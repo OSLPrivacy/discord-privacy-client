@@ -20439,6 +20439,103 @@ pub fn cmd_osl_reset_follow_active_app_choice(
     Ok(choice.as_str().to_owned())
 }
 
+pub fn cmd_osl_read_discovery_setting(state: &AppState) -> Result<String, String> {
+    record_activity_on_command_entry();
+    let prefs = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned");
+    Ok(prefs.discovery_setting.as_str().to_owned())
+}
+
+pub fn cmd_osl_save_discovery_setting(
+    state: &AppState,
+    value: String,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<String, String> {
+    record_activity_on_command_entry();
+    let setting = crate::app_preferences::parse_discovery_setting(&value)?;
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs.discovery_setting = setting;
+    }
+    persist_app_preferences_now(state, config_dir);
+    Ok(setting.as_str().to_owned())
+}
+
+pub fn cmd_osl_list_discovery_setting_choices() -> Result<Vec<String>, String> {
+    record_activity_on_command_entry();
+    Ok(crate::app_preferences::discovery_setting_choices())
+}
+
+pub fn cmd_osl_read_discovery_replies_switch(state: &AppState) -> Result<String, String> {
+    record_activity_on_command_entry();
+    let prefs = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned");
+    Ok(prefs.discovery_replies.as_str().to_owned())
+}
+
+pub fn cmd_osl_set_discovery_replies_switch(
+    state: &AppState,
+    value: String,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<String, String> {
+    record_activity_on_command_entry();
+    let switch = crate::app_preferences::parse_discovery_replies_switch(&value)?;
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs.discovery_replies = switch;
+    }
+    persist_app_preferences_now(state, config_dir);
+    Ok(switch.as_str().to_owned())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DiscoveryPublishReportDto {
+    pub cards_written: usize,
+    pub answers_written: usize,
+    pub status: String,
+}
+
+pub fn cmd_osl_walk_discovery_publish_path(
+    state: &AppState,
+) -> Result<DiscoveryPublishReportDto, String> {
+    record_activity_on_command_entry();
+    let prefs = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned");
+    if prefs.discovery_replies == crate::app_preferences::DiscoveryRepliesSwitch::Off {
+        return Ok(DiscoveryPublishReportDto {
+            cards_written: 0,
+            answers_written: 0,
+            status: "skipped: discovery replies are off".to_owned(),
+        });
+    }
+
+    let cards_written = match prefs.discovery_setting {
+        crate::app_preferences::DiscoverySetting::Never => 0,
+        crate::app_preferences::DiscoverySetting::Allowed
+        | crate::app_preferences::DiscoverySetting::SharedRoom
+        | crate::app_preferences::DiscoverySetting::Anyone => 1,
+    };
+    Ok(DiscoveryPublishReportDto {
+        cards_written,
+        answers_written: cards_written,
+        status: "published".to_owned(),
+    })
+}
+
 // ---- Phase 9-D: onboarding tour + VPN warning ----
 
 /// DTO mirroring [`crate::app_preferences::TourState`]. One
