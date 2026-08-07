@@ -38,8 +38,10 @@ describe("Discord QA header strip", () => {
     expect(controls).not.toContain("<span>Account Burn</span>");
     expect(controls).not.toContain("<span>Discord Burn</span>");
     expect(controls).not.toContain("<span>Chat Burn</span>");
-    expect(controls).toContain('id="discord-qa-whitelist-add"');
-    expect(controls).toContain('id="discord-qa-whitelist-remove"');
+    expect(source).toContain('import { discordQaWhitelistButtonMarkup } from "./discord-qa-whitelist-button";');
+    expect(controls).toContain("discordQaWhitelistButtonMarkup({ scopeApproved, protectionActive: nativeDiscordProtectionActive, verifiedPeer: Boolean(verifiedPeer), busy: whitelistBusy })");
+    expect(controls).not.toContain('id="discord-qa-whitelist-add"');
+    expect(controls).not.toContain('id="discord-qa-whitelist-remove"');
     expect(controls).toContain('id="discord-qa-transcript-visibility"');
     expect(controls).toContain('id="discord-qa-toggle-composer"');
     expect(styles).toContain(
