@@ -40,6 +40,10 @@ import {
   type NativeDiscordRowAttribution,
   type NativeDiscordRowOrientation,
 } from "./discord-row-attribution";
+import {
+  NATIVE_DISCORD_MISSING_COVER_ROW_NOTICE,
+  visibleOpenedMessagesForCarrierRows,
+} from "./native-overlay-row-visibility";
 
 function requireElement<T extends Element>(selector: string): T {
   const element = document.querySelector<T>(selector);
@@ -661,7 +665,7 @@ function paintBoundRows(): void {
     }
   }
   for (const binding of verifiedCarrierRows) {
-    const item = outgoingBubbles.get(binding.messageId);
+    const item = incomingBubbles.get(binding.messageId) ?? outgoingBubbles.get(binding.messageId);
     if (item) {
       bindCarrierRowGeometry(item, binding);
       applyCarrierRowGeometry(item, binding);
@@ -772,9 +776,10 @@ function clearDecodedTranscript(): void {
   syncTranscript();
 }
 
-async function refreshVerifiedCarrierRows(): Promise<void> {
+async function refreshVerifiedCarrierRows(): Promise<readonly NativeDiscordCarrierRowBinding[] | undefined> {
   const state = await getNativeDiscordOverlayState();
   applyVerifiedCarrierRows(state?.visibleCarrierRows);
+  return state?.visibleCarrierRows;
 }
 
 // ---------------------------------------------------------------------------
@@ -1438,8 +1443,10 @@ async function drainReceived(): Promise<void> {
       recordInvalidBackendResponse("open_native_discord_overlay_text",
         "the backend retained rows with an unrecognized protected-message wire");
     }
+    const visibleCarrierRows = await refreshVerifiedCarrierRows();
+    const rowVisibility = visibleOpenedMessagesForCarrierRows(batch.messages, visibleCarrierRows);
     let opened = 0;
-    for (const message of batch.messages) {
+    for (const message of rowVisibility.visibleMessages) {
       // Named by its correlation handle, so a message the backend surfaces a
       // second time -- a row it could not delete, a receipt replay -- updates
       // nothing instead of appending a second bubble for the same text.
@@ -1448,11 +1455,11 @@ async function drainReceived(): Promise<void> {
       incomingBubbles.set(message.messageId, item);
       opened += 1;
     }
+    if (opened > 0) paintBoundRows();
     for (const message of batch.pendingViewOnce) appendPendingViewOnce(message);
     for (const acknowledgment of batch.acknowledgments) {
       applyAcknowledgment(acknowledgment.messageId, acknowledgment.status);
     }
-    await refreshVerifiedCarrierRows();
     // NEW-MESSAGE EDGE. Deliberately conditional: this function is itself a
     // poll, so scheduling a transcript read unconditionally here would make the
     // eye poll Discord's accessibility tree once per receive tick -- exactly the
@@ -1468,7 +1475,9 @@ async function drainReceived(): Promise<void> {
     for (const attachment of attachments) appendPendingAttachment(attachment);
     // Fixed sentences only, and only ever about counts and states -- never a
     // fragment of what arrived.
-    const statusText = nativeOverlayReceiveStatusText(opened, batch);
+    const statusText = rowVisibility.missingCoverRows > 0
+      ? NATIVE_DISCORD_MISSING_COVER_ROW_NOTICE
+      : nativeOverlayReceiveStatusText(opened, batch);
     if (statusText !== null) status.textContent = statusText;
   } catch (error) {
     // This was the last swallowed failure in the file: a bare `catch` that only
