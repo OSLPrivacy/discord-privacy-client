@@ -115,7 +115,7 @@ export const BANNED_WORDS = [...SOFTWARE_JARGON, ...GOV_UK_WORDS_TO_AVOID];
 export const KEPT_WORDS = [
   {
     word: "whitelist",
-    why: 'the plan fixes the page title as "Auto-whitelist rules" (TASK 0742, TASK 0743)',
+    why: 'the plan fixes the page titles "Auto-whitelist rules" (TASK 0742, TASK 0743) and "Whitelisting" (TASK 0766, TASK 0767)',
   },
   {
     word: "server, channel, thread, group DM, supergroup, broadcast list, story, reel",
@@ -161,21 +161,47 @@ export function readWords(text) {
 }
 
 /**
+ * The name a screen gives itself, from whichever of the two ways it uses.
+ *
+ * `aria-label` carries the words directly. `aria-labelledby` names an element
+ * elsewhere on the screen and borrows its words; that is the same accessible
+ * name to a screen reader, so a check that only read `aria-label` would fail a
+ * correctly-labelled screen for choosing the other spelling. Returns null when
+ * the screen is unlabelled, or when it points at an id that is not there --
+ * a dangling `aria-labelledby` gives a screen reader nothing to say.
+ */
+function screenLabel(markup) {
+  const direct = markup.match(/<section\b[^>]*\baria-label="([^"]*)"/iu);
+  if (direct) return { text: visibleText(direct[1]), why: null };
+  const indirect = markup.match(/<section\b[^>]*\baria-labelledby="([^"]*)"/iu);
+  if (!indirect) {
+    return { text: null, why: "the screen's outer section carries no aria-label or aria-labelledby" };
+  }
+  const id = indirect[1].trim().split(/\s+/u)[0];
+  const target = markup.match(
+    new RegExp(`<([a-z0-9]+)\\b[^>]*\\bid="${escapeForRegex(id)}"[^>]*>([\\s\\S]*?)<\\/\\1>`, "iu"),
+  );
+  if (!target) {
+    return { text: null, why: `aria-labelledby names id "${id}", which is not on the screen` };
+  }
+  return { text: visibleText(target[2]), why: null };
+}
+
+/**
  * The page title: the screen's own heading. Both the heading element and the
  * label the screen gives itself have to say it, and say the same thing --
  * a heading that disagrees with the label is not a title anyone can rely on.
  */
 export function pageTitle(markup) {
   const heading = markup.match(/<h[12][^>]*>([\s\S]*?)<\/h[12]>/iu);
-  const labelled = markup.match(/<section\b[^>]*\baria-label="([^"]*)"/iu);
+  const labelled = screenLabel(markup);
   if (!heading) return { title: null, why: "no <h1> or <h2> heading in the screen" };
   const headingText = visibleText(heading[1]);
-  if (!labelled) return { title: null, why: "the screen's outer section carries no aria-label" };
-  const labelText = visibleText(labelled[1]);
-  if (headingText !== labelText) {
+  if (labelled.text === null) return { title: null, why: labelled.why };
+  if (headingText !== labelled.text) {
     return {
       title: null,
-      why: `heading "${headingText}" and screen label "${labelText}" disagree`,
+      why: `heading "${headingText}" and screen label "${labelled.text}" disagree`,
     };
   }
   return { title: headingText, why: null };
