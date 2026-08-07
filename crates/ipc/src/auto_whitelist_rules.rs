@@ -151,8 +151,8 @@ pub enum InstagramWhitelistKind {
     DirectMessage,
     GroupChat,
     PublicPost,
+    Comment,
     Story,
-    Reel,
 }
 
 impl InstagramWhitelistKind {
@@ -160,8 +160,8 @@ impl InstagramWhitelistKind {
         Self::DirectMessage,
         Self::GroupChat,
         Self::PublicPost,
+        Self::Comment,
         Self::Story,
-        Self::Reel,
     ];
 
     pub fn id(self) -> &'static str {
@@ -169,8 +169,8 @@ impl InstagramWhitelistKind {
             Self::DirectMessage => "direct_message",
             Self::GroupChat => "group_chat",
             Self::PublicPost => "public_post",
+            Self::Comment => "comment",
             Self::Story => "story",
-            Self::Reel => "reel",
         }
     }
 
@@ -179,8 +179,8 @@ impl InstagramWhitelistKind {
             Self::DirectMessage => "direct message",
             Self::GroupChat => "group chat",
             Self::PublicPost => "public post",
+            Self::Comment => "comment",
             Self::Story => "story",
-            Self::Reel => "reel",
         }
     }
 }
