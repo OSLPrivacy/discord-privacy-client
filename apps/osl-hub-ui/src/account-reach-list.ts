@@ -8,19 +8,36 @@
  * one row per owned account, each with its own checkbox reflecting whether
  * that account currently reaches the friend.
  *
- * This is a drawing task only. Nothing here calls the Tauri commands from
- * 0240 (`set_hub_friend_account_reach_choice`, `list_hub_friend_account_reach_choices`);
- * wiring the list to those commands is left to a later "connect" task, the
- * same split TASK 0821 used for the Home protection panel.
+ * This module still only draws. TASK 0245 connects the drawn tick boxes to
+ * 0240's commands (`set_hub_friend_account_reach_choice`,
+ * `list_hub_friend_account_reach_choices`) in ./account-reach-connect.ts --
+ * the same draw/connect split TASK 0821 used for the Home protection panel.
+ * What this module owes the connect step is a row that carries everything one
+ * command needs: the service id as well as the account id.
  */
 
 /** One owned account's reach choice for the friend the list is drawn for. */
 export interface AccountReachChoice {
+  /**
+   * Which app the owned account belongs to. The backend keys a reach choice on
+   * service AND account (`account_reach_storage_key`), so a row without its
+   * service cannot be sent to the per-friend commands at all. TASK 0245 draws
+   * it beside the account id so a tick box carries everything the command needs.
+   */
+  serviceId: string;
   accountId: string;
   label: string;
   /** Whether this owned account can currently be seen by the friend. */
   checked: boolean;
 }
+
+/**
+ * The identifier rule the backend itself applies to a service or account id
+ * (`validate_account_reach_component`): 1-128 bytes of ASCII letters, digits,
+ * `-` or `_`. A row that breaks it can never be saved, so it is refused here
+ * rather than drawn as a tick box that silently does nothing.
+ */
+const ACCOUNT_REACH_COMPONENT = /^[A-Za-z0-9_-]{1,128}$/u;
 
 function escapeHtml(value: string): string {
   return value
@@ -40,6 +57,13 @@ export function accountReachListErrors(accounts: readonly AccountReachChoice[]):
   const seen = new Set<string>();
   accounts.forEach((account, index) => {
     if (!account.accountId?.trim()) errors.push(`account reach entry ${index} has no account id`);
+    if (!account.serviceId?.trim()) errors.push(`account reach entry ${index} has no service id`);
+    if (account.accountId?.trim() && !ACCOUNT_REACH_COMPONENT.test(account.accountId)) {
+      errors.push(`account reach entry ${index} account id cannot be saved: ${JSON.stringify(account.accountId)}`);
+    }
+    if (account.serviceId?.trim() && !ACCOUNT_REACH_COMPONENT.test(account.serviceId)) {
+      errors.push(`account reach entry ${index} service id cannot be saved: ${JSON.stringify(account.serviceId)}`);
+    }
     if (!account.label?.trim()) errors.push(`account reach entry ${index} has no label`);
     if (typeof account.checked !== "boolean") {
       errors.push(`account reach entry ${index} tick state is not on or off: ${JSON.stringify(account.checked)}`);
@@ -55,7 +79,7 @@ export function accountReachListErrors(accounts: readonly AccountReachChoice[]):
 function accountReachRow(account: AccountReachChoice): string {
   return `<label class="account-reach-item" data-account-reach-item="${escapeHtml(account.accountId)}">
     <span>${escapeHtml(account.label)}</span>
-    <input type="checkbox" data-account-reach="${escapeHtml(account.accountId)}" ${account.checked ? "checked" : ""}/>
+    <input type="checkbox" data-account-reach="${escapeHtml(account.accountId)}" data-account-reach-service="${escapeHtml(account.serviceId)}" ${account.checked ? "checked" : ""}/>
   </label>`;
 }
 

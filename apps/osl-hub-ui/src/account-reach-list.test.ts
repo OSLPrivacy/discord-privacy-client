@@ -13,10 +13,10 @@ function rule(selector: string): string {
 
 /** TASK 0244 fixture: four named owned accounts with mixed tick states. */
 const FOUR_OWNED_ACCOUNTS: AccountReachChoice[] = [
-  { accountId: "gmail-primary", label: "Gmail (primary)", checked: true },
-  { accountId: "discord-alt", label: "Discord (alt)", checked: false },
-  { accountId: "signal-personal", label: "Signal (personal)", checked: true },
-  { accountId: "telegram-work", label: "Telegram (work)", checked: false },
+  { serviceId: "gmail", accountId: "gmail-primary", label: "Gmail (primary)", checked: true },
+  { serviceId: "discord", accountId: "discord-alt", label: "Discord (alt)", checked: false },
+  { serviceId: "signal", accountId: "signal-personal", label: "Signal (personal)", checked: true },
+  { serviceId: "telegram", accountId: "telegram-work", label: "Telegram (work)", checked: false },
 ];
 
 describe("account reach tick-box list", () => {
@@ -33,7 +33,7 @@ describe("account reach tick-box list", () => {
 
   it("shows a fixture of four named accounts with mixed tick states", () => {
     const markup = accountReachListMarkup(FOUR_OWNED_ACCOUNTS);
-    const checkboxes = [...markup.matchAll(/<input type="checkbox" data-account-reach="([^"]+)" (checked)?\/>/gu)];
+    const checkboxes = [...markup.matchAll(/<input type="checkbox" data-account-reach="([^"]+)" data-account-reach-service="[^"]+" (checked)?\/>/gu)];
 
     expect(checkboxes).toHaveLength(4);
     const states = Object.fromEntries(checkboxes.map((box) => [box[1], box[2] === "checked"]));
@@ -66,15 +66,15 @@ describe("account reach tick-box list", () => {
   });
 
   it("refuses to draw a tick state that is neither on nor off", () => {
-    const broken = [{ accountId: "a", label: "A", checked: "yes" as unknown as boolean }];
+    const broken = [{ serviceId: "s", accountId: "a", label: "A", checked: "yes" as unknown as boolean }];
     expect(accountReachListErrors(broken)).toEqual(["account reach entry 0 tick state is not on or off: \"yes\""]);
     expect(() => accountReachListMarkup(broken)).toThrow(/tick state is not on or off/u);
   });
 
   it("refuses to draw a duplicate account id", () => {
     const broken = [
-      { accountId: "dup", label: "One", checked: true },
-      { accountId: "dup", label: "Two", checked: false },
+      { serviceId: "one", accountId: "dup", label: "One", checked: true },
+      { serviceId: "two", accountId: "dup", label: "Two", checked: false },
     ];
     expect(accountReachListErrors(broken)).toEqual(["account reach entry 1 repeats account id dup"]);
   });

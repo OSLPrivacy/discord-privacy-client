@@ -4,7 +4,7 @@ import { isTauriRuntime } from "./preferences";
 // no longer thrown away with the exception: it is recorded, sanitized and
 // unchanged, so a developer can see why a command was refused instead of
 // guessing from a generic sentence. See ./backend-failure.ts.
-import { checkedBackendResponse, recordBackendFailure, recordInvalidBackendResponse, sanitizeBackendMessage } from "./backend-failure";
+import { checkedBackendResponse, recordBackendFailure, recordInvalidBackendResponse, rejectBackendResponse, sanitizeBackendMessage } from "./backend-failure";
 import {
   parseNativeDiscordOverlayOpenedBatch,
   type NativeDiscordOverlayOpenedBatch,
@@ -598,7 +598,6 @@ export async function loadBuildIntegrityStatus(): Promise<BuildIntegrityStatus |
   } catch (error) { recordBackendFailure("build_integrity_status", error); return null; }
 }
 
-export async function listOslChatHistory(): Promise<OslChatHistoryRow[] | null> {
 export async function listOslChatHistory(hideOthersMessages = false): Promise<OslChatHistoryRow[] | null> {
   if (!isTauriRuntime()) return null;
   try {
@@ -649,6 +648,8 @@ export function parseOslChatBurnResult(raw: unknown): OslChatBurnResult | null {
     || raw.localCleanupComplete !== true
     || raw.recipientCopiesDeleted !== false) return null;
   return raw as unknown as OslChatBurnResult;
+}
+
 export function parseInstalledBuildChatWarning(raw: unknown): InstalledBuildChatWarning | null {
   if (raw === null || raw === undefined) return null;
   if (!isRecord(raw)
@@ -671,6 +672,8 @@ export async function loadInstalledBuildChatWarningStatus(): Promise<InstalledBu
       parseInstalledBuildChatWarning(await invoke<unknown>("installed_build_chat_warning_status")),
       "the installed-build warning did not match the expected shape");
   } catch (error) { recordBackendFailure("installed_build_chat_warning_status", error); return null; }
+}
+
 export async function addOslChatReaction(messageId: string, emoji: string): Promise<OslChatReactionResult | null> {
   return updateOslChatReaction("add_osl_chat_reaction", messageId, emoji);
 }
@@ -1029,6 +1032,65 @@ export async function revokeActiveHubFriendScope(contextToken: string, personId:
       "the person row did not match the expected shape");
   }
   catch (error) { recordBackendFailure("revoke_active_hub_friend_scope", error); return null; }
+}
+
+/**
+ * TASK 0240's per-friend, per-owned-account reach choice, as the backend
+ * states it. One record is one owned account's answer for one friend, so two
+ * owned accounts can carry two different answers for the same person.
+ */
+export interface FriendAccountReachChoice {
+  personId: string;
+  serviceId: string;
+  accountId: string;
+  broadened: boolean;
+}
+
+export function parseFriendAccountReachChoice(raw: unknown): FriendAccountReachChoice | null {
+  if (!isRecord(raw) || !exact(raw, ["personId", "serviceId", "accountId", "broadened"])) return null;
+  if (!safe(raw.personId, 180) || !safeOpaque(raw.serviceId, 128) || !safeOpaque(raw.accountId, 128)) return null;
+  if (typeof raw.broadened !== "boolean") return null;
+  return raw as unknown as FriendAccountReachChoice;
+}
+
+// Change exactly ONE owned account's reach for one friend. The command carries
+// that account's own service and account identifier and nothing else, so a tick
+// box can never move an account the person did not touch. The identifier rules
+// match the backend's own (`validate_account_reach_component`): a refusal is
+// better than a command the backend will reject.
+export async function setHubFriendAccountReachChoice(
+  personId: string,
+  serviceId: string,
+  accountId: string,
+  broadened: boolean,
+): Promise<FriendAccountReachChoice | null> {
+  if (!isTauriRuntime() || !safe(personId, 180) || !safeOpaque(serviceId, 128) || !safeOpaque(accountId, 128) || typeof broadened !== "boolean") return null;
+  try {
+    return checkedBackendResponse("set_hub_friend_account_reach_choice",
+      parseFriendAccountReachChoice(await invoke<unknown>("set_hub_friend_account_reach_choice", {
+        personId,
+        serviceId,
+        accountId,
+        broadened,
+      })),
+      "the account reach choice did not match the expected shape");
+  } catch (error) { recordBackendFailure("set_hub_friend_account_reach_choice", error, [accountId]); return null; }
+}
+
+/** Ask the backend directly what every recorded account reach choice is. */
+export async function listHubFriendAccountReachChoices(personId: string): Promise<FriendAccountReachChoice[] | null> {
+  if (!isTauriRuntime() || !safe(personId, 180)) return null;
+  try {
+    const raw = await invoke<unknown>("list_hub_friend_account_reach_choices", { personId });
+    if (!Array.isArray(raw) || raw.length > 512) {
+      return rejectBackendResponse("list_hub_friend_account_reach_choices",
+        "the account reach choice list did not match the expected shape");
+    }
+    const choices = raw.map(parseFriendAccountReachChoice);
+    return checkedBackendResponse("list_hub_friend_account_reach_choices",
+      choices.every((choice): choice is FriendAccountReachChoice => choice !== null) ? choices : null,
+      "an account reach choice did not match the expected shape");
+  } catch (error) { recordBackendFailure("list_hub_friend_account_reach_choices", error); return null; }
 }
 
 export function parseHubPerson(raw: unknown): HubPerson | null {
