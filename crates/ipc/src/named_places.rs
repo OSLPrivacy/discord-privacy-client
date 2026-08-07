@@ -411,3 +411,45 @@ fn task_name_is_filled(task: &Option<String>) -> bool {
         .map(|task| !task.trim().is_empty())
         .unwrap_or(false)
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LookOnlyShutAttempt {
+    pub place_words: String,
+    pub register_exit: i32,
+    pub typing_boxes_opened: usize,
+    pub research_task: String,
+}
+
+impl LookOnlyShutAttempt {
+    pub fn is_refusal(&self) -> bool {
+        self.register_exit == 1
+            && self.typing_boxes_opened == 0
+            && !self.place_words.trim().is_empty()
+            && !self.research_task.trim().is_empty()
+    }
+}
+
+pub fn try_register_look_only_and_open_typing_box(
+    rows: &[NamedPlace],
+    place: &str,
+) -> Result<LookOnlyShutAttempt, String> {
+    let row = rows
+        .iter()
+        .find(|row| row.place.eq_ignore_ascii_case(place))
+        .ok_or_else(|| format!("look-only place not found: {}", place.to_ascii_lowercase()))?;
+
+    let place_words = row.place.to_ascii_lowercase();
+    if row.disposition != PlaceDisposition::LookOnlyRefused {
+        return Err(format!("{place_words} is not look-only refused"));
+    }
+
+    let research_task = normalized_task_name(&row.research_task)
+        .ok_or_else(|| format!("{place_words} refusal is missing a research task"))?;
+
+    Ok(LookOnlyShutAttempt {
+        place_words,
+        register_exit: 1,
+        typing_boxes_opened: 0,
+        research_task,
+    })
+}
