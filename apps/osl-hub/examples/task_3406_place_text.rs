@@ -3,6 +3,7 @@ mod windows_place_text {
     use std::ffi::{c_void, OsString};
     use std::mem::size_of;
     use std::os::windows::ffi::OsStringExt;
+    use std::process::{Child, Command, Stdio};
     use std::ptr;
     use std::thread;
     use std::time::{Duration, Instant};
@@ -20,16 +21,16 @@ mod windows_place_text {
     };
     use windows_sys::Win32::Foundation::{CloseHandle, BOOL, HWND, LPARAM, POINT, TRUE};
     use windows_sys::Win32::System::DataExchange::{
-        CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardData, OpenClipboard,
-        SetClipboardData,
+        CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardData,
+        IsClipboardFormatAvailable, OpenClipboard, SetClipboardData,
     };
     use windows_sys::Win32::System::Memory::{
         GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE,
     };
     use windows_sys::Win32::System::Ole::CF_UNICODETEXT;
     use windows_sys::Win32::System::Threading::{
-        AttachThreadInput, GetCurrentThreadId, OpenProcess, QueryFullProcessImageNameW,
-        PROCESS_QUERY_LIMITED_INFORMATION,
+        AttachThreadInput, GetCurrentProcessId, GetCurrentThreadId, OpenProcess,
+        QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
     };
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
         SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_KEYUP,
@@ -45,6 +46,7 @@ mod windows_place_text {
 
     const DEFAULT_APP: &str = "Discord";
     const DEFAULT_TEXT: &str = "MAPLE-3406";
+    const DEFAULT_PRIVATE_CANARY: &str = "QQQQQQQQQQ";
     const DEFAULT_INITIAL_FRONT: &str = "Photos";
     const EVENT_SYSTEM_ALERT: u32 = 0x0002;
     const ELECTRON_A11Y_OBJECT_ID: i32 = 1;
@@ -94,10 +96,10 @@ mod windows_place_text {
     }
 
     impl ClipboardRestorer {
-        fn restore(&mut self) -> Result<(), String> {
-            restore_clipboard(&self.snapshot)?;
+        fn restore(&mut self) -> Result<Instant, String> {
+            let removed_at = restore_clipboard(&self.snapshot)?;
             self.restored = true;
-            Ok(())
+            Ok(removed_at)
         }
     }
 
@@ -133,24 +135,33 @@ mod windows_place_text {
 
     pub fn run() -> Result<(), CommandError> {
         let args = Args::parse()?;
+        if let Some(observer) = args.observer {
+            return run_clipboard_observer(observer);
+        }
+        let PlaceArgs {
+            initial_front,
+            app,
+            text,
+            private_canary,
+        } = args.place;
         let initial = foreground_window()
             .ok_or_else(|| CommandError::exit1("Windows reported no foreground window"))?;
         println!(
             "initial_front={}",
             describe_window(&initial).replace('\n', " ")
         );
-        if !window_matches(&initial, &args.initial_front) {
+        if !window_matches(&initial, &initial_front) {
             return Err(CommandError::exit1(format!(
                 "initial front window was not {}",
-                args.initial_front
+                initial_front
             )));
         }
 
-        let discord = match find_window(&args.app) {
+        let discord = match find_window(&app) {
             Some(window) => window,
             None => {
                 println!("osl_clipboard_entries=0");
-                return Err(CommandError::exit1(format!("{} not found", args.app)));
+                return Err(CommandError::exit1(format!("{} not found", app)));
             }
         };
         let initially_behind = !same_root(initial.hwnd, discord.hwnd);
@@ -162,7 +173,7 @@ mod windows_place_text {
         if !initially_behind {
             return Err(CommandError::exit1(format!(
                 "{} was already the foreground window",
-                args.app
+                app
             )));
         }
 
@@ -178,7 +189,7 @@ mod windows_place_text {
         if !same_root(grabbed.hwnd, discord.hwnd) {
             return Err(CommandError::exit1(format!(
                 "{} did not become the foreground window",
-                args.app
+                app
             )));
         }
 
@@ -188,9 +199,8 @@ mod windows_place_text {
         wait_for_tree(&root, &automation)?;
         let composer = find_composer(&root, &automation)?;
         println!("composer_name={:?}", element_name(&composer));
-        let bounds = element_bounds(&composer).ok_or_else(|| {
-            CommandError::exit1(format!("{} composer bounds not found", args.app))
-        })?;
+        let bounds = element_bounds(&composer)
+            .ok_or_else(|| CommandError::exit1(format!("{} composer bounds not found", app)))?;
         println!(
             "composer_bounds={},{},{},{}",
             bounds[0], bounds[1], bounds[2], bounds[3]
@@ -205,39 +215,62 @@ mod windows_place_text {
         if !focus {
             return Err(CommandError::exit1(format!(
                 "{} composer did not take keyboard focus",
-                args.app
+                app
             )));
         }
 
         let snapshot = snapshot_clipboard()
             .map_err(|error| CommandError::exit1(format!("clipboard snapshot failed: {error}")))?;
         let before_digest = snapshot.digest();
+        let before_text = snapshot.unicode_text();
         let mut restorer = ClipboardRestorer {
             snapshot,
             restored: false,
         };
-        stage_clipboard_text(&args.text)
+        let observer = ClipboardObserver::spawn(&text, Duration::from_millis(3_000))
+            .map_err(|error| CommandError::exit1(format!("clipboard observer failed: {error}")))?;
+        let staged_at = stage_clipboard_text(&text)
             .map_err(|error| CommandError::exit1(format!("clipboard stage failed: {error}")))?;
         send_ctrl_v().map_err(CommandError::exit1)?;
-        thread::sleep(Duration::from_millis(320));
+        let readback = wait_for_value(&composer, &text, Duration::from_millis(1_200))?;
+        let observer_report = observer
+            .wait()
+            .map_err(|error| CommandError::exit1(format!("clipboard observer failed: {error}")))?;
 
-        let readback = value_of(&composer).unwrap_or_default();
         println!("readback={readback:?}");
-        restorer
+        let removed_at = restorer
             .restore()
             .map_err(|error| CommandError::exit1(format!("clipboard restore failed: {error}")))?;
-        let after_digest = snapshot_clipboard()
-            .map_err(|error| CommandError::exit1(format!("clipboard resnapshot failed: {error}")))?
-            .digest();
+        let exposure_ms = removed_at.saturating_duration_since(staged_at).as_millis();
+        let after_snapshot = snapshot_clipboard().map_err(|error| {
+            CommandError::exit1(format!("clipboard resnapshot failed: {error}"))
+        })?;
+        let after_digest = after_snapshot.digest();
+        let after_text = after_snapshot.unicode_text();
+        let private_chars_found = private_canary_chars_reaching_clipboard(
+            &private_canary,
+            &[text.as_str(), observer_report.saw.as_str()],
+        );
+        let private_chars = private_chars_found.chars().count();
+        println!("clipboard_exposure_ms={exposure_ms}");
+        println!("clipboard_private_chars={private_chars}");
+        println!("clipboard_private_chars_found={private_chars_found:?}");
+        println!("clipboard_original_text_before={before_text:?}");
+        println!("clipboard_original_text_after={after_text:?}");
         println!("clipboard_before_digest={before_digest:016x}");
         println!("clipboard_after_digest={after_digest:016x}");
         println!("clipboard_restored_exact={}", before_digest == after_digest);
+        println!(
+            "clipboard_second_program_pid={}",
+            observer_report.pid.unwrap_or(0)
+        );
+        println!("clipboard_second_program_saw={:?}", observer_report.saw);
         println!("osl_clipboard_entries=0");
 
-        if readback != args.text {
+        if readback != text {
             return Err(CommandError::exit1(format!(
                 "{} readback did not equal {:?}",
-                args.app, args.text
+                app, text
             )));
         }
         if before_digest != after_digest {
@@ -245,13 +278,40 @@ mod windows_place_text {
                 "clipboard content changed across placement",
             ));
         }
+        if before_text != after_text {
+            return Err(CommandError::exit1(
+                "clipboard text changed across placement",
+            ));
+        }
+        if observer_report.saw != text {
+            return Err(CommandError::exit1(format!(
+                "clipboard observer saw {:?}, not {:?}",
+                observer_report.saw, text
+            )));
+        }
+        if private_chars != 0 {
+            return Err(CommandError::exit1(format!(
+                "{private_chars} private canary characters reached the clipboard: {private_chars_found:?}"
+            )));
+        }
         Ok(())
     }
 
     struct Args {
+        place: PlaceArgs,
+        observer: Option<ObserverArgs>,
+    }
+
+    struct PlaceArgs {
         initial_front: String,
         app: String,
         text: String,
+        private_canary: String,
+    }
+
+    struct ObserverArgs {
+        needle: String,
+        timeout: Duration,
     }
 
     impl Args {
@@ -259,9 +319,30 @@ mod windows_place_text {
             let mut initial_front = DEFAULT_INITIAL_FRONT.to_owned();
             let mut app = DEFAULT_APP.to_owned();
             let mut text = DEFAULT_TEXT.to_owned();
+            let mut private_canary = DEFAULT_PRIVATE_CANARY.to_owned();
+            let mut observer = false;
+            let mut observer_needle = String::new();
+            let mut observer_timeout = Duration::from_millis(3_000);
             let mut args = std::env::args().skip(1);
             while let Some(arg) = args.next() {
                 match arg.as_str() {
+                    "--clipboard-observer" => {
+                        observer = true;
+                    }
+                    "--observer-needle" => {
+                        observer_needle = args.next().ok_or_else(|| {
+                            CommandError::usage("--observer-needle needs a value")
+                        })?;
+                    }
+                    "--observer-timeout-ms" => {
+                        let raw = args.next().ok_or_else(|| {
+                            CommandError::usage("--observer-timeout-ms needs a value")
+                        })?;
+                        let millis = raw.parse::<u64>().map_err(|_| {
+                            CommandError::usage("--observer-timeout-ms must be an integer")
+                        })?;
+                        observer_timeout = Duration::from_millis(millis);
+                    }
                     "--initial-front" => {
                         initial_front = args
                             .next()
@@ -277,9 +358,14 @@ mod windows_place_text {
                             .next()
                             .ok_or_else(|| CommandError::usage("--text needs a value"))?;
                     }
+                    "--private-canary" => {
+                        private_canary = args
+                            .next()
+                            .ok_or_else(|| CommandError::usage("--private-canary needs a value"))?;
+                    }
                     "--help" | "-h" => {
                         return Err(CommandError::usage(
-                            "usage: task_3406_place_text [--initial-front Photos] [--app Discord] [--text MAPLE-3406]",
+                            "usage: task_3406_place_text [--initial-front Photos] [--app Discord] [--text MAPLE-3406] [--private-canary QQQQQQQQQQ]",
                         ));
                     }
                     other => {
@@ -290,12 +376,119 @@ mod windows_place_text {
             if text.is_empty() || text.chars().any(|ch| matches!(ch, '\n' | '\r')) {
                 return Err(CommandError::usage("text must be one non-empty line"));
             }
+            if observer {
+                if observer_needle.is_empty() {
+                    return Err(CommandError::usage(
+                        "--clipboard-observer requires --observer-needle",
+                    ));
+                }
+                return Ok(Self {
+                    place: PlaceArgs {
+                        initial_front,
+                        app,
+                        text,
+                        private_canary,
+                    },
+                    observer: Some(ObserverArgs {
+                        needle: observer_needle,
+                        timeout: observer_timeout,
+                    }),
+                });
+            }
+            if private_canary.is_empty() || private_canary.chars().any(|ch| text.contains(ch)) {
+                return Err(CommandError::usage(
+                    "--private-canary must be non-empty and share no characters with --text",
+                ));
+            }
             Ok(Self {
-                initial_front,
-                app,
-                text,
+                place: PlaceArgs {
+                    initial_front,
+                    app,
+                    text,
+                    private_canary,
+                },
+                observer: None,
             })
         }
+    }
+
+    struct ClipboardObserver {
+        child: Child,
+    }
+
+    struct ClipboardObserverReport {
+        pid: Option<u32>,
+        saw: String,
+    }
+
+    impl ClipboardObserver {
+        fn spawn(needle: &str, timeout: Duration) -> Result<Self, String> {
+            let exe = std::env::current_exe()
+                .map_err(|error| format!("current exe unavailable: {error}"))?;
+            let child = Command::new(exe)
+                .arg("--clipboard-observer")
+                .arg("--observer-needle")
+                .arg(needle)
+                .arg("--observer-timeout-ms")
+                .arg(timeout.as_millis().to_string())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|error| format!("spawn failed: {error}"))?;
+            Ok(Self { child })
+        }
+
+        fn wait(self) -> Result<ClipboardObserverReport, String> {
+            let output = self
+                .child
+                .wait_with_output()
+                .map_err(|error| format!("wait failed: {error}"))?;
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let mut pid = None;
+            let mut saw = None;
+            for line in stdout.lines() {
+                if let Some(value) = line.strip_prefix("observer_pid=") {
+                    pid = value.parse::<u32>().ok();
+                } else if let Some(value) = line.strip_prefix("observer_saw=") {
+                    saw = Some(value.to_owned());
+                }
+            }
+            if !output.status.success() {
+                return Err(format!(
+                    "observer exited {:?}; stdout={stdout:?}; stderr={stderr:?}",
+                    output.status.code()
+                ));
+            }
+            Ok(ClipboardObserverReport {
+                pid,
+                saw: saw.ok_or_else(|| {
+                    format!("observer did not print observer_saw; stdout={stdout:?}")
+                })?,
+            })
+        }
+    }
+
+    fn run_clipboard_observer(args: ObserverArgs) -> Result<(), CommandError> {
+        println!("observer_pid={}", unsafe { GetCurrentProcessId() });
+        let started = Instant::now();
+        let mut last_text = None;
+        while started.elapsed() < args.timeout {
+            if let Ok(Some(text)) = read_clipboard_unicode_text() {
+                if text == args.needle {
+                    println!("observer_saw={text}");
+                    return Ok(());
+                }
+                last_text = Some(text);
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        if let Some(text) = last_text {
+            println!("observer_saw={text}");
+        }
+        Err(CommandError::exit1(
+            "observer did not see requested clipboard text",
+        ))
     }
 
     fn initialize_com() -> Result<ComGuard, CommandError> {
@@ -450,6 +643,23 @@ mod windows_place_text {
         unsafe { pattern.CurrentValue() }
             .ok()
             .map(|value| value.to_string())
+    }
+
+    fn wait_for_value(
+        element: &IUIAutomationElement,
+        expected: &str,
+        timeout: Duration,
+    ) -> Result<String, CommandError> {
+        let started = Instant::now();
+        let mut last = String::new();
+        while started.elapsed() < timeout {
+            last = value_of(element).unwrap_or_default();
+            if last == expected {
+                return Ok(last);
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        Ok(last)
     }
 
     fn element_name(element: &IUIAutomationElement) -> String {
@@ -686,9 +896,7 @@ mod windows_place_text {
                 }
                 let size = unsafe { GlobalSize(handle as _) };
                 if size == 0 {
-                    return Err(format!(
-                        "clipboard format {format} is not byte-copyable"
-                    ));
+                    return Err(format!("clipboard format {format} is not byte-copyable"));
                 }
                 let source = unsafe { GlobalLock(handle as _) };
                 if source.is_null() {
@@ -703,7 +911,7 @@ mod windows_place_text {
         })
     }
 
-    fn stage_clipboard_text(value: &str) -> Result<(), String> {
+    fn stage_clipboard_text(value: &str) -> Result<Instant, String> {
         let utf16 = value
             .encode_utf16()
             .chain(std::iter::once(0))
@@ -715,19 +923,51 @@ mod windows_place_text {
             if unsafe { EmptyClipboard() } == 0 {
                 return Err("clipboard clear failed".to_owned());
             }
-            set_clipboard_bytes(CF_UNICODETEXT as u32, bytes)
+            set_clipboard_bytes(CF_UNICODETEXT as u32, bytes)?;
+            Ok(Instant::now())
         })
     }
 
-    fn restore_clipboard(snapshot: &ClipboardSnapshot) -> Result<(), String> {
+    fn restore_clipboard(snapshot: &ClipboardSnapshot) -> Result<Instant, String> {
         with_clipboard(|| {
             if unsafe { EmptyClipboard() } == 0 {
                 return Err("clipboard clear failed".to_owned());
             }
+            let removed_at = Instant::now();
             for format in &snapshot.formats {
                 set_clipboard_bytes(format.format, &format.bytes)?;
             }
-            Ok(())
+            Ok(removed_at)
+        })
+    }
+
+    fn read_clipboard_unicode_text() -> Result<Option<String>, String> {
+        with_clipboard(|| {
+            if unsafe { IsClipboardFormatAvailable(CF_UNICODETEXT as u32) } == 0 {
+                return Ok(None);
+            }
+            let handle = unsafe { GetClipboardData(CF_UNICODETEXT as u32) };
+            if handle.is_null() {
+                return Ok(None);
+            }
+            let size = unsafe { GlobalSize(handle as _) };
+            if size < size_of::<u16>() {
+                return Ok(None);
+            }
+            let source = unsafe { GlobalLock(handle as _) };
+            if source.is_null() {
+                return Err("clipboard text could not be locked".to_owned());
+            }
+            let units = unsafe {
+                std::slice::from_raw_parts(source.cast::<u16>(), size / size_of::<u16>())
+            };
+            let nul = units
+                .iter()
+                .position(|unit| *unit == 0)
+                .unwrap_or(units.len());
+            let text = String::from_utf16_lossy(&units[..nul]);
+            unsafe { GlobalUnlock(handle as _) };
+            Ok(Some(text))
         })
     }
 
@@ -792,6 +1032,30 @@ mod windows_place_text {
             }
             hash
         }
+
+        fn unicode_text(&self) -> Option<String> {
+            let text = self
+                .formats
+                .iter()
+                .find(|format| format.format == CF_UNICODETEXT as u32)?;
+            let units = text
+                .bytes
+                .chunks_exact(size_of::<u16>())
+                .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+                .collect::<Vec<_>>();
+            let nul = units
+                .iter()
+                .position(|unit| *unit == 0)
+                .unwrap_or(units.len());
+            Some(String::from_utf16_lossy(&units[..nul]))
+        }
+    }
+
+    fn private_canary_chars_reaching_clipboard(canary: &str, observations: &[&str]) -> String {
+        canary
+            .chars()
+            .filter(|private| observations.iter().any(|seen| seen.contains(*private)))
+            .collect()
     }
 
     fn window_title(hwnd: HWND) -> String {
