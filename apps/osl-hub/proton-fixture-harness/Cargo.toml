@@ -1,0 +1,13 @@
+[package]
+name = "task-1244-proton-fixture-harness"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[features]
+proton-fixture = []
+
+[dependencies]
+serde = { version = "=1.0.228", features = ["derive"] }
+
+[workspace]
