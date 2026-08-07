@@ -23,6 +23,7 @@ pub enum WebsiteDriverJob {
     FindPage,
     ReadPage,
     PlaceText,
+    ReadEditableBox,
     PressNamedControl,
 }
 
@@ -32,15 +33,17 @@ impl WebsiteDriverJob {
             Self::FindPage => "find_page",
             Self::ReadPage => "read_page",
             Self::PlaceText => "place_text",
+            Self::ReadEditableBox => "read_editable_box",
             Self::PressNamedControl => "press_named_control",
         }
     }
 }
 
-pub const WEBSITE_DRIVER_JOBS: [WebsiteDriverJob; 4] = [
+pub const WEBSITE_DRIVER_JOBS: [WebsiteDriverJob; 5] = [
     WebsiteDriverJob::FindPage,
     WebsiteDriverJob::ReadPage,
     WebsiteDriverJob::PlaceText,
+    WebsiteDriverJob::ReadEditableBox,
     WebsiteDriverJob::PressNamedControl,
 ];
 
@@ -111,6 +114,13 @@ pub struct WebsiteNamedControl {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WebsiteTextPlacement {
+    pub page: WebsitePage,
+    pub editable_box_name: String,
+    pub text: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WebsiteEditableBoxRead {
     pub page: WebsitePage,
     pub editable_box_name: String,
     pub text: String,
@@ -263,6 +273,13 @@ pub trait WebsiteDriver {
         &mut self,
         placement: WebsiteTextPlacement,
     ) -> Result<WebsitePlacementProof, WebsiteDriverError>;
+    fn read_editable_box(
+        &mut self,
+        _page: &WebsitePage,
+        _editable_box_name: &str,
+    ) -> Result<WebsiteEditableBoxRead, WebsiteDriverError> {
+        Err(WebsiteDriverError::NamedControlNotFound)
+    }
     fn press_named_control(
         &mut self,
         control: WebsiteNamedControl,
@@ -401,6 +418,12 @@ struct BrowserPageSnapshot {
 struct BrowserTextPlacementResult {
     placed: bool,
     readback: String,
+}
+
+#[derive(Deserialize)]
+struct BrowserEditableBoxReadResult {
+    found: bool,
+    text: String,
 }
 
 #[derive(Deserialize)]
@@ -613,6 +636,23 @@ impl WebsiteDriver for RealBrowserWebsiteDriver {
         }
     }
 
+    fn read_editable_box(
+        &mut self,
+        page: &WebsitePage,
+        editable_box_name: &str,
+    ) -> Result<WebsiteEditableBoxRead, WebsiteDriverError> {
+        let websocket_url = self.page_websocket_url(page)?;
+        let result = read_named_editable_box(&websocket_url, editable_box_name)?;
+        if !result.found {
+            return Err(WebsiteDriverError::NamedControlNotFound);
+        }
+        Ok(WebsiteEditableBoxRead {
+            page: page.clone(),
+            editable_box_name: editable_box_name.to_owned(),
+            text: result.text,
+        })
+    }
+
     fn read_selected_email(
         &mut self,
         page: &WebsitePage,
@@ -701,6 +741,70 @@ fn wait_for_devtools(
         }
         thread::sleep(Duration::from_millis(100));
     }
+}
+
+fn read_named_editable_box(
+    websocket_url: &str,
+    name: &str,
+) -> Result<BrowserEditableBoxReadResult, WebsiteDriverError> {
+    let name = serde_json::to_string(name).map_err(|_| WebsiteDriverError::ReadFailed)?;
+    let expression = format!(
+        r#"
+(() => {{
+  const wanted = {name};
+  const compact = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+  const visible = (element) => {{
+    if (!element || element.hidden || element.getAttribute('aria-hidden') === 'true') return false;
+    const style = window.getComputedStyle(element);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse' || style.opacity === '0') return false;
+    return element.getClientRects().length > 0;
+  }};
+  const enabled = (element) => !element.disabled && !element.readOnly && element.getAttribute('aria-disabled') !== 'true';
+  const labelledBy = (element) => compact(
+    (element.getAttribute('aria-labelledby') || '')
+      .split(/\s+/)
+      .map((id) => document.getElementById(id))
+      .filter(Boolean)
+      .map((label) => label.innerText || label.textContent || '')
+      .join(' ')
+  );
+  const controlName = (element) => {{
+    const candidates = [
+      element.getAttribute('aria-label'),
+      labelledBy(element),
+      element.getAttribute('title'),
+      element.getAttribute('placeholder'),
+      element.getAttribute('name'),
+      element.id
+    ];
+    for (const candidate of candidates) {{
+      const name = compact(candidate);
+      if (name) return name;
+    }}
+    return '';
+  }};
+  const editable = (element) => {{
+    if (!enabled(element)) return false;
+    if (element.isContentEditable) return true;
+    const tag = element.tagName.toLowerCase();
+    if (tag === 'textarea') return true;
+    if (tag !== 'input') return element.getAttribute('role') === 'textbox' || element.getAttribute('role') === 'searchbox';
+    const type = (element.getAttribute('type') || 'text').toLowerCase();
+    return !['button', 'checkbox', 'color', 'file', 'hidden', 'image', 'radio', 'range', 'reset', 'submit'].includes(type);
+  }};
+  const read = (element) => element.isContentEditable ? (element.innerText || element.textContent || '') : String(element.value || '');
+  const matches = [];
+  for (const element of document.querySelectorAll('input, textarea, [contenteditable=""], [contenteditable="true"], [role="textbox"], [role="searchbox"]')) {{
+    if (!visible(element) || !editable(element) || controlName(element) !== wanted) continue;
+    matches.push(element);
+  }}
+  if (matches.length !== 1) return {{ found: false, text: '' }};
+  return {{ found: true, text: read(matches[0]) }};
+}})()
+"#
+    );
+    let value = evaluate_target(websocket_url, &expression)?;
+    serde_json::from_value(value).map_err(|_| WebsiteDriverError::ReadFailed)
 }
 
 fn read_page_snapshot(websocket_url: &str) -> Result<BrowserPageSnapshot, WebsiteDriverError> {
@@ -1378,6 +1482,18 @@ mod tests {
             })
         }
 
+        fn read_editable_box(
+            &mut self,
+            page: &WebsitePage,
+            editable_box_name: &str,
+        ) -> Result<WebsiteEditableBoxRead, WebsiteDriverError> {
+            Ok(WebsiteEditableBoxRead {
+                page: page.clone(),
+                editable_box_name: editable_box_name.to_owned(),
+                text: String::new(),
+            })
+        }
+
         fn press_named_control(
             &mut self,
             _control: WebsiteNamedControl,
@@ -1397,10 +1513,11 @@ mod tests {
                 "find_page",
                 "read_page",
                 "place_text",
+                "read_editable_box",
                 "press_named_control"
             ]
         );
-        assert_eq!(jobs.len(), 4);
+        assert_eq!(jobs.len(), 5);
 
         println!("TASK1200 website_driver_job_count={}", jobs.len());
         for name in names {
@@ -1472,6 +1589,23 @@ mod tests {
             })
         }
 
+        fn read_editable_box(
+            &mut self,
+            page: &WebsitePage,
+            editable_box_name: &str,
+        ) -> Result<WebsiteEditableBoxRead, WebsiteDriverError> {
+            let text = self
+                .drafts
+                .get(editable_box_name)
+                .ok_or(WebsiteDriverError::NamedControlNotFound)?
+                .clone();
+            Ok(WebsiteEditableBoxRead {
+                page: page.clone(),
+                editable_box_name: editable_box_name.to_owned(),
+                text,
+            })
+        }
+
         fn press_named_control(
             &mut self,
             control: WebsiteNamedControl,
@@ -1516,5 +1650,39 @@ mod tests {
             "TASK1207 sent_message_count_after={}",
             driver.sent_message_count
         );
+    }
+
+    #[test]
+    fn task_1210_direct_read_editable_box_returns_two_line_fixture_draft() {
+        let mut driver = DraftFixtureDriver::new();
+        let page = driver
+            .find_page(WebsitePageRequest {
+                url: "https://fixture.invalid/draft".to_owned(),
+            })
+            .expect("fixture page opens");
+        let fixture_draft = "TASK1210 first fixture line\nTASK1210 second fixture line";
+
+        driver
+            .place_text(WebsiteTextPlacement {
+                page: page.clone(),
+                editable_box_name: "Body".to_owned(),
+                text: fixture_draft.to_owned(),
+            })
+            .expect("direct place_text command places fixture draft");
+        let read = driver
+            .read_editable_box(&page, "Body")
+            .expect("direct read_editable_box command reads fixture draft");
+
+        assert_eq!(read.editable_box_name, "Body");
+        assert_eq!(read.text, fixture_draft);
+        assert_eq!(read.text.lines().count(), 2);
+
+        println!("TASK1210 direct_command=read_editable_box");
+        println!("TASK1210 editable_box_name={}", read.editable_box_name);
+        println!(
+            "TASK1210 fixture_draft_line_count={}",
+            read.text.lines().count()
+        );
+        println!("TASK1210 fixture_draft={}", read.text);
     }
 }
