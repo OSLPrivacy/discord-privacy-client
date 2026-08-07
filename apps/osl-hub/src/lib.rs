@@ -141,6 +141,7 @@ pub mod owner_presence;
 pub mod peer_attachment_io;
 pub mod preferences;
 pub mod privacy_scan;
+pub mod proton_fake_page;
 #[cfg(feature = "core")]
 pub mod pro_context_cover;
 pub mod proprietary_module_boundary;
