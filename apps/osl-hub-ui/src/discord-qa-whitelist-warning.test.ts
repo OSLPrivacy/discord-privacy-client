@@ -73,8 +73,8 @@ describe("Discord QA whitelist revoke warning", () => {
     const shown = renderWhitelistWarning({ protectionActive: true, verifiedPeer: true, scopeApproved: false });
     expect(shown).toContain("Encryption revoked for this chat");
     expect(shown).toContain("sends will fail until you allow it again");
-    // Pressing + is how the operator gets back to a working state.
-    expect(shown).toContain("Press the + button to allow this chat again");
+    // The off-list state is how the operator gets back to a working state.
+    expect(shown).toContain("Press the Off list button to allow this chat again");
     // OSL cannot know whether the other person has an OSL account at all;
     // the copy must never imply otherwise.
     expect(shown.toLowerCase()).not.toContain("osl account");

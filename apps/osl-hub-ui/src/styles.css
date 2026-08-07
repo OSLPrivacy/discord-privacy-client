@@ -4917,10 +4917,50 @@ code {
   border-width: 0 0 0 1px;
   border-radius: 0;
   color: #8bdbea;
-  font-size: 18px;
+  font-size: 12px;
   line-height: 1;
 }
 .discord-qa-whitelist button:last-child { border-radius: 0 6px 6px 0; }
+
+.discord-qa-whitelist-toggle {
+  min-width: 78px;
+  padding: 0 9px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.discord-qa-whitelist-toggle span { margin-right: 0; }
+
+.discord-qa-whitelist-toggle.off-list {
+  color: #ffcf70;
+  border-color: rgba(255, 207, 112, .45);
+}
+
+.discord-qa-whitelist-toggle.on-list {
+  color: #49d58a;
+  border-color: rgba(73, 213, 138, .45);
+}
+
+.discord-qa-whitelist-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1px solid currentColor;
+}
+
+.discord-qa-whitelist-toggle.on-list .discord-qa-whitelist-dot {
+  background: currentColor;
+}
+
+.discord-qa-whitelist-label {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: none;
+  white-space: nowrap;
+}
 
 .discord-qa-icon-control {
   width: 34px;

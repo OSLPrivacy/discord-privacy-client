@@ -95,11 +95,11 @@ function keyboardJourneySpecs(): KeyboardJourneySpec[] {
     {
       name: "allowed-place change",
       surfaceHtml: sourceBackedSurface(
-        'id="discord-qa-whitelist-add"',
-        '<section><button id="discord-qa-whitelist-add" type="button" aria-label="Allow this verified peer scope">+</button></section>',
+        'id="discord-qa-whitelist-toggle"',
+        '<section><button id="discord-qa-whitelist-toggle" type="button" aria-label="Off list - Allow this verified peer scope" data-whitelist-button="single-place" data-whitelist-state="off-list" data-whitelist-next="allow">Off list</button></section>',
       ),
       namedActions: ["allowed-place change"],
-      targets: ['id="discord-qa-whitelist-add"'],
+      targets: ['id="discord-qa-whitelist-toggle"'],
       startCount: 0,
       expectedEndCount: 1,
     },
