@@ -1,0 +1,30 @@
+[package]
+name = "osl-tor-sidecar"
+version = "0.0.1"
+edition = "2021"
+license = "Apache-2.0"
+rust-version = "1.97.1"
+description = "OSL-owned Tor sidecar: loopback SOCKS listener with JSON status on stdout"
+
+# Standalone workspace root on purpose. The root workspace excludes app
+# shells (see /Cargo.toml); keeping the sidecar self-contained means the
+# heavy arti dependency tree never enters root `cargo --workspace` gates,
+# and parallel lanes do not contend on the root manifest.
+[workspace]
+
+[[bin]]
+name = "osl-tor-sidecar"
+path = "src/main.rs"
+
+[dependencies]
+arti-client = { version = "0.45", default-features = false, features = ["tokio", "rustls"] }
+tor-socksproto = "0.45"
+# Only for naming the runtime type in TorClient<PreferredRuntime>; the
+# tokio/rustls features are enabled through arti-client's own deps.
+tor-rtcompat = { version = "0.45", default-features = false }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "macros", "signal", "time", "sync"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+serde_json = "1"
