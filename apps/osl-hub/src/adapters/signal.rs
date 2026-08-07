@@ -508,9 +508,6 @@ mod tests {
         }
 
         fn commit(&self, _: &SurfaceBinding, _: &PlacementReceipt) -> SendReceipt {
-            SendReceipt {
-                outcome: SendOutcome::NotSent,
-                elapsed_ms: 0,
             self.commits.fetch_add(1, Ordering::SeqCst);
             SendReceipt {
                 outcome: SendOutcome::Sent,
@@ -640,7 +637,6 @@ mod tests {
                 outcome: SendOutcome::Sent,
                 elapsed_ms: 1,
             }
-            unreachable!("destination attestation never commits a send")
         }
     }
 

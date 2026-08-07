@@ -10,13 +10,6 @@ pub const ALLOWED_PLACE_CLI_FLAG: &str = "--allowed-place";
 const HEADLESS_ALLOWED_PLACE_FILE_KEY: [u8; 32] = [0xA7; 32];
 static HEADLESS_ALLOWED_PLACE_LOCK: Mutex<()> = Mutex::new(());
 
-use ipc::allowed_places::{
-    add_allowed_place_record, allowed_place_is_allowed, list_allowed_place_records,
-    remove_allowed_place_record, AllowedPlaceQuery, AllowedPlaceRecord,
-};
-
-pub const ALLOWED_PLACE_CLI_FLAG: &str = "--allowed-place";
-
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase", tag = "command")]
 pub enum AllowedPlaceCommandJson {
@@ -103,8 +96,6 @@ pub fn add_allowed_place_json(
         let record = security::add_allowed_place_record(security, record)?;
         Ok(AllowedPlaceCommandJson::Add { ok: true, record })
     })
-    let record = add_allowed_place_record(store_dir, record).map_err(|error| error.to_string())?;
-    Ok(AllowedPlaceCommandJson::Add { ok: true, record })
 }
 
 pub fn remove_allowed_place_json(
@@ -118,12 +109,6 @@ pub fn remove_allowed_place_json(
             stable_id,
             removed,
         })
-    let removed =
-        remove_allowed_place_record(store_dir, &stable_id).map_err(|error| error.to_string())?;
-    Ok(AllowedPlaceCommandJson::Remove {
-        ok: true,
-        stable_id,
-        removed,
     })
 }
 
@@ -135,11 +120,6 @@ pub fn list_allowed_places_json(store_dir: &Path) -> Result<AllowedPlaceCommandJ
             count: records.len(),
             records,
         })
-    let records = list_allowed_place_records(store_dir).map_err(|error| error.to_string())?;
-    Ok(AllowedPlaceCommandJson::List {
-        ok: true,
-        count: records.len(),
-        records,
     })
 }
 
@@ -154,11 +134,6 @@ pub fn allowed_place_allowed_json(
             allowed,
             query,
         })
-    let allowed = allowed_place_is_allowed(store_dir, &query).map_err(|error| error.to_string())?;
-    Ok(AllowedPlaceCommandJson::Allowed {
-        ok: true,
-        allowed,
-        query,
     })
 }
 

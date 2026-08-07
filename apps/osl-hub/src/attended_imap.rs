@@ -1175,6 +1175,8 @@ mod tests {
             .filter(|(_, mailbox_name, _)| mailbox_name == folder)
             .map(|(_, _, message_id)| message_id.clone())
             .collect()
+    }
+
     fn task_3556_state_command_list() -> Vec<String> {
         #[derive(Deserialize)]
         struct StateCommandList {
