@@ -219,6 +219,7 @@ import { burnFeatureClaimsMarkup } from "./feature-claims";
 import { burnRevocationReceipt, type BurnRevocationReceipt } from "./burn-revocation-receipt";
 import { senderReceiptStatus } from "./receipt-status";
 import { attachmentProgressMarkup, parseAttachmentProgressEvent, type AttachmentProgressEvent } from "./attachment-progress";
+import { attachOslChatComposerDragAndDrop, attachmentTrayMarkup, createOslChatAttachmentTray, type OslChatAttachmentTrayState } from "./chat-attachment-drop";
 import { destructStatusMarkup, type ServerDestructStatus } from "./destruct-status";
 import { offlineCapabilityStatus, type OfflineUnavailableCapability, type OslConnectionState } from "./offline-capability-status";
 import type { NativeDiscordOverlayOpenedBatch } from "./overlay-state";
@@ -713,6 +714,7 @@ let oslChatPreviewsVisible = true;
 let oslChatMutedPeople = new Set<string>();
 let oslChatSettingsPersonId: string | null = null;
 let oslChatAttachments: NativeOverlayPendingAttachment[] = [];
+const oslChatDropTray: OslChatAttachmentTrayState = createOslChatAttachmentTray();
 let buildIntegrityStatus: BuildIntegrityStatus | null = null;
 const attachmentProgressByContext = new Map<string, AttachmentProgressEvent>();
 let privacyScanResult: LocalPrivacyScanResult | PersistedLocalPrivacyScanResult | null = null;
@@ -5251,7 +5253,7 @@ function oslChatContent(): string {
   const settingsPerson = oslChatSettingsPersonId ? hubPeople.find((person) => person.personId === oslChatSettingsPersonId) ?? null : null;
   const settings = settingsPerson ? oslChatFriendSettingsMarkup(settingsPerson) : "";
   const attachments = activeOslChatContext?.scopeApproved && pro
-    ? `<section class="osl-chat-attachments" aria-label="Encrypted attachments"><header><strong>Attachments</strong><button class="button compact" id="osl-chat-attach" type="button" ${oslChatBusy ? "disabled" : ""}>Choose file</button></header>${attachmentProgressMarkupForActiveChat()}${oslChatAttachments.length ? oslChatAttachments.map((item) => `<button class="setting-line" data-osl-chat-attachment="${escapeHtml(item.attachmentId)}" type="button" ${oslChatBusy ? "disabled" : ""}><span><strong>${escapeHtml(item.originalFilename)}</strong><small>${item.viewOnce ? "View once · " : ""}${item.plaintextSize.toLocaleString("en-US")} bytes</small></span>${statusTag("Open")}</button>`).join("") : `<p>No pending attachments.</p>`}<small>Images open in OSL's capture-resistant viewer. Other supported files open temporarily in their Windows viewer, which may allow capture.</small></section>`
+    ? `<section class="osl-chat-attachments" aria-label="Encrypted attachments"><header><strong>Attachments</strong><button class="button compact" id="osl-chat-attach" type="button" ${oslChatBusy ? "disabled" : ""}>Choose file</button></header>${attachmentProgressMarkupForActiveChat()}${oslChatAttachments.length ? oslChatAttachments.map((item) => `<button class="setting-line" data-osl-chat-attachment="${escapeHtml(item.attachmentId)}" type="button" ${oslChatBusy ? "disabled" : ""}><span><strong>${escapeHtml(item.originalFilename)}</strong><small>${item.viewOnce ? "View once · " : ""}${item.plaintextSize.toLocaleString("en-US")} bytes</small></span>${statusTag("Open")}</button>`).join("") : `<p>No pending attachments.</p>`}${oslChatDropTray.attachments.length ? attachmentTrayMarkup(oslChatDropTray) : ""}<small>Images open in OSL's capture-resistant viewer. Other supported files open temporarily in their Windows viewer, which may allow capture.</small></section>`
     : "";
   const receipt = activeOslChatPersonId
     ? oslChatSenderReceiptMarkup(oslChatMessages.get(activeOslChatPersonId) ?? [])
@@ -7946,6 +7948,8 @@ function bindWorkspace(): void {
   document.querySelector<HTMLInputElement>("#osl-chat-view-once")?.addEventListener("change", (event) => { oslChatViewOnce = (event.currentTarget as HTMLInputElement).checked; });
   document.querySelector<HTMLFormElement>("[data-osl-chat-compose]")?.addEventListener("submit", (event) => void sendOslChat(event));
   document.querySelector<HTMLButtonElement>("#osl-chat-attach")?.addEventListener("click", () => void sendOslChatAttachment());
+  const oslChatComposerForm = document.querySelector<HTMLFormElement>("[data-osl-chat-compose]");
+  if (oslChatComposerForm) attachOslChatComposerDragAndDrop(oslChatComposerForm, oslChatDropTray, () => render(), (refusal) => showToast(refusal));
   document.querySelectorAll<HTMLButtonElement>("[data-osl-chat-attachment]").forEach((button) => button.addEventListener("click", () => void openPendingOslChatAttachment(button.dataset.oslChatAttachment ?? "")));
   const nativeProtectDialog = document.querySelector<HTMLDialogElement>("#native-protect-friend-dialog");
   if (nativeProtectDialog && !nativeProtectDialog.open) nativeProtectDialog.showModal();
