@@ -11664,6 +11664,118 @@ mod tests {
     }
 
     #[test]
+    fn task_0128_removing_single_place_skips_prepare_immediately() {
+        let harness = FileBackedSecurityHarness::new("task-0128-remove-place");
+        let core = HubCoreState::default();
+        install_self_identity(&core);
+        let security = HubSecurityState::default();
+        let (person_id, metadata, peer) = test_friend(28);
+        write_people(harness.path(), &person_id, metadata);
+        install_peer_map(&core, harness.path(), &person_id, peer);
+        write_encrypted_json(
+            &harness.path().join(SECURITY_PREFS_FILE),
+            &SecurityPreferences {
+                version: 2,
+                ..SecurityPreferences::default()
+            },
+        )
+        .unwrap();
+
+        let binding = manual_peer_binding(&core, person_id.clone()).unwrap();
+        let scope_id = manual_peer_scope_id("osl-chat", "osl-main", &person_id).unwrap();
+        let scope_input = dm_scope_input(scope_id);
+        let grant = ScopedTrustGrant::for_manual_peer(
+            &binding,
+            "osl-chat",
+            "osl-main",
+            scope_input.clone(),
+            ScopedTrustConsent::ExplicitUserAction,
+        )
+        .unwrap();
+        apply_scoped_trust_grant(&security, &binding, &grant).unwrap();
+
+        let mut before_trace = Vec::new();
+        let before = crate::hub_command_surface::with_allowed_place_before_prepare_cover_message(
+            &mut before_trace,
+            || {
+                require_manual_peer_scope_approved(
+                    &core,
+                    "osl-chat",
+                    "osl-main",
+                    person_id.clone(),
+                    scope_input.clone(),
+                )
+            },
+            |_| Ok(crate::hub_command_surface::PREPARE_COVER_MESSAGE_ACTION_STAGE),
+        )
+        .expect("prepare succeeds while the single place is still approved");
+        let before_prepare_actions = before_trace
+            .iter()
+            .filter(|stage| {
+                **stage == crate::hub_command_surface::PREPARE_COVER_MESSAGE_ACTION_STAGE
+            })
+            .count();
+
+        let removed = remove_friend(&core, &security, person_id.clone()).unwrap();
+        assert_eq!(removed.approvals_withdrawn, 1);
+
+        let mut after_trace = Vec::new();
+        let after = crate::hub_command_surface::with_allowed_place_before_prepare_cover_message(
+            &mut after_trace,
+            || {
+                require_manual_peer_scope_approved(
+                    &core,
+                    "osl-chat",
+                    "osl-main",
+                    person_id.clone(),
+                    scope_input.clone(),
+                )
+            },
+            |_| Ok(crate::hub_command_surface::PREPARE_COVER_MESSAGE_ACTION_STAGE),
+        );
+        let after_prepare_actions = after_trace
+            .iter()
+            .filter(|stage| {
+                **stage == crate::hub_command_surface::PREPARE_COVER_MESSAGE_ACTION_STAGE
+            })
+            .count();
+        let after_status = match after {
+            Ok(_) => panic!("prepare must be skipped immediately after the place is removed"),
+            Err(error) => {
+                assert_eq!(error, "OSL friend is unknown");
+                "skipped"
+            }
+        };
+
+        println!("task_0128_prepare_before_removal={before}");
+        println!("task_0128_before_prepare_actions={before_prepare_actions}");
+        println!("task_0128_removed_places={}", removed.approvals_withdrawn);
+        println!("task_0128_prepare_after_removal={after_status}");
+        println!("task_0128_after_prepare_actions={after_prepare_actions}");
+        println!("task_0128_after_removal_trace={}", after_trace.join(" -> "));
+
+        assert_eq!(
+            before_trace,
+            [
+                crate::hub_command_surface::ALLOWED_PLACE_CHECK_STAGE,
+                crate::hub_command_surface::ALLOWED_PLACE_CONFIRMED_STAGE,
+                crate::hub_command_surface::PREPARE_COVER_MESSAGE_ACTION_STAGE,
+            ]
+        );
+        assert_eq!(
+            before,
+            crate::hub_command_surface::PREPARE_COVER_MESSAGE_ACTION_STAGE
+        );
+        assert_eq!(before_prepare_actions, 1);
+        assert_eq!(after_status, "skipped");
+        assert_eq!(after_prepare_actions, 0);
+        assert_eq!(
+            after_trace,
+            [crate::hub_command_surface::ALLOWED_PLACE_CHECK_STAGE]
+        );
+    }
+
+    #[test]
     fn remove_friend_preserves_burned_manual_scopes_on_disk() {
         let harness = FileBackedSecurityHarness::new("remove-preserves-burn");
         let core = HubCoreState::default();

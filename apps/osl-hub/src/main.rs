@@ -92,6 +92,10 @@ use osl_privacy_hub::native_window_host::{
     NativeWindowHostState,
 };
 use osl_privacy_hub::osl_chat_drag_drop::{OslChatAttachmentTray, OslChatDropIntakeReceipt};
+use osl_privacy_hub::osl_chat_conversations::{
+    DirectMessageConversationInput, OslChatConversationListInput, OslChatConversationRecord,
+    OslChatConversationState,
+};
 use osl_privacy_hub::osl_mail::{self, OslMailState, OslMailStatus};
 use osl_privacy_hub::osl_profile::{self, HubProfileDto, HubProfileInput, OwnerProfilePictureDto};
 use osl_privacy_hub::password_lifecycle::{
@@ -280,6 +284,8 @@ use osl_privacy_hub::hub_command_surface::{
     ProtonMailboxForScrubReadRequest,
     start_autoscrub_reviewed_run_inner, with_allowed_place_before_scrub_conversation_open,
     with_native_discord_product_send_authority,
+    start_autoscrub_reviewed_run_inner, with_allowed_place_before_prepare_cover_message,
+    with_allowed_place_before_protected_message_path, with_native_discord_product_send_authority,
     with_native_discord_product_send_authority_for_switch, BrowserFootprintConsentRequest,
     CheckedHost, DiscordGuidedDeletionPlanState, GuidedDeletionRunAuthorityInput,
     NativeDiscordProductSendAuthority,
@@ -3810,6 +3816,28 @@ fn native_discord_allowed_place_scope_binding(app: &tauri::AppHandle) -> Result<
         })
 }
 
+fn manual_peer_allowed_place_scope_binding(
+    core: &HubCoreState,
+    broker: &HubBrokerState,
+    context_token: &str,
+) -> Result<String, String> {
+    let manual = broker.manual_peer_for(context_token)?;
+    security::require_manual_peer_scope_approved(
+        core,
+        &manual.service_id,
+        &manual.account_id,
+        manual.person_id.clone(),
+        manual.scope.clone(),
+    )?;
+    serde_json::to_string(&(
+        manual.service_id,
+        manual.account_id,
+        manual.person_id,
+        manual.scope,
+    ))
+    .map_err(|_| "The manual peer context is unavailable".to_owned())
+}
+
 #[tauri::command]
 async fn set_native_discord_protected_overlay_open(
     app: tauri::AppHandle,
@@ -4221,24 +4249,51 @@ fn send_native_discord_overlay_carrier(
                 drop(carrier_placement);
                 return Err("The native Discord friend context changed before placement".to_owned());
             }
+    let mut command_trace = Vec::new();
+    with_allowed_place_before_protected_message_path(
+        &mut command_trace,
+        || native_discord_allowed_place_scope_binding(&app),
+        |scope_binding| {
             require_same_overlay_context(&app, epoch, &host)?;
-            let placement_context =
-                NativeDiscordPlacementContext::new(&placement_scope_binding, mode);
-            let receipt = composer.place_carrier(
-                &app.state::<NativeWindowHostState>(),
-                &owner,
-                &placement_scope_binding,
-                Some(&placement_context),
-                mode,
-                chars_per_second,
-                &product_send_authority.carrier,
-            );
-            drop(carrier_placement);
-            require_same_overlay_context(&app, epoch, &host)?;
-            if let Some(window) = app.get_webview_window(native_discord_overlay::OVERLAY_LABEL) {
-                let _ = window.set_focus();
-            }
-            Ok(receipt)
+            let composer = app.state::<NativeDiscordComposerState>();
+            with_native_discord_product_send_authority_for_switch(
+                &composer,
+                &scope_binding,
+                layout,
+                app.state::<HubCoreState>().startup_switches().safe_sending,
+                |product_send_authority| {
+                    let overlay_state = app.state::<OverlaySessionState>();
+                    let carrier_placement = overlay_state.begin_carrier_placement()?;
+                    require_engaged_lock(&app)?;
+                    let placement_scope_binding = native_discord_scope_binding(&app)?;
+                    if placement_scope_binding != scope_binding {
+                        drop(carrier_placement);
+                        return Err(
+                            "The native Discord friend context changed before placement".to_owned()
+                        );
+                    }
+                    require_same_overlay_context(&app, epoch, &host)?;
+                    let placement_context =
+                        NativeDiscordPlacementContext::new(&placement_scope_binding, mode);
+                    let receipt = composer.place_carrier(
+                        &app.state::<NativeWindowHostState>(),
+                        &owner,
+                        &placement_scope_binding,
+                        Some(&placement_context),
+                        mode,
+                        chars_per_second,
+                        &product_send_authority.carrier,
+                    );
+                    drop(carrier_placement);
+                    require_same_overlay_context(&app, epoch, &host)?;
+                    if let Some(window) =
+                        app.get_webview_window(native_discord_overlay::OVERLAY_LABEL)
+                    {
+                        let _ = window.set_focus();
+                    }
+                    Ok(receipt)
+                },
+            )
         },
         || {
             Ok(DiscordCarrierReceipt {
@@ -5928,6 +5983,34 @@ async fn prepare_osl_chat_text(
 }
 
 #[tauri::command]
+async fn create_osl_chat_direct_message_conversation(
+    caller: tauri::WebviewWindow,
+    conversations: State<'_, OslChatConversationState>,
+    creator_id: String,
+    member_ids: Vec<String>,
+) -> Result<OslChatConversationRecord, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may create OSL Chat conversations".to_owned());
+    }
+    conversations.create_direct_message_conversation(DirectMessageConversationInput {
+        creator_id,
+        member_ids,
+    })
+}
+
+#[tauri::command]
+async fn list_osl_chat_conversations(
+    caller: tauri::WebviewWindow,
+    conversations: State<'_, OslChatConversationState>,
+    creator_id: String,
+) -> Result<Vec<OslChatConversationRecord>, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may list OSL Chat conversations".to_owned());
+    }
+    conversations.conversations_for_creator(OslChatConversationListInput { creator_id })
+}
+
+#[tauri::command]
 async fn create_osl_chat_group_conversation(
     app: tauri::AppHandle,
     caller: tauri::WebviewWindow,
@@ -6909,18 +6992,25 @@ async fn prepare_peer_prose_text(
             .map(|preferences| preferences.window_capture_enabled)
             .unwrap_or(true);
         let _active = require_current_context_host(&app, &core, &broker_state, &context_token)?;
-        let prepared = with_indexed_context_write(&app, &broker_state, &context_token, || {
-            broker::prepare_peer_prose_text_with_capture_and_store_client(
-                &core,
-                &security_state,
-                &broker_state,
-                &context_token,
-                plaintext,
-                view_once,
-                require_capture_protection,
-                &store_client,
-            )
-        })?;
+        let mut command_trace = Vec::new();
+        let prepared = with_allowed_place_before_prepare_cover_message(
+            &mut command_trace,
+            || manual_peer_allowed_place_scope_binding(&core, &broker_state, &context_token),
+            |_| {
+                with_indexed_context_write(&app, &broker_state, &context_token, || {
+                    broker::prepare_peer_prose_text_with_capture_and_store_client(
+                        &core,
+                        &security_state,
+                        &broker_state,
+                        &context_token,
+                        plaintext,
+                        view_once,
+                        require_capture_protection,
+                        &store_client,
+                    )
+                })
+            },
+        )?;
         let _still_active =
             require_current_context_host(&app, &core, &broker_state, &context_token)?;
         Ok(prepared)
@@ -11412,6 +11502,7 @@ fn main() {
         app.manage(HubBrokerState::default());
         startup_breadcrumb("setup_step_25_broker_state_managed"); // STARTUP-TRACE
         app.manage(OslChatAttachmentTrayState::default());
+        app.manage(OslChatConversationState::default());
         app.manage(security_state);
         revocation_drain_timer::spawn(app.handle().clone());
         startup_breadcrumb("setup_step_26_security_state_managed"); // STARTUP-TRACE

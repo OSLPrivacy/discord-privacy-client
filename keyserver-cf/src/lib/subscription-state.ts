@@ -24,12 +24,14 @@ import {
   completeOneTimeStripeCheckoutClaim,
   completeStripeCheckoutClaim,
   revokeOneTimeLicensesForPayment,
+  verifyOneTimePaidCodeCallbackChecks,
 } from "./stripe-checkout-claims.js";
+import type { AcquiredStripeEventClaim } from "./stripe-event-claims.js";
 import {
   applyLatestSubscriptionObservation,
   recordAndApplySubscriptionObservation,
 } from "./stripe-subscription-observations.js";
-import { type StripeEvent } from "./stripe.js";
+import { type StripeEvent, type VerifiedStripeWebhook } from "./stripe.js";
 import {
   revokeLicensesForSubscription,
   type SubscriptionStatus,
@@ -189,10 +191,16 @@ export type HandlerResult =
   | { kind: "noop"; reason: string }
   | { kind: "applied"; summary: string };
 
+export interface StripeCallbackProcessingProof {
+  webhook: VerifiedStripeWebhook;
+  eventClaim: AcquiredStripeEventClaim;
+}
+
 /** Dispatch a verified, deduped Stripe event. */
 export async function applyEvent(
   env: Env,
   event: StripeEvent,
+  proof: StripeCallbackProcessingProof,
   fetcher: typeof fetch = fetch,
 ): Promise<HandlerResult> {
   const obj = event.data.object as unknown;
@@ -200,7 +208,7 @@ export async function applyEvent(
   switch (event.type) {
     case "checkout.session.completed":
     case "checkout.session.async_payment_succeeded":
-      return await onCheckoutCompleted(env, obj as StripeCheckoutSessionObj, fetcher);
+      return await onCheckoutCompleted(env, obj as StripeCheckoutSessionObj, proof, fetcher);
     case "customer.subscription.created":
     case "customer.subscription.updated":
       return await onSubscriptionWritten(env, obj as StripeSubObj, eventCreated, event.type);
@@ -222,6 +230,7 @@ export async function applyEvent(
 async function onCheckoutCompleted(
   env: Env,
   obj: StripeCheckoutSessionObj,
+  proof: StripeCallbackProcessingProof,
   fetcher: typeof fetch,
 ): Promise<HandlerResult> {
   if (obj.mode === "payment") {
@@ -247,8 +256,17 @@ async function onCheckoutCompleted(
     }
     const completion = await completeOneTimeStripeCheckoutClaim(env.DB, {
       sessionId: obj.id,
+    const checked = await verifyOneTimePaidCodeCallbackChecks(env.DB, {
+      amountTotal: obj.amount_total,
+      currency: obj.currency,
+      eventClaim: proof.eventClaim,
       paymentIntentId: obj.payment_intent,
+      paymentStatus: obj.payment_status,
+      sessionId: obj.id,
+      webhook: proof.webhook,
     });
+    if (!checked.ok) return { kind: "noop", reason: checked.reason };
+    const completion = await completeOneTimeStripeCheckoutClaim(env.DB, checked.checks);
     if (completion === "missing") {
       console.error("[checkout] verified payment has no delivery claim");
       // Checkout Session creation and D1 claim insertion cannot be one atomic
@@ -410,6 +428,10 @@ async function onDisputeOpened(
   });
   if (!accepted) return { kind: "noop", reason: `stale subscription event: ${eventType}` };
   await revokeOneTimeLicensesForPayment(env.DB, subscriptionId, "chargeback");
+  await revokeLicensesForSubscription(env.DB, subscriptionId, "chargeback");
+  if (obj.payment_intent) {
+    await revokeOneTimeLicensesForPayment(env.DB, obj.payment_intent, "chargeback");
+  }
   return { kind: "applied", summary: `sub=${subscriptionId} → REVOKED + license revoked` };
 }
 
@@ -436,6 +458,7 @@ async function onChargeRefunded(
     eventType,
   });
   if (!accepted) return { kind: "noop", reason: `stale refund event: ${eventType}` };
+  await revokeLicensesForSubscription(env.DB, obj.payment_intent, "manual");
   await revokeOneTimeLicensesForPayment(env.DB, obj.payment_intent, "manual");
   return {
     kind: "applied",

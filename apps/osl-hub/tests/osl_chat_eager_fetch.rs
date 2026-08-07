@@ -24,6 +24,13 @@ use osl_privacy_hub::{
     osl_chat_delivery::receive_osl_chat_pointer,
 };
 
+fn pointer() -> PointerArrival {
+    PointerArrival {
+        server_blob_id: [0x11; ipc::prose_token::BRIDGE_ID_BYTES],
+        seed: [0x22; ipc::prose_token::BRIDGE_SEED_BYTES],
+    }
+}
+
 #[derive(Default)]
 struct Transport {
     blobs: BTreeMap<String, Vec<u8>>,
@@ -59,6 +66,7 @@ impl LocalMessageStore for Store {
 #[test]
 fn t14_t11_payload_is_local_before_the_user_opens_the_conversation() {
     let path = std::env::temp_dir().join(format!("osl-chat-eager-{}", uuid::Uuid::new_v4()));
+    let pointer = pointer();
     let mut transport = Transport::default();
     transport
         .blobs
@@ -69,6 +77,10 @@ fn t14_t11_payload_is_local_before_the_user_opens_the_conversation() {
         blob_id: "c882e13e918656da".to_owned(),
         fetch_seed: [1; ipc::prose_token::BRIDGE_SEED_BYTES],
     };
+        .0
+        .insert(pointer.blob_id_hex(), b"ciphertext".to_vec());
+    let queue = EncryptedBurnQueue::new(&path, [7; 32]);
+    let mut driver = EagerFetchDriver::new(transport, Store::default(), queue);
 
     // No chat view/open callback exists in this call: pointer arrival itself
     // must put the payload in the durable local store.
@@ -233,4 +245,7 @@ fn hex_lower(bytes: &[u8]) -> String {
         out.push_str(&format!("{byte:02x}"));
     }
     out
+        store.0.get(&pointer.blob_id_hex()),
+        Some(&b"ciphertext".to_vec())
+    );
 }

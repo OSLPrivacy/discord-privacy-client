@@ -37,11 +37,18 @@ impl PointerArrival {
         ipc::prose_token::bridge_fetch_token_from_seed(&self.fetch_seed)
     }
 }
+/// The authenticated prose-token pointer shape the deployed service uses.
+///
+/// Production carries the server-assigned blob id and a seed; the fetch token
+/// is derived from that seed when the pointer arrives. The retired shape with
+/// separate `fetch_cap` and `manage_cap` fields is not accepted here.
+pub type PointerArrival = ipc::prose_token::BridgePointer;
 
 /// Network operations supplied by T6-R2's cipher-store client adapter.
 pub trait CipherStoreTransport {
     fn fetch(&mut self, blob_id: &str, fetch_token: &[u8]) -> Result<Vec<u8>, String>;
     fn burn(&mut self, blob_id: &str, fetch_token: &[u8]) -> Result<(), String>;
+    fn burn(&mut self, blob_id: &str, burn_capability: &[u8]) -> Result<(), String>;
 }
 
 /// Trusted local persistence.  It must authenticate/decrypt and durably write
@@ -55,6 +62,10 @@ pub trait LocalMessageStore {
 ///
 /// This is only an adapter: all HTTP verbs, headers, routing policy, status
 /// handling, and token formatting remain owned by `ipc::CipherStoreClient`.
+/// Production transport plug for fetch-on-arrival.
+///
+/// It delegates to the existing bridge cipher-store client method; it does not
+/// create another HTTP fetch implementation.
 pub struct CipherStoreClientTransport {
     client: ipc::cipher_store_client::CipherStoreClient,
 }
@@ -156,6 +167,78 @@ impl LocalMessageStore for MessageStoreArrivalOpener<'_> {
         self.store
             .mark_burned(blob_id)
             .map_err(|error| error.to_string())
+    pub fn from_config_dir(config_dir: &Path) -> Result<Self, String> {
+        let base_url = ipc::cipher_store_client::resolve_cipher_store_base_url(config_dir)
+            .map_err(|error| format!("OSL: cipher-store config: {error}"))?;
+        let client = ipc::cipher_store_client::CipherStoreClient::new(base_url)
+            .map_err(|error| format!("OSL: cipher-store client: {error}"))?;
+        Ok(Self::new(client))
+    }
+}
+
+impl CipherStoreTransport for CipherStoreClientTransport {
+    fn fetch(&mut self, blob_id: &str, fetch_token: &[u8]) -> Result<Vec<u8>, String> {
+        let fetch_token: [u8; ipc::cipher_store_client::FETCH_TOKEN_BYTES] = fetch_token
+            .try_into()
+            .map_err(|_| "OSL: fetch token has the wrong length".to_owned())?;
+        self.client
+            .fetch_legacy_token(blob_id, &fetch_token)
+            .map_err(|error| format!("OSL: cipher-store fetch: {error}"))
+    }
+
+    fn burn(&mut self, blob_id: &str, burn_capability: &[u8]) -> Result<(), String> {
+        let burn_capability: [u8; ipc::cipher_store_client::FETCH_TOKEN_BYTES] = burn_capability
+            .try_into()
+            .map_err(|_| "OSL: burn capability has the wrong length".to_owned())?;
+        self.client
+            .delete(blob_id, &burn_capability)
+            .map_err(|error| format!("OSL: cipher-store burn: {error}"))
+    }
+}
+
+/// Production local plug for fetch-on-arrival.
+///
+/// It rebuilds the normal OSL wire from the fetched object, then delegates to
+/// the existing IPC decrypt/open path, which owns authentication and durable
+/// `MessageStore` persistence.
+pub struct ExistingMessageStoreOpener<'a> {
+    state: &'a ipc::state::AppState,
+    channel_id: String,
+    sender_discord_id: String,
+}
+
+impl<'a> ExistingMessageStoreOpener<'a> {
+    pub fn new(
+        state: &'a ipc::state::AppState,
+        channel_id: impl Into<String>,
+        sender_discord_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            state,
+            channel_id: channel_id.into(),
+            sender_discord_id: sender_discord_id.into(),
+        }
+    }
+}
+
+impl LocalMessageStore for ExistingMessageStoreOpener<'_> {
+    fn decrypt_and_persist(&mut self, blob_id: &str, ciphertext: &[u8]) -> Result<(), String> {
+        let wire = ipc::prose_token::prose_token_bridge_object_to_wire(ciphertext)
+            .map_err(|error| format!("OSL: bridge object open: {error}"))?;
+        ipc::commands::cmd_osl_decrypt_message_v2(
+            self.state,
+            Some(blob_id.to_owned()),
+            self.channel_id.clone(),
+            self.sender_discord_id.clone(),
+            wire,
+            None,
+            None,
+        )
+        .map(|_| ())
+    }
+
+    fn destroy_local(&mut self, blob_id: &str) -> Result<(), String> {
+        ipc::commands::cmd_osl_burn_message(self.state, blob_id.to_owned())
     }
 }
 
@@ -212,18 +295,28 @@ impl<T: CipherStoreTransport, S: LocalMessageStore> EagerFetchDriver<T, S> {
             .decrypt_and_persist(&pointer.blob_id, &ciphertext)?;
         permit.commit()?;
         Ok(true)
+        let blob_id = pointer.blob_id_hex();
+        let fetch_token = pointer.fetch_token();
+        let ciphertext = crate::eager_fetch_retry::retry_reserved_fetch(|| {
+            self.transport.fetch(&blob_id, &fetch_token)
+        })?;
+        self.store.decrypt_and_persist(&blob_id, &ciphertext)
     }
 
     /// Local destruction is first.  Capacity is checked before destruction so
     /// a full durable queue fails closed without silently dropping a server
     /// delete; after destruction the exact received capability is persisted.
     pub fn burn_offline(&mut self, pointer: &PointerArrival) -> Result<(), String> {
-        if !self.burns.can_enqueue(&pointer.blob_id)? {
+        let blob_id = pointer.blob_id_hex();
+        if !self.burns.can_enqueue(&blob_id)? {
             return Err("offline burn queue is full; no live delete was evicted".to_owned());
         }
         self.store.destroy_local(&pointer.blob_id)?;
         let fetch_token = pointer.fetch_token();
         self.burns.enqueue(&pointer.blob_id, &fetch_token)
+        self.store.destroy_local(&blob_id)?;
+        let burn_capability = pointer.fetch_token();
+        self.burns.enqueue(&blob_id, &burn_capability)
     }
 
     /// Retry every durable record after reconnect.  A failure retains that

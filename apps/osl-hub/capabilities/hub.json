@@ -237,6 +237,8 @@
     "allow-installed-build-chat-warning-status",
     "allow-drop-osl-chat-attachments",
     "allow-list-group-verification-build-entries",
-    "allow-read-owner-profile-picture-for-friend"
+    "allow-read-owner-profile-picture-for-friend",
+    "allow-create-osl-chat-direct-message-conversation",
+    "allow-list-osl-chat-conversations"
   ]
 }

@@ -152,6 +152,7 @@ pub mod scrub_evidence_manifest;
 pub mod tor_pref;
 pub mod scrub_hosted {
     pub mod checkpoint;
+    pub mod fixture;
     pub mod friction;
     pub mod ordering;
     pub mod place_scope;
@@ -254,6 +255,7 @@ pub mod inbound_receipts;
 pub mod isolated_worker;
 #[cfg(feature = "core")]
 pub mod mass_cleanup;
+pub mod osl_chat_conversations;
 pub mod osl_chat_delivery;
 pub mod osl_chat_queue;
 pub mod realtime_client;

@@ -906,6 +906,33 @@ impl Peer {
         TestStorage::activate(&self.dir);
     }
 
+    fn install_license_state(&self, dto: keystore::LicenseStateDto) {
+        *self
+            .core
+            .osl
+            .license_state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = dto;
+    }
+
+    fn install_pro_license(&self) {
+        self.install_license_state(keystore::LicenseStateDto {
+            state: keystore::LicenseState::Paid,
+            raw_status: "ACTIVE".to_owned(),
+            current_period_end: Some(9_999_999_999),
+            last_validated_at: Some(1_700_000_000),
+        });
+    }
+
+    fn install_free_license(&self) {
+        self.install_license_state(keystore::LicenseStateDto {
+            state: keystore::LicenseState::Free,
+            raw_status: "FREE".to_owned(),
+            current_period_end: None,
+            last_validated_at: None,
+        });
+    }
+
     /// Add + verify `other` as a friend and open a native Discord protected
     /// context against them, with decrypted display enabled.
     fn open_native_context_to(&self, other_code: &str) -> String {
@@ -2302,6 +2329,26 @@ fn task_1348_second_view_is_refused_on_both_copies() {
 
     alice.activate();
     let first_prepared = prepare_native_discord_overlay_text(
+fn task_0591_free_receiver_reveals_pro_view_once_case(
+    label: &str,
+    install_free_record: bool,
+    fixture: &str,
+) {
+    let relay = RelayServer::start();
+    let storage = TestStorage::new(label);
+    let relay_url = relay.base_url();
+
+    let alice = Peer::new(&storage, "alice", &relay_url, "b591a");
+    let bob = Peer::new(&storage, "bob", &relay_url, "b591b");
+    alice.install_pro_license();
+    if install_free_record {
+        bob.install_free_license();
+    }
+    alice.open_native_context_to(&bob.friend_code);
+    bob.open_native_context_to(&alice.friend_code);
+
+    alice.activate();
+    let prepared = prepare_native_discord_overlay_text(
         &alice.core,
         &alice.security,
         &alice.broker,
@@ -2583,6 +2630,104 @@ fn task_1348_second_view_is_refused_on_both_copies() {
     drop(bob_first);
     drop(bob_second);
     drop(storage);
+        fixture.to_owned(),
+        true,
+    )
+    .expect("task_0591_pro_sender_must_create_view_once");
+
+    bob.activate();
+    let listed = drain_native_discord_overlay_text(&bob.core, &bob.security, &bob.broker)
+        .expect("task_0591_free_receiver_must_list_view_once");
+    assert_eq!(
+        listed.pending_view_once.len(),
+        1,
+        "task_0591_free_receiver_pending_count"
+    );
+    assert!(
+        listed.pending_view_once[0].message_id == prepared.prepared.message_id,
+        "task_0591_free_receiver_pending_id"
+    );
+
+    let opened = reveal_native_discord_overlay_view_once(
+        &bob.core,
+        &bob.security,
+        &bob.broker,
+        &prepared.prepared.message_id,
+    )
+    .unwrap_or_else(|error| panic!("task_0591_refused_open={error}"));
+    assert!(
+        opened.plaintext == fixture,
+        "task_0591_free_receiver_exact_words"
+    );
+    assert!(
+        opened.view_once_consumed,
+        "task_0591_free_receiver_consumed_once"
+    );
+}
+
+#[test]
+fn task_0591_free_accounts_open_view_once_without_receiver_tier_check() {
+    let _serial = fixture_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+
+    const FREE_RECORD_WORDS: &str = "TASK0591 exact words for a free account";
+    const NO_PRO_RECORD_WORDS: &str = "TASK0591 exact words for no Pro record";
+    task_0591_free_receiver_reveals_pro_view_once_case(
+        "task-0591-free-record",
+        true,
+        FREE_RECORD_WORDS,
+    );
+    println!("task_0591_free_account_words={FREE_RECORD_WORDS}");
+    task_0591_free_receiver_reveals_pro_view_once_case(
+        "task-0591-no-pro-record",
+        false,
+        NO_PRO_RECORD_WORDS,
+    );
+    println!("task_0591_no_pro_record_words={NO_PRO_RECORD_WORDS}");
+}
+
+#[test]
+fn task_0591_reading_path_has_zero_tier_checks() {
+    fn between<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
+        source
+            .split_once(start)
+            .and_then(|(_, tail)| tail.split_once(end).map(|(body, _)| body))
+            .expect("task_0591_reading_path_section_exists")
+    }
+
+    let broker = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/broker.rs"))
+        .expect("task_0591_broker_source_is_readable");
+    let sections = [
+        between(
+            &broker,
+            "pub fn reveal_native_discord_overlay_view_once(",
+            "/// Copy for the one case where a send is neither delivered nor lost:",
+        ),
+        between(
+            &broker,
+            "fn drain_peer_inbox_text(",
+            "// Outbound half of the bilateral burn, posted on the same authenticated",
+        ),
+        between(
+            &broker,
+            "fn authenticate_oriented_prose_pointer(",
+            "/// A committed protected message plus the public carrier text that points at",
+        ),
+    ];
+    let reading_path = sections.join("\n");
+    let tier_checks = [
+        "tier_gate::",
+        "check_attachment_allowed(",
+        "is_paid_equivalent(",
+        ".license_state",
+        "cmd_osl_get_tier_gate_status(",
+    ]
+    .into_iter()
+    .map(|needle| reading_path.matches(needle).count())
+    .sum::<usize>();
+    println!("task_0591_reading_path_tier_checks={tier_checks}");
+    assert_eq!(tier_checks, 0, "task_0591_reading_path_tier_checks");
 }
 
 /// A message larger than one carrier chunk is split by the sender into several

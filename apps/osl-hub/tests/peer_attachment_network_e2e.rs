@@ -1471,6 +1471,14 @@ impl Peer {
             .peer_person_id
             .lock()
             .unwrap_or_else(|error| error.into_inner()) = Some(activated.person_id.clone());
+        osl_privacy_hub::security::set_friend_account_reach_choice(
+            &self.security,
+            activated.person_id.clone(),
+            "osl-chat".to_owned(),
+            "osl-main".to_owned(),
+            true,
+        )
+        .expect("allow OSL Chat account reach for this friend");
         osl_privacy_hub::security::set_manual_peer_scope_permission(
             &self.core,
             &self.security,

@@ -19,6 +19,7 @@ use crate::runtime_switches::{
 pub struct HubCoreState {
     pub osl: Arc<AppState>,
     startup_switches: crate::runtime_switches::ResolvedTestOnlyRunTimeSwitches,
+    startup_switches: ResolvedTestOnlyRunTimeSwitches,
     bootstrap_attempted: bool,
     runtime_switches: ResolvedTestOnlyRunTimeSwitches,
     /// Serialises trusted identity/password transitions so Create, Import,
@@ -31,6 +32,7 @@ impl Default for HubCoreState {
         Self {
             osl: production_osl_state(),
             startup_switches: crate::runtime_switches::ResolvedTestOnlyRunTimeSwitches::default(),
+            startup_switches: ResolvedTestOnlyRunTimeSwitches::default(),
             bootstrap_attempted: false,
             runtime_switches: ResolvedTestOnlyRunTimeSwitches::default(),
             lifecycle_lock: Mutex::new(()),
@@ -46,6 +48,13 @@ impl HubCoreState {
     pub fn with_startup_switches(
         startup_switches: crate::runtime_switches::ResolvedTestOnlyRunTimeSwitches,
     ) -> Self {
+            startup_switches: ResolvedTestOnlyRunTimeSwitches::default(),
+            bootstrap_attempted: false,
+            lifecycle_lock: Mutex::new(()),
+        }
+    }
+
+    pub fn with_startup_switches(startup_switches: ResolvedTestOnlyRunTimeSwitches) -> Self {
         Self {
             osl: production_osl_state(),
             startup_switches,
@@ -72,6 +81,16 @@ impl HubCoreState {
 
     pub fn bootstrap_from_disk_with_startup_switches(
         startup_switches: crate::runtime_switches::ResolvedTestOnlyRunTimeSwitches,
+    }
+
+    pub fn bootstrap_from_disk_with_runtime_switches(
+        startup_switches: ResolvedTestOnlyRunTimeSwitches,
+    ) -> Self {
+        Self::bootstrap_from_disk_with_startup_switches(startup_switches)
+    }
+
+    pub fn bootstrap_from_disk_with_startup_switches(
+        startup_switches: ResolvedTestOnlyRunTimeSwitches,
     ) -> Self {
         let state = Self {
             osl: production_osl_state(),
@@ -104,6 +123,11 @@ impl HubCoreState {
     pub fn runtime_switches(&self) -> ResolvedTestOnlyRunTimeSwitches {
         self.runtime_switches.clone()
     pub fn startup_switches(&self) -> crate::runtime_switches::ResolvedTestOnlyRunTimeSwitches {
+    pub fn startup_switches(&self) -> ResolvedTestOnlyRunTimeSwitches {
+        self.startup_switches
+    }
+
+    pub fn runtime_switches(&self) -> ResolvedTestOnlyRunTimeSwitches {
         self.startup_switches
     }
 
@@ -285,6 +309,7 @@ pub fn readiness(state: &HubCoreState) -> CoreReadiness {
     let password_gate_required = if password_screen_skipped {
         false
     } else {
+    let password_gate_required = if state.startup_switches.password_screen_gate_required() {
         ipc::commands::cmd_osl_password_status()
             .map(|value| value.is_set)
             .unwrap_or(true)
@@ -332,6 +357,8 @@ pub fn readiness(state: &HubCoreState) -> CoreReadiness {
     let skips_password_screen = state.startup_switches.password_screen_access
         == crate::runtime_switches::PasswordScreenAccess::SkipPasswordScreenForTest;
     let bootstrap_status = if skips_password_screen
+    let password_screen_skipped_for_test = !state.startup_switches.password_screen_gate_required();
+    let bootstrap_status = if password_screen_skipped_for_test
         && state.bootstrap_attempted
         && status.identity_loaded
         && unlocked

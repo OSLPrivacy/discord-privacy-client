@@ -1212,3 +1212,13 @@ identifier = "allow-read-owner-profile-picture-for-friend"
 description = "Read the unlocked owner's encrypted profile-picture record only for a backend-accepted friend; non-friends receive image-absent."
 commands.allow = ["read_owner_profile_picture_for_friend"]
 
+[[permission]]
+identifier = "allow-create-osl-chat-direct-message-conversation"
+description = "Allow only the trusted main OSL window to create one first-party OSL Chat direct-message conversation record with exactly two member ids."
+commands.allow = ["create_osl_chat_direct_message_conversation"]
+
+[[permission]]
+identifier = "allow-list-osl-chat-conversations"
+description = "Allow only the trusted main OSL window to read first-party OSL Chat conversations for the creating member."
+commands.allow = ["list_osl_chat_conversations"]
+

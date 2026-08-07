@@ -623,7 +623,7 @@ fn digest(conn: &Connection, digest_key: &[u8; 32]) -> Result<[u8; 32], StoreErr
     let mut bytes = b"osl-store-anchor/state-v1".to_vec();
     for (table, sql) in [
         ("_meta", "SELECT key, value FROM _meta WHERE key NOT IN ('anchor_generation', 'anchor_digest') ORDER BY key"),
-        ("messages", "SELECT mid_bi, chan_bi, sender_bi, meta_nonce, meta_ct, ciphertext, nonce, seq, burned, content_version, wrapped_key_nonce, wrapped_key, discord_message_id, channel_id, sender_discord_id, sender_osl_user_id, decrypted_at, scope_type, scope_id, meta_tag FROM messages ORDER BY mid_bi"),
+        ("messages", "SELECT mid_bi, chan_bi, sender_bi, meta_nonce, meta_ct, ciphertext, nonce, seq, burned, content_version, wrapped_key_nonce, wrapped_key, delivered_at, opened_at, destroyed_at, destruct_reason, destructive_remote_burn_state, destructive_remote_burn_grant, discord_message_id, channel_id, sender_discord_id, sender_osl_user_id, decrypted_at, scope_type, scope_id, meta_tag FROM messages ORDER BY mid_bi"),
         ("attachments", "SELECT ck_bi, mid_bi, sender_bi, meta_nonce, meta_ct, ciphertext, nonce, seq, burned, content_version, wrapped_key_nonce, wrapped_key, cache_key, discord_message_id, random_filename, mime, byte_len, created_at, scope_type, scope_id, sender_discord_id FROM attachments ORDER BY ck_bi"),
         ("attachment_manifests", "SELECT mid_bi, complete, generation, nonce, ciphertext FROM attachment_manifests ORDER BY mid_bi"),
     ] {
@@ -943,7 +943,7 @@ mod tests {
             calls_before_restore_validation,
             "restore validation must not turn a restored backup into provider recovery"
         );
-        assert_eq!(schema::inspect_schema_version(&conn).unwrap(), Some(9));
+        assert_eq!(schema::inspect_schema_version(&conn).unwrap(), Some(10));
         assert!(read_journal(&conn).unwrap().is_none());
     }
 

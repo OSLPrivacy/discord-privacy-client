@@ -814,6 +814,7 @@ pub struct AppPreferences {
     #[serde(default)]
     pub new_friend_verification_warnings: NewFriendVerificationWarnings,
     pub message_defaults: MessageDefaults,
+    pub ask_before_irreversible_actions: AskBeforeIrreversibleActionsChoice,
 }
 
 pub const APP_PREFERENCES_VERSION: u32 = 3;

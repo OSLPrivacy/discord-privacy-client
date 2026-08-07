@@ -43,6 +43,8 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use std::sync::{Condvar, Mutex};
@@ -1163,6 +1165,7 @@ pub struct NativeDiscordProductSendAuthority {
 
 pub const ALLOWED_PLACE_CHECK_STAGE: &str = "allowed-place-check";
 pub const ALLOWED_PLACE_CONFIRMED_STAGE: &str = "allowed-place-confirmed";
+pub const PREPARE_COVER_MESSAGE_ACTION_STAGE: &str = "prepare-action";
 pub const PROTECTED_MESSAGE_PATH_STAGE: &str = "protected-message-path";
 
 fn with_allowed_place_before_protected_message_action<Allowed, Output, CheckAllowed, Protected>(
@@ -1188,6 +1191,24 @@ pub fn with_allowed_place_before_protected_message_path<
     CheckAllowed,
     Protected,
 >(
+pub fn with_allowed_place_before_prepare_cover_message<Allowed, Output, CheckAllowed, Protected>(
+    trace: &mut Vec<&'static str>,
+    check_allowed_place: CheckAllowed,
+    protected_message_path: Protected,
+) -> Result<Output, String>
+where
+    CheckAllowed: FnOnce() -> Result<Allowed, String>,
+    Protected: FnOnce(Allowed) -> Result<Output, String>,
+{
+    with_allowed_place_before_protected_message_action(
+        trace,
+        PREPARE_COVER_MESSAGE_ACTION_STAGE,
+        check_allowed_place,
+        protected_message_path,
+    )
+}
+
+pub fn with_allowed_place_before_protected_message_path<Allowed, Output, CheckAllowed, Protected>(
     trace: &mut Vec<&'static str>,
     check_allowed_place: CheckAllowed,
     protected_message_path: Protected,
@@ -1907,6 +1928,8 @@ macro_rules! hub_tauri_commands {
             #[cfg(feature = "discord-qa-shell")]
             poll_native_discord_headless_qa,
             prepare_osl_chat_text,
+            create_osl_chat_direct_message_conversation,
+            list_osl_chat_conversations,
             create_osl_chat_group_conversation,
             send_native_discord_overlay_carrier,
             open_native_discord_overlay_text,
@@ -2304,6 +2327,9 @@ mod discord_guided_deletion_plan_producer_tests {
         SharedConversationScrollablePlace, SharedPlaceMessage,
     };
     use std::cell::Cell;
+    use crate::scrub_hosted::fixture::{
+        ApprovedScrubAccountFixture, LARGE_SCRUB_MARKED_MATCH_COUNT, LARGE_SCRUB_MESSAGE_COUNT,
+    };
 
     fn row(scan_ordinal: usize) -> ScannedRow {
         ScannedRow {
@@ -2550,6 +2576,60 @@ mod discord_guided_deletion_plan_producer_tests {
             SharedConversationScrollGateState::StopAfterCurrentPage
         );
         assert_eq!(place.scrolls, 0);
+    fn task_3687_fresh_fixture_creates_one_hundred_thousand_scrub_messages() {
+        let mut fixture = ApprovedScrubAccountFixture::fresh("approved-account-3687", "owner-3687");
+        assert_eq!(fixture.message_count(), 0);
+
+        let report = fixture
+            .populate_one_hundred_thousand_ordered_messages()
+            .expect("fresh fixture creation");
+        assert_eq!(report.messages_before_creation, 0);
+        assert_eq!(report.messages_after_creation, LARGE_SCRUB_MESSAGE_COUNT);
+        assert_eq!(
+            report.marked_matches_after_creation,
+            LARGE_SCRUB_MARKED_MATCH_COUNT
+        );
+        assert_eq!(report.first_marked_position, Some(10));
+        assert_eq!(report.last_marked_position, Some(100_000));
+        assert!(report.marked_matches_are_every_tenth_position);
+        assert!(fixture.messages_are_strictly_ordered());
+        assert!(fixture
+            .marked_match_positions()
+            .all(|position| position % 10 == 0));
+
+        let scan = fixture.to_guided_deletion_scan();
+        assert_eq!(scan.rows_seen, LARGE_SCRUB_MESSAGE_COUNT);
+        assert_eq!(scan.candidates.len(), LARGE_SCRUB_MARKED_MATCH_COUNT);
+        assert_eq!(
+            scan.candidates.first().map(|row| row.scan_ordinal),
+            Some(10)
+        );
+        assert_eq!(
+            scan.candidates.last().map(|row| row.scan_ordinal),
+            Some(100_000)
+        );
+
+        let state = DiscordGuidedDeletionPlanState::default();
+        state.record_scan(scan).expect("scan is stored");
+        let stop = state
+            .stop_after_current_safe_step()
+            .expect("safe stop reports retained match count");
+        assert_eq!(stop.saved_state, "stop_after_current_safe_step");
+        assert_eq!(stop.match_count, LARGE_SCRUB_MARKED_MATCH_COUNT);
+
+        println!(
+            "TASK3687 fixture_account={} owner={} messages_before_creation={} messages_after_creation={} marked_matches={} match_interval=10 first_marked_position={} last_marked_position={} scrub_runner_rows_seen={} safe_stop_saved_state={} safe_stop_match_count={}",
+            fixture.account_id(),
+            fixture.owner_osl_user_id(),
+            report.messages_before_creation,
+            report.messages_after_creation,
+            report.marked_matches_after_creation,
+            report.first_marked_position.expect("first marked position"),
+            report.last_marked_position.expect("last marked position"),
+            LARGE_SCRUB_MESSAGE_COUNT,
+            stop.saved_state,
+            stop.match_count
+        );
     }
 }
 
@@ -2620,6 +2700,15 @@ mod native_visible_row_qa_command_tests {
         require_native_discord_product_send_authority,
         with_allowed_place_before_scrub_conversation_open,
         with_native_discord_product_send_authority, ActiveServiceHost,
+        canonical_native_visible_row_qa_build_hash, direct_photo_post_command_image_copies,
+        finish_native_visible_row_qa_request, ordinary_text_send_command_image_copies,
+        prepare_native_visible_row_qa_request, recorded_executable_hash_matches_rebuild,
+        require_native_discord_product_send_authority, story_photo_command_image_copies,
+        with_allowed_place_before_prepare_cover_message,
+        with_allowed_place_before_protected_message_path,
+        with_native_discord_product_send_authority, ActiveServiceHost, PhotoPostImageInput,
+        ALLOWED_PLACE_CHECK_STAGE, ALLOWED_PLACE_CONFIRMED_STAGE,
+        PREPARE_COVER_MESSAGE_ACTION_STAGE, PROTECTED_MESSAGE_PATH_STAGE,
     };
     use crate::native_discord_adapter::{
         deidentify_prepared_visual_structure, DiscordCarrierLayout, DiscordCarrierPadding,
@@ -2697,6 +2786,162 @@ mod native_visible_row_qa_command_tests {
         assert!(carrier
             .split_whitespace()
             .eq(TEST_FLAGTEXT.split_whitespace()));
+    }
+
+    #[test]
+    fn task_0120_allowed_place_command_trace_reaches_protected_message_path() {
+        let mut trace = Vec::new();
+        let protected_path_reached = Cell::new(false);
+        let reached = with_allowed_place_before_protected_message_path(
+            &mut trace,
+            || Ok("allowed place"),
+            |allowed_place| {
+                protected_path_reached.set(true);
+                assert_eq!(allowed_place, "allowed place");
+                Ok(PROTECTED_MESSAGE_PATH_STAGE)
+            },
+        )
+        .expect("an allowed place reaches the protected-message path");
+
+        println!(
+            "task_0120_allowed_place_command_trace={}",
+            trace.join(" -> ")
+        );
+        println!("task_0120_reached={reached}");
+
+        assert_eq!(
+            trace,
+            [
+                ALLOWED_PLACE_CHECK_STAGE,
+                ALLOWED_PLACE_CONFIRMED_STAGE,
+                PROTECTED_MESSAGE_PATH_STAGE,
+            ]
+        );
+        assert!(protected_path_reached.get());
+        assert_eq!(reached, PROTECTED_MESSAGE_PATH_STAGE);
+
+        let mut refused_trace = Vec::new();
+        let refused_path_reached = Cell::new(false);
+        let refused = with_allowed_place_before_protected_message_path(
+            &mut refused_trace,
+            || -> Result<&'static str, String> { Err("place not allowed".to_owned()) },
+            |_| {
+                refused_path_reached.set(true);
+                Ok(PROTECTED_MESSAGE_PATH_STAGE)
+            },
+        );
+        match refused {
+            Err(error) => assert_eq!(error, "place not allowed"),
+            Ok(_) => panic!("an unallowed place must refuse before protected-message path"),
+        }
+        println!(
+            "task_0120_unallowed_place_command_trace={}",
+            refused_trace.join(" -> ")
+        );
+        assert_eq!(refused_trace, [ALLOWED_PLACE_CHECK_STAGE]);
+        assert!(!refused_path_reached.get());
+
+        let source = include_str!("main.rs");
+        let command_start = source
+            .find("#[tauri::command]\nfn send_native_discord_overlay_carrier(")
+            .expect("native Discord carrier command remains present");
+        let command_tail = &source[command_start..];
+        let command_end = command_tail
+            .find("struct NativeDiscordOverlayStateDto {")
+            .expect("native Discord carrier command body remains bounded");
+        let command = &command_tail[..command_end];
+        let gate = command
+            .find("with_allowed_place_before_protected_message_path(")
+            .expect("native Discord carrier command gates protected-message path");
+        let allowed_place = command
+            .find("native_discord_allowed_place_scope_binding(&app)")
+            .expect("native Discord carrier command checks the allowed place");
+        let protected_path = command
+            .find("composer.place_carrier(")
+            .expect("native Discord carrier command reaches protected-message placement");
+        assert!(gate < allowed_place);
+        assert!(allowed_place < protected_path);
+    }
+
+    #[test]
+    fn task_0122_allowed_place_trace_records_one_prepare_action() {
+        let mut trace = Vec::new();
+        let prepare_reached = Cell::new(false);
+        let reached = with_allowed_place_before_prepare_cover_message(
+            &mut trace,
+            || Ok("allowed place"),
+            |allowed_place| {
+                prepare_reached.set(true);
+                assert_eq!(allowed_place, "allowed place");
+                Ok(PREPARE_COVER_MESSAGE_ACTION_STAGE)
+            },
+        )
+        .expect("an allowed place reaches cover-message preparation");
+        let prepare_actions = trace
+            .iter()
+            .filter(|stage| **stage == PREPARE_COVER_MESSAGE_ACTION_STAGE)
+            .count();
+
+        println!(
+            "task_0122_allowed_place_prepare_trace={}",
+            trace.join(" -> ")
+        );
+        println!("task_0122_prepare_actions={prepare_actions}");
+        println!("task_0122_reached={reached}");
+
+        assert_eq!(
+            trace,
+            [
+                ALLOWED_PLACE_CHECK_STAGE,
+                ALLOWED_PLACE_CONFIRMED_STAGE,
+                PREPARE_COVER_MESSAGE_ACTION_STAGE,
+            ]
+        );
+        assert_eq!(prepare_actions, 1);
+        assert!(prepare_reached.get());
+        assert_eq!(reached, PREPARE_COVER_MESSAGE_ACTION_STAGE);
+
+        let mut refused_trace = Vec::new();
+        let refused_prepare_reached = Cell::new(false);
+        let refused = with_allowed_place_before_prepare_cover_message(
+            &mut refused_trace,
+            || -> Result<&'static str, String> { Err("place not allowed".to_owned()) },
+            |_| {
+                refused_prepare_reached.set(true);
+                Ok(PREPARE_COVER_MESSAGE_ACTION_STAGE)
+            },
+        );
+        match refused {
+            Err(error) => assert_eq!(error, "place not allowed"),
+            Ok(_) => panic!("an unallowed place must refuse before cover-message preparation"),
+        }
+        println!(
+            "task_0122_unallowed_place_prepare_trace={}",
+            refused_trace.join(" -> ")
+        );
+        assert_eq!(refused_trace, [ALLOWED_PLACE_CHECK_STAGE]);
+        assert!(!refused_prepare_reached.get());
+
+        let source = include_str!("main.rs");
+        let command_start = source
+            .find("#[tauri::command]\nasync fn prepare_peer_prose_text(")
+            .expect("peer prose prepare command remains present");
+        let command_tail = &source[command_start..];
+        let command_end = command_tail
+            .find("/// Open manually pasted marker-free encrypted text")
+            .expect("peer prose prepare command body remains bounded");
+        let command = &command_tail[..command_end];
+        let gate = command
+            .find("with_allowed_place_before_prepare_cover_message(")
+            .expect("peer prose prepare command gates cover-message preparation");
+        let allowed_place = command
+            .find("manual_peer_allowed_place_scope_binding(&core, &broker_state, &context_token)")
+            .expect("peer prose prepare command checks the allowed place");
+        let prepare = command
+            .find("broker::prepare_peer_prose_text_with_capture_and_store_client(")
+            .expect("peer prose prepare command reaches broker preparation");
+        assert!(gate < allowed_place);
+        assert!(allowed_place < prepare);
     }
 
     #[test]
@@ -4590,6 +4835,7 @@ mod tauri_registration_surface_tests {
         for command in commands {
             assert_registered_and_granted(&handlers, &permissions, &capability, command);
         }
+        );
         assert_each_registration_surface_is_required(
             &handlers,
             &permissions,

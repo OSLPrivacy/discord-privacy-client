@@ -16,6 +16,8 @@ use crypto::ed25519;
 use serde::Serialize;
 
 pub const WRAPPED_KEY_POST_DOMAIN: &[u8] = b"discord-privacy-client/wrapped-key-post/v1";
+pub const WRAPPED_KEY_OPEN_CLAIM_DOMAIN: &[u8] =
+    b"discord-privacy-client/wrapped-key-open-claim/v1";
 
 #[derive(Clone, Debug, Serialize)]
 pub struct WrappedKeyUpload {
@@ -84,6 +86,38 @@ pub fn sign_wrapped_key_post(
     ed25519::sign(
         &identity.ed25519_secret,
         &canonical_wrapped_key_post_bytes(&identity.user_id, upload, timestamp_ms),
+    )
+}
+
+pub fn canonical_wrapped_key_open_claim_bytes(
+    recipient_id: &str,
+    content_id: &str,
+    timestamp_ms: i64,
+    request_id: &str,
+) -> Vec<u8> {
+    let mut out = Vec::new();
+    write_lp(&mut out, WRAPPED_KEY_OPEN_CLAIM_DOMAIN);
+    write_lp(&mut out, recipient_id.as_bytes());
+    write_lp(&mut out, content_id.as_bytes());
+    write_lp(&mut out, timestamp_ms.to_string().as_bytes());
+    write_lp(&mut out, request_id.as_bytes());
+    out
+}
+
+pub fn sign_wrapped_key_open_claim(
+    identity: &Identity,
+    content_id: &str,
+    timestamp_ms: i64,
+    request_id: &str,
+) -> ed25519::Signature {
+    ed25519::sign(
+        &identity.ed25519_secret,
+        &canonical_wrapped_key_open_claim_bytes(
+            &identity.user_id,
+            content_id,
+            timestamp_ms,
+            request_id,
+        ),
     )
 }
 
@@ -156,5 +190,24 @@ mod tests {
         let signature = sign_wrapped_key_post(&identity, &upload, timestamp);
         let canonical = canonical_wrapped_key_post_bytes("alice", &upload, timestamp);
         assert!(ed25519::verify(&identity.ed25519_public, &canonical, &signature).unwrap());
+    }
+
+    #[test]
+    fn opened_claim_signature_binds_recipient_content_timestamp_and_request() {
+        let identity = crate::generate_identity("bob".into());
+        let timestamp = 1_700_000_000_123;
+        let request_id = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO";
+        let signature = sign_wrapped_key_open_claim(&identity, "message-1", timestamp, request_id);
+        let canonical =
+            canonical_wrapped_key_open_claim_bytes("bob", "message-1", timestamp, request_id);
+        assert!(ed25519::verify(&identity.ed25519_public, &canonical, &signature).unwrap());
+        assert_ne!(
+            canonical,
+            canonical_wrapped_key_open_claim_bytes("bob", "message-2", timestamp, request_id)
+        );
+        assert_ne!(
+            canonical,
+            canonical_wrapped_key_open_claim_bytes("alice", "message-1", timestamp, request_id)
+        );
     }
 }

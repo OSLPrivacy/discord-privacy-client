@@ -222,6 +222,8 @@ pub fn cmd_osl_fresh_start(
         "peer_map.json",
         "channels.json",
         "whitelist_state.json",
+        "allowed_places.json",
+        "auto_whitelist_rules.json",
         "pending_invitations.json",
     ] {
         let path = config_dir.join(name);

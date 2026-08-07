@@ -24,6 +24,7 @@ import {
 } from "../lib/telegram.js";
 import {
   parseEvent,
+  verifiedStripeWebhook,
   verifyWebhookSignature,
 } from "../lib/stripe.js";
 import { badRequest, json, serviceUnavailable, unauthorized } from "../lib/http.js";
@@ -57,6 +58,7 @@ export async function handleStripeWebhook(
   if (!verified) {
     return unauthorized("bad-signature");
   }
+  const webhookProof = verifiedStripeWebhook();
   const event = parseEvent(rawBody);
   if (!event) return badRequest("malformed event envelope");
   if (!event.livemode) {
@@ -67,8 +69,8 @@ export async function handleStripeWebhook(
   }
 
   const claim = await claimStripeEvent(env.DB, event.id, event.type);
-  if (claim === "completed") return json({ received: true, deduped: true });
-  if (claim === "busy") {
+  if (claim.status === "completed") return json({ received: true, deduped: true });
+  if (claim.status === "busy") {
     return new Response(JSON.stringify({ error: "event is already processing" }), {
       status: 503,
       headers: {
@@ -80,7 +82,10 @@ export async function handleStripeWebhook(
 
   try {
     const donation = await recordVerifiedStripeDonation(env.DB, event);
-    const result = await applyEvent(env, event, fetcher);
+    const result = await applyEvent(env, event, {
+      eventClaim: claim.proof,
+      webhook: webhookProof,
+    }, fetcher);
     // Donation totals live in their own privacy-minimal ledger. Keeping them
     // out of the purchase ledger avoids counting the same money twice in the
     // operator report, including malformed donation-shaped events.

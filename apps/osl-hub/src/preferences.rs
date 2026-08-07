@@ -7,6 +7,10 @@ use serde::{Deserialize, Serialize};
 use crate::models::{
     default_home_tile_order, is_default_home_tile, HomeTileArrangementAction,
     HomeTileArrangementInput, HomeTileArrangementRead, OnboardingPreferences,
+use crate::claim_state::{self, Surface};
+use crate::models::{
+    default_home_tile_order, is_default_home_tile, HomeTileArrangementInput,
+    HomeTileArrangementRead, HomeTileCapabilityFacts, HomeTileData, OnboardingPreferences,
     DEFAULT_HOME_TILE_ORDER,
 };
 
@@ -164,6 +168,8 @@ impl PreviewState {
             &scrub_account_permissions_by_user,
         )
         .map_err(|error| format!("could not save preview preferences: {error}"))?;
+        write_preferences(&self.path, &preferences, &home_tiles_by_user)
+            .map_err(|error| format!("could not save preview preferences: {error}"))?;
 
         let mut current = self
             .onboarding
@@ -226,6 +232,9 @@ impl PreviewState {
             &scrub_account_permissions_by_user,
         )
         .map_err(|error| format!("could not save home tile preferences: {error}"))?;
+
+        write_preferences(&self.path, &onboarding, &home_tiles_by_user)
+            .map_err(|error| format!("could not save home tile preferences: {error}"))?;
 
         let mut current = self
             .home_tiles_by_user
@@ -699,6 +708,14 @@ fn read_arrangement(arrangement: Option<StoredHomeTileArrangement>) -> HomeTileA
     let arrangement = arrangement
         .map(sanitize_arrangement)
         .unwrap_or_else(default_arrangement);
+fn read_arrangement(arrangement: Option<StoredHomeTileArrangement>) -> HomeTileArrangementRead {
+    let arrangement =
+        arrangement
+            .map(sanitize_arrangement)
+            .unwrap_or_else(|| StoredHomeTileArrangement {
+                order: default_home_tile_order(),
+                hidden: Vec::new(),
+            });
     let hidden = arrangement.hidden.into_iter().collect::<HashSet<_>>();
     let mut visible_tiles = Vec::new();
     let mut hidden_tiles = Vec::new();
@@ -780,6 +797,57 @@ fn validate_tile_id(tile_id: &str) -> Result<(), String> {
     } else {
         Err("home tile action target is unknown".to_owned())
     }
+    let visible_tile_data = tile_data(&visible_tiles);
+    let hidden_tile_data = tile_data(&hidden_tiles);
+    HomeTileArrangementRead {
+        visible_tiles,
+        hidden_tiles,
+        visible_tile_data,
+        hidden_tile_data,
+    }
+}
+
+fn tile_data(tiles: &[String]) -> Vec<HomeTileData> {
+    tiles
+        .iter()
+        .map(|tile| HomeTileData {
+            id: tile.clone(),
+            capability: capability_facts_for_home_tile(tile),
+        })
+        .collect()
+}
+
+fn capability_facts_for_home_tile(tile: &str) -> Option<HomeTileCapabilityFacts> {
+    let surface = match tile {
+        "discord" => Surface::Discord,
+        "telegram" => Surface::Telegram,
+        "signal" => Surface::Signal,
+        "whatsapp" => Surface::Whatsapp,
+        "gmail" => Surface::Gmail,
+        "outlook" => Surface::OutlookWeb,
+        "proton" => Surface::Proton,
+        "yahoo" => Surface::Yahoo,
+        "aol" => Surface::Aol,
+        "gmx" => Surface::Gmx,
+        "maildotcom" => Surface::MailDotCom,
+        "icloud" => Surface::ICloud,
+        "tuta" => Surface::Tuta,
+        "osl-chats" => Surface::OslChats,
+        "osl-mail" => Surface::OslMail,
+        _ => return None,
+    };
+    let row = claim_state::claim_of(surface);
+    let public_claim = claim_state::claim_for(row);
+    Some(HomeTileCapabilityFacts {
+        surface: surface.ruling_slug(),
+        public_claim: public_claim.slug(),
+        carrier_evidence: row.carrier.slug(),
+        delivery_evidence: row.delivery.slug(),
+        claim_blockers: row.blockers.iter().map(|blocker| blocker.slug()).collect(),
+        matrix_position: row.matrix.slug(),
+        first_party: claim_state::is_first_party(surface),
+        capability_claim: public_claim.is_capability_claim(),
+    })
 }
 
 #[cfg(test)]
@@ -787,6 +855,8 @@ mod tests {
     use super::*;
     use crate::models::{ForwardSecrecyMode, HomeTileArrangementAction, PlacementMode, SendMode};
     use crate::models::{CoverInsertion, ForwardSecrecyMode, PlacementMode, SendMode};
+    use crate::models::{ForwardSecrecyMode, PlacementMode, SendMode};
+    use serde_json::Value;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1177,5 +1247,185 @@ mod tests {
         assert_eq!(restarted, done);
 
         let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+    fn task_0801_direct_tile_data_includes_capability_facts_and_saves_no_label_text() {
+        let path = temporary_file();
+        let state = PreviewState::load(path.clone());
+
+        let direct = state
+            .save_home_tile_arrangement(
+                "user-a",
+                HomeTileArrangementInput {
+                    order: vec![
+                        "telegram".to_owned(),
+                        "discord".to_owned(),
+                        "outlook".to_owned(),
+                        "scrub".to_owned(),
+                    ],
+                    hidden: vec!["discord".to_owned()],
+                },
+            )
+            .expect("save arrangement");
+
+        let direct_tile_count = direct.visible_tile_data.len() + direct.hidden_tile_data.len();
+        let direct_fact_count = direct
+            .visible_tile_data
+            .iter()
+            .chain(direct.hidden_tile_data.iter())
+            .filter(|tile| tile.capability.is_some())
+            .count();
+        let direct_missing_fact_ids = direct
+            .visible_tile_data
+            .iter()
+            .chain(direct.hidden_tile_data.iter())
+            .filter(|tile| tile.capability.is_none())
+            .map(|tile| tile.id.as_str())
+            .collect::<Vec<_>>();
+        let telegram = direct
+            .visible_tile_data
+            .iter()
+            .find(|tile| tile.id == "telegram")
+            .and_then(|tile| tile.capability.as_ref())
+            .expect("telegram capability facts");
+        let discord = direct
+            .hidden_tile_data
+            .iter()
+            .find(|tile| tile.id == "discord")
+            .and_then(|tile| tile.capability.as_ref())
+            .expect("discord capability facts");
+        let outlook = direct
+            .visible_tile_data
+            .iter()
+            .find(|tile| tile.id == "outlook")
+            .and_then(|tile| tile.capability.as_ref())
+            .expect("outlook capability facts");
+        let saved_json = fs::read_to_string(&path).expect("saved preferences file");
+        let saved: Value = serde_json::from_str(&saved_json).expect("saved preferences json");
+        let saved_label_text_values = count_saved_label_text_values(&saved);
+        let saved_label_text_fields = count_saved_label_text_fields(&saved);
+        let saved_capability_fact_fields = count_saved_capability_fact_fields(&saved);
+
+        println!("TASK0801 direct_tile_data_count={direct_tile_count}");
+        println!("TASK0801 direct_capability_fact_count={direct_fact_count}");
+        println!(
+            "TASK0801 direct_missing_capability_fact_ids={}",
+            if direct_missing_fact_ids.is_empty() {
+                "(none)".to_owned()
+            } else {
+                direct_missing_fact_ids.join(",")
+            }
+        );
+        println!(
+            "TASK0801 direct_telegram_capability_facts={}/{}/{}/{}",
+            telegram.surface,
+            telegram.public_claim,
+            telegram.carrier_evidence,
+            telegram.delivery_evidence
+        );
+        println!(
+            "TASK0801 direct_discord_blockers={}",
+            discord.claim_blockers.join(",")
+        );
+        println!("TASK0801 direct_outlook_surface={}", outlook.surface);
+        println!("TASK0801 saved_label_text_values={saved_label_text_values}");
+        println!("TASK0801 saved_label_text_fields={saved_label_text_fields}");
+        println!("TASK0801 saved_capability_fact_fields={saved_capability_fact_fields}");
+
+        assert_eq!(direct_tile_count, DEFAULT_HOME_TILE_ORDER.len());
+        assert_eq!(direct_fact_count, DEFAULT_HOME_TILE_ORDER.len() - 2);
+        assert_eq!(direct_missing_fact_ids, vec!["scrub", "osl-notes"]);
+        assert_eq!(
+            (
+                telegram.surface,
+                telegram.public_claim,
+                telegram.carrier_evidence,
+                telegram.delivery_evidence,
+            ),
+            (
+                "telegram",
+                "noClaim",
+                "provenLiveWithReceipt",
+                "neverProvenLive",
+            )
+        );
+        assert_eq!(
+            discord.claim_blockers,
+            vec!["open-security-finding", "unknown-recheck-required"]
+        );
+        assert_eq!(outlook.surface, "outlook");
+        assert_eq!(outlook.matrix_position, "noRow");
+        assert_eq!(saved_label_text_values, 0);
+        assert_eq!(saved_label_text_fields, 0);
+        assert_eq!(saved_capability_fact_fields, 0);
+
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    fn count_saved_label_text_values(value: &Value) -> usize {
+        const FORBIDDEN_LABEL_TEXT: &[&str] = &[
+            "Discord",
+            "Telegram",
+            "Signal",
+            "WhatsApp",
+            "Outlook",
+            "Gmail",
+            "Coming soon",
+            "Experimental",
+            "No claim",
+            "Beta",
+            "Available",
+            "Externally blocked",
+        ];
+        match value {
+            Value::String(text) => FORBIDDEN_LABEL_TEXT
+                .iter()
+                .filter(|label| text.contains(**label))
+                .count(),
+            Value::Array(items) => items.iter().map(count_saved_label_text_values).sum(),
+            Value::Object(map) => map.values().map(count_saved_label_text_values).sum(),
+            _ => 0,
+        }
+    }
+
+    fn count_saved_label_text_fields(value: &Value) -> usize {
+        match value {
+            Value::Array(items) => items.iter().map(count_saved_label_text_fields).sum(),
+            Value::Object(map) => {
+                map.keys()
+                    .filter(|key| key.contains("label") || key.contains("displayName"))
+                    .count()
+                    + map
+                        .values()
+                        .map(count_saved_label_text_fields)
+                        .sum::<usize>()
+            }
+            _ => 0,
+        }
+    }
+
+    fn count_saved_capability_fact_fields(value: &Value) -> usize {
+        const FACT_FIELDS: &[&str] = &[
+            "capability",
+            "publicClaim",
+            "carrierEvidence",
+            "deliveryEvidence",
+            "claimBlockers",
+            "matrixPosition",
+            "firstParty",
+            "capabilityClaim",
+        ];
+        match value {
+            Value::Array(items) => items.iter().map(count_saved_capability_fact_fields).sum(),
+            Value::Object(map) => {
+                map.keys()
+                    .filter(|key| FACT_FIELDS.contains(&key.as_str()))
+                    .count()
+                    + map
+                        .values()
+                        .map(count_saved_capability_fact_fields)
+                        .sum::<usize>()
+            }
+            _ => 0,
+        }
     }
 }

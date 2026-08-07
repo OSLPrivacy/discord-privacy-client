@@ -192,6 +192,10 @@ pub struct KeyChangeAlert {
 pub struct ChannelMessageRecord {
     pub message_id: String,
     pub channel_id: String,
+    pub server_id: Option<String>,
+    pub message_id: String,
+    pub channel_id: String,
+    pub plaintext: Option<String>,
     pub thread_ids: Vec<String>,
 }
 
@@ -359,6 +363,15 @@ pub struct AppState {
     /// Session-local conversations that have already consumed the user's
     /// "once" verification warning choice.
     pub verification_warning_seen: Mutex<HashSet<String>>,
+    /// Saved allowed places keyed by their stable id. These are user-visible
+    /// place approvals, separate from the auto-whitelist rules that decide
+    /// what to do when a future place is observed.
+    pub allowed_places: Mutex<crate::allowed_places::SavedAllowedPlaces>,
+
+    /// Saved auto-whitelist naming rules, keyed by app kind. These do not
+    /// bypass concrete whitelist/friend recipient checks; they only store the
+    /// user's policy for future whitelist opportunities.
+    pub auto_whitelist_rules: Mutex<crate::auto_whitelist_rules::AutoWhitelistRules>,
 
     /// Phase 9-C2: ephemeral list of the user's Discord friend ids
     /// (relationships with type=1). Pushed from boot.js's gateway-tap
@@ -480,6 +493,10 @@ impl Default for AppState {
             channel_threads: Mutex::new(HashMap::new()),
             app_preferences: Mutex::new(crate::app_preferences::AppPreferences::default()),
             verification_warning_seen: Mutex::new(HashSet::new()),
+            allowed_places: Mutex::new(crate::allowed_places::SavedAllowedPlaces::default()),
+            auto_whitelist_rules: Mutex::new(
+                crate::auto_whitelist_rules::AutoWhitelistRules::default(),
+            ),
             friend_ids: Mutex::new(Vec::new()),
             verification_warning_seen: Mutex::new(HashSet::new()),
             guild_list: Mutex::new(Vec::new()),

@@ -6,9 +6,13 @@
 //!
 //! Tauri-attribute wrappers live in [`crate::tauri_glue`].
 
+use crate::auto_whitelist_rules::{
+    discord_whitelist_kind_labels, AutoWhitelistAppKind, AutoWhitelistChoice, AutoWhitelistRule,
+    AutoWhitelistRuleQuery,
+};
 use crate::state::AppState;
 use crate::{IpcError, IpcResult};
-use base64::engine::general_purpose::STANDARD;
+use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
 use crypto::{aead, ed25519, hkdf, random, x25519};
 use keystore::{generate_identity, select_best_sealer, BurnScope, KeyServerClient};
@@ -557,6 +561,11 @@ mod command_activity_tests {
             let _ = cmd_osl_reset_follow_active_app_choice(&state, None);
         assert_command_marks_activity("cmd_osl_get_new_friend_defaults", || {
             let _ = cmd_osl_get_new_friend_defaults(&state);
+        assert_command_marks_activity("cmd_osl_get_ask_before_irreversible_actions_choice", || {
+            let _ = cmd_osl_get_ask_before_irreversible_actions_choice(&state);
+        });
+        assert_command_marks_activity("cmd_osl_query_auto_whitelist_rule", || {
+            let _ = cmd_osl_query_auto_whitelist_rule(&state, AutoWhitelistAppKind::Chat);
         });
         assert_command_marks_activity("cmd_osl_get_self_user_id", || {
             let _ = cmd_osl_get_self_user_id(&state);
@@ -1659,6 +1668,44 @@ pub(crate) fn persist_sender_key_state_now(state: &AppState) {
     };
     if let Err(e) = crate::sender_key_state::write_sender_key_state(&path, &file) {
         record_persist_error(state, "sender_key_state.json", e);
+    }
+}
+
+fn persist_auto_whitelist_rules_now(state: &AppState) {
+    let dir = match keystore::osl_config_dir() {
+        Ok(d) => d,
+        Err(e) => {
+            record_persist_error(state, "auto_whitelist_rules dir resolve", e);
+            return;
+        }
+    };
+    let path = dir.join("auto_whitelist_rules.json");
+    let rules = state
+        .auto_whitelist_rules
+        .lock()
+        .expect("auto_whitelist_rules mutex poisoned")
+        .clone();
+    if let Err(e) = crate::auto_whitelist_rules::write_auto_whitelist_rules(&path, &rules) {
+        record_persist_error(state, "auto_whitelist_rules.json", e);
+    }
+}
+
+fn persist_allowed_places_now(state: &AppState) {
+    let dir = match keystore::osl_config_dir() {
+        Ok(d) => d,
+        Err(e) => {
+            record_persist_error(state, "allowed_places dir resolve", e);
+            return;
+        }
+    };
+    let path = dir.join("allowed_places.json");
+    let places = state
+        .allowed_places
+        .lock()
+        .expect("allowed_places mutex poisoned")
+        .clone();
+    if let Err(e) = crate::allowed_places::write_allowed_places(&path, &places) {
+        record_persist_error(state, "allowed_places.json", e);
     }
 }
 
@@ -4295,6 +4342,19 @@ pub fn cmd_osl_remove_sender_message_records(
 
 #[derive(Debug, Serialize, Clone, PartialEq, Eq)]
 pub struct BurnSenderMessageRecordsBothSidesDto {
+    pub burn_id: String,
+    pub requested_count: usize,
+    pub local_removal_count: usize,
+    pub remote_removal_count: usize,
+    pub remaining_local_count: usize,
+    pub equal_removal_counts: bool,
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+pub struct ChatBurnSenderMessageRecordsChoiceDto {
+    pub open_chat_id: String,
+    pub selected_scope: String,
+    pub selected_message_ids: Vec<String>,
     pub requested_count: usize,
     pub local_removal_count: usize,
     pub remote_removal_count: usize,
@@ -4467,6 +4527,67 @@ pub fn cmd_osl_burn_both_sides_server_copies(
         remote_removal_count,
         remaining_local_count: local.remaining_local_count,
         equal_removal_counts: local.removed_count == remote_removal_count,
+    let burn_id =
+        sender_message_records_both_sides_burn_id(&identity.user_id, &discord_message_ids);
+
+    let Some(steps) = begin_sender_message_burn(state, &burn_id, &discord_message_ids)? else {
+        let local = remove_sender_message_records(state, &discord_message_ids)?;
+        let mut remote_removal_count = 0usize;
+        for message_id in &discord_message_ids {
+            let response = client
+                .burn(
+                    &identity,
+                    &BurnScope::Single {
+                        content_id: message_id.clone(),
+                    },
+                )
+                .map_err(|error| format!("OSL: remote wrapped-key removal failed: {error}"))?;
+            remote_removal_count = remote_removal_count
+                .checked_add(usize::try_from(response.deleted_count).map_err(|_| {
+                    "OSL: remote wrapped-key removal count overflowed this platform".to_string()
+                })?)
+                .ok_or_else(|| "OSL: remote wrapped-key removal count overflowed".to_string())?;
+        }
+
+        return Ok(BurnSenderMessageRecordsBothSidesDto {
+            burn_id,
+            requested_count: local.requested_count,
+            local_removal_count: local.removed_count,
+            remote_removal_count,
+            remaining_local_count: local.remaining_local_count,
+            equal_removal_counts: local.removed_count == remote_removal_count,
+        });
+    };
+
+    for step in steps {
+        if !step.local_done {
+            delete_sender_message_burn_step_locally(state, &burn_id, &step.message_id)?;
+        }
+        if !step.remote_done {
+            client
+                .burn(
+                    &identity,
+                    &BurnScope::Single {
+                        content_id: step.message_id.clone(),
+                    },
+                )
+                .map_err(|error| format!("OSL: remote wrapped-key removal failed: {error}"))?;
+            mark_sender_message_burn_remote_done(state, &burn_id, &step.message_id)?;
+        }
+    }
+    let final_steps = begin_sender_message_burn(state, &burn_id, &discord_message_ids)?
+        .ok_or_else(|| "OSL: both-sides burn journal disappeared".to_string())?;
+    let local_removal_count = final_steps.iter().filter(|step| step.local_done).count();
+    let remote_removal_count = final_steps.iter().filter(|step| step.remote_done).count();
+    let remaining_local_count = count_sender_message_records(state, &discord_message_ids)?;
+
+    Ok(BurnSenderMessageRecordsBothSidesDto {
+        burn_id,
+        requested_count: discord_message_ids.len(),
+        local_removal_count,
+        remote_removal_count,
+        remaining_local_count,
+        equal_removal_counts: local_removal_count == remote_removal_count,
     })
 }
 
@@ -4479,6 +4600,52 @@ pub fn cmd_osl_burn_sender_message_records_choice(
         "both-sides" => cmd_osl_burn_sender_message_records_both_sides(state, discord_message_ids),
         other => Err(format!("OSL: unknown scope: {other}")),
     }
+}
+
+/// Resolve a chat burn from the currently open chat, then run the selected burn
+/// scope action against only this user's message ids from that chat.
+pub fn cmd_osl_chat_burn_sender_message_records_choice(
+    state: &AppState,
+    open_chat_id: String,
+    selected_scope: &str,
+) -> Result<ChatBurnSenderMessageRecordsChoiceDto, String> {
+    record_activity_on_command_entry();
+    let self_user_id = state
+        .identity_slot()
+        .as_ref()
+        .map(|identity| identity.user_id.clone())
+        .ok_or_else(|| "OSL: chat burn needs a loaded identity".to_string())?;
+    let selected_message_ids = {
+        let guard = state
+            .message_store
+            .lock()
+            .expect("message_store mutex poisoned");
+        let Some(store) = guard.as_ref() else {
+            return Err("OSL: chat burn needs a message store".to_string());
+        };
+        store
+            .list_by_channel(&open_chat_id, u32::MAX)
+            .map_err(|e| format!("OSL: select open-chat sender records: {e}"))?
+            .into_iter()
+            .filter(|message| message.sender_osl_user_id == self_user_id)
+            .map(|message| message.discord_message_id)
+            .collect::<Vec<_>>()
+    };
+    let result = cmd_osl_burn_sender_message_records_choice(
+        state,
+        selected_scope,
+        selected_message_ids.clone(),
+    )?;
+    Ok(ChatBurnSenderMessageRecordsChoiceDto {
+        open_chat_id,
+        selected_scope: selected_scope.to_owned(),
+        selected_message_ids,
+        requested_count: result.requested_count,
+        local_removal_count: result.local_removal_count,
+        remote_removal_count: result.remote_removal_count,
+        remaining_local_count: result.remaining_local_count,
+        equal_removal_counts: result.equal_removal_counts,
+    })
 }
 
 fn validate_selected_sender_message_records(discord_message_ids: &[String]) -> Result<(), String> {
@@ -4529,6 +4696,86 @@ fn remove_sender_message_records(
         choice: "Both Sides".to_string(),
         remote_removal_count: response.deleted_count,
     })
+}
+
+    })
+}
+
+fn sender_message_records_both_sides_burn_id(user_id: &str, message_ids: &[String]) -> String {
+    let mut hash = Sha256::new();
+    hash.update(b"OSL/sender-message-records-both-sides-burn/v1");
+    hash.update((user_id.len() as u64).to_be_bytes());
+    hash.update(user_id.as_bytes());
+    for message_id in message_ids {
+        hash.update((message_id.len() as u64).to_be_bytes());
+        hash.update(message_id.as_bytes());
+    }
+    hex_lower(&hash.finalize())
+}
+
+fn begin_sender_message_burn(
+    state: &AppState,
+    burn_id: &str,
+    message_ids: &[String],
+) -> Result<Option<Vec<store::SenderMessageBurnStep>>, String> {
+    let guard = state
+        .message_store
+        .lock()
+        .expect("message_store mutex poisoned");
+    let Some(store) = guard.as_ref() else {
+        return Ok(None);
+    };
+    store
+        .begin_sender_message_burn(burn_id, message_ids)
+        .map(Some)
+        .map_err(|e| format!("OSL: sender message burn journal: {e}"))
+}
+
+fn delete_sender_message_burn_step_locally(
+    state: &AppState,
+    burn_id: &str,
+    message_id: &str,
+) -> Result<usize, String> {
+    let guard = state
+        .message_store
+        .lock()
+        .expect("message_store mutex poisoned");
+    let Some(store) = guard.as_ref() else {
+        return Ok(0);
+    };
+    store
+        .delete_sender_message_burn_step_locally(burn_id, message_id)
+        .map_err(|e| format!("OSL: sender message burn local step: {e}"))
+}
+
+fn mark_sender_message_burn_remote_done(
+    state: &AppState,
+    burn_id: &str,
+    message_id: &str,
+) -> Result<(), String> {
+    let guard = state
+        .message_store
+        .lock()
+        .expect("message_store mutex poisoned");
+    let Some(store) = guard.as_ref() else {
+        return Ok(());
+    };
+    store
+        .mark_sender_message_burn_remote_done(burn_id, message_id)
+        .map_err(|e| format!("OSL: sender message burn remote step: {e}"))
+}
+
+fn count_sender_message_records(state: &AppState, message_ids: &[String]) -> Result<usize, String> {
+    let guard = state
+        .message_store
+        .lock()
+        .expect("message_store mutex poisoned");
+    let Some(store) = guard.as_ref() else {
+        return Ok(0);
+    };
+    store
+        .count_message_records(message_ids)
+        .map_err(|e| format!("OSL: sender message burn remaining records: {e}"))
 }
 
 /// Pull diagnostic facts out of a Phase 4 cover string for the
@@ -11283,8 +11530,10 @@ fn record_accepted_friend_relationship(state: &AppState, requester_discord_id: &
 
 const PENDING_FRIEND_REQUESTS_FILE: &str = "pending_friend_requests.json";
 const BLOCKED_PEOPLE_FILE: &str = "blocked_people.json";
+const FRIEND_INVITE_LINKS_FILE: &str = "friend_invite_links.json";
+const FRIEND_INVITE_LINK_PREFIX: &str = "OSLINV1.";
 
-#[derive(Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PendingFriendRequestRecord {
     pub peer_discord_id: String,
@@ -11339,6 +11588,44 @@ pub struct UnblockPersonResult {
     pub blocked_count: usize,
     pub friendship_state: String,
     pub allowed_places: usize,
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CreateFriendRequestByOslNameInput {
+    pub recipient_name: String,
+    pub request_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CreateFriendRequestByOslNameResult {
+    pub request_id: String,
+    pub recipient_name: String,
+    pub peer_osl_user_id: String,
+    pub pending: PendingFriendRequestRecord,
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct FriendInviteLinkRecord {
+    token_sha256_b64: String,
+    peer_discord_id: String,
+    scope_storage_key: String,
+    created_at_unix_seconds: u64,
+    consumed_at_unix_seconds: Option<u64>,
+}
+
+#[derive(Clone, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FriendInviteLinkResult {
+    pub invite_link: String,
+    pub peer_discord_id: String,
+    pub scope_storage_key: String,
+    pub consumed: bool,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct RedeemFriendInviteLinkResult {
+    pub request: crate::friend_request::FriendRequest,
+    pub pending: PendingFriendRequestRecord,
+    pub invite_link_consumed: bool,
 }
 
 fn pending_friend_requests_path(dir: &Path) -> PathBuf {
@@ -11347,6 +11634,26 @@ fn pending_friend_requests_path(dir: &Path) -> PathBuf {
 
 fn blocked_people_path(dir: &Path) -> PathBuf {
     dir.join(BLOCKED_PEOPLE_FILE)
+fn friend_invite_links_path(dir: &Path) -> PathBuf {
+    dir.join(FRIEND_INVITE_LINKS_FILE)
+}
+
+fn friend_invite_link_hash(invite_link: &str) -> String {
+    let digest = Sha256::digest(invite_link.as_bytes());
+    STANDARD.encode(digest)
+}
+
+fn validate_friend_invite_link(invite_link: &str) -> Result<(), String> {
+    let token = invite_link
+        .strip_prefix(FRIEND_INVITE_LINK_PREFIX)
+        .ok_or_else(|| "OSL: invite link is invalid".to_string())?;
+    let decoded = URL_SAFE_NO_PAD
+        .decode(token)
+        .map_err(|_| "OSL: invite link is invalid".to_string())?;
+    if decoded.len() != 32 {
+        return Err("OSL: invite link is invalid".to_string());
+    }
+    Ok(())
 }
 
 /// A6-F2: the pending social graph — who is trying to reach the user and who
@@ -11428,6 +11735,18 @@ fn load_blocked_people(path: &Path) -> Result<Vec<BlockedPersonRecord>, String> 
     }
     if !crate::main_password::has_enc_magic(&blob) {
         save_blocked_people(path, &records)?;
+fn load_friend_invite_links(path: &Path) -> Result<Vec<FriendInviteLinkRecord>, String> {
+    let blob = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(_) => return Err("OSL: invite link storage is unavailable".to_string()),
+    };
+    let plain = crate::main_password::maybe_decrypt(&blob)
+        .map_err(|_| "OSL: invite link storage is unreadable".to_string())?;
+    let records: Vec<FriendInviteLinkRecord> = serde_json::from_slice(&plain)
+        .map_err(|_| "OSL: invite link storage is unreadable".to_string())?;
+    if !crate::main_password::has_enc_magic(&blob) {
+        save_friend_invite_links(path, &records)?;
     }
     Ok(records)
 }
@@ -11573,6 +11892,19 @@ fn clear_allowed_places_for_optional_dir(
             .map_err(|error| error.to_string())?;
     }
     Ok(())
+fn save_friend_invite_links(path: &Path, records: &[FriendInviteLinkRecord]) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|_| "OSL: invite link storage is unavailable".to_string())?;
+    }
+    let bytes = serde_json::to_vec_pretty(records)
+        .map_err(|_| "OSL: invite link storage is unavailable".to_string())?;
+    let sealed = crate::main_password::maybe_encrypt(&bytes)
+        .map_err(|_| "OSL: invite link storage is unavailable".to_string())?;
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, &sealed)
+        .map_err(|_| "OSL: invite link storage is unavailable".to_string())?;
+    std::fs::rename(&tmp, path).map_err(|_| "OSL: invite link storage is unavailable".to_string())
 }
 
 fn local_friend_authority(
@@ -11591,6 +11923,28 @@ fn local_friend_authority(
         .map_err(|e| format!("OSL: {e}"))
 }
 
+fn valid_public_osl_name(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    !bytes.is_empty()
+        && bytes.len() <= 64
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_graphic() && *byte != b'/' && *byte != b'\\')
+}
+
+fn verified_key_bundle_from_pubkeys(
+    response: &keystore::PubkeysResponse,
+) -> Result<crate::tofu::KeyBundle, String> {
+    keystore::validate_peer_bundle(response)
+        .map_err(|_| "OSL: OSL name identity bundle verification failed".to_string())?;
+    Ok(crate::tofu::KeyBundle {
+        ed25519_pub: response.ik_ed25519_pub.clone(),
+        x25519_pub: response.ik_x25519_pub.clone(),
+        mlkem768_pub: response.ik_mlkem768_pub.clone(),
+        ratchet_initial_pub: response.ik_ratchet_initial_pub.clone(),
+    })
+}
+
 fn peer_friend_authority(
     state: &AppState,
     peer_discord_id: &str,
@@ -11605,6 +11959,82 @@ fn peer_friend_authority(
     };
     crate::friend_request::VerifiedFriendAuthority::from_tofu_trusted_key_bundle(&bundle)
         .map_err(|e| format!("OSL: {e}"))
+}
+
+pub fn cmd_osl_create_friend_request_by_osl_name(
+    state: &AppState,
+    input: CreateFriendRequestByOslNameInput,
+) -> Result<CreateFriendRequestByOslNameResult, String> {
+    record_activity_on_command_entry();
+    let name = input.recipient_name.as_str();
+    if input.request_id.is_empty() || input.request_id.len() > 128 {
+        return Err("OSL: request id is invalid".to_string());
+    }
+    if !valid_public_osl_name(name) {
+        return Err("OSL: OSL name is invalid".to_string());
+    }
+    let identity = state
+        .identity_slot()
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| "OSL: identity not loaded".to_string())?;
+    let client = state
+        .keyserver_slot()
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| "OSL: keyserver not configured".to_string())?;
+    let resolved = client
+        .resolve_username(name)
+        .map_err(|_| "OSL: OSL name lookup failed".to_string())?
+        .ok_or_else(|| "OSL: unknown OSL name".to_string())?;
+    if resolved.user_id == identity.user_id {
+        return Err("OSL: cannot request yourself".to_string());
+    }
+    let pubkeys = client
+        .fetch_pubkeys(&resolved.user_id)
+        .map_err(|_| "OSL: OSL name identity lookup failed".to_string())?;
+    let ed25519_pub = STANDARD
+        .decode(&pubkeys.ik_ed25519_pub)
+        .ok()
+        .and_then(|bytes| <[u8; 32]>::try_from(bytes.as_slice()).ok())
+        .ok_or_else(|| "OSL: OSL name identity bundle verification failed".to_string())?;
+    if pubkeys.user_id != resolved.user_id || ed25519_pub != resolved.ed25519_public {
+        return Err("OSL: OSL name identity bundle verification failed".to_string());
+    }
+    let peer_bundle = verified_key_bundle_from_pubkeys(&pubkeys)?;
+
+    {
+        let mut pm = state.peer_map.lock().expect("peer_map mutex poisoned");
+        pm.insert(
+            resolved.user_id.clone(),
+            crate::peer_map::PeerEntry {
+                osl_user_id: Some(resolved.user_id.clone()),
+                pubkey: Some(peer_bundle.x25519_pub.clone()),
+                ik_mlkem768_pub: Some(peer_bundle.mlkem768_pub.clone()),
+                ik_ratchet_initial_pub: peer_bundle.ratchet_initial_pub.clone(),
+                tofu_ed25519_pub: Some(peer_bundle.ed25519_pub.clone()),
+                tofu_key_bundle: Some(peer_bundle),
+                first_seen: Some(now_unix_secs().to_string()),
+                ..Default::default()
+            },
+        );
+    }
+
+    let dir =
+        keystore::osl_config_dir().map_err(|e| format!("OSL: pending friend request dir: {e}"))?;
+    let scope = crate::scope::Scope::dm(&resolved.user_id);
+    let sent = cmd_osl_send_friend_request_with_dir(
+        state,
+        resolved.user_id.clone(),
+        (&scope).into(),
+        &dir,
+    )?;
+    Ok(CreateFriendRequestByOslNameResult {
+        request_id: input.request_id,
+        recipient_name: name.to_string(),
+        peer_osl_user_id: resolved.user_id,
+        pending: sent.pending,
+    })
 }
 
 pub fn cmd_osl_send_friend_request(
@@ -11814,6 +12244,101 @@ pub fn person_blocked(person_id: &str) -> Result<bool, String> {
     Ok(load_blocked_people(&blocked_people_path(&dir))?
         .iter()
         .any(|record| record.peer_discord_id == person_id))
+pub fn cmd_osl_create_friend_invite_link(
+    state: &AppState,
+    peer_discord_id: String,
+    scope_input: crate::scope::ScopeInput,
+) -> Result<FriendInviteLinkResult, String> {
+    record_activity_on_command_entry();
+    let dir = keystore::osl_config_dir().map_err(|e| format!("OSL: invite link dir: {e}"))?;
+    cmd_osl_create_friend_invite_link_with_dir(state, peer_discord_id, scope_input, &dir)
+}
+
+fn cmd_osl_create_friend_invite_link_with_dir(
+    state: &AppState,
+    peer_discord_id: String,
+    scope_input: crate::scope::ScopeInput,
+    dir: &Path,
+) -> Result<FriendInviteLinkResult, String> {
+    guard_friend_request_peer_binding(state, &peer_discord_id)?;
+    let scope: crate::scope::Scope = scope_input
+        .try_into()
+        .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
+    if scope.kind == crate::scope::ScopeKind::Dm && scope.id != peer_discord_id {
+        return Err("OSL: invite link scope is not bound to this peer".to_string());
+    }
+    let _peer_authority = peer_friend_authority(state, &peer_discord_id)?;
+
+    let token = URL_SAFE_NO_PAD.encode(random::random_bytes(32));
+    let invite_link = format!("{FRIEND_INVITE_LINK_PREFIX}{token}");
+    let record = FriendInviteLinkRecord {
+        token_sha256_b64: friend_invite_link_hash(&invite_link),
+        peer_discord_id: peer_discord_id.clone(),
+        scope_storage_key: scope.storage_key(),
+        created_at_unix_seconds: now_unix_secs() as u64,
+        consumed_at_unix_seconds: None,
+    };
+    let path = friend_invite_links_path(dir);
+    let mut records = load_friend_invite_links(&path)?;
+    records.push(record.clone());
+    save_friend_invite_links(&path, &records)?;
+
+    Ok(FriendInviteLinkResult {
+        invite_link,
+        peer_discord_id,
+        scope_storage_key: record.scope_storage_key,
+        consumed: false,
+    })
+}
+
+pub fn cmd_osl_redeem_friend_invite_link(
+    state: &AppState,
+    invite_link: String,
+) -> Result<RedeemFriendInviteLinkResult, String> {
+    record_activity_on_command_entry();
+    let dir =
+        keystore::osl_config_dir().map_err(|e| format!("OSL: invite link redeem dir: {e}"))?;
+    cmd_osl_redeem_friend_invite_link_with_dir(state, invite_link, &dir)
+}
+
+fn cmd_osl_redeem_friend_invite_link_with_dir(
+    state: &AppState,
+    invite_link: String,
+    dir: &Path,
+) -> Result<RedeemFriendInviteLinkResult, String> {
+    validate_friend_invite_link(&invite_link)?;
+    let invite_path = friend_invite_links_path(dir);
+    let mut invites = load_friend_invite_links(&invite_path)?;
+    let invite_hash = friend_invite_link_hash(&invite_link);
+    let invite_index = invites
+        .iter()
+        .position(|record| record.token_sha256_b64 == invite_hash)
+        .ok_or_else(|| "OSL: invite link is invalid".to_string())?;
+    if invites[invite_index].consumed_at_unix_seconds.is_some() {
+        return Err("OSL: invite link is already consumed".to_string());
+    }
+
+    let peer_discord_id = invites[invite_index].peer_discord_id.clone();
+    let scope = crate::scope::Scope::parse(&invites[invite_index].scope_storage_key)
+        .ok_or_else(|| "OSL: invite link scope is invalid".to_string())?;
+    if scope.kind == crate::scope::ScopeKind::Dm && scope.id != peer_discord_id {
+        return Err("OSL: invite link scope is not bound to this peer".to_string());
+    }
+
+    let sent = cmd_osl_send_friend_request_with_dir(
+        state,
+        peer_discord_id,
+        crate::scope::ScopeInput::from(&scope),
+        dir,
+    )?;
+    invites[invite_index].consumed_at_unix_seconds = Some(now_unix_secs() as u64);
+    save_friend_invite_links(&invite_path, &invites)?;
+
+    Ok(RedeemFriendInviteLinkResult {
+        request: sent.request,
+        pending: sent.pending,
+        invite_link_consumed: true,
+    })
 }
 
 #[cfg(test)]
@@ -11951,10 +12476,11 @@ fn adopt_friend_request_scope(
 #[cfg(test)]
 mod friend_request_acceptance_tests {
     use super::{
-        cmd_osl_accept_friend_request, cmd_osl_send_friend_request,
+        cmd_osl_accept_friend_request, cmd_osl_create_friend_invite_link_with_dir,
+        cmd_osl_redeem_friend_invite_link_with_dir, cmd_osl_send_friend_request,
         cmd_osl_send_friend_request_with_dir, cmd_osl_send_typed_friend_request_with_dir,
-        load_pending_friend_requests, pending_friend_requests_path,
-        persist_typed_friend_request_with_dir,
+        friend_invite_links_path, load_friend_invite_links, load_pending_friend_requests,
+        pending_friend_requests_path, persist_typed_friend_request_with_dir,
     };
     use crate::friend_request::{
         FriendPeer, FriendRequest, FriendScopeGrant, VerifiedFriendAuthority,
@@ -12247,6 +12773,96 @@ mod friend_request_acceptance_tests {
                 Err(err) => err,
             };
         assert_eq!(duplicate, "OSL: friend request already exists");
+    }
+
+    #[test]
+    fn cmd_osl_redeem_friend_invite_link_creates_one_pending_and_consumes_link() {
+        let _guard = crate::test_process_globals::serialize();
+        let _reset = ActiveAccountDirReset;
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        keystore::set_active_account_dir(Some(dir.path().to_path_buf()));
+        let _key = FileStorageKeyForTest::install([0x21; 32]);
+        let state = AppState::new();
+        state.install_identity(keystore::generate_identity(
+            "requester-osl-0218".to_string(),
+        ));
+        let trusted_peer = keystore::generate_identity("trusted-peer-0218".to_string());
+        let scope = Scope::dm(REQUESTER_DID);
+        state.peer_map.lock().unwrap().insert(
+            REQUESTER_DID.to_string(),
+            crate::peer_map::PeerEntry {
+                discord_id: Some(REQUESTER_DID.to_string()),
+                tofu_key_bundle: Some(identity_bundle(&trusted_peer)),
+                ..Default::default()
+            },
+        );
+
+        let link = cmd_osl_create_friend_invite_link_with_dir(
+            &state,
+            REQUESTER_DID.to_string(),
+            (&scope).into(),
+            dir.path(),
+        )
+        .expect("valid unused invite link is issued");
+        assert_eq!(
+            load_pending_friend_requests(&pending_friend_requests_path(dir.path()))
+                .expect("pending file absent is empty")
+                .len(),
+            0
+        );
+
+        let redeemed = cmd_osl_redeem_friend_invite_link_with_dir(
+            &state,
+            link.invite_link.clone(),
+            dir.path(),
+        )
+        .expect("valid unused invite link redeems into a pending request");
+
+        assert!(redeemed.request.grants_scope(&scope));
+        assert_eq!(redeemed.pending.peer_discord_id, REQUESTER_DID);
+        assert_eq!(redeemed.pending.scope_storage_key, scope.storage_key());
+        assert!(redeemed.invite_link_consumed);
+
+        let pending = load_pending_friend_requests(&pending_friend_requests_path(dir.path()))
+            .expect("pending file loads after redeem");
+        let invites = load_friend_invite_links(&friend_invite_links_path(dir.path()))
+            .expect("invite link file loads after redeem");
+        let consumed = invites
+            .iter()
+            .filter(|record| record.consumed_at_unix_seconds.is_some())
+            .count();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0], redeemed.pending);
+        assert_eq!(consumed, 1);
+
+        let duplicate = match cmd_osl_redeem_friend_invite_link_with_dir(
+            &state,
+            link.invite_link,
+            dir.path(),
+        ) {
+            Ok(_) => panic!("a consumed invite link must not redeem twice"),
+            Err(err) => err,
+        };
+        let pending_after_duplicate =
+            load_pending_friend_requests(&pending_friend_requests_path(dir.path()))
+                .expect("pending file loads after duplicate refusal");
+        let consumed_after_duplicate =
+            load_friend_invite_links(&friend_invite_links_path(dir.path()))
+                .expect("invite link file loads after duplicate refusal")
+                .iter()
+                .filter(|record| record.consumed_at_unix_seconds.is_some())
+                .count();
+
+        assert_eq!(duplicate, "OSL: invite link is already consumed");
+        assert_eq!(pending_after_duplicate.len(), 1);
+        assert_eq!(consumed_after_duplicate, 1);
+
+        println!(
+            "task_0218_pending_requests={}",
+            pending_after_duplicate.len()
+        );
+        println!("task_0218_consumed_links={consumed_after_duplicate}");
+        println!("task_0218_duplicate_redeem_error={duplicate}");
     }
 
     #[test]
@@ -15868,6 +16484,8 @@ const OSL_EXPORT_MAGIC: &[u8] = b"OSLDATA1";
 const OSL_EXPORT_FILES: &[&str] = &[
     "peer_map.json",
     "whitelist_state.json",
+    "allowed_places.json",
+    "auto_whitelist_rules.json",
     "sender_key_state.json",
     "channels.json",
     crate::burned_scopes_file::BURNED_SCOPES_FILE_NAME,
@@ -16684,6 +17302,22 @@ mod account_transfer_tests {
 
     #[test]
     fn task_0458_second_device_package_restores_identity_key_and_marked_conversation() {
+    fn task_0460_identity_fingerprint(identity: &keystore::Identity) -> String {
+        let mut hash = Sha256::new();
+        hash.update(b"osl-task-0460-identity-fingerprint-v1");
+        hash.update(identity.ed25519_public.as_bytes());
+        hash.update(identity.x25519_public.as_bytes());
+        let digest = hash.finalize();
+        let mut out = String::from("sha256:");
+        for byte in digest {
+            use std::fmt::Write as _;
+            let _ = write!(out, "{byte:02x}");
+        }
+        out
+    }
+
+    #[test]
+    fn task_0459_restore_test_package_on_clean_profile_b() {
         let _serial = crate::test_process_globals::serialize();
         let _reset = FileKeyReset;
         crate::main_password::set_file_storage_key(None);
@@ -16697,6 +17331,16 @@ mod account_transfer_tests {
         let source_dir = TempDir::new().unwrap();
         let restored_dir = TempDir::new().unwrap();
         let entropy = [45; 16];
+        const SOURCE_PROFILE: &str = "test-profile-A";
+        const CLEAN_PROFILE_B: &str = "test-profile-B";
+        const ACCOUNT: &str = "task0459-clean-profile-account";
+        const CONVERSATION: &str = "TASK0459-RESTORED-CONVERSATION";
+        const MESSAGE_ID: &str = "task0459-message-0001";
+        const MESSAGE_TEXT: &str = "TASK0459 clean profile B reads this restored package message";
+
+        let source_dir = TempDir::new().unwrap();
+        let profile_b_dir = TempDir::new().unwrap();
+        let entropy = [59; 16];
         let phrase = bip39::Mnemonic::from_entropy_in(bip39::Language::English, &entropy)
             .unwrap()
             .to_string();
@@ -16796,11 +17440,107 @@ mod account_transfer_tests {
             "TASK0458_CONVERSATION_EXACT_MATCH={}",
             restored_message.channel_id == CONVERSATION_NAME
                 && restored_message.plaintext == MESSAGE_TEXT
+            let identity = identity.as_mut().expect("source identity installed");
+            identity.user_id = ACCOUNT.to_owned();
+            identity.discord_snowflake = Some(ACCOUNT.to_owned());
+        }
+        let source_identity = source_state.identity_slot().as_ref().unwrap().clone();
+        let expected_identity_key = STANDARD.encode(source_identity.ed25519_public.as_bytes());
+        let source_secret = *source_identity.x25519_secret.as_bytes();
+
+        {
+            let source_store =
+                MessageStore::open(&source_dir.path().join("store"), &source_secret).unwrap();
+            source_store
+                .put(&StoredMessage {
+                    discord_message_id: MESSAGE_ID.to_owned(),
+                    channel_id: CONVERSATION.to_owned(),
+                    sender_discord_id: ACCOUNT.to_owned(),
+                    sender_osl_user_id: ACCOUNT.to_owned(),
+                    plaintext: MESSAGE_TEXT.to_owned(),
+                    decrypted_at: 459,
+                    burned: false,
+                })
+                .unwrap();
+        }
+
+        let package = cmd_osl_export_data_with_dir(&source_state, source_dir.path())
+            .expect("profile A exports a restorable package");
+        assert!(
+            !profile_b_dir.path().join("store/messages.sqlite").exists(),
+            "profile B must start clean, without a preexisting message store"
+        );
+
+        let profile_b_state = AppState::new();
+        let mut placeholder = keystore::generate_identity("task0459-profile-b-placeholder".into());
+        placeholder.discord_snowflake = Some(ACCOUNT.to_owned());
+        profile_b_state.install_identity(placeholder);
+
+        cmd_osl_recover_account_from_export_with_dir(
+            &profile_b_state,
+            package.clone(),
+            phrase,
+            profile_b_dir.path(),
+        )
+        .expect("direct restore command imports the package into clean profile B");
+
+        let unlocked_state = AppState::new();
+        let unlock_response = cmd_load_identity(
+            &unlocked_state,
+            profile_b_dir
+                .path()
+                .join("identity.json")
+                .display()
+                .to_string(),
+        )
+        .expect("profile B unlocks by loading restored identity.json");
+        let unlocked_identity = unlocked_state.identity_slot().as_ref().unwrap().clone();
+        let restored_identity_key = STANDARD.encode(unlocked_identity.ed25519_public.as_bytes());
+        assert_eq!(restored_identity_key, expected_identity_key);
+
+        let restored_store = MessageStore::open(
+            &profile_b_dir.path().join("store"),
+            unlocked_identity.x25519_secret.as_bytes(),
+        )
+        .expect("profile B opens restored message store with restored identity key");
+        let restored_rows = restored_store
+            .list_by_channel(CONVERSATION, 10)
+            .expect("profile B reads restored conversation");
+        assert_eq!(restored_rows.len(), 1);
+        assert_eq!(restored_rows[0].discord_message_id, MESSAGE_ID);
+        assert_eq!(restored_rows[0].plaintext, MESSAGE_TEXT);
+
+        println!("TASK0459_SOURCE_PROFILE={SOURCE_PROFILE}");
+        println!("TASK0459_CLEAN_PROFILE={CLEAN_PROFILE_B}");
+        println!("TASK0459_DIRECT_RESTORE_COMMAND=cmd_osl_recover_account_from_export_with_dir");
+        println!("TASK0459_PROFILE_B_CLEAN_STORE_BEFORE=false");
+        println!("TASK0459_PACKAGE_BYTES={}", package.len());
+        println!("TASK0459_PROFILE_B_UNLOCKED=true");
+        println!("TASK0459_UNLOCKED_USER_ID={}", unlock_response.user_id);
+        println!("TASK0459_EXPECTED_IDENTITY_KEY={expected_identity_key}");
+        println!("TASK0459_PROFILE_B_IDENTITY_KEY={restored_identity_key}");
+        println!(
+            "TASK0459_IDENTITY_KEY_MATCH={}",
+            restored_identity_key == expected_identity_key
+        );
+        println!("TASK0459_EXPECTED_CONVERSATION_COUNT=1");
+        println!(
+            "TASK0459_PROFILE_B_CONVERSATION_COUNT={}",
+            restored_rows.len()
+        );
+        println!(
+            "TASK0459_RESTORED_CONVERSATION={}",
+            restored_rows[0].channel_id
+        );
+        println!(
+            "TASK0459_RESTORED_MESSAGE_TEXT={}",
+            restored_rows[0].plaintext
         );
     }
 
     #[test]
     fn task_0458_second_device_package_restores_identity_key_and_marked_conversation() {
+    fn task_0460_compare_restored_identity_on_two_profiles() {
         let _serial = crate::test_process_globals::serialize();
         let _reset = FileKeyReset;
         crate::main_password::set_file_storage_key(None);
@@ -16814,6 +17554,209 @@ mod account_transfer_tests {
         let source_dir = TempDir::new().unwrap();
         let restored_dir = TempDir::new().unwrap();
         let entropy = [45; 16];
+        const PROFILE_A: &str = "test-profile-A";
+        const PROFILE_B: &str = "test-profile-B";
+        const ACCOUNT: &str = "task0460-restored-identity-account";
+        const OLD_CONVERSATION: &str = "TASK0460-OLD-CONVERSATION";
+        const OLD_MESSAGE_ID: &str = "task0460-old-message-0001";
+        const OLD_MESSAGE_TEXT: &str = "TASK0460 old conversation survives on both profiles";
+
+        let profile_a_dir = TempDir::new().unwrap();
+        let profile_b_dir = TempDir::new().unwrap();
+        let entropy = [60; 16];
+        let phrase = bip39::Mnemonic::from_entropy_in(bip39::Language::English, &entropy)
+            .unwrap()
+            .to_string();
+
+        let profile_a_state = state_with_entropy(entropy);
+        {
+            let mut identity = profile_a_state.identity_slot();
+            let identity = identity.as_mut().expect("profile A identity installed");
+            identity.user_id = ACCOUNT.to_owned();
+            identity.discord_snowflake = Some(ACCOUNT.to_owned());
+        }
+        cmd_save_identity(
+            &profile_a_state,
+            profile_a_dir
+                .path()
+                .join("identity.json")
+                .display()
+                .to_string(),
+        )
+        .expect("profile A saves identity.json for later unlock");
+        let profile_a_secret = *profile_a_state
+            .identity_slot()
+            .as_ref()
+            .expect("profile A identity remains installed")
+            .x25519_secret
+            .as_bytes();
+
+        {
+            let profile_a_store =
+                MessageStore::open(&profile_a_dir.path().join("store"), &profile_a_secret).unwrap();
+            profile_a_store
+                .put(&StoredMessage {
+                    discord_message_id: OLD_MESSAGE_ID.to_owned(),
+                    channel_id: OLD_CONVERSATION.to_owned(),
+                    sender_discord_id: ACCOUNT.to_owned(),
+                    sender_osl_user_id: ACCOUNT.to_owned(),
+                    plaintext: OLD_MESSAGE_TEXT.to_owned(),
+                    decrypted_at: 460,
+                    burned: false,
+                })
+                .unwrap();
+        }
+
+        let package = cmd_osl_export_data_with_dir(&profile_a_state, profile_a_dir.path())
+            .expect("profile A exports a restorable account package");
+
+        let profile_b_restore_state = AppState::new();
+        let mut placeholder = keystore::generate_identity("task0460-profile-b-placeholder".into());
+        placeholder.discord_snowflake = Some(ACCOUNT.to_owned());
+        profile_b_restore_state.install_identity(placeholder);
+        cmd_osl_recover_account_from_export_with_dir(
+            &profile_b_restore_state,
+            package,
+            phrase,
+            profile_b_dir.path(),
+        )
+        .expect("profile B restores profile A account package");
+
+        let profile_a_unlocked = AppState::new();
+        let profile_a_unlock = cmd_load_identity(
+            &profile_a_unlocked,
+            profile_a_dir
+                .path()
+                .join("identity.json")
+                .display()
+                .to_string(),
+        )
+        .expect("profile A still unlocks");
+        let profile_a_identity = profile_a_unlocked
+            .identity_slot()
+            .as_ref()
+            .expect("profile A unlocked identity installed")
+            .clone();
+
+        let profile_b_unlocked = AppState::new();
+        let profile_b_unlock = cmd_load_identity(
+            &profile_b_unlocked,
+            profile_b_dir
+                .path()
+                .join("identity.json")
+                .display()
+                .to_string(),
+        )
+        .expect("profile B still unlocks");
+        let profile_b_identity = profile_b_unlocked
+            .identity_slot()
+            .as_ref()
+            .expect("profile B unlocked identity installed")
+            .clone();
+
+        let profile_a_fingerprint = task_0460_identity_fingerprint(&profile_a_identity);
+        let profile_b_fingerprint = task_0460_identity_fingerprint(&profile_b_identity);
+        assert_eq!(profile_a_fingerprint, profile_b_fingerprint);
+
+        let profile_a_store = MessageStore::open(
+            &profile_a_dir.path().join("store"),
+            profile_a_identity.x25519_secret.as_bytes(),
+        )
+        .expect("profile A opens old conversation store after unlock");
+        let profile_b_store = MessageStore::open(
+            &profile_b_dir.path().join("store"),
+            profile_b_identity.x25519_secret.as_bytes(),
+        )
+        .expect("profile B opens restored old conversation store after unlock");
+        let profile_a_rows = profile_a_store
+            .list_by_channel(OLD_CONVERSATION, 10)
+            .expect("profile A reads old conversation");
+        let profile_b_rows = profile_b_store
+            .list_by_channel(OLD_CONVERSATION, 10)
+            .expect("profile B reads old conversation");
+        assert_eq!(profile_a_rows.len(), 1);
+        assert_eq!(profile_b_rows.len(), 1);
+        assert_eq!(profile_a_rows[0].discord_message_id, OLD_MESSAGE_ID);
+        assert_eq!(profile_b_rows[0].discord_message_id, OLD_MESSAGE_ID);
+        assert_eq!(profile_a_rows[0].plaintext, OLD_MESSAGE_TEXT);
+        assert_eq!(profile_b_rows[0].plaintext, OLD_MESSAGE_TEXT);
+
+        println!("TASK0460_PROFILE_A={PROFILE_A}");
+        println!("TASK0460_PROFILE_B={PROFILE_B}");
+        println!("TASK0460_PROFILE_A_UNLOCKED=true");
+        println!("TASK0460_PROFILE_B_UNLOCKED=true");
+        println!(
+            "TASK0460_PROFILE_A_UNLOCKED_USER_ID={}",
+            profile_a_unlock.user_id
+        );
+        println!(
+            "TASK0460_PROFILE_B_UNLOCKED_USER_ID={}",
+            profile_b_unlock.user_id
+        );
+        println!("TASK0460_PROFILE_A_IDENTITY_FINGERPRINT={profile_a_fingerprint}");
+        println!("TASK0460_PROFILE_B_IDENTITY_FINGERPRINT={profile_b_fingerprint}");
+        println!(
+            "TASK0460_FINGERPRINTS_MATCH={}",
+            profile_a_fingerprint == profile_b_fingerprint
+        );
+        println!("TASK0460_OLD_CONVERSATION_ID={OLD_CONVERSATION}");
+        println!(
+            "TASK0460_PROFILE_A_OLD_CONVERSATION_COUNT={}",
+            profile_a_rows.len()
+        );
+        println!(
+            "TASK0460_PROFILE_B_OLD_CONVERSATION_COUNT={}",
+            profile_b_rows.len()
+        );
+        println!(
+            "TASK0460_PROFILE_A_OLD_CONVERSATION_PRESENT={}",
+            !profile_a_rows.is_empty()
+        );
+        println!(
+            "TASK0460_PROFILE_B_OLD_CONVERSATION_PRESENT={}",
+            !profile_b_rows.is_empty()
+        );
+        println!(
+            "TASK0460_OLD_CONVERSATION_PRESENT_ON_BOTH={}",
+            !profile_a_rows.is_empty() && !profile_b_rows.is_empty()
+        );
+        println!(
+            "TASK0460_PROFILE_A_OLD_MESSAGE_ID={}",
+            profile_a_rows[0].discord_message_id
+        );
+        println!(
+            "TASK0460_PROFILE_B_OLD_MESSAGE_ID={}",
+            profile_b_rows[0].discord_message_id
+        );
+        println!(
+            "TASK0460_PROFILE_A_OLD_MESSAGE_TEXT={}",
+            profile_a_rows[0].plaintext
+        );
+        println!(
+            "TASK0460_PROFILE_B_OLD_MESSAGE_TEXT={}",
+            profile_b_rows[0].plaintext
+        );
+    }
+
+    #[test]
+    fn task_1371_second_machine_restore_fetches_exact_prior_chat_history() {
+        let _serial = crate::test_process_globals::serialize();
+        let _reset = FileKeyReset;
+        crate::main_password::set_file_storage_key(None);
+
+        const SOURCE_MACHINE: &str = "task1371-machine-a";
+        const SECOND_MACHINE: &str = "task1371-machine-b";
+        const ACCOUNT: &str = "task1371-restored-chat-identity";
+        const CONVERSATION: &str = "TASK1371-RESTORED-CHAT-HISTORY";
+        const OLDER_MESSAGE_ID: &str = "task1371-message-0001";
+        const NEWER_MESSAGE_ID: &str = "task1371-message-0002";
+        const OLDER_MESSAGE: &str = "TASK1371 earlier message alpha";
+        const NEWER_MESSAGE: &str = "TASK1371 earlier message beta";
+        const EXPECTED_MESSAGES_NEWEST_FIRST: [&str; 2] = [NEWER_MESSAGE, OLDER_MESSAGE];
+
+        let source_dir = TempDir::new().unwrap();
+        let second_machine_dir = TempDir::new().unwrap();
+        let entropy = [137u8; 16];
         let phrase = bip39::Mnemonic::from_entropy_in(bip39::Language::English, &entropy)
             .unwrap()
             .to_string();
@@ -16907,6 +17850,145 @@ mod account_transfer_tests {
             "TASK0458_CONVERSATION_EXACT_MATCH={}",
             restored_message.channel_id == CONVERSATION_NAME
                 && restored_message.plaintext == MESSAGE_TEXT
+            let identity = identity.as_mut().expect("source identity installed");
+            identity.user_id = ACCOUNT.to_owned();
+            identity.discord_snowflake = Some(ACCOUNT.to_owned());
+        }
+        let source_identity = source_state
+            .identity_slot()
+            .as_ref()
+            .expect("source identity remains installed")
+            .clone();
+        let expected_identity_key = STANDARD.encode(source_identity.ed25519_public.as_bytes());
+        let source_secret = *source_identity.x25519_secret.as_bytes();
+
+        {
+            let source_store =
+                MessageStore::open(&source_dir.path().join("store"), &source_secret).unwrap();
+            source_store
+                .put(&StoredMessage {
+                    discord_message_id: OLDER_MESSAGE_ID.to_owned(),
+                    channel_id: CONVERSATION.to_owned(),
+                    sender_discord_id: ACCOUNT.to_owned(),
+                    sender_osl_user_id: ACCOUNT.to_owned(),
+                    plaintext: OLDER_MESSAGE.to_owned(),
+                    decrypted_at: 1_371_001,
+                    burned: false,
+                })
+                .unwrap();
+            source_store
+                .put(&StoredMessage {
+                    discord_message_id: NEWER_MESSAGE_ID.to_owned(),
+                    channel_id: CONVERSATION.to_owned(),
+                    sender_discord_id: ACCOUNT.to_owned(),
+                    sender_osl_user_id: ACCOUNT.to_owned(),
+                    plaintext: NEWER_MESSAGE.to_owned(),
+                    decrypted_at: 1_371_002,
+                    burned: false,
+                })
+                .unwrap();
+        }
+        let source_store = MessageStore::open(&source_dir.path().join("store"), &source_secret)
+            .expect("source machine reopens existing chat store");
+        let source_rows = source_store
+            .list_by_channel(CONVERSATION, 10)
+            .expect("source machine reads existing chat history before export");
+        let source_messages: Vec<&str> = source_rows
+            .iter()
+            .map(|row| row.plaintext.as_str())
+            .collect();
+        assert_eq!(source_messages, EXPECTED_MESSAGES_NEWEST_FIRST);
+        drop(source_store);
+
+        let package = cmd_osl_export_data_with_dir(&source_state, source_dir.path())
+            .expect("source machine exports restorable chat identity and history");
+        assert!(
+            !second_machine_dir
+                .path()
+                .join("store/messages.sqlite")
+                .exists(),
+            "second machine starts without this chat history"
+        );
+
+        let restore_state = AppState::new();
+        let mut placeholder =
+            keystore::generate_identity("task1371-second-machine-placeholder".into());
+        placeholder.discord_snowflake = Some(ACCOUNT.to_owned());
+        restore_state.install_identity(placeholder);
+        cmd_osl_recover_account_from_export_with_dir(
+            &restore_state,
+            package,
+            phrase,
+            second_machine_dir.path(),
+        )
+        .expect("second machine restores the exported chat identity");
+
+        let restored_state = AppState::new();
+        let unlock_response = cmd_load_identity(
+            &restored_state,
+            second_machine_dir
+                .path()
+                .join("identity.json")
+                .display()
+                .to_string(),
+        )
+        .expect("second machine unlocks restored identity");
+        let restored_identity = restored_state
+            .identity_slot()
+            .as_ref()
+            .expect("restored identity installed after unlock")
+            .clone();
+        let restored_identity_key = STANDARD.encode(restored_identity.ed25519_public.as_bytes());
+        assert_eq!(restored_identity_key, expected_identity_key);
+
+        let restored_store = MessageStore::open(
+            &second_machine_dir.path().join("store"),
+            restored_identity.x25519_secret.as_bytes(),
+        )
+        .expect("second machine opens restored message store with restored identity key");
+        *restored_state.message_store.lock().unwrap() = Some(restored_store);
+        let restored_rows =
+            cmd_osl_load_channel_history(&restored_state, CONVERSATION.to_owned(), Some(10))
+                .expect("second machine fetches restored chat history");
+        let restored_messages: Vec<&str> = restored_rows
+            .iter()
+            .map(|row| row.plaintext.as_str())
+            .collect();
+        let restored_ids: Vec<&str> = restored_rows
+            .iter()
+            .map(|row| row.discord_message_id.as_str())
+            .collect();
+        assert_eq!(restored_messages, EXPECTED_MESSAGES_NEWEST_FIRST);
+        assert_eq!(
+            restored_ids,
+            vec![NEWER_MESSAGE_ID, OLDER_MESSAGE_ID],
+            "history fetch must return the exact earlier rows, newest first"
+        );
+
+        println!("TASK1371_SOURCE_MACHINE={SOURCE_MACHINE}");
+        println!("TASK1371_SECOND_MACHINE={SECOND_MACHINE}");
+        println!("TASK1371_RESTORE_COMMAND=cmd_osl_recover_account_from_export_with_dir");
+        println!("TASK1371_HISTORY_FETCH_COMMAND=cmd_osl_load_channel_history");
+        println!("TASK1371_SECOND_MACHINE_CLEAN_STORE_BEFORE=false");
+        println!("TASK1371_UNLOCKED_USER_ID={}", unlock_response.user_id);
+        println!("TASK1371_EXPECTED_IDENTITY_KEY={expected_identity_key}");
+        println!("TASK1371_SECOND_MACHINE_IDENTITY_KEY={restored_identity_key}");
+        println!(
+            "TASK1371_RESTORED_IDENTITY_MATCH={}",
+            restored_identity_key == expected_identity_key
+        );
+        println!("TASK1371_SOURCE_HISTORY_COUNT={}", source_messages.len());
+        println!(
+            "TASK1371_SECOND_MACHINE_HISTORY_COUNT={}",
+            restored_messages.len()
+        );
+        println!("TASK1371_EXPECTED_MESSAGE_1={NEWER_MESSAGE}");
+        println!("TASK1371_EXPECTED_MESSAGE_2={OLDER_MESSAGE}");
+        println!("TASK1371_SECOND_MACHINE_MESSAGE_1={}", restored_messages[0]);
+        println!("TASK1371_SECOND_MACHINE_MESSAGE_2={}", restored_messages[1]);
+        println!(
+            "TASK1371_EXACT_MESSAGES_MATCH={}",
+            restored_messages == EXPECTED_MESSAGES_NEWEST_FIRST
         );
     }
 
@@ -18062,11 +19144,480 @@ pub fn cmd_osl_membership_update(
 /// genuinely empty).
 pub fn cmd_osl_membership_get(state: &AppState, channel_id: String) -> Result<Vec<String>, String> {
     record_activity_on_command_entry();
-    let g = state
-        .channel_members
+    let cached = {
+        let g = state
+            .channel_members
+            .lock()
+            .expect("channel_members mutex poisoned");
+        g.get(&channel_id).cloned()
+    };
+    if let Some(members) = cached {
+        return Ok(members);
+    }
+    let durable = state
+        .scope_membership
         .lock()
-        .expect("channel_members mutex poisoned");
-    Ok(g.get(&channel_id).cloned().unwrap_or_default())
+        .expect("scope_membership mutex poisoned")
+        .members_for_key(&crate::membership::gc_key(&channel_id));
+    Ok(durable)
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct ChannelMessageThreadDto {
+    pub thread_id: String,
+    pub channel_id: String,
+    pub parent_message_id: String,
+    pub channel_message_count: usize,
+    pub thread_count: usize,
+    pub parent_thread_count: usize,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct ChannelMessageDto {
+    pub message_id: String,
+    pub channel_id: String,
+    pub thread_ids: Vec<String>,
+    pub thread_count: usize,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct OpenedChannelMessageThreadDto {
+    pub thread_id: String,
+    pub channel_id: String,
+    pub parent_message_id: String,
+    pub parent_message: ChannelMessageDto,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct ServerChannelMessageDto {
+    pub server_id: String,
+    pub channel_id: String,
+    pub message_id: String,
+    pub plaintext: String,
+    pub channel_message_count: usize,
+}
+
+/// Store one first-party OSL Chats message under an explicitly selected server
+/// channel.
+///
+/// The server/channel pair is checked against the discovered guild snapshot
+/// before any message id is inspected, so replaying a send while changing only
+/// the server cannot overwrite a valid message in the original channel.
+pub fn cmd_osl_post_server_channel_message(
+    state: &AppState,
+    server_id: String,
+    channel_id: String,
+    message_id: String,
+    plaintext: String,
+) -> Result<ServerChannelMessageDto, String> {
+    record_activity_on_command_entry();
+    let server_id = normalize_channel_thread_field("server_id", server_id)?;
+    let channel_id = normalize_channel_thread_field("channel_id", channel_id)?;
+    let message_id = normalize_channel_thread_field("message_id", message_id)?;
+    let plaintext = normalize_server_channel_plaintext(plaintext)?;
+    require_known_server_channel(state, &server_id, &channel_id)?;
+
+    let mut messages = state
+        .channel_messages
+        .lock()
+        .expect("channel_messages mutex poisoned");
+
+    match messages.get_mut(&message_id) {
+        Some(existing) => {
+            if existing
+                .server_id
+                .as_deref()
+                .is_some_and(|known| known != server_id)
+                || existing.channel_id != channel_id
+            {
+                return Err(format!(
+                    "OSL: message '{}' already belongs to server '{}' channel '{}'",
+                    message_id,
+                    existing.server_id.as_deref().unwrap_or("<unknown>"),
+                    existing.channel_id
+                ));
+            }
+            existing.server_id = Some(server_id.clone());
+            existing.plaintext = Some(plaintext.clone());
+        }
+        None => {
+            messages.insert(
+                message_id.clone(),
+                crate::state::ChannelMessageRecord {
+                    server_id: Some(server_id.clone()),
+                    message_id: message_id.clone(),
+                    channel_id: channel_id.clone(),
+                    plaintext: Some(plaintext.clone()),
+                    thread_ids: Vec::new(),
+                },
+            );
+        }
+    }
+
+    Ok(ServerChannelMessageDto {
+        channel_message_count: count_server_channel_messages(&messages, &server_id, &channel_id),
+        server_id,
+        channel_id,
+        message_id,
+        plaintext,
+    })
+}
+
+/// Read one stored first-party OSL Chats server-channel message.
+pub fn cmd_osl_read_server_channel_message(
+    state: &AppState,
+    server_id: String,
+    channel_id: String,
+    message_id: String,
+) -> Result<ServerChannelMessageDto, String> {
+    record_activity_on_command_entry();
+    let server_id = normalize_channel_thread_field("server_id", server_id)?;
+    let channel_id = normalize_channel_thread_field("channel_id", channel_id)?;
+    let message_id = normalize_channel_thread_field("message_id", message_id)?;
+    require_known_server_channel(state, &server_id, &channel_id)?;
+
+    let messages = state
+        .channel_messages
+        .lock()
+        .expect("channel_messages mutex poisoned");
+    let message = messages
+        .get(&message_id)
+        .ok_or_else(|| format!("OSL: message '{message_id}' does not exist"))?;
+    if message.server_id.as_deref() != Some(server_id.as_str()) || message.channel_id != channel_id
+    {
+        return Err(format!(
+            "OSL: message '{}' does not belong to server '{}' channel '{}'",
+            message_id, server_id, channel_id
+        ));
+    }
+    let plaintext = message
+        .plaintext
+        .clone()
+        .ok_or_else(|| format!("OSL: message '{message_id}' has no stored plaintext"))?;
+
+    Ok(ServerChannelMessageDto {
+        channel_message_count: count_server_channel_messages(&messages, &server_id, &channel_id),
+        server_id,
+        channel_id,
+        message_id,
+        plaintext,
+    })
+}
+
+/// Count stored first-party OSL Chats messages under one server channel.
+pub fn cmd_osl_count_server_channel_messages(
+    state: &AppState,
+    server_id: String,
+    channel_id: String,
+) -> Result<usize, String> {
+    record_activity_on_command_entry();
+    let server_id = normalize_channel_thread_field("server_id", server_id)?;
+    let channel_id = normalize_channel_thread_field("channel_id", channel_id)?;
+    require_known_server_channel(state, &server_id, &channel_id)?;
+
+    let messages = state
+        .channel_messages
+        .lock()
+        .expect("channel_messages mutex poisoned");
+    Ok(count_server_channel_messages(
+        &messages,
+        &server_id,
+        &channel_id,
+    ))
+}
+
+/// Create one local thread attached to a parent channel message.
+///
+/// The parent message is recorded in the same command so the thread cannot
+/// exist without both the parent message id and the channel id that own it.
+pub fn cmd_osl_create_channel_message_thread(
+    state: &AppState,
+    channel_id: String,
+    parent_message_id: String,
+    thread_id: String,
+) -> Result<ChannelMessageThreadDto, String> {
+    record_activity_on_command_entry();
+    let channel_id = normalize_channel_thread_field("channel_id", channel_id)?;
+    let parent_message_id = normalize_channel_thread_field("parent_message_id", parent_message_id)?;
+    let thread_id = normalize_channel_thread_field("thread_id", thread_id)?;
+
+    let mut messages = state
+        .channel_messages
+        .lock()
+        .expect("channel_messages mutex poisoned");
+    let mut threads = state
+        .channel_threads
+        .lock()
+        .expect("channel_threads mutex poisoned");
+
+    let parent = messages
+        .entry(parent_message_id.clone())
+        .or_insert_with(|| crate::state::ChannelMessageRecord {
+            server_id: None,
+            message_id: parent_message_id.clone(),
+            channel_id: channel_id.clone(),
+            plaintext: None,
+            thread_ids: Vec::new(),
+        });
+    if parent.channel_id != channel_id {
+        return Err(format!(
+            "OSL: parent message '{}' belongs to channel '{}', not '{}'",
+            parent_message_id, parent.channel_id, channel_id
+        ));
+    }
+
+    match threads.get(&thread_id) {
+        Some(existing)
+            if existing.channel_id == channel_id
+                && existing.parent_message_id == parent_message_id => {}
+        Some(existing) => {
+            return Err(format!(
+                "OSL: thread '{}' already belongs to channel '{}' parent '{}'",
+                thread_id, existing.channel_id, existing.parent_message_id
+            ));
+        }
+        None => {
+            threads.insert(
+                thread_id.clone(),
+                crate::state::ChannelThreadRecord {
+                    thread_id: thread_id.clone(),
+                    channel_id: channel_id.clone(),
+                    parent_message_id: parent_message_id.clone(),
+                },
+            );
+        }
+    }
+
+    if !parent.thread_ids.iter().any(|id| id == &thread_id) {
+        parent.thread_ids.push(thread_id.clone());
+    }
+    let parent_thread_count = parent.thread_ids.len();
+    let channel_message_count = messages
+        .values()
+        .filter(|message| message.channel_id == channel_id)
+        .count();
+    let thread_count = threads
+        .values()
+        .filter(|thread| thread.channel_id == channel_id)
+        .count();
+
+    Ok(ChannelMessageThreadDto {
+        thread_id,
+        channel_id,
+        parent_message_id,
+        channel_message_count,
+        thread_count,
+        parent_thread_count,
+    })
+}
+
+/// Open one local channel-message thread and return the parent message that
+/// owns it.
+pub fn cmd_osl_open_channel_message_thread(
+    state: &AppState,
+    thread_id: String,
+) -> Result<OpenedChannelMessageThreadDto, String> {
+    record_activity_on_command_entry();
+    let thread_id = normalize_channel_thread_field("thread_id", thread_id)?;
+
+    let threads = state
+        .channel_threads
+        .lock()
+        .expect("channel_threads mutex poisoned");
+    let thread = threads
+        .get(&thread_id)
+        .cloned()
+        .ok_or_else(|| format!("OSL: thread '{thread_id}' does not exist"))?;
+    drop(threads);
+
+    let messages = state
+        .channel_messages
+        .lock()
+        .expect("channel_messages mutex poisoned");
+    let parent = messages
+        .get(&thread.parent_message_id)
+        .cloned()
+        .ok_or_else(|| {
+            format!(
+                "OSL: parent message '{}' for thread '{}' does not exist",
+                thread.parent_message_id, thread.thread_id
+            )
+        })?;
+    if parent.channel_id != thread.channel_id {
+        return Err(format!(
+            "OSL: parent message '{}' belongs to channel '{}', not '{}'",
+            parent.message_id, parent.channel_id, thread.channel_id
+        ));
+    }
+    if !parent.thread_ids.iter().any(|id| id == &thread.thread_id) {
+        return Err(format!(
+            "OSL: parent message '{}' does not list thread '{}'",
+            parent.message_id, thread.thread_id
+        ));
+    }
+
+    Ok(OpenedChannelMessageThreadDto {
+        thread_id: thread.thread_id,
+        channel_id: thread.channel_id,
+        parent_message_id: parent.message_id.clone(),
+        parent_message: ChannelMessageDto {
+            thread_count: parent.thread_ids.len(),
+            message_id: parent.message_id,
+            channel_id: parent.channel_id,
+            thread_ids: parent.thread_ids,
+        },
+    })
+}
+
+fn normalize_channel_thread_field(field: &str, value: String) -> Result<String, String> {
+    let value = value.trim();
+    if value.is_empty() || value.len() > 160 || value.chars().any(char::is_control) {
+        return Err(format!("OSL: invalid {field}"));
+    }
+    Ok(value.to_owned())
+}
+
+fn normalize_server_channel_plaintext(value: String) -> Result<String, String> {
+    if value.is_empty() || value.len() > 4096 {
+        return Err("OSL: invalid server-channel message plaintext".to_owned());
+    }
+    Ok(value)
+}
+
+fn require_known_server_channel(
+    state: &AppState,
+    server_id: &str,
+    channel_id: &str,
+) -> Result<(), String> {
+    let guilds = state.guild_list.lock().expect("guild_list mutex poisoned");
+    let channel_belongs_to_server = guilds
+        .iter()
+        .find(|guild| guild.id == server_id)
+        .is_some_and(|guild| guild.channel_ids.iter().any(|known| known == channel_id));
+    if !channel_belongs_to_server {
+        return Err(format!(
+            "OSL: channel '{channel_id}' does not belong to server '{server_id}'"
+        ));
+    }
+    Ok(())
+}
+
+fn count_server_channel_messages(
+    messages: &std::collections::HashMap<String, crate::state::ChannelMessageRecord>,
+    server_id: &str,
+    channel_id: &str,
+) -> usize {
+    messages
+        .values()
+        .filter(|message| {
+            message.server_id.as_deref() == Some(server_id) && message.channel_id == channel_id
+        })
+        .count()
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct NamedGroupConversationDto {
+    pub name: String,
+    pub group_id: String,
+    pub scope: crate::scope::ScopeInput,
+    pub member_ids: Vec<String>,
+    pub member_count: usize,
+}
+
+/// Create a first-party named group conversation and seed its membership oracle.
+///
+/// The command requires at least three distinct member ids. It writes both the
+/// durable GC membership view and the in-memory channel snapshot that group
+/// sends already consult, so later send paths resolve the same member set.
+pub fn cmd_osl_create_group_conversation(
+    state: &AppState,
+    name: String,
+    member_ids: Vec<String>,
+) -> Result<NamedGroupConversationDto, String> {
+    record_activity_on_command_entry();
+    let name = normalize_group_name(name)?;
+    let member_ids = normalize_group_member_ids(member_ids)?;
+    let group_id = named_group_id(&name, &member_ids);
+    {
+        let mut membership = state
+            .scope_membership
+            .lock()
+            .expect("scope_membership mutex poisoned");
+        membership.note_gc_members(&group_id, member_ids.iter());
+    }
+    {
+        let mut channel_members = state
+            .channel_members
+            .lock()
+            .expect("channel_members mutex poisoned");
+        channel_members.insert(group_id.clone(), member_ids.clone());
+    }
+    persist_scope_membership_now(state);
+    let scope = crate::scope::Scope::gc(group_id.clone());
+    Ok(NamedGroupConversationDto {
+        name,
+        group_id,
+        scope: (&scope).into(),
+        member_count: member_ids.len(),
+        member_ids,
+    })
+}
+
+fn normalize_group_name(name: String) -> Result<String, String> {
+    let name = name.trim();
+    if name.is_empty() || name.len() > 80 || name.chars().any(char::is_control) {
+        return Err("OSL: group conversation name is invalid".to_owned());
+    }
+    Ok(name.to_owned())
+}
+
+fn normalize_group_member_ids(member_ids: Vec<String>) -> Result<Vec<String>, String> {
+    let mut normalized = Vec::with_capacity(member_ids.len());
+    for member_id in member_ids {
+        let member_id = member_id.trim();
+        if member_id.is_empty()
+            || member_id.len() > 160
+            || member_id.chars().any(|character| {
+                !(character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.' | ':'))
+            })
+        {
+            return Err("OSL: group member id is invalid".to_owned());
+        }
+        normalized.push(member_id.to_owned());
+    }
+    let supplied_count = normalized.len();
+    normalized.sort();
+    normalized.dedup();
+    if normalized.len() != supplied_count {
+        return Err("OSL: group conversations require distinct members".to_owned());
+    }
+    if normalized.len() < 3 {
+        return Err("OSL: group conversations require at least three members".to_owned());
+    }
+    Ok(normalized)
+}
+
+fn named_group_id(name: &str, member_ids: &[String]) -> String {
+    let mut hash = Sha256::new();
+    hash.update(b"OSL/named-group-conversation/v1");
+    hash.update((name.len() as u64).to_le_bytes());
+    hash.update(name.as_bytes());
+    for member_id in member_ids {
+        hash.update((member_id.len() as u64).to_le_bytes());
+        hash.update(member_id.as_bytes());
+    }
+    let hex = hex_lower(&hash.finalize());
+    format!("named-gc-{}", &hex[..32])
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    encoded
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -18564,6 +20115,18 @@ pub struct GuildDto {
     pub member_ids: Vec<String>,
     #[serde(default)]
     pub channel_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct ServerChannelDto {
+    pub server_id: String,
+    pub channel_id: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct OslChatServerChannelSelectionDto {
+    pub selected: ServerChannelDto,
+    pub servers: Vec<GuildDto>,
 }
 
 /// 9-C2: boot.js pushes the user's friend-ids snapshot here on
@@ -19673,6 +21236,99 @@ pub fn cmd_osl_set_thread_permissions(
     threads
         .set_thread_permissions(&members, &channel_id, &thread_id, person_names)
         .map_err(|error| error.to_string())
+pub fn cmd_osl_save_allowed_place(
+    state: &AppState,
+    record: crate::allowed_places::AllowedPlaceRecord,
+) -> Result<crate::allowed_places::AllowedPlaceRecord, String> {
+    record_activity_on_command_entry();
+    if record.app.trim().is_empty()
+        || record.account.trim().is_empty()
+        || record.kind.trim().is_empty()
+        || record.stable_id.trim().is_empty()
+    {
+        return Err("OSL: allowed place is incomplete".to_owned());
+    }
+    let saved = {
+        let mut places = state
+            .allowed_places
+            .lock()
+            .expect("allowed_places mutex poisoned");
+        places.save(record)
+    };
+    persist_allowed_places_now(state);
+    Ok(saved)
+}
+
+pub fn cmd_osl_query_allowed_place(
+    state: &AppState,
+    stable_id: String,
+) -> Result<Option<crate::allowed_places::AllowedPlaceQuery>, String> {
+    record_activity_on_command_entry();
+    if stable_id.trim().is_empty() {
+        return Err("OSL: allowed place stable_id is empty".to_owned());
+    }
+    let places = state
+        .allowed_places
+        .lock()
+        .expect("allowed_places mutex poisoned");
+    Ok(places.query(&stable_id))
+}
+
+/// Adds one stable channel identity under its server identity.
+///
+/// This is the direct command boundary for server-channel discovery. The
+/// channel id is not derived from mutable display text, and replaying the same
+/// server/channel observation leaves one channel entry.
+pub fn cmd_osl_create_server_channel(
+    state: &AppState,
+    server_id: String,
+    channel_id: String,
+) -> Result<ServerChannelDto, String> {
+    record_activity_on_command_entry();
+    if server_id.trim().is_empty() {
+        return Err("OSL: server_id is empty".to_string());
+    }
+    if channel_id.trim().is_empty() {
+        return Err("OSL: channel_id is empty".to_string());
+    }
+
+    {
+        let mut guilds = state.guild_list.lock().expect("guild_list mutex poisoned");
+        match guilds.iter_mut().find(|guild| guild.id == server_id) {
+            Some(guild) => {
+                if !guild.channel_ids.iter().any(|known| known == &channel_id) {
+                    guild.channel_ids.push(channel_id.clone());
+                }
+            }
+            None => guilds.push(GuildDto {
+                id: server_id.clone(),
+                name: server_id.clone(),
+                member_ids: Vec::new(),
+                channel_ids: vec![channel_id.clone()],
+            }),
+        }
+    }
+
+    Ok(ServerChannelDto {
+        server_id,
+        channel_id,
+    })
+}
+
+/// Select one OSL Chats server channel and return the refreshed server list.
+///
+/// Selection is also discovery: a direct user action against a server/channel
+/// identity records that channel under its server before Chats renders the
+/// selectable channel list.
+pub fn cmd_osl_select_chat_server_channel(
+    state: &AppState,
+    server_id: String,
+    channel_id: String,
+) -> Result<OslChatServerChannelSelectionDto, String> {
+    record_activity_on_command_entry();
+    let selected = cmd_osl_create_server_channel(state, server_id, channel_id)?;
+    let servers = cmd_osl_get_guild_list(state)?;
+    Ok(OslChatServerChannelSelectionDto { selected, servers })
 }
 
 /// 9-C2: bulk-whitelist N peers under DM scope (one DM scope per
@@ -19881,6 +21537,124 @@ pub fn cmd_osl_save_new_friend_defaults(
     }
     persist_app_preferences_now(state, config_dir);
     cmd_osl_get_new_friend_defaults(state)
+// ---- Saved auto-whitelist rules ----
+
+pub fn cmd_osl_save_auto_whitelist_rule(
+    state: &AppState,
+    app_kind: AutoWhitelistAppKind,
+    choice: AutoWhitelistChoice,
+) -> Result<AutoWhitelistRule, String> {
+    record_activity_on_command_entry();
+    let saved = {
+        let mut rules = state
+            .auto_whitelist_rules
+            .lock()
+            .expect("auto_whitelist_rules mutex poisoned");
+        rules.save(app_kind, choice)
+    };
+    persist_auto_whitelist_rules_now(state);
+    Ok(saved)
+}
+
+pub fn cmd_osl_query_auto_whitelist_rule(
+    state: &AppState,
+    app_kind: AutoWhitelistAppKind,
+) -> Result<AutoWhitelistRuleQuery, String> {
+    record_activity_on_command_entry();
+    let rules = state
+        .auto_whitelist_rules
+        .lock()
+        .expect("auto_whitelist_rules mutex poisoned");
+    Ok(rules.query(app_kind))
+}
+
+pub fn cmd_osl_list_discord_whitelist_kinds(
+    _state: &AppState,
+) -> Result<Vec<&'static str>, String> {
+    record_activity_on_command_entry();
+    Ok(discord_whitelist_kind_labels())
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct SignalWhitelistKindDto {
+    pub id: &'static str,
+    pub name: &'static str,
+    pub auto_rule_app_kind: &'static str,
+    pub allowed_place_kind: &'static str,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct SignalAutoWhitelistRuleDto {
+    pub signal_kind: String,
+    pub auto_rule_app_kind: String,
+    pub allowed_place: crate::allowed_places::AllowedPlaceRecord,
+    pub choice: String,
+}
+
+pub fn cmd_osl_list_signal_whitelist_kinds() -> Result<Vec<SignalWhitelistKindDto>, String> {
+    record_activity_on_command_entry();
+    Ok(crate::auto_whitelist_rules::SignalWhitelistKind::ALL
+        .into_iter()
+        .map(|kind| SignalWhitelistKindDto {
+            id: kind.id(),
+            name: kind.label(),
+            auto_rule_app_kind: kind.auto_rule_app_kind_id(),
+            allowed_place_kind: kind.allowed_place_kind(),
+        })
+        .collect())
+}
+
+pub fn cmd_osl_save_signal_auto_whitelist_rule(
+    state: &AppState,
+    signal_kind: String,
+    account: String,
+    place: String,
+    choice: String,
+) -> Result<SignalAutoWhitelistRuleDto, String> {
+    record_activity_on_command_entry();
+    let kind = crate::auto_whitelist_rules::parse_signal_whitelist_kind(&signal_kind)?;
+    let choice = crate::auto_whitelist_rules::parse_auto_whitelist_choice(&choice)?;
+    {
+        let mut rules = state
+            .auto_whitelist_rules
+            .lock()
+            .expect("auto_whitelist_rules mutex poisoned");
+        rules.save(kind.auto_rule_app_kind(), choice);
+    }
+    persist_auto_whitelist_rules_now(state);
+    Ok(signal_rule_lookup(kind, account, place, choice))
+}
+
+pub fn cmd_osl_read_signal_auto_whitelist_rule(
+    state: &AppState,
+    signal_kind: String,
+    account: String,
+    place: String,
+) -> Result<SignalAutoWhitelistRuleDto, String> {
+    record_activity_on_command_entry();
+    let kind = crate::auto_whitelist_rules::parse_signal_whitelist_kind(&signal_kind)?;
+    let choice = state
+        .auto_whitelist_rules
+        .lock()
+        .expect("auto_whitelist_rules mutex poisoned")
+        .query(kind.auto_rule_app_kind())
+        .saved_choice
+        .unwrap_or_default();
+    Ok(signal_rule_lookup(kind, account, place, choice))
+}
+
+fn signal_rule_lookup(
+    kind: crate::auto_whitelist_rules::SignalWhitelistKind,
+    account: String,
+    place: String,
+    choice: crate::auto_whitelist_rules::AutoWhitelistChoice,
+) -> SignalAutoWhitelistRuleDto {
+    SignalAutoWhitelistRuleDto {
+        signal_kind: kind.id().to_owned(),
+        auto_rule_app_kind: kind.auto_rule_app_kind_id().to_owned(),
+        allowed_place: crate::allowed_places::AllowedPlaceRecord::signal(account, kind, place),
+        choice: choice.label().to_owned(),
+    }
 }
 
 // ---- Phase 9-B1: app preferences ----
@@ -22771,6 +24545,8 @@ fn cmd_osl_burn_engage_finish(
         crate::burned_scopes_file::BURNED_SCOPES_FILE_NAME,
         "app_preferences.json",
         "sender_key_state.json",
+        "allowed_places.json",
+        "auto_whitelist_rules.json",
         // Probe-2 Rust Bug 3: membership.json was leaking across burns
         // (scope-membership accrual survived intact and fed the new
         // identity's recipient resolution). Wipe it explicitly.

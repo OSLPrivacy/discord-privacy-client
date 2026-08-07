@@ -342,6 +342,14 @@ const protectionPresetStorageKey = "osl-protection-preset-v1";
 const oslMailNotificationsStorageKey = "osl-mail-notifications-v1";
 const protectionPresetValues: readonly ProtectionPreset[] = ["basic", "balanced", "maximum"];
 const inboxFilterValues: readonly InboxFilter[] = ["all", "osl", "connected", "requests"];
+const quickTourRoute: OnboardingRoute = "tutorial";
+const quickTourCards = [
+  ["Lock", "Lock turns on protected input and protected send routing. Turn it off to use the host app’s ordinary composer."],
+  ["Eye", "Eye controls decrypted display only. With Eye off, OSL leaves the native carrier rows untouched."],
+  ["Cyan ring", "The small cyan ring around the native composer means protected input is active. No ring means you are typing into the host’s plaintext composer."],
+  ["Send mode", "Choose Manual, Clipboard, Double Enter or Single Enter. No mode silently sends: OSL stops if it cannot prove the exact destination."],
+  ["App limits", "Protection is limited to the app, account, chat, and composer OSL can verify. If that proof changes, OSL refuses protected routing rather than guessing."],
+] as const;
 
 function parseProtectionPreset(raw: unknown): ProtectionPreset {
   return protectionPresetValues.includes(raw as ProtectionPreset) ? raw as ProtectionPreset : "balanced";
@@ -1849,20 +1857,29 @@ async function alignActiveNativeCompanion(): Promise<boolean> {
 
 async function reopenActiveNativeCompanion(): Promise<void> {
   if (nativeActionBusy || !activeNativeHostId) return;
-  if (await focusActiveNativeCompanion()) return;
-  const staleAppId = activeNativeHostId;
-  const app = homeAppsFromServices(services).find((candidate) => candidate.id === activeHomeAppId)
-    ?? homeAppsFromServices(services).find((candidate) => candidate.id === staleAppId);
-  const service = app?.serviceId ? services.find((candidate) => candidate.id === app.serviceId) : null;
-  await detachNativeAppWindow().catch(() => undefined);
-  activeNativeHostId = null;
-  activeNativeHostMode = null;
-  if (!app || !service) {
-    showToast(`${activeHomeAppName()} could not be reopened`);
-    render();
-    return;
+  nativeActionBusy = true;
+  render();
+  try {
+    if (await focusActiveNativeCompanion()) return;
+    const staleAppId = activeNativeHostId;
+    const app = homeAppsFromServices(services).find((candidate) => candidate.id === activeHomeAppId)
+      ?? homeAppsFromServices(services).find((candidate) => candidate.id === staleAppId);
+    const service = app?.serviceId ? services.find((candidate) => candidate.id === app.serviceId) : null;
+    await detachNativeAppWindow().catch(() => undefined);
+    activeNativeHostId = null;
+    activeNativeHostMode = null;
+    if (!app || !service) {
+      showToast(`${activeHomeAppName()} could not be reopened`);
+      return;
+    }
+    nativeActionBusy = false;
+    await openNativeHostedApp(app, service, staleAppId);
+  } finally {
+    if (nativeActionBusy) {
+      nativeActionBusy = false;
+      render();
+    }
   }
-  await openNativeHostedApp(app, service, staleAppId);
 }
 
 function onboardingShellMarkup(setupNavigation = ""): string {
@@ -2087,19 +2104,12 @@ function proSetupContent(): string {
 }
 
 function tutorialContent(): string {
-  const steps = [
-    ["Lock", "Lock turns on protected input and protected send routing. Turn it off to use the host app’s ordinary composer."],
-    ["Eye", "Eye controls decrypted display only. With Eye off, OSL leaves the native carrier rows untouched."],
-    ["Cyan ring", "The small cyan ring around the native composer means protected input is active. No ring means you are typing into the host’s plaintext composer."],
-    ["Send mode", "Choose Manual, Clipboard, Double Enter or Single Enter. No mode silently sends: OSL stops if it cannot prove the exact destination."],
-    ["App limits", "Protection is limited to the app, account, chat, and composer OSL can verify. If that proof changes, OSL refuses protected routing rather than guessing."],
-  ] as const;
-  const current = steps[onboardingTourStep];
+  const current = quickTourCards[onboardingTourStep];
   if (!current) return replayingOnboardingTour
     ? `<h1 id="route-heading" tabindex="-1">Tour complete</h1><p class="compact-lead onboarding-centered-copy">You can replay this tour any time from Settings → About.</p><div class="setup-footer onboarding-actions"><button class="button primary" id="finish-onboarding-tour" type="button">Return to Home</button></div>`
     : chooseAppsOnboardingContent();
   const [title, detail] = current;
-  return `<section class="onboarding-tour" aria-labelledby="route-heading" data-onboarding-tour-step="${onboardingTourStep + 1}"><p class="eyebrow">Quick tour · ${onboardingTourStep + 1} of ${steps.length}</p><h1 id="route-heading" tabindex="-1">${title}</h1><p class="compact-lead onboarding-centered-copy">${detail}</p><p class="send-mode-truth">You can return to this tour later from Settings → About.</p><div class="setup-footer onboarding-actions"><button class="button ghost onboarding-back onboarding-step-back" id="onboarding-tour-back" type="button">Back</button><button class="button primary" id="onboarding-tour-next" type="button">${onboardingTourStep + 1 === steps.length ? "Choose apps" : "Next"}</button></div></section>`;
+  return `<section class="onboarding-tour" aria-labelledby="route-heading" data-onboarding-tour-step="${onboardingTourStep + 1}"><p class="eyebrow">Quick tour · ${onboardingTourStep + 1} of ${quickTourCards.length}</p><h1 id="route-heading" tabindex="-1">${title}</h1><p class="compact-lead onboarding-centered-copy">${detail}</p><p class="send-mode-truth">You can return to this tour later from Settings → About.</p><div class="setup-footer onboarding-actions"><button class="button ghost onboarding-back onboarding-step-back" id="onboarding-tour-back" type="button">Back</button><button class="button primary" id="onboarding-tour-next" type="button">${onboardingTourStep + 1 === quickTourCards.length ? "Choose apps" : "Next"}</button></div></section>`;
 }
 
 function chooseAppsOnboardingContent(): string {
@@ -3144,6 +3154,86 @@ async function saveSendingSetupDraft(): Promise<void> {
     windowCaptureEnabled,
     forwardSecrecyMode,
   });
+type QuickTourScreen = "setup" | "tour-card" | "app-selection" | "home";
+type QuickTourControl = "Back" | "Next" | "Choose apps" | "Set card";
+type QuickTourControlResult = {
+  accepted: boolean;
+  control: QuickTourControl;
+  screen: QuickTourScreen;
+  route: Route;
+  onboardingRoute: OnboardingRoute;
+  cardNumber: number | null;
+  completedCardCount: number;
+  reason: string | null;
+};
+
+function quickTourCardNumber(): number | null {
+  return onboardingRoute === "tutorial" && onboardingTourStep >= 0 && onboardingTourStep < quickTourCards.length
+    ? onboardingTourStep + 1
+    : null;
+}
+
+function completedQuickTourCardCount(): number {
+  return Math.min(Math.max(onboardingTourStep, 0), quickTourCards.length);
+}
+
+function quickTourScreen(): QuickTourScreen {
+  if (route === "home") return "home";
+  if (route === "onboarding" && onboardingRoute === "tutorial") {
+    return quickTourCardNumber() === null ? "app-selection" : "tour-card";
+  }
+  return "setup";
+}
+
+function quickTourControlResult(control: QuickTourControl, accepted: boolean, reason: string | null = null): QuickTourControlResult {
+  return {
+    accepted,
+    control,
+    screen: quickTourScreen(),
+    route,
+    onboardingRoute,
+    cardNumber: quickTourCardNumber(),
+    completedCardCount: completedQuickTourCardCount(),
+    reason,
+  };
+}
+
+function setQuickTourCardNumber(cardNumber: number): QuickTourControlResult {
+  if (!Number.isInteger(cardNumber) || cardNumber < 1 || cardNumber > quickTourCards.length) {
+    return quickTourControlResult("Set card", false, "invalid-card-number");
+  }
+  route = "onboarding";
+  onboardingRoute = quickTourRoute;
+  onboardingTourStep = cardNumber - 1;
+  return quickTourControlResult("Set card", true);
+}
+
+function backQuickTour(): QuickTourControlResult {
+  if (onboardingTourStep > 0) {
+    onboardingTourStep -= 1;
+  } else if (replayingOnboardingTour) {
+    replayingOnboardingTour = false;
+    route = "home";
+  } else {
+    onboardingRoute = previousSetupRoute(onboardingRoute);
+  }
+  return quickTourControlResult("Back", true);
+}
+
+function nextQuickTour(): QuickTourControlResult {
+  if (onboardingTourStep < 0 || onboardingTourStep >= quickTourCards.length) {
+    return quickTourControlResult("Next", false, "invalid-card-number");
+  }
+  onboardingTourStep += 1;
+  return quickTourControlResult("Next", true);
+}
+
+function chooseAppsFromQuickTour(): QuickTourControlResult {
+  if (onboardingTourStep !== quickTourCards.length - 1) {
+    return quickTourControlResult("Choose apps", false, "quick-tour-incomplete");
+  }
+  onboardingTourStep += 1;
+  return quickTourControlResult("Choose apps", true);
 }
 
 function bindOnboarding(): void {
@@ -3266,18 +3356,12 @@ function bindOnboarding(): void {
   // has to leave the route rather than sit there disabled: back out of a replay
   // to Home, and out of first-run setup to the previous setup step.
   document.querySelector<HTMLButtonElement>("#onboarding-tour-back")?.addEventListener("click", () => {
-    if (onboardingTourStep > 0) {
-      onboardingTourStep -= 1;
-    } else if (replayingOnboardingTour) {
-      replayingOnboardingTour = false;
-      route = "home";
-    } else {
-      onboardingRoute = previousSetupRoute(onboardingRoute);
-    }
+    backQuickTour();
     render();
   });
   document.querySelector<HTMLButtonElement>("#onboarding-tour-next")?.addEventListener("click", () => {
-    onboardingTourStep += 1;
+    if (onboardingTourStep + 1 === quickTourCards.length) chooseAppsFromQuickTour();
+    else nextQuickTour();
     render();
   });
   document.querySelector<HTMLButtonElement>("#finish-onboarding-tour")?.addEventListener("click", () => {
@@ -4485,8 +4569,9 @@ function trustedHeader(): string {
     && !(discordQaShell && activeHomeAppId === "discord")) {
     return `<div class="trusted-stack home-trusted-stack"><header class="home-header guide-header"><button class="home-brand" data-route="home" aria-label="OSL Privacy home"><img class="osl-logo logo-treatment" src="${oslVectorLogoUrl}" alt=""/><span class="home-brand-copy"><strong>OSL Privacy</strong></span></button><div class="guide-header-service">${serviceLogo(activeService.id)}<span><strong>${escapeHtml(activeService.displayName)}</strong><small>${isCoreProtectionReady(core.readiness) ? "Ready" : "Needs attention"}</small></span></div>${settingsButtonMarkup()}</header></div>`;
   }
+  const localProtectionBusy = protectedSheetCloseBusy || nativeProtectBusy;
   const localProtection = route === "service" && activeService !== null
-    ? `<button class="local-protected-toggle" id="local-protected-toggle" type="button" aria-expanded="${localProtectedSheet.open || peerProtectedSheet.open || nativeDiscordProtectionActive}">Protect</button>`
+    ? `<button class="local-protected-toggle" id="local-protected-toggle" type="button" aria-expanded="${localProtectedSheet.open || peerProtectedSheet.open || nativeDiscordProtectionActive}" ${localProtectionBusy ? "disabled" : ""}>${localProtectionBusy ? "Working…" : "Protect"}</button>`
     : "";
   const mailScope = route === "service" ? mailComposerEncryptionScope(activeHomeApp()) : "";
   const webSurfaceCapabilities: readonly WebSurfaceCapability[] = activeEmbeddedHost
@@ -5116,7 +5201,7 @@ function oslChatContent(): string {
   const settingsPerson = oslChatSettingsPersonId ? hubPeople.find((person) => person.personId === oslChatSettingsPersonId) ?? null : null;
   const settings = settingsPerson ? oslChatFriendSettingsMarkup(settingsPerson) : "";
   const attachments = activeOslChatContext?.scopeApproved && pro
-    ? `<section class="osl-chat-attachments" aria-label="Encrypted attachments"><header><strong>Attachments</strong><button class="button compact" id="osl-chat-attach" type="button" ${oslChatBusy ? "disabled" : ""}>Choose file</button></header>${attachmentProgressMarkupForActiveChat()}${oslChatAttachments.length ? oslChatAttachments.map((item) => `<button class="setting-line" data-osl-chat-attachment="${escapeHtml(item.attachmentId)}" type="button"><span><strong>${escapeHtml(item.originalFilename)}</strong><small>${item.viewOnce ? "View once · " : ""}${item.plaintextSize.toLocaleString("en-US")} bytes</small></span>${statusTag("Open")}</button>`).join("") : `<p>No pending attachments.</p>`}<small>Images open in OSL's capture-resistant viewer. Other supported files open temporarily in their Windows viewer, which may allow capture.</small></section>`
+    ? `<section class="osl-chat-attachments" aria-label="Encrypted attachments"><header><strong>Attachments</strong><button class="button compact" id="osl-chat-attach" type="button" ${oslChatBusy ? "disabled" : ""}>Choose file</button></header>${attachmentProgressMarkupForActiveChat()}${oslChatAttachments.length ? oslChatAttachments.map((item) => `<button class="setting-line" data-osl-chat-attachment="${escapeHtml(item.attachmentId)}" type="button" ${oslChatBusy ? "disabled" : ""}><span><strong>${escapeHtml(item.originalFilename)}</strong><small>${item.viewOnce ? "View once · " : ""}${item.plaintextSize.toLocaleString("en-US")} bytes</small></span>${statusTag("Open")}</button>`).join("") : `<p>No pending attachments.</p>`}<small>Images open in OSL's capture-resistant viewer. Other supported files open temporarily in their Windows viewer, which may allow capture.</small></section>`
     : "";
   const receipt = activeOslChatPersonId
     ? oslChatSenderReceiptMarkup(oslChatMessages.get(activeOslChatPersonId) ?? [])
@@ -5659,7 +5744,7 @@ function serviceContent(): string {
     const protectionFailure = nativeProtectFailureNotice
       ? `<p class="form-status" role="status">${escapeHtml(nativeProtectFailureNotice)}</p>`
       : "";
-    return `<main class="content-viewport native-app-page native-companion-page" id="route-heading" tabindex="-1"><section class="native-app-card native-companion-card"><span class="service-icon large">${activeService ? serviceLogo(activeService.id) : ""}</span><h1>${name} is open</h1><p>Signed-in window reused · session not copied</p>${discordQaHostStatusMarkup()}${protectionFailure}<button class="button primary" id="native-companion-focus" type="button">Bring forward or reopen</button><div class="native-app-secondary"><button class="text-back" id="native-app-back">← Apps</button></div></section></main>`;
+    return `<main class="content-viewport native-app-page native-companion-page" id="route-heading" tabindex="-1"><section class="native-app-card native-companion-card"><span class="service-icon large">${activeService ? serviceLogo(activeService.id) : ""}</span><h1>${name} is open</h1><p>Signed-in window reused · session not copied</p>${discordQaHostStatusMarkup()}${protectionFailure}<button class="button primary" id="native-companion-focus" type="button" ${nativeActionBusy ? "disabled" : ""}>${nativeActionBusy ? "Opening…" : "Bring forward or reopen"}</button><div class="native-app-secondary"><button class="text-back" id="native-app-back">← Apps</button></div></section></main>`;
   }
   if (activeNativeHostId) return `<main class="content-viewport host-viewport native-host-open" id="route-heading" tabindex="-1" aria-label="${name} is open in an OSL-specific native window"><span class="sr-only">${name} native client is open inside OSL.</span></main>`;
   if (activeDefaultBrowserCompanion) return `<main class="content-viewport host-viewport native-host-open" id="route-heading" tabindex="-1" aria-label="${name} is open in your default-browser companion"><span class="sr-only">${name} is open in an app-style normal-profile browser window. It is not capture-protected or shortcut-locked by OSL.</span></main>`;
@@ -10331,6 +10416,7 @@ type OslHubUiTestStatePatch = {
   route?: Route;
   onboardingRoute?: OnboardingRoute;
   onboardingComplete?: boolean;
+  onboardingTourStep?: number;
   setup?: Partial<SetupState>;
   silentVisibleMode?: SilentVisibleMode | null;
   coverInsertion?: CoverInsertionChoice | null;
@@ -10398,6 +10484,8 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   route = patch.route ?? "home";
   onboardingRoute = patch.onboardingRoute ?? "welcome";
   onboardingComplete = patch.onboardingComplete ?? false;
+  onboardingTourStep = patch.onboardingTourStep ?? 0;
+  replayingOnboardingTour = false;
   setup = { ...defaultSetup, ...patch.setup };
   silentVisibleMode = patch.silentVisibleMode ?? null;
   coverInsertion = patch.coverInsertion ?? initialCoverInsertionChoice();
@@ -10474,6 +10562,376 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   applyTestCoreState(patch.coreReady ?? false, patch.storageMethod ?? null, patch.bootstrapStatus);
 }
 
+export type BusyButtonAuditRow = {
+  action: string;
+  button: string;
+  runningDisabled: boolean;
+  secondPressCount: number;
+  afterSuccessDisabled: boolean;
+  afterFailureDisabled: boolean;
+};
+
+function testLinkedService(id: HomeAppId = "gmail"): LinkedService {
+  const serviceId = id === "gmail" ? "email" : id;
+  return {
+    id: serviceId,
+    displayName: id === "discord" ? "Discord" : "Gmail",
+    sidebarGlyph: id.slice(0, 2).toUpperCase(),
+    sidebarOrder: 0,
+    category: "consumer",
+    launchState: "available",
+    supportsNativePreview: true,
+    supportsProtectedPreview: true,
+    accounts: [{
+      id: "account-1",
+      label: "Personal",
+      provider: id === "gmail" ? "gmail" : null,
+      connected: true,
+    }],
+  } as unknown as LinkedService;
+}
+
+function resetBusyButtonAuditState(): void {
+  nativeCatalogBusy = false;
+  browserReadinessBusy = false;
+  browserImportBusy = false;
+  browserImportCancelling = false;
+  browserImportQueue = [];
+  browserImportQueueIndex = 0;
+  browserImportSourceSelected = false;
+  mullvadBusy = false;
+  appLaunchPendingId = null;
+  serviceGuideStep = null;
+  activeEmbeddedHost = null;
+  activeNativeHostId = null;
+  activeNativeHostMode = null;
+  activeDefaultBrowserCompanion = false;
+  backgroundInstallIds.clear();
+  nativeActionBusy = false;
+  protectedSheetCloseBusy = false;
+  nativeProtectBusy = false;
+  discordQaHeaderBusy = null;
+  discordQaRowProofState = "idle";
+  discordQaComposerBusy = false;
+  discordQaOneClickBusy = false;
+  oslChatBusy = false;
+  oslChatMessages.clear();
+  oslChatAttachments = [];
+  oslChatSettingsPersonId = null;
+  burnDialogOpen = false;
+  updateStatus = { state: "upToDate", current: "0.1.0" };
+}
+
+function buttonStartTag(markup: string, marker: string): string {
+  const markerIndex = markup.indexOf(marker);
+  if (markerIndex < 0) throw new Error(`busy button audit marker not rendered: ${marker}`);
+  const start = markup.lastIndexOf("<button", markerIndex);
+  const end = markup.indexOf(">", markerIndex);
+  if (start < 0 || end < markerIndex) throw new Error(`busy button audit marker is not inside a button: ${marker}`);
+  return markup.slice(start, end + 1);
+}
+
+function buttonIsDisabled(markup: string, marker: string): boolean {
+  return /\sdisabled(?:[\s=>]|$)/u.test(buttonStartTag(markup, marker));
+}
+
+function seedServiceForBusyButtonAudit(appId: HomeAppId = "gmail"): LinkedService {
+  const service = testLinkedService(appId);
+  services = [service];
+  linkedServicesChecked = true;
+  activeService = service;
+  activeHomeAppId = appId;
+  return service;
+}
+
+function seedOslChatForBusyButtonAudit(approved = true): void {
+  const person = testHubPerson({
+    personId: "person-1",
+    alias: "Avery",
+    safetyNumberVerified: true,
+  });
+  hubPeople = [person];
+  activeOslChatPersonId = person.personId;
+  activeOslChatContext = {
+    contextToken: "context-1",
+    serviceId: "osl-chat",
+    accountId: "account-1",
+    personId: person.personId,
+    peerOslUserId: person.oslUserId,
+    scopeApproved: approved,
+  };
+  oslChatDraft = "hello";
+  oslChatMessages.set(person.personId, [{
+    messageId: "incoming-1",
+    direction: "incoming",
+    body: "ready",
+    state: "received",
+    timestampLabel: "now",
+  }]);
+}
+
+function longRunningButtonAuditForTest(): BusyButtonAuditRow[] {
+  type Scenario = {
+    action: string;
+    button: string;
+    marker: string;
+    setup: () => void;
+    setRunning: () => void;
+    render: () => string;
+    settledDisabled?: () => boolean;
+  };
+  const scenarios: Scenario[] = [
+    {
+      action: "check selected Windows apps",
+      button: "#continue-app-choice",
+      marker: 'id="continue-app-choice"',
+      setup: () => {
+        route = "onboarding";
+        onboardingRoute = "tutorial";
+        selectedOnboardingApps.clear();
+        selectedOnboardingApps.add("discord");
+      },
+      setRunning: () => { nativeCatalogBusy = true; },
+      render: () => chooseAppsOnboardingContent(),
+    },
+    {
+      action: "check selected browser areas",
+      button: "#import-saved-accounts",
+      marker: 'id="import-saved-accounts"',
+      setup: () => {
+        route = "onboarding";
+        onboardingRoute = "browser";
+        browserProfiles = [{ browserId: "chrome", profile: "Default", displayName: "Default" }];
+        browserImports = [{ id: "chrome", displayName: "Chrome", installed: true }];
+        selectedBrowserProfileKeys = new Set([browserProfileKey(browserProfiles[0]!)]);
+      },
+      setRunning: () => { browserImportBusy = true; },
+      render: () => browserImportContent(),
+    },
+    {
+      action: "skip while browser area check is running",
+      button: "#continue-browser-import",
+      marker: 'id="continue-browser-import"',
+      setup: () => {
+        route = "onboarding";
+        onboardingRoute = "browser";
+        browserProfiles = [{ browserId: "chrome", profile: "Default", displayName: "Default" }];
+        browserImports = [{ id: "chrome", displayName: "Chrome", installed: true }];
+      },
+      setRunning: () => { browserImportBusy = true; },
+      render: () => browserImportContent(),
+    },
+    {
+      action: "install Mullvad",
+      button: "#install-mullvad",
+      marker: 'id="install-mullvad"',
+      setup: () => { mullvadStatus.availability = "installable"; },
+      setRunning: () => { mullvadBusy = true; },
+      render: () => mullvadSetupContent(),
+    },
+    {
+      action: "open Mullvad",
+      button: "#open-mullvad",
+      marker: 'id="open-mullvad"',
+      setup: () => { mullvadStatus.availability = "installed"; },
+      setRunning: () => { mullvadBusy = true; },
+      render: () => mullvadSetupContent(),
+    },
+    {
+      action: "open app from launcher",
+      button: "[data-home-app]",
+      marker: 'data-home-app="discord"',
+      setup: () => { route = "settings"; settingsSection = "apps"; seedServiceForBusyButtonAudit("discord"); },
+      setRunning: () => { appLaunchPendingId = "discord"; },
+      render: () => serviceAccountsSettingsContent(),
+    },
+    {
+      action: "open embedded service",
+      button: "#embedded-service-setup",
+      marker: 'id="embedded-service-setup"',
+      setup: () => { route = "service"; seedServiceForBusyButtonAudit("gmail"); },
+      setRunning: () => { nativeActionBusy = true; },
+      render: () => serviceContent(),
+    },
+    {
+      action: "background install native app",
+      button: "[data-background-install]",
+      marker: 'data-background-install="discord"',
+      setup: () => {
+        route = "service";
+        serviceGuideStep = 0;
+        seedServiceForBusyButtonAudit("discord");
+        nativeApps = [{
+          id: "discord",
+          displayName: "Discord",
+          availability: "installable",
+          supportStatus: "available",
+          carrierEvidence: "builtNeverProvenLive",
+          deliveryEvidence: "neverProvenLive",
+          claimBlockers: [],
+          claimNote: "Test native app",
+          protectedMode: "assistOnly",
+          isolatedProfileAvailable: false,
+          supportsOverlay: false,
+        }];
+      },
+      setRunning: () => { backgroundInstallIds.add("discord"); },
+      render: () => serviceGuideContent(activeService!, serviceGuideStep!),
+    },
+    {
+      action: "bring native companion forward",
+      button: "#native-companion-focus",
+      marker: 'id="native-companion-focus"',
+      setup: () => {
+        route = "service";
+        seedServiceForBusyButtonAudit("discord");
+        activeNativeHostId = "discord";
+        activeNativeHostMode = "existingSession";
+      },
+      setRunning: () => { nativeActionBusy = true; },
+      render: () => serviceContent(),
+    },
+    {
+      action: "toggle protected sheet",
+      button: "#local-protected-toggle",
+      marker: 'id="local-protected-toggle"',
+      setup: () => { route = "service"; seedServiceForBusyButtonAudit("gmail"); },
+      setRunning: () => { protectedSheetCloseBusy = true; },
+      render: () => trustedHeader(),
+    },
+    {
+      action: "open native Discord protection",
+      button: "#native-protect-verified-peer",
+      marker: 'id="native-protect-verified-peer"',
+      setup: () => {
+        activeNativeHostId = "discord";
+        nativeProtectPickerOpen = true;
+        hubPeople = [testHubPerson({ personId: "person-1", alias: "Avery", safetyNumberVerified: true })];
+      },
+      setRunning: () => { nativeProtectBusy = true; },
+      render: () => nativeDiscordProtectPickerMarkup(),
+    },
+    {
+      action: "OSL Chat approval",
+      button: "#osl-chat-approve",
+      marker: 'id="osl-chat-approve"',
+      setup: () => { route = "osl-chat"; seedOslChatForBusyButtonAudit(false); },
+      setRunning: () => { oslChatBusy = true; },
+      render: () => oslChatContent(),
+    },
+    {
+      action: "OSL Chat refresh",
+      button: "#osl-chat-refresh",
+      marker: 'id="osl-chat-refresh"',
+      setup: () => { route = "osl-chat"; seedOslChatForBusyButtonAudit(true); },
+      setRunning: () => { oslChatBusy = true; },
+      render: () => oslChatContent(),
+    },
+    {
+      action: "OSL Chat send",
+      button: ".osl-chat-send",
+      marker: 'class="osl-chat-send"',
+      setup: () => { route = "osl-chat"; seedOslChatForBusyButtonAudit(true); },
+      setRunning: () => { oslChatBusy = true; },
+      render: () => oslChatContent(),
+    },
+    {
+      action: "OSL Chat choose attachment",
+      button: "#osl-chat-attach",
+      marker: 'id="osl-chat-attach"',
+      setup: () => { route = "osl-chat"; licenseState.access = "pro"; seedOslChatForBusyButtonAudit(true); },
+      setRunning: () => { oslChatBusy = true; },
+      render: () => oslChatContent(),
+    },
+    {
+      action: "OSL Chat open attachment",
+      button: "[data-osl-chat-attachment]",
+      marker: 'data-osl-chat-attachment="attachment-1"',
+      setup: () => {
+        route = "osl-chat";
+        licenseState.access = "pro";
+        seedOslChatForBusyButtonAudit(true);
+        oslChatAttachments = [{ attachmentId: "attachment-1", originalFilename: "proof.png", plaintextSize: 12, viewOnce: false } as NativeOverlayPendingAttachment];
+      },
+      setRunning: () => { oslChatBusy = true; },
+      render: () => oslChatContent(),
+    },
+    {
+      action: "OSL Chat permission toggle",
+      button: "#osl-chat-permission-toggle",
+      marker: 'id="osl-chat-permission-toggle"',
+      setup: () => {
+        route = "osl-chat";
+        seedOslChatForBusyButtonAudit(true);
+        oslChatSettingsPersonId = "person-1";
+      },
+      setRunning: () => { oslChatBusy = true; },
+      render: () => oslChatContent(),
+    },
+    {
+      action: "owned confirmation",
+      button: "#owned-confirmation-submit",
+      marker: 'id="owned-confirmation-submit"',
+      setup: () => { ownedConfirmation = { kind: "clearActivation" }; },
+      setRunning: () => { ownedConfirmationBusy = true; },
+      render: () => ownedConfirmationMarkup(),
+    },
+    {
+      action: "burn confirmation",
+      button: "#burn-confirm-submit",
+      marker: 'id="burn-confirm-submit"',
+      setup: () => { burnDialogOpen = true; burnScope = "account"; },
+      setRunning: () => { burnBusy = true; },
+      render: () => burnDialogMarkup(),
+      settledDisabled: () => false,
+    },
+    {
+      action: "check for updates",
+      button: "[data-update-check]",
+      marker: "data-update-check",
+      setup: () => { settingsSection = "about"; updateStatus = { state: "upToDate", current: "0.1.0" }; },
+      setRunning: () => { updateStatus = { state: "checking" }; },
+      render: () => updateSettingsContent(),
+    },
+    {
+      action: "install update",
+      button: "[data-update-install]",
+      marker: "data-update-install",
+      setup: () => { updateStatus = { state: "available", current: "0.1.0", next: "0.1.1", notes: "Notes" }; },
+      setRunning: () => { updateStatus = { state: "installing", current: "0.1.0", next: "0.1.1", notes: "Notes" }; },
+      render: () => updateDialogMarkup(),
+    },
+  ];
+
+  return scenarios.map((scenario) => {
+    applyOslHubUiTestState({ coreReady: true });
+    resetBusyButtonAuditState();
+    scenario.setup();
+    scenario.setRunning();
+    const runningDisabled = buttonIsDisabled(scenario.render(), scenario.marker);
+    const secondPressCount = runningDisabled ? 0 : 1;
+
+    applyOslHubUiTestState({ coreReady: true });
+    resetBusyButtonAuditState();
+    scenario.setup();
+    const afterSuccessDisabled = scenario.settledDisabled?.() ?? buttonIsDisabled(scenario.render(), scenario.marker);
+
+    applyOslHubUiTestState({ coreReady: true });
+    resetBusyButtonAuditState();
+    scenario.setup();
+    const afterFailureDisabled = scenario.settledDisabled?.() ?? buttonIsDisabled(scenario.render(), scenario.marker);
+
+    return {
+      action: scenario.action,
+      button: scenario.button,
+      runningDisabled,
+      secondPressCount,
+      afterSuccessDisabled,
+      afterFailureDisabled,
+    };
+  });
+}
+
 export const __oslHubUiTest = {
   reset(patch: OslHubUiTestStatePatch = {}): void {
     applyOslHubUiTestState(patch);
@@ -10516,6 +10974,21 @@ export const __oslHubUiTest = {
   },
   bindOnboarding(): void {
     bindOnboarding();
+  },
+  quickTourSnapshot(): QuickTourControlResult {
+    return quickTourControlResult("Set card", true);
+  },
+  setQuickTourCardNumber(cardNumber: number): QuickTourControlResult {
+    return setQuickTourCardNumber(cardNumber);
+  },
+  chooseAppsFromQuickTour(): QuickTourControlResult {
+    return chooseAppsFromQuickTour();
+  },
+  nextQuickTour(): QuickTourControlResult {
+    return nextQuickTour();
+  },
+  backQuickTour(): QuickTourControlResult {
+    return backQuickTour();
   },
   bindWorkspace(): void {
     bindWorkspace();
@@ -10689,6 +11162,9 @@ export const __oslHubUiTest = {
   handleUnhandledRejection(event: PromiseRejectionEvent): void {
     handleUnhandledRejection(event);
   },
+  longRunningButtonAudit(): BusyButtonAuditRow[] {
+    return longRunningButtonAuditForTest();
+  },
   /** Run one OSL Chat delivery tick, exactly as the cadence would. */
   deliverOslChats(): Promise<void> {
     return oslChatDelivery.sync();
@@ -10739,6 +11215,9 @@ export const __oslHubUiTest = {
   snapshot(): {
     route: Route;
     onboardingRoute: OnboardingRoute;
+    onboardingTourCardNumber: number | null;
+    completedTourCardCount: number;
+    quickTourScreen: QuickTourScreen;
     settingsSection: SettingsSection;
     homePrimaryIssue: HomePrimaryIssue;
     privacyProtectionReviewOpen: boolean;
@@ -10762,6 +11241,9 @@ export const __oslHubUiTest = {
     return {
       route,
       onboardingRoute,
+      onboardingTourCardNumber: quickTourCardNumber(),
+      completedTourCardCount: completedQuickTourCardCount(),
+      quickTourScreen: quickTourScreen(),
       settingsSection,
       homePrimaryIssue: homePrimaryRecommendation().issue,
       privacyProtectionReviewOpen,

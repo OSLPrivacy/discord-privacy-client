@@ -57,6 +57,8 @@ fn tf_91_flaky_network_retries_inside_one_reservation_without_losing_the_payload
     let pointer = PointerArrival {
         blob_id: "view-once".to_owned(),
         fetch_seed: [1; ipc::prose_token::BRIDGE_SEED_BYTES],
+        server_blob_id: [0x33; ipc::prose_token::BRIDGE_ID_BYTES],
+        seed: [0x44; ipc::prose_token::BRIDGE_SEED_BYTES],
     };
 
     driver.on_pointer_arrival(&pointer).unwrap();

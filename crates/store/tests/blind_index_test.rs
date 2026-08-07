@@ -1086,7 +1086,7 @@ fn assert_legacy_privacy_migration(stamped: bool) {
     );
     drop(store);
 
-    assert_eq!(schema_version(&db_path), 9);
+    assert_eq!(schema_version(&db_path), 10);
     let conn = rusqlite::Connection::open(&db_path).unwrap();
     let burned_rows: Vec<LegacyBurnedRow> = {
         let mut stmt = conn

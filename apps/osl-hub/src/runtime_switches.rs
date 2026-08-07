@@ -225,6 +225,13 @@ pub struct ResolvedTestOnlyEnvironmentControls {
     pub service_time_unix_seconds: i64,
     pub time_zone: String,
     pub online_state: OnlineState,
+impl ResolvedTestOnlyRunTimeSwitches {
+    pub fn password_screen_gate_required(self) -> bool {
+        match self.password_screen_access {
+            PasswordScreenAccess::RequirePasswordScreen => true,
+            PasswordScreenAccess::SkipPasswordScreenForTest => false,
+        }
+    }
 }
 
 impl Default for PasswordScreenAccess {
@@ -693,6 +700,7 @@ mod tests {
             switches.password_screen_access,
             PasswordScreenAccess::RequirePasswordScreen
         );
+        assert!(switches.password_screen_gate_required());
         assert_eq!(
             switches.safe_sending,
             SafeSending::LiveSendRequiresAuthority

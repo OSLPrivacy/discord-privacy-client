@@ -60,10 +60,12 @@ impl LocalMessageStore for Local {
     }
 }
 
-fn pointer(id: &str) -> PointerArrival {
+fn pointer(seed_byte: u8) -> PointerArrival {
     PointerArrival {
         blob_id: id.to_owned(),
         fetch_seed: [7; ipc::prose_token::BRIDGE_SEED_BYTES],
+        server_blob_id: [0x55; ipc::prose_token::BRIDGE_ID_BYTES],
+        seed: [seed_byte; ipc::prose_token::BRIDGE_SEED_BYTES],
     }
 }
 
@@ -72,28 +74,30 @@ fn t6_t28_pointer_fetches_before_open_and_offline_burn_survives_restart_without_
     let temp = tempfile::tempdir().unwrap();
     let queue_path = temp.path().join("offline-burns.enc");
     let queue = EncryptedBurnQueue::new(&queue_path, [3; 32]);
+    let arrival = pointer(0x77);
+    let blob_id = arrival.blob_id_hex();
     let network = Network {
         online: true,
-        blobs: BTreeMap::from([("a".to_owned(), b"plain".to_vec())]),
+        blobs: BTreeMap::from([(blob_id.clone(), b"plain".to_vec())]),
         burned: vec![],
     };
     let mut driver = EagerFetchDriver::new(network, Local::default(), queue);
 
-    driver.on_pointer_arrival(&pointer("a")).unwrap();
+    driver.on_pointer_arrival(&arrival).unwrap();
     let (mut network, mut local, queue) = driver.into_parts();
     network.online = false;
     assert_eq!(
-        local.open("a").unwrap(),
+        local.open(&blob_id).unwrap(),
         b"plain",
         "open reads the eager-persisted local copy while hard-down"
     );
     assert_eq!(local.opens, 1);
 
     let mut driver = EagerFetchDriver::new(network, local, queue);
-    driver.burn_offline(&pointer("a")).unwrap();
+    driver.burn_offline(&arrival).unwrap();
     let (mut network, mut local, queue) = driver.into_parts();
     assert!(
-        local.open("a").is_err(),
+        local.open(&blob_id).is_err(),
         "local destruction does not wait for reconnect"
     );
     assert_eq!(queue.pending().unwrap().len(), 1);
@@ -112,6 +116,8 @@ fn t6_t28_pointer_fetches_before_open_and_offline_burn_survives_restart_without_
         network.burned,
         vec![("a".to_owned(), pointer("a").fetch_token().to_vec())],
         "the bridge fetch token is reused for deployed-service burn"
+        vec![(blob_id.clone(), arrival.fetch_token().to_vec())],
+        "bridge burn credential is sent unchanged"
     );
     assert!(queue.pending().unwrap().is_empty());
 

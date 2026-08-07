@@ -66,12 +66,18 @@ use rusqlite::{params, Connection, Transaction};
 ///        stubs. The terminal `burned` bit remains queryable, but an offline
 ///        reader no longer learns the exact time of destructive activity.
 ///   v9 — Adds receipt lifecycle fields and per-device acknowledgement rows.
-pub(crate) const SCHEMA_VERSION: u32 = 9;
+///   v10 — Marks every pre-grant message unable to use destructive remote burn.
+pub(crate) const SCHEMA_VERSION: u32 = 10;
 const PRIVACY_SCHEMA_VERSION: u32 = 4;
 const MESSAGE_ENVELOPE_SCHEMA_VERSION: u32 = 5;
 const ATTACHMENT_ENVELOPE_SCHEMA_VERSION: u32 = 6;
 const ATTACHMENT_MANIFEST_SCHEMA_VERSION: u32 = 7;
 const BURN_TIMESTAMP_PRIVACY_SCHEMA_VERSION: u32 = 8;
+const RECEIPT_SCHEMA_VERSION: u32 = 9;
+
+const REMOTE_BURN_UNABLE_STATE: &str = "unable_destructive_remote_burn";
+const REMOTE_BURN_SEPARATE_GRANT_STATE: &str = "has_separate_remote_burn_grant";
+const REMOTE_BURN_LEGACY_UNABLE_COUNT_KEY: &str = "remote_burn_legacy_unable_count";
 
 /// Fixed canary plaintext. Hard-coded so a wrong-key unseal that
 /// happens to produce non-error garbage still fails the
@@ -111,6 +117,12 @@ CREATE TABLE IF NOT EXISTS messages (
     opened_at BLOB,
     destroyed_at BLOB,
     destruct_reason BLOB,
+    destructive_remote_burn_state TEXT NOT NULL DEFAULT 'unable_destructive_remote_burn'
+        CHECK (destructive_remote_burn_state IN (
+            'unable_destructive_remote_burn',
+            'has_separate_remote_burn_grant'
+        )),
+    destructive_remote_burn_grant BLOB,
 
     -- Null downgrade-guard columns. The exact final v3 reader (adff4e45)
     -- creates its legacy indexes before checking schema_version. Keeping the
@@ -133,6 +145,13 @@ CREATE INDEX IF NOT EXISTS idx_messages_chan_seq
 CREATE INDEX IF NOT EXISTS idx_messages_channel
     ON messages(channel_id, decrypted_at DESC);
 
+CREATE TABLE IF NOT EXISTS message_timers (
+    mid_bi BLOB PRIMARY KEY,
+    minutes INTEGER NOT NULL CHECK (minutes > 0),
+    action_version INTEGER NOT NULL DEFAULT 1 CHECK (action_version > 0),
+    FOREIGN KEY (mid_bi) REFERENCES messages(mid_bi) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS message_device_acks (
     mid_bi BLOB NOT NULL,
     device_bi BLOB NOT NULL,
@@ -143,6 +162,16 @@ CREATE TABLE IF NOT EXISTS message_device_acks (
     destruct_reason BLOB,
     PRIMARY KEY (mid_bi, device_bi, ack_kind),
     FOREIGN KEY (mid_bi) REFERENCES messages(mid_bi) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS sender_message_burn_steps (
+    burn_bi BLOB NOT NULL,
+    step_index INTEGER NOT NULL CHECK (step_index >= 0),
+    mid_bi BLOB NOT NULL,
+    local_done INTEGER NOT NULL DEFAULT 0 CHECK (local_done IN (0, 1)),
+    remote_done INTEGER NOT NULL DEFAULT 0 CHECK (remote_done IN (0, 1)),
+    PRIMARY KEY (burn_bi, step_index),
+    UNIQUE (burn_bi, mid_bi)
 );
 
 CREATE TABLE IF NOT EXISTS attachments (
@@ -218,6 +247,11 @@ const V4_ATTACHMENT_DOWNGRADE_COLUMNS: &[&str] = &[
     "ALTER TABLE attachments ADD COLUMN sender_discord_id TEXT",
 ];
 
+const V10_MESSAGE_REMOTE_BURN_COLUMNS: &[&str] = &[
+    "ALTER TABLE messages ADD COLUMN destructive_remote_burn_state TEXT NOT NULL DEFAULT 'unable_destructive_remote_burn' CHECK (destructive_remote_burn_state IN ('unable_destructive_remote_burn', 'has_separate_remote_burn_grant'))",
+    "ALTER TABLE messages ADD COLUMN destructive_remote_burn_grant BLOB",
+];
+
 /// Create `_meta` only. Split out from [`migrate`] so `open` can verify the
 /// canary first.
 pub(crate) fn ensure_meta_table(conn: &Connection) -> Result<(), StoreError> {
@@ -272,6 +306,7 @@ pub(crate) fn migrate(
             // downgrade-guard columns, so add those before SCHEMA_CURRENT creates
             // the exact-v3 compatibility indexes that reference them.
             apply_columns(conn, "messages", V4_MESSAGE_DOWNGRADE_COLUMNS)?;
+            apply_columns(conn, "messages", V10_MESSAGE_REMOTE_BURN_COLUMNS)?;
             apply_columns(conn, "attachments", V4_ATTACHMENT_DOWNGRADE_COLUMNS)?;
             // CREATE IF NOT EXISTS keeps this idempotent.
             conn.execute_batch(SCHEMA_CURRENT)?;
@@ -282,6 +317,11 @@ pub(crate) fn migrate(
         }
         Some(BURN_TIMESTAMP_PRIVACY_SCHEMA_VERSION) => {
             migrate_v8_to_v9(conn)?;
+            migrate_v9_to_v10(conn)?;
+            return Ok(());
+        }
+        Some(RECEIPT_SCHEMA_VERSION) => {
+            migrate_v9_to_v10(conn)?;
             return Ok(());
         }
         Some(MESSAGE_ENVELOPE_SCHEMA_VERSION) => {
@@ -289,17 +329,20 @@ pub(crate) fn migrate(
             migrate_v6_to_v7(conn, key)?;
             migrate_v7_to_v8(conn)?;
             migrate_v8_to_v9(conn)?;
+            migrate_v9_to_v10(conn)?;
             return Ok(());
         }
         Some(ATTACHMENT_ENVELOPE_SCHEMA_VERSION) => {
             migrate_v6_to_v7(conn, key)?;
             migrate_v7_to_v8(conn)?;
             migrate_v8_to_v9(conn)?;
+            migrate_v9_to_v10(conn)?;
             return Ok(());
         }
         Some(ATTACHMENT_MANIFEST_SCHEMA_VERSION) => {
             migrate_v7_to_v8(conn)?;
             migrate_v8_to_v9(conn)?;
+            migrate_v9_to_v10(conn)?;
             return Ok(());
         }
         Some(PRIVACY_SCHEMA_VERSION) => {
@@ -308,6 +351,7 @@ pub(crate) fn migrate(
             migrate_v6_to_v7(conn, key)?;
             migrate_v7_to_v8(conn)?;
             migrate_v8_to_v9(conn)?;
+            migrate_v9_to_v10(conn)?;
             return Ok(());
         }
         _ => {}
@@ -330,6 +374,7 @@ pub(crate) fn migrate(
     migrate_v6_to_v7(conn, key)?;
     migrate_v7_to_v8(conn)?;
     migrate_v8_to_v9(conn)?;
+    migrate_v9_to_v10(conn)?;
     Ok(())
 }
 
@@ -1256,6 +1301,53 @@ fn migrate_v8_to_v9(conn: &Connection) -> Result<(), StoreError> {
              FOREIGN KEY (mid_bi) REFERENCES messages(mid_bi) ON DELETE CASCADE
          );",
     )?;
+    write_meta_u32(&tx, "schema_version", RECEIPT_SCHEMA_VERSION)?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Add explicit remote-burn grant state.
+///
+/// Rows written by older builds have no separate grant. The migration therefore
+/// marks every existing message as unable to use destructive remote burn and
+/// records the count it marked. It never derives a grant from message metadata.
+fn migrate_v9_to_v10(conn: &Connection) -> Result<(), StoreError> {
+    let old_messages: i64 =
+        conn.query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))?;
+    let tx = conn.unchecked_transaction()?;
+    for sql in missing_columns(&tx, "messages", V10_MESSAGE_REMOTE_BURN_COLUMNS)? {
+        tx.execute(sql, [])?;
+    }
+    tx.execute(
+        "UPDATE messages
+            SET destructive_remote_burn_state = ?1,
+                destructive_remote_burn_grant = NULL",
+        params![REMOTE_BURN_UNABLE_STATE],
+    )?;
+    let marked_unable: i64 = tx.query_row(
+        "SELECT COUNT(*) FROM messages
+          WHERE destructive_remote_burn_state = ?1
+            AND destructive_remote_burn_grant IS NULL",
+        params![REMOTE_BURN_UNABLE_STATE],
+        |row| row.get(0),
+    )?;
+    let guessed_grants: i64 = tx.query_row(
+        "SELECT COUNT(*) FROM messages
+          WHERE destructive_remote_burn_state = ?1
+             OR destructive_remote_burn_grant IS NOT NULL",
+        params![REMOTE_BURN_SEPARATE_GRANT_STATE],
+        |row| row.get(0),
+    )?;
+    if marked_unable != old_messages || guessed_grants != 0 {
+        return Err(StoreError::Schema(format!(
+            "remote burn migration mismatch: old_messages={old_messages} marked_unable={marked_unable} guessed_grants={guessed_grants}"
+        )));
+    }
+    write_meta_blob(
+        &tx,
+        REMOTE_BURN_LEGACY_UNABLE_COUNT_KEY,
+        &(marked_unable as u64).to_le_bytes(),
+    )?;
     write_meta_u32(&tx, "schema_version", SCHEMA_VERSION)?;
     tx.commit()?;
     Ok(())
@@ -1371,6 +1463,7 @@ pub(crate) fn refuse_ambiguous_legacy_wrappers(conn: &Connection) -> Result<(), 
             on_disk,
             Some(ATTACHMENT_MANIFEST_SCHEMA_VERSION)
                 | Some(BURN_TIMESTAMP_PRIVACY_SCHEMA_VERSION)
+                | Some(RECEIPT_SCHEMA_VERSION)
                 | Some(SCHEMA_VERSION)
         )
     {
@@ -1416,6 +1509,7 @@ pub(crate) fn refuse_ambiguous_legacy_wrappers(conn: &Connection) -> Result<(), 
                     Some(ATTACHMENT_ENVELOPE_SCHEMA_VERSION)
                         | Some(ATTACHMENT_MANIFEST_SCHEMA_VERSION)
                         | Some(BURN_TIMESTAMP_PRIVACY_SCHEMA_VERSION)
+                        | Some(RECEIPT_SCHEMA_VERSION)
                         | Some(SCHEMA_VERSION)
                 ))
         {
@@ -1659,7 +1753,7 @@ mod tests {
         assert!(table_exists(&conn, "message_device_acks").unwrap());
         assert_eq!(
             read_meta_u32(&conn, "schema_version").unwrap(),
-            Some(SCHEMA_VERSION)
+            Some(RECEIPT_SCHEMA_VERSION)
         );
 
         // Annotated as bytes: an unannotated `vec![0xA1]` infers Vec<i32>, which
@@ -1685,5 +1779,55 @@ mod tests {
             })
             .unwrap();
         assert_eq!(acknowledgements, 1);
+    }
+
+    #[test]
+    fn task_0409_migration_marks_all_old_messages_unable_without_guessed_grants() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE _meta (key TEXT PRIMARY KEY, value BLOB);
+             CREATE TABLE messages (mid_bi BLOB PRIMARY KEY);
+             INSERT INTO messages(mid_bi) VALUES (X'01'), (X'02'), (X'03'), (X'04');",
+        )
+        .unwrap();
+        write_meta_u32(&conn, "schema_version", RECEIPT_SCHEMA_VERSION).unwrap();
+
+        let old_messages: i64 = conn
+            .query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))
+            .unwrap();
+        migrate_v9_to_v10(&conn).unwrap();
+
+        let reported_bytes = read_meta_blob(&conn, REMOTE_BURN_LEGACY_UNABLE_COUNT_KEY)
+            .unwrap()
+            .unwrap();
+        let mut reported = [0u8; 8];
+        reported.copy_from_slice(&reported_bytes);
+        let reported_unable = u64::from_le_bytes(reported);
+        let unable_messages: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM messages
+                  WHERE destructive_remote_burn_state = ?1
+                    AND destructive_remote_burn_grant IS NULL",
+                params![REMOTE_BURN_UNABLE_STATE],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let guessed_grants: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM messages
+                  WHERE destructive_remote_burn_state = ?1
+                     OR destructive_remote_burn_grant IS NOT NULL",
+                params![REMOTE_BURN_SEPARATE_GRANT_STATE],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        println!(
+            "task_0409 remote burn migration: old_messages={old_messages} reported_unable={reported_unable} {REMOTE_BURN_UNABLE_STATE}={unable_messages} guessed_grants={guessed_grants}"
+        );
+        assert_eq!(reported_unable, old_messages as u64);
+        assert_eq!(unable_messages, old_messages);
+        assert_eq!(guessed_grants, 0);
+        assert_eq!(read_meta_u32(&conn, "schema_version").unwrap(), Some(10));
     }
 }
