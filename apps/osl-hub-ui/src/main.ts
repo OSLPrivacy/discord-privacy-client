@@ -169,6 +169,8 @@ import { CoalescedRealignment, NativeCallGate } from "./native-realignment";
 import { bindWindowLifecycleRealignment } from "./window-lifecycle-bindings";
 import { FrameRenderScheduler } from "./render-scheduler";
 import { whitelistDropdownMarkup } from "./whitelist-dropdown";
+import { settingsHomeMenuMarkup } from "./settings-home";
+import { whitelistingClearAll, whitelistingPendingChanges, whitelistingReset, whitelistingScreenMarkup, whitelistingSelectAll, whitelistingSetSearch, whitelistingToggleConversation, type WhitelistingConversation, type WhitelistingScreenState } from "./whitelisting-screen";
 import { defaultScrubSignalGroups, enabledScrubFindings, parseScrubSignalGroups, scrubSignalDefinitions, scrubSignalGroupFor, type ScrubSignalGroup } from "./scrub";
 import { loadMassCleanupCapabilities, type MassCleanupCapabilityManifest } from "./mass-cleanup";
 import { projectAutoScrubFleetStatus, type AutoScrubFleetStatus } from "./autoscrub-contract";
@@ -320,7 +322,7 @@ const NATIVE_DISCORD_COMPOSER_UNREACHABLE_EVENT = "osl://native-discord-composer
 const NATIVE_DISCORD_COMPOSER_UNREACHABLE_REASONS = ["zorder-band", "keyboard-focus", "session-ended"] as const;
 type NativeDiscordComposerUnreachableReason = (typeof NATIVE_DISCORD_COMPOSER_UNREACHABLE_REASONS)[number];
 type OnboardingRoute = "pro" | "welcome" | "create" | "import" | "unlock" | "keylost" | "account-recovery" | "recovery" | "mullvad" | "sending" | "defaults" | "tor" | "forward-secrecy" | "cover" | "silent-visible" | "visibility" | "passwords" | "burnpass" | "privacy" | "tutorial" | "detected" | "install" | "apps" | "browser" | "decoy";
-type SettingsSection = "account" | "apps" | "scrub" | "cleanup" | "notifications" | "appearance" | "about";
+type SettingsSection = "account" | "apps" | "whitelisting" | "scrub" | "cleanup" | "notifications" | "appearance" | "about";
 type SavedAccountMode = "ask" | "use" | "clean";
 type BurnScope = "chat" | "app" | "account";
 type BurnResult = {
@@ -651,6 +653,13 @@ let discordQaTranscriptVisibilityOutcome: DiscordQaTranscriptVisibilityOutcome =
 // might still need.
 let discordMarkerAvailable = true;
 let whitelistRosterOpen = false;
+// Whitelisting screen. The saved answer always comes from the hub (which chats
+// each verified person is approved in); these two hold only what the user has
+// typed and ticked since the screen was opened, so a re-render never invents an
+// approval and Reset has something real to go back to.
+let whitelistingSearch = "";
+let whitelistingDraft: readonly string[] | null = null;
+let whitelistingBusy = false;
 let onboardingComplete = false;
 let screenshotProtectionEnabled = false;
 let linkedServicesChecked = false;
@@ -4329,7 +4338,7 @@ export function primarySidebarMarkup(): string {
   const activeDestination = (id: OslPrimaryDestination): boolean => {
     if (id === "home") return route === "home" && !friendsDialogOpen;
     if (id === "inbox") return route === "inbox" || route === "osl-chat" || route === "osl-mail";
-    if (id === "people") return route === "people" || friendsDialogOpen;
+    if (id === "people") return route === "people" || friendsDialogOpen || (route === "settings" && settingsSection === "whitelisting");
     if (id === "privacy") return route === "privacy" || (route === "settings" && (settingsSection === "scrub" || settingsSection === "cleanup" || settingsSection === "appearance"));
     if (id === "activity") return route === "activity" || (route === "settings" && settingsSection === "notifications");
     if (id === "connections") return route === "connections" || route === "service" || route === "mullvad" || (route === "settings" && settingsSection === "apps");
@@ -5807,24 +5816,144 @@ function serviceGuideContent(service: LinkedService, step: ServiceGuideStep): st
 }
 
 function settingsContent(): string {
-  const items: Array<[SettingsSection, string]> = [["account", "Account"], ["apps", "Apps"], ["scrub", "Scrub"], ["cleanup", "Cleanup"], ["notifications", "Notifications"], ["appearance", "Appearance"], ["about", "About"]];
+  const items: Array<[SettingsSection, string]> = [["account", "Account"], ["apps", "Apps"], ["whitelisting", "Whitelisting"], ["scrub", "Scrub"], ["cleanup", "Cleanup"], ["notifications", "Notifications"], ["appearance", "Appearance"], ["about", "About"]];
   // These buttons pick a section WITHIN Settings, so they are not `page`.
   // Settings itself is the page, and the primary sidebar already marks it
   // `aria-current="page"`; marking a section button the same way put two
   // "current page" markers in one document and left a screen-reader user with no
   // way to tell which one was the destination. `aria-current="true"` is the
   // generic "this one is current in its own set".
-  return `<main class="content-viewport settings-page" aria-labelledby="route-heading"><nav class="settings-sidebar" aria-label="Settings"><h1 id="route-heading" tabindex="-1">Settings</h1>${items.map(([id, label]) => `<button data-settings="${id}" class="${settingsSection === id ? "active" : ""}" ${settingsSection === id ? 'aria-current="true"' : ""}>${label}</button>`).join("")}</nav><section class="settings-detail">${settingsSectionContent()}</section></main>`;
+  // The Settings home is this menu: every choice carries one line saying what
+  // is behind it, because "Scrub" and "Cleanup" are indistinguishable to a
+  // first-time user from their labels alone. settingsHomeMenuMarkup refuses to
+  // render if any of the eight choices is missing.
+  return `<main class="content-viewport settings-page" aria-labelledby="route-heading"><nav class="settings-sidebar settings-home" aria-label="Settings"><h1 id="route-heading" tabindex="-1">Settings</h1><p class="settings-home-intro">Choose what you want to change.</p>${settingsHomeMenuMarkup(items, settingsSection)}</nav><section class="settings-detail">${settingsSectionContent()}</section></main>`;
 }
 
 function settingsSectionContent(): string {
   if (settingsSection === "account") return `${identitySettingsContent()}${settingsDivider()}${passwordSecuritySettingsContent()}${accountAdvancedSettingsContent()}${renderRecoveryStatesSettings()}`;
   if (settingsSection === "apps") return `${serviceAccountsSettingsContent()}${optionalComponentsSettingsContent()}${sendingSettingsContent()}`;
+  if (settingsSection === "whitelisting") return whitelistingSettingsContent();
   if (settingsSection === "scrub") return privacySettingsContent();
   if (settingsSection === "cleanup") return massCleanupSettingsContent();
   if (settingsSection === "notifications") return notificationSettingsContent();
   if (settingsSection === "appearance") return appearanceSettingsContent();
   return updateSettingsContent();
+}
+
+// The allowed-conversation list the Whitelisting screen ticks. Every row is a
+// chat the hub already knows about for a verified person: the ones in
+// whitelistedScopes are allowed right now, the ones in reachNarrowedScopes are
+// chats that were taken back. That is the whole saved answer -- this screen
+// never invents a conversation the hub has not seen.
+const whitelistingRowSeparator = "::";
+
+function whitelistingConversationId(personId: string, storageKey: string): string {
+  return `${personId}${whitelistingRowSeparator}${storageKey}`;
+}
+
+function whitelistingConversationParts(id: string): { personId: string; storageKey: string } | null {
+  const at = id.indexOf(whitelistingRowSeparator);
+  if (at <= 0) return null;
+  return { personId: id.slice(0, at), storageKey: id.slice(at + whitelistingRowSeparator.length) };
+}
+
+function whitelistingRows(): { conversations: WhitelistingConversation[]; saved: string[] } {
+  const conversations: WhitelistingConversation[] = [];
+  const saved: string[] = [];
+  for (const person of hubPeople.filter((candidate) => candidate.safetyNumberVerified && !candidate.pendingKeyChange)) {
+    const nickname = person.alias ?? "Unnamed friend";
+    for (const scope of person.whitelistedScopes.slice(0, whitelistRosterScopeLimit)) {
+      const id = whitelistingConversationId(person.personId, scope.storageKey);
+      conversations.push({
+        id,
+        account: `Approved for ${nickname}`,
+        name: friendScopeLabel(scope),
+        kind: scope.userSpecific ? "Only this person" : "Anyone verified here",
+      });
+      saved.push(id);
+    }
+    for (const key of person.reachNarrowedScopes.slice(0, whitelistRosterScopeLimit)) {
+      conversations.push({
+        id: whitelistingConversationId(person.personId, key),
+        account: `Taken back for ${nickname}`,
+        name: narrowedScopeLabel(key),
+        kind: "Not allowed since you took it back",
+      });
+    }
+  }
+  return { conversations, saved };
+}
+
+function whitelistingScreenState(): WhitelistingScreenState {
+  const { conversations, saved } = whitelistingRows();
+  const known = new Set(conversations.map((conversation) => conversation.id));
+  // A draft can outlive the row it ticked (the hub reloads, a friend is
+  // removed). Dropping unknown ids keeps Save from writing to a chat that is no
+  // longer on screen.
+  const draft = whitelistingDraft === null ? saved : whitelistingDraft.filter((id) => known.has(id));
+  return { conversations, saved, draft, search: whitelistingSearch, busy: whitelistingBusy || discordQaHeaderBusy !== null };
+}
+
+function setWhitelistingState(next: WhitelistingScreenState): void {
+  whitelistingSearch = next.search;
+  whitelistingDraft = next.draft;
+  render();
+}
+
+// Save only ever removes. Approving a chat still has to happen from inside that
+// chat, where OSL can see which scope the user is actually standing in, so a tick
+// that turns ON is reported back as refused rather than silently written.
+async function saveWhitelistingSelection(): Promise<void> {
+  const state = whitelistingScreenState();
+  const changes = whitelistingPendingChanges(state);
+  if (changes.allow.length === 0 && changes.remove.length === 0) {
+    showToast("Nothing to save");
+    return;
+  }
+  const active = activeVerifiedDiscordQaPeer();
+  whitelistingBusy = true;
+  render();
+  let removed = 0;
+  const refused: string[] = [];
+  for (const id of changes.remove) {
+    const parts = whitelistingConversationParts(id);
+    if (!parts || !active || active.person.personId !== parts.personId) {
+      refused.push(id);
+      continue;
+    }
+    const updated = await revokeActiveHubFriendScope(active.context.contextToken, parts.personId, parts.storageKey);
+    if (!updated) {
+      refused.push(id);
+      continue;
+    }
+    removed += 1;
+    hubPeople = hubPeople.map((person) => person.personId === parts.personId ? updated : person);
+  }
+  hubPeople = await listHubPeople() ?? hubPeople;
+  whitelistingBusy = false;
+  whitelistingDraft = null;
+  render();
+  const blocked = refused.length + changes.allow.length;
+  showToast(blocked === 0
+    ? `Saved. ${removed} ${removed === 1 ? "conversation is" : "conversations are"} no longer allowed.`
+    : `Saved ${removed} of ${removed + blocked}. ${blocked} ${blocked === 1 ? "change needs" : "changes need"} that chat open first.`);
+}
+
+function whitelistingSettingsContent(): string {
+  const verified = hubPeople.filter((person) => person.safetyNumberVerified && !person.pendingKeyChange);
+  const active = activeVerifiedDiscordQaPeer();
+  const approvedChats = verified.reduce((total, person) => total + person.whitelistCount, 0);
+  const rows = verified.length
+    ? verified.map((person) => whitelistRosterPersonMarkup(
+      person,
+      active?.person.personId ?? null,
+      discordQaHeaderBusy !== null,
+      active?.context.scopeApproved === true,
+    )).join("")
+    : `<div class="empty-state compact"><strong>No verified people yet</strong><p>Verify a friend before any chat can be whitelisted.</p></div>`;
+  const roster = `<section class="settings-list whitelist-settings" data-settings-whitelisting aria-labelledby="whitelisting-people-title"><header><h2 id="whitelisting-people-title">Who is trusted where</h2><p>${verified.length.toLocaleString("en-US")} verified ${verified.length === 1 ? "person" : "people"} · ${approvedChats.toLocaleString("en-US")} approved ${approvedChats === 1 ? "chat" : "chats"}. A chat is approved from inside that chat; here you can review it or take it back.</p></header>${rows}</section>`;
+  return `${whitelistingScreenMarkup(whitelistingScreenState())}${settingsDivider()}${roster}`;
 }
 
 function optionalComponentsSettingsContent(): string {
@@ -8033,6 +8162,33 @@ function bindWorkspace(): void {
   document.querySelectorAll<HTMLButtonElement>("[data-whitelist-scope-remove]").forEach((button) => button.addEventListener("click", () => {
     void revokeWhitelistRosterScope(button.dataset.whitelistScopeRemove ?? "", button.dataset.whitelistScopeKey ?? "");
   }));
+  // Whitelisting screen. render() rebuilds the section, so the search box puts
+  // its own focus and caret back rather than dropping the user out of the field
+  // after every keystroke.
+  document.querySelector<HTMLInputElement>("#whitelisting-search")?.addEventListener("input", (event) => {
+    const input = event.currentTarget as HTMLInputElement;
+    const caret = input.selectionStart;
+    setWhitelistingState(whitelistingSetSearch(whitelistingScreenState(), input.value));
+    const restored = document.querySelector<HTMLInputElement>("#whitelisting-search");
+    if (!restored) return;
+    restored.focus({ preventScroll: true });
+    if (caret !== null) restored.setSelectionRange(caret, caret);
+  });
+  document.querySelectorAll<HTMLInputElement>("[data-whitelisting-conversation]").forEach((tick) => tick.addEventListener("change", () => {
+    setWhitelistingState(whitelistingToggleConversation(whitelistingScreenState(), tick.dataset.whitelistingConversation ?? "", tick.checked));
+  }));
+  document.querySelector<HTMLButtonElement>("[data-whitelisting-select-all]")?.addEventListener("click", () => {
+    setWhitelistingState(whitelistingSelectAll(whitelistingScreenState()));
+  });
+  document.querySelector<HTMLButtonElement>("[data-whitelisting-clear-all]")?.addEventListener("click", () => {
+    setWhitelistingState(whitelistingClearAll(whitelistingScreenState()));
+  });
+  document.querySelector<HTMLButtonElement>("[data-whitelisting-reset]")?.addEventListener("click", () => {
+    setWhitelistingState(whitelistingReset(whitelistingScreenState()));
+  });
+  document.querySelector<HTMLButtonElement>("[data-whitelisting-save]")?.addEventListener("click", () => {
+    void saveWhitelistingSelection();
+  });
   document.querySelector<HTMLButtonElement>("#discord-qa-transcript-visibility")?.addEventListener("click", () => {
     void toggleDiscordQaTranscriptVisibility();
   });
