@@ -696,14 +696,12 @@ pub mod security {
     use crate::core_bridge::HubCoreState;
 
     #[derive(Debug, Default)]
-    pub struct HubSecurityState {
-        friends: Mutex<HashMap<String, ManualPeerBinding>>,
-    }
+    pub struct HubSecurityState;
 
-    static FOCUSED_FRIENDS: OnceLock<Mutex<HashMap<String, ManualPeerBinding>>> = OnceLock::new();
+    static FOCUSED_ALLOWED_LIST: OnceLock<Mutex<HashMap<String, AllowedFriend>>> = OnceLock::new();
 
-    fn focused_friends() -> &'static Mutex<HashMap<String, ManualPeerBinding>> {
-        FOCUSED_FRIENDS.get_or_init(|| Mutex::new(HashMap::new()))
+    fn focused_allowed_list() -> &'static Mutex<HashMap<String, AllowedFriend>> {
+        FOCUSED_ALLOWED_LIST.get_or_init(|| Mutex::new(HashMap::new()))
     }
 
     #[derive(Debug, Clone, Serialize)]
@@ -719,15 +717,53 @@ pub mod security {
         pub person_id: String,
         pub osl_user_id: String,
         pub display_name: String,
+        pub email_address: Option<String>,
         pub safety_number: String,
         pub accepted: bool,
         pub verified: bool,
     }
 
     #[derive(Clone, Debug, Eq, PartialEq)]
+    struct AllowedFriend {
+        binding: ManualPeerBinding,
+        display_name: String,
+        email_address: Option<String>,
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
     pub struct ManualPeerBinding {
         pub person_id: String,
         pub peer_osl_user_id: String,
+    }
+
+    fn normalized_friend_email_address(address: &str) -> Result<String, String> {
+        let normalized = address.trim().to_ascii_lowercase();
+        let Some((local, domain)) = normalized.split_once('@') else {
+            return Err("OSL friend email address is invalid".to_owned());
+        };
+        if normalized.len() > 254
+            || local.is_empty()
+            || domain.is_empty()
+            || domain.contains('@')
+            || normalized
+                .bytes()
+                .any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace())
+        {
+            return Err("OSL friend email address is invalid".to_owned());
+        }
+        Ok(normalized)
+    }
+
+    fn person_dto(friend: &AllowedFriend, safety_number: String) -> PersonDto {
+        PersonDto {
+            person_id: friend.binding.person_id.clone(),
+            osl_user_id: friend.binding.peer_osl_user_id.clone(),
+            display_name: friend.display_name.clone(),
+            email_address: friend.email_address.clone(),
+            safety_number,
+            accepted: true,
+            verified: false,
+        }
     }
 
     pub fn export_friend_code(core: &HubCoreState) -> Result<FriendCodeExport, String> {
@@ -746,7 +782,7 @@ pub mod security {
 
     pub fn add_friend_code(
         _core: &HubCoreState,
-        security: &HubSecurityState,
+        _security: &HubSecurityState,
         friend_code: String,
         display_name: Option<String>,
     ) -> Result<PersonDto, String> {
@@ -756,35 +792,48 @@ pub mod security {
             .to_owned();
         let person_id = format!("task3982-person-{peer_osl_user_id}");
         let safety_number = format!("task3982-safety-{peer_osl_user_id}");
-        security
-            .friends
+        let display_name = display_name.unwrap_or_default();
+        let binding = ManualPeerBinding {
+            person_id: person_id.clone(),
+            peer_osl_user_id: peer_osl_user_id.clone(),
+        };
+        let friend = AllowedFriend {
+            binding,
+            display_name,
+            email_address: None,
+        };
+        focused_allowed_list()
             .lock()
             .map_err(|_| "OSL friend state is unavailable".to_owned())?
-            .insert(
-                person_id.clone(),
-                ManualPeerBinding {
-                    person_id: person_id.clone(),
-                    peer_osl_user_id: peer_osl_user_id.clone(),
-                },
-            );
-        focused_friends()
+            .insert(person_id, friend.clone());
+        Ok(person_dto(&friend, safety_number))
+    }
+
+    pub fn set_friend_email_address(
+        _security: &HubSecurityState,
+        person_id: String,
+        email_address: String,
+    ) -> Result<PersonDto, String> {
+        let normalized = normalized_friend_email_address(&email_address)?;
+        let mut friends = focused_allowed_list()
             .lock()
-            .map_err(|_| "OSL friend state is unavailable".to_owned())?
-            .insert(
-                person_id.clone(),
-                ManualPeerBinding {
-                    person_id: person_id.clone(),
-                    peer_osl_user_id: peer_osl_user_id.clone(),
-                },
-            );
-        Ok(PersonDto {
-            person_id,
-            osl_user_id: peer_osl_user_id,
-            display_name: display_name.unwrap_or_default(),
-            safety_number,
-            accepted: true,
-            verified: false,
-        })
+            .map_err(|_| "OSL friend state is unavailable".to_owned())?;
+        let duplicate_name = friends
+            .iter()
+            .filter(|(candidate_id, _)| candidate_id.as_str() != person_id.as_str())
+            .find(|(_, friend)| friend.email_address.as_deref() == Some(normalized.as_str()))
+            .map(|(_, friend)| friend.display_name.clone());
+        if let Some(name) = duplicate_name {
+            return Err(format!("OSL friend email address already belongs to {name}"));
+        }
+        let friend = friends
+            .get_mut(&person_id)
+            .ok_or_else(|| "OSL friend is unknown".to_owned())?;
+        friend.email_address = Some(normalized);
+        Ok(person_dto(
+            friend,
+            format!("task3982-safety-{}", friend.binding.peer_osl_user_id),
+        ))
     }
 
     pub fn verify_friend_safety_number(
@@ -800,11 +849,25 @@ pub mod security {
         _core: &HubCoreState,
         person_id: String,
     ) -> Result<ManualPeerBinding, String> {
-        focused_friends()
+        focused_allowed_list()
             .lock()
             .map_err(|_| "OSL friend state is unavailable".to_owned())?
             .get(&person_id)
-            .cloned()
+            .map(|friend| friend.binding.clone())
+            .ok_or_else(|| "OSL sender is not a friend".to_owned())
+    }
+
+    pub fn manual_peer_binding_for_email_address(
+        _core: &HubCoreState,
+        email_address: &str,
+    ) -> Result<ManualPeerBinding, String> {
+        let normalized = normalized_friend_email_address(email_address)?;
+        focused_allowed_list()
+            .lock()
+            .map_err(|_| "OSL friend state is unavailable".to_owned())?
+            .values()
+            .find(|friend| friend.email_address.as_deref() == Some(normalized.as_str()))
+            .map(|friend| friend.binding.clone())
             .ok_or_else(|| "OSL sender is not a friend".to_owned())
     }
 
