@@ -904,6 +904,8 @@ pub fn find_possible_matches_in_read_messages(
     Ok(matches)
 }
 
+// OSL-FINISH-ONLY-TESTS-DELIBERATE: finish_active_service_account_run_notice/2 is a tested active queued-account completion formatter kept until the live UI finish event is wired.
+// The command path currently exposes queue progress.
 pub fn finish_active_service_account_run_notice(
     queue: &ServiceAccountRunQueue,
     match_count: usize,
@@ -2482,6 +2484,7 @@ pub struct FinishedServiceAccountRunNotice {
     pub detail: String,
 }
 
+// OSL-FINISH-ONLY-TESTS-DELIBERATE: finish_active_service_account_run_notice/5 is a tested hosted-account completion DTO kept because no runtime command starts this finish toast yet.
 pub fn finish_active_service_account_run_notice(
     service_id: ServiceKind,
     run_id: &str,

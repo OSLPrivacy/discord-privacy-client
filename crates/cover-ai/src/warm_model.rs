@@ -55,6 +55,7 @@ impl<M: ResidentModel> WarmModel<M> {
     /// Install a model only after the background loader has completed. Models
     /// above the declared pack working-set ceiling are rejected before they can
     /// become resident.
+    // OSL-FINISH-ONLY-TESTS-DELIBERATE: finish_load/2 is intentionally test-held until the default product wires the background local-model loader.
     pub fn finish_load(&mut self, model: M, now: Instant) -> Result<(), M> {
         self.loading = false;
         if model.working_set_bytes() > self.max_working_set_bytes {
