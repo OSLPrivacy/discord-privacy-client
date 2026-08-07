@@ -1,3 +1,17 @@
+fn verify_marked_placement(before: &str, after: &str, mark: &str) -> Result<(), String> {
+    if !before.trim().is_empty() {
+        return Err(format!(
+            "composer was not empty before placement: {before:?}"
+        ));
+    }
+    if after != mark {
+        return Err(format!(
+            "readback did not equal placed mark {mark:?}: {after:?}"
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(target_os = "windows")]
 mod windows_place_text {
     use std::ffi::{c_void, OsString};
@@ -184,7 +198,8 @@ mod windows_place_text {
 
         let _com = initialize_com()?;
         let automation = automation()?;
-        let root = discord_accessibility_root(&automation, discord.hwnd)?;
+        let (root, root_route) = accessibility_root(&automation, discord.hwnd)?;
+        println!("root_route={root_route}");
         wait_for_tree(&root, &automation)?;
         let composer = find_composer(&root, &automation)?;
         println!("composer_name={:?}", element_name(&composer));
@@ -195,6 +210,15 @@ mod windows_place_text {
             "composer_bounds={},{},{},{}",
             bounds[0], bounds[1], bounds[2], bounds[3]
         );
+
+        let before_readback = value_of(&composer).unwrap_or_default();
+        println!("before_readback={before_readback:?}");
+        if !before_readback.trim().is_empty() {
+            return Err(CommandError::exit1(format!(
+                "{} composer was not empty before placement: {:?}",
+                args.app, before_readback
+            )));
+        }
 
         click_composer(bounds, discord.hwnd)?;
         thread::sleep(Duration::from_millis(180));
@@ -234,12 +258,8 @@ mod windows_place_text {
         println!("clipboard_restored_exact={}", before_digest == after_digest);
         println!("osl_clipboard_entries=0");
 
-        if readback != args.text {
-            return Err(CommandError::exit1(format!(
-                "{} readback did not equal {:?}",
-                args.app, args.text
-            )));
-        }
+        super::verify_marked_placement(&before_readback, &readback, &args.text)
+            .map_err(|error| CommandError::exit1(format!("{} {error}", args.app)))?;
         if before_digest != after_digest {
             return Err(CommandError::exit1(
                 "clipboard content changed across placement",
@@ -315,13 +335,24 @@ mod windows_place_text {
         })
     }
 
-    fn discord_accessibility_root(
+    fn accessibility_root(
         automation: &IUIAutomation,
         hwnd: HWND,
-    ) -> Result<IUIAutomationElement, CommandError> {
+    ) -> Result<(IUIAutomationElement, &'static str), CommandError> {
+        if let Ok(root) =
+            unsafe { automation.ElementFromHandle(windows::Win32::Foundation::HWND(hwnd as _)) }
+        {
+            if subtree_len(&root, automation) >= MIN_TREE_ELEMENTS
+                && find_composer(&root, automation).is_ok()
+            {
+                return Ok((root, "uia_native"));
+            }
+        }
+
         let accessible = wake_electron_accessibility(hwnd)
-            .ok_or_else(|| CommandError::exit1("Discord accessibility wake failed"))?;
+            .ok_or_else(|| CommandError::exit1("accessibility root not available"))?;
         unsafe { automation.ElementFromIAccessible(&accessible, 0) }
+            .map(|root| (root, "msaa_client_after_wake"))
             .map_err(|error| CommandError::exit1(format!("MSAA bridge failed: {error:?}")))
     }
 
@@ -686,9 +717,7 @@ mod windows_place_text {
                 }
                 let size = unsafe { GlobalSize(handle as _) };
                 if size == 0 {
-                    return Err(format!(
-                        "clipboard format {format} is not byte-copyable"
-                    ));
+                    return Err(format!("clipboard format {format} is not byte-copyable"));
                 }
                 let source = unsafe { GlobalLock(handle as _) };
                 if source.is_null() {
@@ -848,4 +877,35 @@ fn main() {
 fn main() {
     eprintln!("task_3406_place_text requires Windows");
     std::process::exit(2);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::verify_marked_placement;
+
+    fn random_mark() -> String {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock is after epoch")
+            .as_nanos();
+        format!("TASK3415-{nanos:x}-OSL")
+    }
+
+    #[test]
+    fn task_3415_empty_before_exact_after_check_is_not_vacuous() {
+        let mark = random_mark();
+
+        assert!(verify_marked_placement("", &mark, &mark).is_ok());
+        let dirty = verify_marked_placement("owner draft", &mark, &mark)
+            .expect_err("a non-empty composer must fail before placement");
+        let noop = verify_marked_placement("", "", &mark)
+            .expect_err("a no-op placing job must fail the exact readback");
+
+        eprintln!(
+            "task3415 mark={mark:?} before={:?} after={mark:?} noop_after={:?} noop_failed=true",
+            "", ""
+        );
+        assert!(dirty.contains("not empty"));
+        assert!(noop.contains("readback did not equal placed mark"));
+    }
 }
