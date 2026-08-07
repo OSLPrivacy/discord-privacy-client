@@ -197,6 +197,7 @@ pub mod privacy_scan;
 pub mod pro_context_cover;
 pub mod proprietary_module_boundary;
 pub mod proprietary_module_lifecycle;
+pub mod protected_clipboard;
 pub mod scrub_erasure;
 pub mod scrub_erasure_queue;
 pub mod scrub_erasure_tracker;
