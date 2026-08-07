@@ -67,7 +67,14 @@ pub fn normalize_app_kind(raw: &str) -> Result<String, String> {
 
 pub const X_DIRECT_MESSAGE_PLACE_KIND: &str = "direct_message";
 pub const X_PUBLIC_POST_PLACE_KIND: &str = "public_post";
-pub const X_PLACE_KINDS: [&str; 2] = [X_DIRECT_MESSAGE_PLACE_KIND, X_PUBLIC_POST_PLACE_KIND];
+pub const X_GROUP_DIRECT_MESSAGE_PLACE_KIND: &str = "group_direct_message";
+pub const X_REPLY_PLACE_KIND: &str = "reply";
+pub const X_PLACE_KINDS: [&str; 4] = [
+    X_DIRECT_MESSAGE_PLACE_KIND,
+    X_GROUP_DIRECT_MESSAGE_PLACE_KIND,
+    X_PUBLIC_POST_PLACE_KIND,
+    X_REPLY_PLACE_KIND,
+];
 
 pub fn normalize_place_kind_for_app(app_kind: &str, raw: &str) -> Result<String, String> {
     let place_kind = normalize_place_kind(raw)?;
@@ -151,8 +158,8 @@ pub enum InstagramWhitelistKind {
     DirectMessage,
     GroupChat,
     PublicPost,
+    Comment,
     Story,
-    Reel,
 }
 
 impl InstagramWhitelistKind {
@@ -160,8 +167,8 @@ impl InstagramWhitelistKind {
         Self::DirectMessage,
         Self::GroupChat,
         Self::PublicPost,
+        Self::Comment,
         Self::Story,
-        Self::Reel,
     ];
 
     pub fn id(self) -> &'static str {
@@ -169,8 +176,8 @@ impl InstagramWhitelistKind {
             Self::DirectMessage => "direct_message",
             Self::GroupChat => "group_chat",
             Self::PublicPost => "public_post",
+            Self::Comment => "comment",
             Self::Story => "story",
-            Self::Reel => "reel",
         }
     }
 
@@ -179,8 +186,8 @@ impl InstagramWhitelistKind {
             Self::DirectMessage => "direct message",
             Self::GroupChat => "group chat",
             Self::PublicPost => "public post",
+            Self::Comment => "comment",
             Self::Story => "story",
-            Self::Reel => "reel",
         }
     }
 }
@@ -234,16 +241,26 @@ impl TelegramWhitelistKind {
 pub enum SignalWhitelistKind {
     DirectMessage,
     GroupChat,
+    Group,
+    NoteToSelf,
     Story,
 }
 
 impl SignalWhitelistKind {
-    pub const ALL: [Self; 3] = [Self::DirectMessage, Self::GroupChat, Self::Story];
+    pub const ALL: [Self; 5] = [
+        Self::DirectMessage,
+        Self::GroupChat,
+        Self::Group,
+        Self::NoteToSelf,
+        Self::Story,
+    ];
 
     pub fn id(self) -> &'static str {
         match self {
             Self::DirectMessage => "direct_message",
             Self::GroupChat => "group_chat",
+            Self::Group => "group",
+            Self::NoteToSelf => "note_to_self",
             Self::Story => "story",
         }
     }
@@ -252,6 +269,8 @@ impl SignalWhitelistKind {
         match self {
             Self::DirectMessage => "direct message",
             Self::GroupChat => "group chat",
+            Self::Group => "group",
+            Self::NoteToSelf => "note to self",
             Self::Story => "story",
         }
     }
@@ -263,7 +282,9 @@ impl SignalWhitelistKind {
     pub fn auto_rule_app_kind(self) -> AutoWhitelistAppKind {
         match self {
             Self::DirectMessage => AutoWhitelistAppKind::SignalDirectMessage,
-            Self::GroupChat | Self::Story => AutoWhitelistAppKind::SignalGroupChat,
+            Self::GroupChat | Self::Group | Self::NoteToSelf | Self::Story => {
+                AutoWhitelistAppKind::SignalGroupChat
+            }
         }
     }
 
@@ -271,6 +292,8 @@ impl SignalWhitelistKind {
         match self {
             Self::DirectMessage => "signal:direct_message",
             Self::GroupChat => "signal:group_chat",
+            Self::Group => "signal:group",
+            Self::NoteToSelf => "signal:note_to_self",
             Self::Story => "signal:story",
         }
     }
@@ -285,15 +308,17 @@ impl SignalWhitelistKind {
 pub enum MessengerWhitelistKind {
     DirectMessage,
     GroupChat,
+    Community,
 }
 
 impl MessengerWhitelistKind {
-    pub const ALL: [Self; 2] = [Self::DirectMessage, Self::GroupChat];
+    pub const ALL: [Self; 3] = [Self::DirectMessage, Self::GroupChat, Self::Community];
 
     pub fn id(self) -> &'static str {
         match self {
             Self::DirectMessage => "direct_message",
             Self::GroupChat => "group_chat",
+            Self::Community => "community",
         }
     }
 
@@ -301,6 +326,7 @@ impl MessengerWhitelistKind {
         match self {
             Self::DirectMessage => "direct message",
             Self::GroupChat => "group chat",
+            Self::Community => "community",
         }
     }
 }
@@ -424,17 +450,21 @@ pub fn normalize_auto_whitelist_app_kind(input: &str) -> Result<String, String> 
 pub enum DiscordWhitelistKind {
     DirectMessage,
     GroupChat,
+    GroupDm,
     Server,
     ServerChannel,
+    Channel,
     Thread,
 }
 
 impl DiscordWhitelistKind {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 7] = [
         Self::DirectMessage,
         Self::GroupChat,
+        Self::GroupDm,
         Self::Server,
         Self::ServerChannel,
+        Self::Channel,
         Self::Thread,
     ];
 
@@ -442,8 +472,10 @@ impl DiscordWhitelistKind {
         match self {
             Self::DirectMessage => "direct_message",
             Self::GroupChat => "group_chat",
+            Self::GroupDm => "group_dm",
             Self::Server => "server",
             Self::ServerChannel => "server_channel",
+            Self::Channel => "channel",
             Self::Thread => "thread",
         }
     }
@@ -452,8 +484,10 @@ impl DiscordWhitelistKind {
         match self {
             Self::DirectMessage => "direct message",
             Self::GroupChat => "group chat",
+            Self::GroupDm => "group DM",
             Self::Server => "server",
             Self::ServerChannel => "server channel",
+            Self::Channel => "channel",
             Self::Thread => "thread",
         }
     }
@@ -588,16 +622,29 @@ pub enum WhatsAppWhitelistKind {
     DirectMessage,
     GroupChat,
     Channel,
+    Community,
+    CommunityGroup,
+    BroadcastList,
 }
 
 impl WhatsAppWhitelistKind {
-    pub const ALL: [Self; 3] = [Self::DirectMessage, Self::GroupChat, Self::Channel];
+    pub const ALL: [Self; 6] = [
+        Self::DirectMessage,
+        Self::GroupChat,
+        Self::Channel,
+        Self::Community,
+        Self::CommunityGroup,
+        Self::BroadcastList,
+    ];
 
     pub fn id(self) -> &'static str {
         match self {
             Self::DirectMessage => "direct_message",
             Self::GroupChat => "group_chat",
             Self::Channel => "channel",
+            Self::Community => "community",
+            Self::CommunityGroup => "community_group",
+            Self::BroadcastList => "broadcast_list",
         }
     }
 
@@ -606,6 +653,9 @@ impl WhatsAppWhitelistKind {
             Self::DirectMessage => "direct message",
             Self::GroupChat => "group chat",
             Self::Channel => "channel",
+            Self::Community => "community",
+            Self::CommunityGroup => "community group",
+            Self::BroadcastList => "broadcast list",
         }
     }
 
@@ -614,6 +664,9 @@ impl WhatsAppWhitelistKind {
             Self::DirectMessage => "whatsapp:direct_message",
             Self::GroupChat => "whatsapp:group_chat",
             Self::Channel => "whatsapp:channel",
+            Self::Community => "whatsapp:community",
+            Self::CommunityGroup => "whatsapp:community_group",
+            Self::BroadcastList => "whatsapp:broadcast_list",
         }
     }
 
