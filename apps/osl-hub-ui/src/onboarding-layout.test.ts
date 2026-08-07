@@ -848,6 +848,8 @@ describe("fresh-account continuation", () => {
     expect(content).toContain("Enter Pro code");
     expect(content).toContain('id="activation-form"');
     expect(content).toContain('id="continue-pro-ready"');
+    expect(content).toContain('data-onboarding="forward-secrecy"');
+    expect(content).not.toContain('data-onboarding="sending"');
     expect(binding).toContain('"#activation-form"');
     expect(activation).toContain("validateHubActivationCode(activationCode)");
     expect(activation).toContain("proOnboardingReadyResult = true");

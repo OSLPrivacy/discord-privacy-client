@@ -1366,8 +1366,16 @@ pub fn run_inactivity_auto_lock_timer_for_state(
     if get_file_storage_key().is_none() {
         return InactivityAutoLockOutcome::AlreadyLocked;
     }
-    let timer =
-        keystore::InactivityTimer::with_last_activity(INACTIVITY_AUTO_LOCK_SECONDS, last_activity);
+    let Some(seconds) = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .idle_lock_time_choice
+        .seconds()
+    else {
+        return InactivityAutoLockOutcome::StillUnlocked;
+    };
+    let timer = keystore::InactivityTimer::with_last_activity(seconds, last_activity);
     if timer.should_reprompt_at(now) {
         lock_main_password_session(state);
         InactivityAutoLockOutcome::Locked
@@ -1465,14 +1473,15 @@ fn inactivity_auto_lock_slot() -> &'static Mutex<Option<keystore::InactivityTime
     INACTIVITY_AUTO_LOCK_TIMER.get_or_init(|| Mutex::new(None))
 }
 
-fn arm_inactivity_auto_lock_timer_at(now: Instant) {
+fn arm_inactivity_auto_lock_timer_with_seconds_at(seconds: u64, now: Instant) {
     let mut slot = inactivity_auto_lock_slot()
         .lock()
         .expect("inactivity auto-lock timer mutex poisoned");
-    *slot = Some(keystore::InactivityTimer::with_last_activity(
-        keystore::DEFAULT_INACTIVITY_SECONDS,
-        now,
-    ));
+    *slot = Some(keystore::InactivityTimer::with_last_activity(seconds, now));
+}
+
+fn arm_inactivity_auto_lock_timer_at(now: Instant) {
+    arm_inactivity_auto_lock_timer_with_seconds_at(keystore::DEFAULT_INACTIVITY_SECONDS, now);
 }
 
 fn disarm_inactivity_auto_lock_timer() {
@@ -1487,10 +1496,51 @@ fn set_file_storage_key_after_main_password_unlock_at(key: [u8; 32], now: Instan
     arm_inactivity_auto_lock_timer_at(now);
 }
 
+fn set_file_storage_key_after_main_password_unlock_with_choice_at(
+    key: [u8; 32],
+    choice: crate::app_preferences::IdleLockTimeChoice,
+    now: Instant,
+) {
+    set_file_storage_key(Some(key));
+    configure_file_key_inactivity_auto_lock_for_choice_at(choice, now);
+}
+
 /// Install a password-derived file storage key and arm the 15-minute
 /// inactivity auto-lock timer for this unlocked session.
 pub fn set_file_storage_key_after_main_password_unlock(key: [u8; 32]) {
     set_file_storage_key_after_main_password_unlock_at(key, Instant::now());
+}
+
+/// Install a password-derived file storage key and arm, shorten, or disable
+/// the file-key inactivity timer according to the user's saved lock choice.
+pub fn set_file_storage_key_after_main_password_unlock_with_choice(
+    key: [u8; 32],
+    choice: crate::app_preferences::IdleLockTimeChoice,
+) {
+    set_file_storage_key_after_main_password_unlock_with_choice_at(key, choice, Instant::now());
+}
+
+/// Reconfigure the file-key-only legacy timer for the currently unlocked
+/// session. The full session lock is authoritative, but this older timer still
+/// protects low-level file reads, so it must observe the same `never` choice.
+pub fn configure_file_key_inactivity_auto_lock_for_choice(
+    choice: crate::app_preferences::IdleLockTimeChoice,
+) {
+    configure_file_key_inactivity_auto_lock_for_choice_at(choice, Instant::now());
+}
+
+fn configure_file_key_inactivity_auto_lock_for_choice_at(
+    choice: crate::app_preferences::IdleLockTimeChoice,
+    now: Instant,
+) {
+    if get_file_storage_key().is_none() {
+        disarm_inactivity_auto_lock_timer();
+        return;
+    }
+    match choice.seconds() {
+        Some(seconds) => arm_inactivity_auto_lock_timer_with_seconds_at(seconds, now),
+        None => disarm_inactivity_auto_lock_timer(),
+    }
 }
 
 /// Clear the unlocked file key after 15 idle minutes. Returns true when this
@@ -1874,7 +1924,7 @@ pub fn has_enc_magic(blob: &[u8]) -> bool {
 pub const AT_REST_STATE_FILES: &[&str] = &[
     "peer_map.json",
     "whitelist_state.json",
-    "burned_scopes.json",
+    crate::burned_scopes_file::BURNED_SCOPES_FILE_NAME,
     "app_preferences.json",
     "sender_key_state.json",
     "membership.json",
@@ -2474,7 +2524,7 @@ pub fn burn_wipe_all(dir: &Path) -> Result<(), String> {
         "password_marker.json",
         "lockout_state.json",
         // 7d-FIX1: also wipe burned-scopes ledger.
-        "burned_scopes.json",
+        crate::burned_scopes_file::BURNED_SCOPES_FILE_NAME,
         // BURN-CLEANSLATE: app_preferences.json and
         // sender_key_state.json are sealed under file_storage_key
         // (the main password) just like peer_map/whitelist_state,

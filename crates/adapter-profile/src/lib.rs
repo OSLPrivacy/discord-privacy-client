@@ -31,6 +31,9 @@ pub use defaults_web::{
     capabilities_from_profile, icloud_web_control_targets, proton_web_control_targets,
     validate_icloud_web_control_targets, x_web_default_capability_profile, x_web_default_profile,
     x_web_default_trusted_signing_key_b64, EmailWebControlStrategy, EmailWebControlTarget,
+    capabilities_from_profile, tuta_web_mail_targets, x_web_default_capability_profile,
+    x_web_default_profile, x_web_default_trusted_signing_key_b64, yahoo_web_mail_targets,
+    TutaWebTarget, YahooWebTarget,
 };
 pub use envelope::{
     canonical_profile_digest, EnvelopeError, SignedProfile, ADAPTER_PROFILE_ENVELOPE_DOMAIN,

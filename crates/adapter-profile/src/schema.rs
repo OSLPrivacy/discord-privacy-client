@@ -149,6 +149,7 @@ pub enum AdapterService {
     Gmail,
     Outlook,
     Proton,
+    Tuta,
     Yahoo,
     Aol,
     Gmx,
@@ -472,8 +473,13 @@ pub enum SelectorKind {
     MessageList,
     MessageRow,
     MessageRowAuthor,
+    ComposeButton,
     ComposerInput,
+    BodyInput,
     SendButton,
+    FolderList,
+    ThreadView,
+    ReadingPane,
     SentState,
 }
 

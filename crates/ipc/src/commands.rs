@@ -93,6 +93,63 @@ pub struct AllowedPlaceDirectionStateDto {
     pub verification_state: String,
     pub first_to_second: bool,
     pub second_to_first: bool,
+pub fn cmd_osl_list_telegram_whitelist_kinds() -> Vec<crate::allowed_places::AllowedPlaceKind> {
+    crate::allowed_places::telegram_whitelist_kinds()
+}
+
+pub fn cmd_osl_add_allowed_place_record(
+    state: &AppState,
+    app: String,
+    account: String,
+    kind: String,
+    stable_id: String,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<crate::allowed_places::AllowedPlaceRecord, String> {
+    record_activity_on_command_entry();
+    let record = crate::allowed_places::AllowedPlaceRecord {
+        app,
+        account,
+        kind,
+        stable_id,
+    };
+    crate::allowed_places::validate_allowed_place_record(&record)?;
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        if let Some(existing) = prefs.allowed_place_records.get(&record.stable_id) {
+            if existing != &record {
+                return Err(
+                    "OSL: allowed-place stable ID already belongs to a different record"
+                        .to_string(),
+                );
+            }
+        }
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs
+            .allowed_place_records
+            .insert(record.stable_id.clone(), record.clone());
+        if let Some(dir) = config_dir {
+            let path = dir.join("app_preferences.json");
+            crate::app_preferences::write_app_preferences(&path, &prefs)?;
+        }
+    }
+    Ok(record)
+}
+
+pub fn cmd_osl_list_allowed_place_records(
+    state: &AppState,
+) -> Result<Vec<crate::allowed_places::AllowedPlaceRecord>, String> {
+    record_activity_on_command_entry();
+    Ok(state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .allowed_place_records
+        .values()
+        .cloned()
+        .collect())
 }
 
 // 9-TD2.3: F0-FIX3 trace logs.
@@ -126,6 +183,13 @@ fn record_activity_on_command_entry() {
     crate::session_lock::note_activity();
 }
 
+fn record_activity_on_command_entry_for_state(state: &AppState) {
+    #[cfg(test)]
+    COMMAND_ACTIVITY_MARK_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    crate::main_password::mark_inactivity_timer_activity();
+    crate::session_lock::note_activity_for_state(state);
+}
+
 /// A7 lock enforcement for a secret-bearing command.
 ///
 /// `record_activity_on_command_entry` alone was never a lock: its only
@@ -142,7 +206,7 @@ fn guard_session_on_command_entry(state: &AppState) -> Result<(), String> {
     if crate::session_lock::run_idle_session_lock(state) {
         return Err(crate::session_lock::SESSION_LOCKED_ERROR.to_string());
     }
-    record_activity_on_command_entry();
+    record_activity_on_command_entry_for_state(state);
     Ok(())
 }
 
@@ -15806,7 +15870,7 @@ const OSL_EXPORT_FILES: &[&str] = &[
     "whitelist_state.json",
     "sender_key_state.json",
     "channels.json",
-    "burned_scopes.json",
+    crate::burned_scopes_file::BURNED_SCOPES_FILE_NAME,
     "membership.json",
     "scope_ttl.json",
     "scope_blobs.json",
@@ -21450,6 +21514,144 @@ pub fn cmd_osl_set_update_channel(
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct AutoWhitelistRuleChoiceDto {
+    pub id: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct AutoWhitelistRuleDto {
+    pub app_kind: String,
+    pub choice: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct TelegramAutoWhitelistRuleDto {
+    pub rule_lookup: String,
+    pub choice: String,
+    pub allowed_place: crate::allowed_places::AllowedPlaceRecord,
+}
+
+pub fn cmd_osl_get_auto_whitelist_rule_choices() -> Result<Vec<AutoWhitelistRuleChoiceDto>, String>
+{
+    record_activity_on_command_entry();
+    Ok(crate::auto_whitelist_rules::AutoWhitelistChoice::ALL
+        .into_iter()
+        .map(|choice| AutoWhitelistRuleChoiceDto {
+            id: choice.id().to_string(),
+            label: choice.label().to_string(),
+        })
+        .collect())
+}
+
+pub fn cmd_osl_save_auto_whitelist_rule(
+    state: &AppState,
+    app_kind: String,
+    choice: String,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<AutoWhitelistRuleDto, String> {
+    record_activity_on_command_entry();
+    let app_kind = crate::auto_whitelist_rules::app_kind_rule_lookup(&app_kind)?;
+    let choice = crate::auto_whitelist_rules::parse_auto_whitelist_choice(&choice)?;
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs.auto_whitelist_rules.insert(app_kind.clone(), choice);
+        if let Some(dir) = config_dir {
+            let path = dir.join("app_preferences.json");
+            crate::app_preferences::write_app_preferences(&path, &prefs)?;
+        }
+    }
+    Ok(AutoWhitelistRuleDto {
+        app_kind,
+        choice: choice.label().to_string(),
+    })
+}
+
+pub fn cmd_osl_read_auto_whitelist_rule(
+    state: &AppState,
+    app_kind: String,
+) -> Result<AutoWhitelistRuleDto, String> {
+    record_activity_on_command_entry();
+    let app_kind = crate::auto_whitelist_rules::app_kind_rule_lookup(&app_kind)?;
+    let choice = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .auto_whitelist_rules
+        .get(&app_kind)
+        .copied()
+        .unwrap_or_default();
+    Ok(AutoWhitelistRuleDto {
+        app_kind,
+        choice: choice.label().to_string(),
+    })
+}
+
+pub fn cmd_osl_save_telegram_auto_whitelist_rule(
+    state: &AppState,
+    account: String,
+    kind: String,
+    place_id: String,
+    choice: String,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<TelegramAutoWhitelistRuleDto, String> {
+    record_activity_on_command_entry();
+    let allowed_place =
+        crate::allowed_places::AllowedPlaceRecord::telegram(account, &kind, place_id)?;
+    let rule_lookup = crate::auto_whitelist_rules::telegram_kind_rule_lookup(&allowed_place.kind)?;
+    let choice = crate::auto_whitelist_rules::parse_auto_whitelist_choice(&choice)?;
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs
+            .auto_whitelist_rules
+            .insert(rule_lookup.clone(), choice);
+        if let Some(dir) = config_dir {
+            let path = dir.join("app_preferences.json");
+            crate::app_preferences::write_app_preferences(&path, &prefs)?;
+        }
+    }
+    Ok(TelegramAutoWhitelistRuleDto {
+        rule_lookup,
+        choice: choice.label().to_string(),
+        allowed_place,
+    })
+}
+
+pub fn cmd_osl_read_telegram_auto_whitelist_rule(
+    state: &AppState,
+    account: String,
+    kind: String,
+    place_id: String,
+) -> Result<TelegramAutoWhitelistRuleDto, String> {
+    record_activity_on_command_entry();
+    let allowed_place =
+        crate::allowed_places::AllowedPlaceRecord::telegram(account, &kind, place_id)?;
+    let rule_lookup = crate::auto_whitelist_rules::telegram_kind_rule_lookup(&allowed_place.kind)?;
+    let choice = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .auto_whitelist_rules
+        .get(&rule_lookup)
+        .copied()
+        .unwrap_or_default();
+    Ok(TelegramAutoWhitelistRuleDto {
+        rule_lookup,
+        choice: choice.label().to_string(),
+        allowed_place,
+    })
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct PrivacyLevelRuleSetDto {
     pub level: String,
     pub label: String,
@@ -21469,6 +21671,8 @@ impl PrivacyLevelRuleSetDto {
         Self {
             level: level.id().to_owned(),
             label: level.label().to_owned(),
+            level: level.id().to_string(),
+            label: level.label().to_string(),
             before_send_warnings: rules.before_send_warnings,
             attachment_cleaning: rules.attachment_cleaning,
             cleanup_review_days: rules.cleanup_review_days,
@@ -21480,6 +21684,7 @@ impl PrivacyLevelRuleSetDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct PrivacyProtectionChoicesDto {
     pub level: String,
     pub label: String,
@@ -21502,6 +21707,7 @@ impl PrivacyProtectionChoicesDto {
         };
         let cleanup = match (rules.attachment_cleaning, rules.cleanup_review_days) {
             (false, 0) => "cleanup_off".to_owned(),
+            (false, 0) => "cleanup_off".to_string(),
             (false, days) => format!("cleanup_review_{days}_days"),
             (true, days) => format!("attachment_cleaning_plus_{days}_day_review"),
         };
@@ -21533,6 +21739,12 @@ impl PrivacyProtectionChoicesDto {
             cleanup,
             app_exceptions: app_exceptions.to_owned(),
             contact_rules: contact_rules.to_owned(),
+            level: level.id().to_string(),
+            label: level.label().to_string(),
+            warnings: warnings.to_string(),
+            cleanup,
+            app_exceptions: app_exceptions.to_string(),
+            contact_rules: contact_rules.to_string(),
         }
     }
 }
@@ -21564,6 +21776,7 @@ pub fn cmd_osl_save_privacy_level_rule_set(
     state: &AppState,
     level: String,
     config_dir: Option<PathBuf>,
+    config_dir: Option<std::path::PathBuf>,
 ) -> Result<PrivacyLevelRuleSetDto, String> {
     record_activity_on_command_entry();
     let level = crate::app_preferences::parse_privacy_level(&level)?;
@@ -21718,6 +21931,61 @@ fn mutate_app_preferences_result<T>(
     update: impl FnOnce(&mut crate::app_preferences::AppPreferences) -> T,
 ) -> Result<T, String> {
     let (previous, value) = {
+            .insert(level.id().to_string(), rules);
+        if let Some(dir) = config_dir {
+            let path = dir.join("app_preferences.json");
+            crate::app_preferences::write_app_preferences(&path, &prefs)?;
+        }
+    }
+    Ok(PrivacyLevelRuleSetDto::from_parts(level, rules))
+}
+
+pub fn cmd_osl_read_privacy_level_rule_set(
+    state: &AppState,
+    level: String,
+) -> Result<PrivacyLevelRuleSetDto, String> {
+    record_activity_on_command_entry();
+    let level = crate::app_preferences::parse_privacy_level(&level)?;
+    let rules = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .privacy_level_rule_sets
+        .get(level.id())
+        .copied()
+        .unwrap_or_else(|| crate::app_preferences::PrivacyLevelRuleSet::for_level(level));
+    Ok(PrivacyLevelRuleSetDto::from_parts(level, rules))
+}
+
+pub fn cmd_osl_read_privacy_protection_choices(
+    state: &AppState,
+) -> Result<PrivacyProtectionChoicesDto, String> {
+    record_activity_on_command_entry();
+    let (level, rules) = saved_privacy_level_and_rules(state);
+    Ok(PrivacyProtectionChoicesDto::from_parts(level, rules))
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct VerificationWarningChoiceDto {
+    pub choice: String,
+}
+
+impl From<crate::app_preferences::VerificationWarningChoice> for VerificationWarningChoiceDto {
+    fn from(choice: crate::app_preferences::VerificationWarningChoice) -> Self {
+        Self {
+            choice: choice.words().to_string(),
+        }
+    }
+}
+
+pub fn cmd_osl_save_verification_warning_choice(
+    state: &AppState,
+    choice: String,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<VerificationWarningChoiceDto, String> {
+    record_activity_on_command_entry();
+    let choice = crate::app_preferences::parse_verification_warning_choice(&choice)?;
+    {
         let mut prefs = state
             .app_preferences
             .lock()
@@ -21814,6 +22082,26 @@ mod task3148_follow_active_app_choice_tests {
         );
         assert_eq!(after_bad, "off");
     }
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs.verification_warning_choice = choice;
+        if let Some(dir) = config_dir {
+            let path = dir.join("app_preferences.json");
+            crate::app_preferences::write_app_preferences(&path, &prefs)?;
+        }
+    }
+    Ok(choice.into())
+}
+
+pub fn cmd_osl_read_verification_warning_choice(
+    state: &AppState,
+) -> Result<VerificationWarningChoiceDto, String> {
+    record_activity_on_command_entry();
+    let choice = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .verification_warning_choice;
+    Ok(choice.into())
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -21922,6 +22210,30 @@ pub fn cmd_osl_save_language_choice(
 ) -> Result<String, String> {
     record_activity_on_command_entry();
     let language = crate::screen_words::normalize_language(&language)?.to_string();
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct IdleLockTimeChoiceDto {
+    pub choice: String,
+    pub seconds: Option<u64>,
+    pub label: String,
+}
+
+impl From<crate::app_preferences::IdleLockTimeChoice> for IdleLockTimeChoiceDto {
+    fn from(choice: crate::app_preferences::IdleLockTimeChoice) -> Self {
+        Self {
+            choice: choice.choice().to_string(),
+            seconds: choice.seconds(),
+            label: choice.label(),
+        }
+    }
+}
+
+pub fn cmd_osl_save_idle_lock_time_choice(
+    state: &AppState,
+    choice: String,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<IdleLockTimeChoiceDto, String> {
+    record_activity_on_command_entry();
+    let choice = crate::app_preferences::parse_idle_lock_time_choice(&choice)?;
     {
         let mut prefs = state
             .app_preferences
@@ -22102,6 +22414,26 @@ pub fn cmd_osl_check_row_ownership_marking_admission(
     record_activity_on_command_entry();
     let _ = state;
     crate::row_ownership_ladder::check_row_ownership_marking_admission(app_name, evidence_kind)
+        prefs.idle_lock_time_choice = choice;
+        if let Some(dir) = config_dir {
+            let path = dir.join("app_preferences.json");
+            crate::app_preferences::write_app_preferences(&path, &prefs)?;
+        }
+    }
+    crate::main_password::configure_file_key_inactivity_auto_lock_for_choice(choice);
+    Ok(choice.into())
+}
+
+pub fn cmd_osl_read_idle_lock_time_choice(
+    state: &AppState,
+) -> Result<IdleLockTimeChoiceDto, String> {
+    record_activity_on_command_entry();
+    let choice = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .idle_lock_time_choice;
+    Ok(choice.into())
 }
 
 // ---- Phase 9-D: onboarding tour + VPN warning ----
@@ -22282,7 +22614,7 @@ fn persist_burned_scopes_now(state: &AppState) {
             return;
         }
     };
-    let path = dir.join("burned_scopes.json");
+    let path = crate::burned_scopes_file::path_in_config_dir(&dir);
     let g = state
         .burned_scopes
         .lock()
@@ -22436,7 +22768,7 @@ fn cmd_osl_burn_engage_finish(
     for name in [
         "password_marker.json",
         "lockout_state.json",
-        "burned_scopes.json",
+        crate::burned_scopes_file::BURNED_SCOPES_FILE_NAME,
         "app_preferences.json",
         "sender_key_state.json",
         // Probe-2 Rust Bug 3: membership.json was leaking across burns

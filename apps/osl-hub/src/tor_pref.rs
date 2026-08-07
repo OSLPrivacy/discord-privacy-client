@@ -692,6 +692,9 @@ mod tests {
         "save_scrub_setup",
         "save_burn_review_state",
         "get_burn_review_state",
+        "save_burn_review_state",
+        "get_burn_review_state",
+        "back_burn_review",
         "set_tor_preference",
         "get_follow_active_app_choice",
         "set_follow_active_app_choice",
@@ -823,6 +826,7 @@ mod tests {
         "list_osl_chat_history",
         "burn_osl_chat_history",
         "select_osl_chat_attachment",
+        "drop_osl_chat_attachments",
         "list_osl_chat_attachments",
         "open_osl_chat_attachment",
         "select_native_discord_overlay_attachment",
@@ -861,6 +865,7 @@ mod tests {
         "get_osl_profile",
         "set_owner_profile_picture",
         "read_owner_profile_picture",
+        "read_owner_profile_picture_for_friend",
         "clear_owner_profile_picture",
         // Local-only: derives an HKDF subkey from the on-device storage-key
         // authority and returns it to the local webview. No socket, no
@@ -876,6 +881,8 @@ mod tests {
         "get_hub_friend_wide_whitelist_action_help",
         "set_hub_friend_account_reach_everywhere",
         "compare_allowed_place_direction_state",
+        "compare_allowed_place_direction_state",
+        "list_group_verification_build_entries",
         "set_hub_friend_nickname",
         "add_group_member_permission",
         "remove_group_member_permission",
@@ -916,6 +923,8 @@ mod tests {
         "build_integrity_status",
         "verify_peer_build_integrity",
         "list_bad_message_rules",
+        "installed_build_record",
+        "installed_build_chat_warning_status",
     ];
 
     /// The commands that hold an authorized route open across their own send.

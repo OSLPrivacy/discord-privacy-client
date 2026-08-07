@@ -1708,6 +1708,123 @@ pub fn service_kind_from_id(service_id: &str) -> Option<ServiceKind> {
     })
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServiceCapabilityFacts {
+    pub service_id: ServiceKind,
+    pub placing: bool,
+    pub reading: bool,
+    pub opening: bool,
+    pub real_two_person_protected_messaging: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProtectedDeliveryProof {
+    pub service_id: ServiceKind,
+    pub protected_message_id: String,
+    pub sender_person_id: String,
+    pub recipient_person_id: String,
+    pub protected_message_received: bool,
+    pub received_by_real_other_person: bool,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ServiceReadyLabel {
+    Ready,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServiceReadyDecision {
+    pub service_id: ServiceKind,
+    pub label: Option<ServiceReadyLabel>,
+    pub refusal: Option<String>,
+}
+
+pub const READY_REQUIRES_REAL_TWO_PERSON_CAPABILITY: &str =
+    "ready_requires_real_two_person_protected_messaging_capability";
+pub const READY_REQUIRES_MATCHING_DELIVERY_PROOF: &str = "ready_requires_matching_delivery_proof";
+
+pub fn installed_service_count() -> usize {
+    service_descriptors()
+        .into_iter()
+        .filter(|descriptor| descriptor.launch_state == ServiceLaunchState::Available)
+        .count()
+}
+
+pub fn installed_service_capability_facts() -> Vec<ServiceCapabilityFacts> {
+    service_descriptors()
+        .into_iter()
+        .filter(|descriptor| descriptor.launch_state == ServiceLaunchState::Available)
+        .filter_map(|descriptor| service_capability_facts_for_kind(descriptor.id))
+        .collect()
+}
+
+pub fn service_capability_facts(service_id: &str) -> Option<ServiceCapabilityFacts> {
+    let service_id = service_kind_from_id(service_id)?;
+    service_capability_facts_for_kind(service_id)
+}
+
+pub fn direct_service_ready_label(
+    service_id: &str,
+    delivery_proof: Option<&ProtectedDeliveryProof>,
+) -> Result<ServiceReadyLabel, &'static str> {
+    let facts =
+        service_capability_facts(service_id).ok_or(READY_REQUIRES_REAL_TWO_PERSON_CAPABILITY)?;
+    direct_service_ready_label_for_facts(facts, delivery_proof)
+}
+
+pub fn direct_service_ready_label_for_facts(
+    facts: ServiceCapabilityFacts,
+    delivery_proof: Option<&ProtectedDeliveryProof>,
+) -> Result<ServiceReadyLabel, &'static str> {
+    if !facts.real_two_person_protected_messaging {
+        return Err(READY_REQUIRES_REAL_TWO_PERSON_CAPABILITY);
+    }
+    let Some(delivery_proof) = delivery_proof else {
+        return Err(READY_REQUIRES_MATCHING_DELIVERY_PROOF);
+    };
+    if !delivery_proof_matches_ready_rule(facts.service_id, delivery_proof) {
+        return Err(READY_REQUIRES_MATCHING_DELIVERY_PROOF);
+    }
+    Ok(ServiceReadyLabel::Ready)
+}
+
+pub fn ready_decisions_from_service_proof_records(
+    proof_records: &[ProtectedDeliveryProof],
+) -> Vec<ServiceReadyDecision> {
+    service_descriptors()
+        .into_iter()
+        .filter(|descriptor| descriptor.launch_state == ServiceLaunchState::Available)
+        .filter_map(|descriptor| {
+            let facts = service_capability_facts_for_kind(descriptor.id)?;
+            let matching_proof = proof_records
+                .iter()
+                .find(|proof| delivery_proof_matches_ready_rule(descriptor.id, proof));
+            let effective_facts = ServiceCapabilityFacts {
+                real_two_person_protected_messaging: facts.real_two_person_protected_messaging
+                    || matching_proof.is_some(),
+                ..facts
+            };
+            let decision = direct_service_ready_label_for_facts(effective_facts, matching_proof);
+            Some(match decision {
+                Ok(label) => ServiceReadyDecision {
+                    service_id: descriptor.id,
+                    label: Some(label),
+                    refusal: None,
+                },
+                Err(refusal) => ServiceReadyDecision {
+                    service_id: descriptor.id,
+                    label: None,
+                    refusal: Some(refusal.to_owned()),
+                },
+            })
+        })
+        .collect()
+}
+
 pub fn read_shared_mailbox_folders(
     owner_osl_user_id: &str,
     service_id: &str,
@@ -1810,6 +1927,64 @@ pub fn mail_message_is_owned_by_signed_in_address(
     Ok(sender.eq_ignore_ascii_case(signed_in_address.trim()))
 }
 
+fn delivery_proof_matches_ready_rule(
+    service_id: ServiceKind,
+    proof: &ProtectedDeliveryProof,
+) -> bool {
+    proof.service_id == service_id
+        && proof.protected_message_received
+        && proof.received_by_real_other_person
+        && !proof.protected_message_id.trim().is_empty()
+        && !proof.sender_person_id.trim().is_empty()
+        && !proof.recipient_person_id.trim().is_empty()
+        && proof.sender_person_id != proof.recipient_person_id
+}
+
+fn service_capability_facts_for_kind(service_id: ServiceKind) -> Option<ServiceCapabilityFacts> {
+    SERVICE_CAPABILITY_FACTS
+        .iter()
+        .copied()
+        .find(|facts| facts.service_id == service_id)
+}
+
+const SERVICE_CAPABILITY_FACTS: [ServiceCapabilityFacts; 5] = [
+    ServiceCapabilityFacts {
+        service_id: ServiceKind::Discord,
+        placing: true,
+        reading: true,
+        opening: true,
+        real_two_person_protected_messaging: false,
+    },
+    ServiceCapabilityFacts {
+        service_id: ServiceKind::Telegram,
+        placing: true,
+        reading: true,
+        opening: true,
+        real_two_person_protected_messaging: false,
+    },
+    ServiceCapabilityFacts {
+        service_id: ServiceKind::WhatsApp,
+        placing: false,
+        reading: true,
+        opening: true,
+        real_two_person_protected_messaging: false,
+    },
+    ServiceCapabilityFacts {
+        service_id: ServiceKind::Email,
+        placing: false,
+        reading: false,
+        opening: true,
+        real_two_person_protected_messaging: false,
+    },
+    ServiceCapabilityFacts {
+        service_id: ServiceKind::Signal,
+        placing: false,
+        reading: true,
+        opening: true,
+        real_two_person_protected_messaging: false,
+    },
+];
+
 fn new_account_id(counter: &AtomicU64) -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1855,6 +2030,87 @@ fn sanitize_accounts(accounts: Vec<AccountRecord>) -> Vec<AccountRecord> {
         clean.push(account);
     }
     clean
+}
+
+fn validate_mailbox_reader_binding(
+    owner_osl_user_id: &str,
+    service_id: &str,
+    account_id: &str,
+) -> Result<(), String> {
+    validate_owner_osl_user_id(owner_osl_user_id)?;
+    if !valid_account_id(account_id) {
+        return Err("mailbox account id is invalid".to_owned());
+    }
+    validate_mail_service_id(service_id)
+}
+
+fn validate_mail_service_id(service_id: &str) -> Result<(), String> {
+    match service_id {
+        "email" | "gmail" | "outlook" | "proton" | "tuta" | "yahoo" | "aol" | "gmx"
+        | "maildotcom" | "icloud" => Ok(()),
+        _ => Err("unknown mail service".to_owned()),
+    }
+}
+
+fn validate_mailbox_folders(folders: &[MailboxFolderCandidate]) -> Result<(), String> {
+    let mut seen = BTreeSet::new();
+    for folder in folders {
+        validate_mailbox_text(&folder.folder_id, "mailbox folder id", 128)?;
+        validate_mailbox_text(&folder.label, "mailbox folder label", 128)?;
+        if !seen.insert(folder.folder_id.as_str()) {
+            return Err("mailbox folder is duplicated".to_owned());
+        }
+    }
+    Ok(())
+}
+
+fn ensure_mailbox_folder_exists(
+    folders: &[MailboxFolderCandidate],
+    folder_id: &str,
+) -> Result<(), String> {
+    validate_mailbox_text(folder_id, "mailbox folder id", 128)?;
+    if folders.iter().any(|folder| folder.folder_id == folder_id) {
+        Ok(())
+    } else {
+        Err("mailbox folder not found".to_owned())
+    }
+}
+
+fn validate_mailbox_message(message: &MailboxMessageCandidate) -> Result<(), String> {
+    validate_mailbox_text(&message.folder_id, "mailbox folder id", 128)?;
+    validate_mailbox_text(&message.message_id, "mailbox message id", 180)?;
+    validate_mailbox_text(&message.subject, "mailbox message subject", 512)?;
+    validate_mailbox_text(&message.sender, "mailbox message sender", 254)?;
+    validate_mailbox_body(&message.body)?;
+    if message.time > 0 {
+        Ok(())
+    } else {
+        Err("mailbox message time is invalid".to_owned())
+    }
+}
+
+fn validate_mailbox_text(value: &str, label: &str, max_bytes: usize) -> Result<(), String> {
+    if value.trim() == value
+        && !value.is_empty()
+        && value.len() <= max_bytes
+        && !value.chars().any(|character| character.is_control())
+    {
+        Ok(())
+    } else {
+        Err(format!("{label} is invalid"))
+    }
+}
+
+fn validate_mailbox_body(value: &str) -> Result<(), String> {
+    if value.len() <= 256 * 1024
+        && value
+            .chars()
+            .all(|character| !character.is_control() || matches!(character, '\n' | '\r' | '\t'))
+    {
+        Ok(())
+    } else {
+        Err("mailbox message body is invalid".to_owned())
+    }
 }
 
 fn validate_owner_osl_user_id(value: &str) -> Result<(), String> {

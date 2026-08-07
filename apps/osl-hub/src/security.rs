@@ -33,6 +33,7 @@ const PEOPLE_FILE: &str = "hub_people.json";
 const SECURITY_PREFS_FILE: &str = "hub_security_preferences.json";
 const ONE_USE_INVITE_LINK_TTL_SECONDS: i64 = 7 * 24 * 60 * 60;
 const ONE_USE_INVITE_LINK_PREFIX: &str = "https://invite.osl.local/one-use/";
+const DEFAULT_DECRYPT_DISPLAY_ENABLED: bool = false;
 const PEER_REPLAY_FILE: &str = "hub_peer_replay.json";
 const PRIVATE_CONTACT_LINKS_FILE: &str = "hub_private_contact_links.json";
 const ATTACHMENT_BURN_FILE: &str = "scope_attachments.json";
@@ -437,6 +438,60 @@ pub struct OneUseInviteLink {
 pub const TIMER_PICKER_MAX_DAYS: u32 = 30;
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct HubFriendDirectAccountDto {
+    pub service_id: String,
+    pub account_id: String,
+    pub label: String,
+}
+
+impl HubFriendDirectAccountDto {
+    pub fn new(
+        service_id: impl Into<String>,
+        account_id: impl Into<String>,
+        label: impl Into<String>,
+    ) -> Self {
+        Self {
+            service_id: service_id.into(),
+            account_id: account_id.into(),
+            label: label.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HubFriendAccountReachRowDto {
+    pub service_id: String,
+    pub account_id: String,
+    pub label: String,
+    pub ticked: bool,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HubFriendAccountReachResultDto {
+    pub action: String,
+    pub person_id: String,
+    pub direct_account_list: Vec<HubFriendAccountReachRowDto>,
+    pub ticked_count: usize,
+    pub unticked_count: usize,
+    pub changed_count: usize,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupVerificationBuildListEntryDto {
+    pub member_id: String,
+    /// Mirrors the direct allowed-place comparison: `none`, `one-way`, or `two-way`.
+    pub two_way_state: String,
+    /// `unmodified` when the member is on the original build; `modified` when
+    /// their build has intentionally diverged.
+    pub build_state: String,
+}
+
+pub const TIMER_PICKER_MAX_DAYS: u32 = 30;
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TimerPickerStateDto {
     pub days: String,
@@ -560,6 +615,39 @@ pub struct FriendAccountReachEverywhereResult {
     pub account_count: usize,
     pub ticked_count: usize,
     pub accounts: Vec<FriendAccountReachTickDto>,
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum DecryptDisplayChoice {
+    Silent,
+    Visible,
+}
+
+impl DecryptDisplayChoice {
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "SILENT" => Ok(Self::Silent),
+            "VISIBLE" => Ok(Self::Visible),
+            _ => Err("OSL decrypt display choice is invalid".to_owned()),
+        }
+    }
+
+    pub const fn from_enabled(enabled: bool) -> Self {
+        if enabled {
+            Self::Visible
+        } else {
+            Self::Silent
+        }
+    }
+
+    pub const fn decrypt_display_enabled(self) -> bool {
+        matches!(self, Self::Visible)
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Silent => "SILENT",
+            Self::Visible => "VISIBLE",
+        }
+    }
 }
 
 /// The minimum friend state needed to create a manual peer-messaging lease.
@@ -1058,6 +1146,21 @@ pub struct ChatApprovalSuggestionAnswer {
     /// before mutation so typos cannot become durable settings.
     #[serde(default)]
     look_choices: BTreeMap<String, String>,
+    /// Friend ids whose future direct accounts inherit an approval when they
+    /// first appear in the account reach list.
+    #[serde(default)]
+    future_account_auto_reach_people: BTreeSet<String>,
+    /// Local group verification rows shown in the group build list.
+    #[serde(default)]
+    group_verification_build_list: Vec<GroupVerificationBuildListRecord>,
+}
+
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GroupVerificationBuildListRecord {
+    group_id: String,
+    member_id: String,
+    build_state: String,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -4166,7 +4269,7 @@ pub fn scope_security(scope_input: ScopeInput) -> Result<ScopeSecurityDto, Strin
             .decrypt_display_by_scope
             .get(&storage_key)
             .copied()
-            .unwrap_or(true),
+            .unwrap_or(DEFAULT_DECRYPT_DISPLAY_ENABLED),
         storage_key,
     })
 }
@@ -4209,6 +4312,21 @@ pub fn set_scope_security(
         ttl_seconds: effective_ttl,
         decrypt_display_enabled,
     })
+}
+
+pub fn set_scope_security_display_choice(
+    security: &HubSecurityState,
+    scope_input: ScopeInput,
+    ttl_seconds: u32,
+    display_choice: &str,
+) -> Result<ScopeSecurityDto, String> {
+    let choice = DecryptDisplayChoice::parse(display_choice)?;
+    set_scope_security(
+        security,
+        scope_input,
+        ttl_seconds,
+        choice.decrypt_display_enabled(),
+    )
 }
 
 /// Burn all OSL Privacy history in one scope and delete every recorded remote
@@ -6040,6 +6158,221 @@ pub fn set_friend_account_reach_everywhere(
         ticked_count,
         accounts,
     })
+}
+
+pub fn set_hub_friend_account_reach_everywhere(
+    security: &HubSecurityState,
+    person_id: String,
+    direct_account_list: Vec<HubFriendDirectAccountDto>,
+) -> Result<HubFriendAccountReachResultDto, String> {
+    set_hub_friend_account_reach(security, person_id, direct_account_list, true)
+}
+
+pub fn set_hub_friend_account_reach_nowhere(
+    security: &HubSecurityState,
+    person_id: String,
+    direct_account_list: Vec<HubFriendDirectAccountDto>,
+) -> Result<HubFriendAccountReachResultDto, String> {
+    set_hub_friend_account_reach(security, person_id, direct_account_list, false)
+}
+
+pub fn list_hub_friend_account_reach(
+    security: &HubSecurityState,
+    person_id: String,
+    direct_account_list: Vec<HubFriendDirectAccountDto>,
+) -> Result<HubFriendAccountReachResultDto, String> {
+    require_unlocked()?;
+    validate_person_id(&person_id)?;
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL manual peer settings are unavailable".to_owned())?;
+    let dir = config_dir()?;
+    let prefs_path = dir.join(SECURITY_PREFS_FILE);
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&prefs_path)?;
+    prefs.version = 2;
+    let changed_count = if prefs.future_account_auto_reach_people.contains(&person_id) {
+        apply_hub_friend_account_reach(&mut prefs, &person_id, &direct_account_list, true)?
+    } else {
+        validate_hub_friend_direct_accounts(&direct_account_list)?;
+        0
+    };
+    let rows = hub_friend_account_reach_rows(&prefs, &person_id, direct_account_list)?;
+    if changed_count > 0 {
+        write_encrypted_json(&prefs_path, &prefs)?;
+    }
+    let ticked_count = rows.iter().filter(|row| row.ticked).count();
+    let unticked_count = rows.len().saturating_sub(ticked_count);
+    Ok(HubFriendAccountReachResultDto {
+        action: "list".to_owned(),
+        person_id,
+        direct_account_list: rows,
+        ticked_count,
+        unticked_count,
+        changed_count,
+    })
+}
+
+fn set_hub_friend_account_reach(
+    security: &HubSecurityState,
+    person_id: String,
+    direct_account_list: Vec<HubFriendDirectAccountDto>,
+    ticked: bool,
+) -> Result<HubFriendAccountReachResultDto, String> {
+    require_unlocked()?;
+    validate_person_id(&person_id)?;
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL manual peer settings are unavailable".to_owned())?;
+    let dir = config_dir()?;
+    let prefs_path = dir.join(SECURITY_PREFS_FILE);
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&prefs_path)?;
+    prefs.version = 2;
+    if ticked {
+        prefs
+            .future_account_auto_reach_people
+            .insert(person_id.clone());
+    } else {
+        prefs.future_account_auto_reach_people.remove(&person_id);
+    }
+    let changed_count =
+        apply_hub_friend_account_reach(&mut prefs, &person_id, &direct_account_list, ticked)?;
+    let rows = hub_friend_account_reach_rows(&prefs, &person_id, direct_account_list)?;
+    write_encrypted_json(&prefs_path, &prefs)?;
+    let ticked_count = rows.iter().filter(|row| row.ticked).count();
+    let unticked_count = rows.len().saturating_sub(ticked_count);
+    Ok(HubFriendAccountReachResultDto {
+        action: if ticked { "everywhere" } else { "nowhere" }.to_owned(),
+        person_id,
+        direct_account_list: rows,
+        ticked_count,
+        unticked_count,
+        changed_count,
+    })
+}
+
+fn validate_hub_friend_direct_accounts(
+    direct_account_list: &[HubFriendDirectAccountDto],
+) -> Result<(), String> {
+    for account in direct_account_list {
+        validate_manual_peer_service_account(&account.service_id, &account.account_id)?;
+    }
+    Ok(())
+}
+
+fn apply_hub_friend_account_reach(
+    prefs: &mut SecurityPreferences,
+    person_id: &str,
+    direct_account_list: &[HubFriendDirectAccountDto],
+    ticked: bool,
+) -> Result<usize, String> {
+    let mut changed_count = 0usize;
+    for account in direct_account_list {
+        validate_manual_peer_service_account(&account.service_id, &account.account_id)?;
+        let storage_key =
+            manual_peer_scope_storage_key(&account.service_id, &account.account_id, person_id)?;
+        if ticked {
+            if prefs.burned_manual_scopes.contains(&storage_key) {
+                return Err(
+                    "This manual conversation was burned and cannot be reapproved".to_owned(),
+                );
+            }
+            let approved = prefs.manual_approved_scopes.insert(storage_key.clone());
+            let attributed = prefs
+                .manual_approved_scope_people
+                .insert(storage_key, person_id.to_owned())
+                .as_deref()
+                != Some(person_id);
+            if approved || attributed {
+                changed_count = changed_count.saturating_add(1);
+            }
+        } else if withdraw_manual_scope_grant(prefs, &storage_key) {
+            changed_count = changed_count.saturating_add(1);
+        }
+    }
+    Ok(changed_count)
+}
+
+fn hub_friend_account_reach_rows(
+    prefs: &SecurityPreferences,
+    person_id: &str,
+    direct_account_list: Vec<HubFriendDirectAccountDto>,
+) -> Result<Vec<HubFriendAccountReachRowDto>, String> {
+    direct_account_list
+        .into_iter()
+        .map(|account| {
+            let storage_key =
+                manual_peer_scope_storage_key(&account.service_id, &account.account_id, person_id)?;
+            Ok(HubFriendAccountReachRowDto {
+                ticked: manual_scope_preference_approved(prefs, &storage_key),
+                service_id: account.service_id,
+                account_id: account.account_id,
+                label: account.label,
+            })
+        })
+        .collect()
+}
+
+fn validate_group_verification_build_state(build_state: &str) -> Result<(), String> {
+    match build_state {
+        "unmodified" | "modified" => Ok(()),
+        _ => Err("OSL group verification build state is invalid".to_owned()),
+    }
+}
+
+fn list_group_verification_build_entries_from_prefs(
+    prefs: &SecurityPreferences,
+    app: &str,
+    local_account: &str,
+    group_id: &str,
+) -> Result<Vec<GroupVerificationBuildListEntryDto>, String> {
+    validate_allowed_place_component(app, "app")?;
+    validate_allowed_place_component(group_id, "group")?;
+    if app == "discord" {
+        if !is_discord_snowflake_shaped(local_account) || !is_discord_snowflake_shaped(group_id) {
+            return Err("OSL group verification Discord id is invalid".to_owned());
+        }
+    } else {
+        validate_allowed_place_component(local_account, "account")?;
+    }
+
+    let mut entries = Vec::new();
+    for record in prefs
+        .group_verification_build_list
+        .iter()
+        .filter(|record| record.group_id == group_id)
+    {
+        validate_allowed_place_direction(app, local_account, &record.member_id, "direct_message")?;
+        validate_group_verification_build_state(&record.build_state)?;
+        let two_way = compare_allowed_place_direction_state_from_prefs(
+            prefs,
+            app,
+            local_account,
+            &record.member_id,
+            "direct_message",
+        )?;
+        if two_way.state != "two-way" {
+            continue;
+        }
+        entries.push(GroupVerificationBuildListEntryDto {
+            member_id: record.member_id.clone(),
+            two_way_state: two_way.state,
+            build_state: record.build_state.clone(),
+        });
+    }
+    entries.sort_by(|left, right| left.member_id.cmp(&right.member_id));
+    Ok(entries)
+}
+
+pub fn list_group_verification_build_entries(
+    app: String,
+    local_account: String,
+    group_id: String,
+) -> Result<Vec<GroupVerificationBuildListEntryDto>, String> {
+    require_unlocked()?;
+    let prefs = load_security_preferences()?;
+    list_group_verification_build_entries_from_prefs(&prefs, &app, &local_account, &group_id)
 }
 
 fn manual_approved_scopes_for_person(
@@ -10969,6 +11302,80 @@ mod tests {
             "TASK0243 friend_b state=on fingerprint_before={} fingerprint_after={}",
             friend_b_fingerprint_before, friend_b_fingerprint_after
         );
+    fn task_0317_display_choice(enabled: bool) -> &'static str {
+        DecryptDisplayChoice::from_enabled(enabled).as_str()
+    }
+
+    #[test]
+    fn task_0317_display_choice_default_persistence_and_refusal() {
+        let harness = FileBackedSecurityHarness::new("task-0317-display-choice");
+        let security = HubSecurityState::default();
+        let new_account_scope = dm_scope_input("task0317-new-account".to_owned());
+        let changed_account_scope = dm_scope_input("task0317-changed-account".to_owned());
+        let invalid_account_scope = dm_scope_input("task0317-invalid-account".to_owned());
+
+        let new_account = scope_security(new_account_scope).unwrap();
+        let new_account_choice = task_0317_display_choice(new_account.decrypt_display_enabled);
+        println!("TASK0317 new_account.display_choice={new_account_choice}");
+        assert_eq!(new_account_choice, "SILENT");
+
+        set_scope_security_display_choice(
+            &security,
+            changed_account_scope.clone(),
+            3_600,
+            "VISIBLE",
+        )
+        .unwrap();
+        let restarted = scope_security(changed_account_scope).unwrap();
+        let changed_account_choice = task_0317_display_choice(restarted.decrypt_display_enabled);
+        println!("TASK0317 changed_account.after_restart.display_choice={changed_account_choice}");
+        assert_eq!(changed_account_choice, "VISIBLE");
+
+        let invalid = set_scope_security_display_choice(
+            &security,
+            invalid_account_scope.clone(),
+            3_600,
+            "AUTO",
+        );
+        assert!(invalid.is_err());
+
+        let stored: SecurityPreferences =
+            load_encrypted_json(&harness.path().join(SECURITY_PREFS_FILE)).unwrap();
+        let invalid_storage_key = Scope::try_from(invalid_account_scope)
+            .unwrap()
+            .storage_key();
+        let invalid_stored = stored
+            .decrypt_display_by_scope
+            .contains_key(&invalid_storage_key);
+        println!("TASK0317 invalid_choice=AUTO result=REFUSED stored={invalid_stored}");
+        assert_eq!(
+            stored
+                .decrypt_display_by_scope
+                .get("dm:task0317-changed-account"),
+            Some(&true)
+        );
+        assert!(!invalid_stored);
+    }
+
+    #[test]
+    fn task_0549_timer_picker_state_defaults_to_zero_days_and_rejects_day_31() {
+        let state = default_timer_picker_state();
+        println!("TASK0549 timer_picker.default.days={}", state.days);
+        println!("TASK0549 timer_picker.default.hours={}", state.hours);
+        println!("TASK0549 timer_picker.default.minutes={}", state.minutes);
+        println!("TASK0549 timer_picker.default.seconds={}", state.seconds);
+        assert_eq!(state.days, "00");
+        assert_eq!(state.hours, "00");
+        assert_eq!(state.minutes, "00");
+        assert_eq!(state.seconds, "00");
+
+        let cap = timer_picker_state(30, 23, 59, 59).unwrap();
+        println!("TASK0549 timer_picker.max.days={}", cap.days);
+        assert_eq!(cap.days, "30");
+
+        let rejected = timer_picker_state(31, 0, 0, 0).unwrap_err();
+        println!("TASK0549 timer_picker.rejected_days=31 error={rejected}");
+        assert_eq!(rejected, "OSL timer picker days must be between 00 and 30");
     }
 
     /// Read the burn identifiers the outbox actually persisted, so the ack half
@@ -12194,6 +12601,482 @@ key"
             .unwrap();
         assert!(!manual_burn.contains("delete_messages_in_channel"));
         assert!(manual_burn.contains("let rows_destroyed = 0"));
+    }
+
+    #[test]
+    fn task_0174_two_way_verification_tick_hides_immediately_after_one_direction_is_removed() {
+        let harness = FileBackedSecurityHarness::new("task0174-two-way-verification-tick");
+        let first_account = "900000000000017400";
+        let second_account = "900000000000017401";
+        let first_to_second =
+            allowed_place_direction_key("discord", first_account, "direct_message", second_account);
+        let second_to_first =
+            allowed_place_direction_key("discord", second_account, "direct_message", first_account);
+        let mut prefs = SecurityPreferences {
+            version: 2,
+            ..SecurityPreferences::default()
+        };
+        prefs
+            .allowed_place_directions
+            .insert(first_to_second.clone());
+        prefs
+            .allowed_place_directions
+            .insert(second_to_first.clone());
+        write_encrypted_json(&harness.path().join(SECURITY_PREFS_FILE), &prefs).unwrap();
+
+        let first_tick = compare_allowed_place_direction_state(
+            "discord".to_owned(),
+            first_account.to_owned(),
+            second_account.to_owned(),
+            "direct_message".to_owned(),
+        )
+        .unwrap();
+        println!(
+            "TASK0174 first_tick.saved_directions={} first_tick.verification_state={} first_tick.two_way_state={}",
+            first_tick.saved_directions, first_tick.verification_state, first_tick.state
+        );
+        assert_eq!(first_tick.saved_directions, 2);
+        assert!(first_tick.first_to_second);
+        assert!(first_tick.second_to_first);
+        assert_eq!(first_tick.state, "two-way");
+        assert_eq!(first_tick.verification_state, "visible");
+
+        let mut persisted: SecurityPreferences =
+            load_encrypted_json(&harness.path().join(SECURITY_PREFS_FILE)).unwrap();
+        assert!(persisted.allowed_place_directions.remove(&second_to_first));
+        write_encrypted_json(&harness.path().join(SECURITY_PREFS_FILE), &persisted).unwrap();
+
+        let second_tick = compare_allowed_place_direction_state(
+            "discord".to_owned(),
+            first_account.to_owned(),
+            second_account.to_owned(),
+            "direct_message".to_owned(),
+        )
+        .unwrap();
+        println!(
+            "TASK0174 second_tick.saved_directions={} second_tick.verification_state={} second_tick.two_way_state={} removed_direction={}",
+            second_tick.saved_directions,
+            second_tick.verification_state,
+            second_tick.state,
+            second_to_first
+        );
+        assert_eq!(second_tick.saved_directions, 1);
+        assert!(second_tick.first_to_second);
+        assert!(!second_tick.second_to_first);
+        assert_eq!(second_tick.state, "one-way");
+        assert_eq!(second_tick.verification_state, "hidden");
+    }
+
+    #[test]
+    fn task_0258_everywhere_then_nowhere_controls_protected_message_action() {
+        let _harness = FileBackedSecurityHarness::new("task0258-everywhere-nowhere");
+        let security = HubSecurityState::default();
+        let person_id = "hub-person-task-0258".to_owned();
+        let accounts = vec![
+            HubFriendDirectAccountDto::new(
+                "discord",
+                "native-discord-olive-0258",
+                "OLIVE-0258 Discord",
+            ),
+            HubFriendDirectAccountDto::new(
+                "telegram",
+                "olive-0258-telegram",
+                "OLIVE-0258 Telegram",
+            ),
+            HubFriendDirectAccountDto::new("email", "olive-0258-mail", "OLIVE-0258 Mail"),
+        ];
+        let binding = ManualPeerBinding {
+            person_id: person_id.clone(),
+            peer_osl_user_id: "osl-peer-task-0258".to_owned(),
+            peer_x25519_public: [0x25; X25519_PUBLIC_BYTES],
+            peer_mlkem768_public: [0x58; MLKEM768_PUBLIC_BYTES],
+        };
+        let protected_message_action =
+            |account: &HubFriendDirectAccountDto| -> Result<bool, String> {
+                let scope = Scope::dm(manual_peer_scope_id(
+                    &account.service_id,
+                    &account.account_id,
+                    &person_id,
+                )?);
+                manual_peer_scope_approved_for_binding(
+                    &account.service_id,
+                    &account.account_id,
+                    &binding,
+                    ScopeInput::from(&scope),
+                )
+            };
+
+        let everywhere =
+            set_hub_friend_account_reach_everywhere(&security, person_id.clone(), accounts.clone())
+                .unwrap();
+        let everywhere_states = everywhere
+            .direct_account_list
+            .iter()
+            .map(|row| format!("{}={}", row.label, row.ticked))
+            .collect::<Vec<_>>()
+            .join("|");
+        println!(
+            "TASK0258_EVERYWHERE action={} account_count={} ticked_count={} unticked_count={} changed_count={} states={}",
+            everywhere.action,
+            everywhere.direct_account_list.len(),
+            everywhere.ticked_count,
+            everywhere.unticked_count,
+            everywhere.changed_count,
+            everywhere_states
+        );
+        assert_eq!(everywhere.action, "everywhere");
+        assert_eq!(everywhere.direct_account_list.len(), 3);
+        assert_eq!(everywhere.ticked_count, 3);
+        assert_eq!(everywhere.unticked_count, 0);
+
+        let mut acted_after_everywhere = 0usize;
+        let mut skipped_after_everywhere = 0usize;
+        for account in &accounts {
+            let acted = protected_message_action(account).unwrap();
+            if acted {
+                acted_after_everywhere += 1;
+            } else {
+                skipped_after_everywhere += 1;
+            }
+            println!(
+                "TASK0258_PROTECTED_MESSAGE_AFTER_EVERYWHERE account={} action=protected-message outcome={}",
+                account.label,
+                if acted { "acted" } else { "skipped" }
+            );
+        }
+        println!(
+            "TASK0258_PROTECTED_MESSAGE_AFTER_EVERYWHERE acted_count={} skipped_count={}",
+            acted_after_everywhere, skipped_after_everywhere
+        );
+        assert_eq!(acted_after_everywhere, 3);
+        assert_eq!(skipped_after_everywhere, 0);
+
+        let nowhere =
+            set_hub_friend_account_reach_nowhere(&security, person_id.clone(), accounts.clone())
+                .unwrap();
+        let nowhere_states = nowhere
+            .direct_account_list
+            .iter()
+            .map(|row| format!("{}={}", row.label, row.ticked))
+            .collect::<Vec<_>>()
+            .join("|");
+        println!(
+            "TASK0258_NOWHERE action={} account_count={} ticked_count={} unticked_count={} changed_count={} states={}",
+            nowhere.action,
+            nowhere.direct_account_list.len(),
+            nowhere.ticked_count,
+            nowhere.unticked_count,
+            nowhere.changed_count,
+            nowhere_states
+        );
+        assert_eq!(nowhere.action, "nowhere");
+        assert_eq!(nowhere.direct_account_list.len(), 3);
+        assert_eq!(nowhere.ticked_count, 0);
+        assert_eq!(nowhere.unticked_count, 3);
+
+        let mut acted_after_nowhere = 0usize;
+        let mut skipped_after_nowhere = 0usize;
+        for account in &accounts {
+            let acted = protected_message_action(account).unwrap();
+            if acted {
+                acted_after_nowhere += 1;
+            } else {
+                skipped_after_nowhere += 1;
+            }
+            println!(
+                "TASK0258_PROTECTED_MESSAGE_AFTER_NOWHERE account={} action=protected-message outcome={}",
+                account.label,
+                if acted { "acted" } else { "skipped" }
+            );
+        }
+        println!(
+            "TASK0258_PROTECTED_MESSAGE_AFTER_NOWHERE acted_count={} skipped_count={}",
+            acted_after_nowhere, skipped_after_nowhere
+        );
+        assert_eq!(acted_after_nowhere, 0);
+        assert_eq!(skipped_after_nowhere, 3);
+    }
+
+    #[test]
+    fn task_0265_future_account_auto_whitelist_both_ways() {
+        let _harness = FileBackedSecurityHarness::new("task0265-future-account-auto-whitelist");
+        let security = HubSecurityState::default();
+        let person_id = "hub-person-task-0265".to_owned();
+        let first_account = HubFriendDirectAccountDto::new(
+            "discord",
+            "native-discord-task-0265-first",
+            "TASK0265 first account",
+        );
+        let second_account = HubFriendDirectAccountDto::new(
+            "discord",
+            "native-discord-task-0265-second",
+            "TASK0265 second account",
+        );
+
+        let switch_on =
+            set_hub_friend_account_reach_everywhere(&security, person_id.clone(), Vec::new())
+                .unwrap();
+        println!(
+            "TASK0265 switch_on.action={} visible_account_count={} changed_count={}",
+            switch_on.action,
+            switch_on.direct_account_list.len(),
+            switch_on.changed_count
+        );
+        assert_eq!(switch_on.action, "everywhere");
+        assert_eq!(switch_on.direct_account_list.len(), 0);
+
+        let first_added = list_hub_friend_account_reach(
+            &security,
+            person_id.clone(),
+            vec![first_account.clone()],
+        )
+        .unwrap();
+        let first_row = first_added
+            .direct_account_list
+            .iter()
+            .find(|row| row.account_id == first_account.account_id)
+            .expect("first account row exists");
+        println!(
+            "TASK0265 first_add.account_id={} ticked={} ticked_count={} unticked_count={} changed_count={}",
+            first_row.account_id,
+            first_row.ticked,
+            first_added.ticked_count,
+            first_added.unticked_count,
+            first_added.changed_count
+        );
+        assert!(first_row.ticked);
+        assert_eq!(first_added.ticked_count, 1);
+        assert_eq!(first_added.unticked_count, 0);
+        assert_eq!(first_added.changed_count, 1);
+
+        let after_remove =
+            list_hub_friend_account_reach(&security, person_id.clone(), Vec::new()).unwrap();
+        println!(
+            "TASK0265 removed_visible_account_count={} ticked_count={} unticked_count={}",
+            after_remove.direct_account_list.len(),
+            after_remove.ticked_count,
+            after_remove.unticked_count
+        );
+        assert_eq!(after_remove.direct_account_list.len(), 0);
+
+        let switch_off =
+            set_hub_friend_account_reach_nowhere(&security, person_id.clone(), Vec::new()).unwrap();
+        println!(
+            "TASK0265 switch_off.action={} visible_account_count={} changed_count={}",
+            switch_off.action,
+            switch_off.direct_account_list.len(),
+            switch_off.changed_count
+        );
+        assert_eq!(switch_off.action, "nowhere");
+        assert_eq!(switch_off.direct_account_list.len(), 0);
+
+        let second_added = list_hub_friend_account_reach(
+            &security,
+            person_id,
+            vec![first_account.clone(), second_account.clone()],
+        )
+        .unwrap();
+        let final_first = second_added
+            .direct_account_list
+            .iter()
+            .find(|row| row.account_id == first_account.account_id)
+            .expect("first account row exists after re-add");
+        let final_second = second_added
+            .direct_account_list
+            .iter()
+            .find(|row| row.account_id == second_account.account_id)
+            .expect("second account row exists");
+        println!(
+            "TASK0265 final.first_account_id={} final.first_ticked={} final.second_account_id={} final.second_ticked={} ticked_count={} unticked_count={} changed_count={}",
+            final_first.account_id,
+            final_first.ticked,
+            final_second.account_id,
+            final_second.ticked,
+            second_added.ticked_count,
+            second_added.unticked_count,
+            second_added.changed_count
+        );
+        assert!(final_first.ticked);
+        assert!(!final_second.ticked);
+        assert_eq!(second_added.ticked_count, 1);
+        assert_eq!(second_added.unticked_count, 1);
+        assert_eq!(second_added.changed_count, 0);
+    }
+
+    #[test]
+    fn task_0177_group_build_list_returns_one_entry_of_each_build_state() {
+        let harness = FileBackedSecurityHarness::new("task0177-group-build-list");
+        let local_account = "900000000000017700";
+        let unmodified_member = "900000000000017701";
+        let modified_member = "900000000000017702";
+        let other_group_member = "900000000000017703";
+        let group_id = "900000000000017704";
+        let other_group_id = "900000000000017705";
+        let mut prefs = SecurityPreferences {
+            version: 2,
+            ..SecurityPreferences::default()
+        };
+        for member_id in [unmodified_member, modified_member, other_group_member] {
+            prefs
+                .allowed_place_directions
+                .insert(allowed_place_direction_key(
+                    "discord",
+                    local_account,
+                    "direct_message",
+                    member_id,
+                ));
+            prefs
+                .allowed_place_directions
+                .insert(allowed_place_direction_key(
+                    "discord",
+                    member_id,
+                    "direct_message",
+                    local_account,
+                ));
+        }
+        prefs.group_verification_build_list.extend([
+            GroupVerificationBuildListRecord {
+                group_id: group_id.to_owned(),
+                member_id: unmodified_member.to_owned(),
+                build_state: "unmodified".to_owned(),
+            },
+            GroupVerificationBuildListRecord {
+                group_id: group_id.to_owned(),
+                member_id: modified_member.to_owned(),
+                build_state: "modified".to_owned(),
+            },
+            GroupVerificationBuildListRecord {
+                group_id: other_group_id.to_owned(),
+                member_id: other_group_member.to_owned(),
+                build_state: "unmodified".to_owned(),
+            },
+        ]);
+        write_encrypted_json(&harness.path().join(SECURITY_PREFS_FILE), &prefs).unwrap();
+
+        let entries = list_group_verification_build_entries(
+            "discord".to_owned(),
+            local_account.to_owned(),
+            group_id.to_owned(),
+        )
+        .unwrap();
+        let unmodified_count = entries
+            .iter()
+            .filter(|entry| entry.build_state == "unmodified")
+            .count();
+        let modified_count = entries
+            .iter()
+            .filter(|entry| entry.build_state == "modified")
+            .count();
+        println!(
+            "TASK0177 direct_query=list_group_verification_build_entries group_id={} entries={} unmodified={} modified={}",
+            group_id,
+            entries.len(),
+            unmodified_count,
+            modified_count
+        );
+        for entry in &entries {
+            println!(
+                "TASK0177 entry member_id={} two_way_state={} build_state={}",
+                entry.member_id, entry.two_way_state, entry.build_state
+            );
+        }
+        assert_eq!(entries.len(), 2);
+        assert_eq!(unmodified_count, 1);
+        assert_eq!(modified_count, 1);
+        assert_eq!(entries[0].member_id, unmodified_member);
+        assert_eq!(entries[0].two_way_state, "two-way");
+        assert_eq!(entries[0].build_state, "unmodified");
+        assert_eq!(entries[1].member_id, modified_member);
+        assert_eq!(entries[1].two_way_state, "two-way");
+        assert_eq!(entries[1].build_state, "modified");
+    }
+
+    #[test]
+    fn task_0178_group_build_list_returns_only_two_way_people() {
+        let harness = FileBackedSecurityHarness::new("task0178-group-build-list");
+        let local_account = "900000000000017800";
+        let two_way_unmodified_member = "900000000000017801";
+        let one_way_member = "900000000000017802";
+        let two_way_modified_member = "900000000000017803";
+        let group_id = "900000000000017804";
+        let mut prefs = SecurityPreferences {
+            version: 2,
+            ..SecurityPreferences::default()
+        };
+        for member_id in [
+            two_way_unmodified_member,
+            one_way_member,
+            two_way_modified_member,
+        ] {
+            prefs
+                .allowed_place_directions
+                .insert(allowed_place_direction_key(
+                    "discord",
+                    local_account,
+                    "direct_message",
+                    member_id,
+                ));
+        }
+        for member_id in [two_way_unmodified_member, two_way_modified_member] {
+            prefs
+                .allowed_place_directions
+                .insert(allowed_place_direction_key(
+                    "discord",
+                    member_id,
+                    "direct_message",
+                    local_account,
+                ));
+        }
+        prefs.group_verification_build_list.extend([
+            GroupVerificationBuildListRecord {
+                group_id: group_id.to_owned(),
+                member_id: two_way_unmodified_member.to_owned(),
+                build_state: "unmodified".to_owned(),
+            },
+            GroupVerificationBuildListRecord {
+                group_id: group_id.to_owned(),
+                member_id: one_way_member.to_owned(),
+                build_state: "unmodified".to_owned(),
+            },
+            GroupVerificationBuildListRecord {
+                group_id: group_id.to_owned(),
+                member_id: two_way_modified_member.to_owned(),
+                build_state: "modified".to_owned(),
+            },
+        ]);
+        write_encrypted_json(&harness.path().join(SECURITY_PREFS_FILE), &prefs).unwrap();
+
+        let entries = list_group_verification_build_entries(
+            "discord".to_owned(),
+            local_account.to_owned(),
+            group_id.to_owned(),
+        )
+        .unwrap();
+        let returned_members = entries
+            .iter()
+            .map(|entry| entry.member_id.as_str())
+            .collect::<Vec<_>>();
+        println!(
+            "TASK0178 fixture.people=3 returned.people={} two_way.people={}",
+            entries.len(),
+            entries
+                .iter()
+                .filter(|entry| entry.two_way_state == "two-way")
+                .count()
+        );
+        println!(
+            "TASK0178 returned.member_ids={}",
+            returned_members.join(",")
+        );
+        println!("TASK0178 excluded.one_way_member={one_way_member}");
+
+        assert_eq!(entries.len(), 2);
+        assert_eq!(
+            returned_members,
+            vec![two_way_unmodified_member, two_way_modified_member]
+        );
+        assert!(entries.iter().all(|entry| entry.two_way_state == "two-way"));
+        assert!(!returned_members.contains(&one_way_member));
     }
 
     #[test]

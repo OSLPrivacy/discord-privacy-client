@@ -134,6 +134,7 @@ pub struct SharedConversationScrollRead {
     pub action_log: Vec<SharedConversationScrollActionLog>,
     pub stop_reason: SharedConversationScrollStop,
     pub stopped_on_page_number: Option<usize>,
+    pub stop_reason: SharedConversationScrollStop,
 }
 
 impl SharedConversationScrollRead {
@@ -222,6 +223,9 @@ where
 
     for page_number in 1..=page_limit {
         action_log.push(pace.paced_action(SharedConversationScrollActionKind::Open, page_number));
+    let mut seen_message_ids = HashSet::new();
+
+    for page_number in 1..=page_limit {
         let screen = place.read_current_screen()?;
         let messages_on_screen = screen.len();
         let mut new_messages_read = 0usize;
@@ -265,6 +269,8 @@ where
             }
         }
 
+        });
+
         if page_number == page_limit {
             return Ok(SharedConversationScrollRead {
                 messages,
@@ -272,6 +278,7 @@ where
                 action_log,
                 stop_reason: SharedConversationScrollStop::PageLimitReached,
                 stopped_on_page_number: None,
+                stop_reason: SharedConversationScrollStop::PageLimitReached,
             });
         }
 
@@ -282,6 +289,7 @@ where
                 action_log,
                 stop_reason: SharedConversationScrollStop::NoNewMessages,
                 stopped_on_page_number: None,
+                stop_reason: SharedConversationScrollStop::NoNewMessages,
             });
         }
 
@@ -295,6 +303,9 @@ where
             });
         }
         action_log.push(pace.paced_action(SharedConversationScrollActionKind::Scroll, page_number));
+                stop_reason: SharedConversationScrollStop::EndOfPlace,
+            });
+        }
     }
 
     unreachable!("the loop always returns from its page-limit branch");
@@ -315,6 +326,8 @@ mod tests {
     use super::{
         read_shared_conversation_messages_one_page_at_a_time, SharedConversationScrollGateState,
         SharedConversationScrollStop, SharedConversationScrollablePlace, SharedPlaceMessage,
+        read_shared_conversation_messages_one_page_at_a_time, SharedConversationScrollStop,
+        SharedConversationScrollablePlace, SharedPlaceMessage,
     };
 
     struct FixedPagePlace {
@@ -379,6 +392,7 @@ mod tests {
             .all(|entry| entry.messages_on_screen == 40
                 && entry.new_messages_read == 40
                 && entry.gate_after_page == SharedConversationScrollGateState::Running));
+            .all(|entry| entry.messages_on_screen == 40 && entry.new_messages_read == 40));
     }
 
     #[test]

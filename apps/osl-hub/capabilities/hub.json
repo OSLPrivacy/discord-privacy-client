@@ -193,9 +193,7 @@
     "allow-burn-active-hub-context",
     "allow-list-active-hub-context-burn-choices",
     "allow-get-hub-revocation-status",
-    "allow-set-owner-profile-picture",
     "allow-read-owner-profile-picture",
-    "allow-clear-owner-profile-picture",
     "allow-get-osl-chat-local-state-key",
     "allow-get-recovery-kit-unsaved",
     "allow-set-recovery-kit-unsaved",
@@ -210,7 +208,6 @@
     "allow-query-allowed-place-record",
     "allow-list-allowed-place-records",
     "allow-query-allowed-place-allowed",
-    "allow-compare-allowed-place-direction-state",
     "allow-list-whatsapp-whitelist-kinds",
     "allow-request-autoscrub-run-action",
     "allow-read-icloud-mailbox-for-scrub",
@@ -235,6 +232,11 @@
     "allow-save-scrub-setup",
     "allow-check-hub-password-reset-phrase",
     "allow-set-hub-friend-account-reach-choice",
-    "allow-list-hub-friend-account-reach-choices"
+    "allow-list-hub-friend-account-reach-choices",
+    "allow-installed-build-record",
+    "allow-installed-build-chat-warning-status",
+    "allow-drop-osl-chat-attachments",
+    "allow-list-group-verification-build-entries",
+    "allow-read-owner-profile-picture-for-friend"
   ]
 }

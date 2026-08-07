@@ -15,6 +15,8 @@ const MODULE_RELOAD_BUDGET_MS = 30_000;
 const mocks = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn(), emitTo: vi.fn(), getCurrentWindow: vi.fn() }));
 const mainSource = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
 vi.mock("@fontsource-variable/inter/wght.css", () => ({}));
+vi.mock("@fontsource-variable/onest/wght.css", () => ({}));
+vi.mock("@fontsource-variable/source-sans-3/wght.css", () => ({}));
 vi.mock("./logos", () => ({ browserLogo: (id: string) => `<span>${id}</span>`, providerLogo: (id: string) => `<span>${id}</span>`, serviceLogo: (id: string) => `<span>${id}</span>` }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
 vi.mock("@tauri-apps/api/event", () => ({ emitTo: mocks.emitTo, listen: mocks.listen }));
@@ -132,6 +134,74 @@ describe("B0-02 handler bindings", () => {
     const restarted = await loadUi({}, storage);
     restarted.__oslHubUiTest.reset({ route: "onboarding", onboardingRoute: "privacy" });
     expect(restarted.__oslHubUiTest.snapshot().protectionPreset).toBe("maximum");
+  }, MODULE_RELOAD_BUDGET_MS);
+
+  it("records TASK 0341 protection-level controls and current route outcomes", async () => {
+    const storage = memoryStorage();
+    const basic = new FakeElement({ value: "basic" });
+    const balanced = new FakeElement({ value: "balanced" });
+    const maximum = new FakeElement({ value: "maximum" });
+    const unknown = new FakeElement({ value: "unknown" });
+    const { __oslHubUiTest } = await loadUi({
+      'input[name="protection-preset"]': [basic, balanced, maximum, unknown],
+    }, storage);
+
+    __oslHubUiTest.reset({ route: "onboarding", onboardingRoute: "privacy" });
+    expect(storage.getItem("osl-protection-preset-v1")).toBeNull();
+    console.log(`TASK0341 ui.initial.saved_rule=${storage.getItem("osl-protection-preset-v1")}`);
+    __oslHubUiTest.bindOnboarding();
+
+    for (const [label, input, expected] of [
+      ["Basic", basic, "basic"],
+      ["Balanced", balanced, "balanced"],
+      ["Maximum", maximum, "maximum"],
+    ] as const) {
+      input.checked = true;
+      input.dispatch("change");
+      const savedRule = storage.getItem("osl-protection-preset-v1");
+      console.log(`TASK0341 ui.control.${label}.saved_rule=${savedRule}`);
+      expect(__oslHubUiTest.snapshot().protectionPreset).toBe(expected);
+      expect(savedRule).toBe(expected);
+    }
+
+    const beforeUnknown = {
+      savedRule: storage.getItem("osl-protection-preset-v1"),
+      snapshot: __oslHubUiTest.snapshot(),
+      page: __oslHubUiTest.renderOnboardingRoute("privacy"),
+    };
+    unknown.checked = true;
+    unknown.dispatch("change");
+    const afterUnknown = {
+      savedRule: storage.getItem("osl-protection-preset-v1"),
+      snapshot: __oslHubUiTest.snapshot(),
+      page: __oslHubUiTest.renderOnboardingRoute("privacy"),
+    };
+    console.log(`TASK0341 ui.control.Unknown.saved_rule_before=${beforeUnknown.savedRule},after=${afterUnknown.savedRule}`);
+    console.log(`TASK0341 ui.control.Unknown.page_unchanged=${beforeUnknown.page === afterUnknown.page}`);
+    console.log(`TASK0341 ui.control.Unknown.route_unchanged=${afterUnknown.snapshot.route}/${afterUnknown.snapshot.onboardingRoute}`);
+    expect(afterUnknown.savedRule).toBe(beforeUnknown.savedRule);
+    expect(afterUnknown.snapshot.route).toBe(beforeUnknown.snapshot.route);
+    expect(afterUnknown.snapshot.onboardingRoute).toBe(beforeUnknown.snapshot.onboardingRoute);
+    expect(afterUnknown.page).toBe(beforeUnknown.page);
+
+    const continueStorage = memoryStorage({ "osl-protection-preset-v1": "maximum" });
+    const continueControl = new FakeElement({ dataset: { onboarding: "defaults" } });
+    const continueUi = await loadUi({ "[data-onboarding]": [continueControl] }, continueStorage);
+    continueUi.__oslHubUiTest.reset({ route: "onboarding", onboardingRoute: "privacy" });
+    continueUi.__oslHubUiTest.bindOnboarding();
+    continueControl.dispatch("click");
+    console.log(`TASK0341 ui.control.Continue.opened_route=${continueUi.__oslHubUiTest.snapshot().onboardingRoute}`);
+    console.log(`TASK0341 ui.control.Continue.saved_rule=${continueStorage.getItem("osl-protection-preset-v1")}`);
+    expect(continueUi.__oslHubUiTest.snapshot().onboardingRoute).toBe("defaults");
+    expect(continueStorage.getItem("osl-protection-preset-v1")).toBe("maximum");
+
+    const backControl = new FakeElement();
+    const backUi = await loadUi({ "#onboarding-back": [backControl] });
+    backUi.__oslHubUiTest.reset({ route: "onboarding", onboardingRoute: "privacy" });
+    backUi.__oslHubUiTest.bindOnboarding();
+    backControl.dispatch("click");
+    console.log(`TASK0341 ui.control.Back.opened_route=${backUi.__oslHubUiTest.snapshot().onboardingRoute}`);
+    expect(backUi.__oslHubUiTest.snapshot().onboardingRoute).toBe("forward-secrecy");
   }, MODULE_RELOAD_BUDGET_MS);
 
   it("moves Inbox tabs from decorative markup to filtered panel state", async () => {

@@ -221,6 +221,9 @@ export interface RecipientProtectedMessageDataInput {
   message: string;
   readKey: string;
   plaintext: string;
+  readKeys: [MessageReadKeyRecord];
+  senderDeleteGrants: [DeleteGrantRecord];
+  recipientDeleteGrants: [DeleteGrantRecord];
 }
 
 export type DeleteGrantParseResult =

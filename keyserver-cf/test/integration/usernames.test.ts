@@ -2,6 +2,14 @@ import { SELF, env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { usernameClaimMessage, usernameMoveMessage } from "../../src/lib/username.js";
 import { canonicalUnregisterBytes } from "../../src/lib/canonical.js";
+import {
+  ACCOUNT_OWNERSHIP_PROOF_TYPE_ED25519_CHALLENGE_V1,
+  canonicalAccountOwnershipProofBytes,
+} from "../../src/lib/account-ownership-proof.js";
+import {
+  sha256Hex,
+  type IssuedAccountOwnershipChallenge,
+} from "../../src/lib/account-ownership-challenge.js";
 import { buildRegMsg, buildRotMsg } from "../../src/lib/signed-request.js";
 import {
   ACCOUNT_OWNERSHIP_PROOF_TYPE_ED25519_CHALLENGE_V1,
@@ -30,6 +38,7 @@ const userId = () => `username-user-${Date.now()}-${sequence++}`;
 const snowflakeId = () => `9000000000000${String(100000 + sequence++).padStart(6, "0")}`;
 const testDb = (env as unknown as { DB: D1Database }).DB;
 const PUBLIC_NAME_PROOF_DOMAIN = "OSL-PUBLIC-NAME-PROOF-v1\u0000";
+const serviceAccountId = () => `90000000000000${String(3000 + sequence++).padStart(4, "0")}`;
 
 function b64url(bytes: Uint8Array): string {
   let value = "";
@@ -203,6 +212,116 @@ async function insertChallenge(
     .run();
 }
 
+type SigningPair = Awaited<ReturnType<typeof generateEd25519Pair>>;
+
+async function issueOwnershipChallenge(
+  appAccountId: string,
+  uid: string,
+): Promise<IssuedAccountOwnershipChallenge> {
+  const response = await SELF.fetch("http://test/v1/account-ownership/challenge", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "cf-connecting-ip": `198.51.100.${sequence % 240 + 1}`,
+    },
+    body: JSON.stringify({
+      service: "discord",
+      service_account_id: appAccountId,
+      owner_user_id: uid,
+      consent: true,
+    }),
+  });
+  if (response.status !== 201) {
+    throw new Error(`ownership challenge failed: ${response.status} ${await response.text()}`);
+  }
+  return await response.json() as IssuedAccountOwnershipChallenge;
+}
+
+async function bindAppAccount(
+  uid: string,
+  pair: SigningPair,
+  appAccountId = serviceAccountId(),
+): Promise<string> {
+  const challenge = await issueOwnershipChallenge(appAccountId, uid);
+  const proofSignature = await signEd25519(
+    pair.signingKey,
+    canonicalAccountOwnershipProofBytes({
+      proof_type: ACCOUNT_OWNERSHIP_PROOF_TYPE_ED25519_CHALLENGE_V1,
+      platform_id: appAccountId,
+      owner_user_id: uid,
+      nonce_b64: challenge.nonce,
+      issued_at_unix_seconds: challenge.issued_at_unix_seconds,
+      expires_at_unix_seconds: challenge.expires_at_unix_seconds,
+    }),
+  );
+  const proof = {
+    platform_id: appAccountId,
+    proof_type: ACCOUNT_OWNERSHIP_PROOF_TYPE_ED25519_CHALLENGE_V1,
+    e: {
+      owner_user_id: uid,
+      nonce_b64: challenge.nonce,
+      issued_at_unix_seconds: challenge.issued_at_unix_seconds,
+      expires_at_unix_seconds: challenge.expires_at_unix_seconds,
+      signature_b64: proofSignature,
+    },
+  };
+  const response = await SELF.fetch("http://test/v1/account-ownership/proof", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "cf-connecting-ip": `198.51.100.${sequence % 240 + 1}`,
+    },
+    body: JSON.stringify({
+      service: "discord",
+      service_account_id: appAccountId,
+      owner_user_id: uid,
+      proof,
+    }),
+  });
+  if (response.status !== 201) {
+    throw new Error(`ownership proof failed: ${response.status} ${await response.text()}`);
+  }
+  return appAccountId;
+}
+
+async function issuePublicNameProof(args: {
+  username: string;
+  uid: string;
+  pair: SigningPair;
+  appAccountId?: string;
+  issuedAt?: number;
+  expiresAt?: number;
+}): Promise<{ service: "discord"; service_account_id: string; name: string; token: string }> {
+  const appAccountId = await bindAppAccount(
+    args.uid,
+    args.pair,
+    args.appAccountId,
+  );
+  const now = Math.floor(Date.now() / 1000);
+  const issuedAt = args.issuedAt ?? now;
+  const expiresAt = args.expiresAt ?? now + 5 * 60;
+  const token = b64url(crypto.getRandomValues(new Uint8Array(32)));
+  await testDb.prepare(
+    `INSERT INTO public_name_proofs (
+       token_sha256, service, service_account_sha256, owner_user_id, name,
+       issued_at_unix_seconds, expires_at_unix_seconds, consumed_at_unix_seconds
+     ) VALUES (?1, 'discord', ?2, ?3, ?4, ?5, ?6, NULL)`,
+  ).bind(
+    await sha256Hex(new TextEncoder().encode(token)),
+    await sha256Hex(new TextEncoder().encode(appAccountId)),
+    args.uid,
+    args.username,
+    issuedAt,
+    expiresAt,
+  ).run();
+  return {
+    service: "discord",
+    service_account_id: appAccountId,
+    name: args.username,
+    token,
+  };
+}
+
 /// D81. The lookup is `POST /v1/usernames/lookup` with the handle in the
 /// BODY: the old `GET /v1/usernames/:username` wrote the handle a caller was
 /// interested in into the platform's request-path record, next to that
@@ -225,7 +344,7 @@ async function looksUp(username: string, ip: string): Promise<boolean> {
 async function claim(
   username: string,
   uid: string,
-  pair: { publicKeyB64: string; signingKey: CryptoKey },
+  pair: SigningPair,
   invite = "",
   requestId = b64url(crypto.getRandomValues(new Uint8Array(32))),
   serviceAccountId = snowflakeId(),
@@ -242,6 +361,7 @@ async function rawClaim(
   invite = "",
   requestId = b64url(crypto.getRandomValues(new Uint8Array(32))),
   timestamp_ms = Date.now(),
+  publicNameProof?: { service: "discord"; service_account_id: string; name: string; token: string },
 ) {
   const friend_code = invite || await friendCode(uid, pair);
   const signature_b64 = await signEd25519(pair.signingKey, usernameClaimMessage({
@@ -265,6 +385,23 @@ async function rawClaim(
     method: "POST",
     headers: { "content-type": "application/json", "cf-connecting-ip": `198.51.100.${sequence % 240 + 1}` },
     body: JSON.stringify({ username, user_id: uid, friend_code, request_id: requestId, timestamp_ms, signature_b64, ...proofFields }),
+  const proof = publicNameProof ?? await issuePublicNameProof({
+    username,
+    uid,
+    pair,
+  });
+  return SELF.fetch("http://test/v1/usernames/claim", {
+    method: "POST",
+    headers: { "content-type": "application/json", "cf-connecting-ip": `198.51.100.${sequence % 240 + 1}` },
+    body: JSON.stringify({
+      username,
+      user_id: uid,
+      friend_code,
+      request_id: requestId,
+      timestamp_ms,
+      signature_b64,
+      public_name_proof: proof,
+    }),
   });
 }
 
@@ -555,6 +692,25 @@ describe("username directory", () => {
       const request_id = b64url(crypto.getRandomValues(new Uint8Array(32)));
       const signature_b64 = await signEd25519(pair.signingKey, usernameClaimMessage({
         username,
+    const proof = await issuePublicNameProof({
+      username: "proof_once",
+      uid,
+      pair,
+    });
+    const request_id = b64url(crypto.getRandomValues(new Uint8Array(32)));
+    const timestamp_ms = Date.now();
+    const signature_b64 = await signEd25519(pair.signingKey, usernameClaimMessage({
+      username: "proof_once",
+      user_id: uid,
+      friend_code: invite,
+      request_id,
+      timestamp_ms,
+    }));
+    const init = {
+      method: "POST",
+      headers: { "content-type": "application/json", "cf-connecting-ip": "203.0.113.31" },
+      body: JSON.stringify({
+        username: "proof_once",
         user_id: uid,
         friend_code: invite,
         request_id,
@@ -600,6 +756,95 @@ describe("username directory", () => {
     console.log(`TASK0445 second_name.proof_rows=${proofRowsAfterSecond}`);
     console.log(`TASK0445 proof_name_claim.status=${first.status}`);
     console.log(`TASK0445 proof_name.rows=${firstRows}`);
+        signature_b64,
+        public_name_proof: proof,
+      }),
+    };
+    const first = await SELF.fetch("http://test/v1/usernames/claim", init);
+    const replay = await SELF.fetch("http://test/v1/usernames/claim", init);
+
+    const wrongNameProof = await issuePublicNameProof({
+      username: "proof_one_name",
+      uid,
+      pair,
+    });
+    const wrongName = await claim(
+      "proof_other_name",
+      uid,
+      pair,
+      invite,
+      undefined,
+      wrongNameProof,
+    );
+
+    const now = Math.floor(Date.now() / 1000);
+    const expiredProof = await issuePublicNameProof({
+      username: "proof_expired",
+      uid,
+      pair,
+      issuedAt: now - 301,
+      expiresAt: now - 1,
+    });
+    const expired = await claim(
+      "proof_expired",
+      uid,
+      pair,
+      invite,
+      undefined,
+      expiredProof,
+    );
+
+    console.log(`TASK0312 public_name_proof_claim_once.statuses=${first.status},${replay.status}`);
+    console.log(`TASK0312 public_name_proof_wrong_name.status=${wrongName.status}`);
+    console.log(`TASK0312 public_name_proof_expired.status=${expired.status}`);
+    expect([first.status, replay.status]).toEqual([200, 409]);
+    expect(wrongName.status).toBe(403);
+    expect(expired.status).toBe(403);
+  });
+
+  it("TASK0447 - claimed public-name storage and exact search expose only minimal identity data", async () => {
+    const name = "task0447_fixture";
+    const uid = userId();
+    const pair = await registerTestUser(SELF, uid);
+    const expectedFingerprint = await sha256Hex(pair.publicKey);
+    const claimed = await claim(name, uid, pair);
+    expect(claimed.status, await claimed.text()).toBe(200);
+
+    const stored = await testDb.prepare(
+      "SELECT * FROM public_name_directory WHERE name = ?",
+    ).bind(name).first<Record<string, unknown>>();
+    expect(stored).not.toBeNull();
+    const storedKeys = Object.keys(stored ?? {}).sort();
+    console.log(`TASK0447_CLAIMED_FIXTURE_NAME=${name}`);
+    console.log(`TASK0447_STORED_RECORD_FIELD_COUNT=${storedKeys.length}`);
+    console.log(`TASK0447_STORED_RECORD_FIELDS=${storedKeys.join(",")}`);
+    console.log(`TASK0447_STORED_IDENTITY_FINGERPRINT=${stored?.identity_fingerprint}`);
+    expect(storedKeys).toEqual(["claimed_at", "identity_fingerprint", "name", "updated_at"]);
+    expect(stored).toMatchObject({
+      name,
+      identity_fingerprint: expectedFingerprint,
+    });
+
+    const search = await SELF.fetch("http://test/v1/public-names/exact-search", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "cf-connecting-ip": "203.0.113.47",
+      },
+      body: JSON.stringify({ name }),
+    });
+    expect(search.status, await search.clone().text()).toBe(200);
+    const searchBody = await search.json() as Record<string, unknown>;
+    const searchKeys = Object.keys(searchBody).sort();
+    console.log(`TASK0447_EXACT_SEARCH_STATUS=${search.status}`);
+    console.log(`TASK0447_EXACT_SEARCH_FIELDS=${searchKeys.join(",")}`);
+    console.log(`TASK0447_EXACT_SEARCH_NAME=${searchBody.name}`);
+    console.log(`TASK0447_EXACT_SEARCH_IDENTITY_FINGERPRINT=${searchBody.identity_fingerprint}`);
+    expect(searchKeys).toEqual(["identity_fingerprint", "name"]);
+    expect(searchBody).toEqual({
+      name,
+      identity_fingerprint: expectedFingerprint,
+    });
   });
 
   it("claims and resolves only an exact normalized username", async () => {
@@ -628,12 +873,26 @@ describe("username directory", () => {
       body: JSON.stringify({ username: "unsigned", user_id: uid, service_account_id: serviceAccountId, friend_code: invite, request_id, timestamp_ms }),
     });
     expect(unsigned.status).toBe(400);
+    const wrongSigProof = await issuePublicNameProof({
+      username: "wrongkey",
+      uid,
+      pair: owner,
+    });
     const wrongSig = await signEd25519(attacker.signingKey, usernameClaimMessage({ username: "wrongkey", user_id: uid, friend_code: invite, request_id, timestamp_ms }));
     const proofFields = await publicNameProofFields(uid, owner.signingKey, "wrongkey");
     const wrong = await SELF.fetch("http://test/v1/usernames/claim", {
       method: "POST", headers: { "content-type": "application/json", "cf-connecting-ip": "203.0.113.13" },
       body: JSON.stringify({ username: "wrongkey", user_id: uid, service_account_id: serviceAccountId, friend_code: invite, request_id, timestamp_ms, signature_b64: wrongSig }),
       body: JSON.stringify({ username: "wrongkey", user_id: uid, friend_code: invite, request_id, timestamp_ms, signature_b64: wrongSig, ...proofFields }),
+      body: JSON.stringify({
+        username: "wrongkey",
+        user_id: uid,
+        friend_code: invite,
+        request_id,
+        timestamp_ms,
+        signature_b64: wrongSig,
+        public_name_proof: wrongSigProof,
+      }),
     });
     expect(wrong.status).toBe(401);
     const attackerInvite = await friendCode(uid, attacker);
@@ -651,11 +910,17 @@ describe("username directory", () => {
     const signature_b64 = await signEd25519(pair.signingKey, usernameClaimMessage({
       username: "replay_test", user_id: uid, friend_code, request_id, timestamp_ms,
     }));
+    const public_name_proof = await issuePublicNameProof({
+      username: "replay_test",
+      uid,
+      pair,
+    });
     const init = {
       method: "POST",
       headers: { "content-type": "application/json", "cf-connecting-ip": "203.0.113.19" },
       body: JSON.stringify({ username: "replay_test", user_id: uid, service_account_id: serviceAccountId, friend_code, request_id, timestamp_ms, signature_b64 }),
       body: JSON.stringify({ username: "replay_test", user_id: uid, friend_code, request_id, timestamp_ms, signature_b64, ...(await publicNameProofFields(uid, pair.signingKey, "replay_test")) }),
+      body: JSON.stringify({ username: "replay_test", user_id: uid, friend_code, request_id, timestamp_ms, signature_b64, public_name_proof }),
     };
     expect((await SELF.fetch("http://test/v1/usernames/claim", init)).status).toBe(200);
     expect((await SELF.fetch("http://test/v1/usernames/claim", init)).status).toBe(409);
@@ -689,10 +954,11 @@ describe("username directory", () => {
     const timestamp_ms = Date.now();
     const message = canonicalUnregisterBytes({ user_id: one, timestamp_ms });
     const signature_b64 = await signEd25519(pairOne.signingKey, message);
-    expect((await SELF.fetch(`http://test/v1/pubkeys/${encodeURIComponent(one)}`, {
+    const unregister = await SELF.fetch(`http://test/v1/pubkeys/${encodeURIComponent(one)}`, {
       method: "DELETE", headers: { "content-type": "application/json", "cf-connecting-ip": "203.0.113.16" },
       body: JSON.stringify({ signature_b64, timestamp_ms }),
-    })).status).toBe(200);
+    });
+    expect(unregister.status, await unregister.text()).toBe(200);
     expect(await looksUp("renamed_user", "203.0.113.17")).toBe(false);
     expect((await claim("renamed_user", two, pairTwo)).status).toBe(409);
   });

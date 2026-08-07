@@ -285,6 +285,13 @@ export interface SupportMatrixRowPresentation {
   publicClaimAllowed: boolean;
 }
 export type SupportMatrixPresentation = SupportMatrixPublicPresentation | SupportMatrixRowPresentation;
+export type InstalledBuildWarningReason = "changed" | "corruptProof";
+export interface InstalledBuildChatWarning {
+  kind: "changedBuild";
+  reason: InstalledBuildWarningReason;
+  message: string;
+  messageSendingAvailable: true;
+}
 
 export const LOCAL_PROTECTED_TEXT_MAX_BYTES = 1_000;
 export const HUB_PLAINTEXT_MAX_BYTES = 1_000;
@@ -623,6 +630,28 @@ export function parseOslChatBurnResult(raw: unknown): OslChatBurnResult | null {
     || raw.localCleanupComplete !== true
     || raw.recipientCopiesDeleted !== false) return null;
   return raw as unknown as OslChatBurnResult;
+export function parseInstalledBuildChatWarning(raw: unknown): InstalledBuildChatWarning | null {
+  if (raw === null || raw === undefined) return null;
+  if (!isRecord(raw)
+    || raw.kind !== "changedBuild"
+    || (raw.reason !== "changed" && raw.reason !== "corruptProof")
+    || raw.message !== "OSL build changed after its startup proof. Sending stays available."
+    || raw.messageSendingAvailable !== true) return null;
+  return {
+    kind: "changedBuild",
+    reason: raw.reason,
+    message: raw.message,
+    messageSendingAvailable: true,
+  };
+}
+
+export async function loadInstalledBuildChatWarningStatus(): Promise<InstalledBuildChatWarning | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    return checkedBackendResponse("installed_build_chat_warning_status",
+      parseInstalledBuildChatWarning(await invoke<unknown>("installed_build_chat_warning_status")),
+      "the installed-build warning did not match the expected shape");
+  } catch (error) { recordBackendFailure("installed_build_chat_warning_status", error); return null; }
 }
 
 export async function preparePeerProseText(

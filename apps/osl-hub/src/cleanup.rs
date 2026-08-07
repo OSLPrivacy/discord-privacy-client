@@ -63,6 +63,97 @@ pub struct HubFullCleanupResult {
 pub const WINDOWS_REMOVE_PROGRAM_UNINSTALL_ARG: &str =
     "--osl-windows-remove-program-uninstall-step";
 pub const WINDOWS_REMOVE_PROGRAM_UNINSTALL_STEP: &str = "windows-remove-program-uninstall";
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HubUninstallFootprintEntry {
+    pub name: &'static str,
+    pub count: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct HubUninstallRoots {
+    pub program_files_dir: PathBuf,
+    pub app_config_dir: PathBuf,
+    pub app_local_data_dir: PathBuf,
+    pub startup_entry: PathBuf,
+    pub log_dir: PathBuf,
+}
+
+impl HubUninstallRoots {
+    pub fn new(
+        program_files_dir: PathBuf,
+        app_config_dir: PathBuf,
+        app_local_data_dir: PathBuf,
+        startup_entry: PathBuf,
+        log_dir: PathBuf,
+    ) -> Self {
+        Self {
+            program_files_dir,
+            app_config_dir,
+            app_local_data_dir,
+            startup_entry,
+            log_dir,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HubUninstallCleanupResult {
+    pub completed: bool,
+    pub removed_places: Vec<&'static str>,
+    pub failed_places: Vec<&'static str>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HubUninstallStopPoint {
+    AfterKeysAndStoredMessages,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UninstallPlace {
+    ProgramFiles,
+    Settings,
+    Keys,
+    StoredMessages,
+    DownloadedFiles,
+    StartupEntry,
+    Logs,
+}
+
+impl UninstallPlace {
+    const ALL: [UninstallPlace; 7] = [
+        UninstallPlace::ProgramFiles,
+        UninstallPlace::Settings,
+        UninstallPlace::Keys,
+        UninstallPlace::StoredMessages,
+        UninstallPlace::DownloadedFiles,
+        UninstallPlace::StartupEntry,
+        UninstallPlace::Logs,
+    ];
+
+    const REMOVAL_ORDER: [UninstallPlace; 7] = [
+        UninstallPlace::Keys,
+        UninstallPlace::StoredMessages,
+        UninstallPlace::Settings,
+        UninstallPlace::DownloadedFiles,
+        UninstallPlace::StartupEntry,
+        UninstallPlace::Logs,
+        UninstallPlace::ProgramFiles,
+    ];
+
+    const fn name(self) -> &'static str {
+        match self {
+            UninstallPlace::ProgramFiles => "program files",
+            UninstallPlace::Settings => "settings",
+            UninstallPlace::Keys => "keys",
+            UninstallPlace::StoredMessages => "stored messages",
+            UninstallPlace::DownloadedFiles => "downloaded files",
+            UninstallPlace::StartupEntry => "startup entry",
+            UninstallPlace::Logs => "logs",
+        }
+    }
+}
 
 struct CleanupTarget {
     id: &'static str,
@@ -339,6 +430,26 @@ hub_local_state! {
         disposition: Disposition::Purge,
         contains: "the Discord QA shell's separate local-data tree",
     },
+}
+
+pub fn list_hub_uninstall_footprint(
+    roots: &HubUninstallRoots,
+) -> Result<Vec<HubUninstallFootprintEntry>, String> {
+    validate_uninstall_roots(roots)?;
+    Ok(UninstallPlace::ALL
+        .iter()
+        .copied()
+        .map(|place| HubUninstallFootprintEntry {
+            name: place.name(),
+            count: uninstall_place_count(place, roots),
+        })
+        .collect())
+}
+
+pub fn execute_hub_uninstall_cleanup(
+    roots: &HubUninstallRoots,
+) -> Result<HubUninstallCleanupResult, String> {
+    execute_hub_uninstall_cleanup_with_stop(roots, None, &KeyMaterialWipe::production())
 }
 
 /// Delete every known OSL Privacy artifact after the trusted host has closed all
@@ -648,12 +759,193 @@ fn purge_fixed_targets(
     (removed_targets, failed_targets)
 }
 
+fn execute_hub_uninstall_cleanup_with_stop(
+    roots: &HubUninstallRoots,
+    stop: Option<HubUninstallStopPoint>,
+    key_material: &KeyMaterialWipe,
+) -> Result<HubUninstallCleanupResult, String> {
+    validate_uninstall_roots(roots)?;
+    let mut removed_places = Vec::new();
+    let mut failed_places = Vec::new();
+
+    for place in UninstallPlace::REMOVAL_ORDER {
+        let before = uninstall_place_count(place, roots);
+        let removed = remove_uninstall_place(place, roots, key_material);
+        let after = uninstall_place_count(place, roots);
+        if removed.is_err() || after > 0 {
+            failed_places.push(place.name());
+        } else if before > 0 || removed == Ok(Removal::Removed) {
+            removed_places.push(place.name());
+        }
+
+        if stop == Some(HubUninstallStopPoint::AfterKeysAndStoredMessages)
+            && place == UninstallPlace::StoredMessages
+        {
+            return Ok(HubUninstallCleanupResult {
+                completed: false,
+                removed_places,
+                failed_places,
+            });
+        }
+    }
+
+    dedupe_static_in_place(&mut removed_places);
+    dedupe_static_in_place(&mut failed_places);
+    Ok(HubUninstallCleanupResult {
+        completed: failed_places.is_empty(),
+        removed_places,
+        failed_places,
+    })
+}
+
+fn uninstall_place_count(place: UninstallPlace, roots: &HubUninstallRoots) -> usize {
+    uninstall_marker_paths(place, roots)
+        .into_iter()
+        .filter(|path| path_exists_without_following_links(path))
+        .count()
+}
+
+fn uninstall_marker_paths(place: UninstallPlace, roots: &HubUninstallRoots) -> Vec<PathBuf> {
+    match place {
+        UninstallPlace::ProgramFiles => vec![roots.program_files_dir.clone()],
+        UninstallPlace::Settings => vec![roots.app_config_dir.join("preview-preferences.json")],
+        UninstallPlace::Keys => vec![roots
+            .app_config_dir
+            .join(HUB_CORE_DIR)
+            .join("identity.json")],
+        UninstallPlace::StoredMessages => {
+            vec![roots
+                .app_config_dir
+                .join(HUB_CORE_DIR)
+                .join("stored-messages")]
+        }
+        UninstallPlace::DownloadedFiles => {
+            vec![roots.app_local_data_dir.join("peer-attachment-staging")]
+        }
+        UninstallPlace::StartupEntry => vec![roots.startup_entry.clone()],
+        UninstallPlace::Logs => vec![roots.log_dir.clone()],
+    }
+}
+
+fn remove_uninstall_place(
+    place: UninstallPlace,
+    roots: &HubUninstallRoots,
+    key_material: &KeyMaterialWipe,
+) -> Result<Removal, ()> {
+    let paths = match place {
+        UninstallPlace::ProgramFiles => vec![roots.program_files_dir.clone()],
+        UninstallPlace::Settings => vec![roots.app_config_dir.clone()],
+        UninstallPlace::Keys => vec![
+            roots
+                .app_config_dir
+                .join(HUB_CORE_DIR)
+                .join("identity.json"),
+            roots
+                .app_config_dir
+                .join(HUB_CORE_DIR)
+                .join("hub-identities"),
+            roots.app_config_dir.join(HUB_CORE_DIR).join("prekeys.json"),
+            roots.app_config_dir.join(HUB_CORE_DIR).join("prekeys"),
+            roots
+                .app_config_dir
+                .join(HUB_CORE_DIR)
+                .join("ratchet-sessions"),
+            roots.app_config_dir.join(HUB_CORE_DIR).join("sender-keys"),
+        ],
+        UninstallPlace::StoredMessages => vec![
+            roots
+                .app_config_dir
+                .join(HUB_CORE_DIR)
+                .join("stored-messages"),
+            roots.app_config_dir.join(HUB_CORE_DIR).join("messages"),
+            roots
+                .app_config_dir
+                .join(HUB_CORE_DIR)
+                .join("message-store"),
+        ],
+        UninstallPlace::DownloadedFiles => vec![
+            roots.app_local_data_dir.join("peer-attachment-staging"),
+            roots
+                .app_local_data_dir
+                .join("service-profiles-v2")
+                .join("downloads"),
+            roots
+                .app_config_dir
+                .join("components-v1")
+                .join("component-payloads"),
+        ],
+        UninstallPlace::StartupEntry => vec![roots.startup_entry.clone()],
+        UninstallPlace::Logs => vec![roots.log_dir.clone()],
+    };
+
+    let mut removed_any = false;
+    let mut failed = false;
+    for path in paths {
+        match remove_target_without_following_links(&path) {
+            Ok(Removal::Removed) => removed_any = true,
+            Ok(Removal::Absent) => {}
+            Err(()) => failed = true,
+        }
+    }
+    if place == UninstallPlace::Keys {
+        let mut key_removed = Vec::new();
+        let mut key_failed = Vec::new();
+        run_key_material_wipe(key_material, &mut key_removed, &mut key_failed);
+        removed_any |= !key_removed.is_empty();
+        failed |= !key_failed.is_empty();
+    }
+    prune_empty_uninstall_dirs(roots);
+    if failed {
+        Err(())
+    } else if removed_any {
+        Ok(Removal::Removed)
+    } else {
+        Ok(Removal::Absent)
+    }
+}
+
+fn path_exists_without_following_links(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok()
+}
+
+fn prune_empty_uninstall_dirs(roots: &HubUninstallRoots) {
+    for path in [
+        roots.app_config_dir.join(HUB_CORE_DIR),
+        roots.app_config_dir.join("components-v1"),
+        roots.app_local_data_dir.join("service-profiles-v2"),
+        roots.app_config_dir.clone(),
+        roots.app_local_data_dir.clone(),
+    ] {
+        let _ = std::fs::remove_dir(&path);
+    }
+}
+
 /// Preserve first-seen order while removing repeats. Registry ids are shared by
 /// several paths (a file and its `.tmp`/`.bak` siblings), and the frontend
 /// parser bounds both lists.
 fn dedupe_in_place(ids: &mut Vec<String>) {
     let mut seen = HashSet::new();
     ids.retain(|id| seen.insert(id.clone()));
+}
+
+fn dedupe_static_in_place(ids: &mut Vec<&'static str>) {
+    let mut seen = HashSet::new();
+    ids.retain(|id| seen.insert(*id));
+}
+
+fn validate_uninstall_roots(roots: &HubUninstallRoots) -> Result<(), String> {
+    for path in [
+        &roots.program_files_dir,
+        &roots.app_config_dir,
+        &roots.app_local_data_dir,
+        &roots.startup_entry,
+        &roots.log_dir,
+    ] {
+        if !path.is_absolute() || path.parent().is_none() {
+            return Err("OSL uninstall roots must be absolute non-root paths".to_owned());
+        }
+    }
+    Ok(())
 }
 
 fn validate_trusted_roots(app_config_dir: &Path, app_local_data_dir: &Path) -> Result<(), String> {
@@ -1269,6 +1561,130 @@ mod tests {
                 "{name} is registered but a burn does not destroy it, and nothing says why"
             );
         }
+    }
+
+    fn task_3183_key_material_wipe() -> KeyMaterialWipe {
+        KeyMaterialWipe {
+            evict_tpm_key: Box::new(|| KeyMaterialOutcome::Wiped),
+            purge_keyring_entry: Box::new(|| KeyMaterialOutcome::Wiped),
+        }
+    }
+
+    fn task_3183_seed(label: &str) -> (PathBuf, HubUninstallRoots) {
+        let root = temp_root(label);
+        let roots = HubUninstallRoots::new(
+            root.join("program-files").join("OSL Privacy"),
+            root.join("settings"),
+            root.join("local-data"),
+            root.join("startup").join("OSL Privacy.lnk"),
+            root.join("logs"),
+        );
+        std::fs::create_dir_all(&roots.program_files_dir).unwrap();
+        std::fs::write(roots.program_files_dir.join("OSL.exe"), b"program").unwrap();
+        std::fs::create_dir_all(&roots.app_config_dir).unwrap();
+        std::fs::write(
+            roots.app_config_dir.join("preview-preferences.json"),
+            b"settings",
+        )
+        .unwrap();
+        let core = roots.app_config_dir.join(HUB_CORE_DIR);
+        std::fs::create_dir_all(&core).unwrap();
+        std::fs::write(core.join("identity.json"), b"keys").unwrap();
+        let messages = core.join("stored-messages");
+        std::fs::create_dir_all(&messages).unwrap();
+        std::fs::write(messages.join("marker"), b"stored messages").unwrap();
+        let downloads = roots.app_local_data_dir.join("peer-attachment-staging");
+        std::fs::create_dir_all(&downloads).unwrap();
+        std::fs::write(downloads.join("marker"), b"downloaded").unwrap();
+        std::fs::create_dir_all(roots.startup_entry.parent().unwrap()).unwrap();
+        std::fs::write(&roots.startup_entry, b"startup").unwrap();
+        std::fs::create_dir_all(&roots.log_dir).unwrap();
+        std::fs::write(roots.log_dir.join("marker.log"), b"logs").unwrap();
+        (root, roots)
+    }
+
+    fn task_3183_count(entries: &[HubUninstallFootprintEntry], name: &str) -> usize {
+        entries
+            .iter()
+            .find(|entry| entry.name == name)
+            .map(|entry| entry.count)
+            .unwrap_or_else(|| panic!("missing uninstall place {name}"))
+    }
+
+    fn task_3183_print_counts(label: &str, entries: &[HubUninstallFootprintEntry]) {
+        println!("TASK3183_{label}_PLACE_COUNT={}", entries.len());
+        for (index, entry) in entries.iter().enumerate() {
+            println!(
+                "TASK3183_{label}_PLACE[{}]={} COUNT={}",
+                index + 1,
+                entry.name,
+                entry.count
+            );
+        }
+    }
+
+    #[test]
+    fn task_3183_uninstall_removes_all_listed_places_in_safe_order() {
+        let (full_root, full_roots) = task_3183_seed("task-3183-full");
+        let before = list_hub_uninstall_footprint(&full_roots).unwrap();
+        task_3183_print_counts("BEFORE", &before);
+        assert_eq!(before.len(), 7);
+        assert!(
+            before.iter().all(|entry| entry.count > 0),
+            "every named place must start above zero: {before:?}"
+        );
+        println!(
+            "TASK3183_BEFORE_ALL_7_ABOVE_ZERO={}",
+            before.iter().filter(|entry| entry.count > 0).count()
+        );
+
+        let full_result = execute_hub_uninstall_cleanup_with_stop(
+            &full_roots,
+            None,
+            &task_3183_key_material_wipe(),
+        )
+        .unwrap();
+        assert!(
+            full_result.completed,
+            "full uninstall failed: {full_result:?}"
+        );
+        let after = list_hub_uninstall_footprint(&full_roots).unwrap();
+        task_3183_print_counts("AFTER", &after);
+        assert_eq!(after.len(), 7);
+        assert!(
+            after.iter().all(|entry| entry.count == 0),
+            "full uninstall left residue: {after:?}"
+        );
+        println!(
+            "TASK3183_AFTER_ALL_7_ZERO={}",
+            after.iter().filter(|entry| entry.count == 0).count()
+        );
+
+        let (half_root, half_roots) = task_3183_seed("task-3183-half");
+        let half_result = execute_hub_uninstall_cleanup_with_stop(
+            &half_roots,
+            Some(HubUninstallStopPoint::AfterKeysAndStoredMessages),
+            &task_3183_key_material_wipe(),
+        )
+        .unwrap();
+        assert!(
+            !half_result.completed,
+            "the halfway run must report interruption"
+        );
+        let half = list_hub_uninstall_footprint(&half_roots).unwrap();
+        task_3183_print_counts("HALF", &half);
+        let half_keys = task_3183_count(&half, "keys");
+        let half_messages = task_3183_count(&half, "stored messages");
+        let half_program_files = task_3183_count(&half, "program files");
+        println!("TASK3183_HALF_KEYS_COUNT={half_keys}");
+        println!("TASK3183_HALF_STORED_MESSAGES_COUNT={half_messages}");
+        println!("TASK3183_HALF_PROGRAM_FILES_COUNT={half_program_files}");
+        assert_eq!(half_keys, 0);
+        assert_eq!(half_messages, 0);
+        assert_eq!(half_program_files, 1);
+
+        let _ = std::fs::remove_dir_all(full_root);
+        let _ = std::fs::remove_dir_all(half_root);
     }
 
     /// Seed one file under every registered `Purge` name and prove the burn

@@ -23,8 +23,16 @@
 //!   from a future settings UI).
 
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+
+pub const BURNED_SCOPES_FILE_NAME: &str = "burned_scopes.json";
+
+/// The burned-scope ledger lives beside the rest of the account's saved state
+/// files and is sealed by the same file-storage key as those files.
+pub fn path_in_config_dir(config_dir: &Path) -> PathBuf {
+    config_dir.join(BURNED_SCOPES_FILE_NAME)
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BurnedScopesFile {

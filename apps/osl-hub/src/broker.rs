@@ -33,6 +33,17 @@ pub mod view_once_fanout;
 
 const MAX_CONTEXT_ID_BYTES: usize = 160;
 
+fn require_view_once_message_creation_allowed(
+    core: &HubCoreState,
+    view_once: bool,
+) -> Result<(), String> {
+    if !view_once {
+        return Ok(());
+    }
+    ipc::tier_gate::check_view_once_message_creation_allowed(&core.osl)
+        .map_err(|_| ipc::tier_gate::VIEW_ONCE_MESSAGE_PRO_REFUSAL.to_owned())
+}
+
 fn scope_storage_key(scope_input: &ScopeInput) -> Result<String, String> {
     let scope: ipc::scope::Scope = scope_input
         .clone()
@@ -2648,6 +2659,7 @@ fn prepare_direct_manual_v3(
     message_id: String,
     chunk: Option<&NativeTextChunkMeta>,
 ) -> Result<String, String> {
+    require_view_once_message_creation_allowed(core, policy.view_once)?;
     let maximum = if chunk.is_some() {
         MAX_NATIVE_OVERLAY_CHUNK_BYTES
     } else {
@@ -4314,6 +4326,45 @@ pub fn prepare_native_discord_overlay_text_with_timer_picker_and_route_clients(
     )
 }
 
+/// Read back the exact prepared carrier copy before a native surface can post
+/// it.
+///
+/// The check is local: it proves the text still decodes to an OSL prose-token
+/// pointer under the active manual-peer scope and detector, but does not fetch
+/// or post anything. A failure means the row the native adapter is about to
+/// type would strand an unreadable public carrier, so the caller must refuse
+/// before issuing any platform post command.
+pub fn read_back_prepared_native_overlay_post_copy(
+    core: &HubCoreState,
+    broker: &HubBrokerState,
+    prepared_post_copy: &str,
+) -> Result<(), String> {
+    let context_token = broker.active_native_manual_context_token()?;
+    let manual = broker.manual_peer_for(&context_token)?;
+    let verified = security::require_manual_peer_scope_approved(
+        core,
+        &manual.service_id,
+        &manual.account_id,
+        manual.person_id.clone(),
+        manual.scope.clone(),
+    )?;
+    if verified.peer_osl_user_id != manual.peer_osl_user_id {
+        return Err("The prepared Discord carrier pointer could not be recovered".to_owned());
+    }
+    let detection_key = prose_detection_key(core, &verified)
+        .map_err(|_| "The prepared Discord carrier pointer could not be recovered".to_owned())?;
+    match ipc::prose_token::prose_token_recover_pointer(
+        &manual.scope,
+        &detection_key,
+        prepared_post_copy,
+    ) {
+        Ok(Some(_pointer)) => Ok(()),
+        Ok(None) | Err(_) => {
+            Err("The prepared Discord carrier pointer could not be recovered".to_owned())
+        }
+    }
+}
+
 pub fn prepare_osl_chat_text(
     core: &HubCoreState,
     security_state: &HubSecurityState,
@@ -4652,6 +4703,7 @@ fn prepare_peer_inbox_text_with_route_clients(
     keyserver_client: Option<&keystore::KeyServerClient>,
 ) -> Result<PreparedNativeOverlayCarrier, String> {
     require_view_once_create_allowed(core, view_once)?;
+    require_view_once_message_creation_allowed(core, view_once)?;
     #[cfg(feature = "discord-qa-shell")]
     let is_fixed_discord_qa_probe = plaintext == "OSL Discord QA probe" && !view_once;
     #[cfg(feature = "discord-qa-shell")]
@@ -6369,6 +6421,7 @@ fn begin_peer_attachment(
     osl_chat: bool,
 ) -> Result<NativeOverlayAttachmentSealPlan, String> {
     const ERROR: &str = "OSL could not prepare this private attachment";
+    require_view_once_message_creation_allowed(core, view_once)?;
     let context_token = if osl_chat {
         broker.active_osl_chat_context_token()?
     } else {
@@ -6393,6 +6446,12 @@ fn begin_peer_attachment(
     let tier = active_attachment_account_tier(core)?;
     if crate::attachment_limits::check_attachment_size(plaintext_size, tier).is_err() {
     if crate::attachment_limits::check_attachment_request(plaintext_size, 1, tier).is_err() {
+    let plaintext_limit = if osl_chat {
+        crate::osl_chat_file_limits::current_osl_chat_file_size_limit(core).max_bytes
+    } else {
+        ipc::attachment_wire::MAX_STREAMED_ATTACHMENT_BYTES
+    };
+    if plaintext_size == 0 || plaintext_size > plaintext_limit {
         return Err(ERROR.to_owned());
     }
     let ttl_seconds = security::scope_security(manual.scope.clone())
@@ -12180,6 +12239,15 @@ mod tests {
         }
     }
 
+    fn set_test_license(core: &HubCoreState, state: keystore::LicenseState, raw_status: &str) {
+        *core.osl.license_state.lock().expect("license state lock") = keystore::LicenseStateDto {
+            state,
+            raw_status: raw_status.to_owned(),
+            current_period_end: None,
+            last_validated_at: None,
+        };
+    }
+
     fn native_peer_payload(
         manual: &ManualPeerContext,
         context: &HubConversationContext,
@@ -12342,6 +12410,104 @@ mod tests {
             println!("TASK0593_CUT_SURFACE surface={cut} reason=owner-ruling-2026-08-05");
         }
         assert_eq!(named_results, 15);
+    }
+
+    #[test]
+    fn task_0590_view_once_creation_is_pro_only_and_free_count_stays_zero() {
+        let pro = native_manual_pair("task0590-pro");
+        set_test_license(&pro.core, keystore::LicenseState::Paid, "ACTIVE");
+        let mut pro_created_count = 0usize;
+        let pro_wire = prepare_direct_manual_v3(
+            &pro.core,
+            &pro.alice_binding,
+            &pro.alice_manual,
+            &pro.alice_context,
+            "TASK0590 pro view-once direct command".to_owned(),
+            PeerProtectionPolicy {
+                view_once: true,
+                require_capture_protection: true,
+                created_at: 1_700_000_590,
+                expires_at: 1_700_004_190,
+                send_order: None,
+            },
+            "peer-task0590pro000000000000000000".to_owned(),
+            None,
+        )
+        .map(|wire| {
+            pro_created_count += 1;
+            wire
+        })
+        .expect("Pro account creates a view-once message");
+        let pro_payload = decrypt_direct_manual_v3(
+            &pro.core,
+            &pro.alice_binding,
+            ManualWireSender::SelfIdentity,
+            &pro_wire,
+        )
+        .expect("Pro-created wire decrypts to the protected payload");
+        assert!(pro_payload.view_once);
+        assert_eq!(pro_created_count, 1);
+
+        let free = native_manual_pair("task0590-free");
+        set_test_license(&free.core, keystore::LicenseState::Free, "Unconfigured");
+        let mut free_created_count = 0usize;
+        let free_result = prepare_direct_manual_v3(
+            &free.core,
+            &free.alice_binding,
+            &free.alice_manual,
+            &free.alice_context,
+            "TASK0590 free view-once direct command".to_owned(),
+            PeerProtectionPolicy {
+                view_once: true,
+                require_capture_protection: true,
+                created_at: 1_700_000_590,
+                expires_at: 1_700_004_190,
+                send_order: None,
+            },
+            "peer-task0590free00000000000000000".to_owned(),
+            None,
+        )
+        .map(|wire| {
+            free_created_count += 1;
+            wire
+        });
+        let free_refusal = free_result.expect_err("Free account must be refused by name");
+        assert_eq!(free_refusal, ipc::tier_gate::VIEW_ONCE_MESSAGE_PRO_REFUSAL);
+        assert_eq!(free_created_count, 0);
+
+        let free_ordinary_wire = prepare_direct_manual_v3(
+            &free.core,
+            &free.alice_binding,
+            &free.alice_manual,
+            &free.alice_context,
+            "TASK0590 free ordinary direct command".to_owned(),
+            PeerProtectionPolicy {
+                view_once: false,
+                require_capture_protection: true,
+                created_at: 1_700_000_590,
+                expires_at: 1_700_004_190,
+                send_order: None,
+            },
+            "peer-task0590freeordinary0000000".to_owned(),
+            None,
+        )
+        .expect("Free account still creates ordinary protected messages");
+        let free_ordinary_payload = decrypt_direct_manual_v3(
+            &free.core,
+            &free.alice_binding,
+            ManualWireSender::SelfIdentity,
+            &free_ordinary_wire,
+        )
+        .expect("Free ordinary wire decrypts to the protected payload");
+        assert!(!free_ordinary_payload.view_once);
+        assert_eq!(free_created_count, 0);
+
+        println!(
+            "TASK0590 pro_account.created_view_once={} view_once={} view_once_created_count={}",
+            true, pro_payload.view_once, pro_created_count
+        );
+        println!("TASK0590 free_account.refusal_name={free_refusal}");
+        println!("TASK0590 free_account.view_once_created_count={free_created_count}");
     }
 
     #[test]
@@ -17827,6 +17993,17 @@ mod tests {
         let broker = HubBrokerState::default();
         let chosen_lease = broker.activate(chosen_context.clone(), 11).unwrap();
         let chosen_mark = format!("EMBER-0535-chosen:{}", hex(&crypto::random::random_bytes(8)));
+        let security = HubSecurityState::default();
+        security::set_scope_security(&security, scope_input(&chosen_context).unwrap(), 3600, true)
+            .unwrap();
+        security::set_scope_security(&security, scope_input(&other_context).unwrap(), 3600, true)
+            .unwrap();
+        let broker = HubBrokerState::default();
+        let chosen_lease = broker.activate(chosen_context.clone(), 11).unwrap();
+        let chosen_mark = format!(
+            "EMBER-0535-chosen:{}",
+            hex(&crypto::random::random_bytes(8))
+        );
         let chosen_message = prepare_local_protected_text(
             &core,
             &broker,
@@ -17884,11 +18061,29 @@ mod tests {
             .unwrap();
         eprintln!("TASK-0535 burn removed={burned}");
         assert_eq!(burned, 1);
+        let chosen_burn_lease = broker.activate(chosen_context.clone(), 13).unwrap();
+        let burned =
+            burn_local_protected_context(&core, &broker, &chosen_burn_lease.context_token).unwrap();
+        eprintln!("TASK-0535 burn removed={burned}");
 
         let after_chosen = count_for_binding(&chosen_binding);
         let after_other = count_for_binding(&other_binding);
         eprintln!("TASK-0535 after chosen_service_count={after_chosen}");
         eprintln!("TASK-0535 after other_service_count={after_other}");
+        if after_chosen != 0 {
+            let read = decrypt_local_protected_capsule(
+                &core,
+                &broker,
+                &chosen_burn_lease.context_token,
+                chosen_message.capsule,
+            )
+            .unwrap();
+            panic!(
+                "TASK-0535 marked service message still present: {}",
+                read.plaintext
+            );
+        }
+        assert_eq!(burned, 1);
         assert_eq!(after_chosen, 0);
         assert_eq!(after_other, 3);
 
@@ -17908,6 +18103,398 @@ mod tests {
         keystore::set_active_account_dir(None);
         keystore::set_base_dir_override(None);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn task_3566_double_burn_clicks_delete_marked_targets_once_per_scope() {
+        let _serial = crate::global_keystore_test_lock();
+        let unique = format!(
+            "osl-hub-task-3566-double-burn-{}-{}",
+            std::process::id(),
+            random_local_message_id()
+        );
+        let root = std::env::temp_dir().join(unique);
+        let ledger_dir = root.join("ledger");
+        let config_dir = root.join("config");
+        let local_data_dir = root.join("local-data");
+        std::fs::create_dir_all(&ledger_dir).unwrap();
+        std::fs::create_dir_all(config_dir.join("osl-core").join("messages")).unwrap();
+        std::fs::create_dir_all(&local_data_dir).unwrap();
+        let native_history = root.join("native-discord-history.txt");
+        std::fs::write(&native_history, b"native unmarked message").unwrap();
+
+        keystore::set_base_dir_override(Some(ledger_dir.clone()));
+        keystore::set_active_account_dir(Some(ledger_dir.clone()));
+        ipc::main_password::set_main_password(&ledger_dir, "aB3!z9").unwrap();
+        let file_key =
+            ipc::main_password::get_file_storage_key().expect("main password installs file key");
+        let ledger_path = ledger_dir.join(LOCAL_PROTECTED_FILE);
+
+        let owner = "self-liam";
+        let chat_context = HubConversationContext {
+            service_id: "discord".to_owned(),
+            account_id: "task-3566-account".to_owned(),
+            conversation_kind: HubConversationKind::Dm,
+            conversation_id: "dm-task-3566-chat".to_owned(),
+            space_id: None,
+            participant_osl_ids: vec![owner.to_owned()],
+            self_osl_id: owner.to_owned(),
+        };
+        let app_context_a = HubConversationContext {
+            service_id: "discord".to_owned(),
+            account_id: "task-3566-account".to_owned(),
+            conversation_kind: HubConversationKind::Dm,
+            conversation_id: "dm-task-3566-app-a".to_owned(),
+            space_id: None,
+            participant_osl_ids: vec![owner.to_owned()],
+            self_osl_id: owner.to_owned(),
+        };
+        let app_context_b = HubConversationContext {
+            service_id: "discord".to_owned(),
+            account_id: "task-3566-account".to_owned(),
+            conversation_kind: HubConversationKind::Dm,
+            conversation_id: "dm-task-3566-app-b".to_owned(),
+            space_id: None,
+            participant_osl_ids: vec![owner.to_owned()],
+            self_osl_id: owner.to_owned(),
+        };
+        let untouched_context = HubConversationContext {
+            service_id: "telegram".to_owned(),
+            account_id: "task-3566-other-account".to_owned(),
+            conversation_kind: HubConversationKind::Dm,
+            conversation_id: "dm-task-3566-unmarked".to_owned(),
+            space_id: None,
+            participant_osl_ids: vec![owner.to_owned()],
+            self_osl_id: owner.to_owned(),
+        };
+        let chat_binding = local_context_binding(&chat_context);
+        let app_binding_a = local_context_binding(&app_context_a);
+        let app_binding_b = local_context_binding(&app_context_b);
+        let untouched_binding = local_context_binding(&untouched_context);
+
+        let mut records = BTreeMap::new();
+        let mut insert_record = |id: &str, binding: &str, created_at: i64| {
+            records.insert(
+                id.to_owned(),
+                LocalProtectedRecord {
+                    context_binding: binding.to_owned(),
+                    capsule_sha256: format!("capsule-{id}"),
+                    created_at,
+                    last_opened_at: None,
+                    view_once: false,
+                },
+            );
+        };
+        insert_record("chat-marked-1", &chat_binding, 1);
+        insert_record("chat-marked-2", &chat_binding, 2);
+        insert_record("app-marked-a-1", &app_binding_a, 3);
+        insert_record("app-marked-a-2", &app_binding_a, 4);
+        insert_record("app-marked-b-1", &app_binding_b, 5);
+        insert_record("unmarked-ledger-1", &untouched_binding, 6);
+        insert_record("unmarked-ledger-2", &untouched_binding, 7);
+        write_local_ledger(
+            &ledger_path,
+            &LocalProtectedLedger {
+                version: LOCAL_PROTECTED_VERSION,
+                records,
+            },
+            &file_key,
+        )
+        .unwrap();
+
+        let count_binding = |binding: &str| {
+            load_local_ledger(&ledger_path, &file_key)
+                .unwrap()
+                .records
+                .values()
+                .filter(|record| record.context_binding == binding)
+                .count()
+        };
+        let count_unmarked_ledger = || count_binding(&untouched_binding);
+        let classify_second = |deleted| {
+            if deleted == 0 {
+                "already_absent"
+            } else {
+                "unexpected_delete"
+            }
+        };
+
+        let chat_before = count_binding(&chat_binding);
+        let chat_unmarked_before = count_unmarked_ledger();
+        let chat_first_deleted =
+            prune_local_ledger_context(&ledger_path, &file_key, &chat_binding).unwrap();
+        let chat_second_deleted =
+            prune_local_ledger_context(&ledger_path, &file_key, &chat_binding).unwrap();
+        let chat_unmarked_after = count_unmarked_ledger();
+        let chat_unmarked_deleted = chat_unmarked_before.saturating_sub(chat_unmarked_after);
+        println!(
+            "TASK-3566 scope=chat before={chat_before} first_deleted={chat_first_deleted} second_action={} second_deleted={chat_second_deleted} unmarked_deleted={chat_unmarked_deleted}",
+            classify_second(chat_second_deleted)
+        );
+
+        assert!(chat_before > 0);
+        assert_eq!(chat_first_deleted, chat_before);
+        assert_eq!(chat_second_deleted, 0);
+        assert_eq!(chat_unmarked_deleted, 0);
+
+        let app_bindings = [&app_binding_a, &app_binding_b];
+        let app_before = app_bindings
+            .iter()
+            .map(|binding| count_binding(binding))
+            .sum::<usize>();
+        let app_unmarked_before = count_unmarked_ledger();
+        let app_core = HubCoreState::default();
+        *app_core.osl.identity.lock().unwrap() =
+            Some(keystore::generate_identity(owner.to_owned()));
+        let app_first_deleted = app_bindings
+            .iter()
+            .map(|binding| burn_indexed_local_protected_binding(&app_core, binding))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+            .into_iter()
+            .sum::<usize>();
+        let app_second_deleted = app_bindings
+            .iter()
+            .map(|binding| burn_indexed_local_protected_binding(&app_core, binding))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+            .into_iter()
+            .sum::<usize>();
+        let app_unmarked_after = count_unmarked_ledger();
+        let app_unmarked_deleted = app_unmarked_before.saturating_sub(app_unmarked_after);
+        println!(
+            "TASK-3566 scope=app before={app_before} first_deleted={app_first_deleted} second_action={} second_deleted={app_second_deleted} unmarked_deleted={app_unmarked_deleted}",
+            classify_second(app_second_deleted)
+        );
+
+        assert!(app_before > 0);
+        assert_eq!(app_first_deleted, app_before);
+        assert_eq!(app_second_deleted, 0);
+        assert_eq!(app_unmarked_deleted, 0);
+
+        keystore::set_base_dir_override(Some(config_dir.join("osl-core")));
+        keystore::set_active_account_dir(Some(config_dir.join("osl-core")));
+        ipc::main_password::set_main_password(&config_dir.join("osl-core"), "aB3!z9").unwrap();
+        let account_marks = [
+            config_dir
+                .join("osl-core")
+                .join("messages")
+                .join("account-marked-1"),
+            config_dir
+                .join("osl-core")
+                .join("messages")
+                .join("account-marked-2"),
+            config_dir
+                .join("osl-core")
+                .join("messages")
+                .join("account-marked-3"),
+        ];
+        for (index, mark) in account_marks.iter().enumerate() {
+            std::fs::write(mark, format!("marked account message {index}")).unwrap();
+        }
+        let account_before = account_marks.iter().filter(|path| path.exists()).count();
+        let account_unmarked_before = usize::from(native_history.exists());
+        let core = HubCoreState::default();
+        let account_first =
+            crate::cleanup::execute_full_hub_cleanup(&core, &config_dir, &local_data_dir, true)
+                .unwrap();
+        let account_after_first = account_marks.iter().filter(|path| path.exists()).count();
+        let account_first_deleted = account_before.saturating_sub(account_after_first);
+        let account_second =
+            crate::cleanup::execute_full_hub_cleanup(&core, &config_dir, &local_data_dir, true);
+        let account_second_action = match &account_second {
+            Ok(result) if result.removed_targets.is_empty() => "already_absent",
+            Ok(_) => "unexpected_delete",
+            Err(error) if error == "OSL main password must be unlocked" => {
+                "refused:main_password_locked"
+            }
+            Err(_) => "refused:other",
+        };
+        let account_after_second = account_marks.iter().filter(|path| path.exists()).count();
+        let account_second_deleted = account_after_first.saturating_sub(account_after_second);
+        let account_unmarked_after = usize::from(native_history.exists());
+        let account_unmarked_deleted =
+            account_unmarked_before.saturating_sub(account_unmarked_after);
+        println!(
+            "TASK-3566 scope=account before={account_before} first_deleted={account_first_deleted} removed_targets={} second_action={account_second_action} second_deleted={account_second_deleted} unmarked_deleted={account_unmarked_deleted}",
+            account_first.removed_targets.join(",")
+        );
+
+        assert!(account_before > 0);
+        assert_eq!(account_first_deleted, account_before);
+        assert_eq!(account_second_action, "refused:main_password_locked");
+        assert_eq!(account_second_deleted, 0);
+        assert_eq!(account_unmarked_deleted, 0);
+
+        keystore::set_base_dir_override(None);
+        keystore::set_active_account_dir(None);
+        ipc::main_password::set_file_storage_key(None);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task_3559_empty_burn_scopes_do_not_mutate_state_or_request_deletion() {
+        let _serial = crate::global_keystore_test_lock();
+        ipc::main_password::set_file_storage_key(None);
+        keystore::set_base_dir_override(None);
+        keystore::set_active_account_dir(None);
+
+        let unique = format!(
+            "osl-hub-task-3559-empty-burn-{}-{}",
+            std::process::id(),
+            random_local_message_id()
+        );
+        let root = std::env::temp_dir().join(unique);
+        let ledger_dir = root.join("ledger");
+        std::fs::create_dir_all(&ledger_dir).unwrap();
+
+        keystore::set_base_dir_override(Some(ledger_dir.clone()));
+        keystore::set_active_account_dir(Some(ledger_dir.clone()));
+        ipc::main_password::set_main_password(&ledger_dir, "aB3!z9").unwrap();
+        let file_key =
+            ipc::main_password::get_file_storage_key().expect("main password installs file key");
+        let ledger_path = ledger_dir.join(LOCAL_PROTECTED_FILE);
+
+        let owner = "self-liam";
+        let chat_context = HubConversationContext {
+            service_id: "discord".to_owned(),
+            account_id: "task-3559-account".to_owned(),
+            conversation_kind: HubConversationKind::Dm,
+            conversation_id: "dm-task-3559-chat-empty".to_owned(),
+            space_id: None,
+            participant_osl_ids: vec![owner.to_owned()],
+            self_osl_id: owner.to_owned(),
+        };
+        let app_context = HubConversationContext {
+            service_id: "discord".to_owned(),
+            account_id: "task-3559-account".to_owned(),
+            conversation_kind: HubConversationKind::Dm,
+            conversation_id: "dm-task-3559-app-empty".to_owned(),
+            space_id: None,
+            participant_osl_ids: vec![owner.to_owned()],
+            self_osl_id: owner.to_owned(),
+        };
+        let chat_binding = local_context_binding(&chat_context);
+        let app_binding = local_context_binding(&app_context);
+
+        let local_snapshot = |binding: &str| {
+            let ledger = load_local_ledger(&ledger_path, &file_key).unwrap();
+            let total_records = ledger.records.len();
+            let matching_records = ledger
+                .records
+                .values()
+                .filter(|record| record.context_binding == binding)
+                .count();
+            (ledger_path.exists(), total_records, matching_records)
+        };
+        let changed_local_fields = |before: (bool, usize, usize), after: (bool, usize, usize)| {
+            usize::from(before.0 != after.0)
+                + usize::from(before.1 != after.1)
+                + usize::from(before.2 != after.2)
+        };
+        let format_local_state = |state: (bool, usize, usize)| {
+            format!(
+                "ledger_exists:{};total_records:{};matching_records:{}",
+                state.0, state.1, state.2
+            )
+        };
+
+        let chat_before = local_snapshot(&chat_binding);
+        assert_eq!(chat_before.1, 0);
+        assert_eq!(chat_before.2, 0);
+        let chat_deleted =
+            prune_local_ledger_context(&ledger_path, &file_key, &chat_binding).unwrap();
+        let chat_after = local_snapshot(&chat_binding);
+        let chat_changed = changed_local_fields(chat_before, chat_after);
+        let chat_result = if chat_deleted == 0 {
+            "no_op:already_empty"
+        } else {
+            "unexpected_delete"
+        };
+        println!(
+            "TASK-3559 scope=chat sent=0 stored=0 result={chat_result} deletion_requests=0 before={} after={} changed_fields={chat_changed}",
+            format_local_state(chat_before),
+            format_local_state(chat_after)
+        );
+        assert_eq!(chat_result, "no_op:already_empty");
+        assert_eq!(chat_deleted, 0);
+        assert_eq!(chat_changed, 0);
+
+        let app_core = HubCoreState::default();
+        *app_core.osl.identity.lock().unwrap() =
+            Some(keystore::generate_identity(owner.to_owned()));
+        let app_before = local_snapshot(&app_binding);
+        assert_eq!(app_before.1, 0);
+        assert_eq!(app_before.2, 0);
+        let app_deleted = burn_indexed_local_protected_binding(&app_core, &app_binding).unwrap();
+        let app_after = local_snapshot(&app_binding);
+        let app_changed = changed_local_fields(app_before, app_after);
+        let app_result = if app_deleted == 0 {
+            "no_op:already_empty"
+        } else {
+            "unexpected_delete"
+        };
+        println!(
+            "TASK-3559 scope=app sent=0 stored=0 result={app_result} deletion_requests=0 before={} after={} changed_fields={app_changed}",
+            format_local_state(app_before),
+            format_local_state(app_after)
+        );
+        assert_eq!(app_result, "no_op:already_empty");
+        assert_eq!(app_deleted, 0);
+        assert_eq!(app_changed, 0);
+
+        ipc::main_password::set_file_storage_key(None);
+        keystore::set_base_dir_override(None);
+        keystore::set_active_account_dir(None);
+        let account_config_dir = root.join("account-config");
+        let account_local_data_dir = root.join("account-local-data");
+        let account_snapshot = || {
+            (
+                account_config_dir.exists(),
+                account_config_dir.join("osl-core").exists(),
+                account_local_data_dir.exists(),
+                ipc::main_password::get_file_storage_key().is_some(),
+            )
+        };
+        let changed_account_fields =
+            |before: (bool, bool, bool, bool), after: (bool, bool, bool, bool)| {
+                usize::from(before.0 != after.0)
+                    + usize::from(before.1 != after.1)
+                    + usize::from(before.2 != after.2)
+                    + usize::from(before.3 != after.3)
+            };
+        let format_account_state = |state: (bool, bool, bool, bool)| {
+            format!(
+                "config_exists:{};hub_core_exists:{};local_data_exists:{};file_key_unlocked:{}",
+                state.0, state.1, state.2, state.3
+            )
+        };
+        let account_before = account_snapshot();
+        let account_result = crate::cleanup::execute_full_hub_cleanup(
+            &HubCoreState::default(),
+            &account_config_dir,
+            &account_local_data_dir,
+            true,
+        );
+        let account_after = account_snapshot();
+        let account_changed = changed_account_fields(account_before, account_after);
+        let account_result = match account_result {
+            Ok(result) if result.removed_targets.is_empty() => "no_op:already_empty".to_owned(),
+            Ok(_) => "unexpected_delete".to_owned(),
+            Err(error) => format!("refused:{error}"),
+        };
+        println!(
+            "TASK-3559 scope=account sent=0 stored=0 result=\"{account_result}\" deletion_requests=0 before={} after={} changed_fields={account_changed}",
+            format_account_state(account_before),
+            format_account_state(account_after)
+        );
+        assert_eq!(account_result, "refused:OSL main password must be unlocked");
+        assert_eq!(account_changed, 0);
+
+        keystore::set_base_dir_override(None);
+        keystore::set_active_account_dir(None);
+        ipc::main_password::set_file_storage_key(None);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

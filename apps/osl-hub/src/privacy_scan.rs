@@ -37,6 +37,7 @@ const MAIL_ATTACHMENT_MIB: u64 = 1024 * 1024;
 const MAILCOM_FREE_ORDINARY_ATTACHMENT_LIMIT_MB: u32 = 30;
 const MAILCOM_PREMIUM_ORDINARY_ATTACHMENT_LIMIT_MB: u32 = 100;
 const EXCHANGE_DEFAULT_ORDINARY_ATTACHMENT_LIMIT_MB: u32 = 10;
+const BLOCKED_JUMP_REFERENCE: &str = "blocked-local-reference";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -560,13 +561,13 @@ pub fn scan_local_messages_with_analyzers(
                 service_id: message.service_id.clone(),
                 account_id: message.account_id.clone(),
                 conversation_id: message.conversation_id.clone(),
-                message_locator: message.message_locator.clone(),
+                message_locator: result_message_locator(&message.message_locator),
                 authored_by_self: message.authored_by_self,
                 created_at_unix_ms: message.created_at_unix_ms,
                 category,
                 confidence,
                 reason,
-                local_preview: preview(&message.text),
+                local_preview: result_preview(&message.text),
                 can_request_delete: message.authored_by_self,
                 attachment_path: None,
             });
@@ -591,15 +592,15 @@ pub fn scan_local_messages_with_analyzers(
                     service_id: message.service_id.clone(),
                     account_id: message.account_id.clone(),
                     conversation_id: message.conversation_id.clone(),
-                    message_locator: message.message_locator.clone(),
+                    message_locator: result_message_locator(&message.message_locator),
                     authored_by_self: message.authored_by_self,
                     created_at_unix_ms: message.created_at_unix_ms,
                     category,
                     confidence,
                     reason,
-                    local_preview: preview(&fragment.text),
+                    local_preview: result_preview(&fragment.text),
                     can_request_delete: message.authored_by_self,
-                    attachment_path: Some(fragment.path.clone()),
+                    attachment_path: Some(result_attachment_path(&fragment.path)),
                 });
             }
         }
@@ -616,7 +617,7 @@ pub fn scan_local_messages_with_analyzers(
                 service_id: message.service_id.clone(),
                 account_id: message.account_id.clone(),
                 conversation_id: message.conversation_id.clone(),
-                message_locator: message.message_locator.clone(),
+                message_locator: result_message_locator(&message.message_locator),
                 authored_by_self: message.authored_by_self,
                 created_at_unix_ms: message.created_at_unix_ms,
                 category,
@@ -624,7 +625,7 @@ pub fn scan_local_messages_with_analyzers(
                 reason: signal.reason,
                 local_preview: "Local media classification signal".into(),
                 can_request_delete: message.authored_by_self,
-                attachment_path: Some(signal.path),
+                attachment_path: Some(result_attachment_path(&signal.path)),
             });
         }
     }
@@ -1276,6 +1277,70 @@ fn preview(text: &str) -> String {
     output
 }
 
+fn result_message_locator(locator: &str) -> String {
+    if contains_jump_reference(locator) {
+        BLOCKED_JUMP_REFERENCE.to_owned()
+    } else {
+        locator.to_owned()
+    }
+}
+
+fn result_attachment_path(path: &str) -> String {
+    if contains_jump_reference(path) {
+        BLOCKED_JUMP_REFERENCE.to_owned()
+    } else {
+        path.to_owned()
+    }
+}
+
+fn result_preview(text: &str) -> String {
+    preview(&redact_jump_reference_tokens(text))
+}
+
+fn redact_jump_reference_tokens(text: &str) -> String {
+    let mut output = String::with_capacity(text.len().min(MAX_PREVIEW_CHARS));
+    for (index, token) in text.split_whitespace().enumerate() {
+        if index > 0 {
+            output.push(' ');
+        }
+        if contains_jump_reference(token) {
+            output.push_str("[blocked-reference]");
+        } else {
+            output.push_str(token);
+        }
+    }
+    output
+}
+
+fn contains_jump_reference(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    contains_url_or_deep_link(&lower) || contains_open_action_reference(&lower)
+}
+
+fn contains_url_or_deep_link(lower: &str) -> bool {
+    lower.contains("://")
+        || lower.starts_with("mailto:")
+        || lower.starts_with("tel:")
+        || lower.starts_with("www.")
+        || lower.contains(".com/")
+        || lower.contains(".net/")
+        || lower.contains(".org/")
+        || lower.contains("deep-link")
+        || lower.contains("deeplink")
+}
+
+fn contains_open_action_reference(lower: &str) -> bool {
+    lower.contains("open_service")
+        || lower.contains("open-service")
+        || lower.contains("openservice")
+        || lower.contains("open_action")
+        || lower.contains("open-action")
+        || lower.contains("openaction")
+        || lower.contains("open action")
+        || lower.contains("openserviceroute")
+        || lower.contains("open_service_host")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1580,6 +1645,27 @@ mod tests {
         let result = scan_local_messages(vec![candidate]);
         assert_eq!(result.findings.len(), 1);
         assert!(!result.findings[0].can_request_delete);
+    }
+
+    #[test]
+    fn result_json_blocks_original_message_jump_links() {
+        let mut candidate = message(
+            "password: example https://discord.com/channels/@me/123/456?openAction=open_service_host",
+        );
+        candidate.message_locator =
+            "https://discord.com/channels/@me/123/456?deepLink=osl://open&openAction=open_service_host"
+                .to_owned();
+
+        let result = scan_local_messages(vec![candidate]);
+        let json = serde_json::to_string(&result).expect("serialize privacy scan result");
+
+        assert_eq!(result.findings.len(), 1);
+        assert_eq!(result.findings[0].message_locator, BLOCKED_JUMP_REFERENCE);
+        assert!(!json.contains("https://"));
+        assert!(!json.contains("discord.com/channels"));
+        assert!(!json.contains("deepLink"));
+        assert!(!json.contains("openAction"));
+        assert!(!json.contains("open_service_host"));
     }
 
     #[test]

@@ -114,6 +114,41 @@ pub struct OslMailForwardResult {
     pub no_osl_warnings: Vec<String>,
     pub warning: Option<String>,
     pub required_confirmation: Option<String>,
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MailDraftControl {
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct MailDraftRecipients {
+    pub to: Vec<String>,
+    pub cc: Vec<String>,
+    pub bcc: Vec<String>,
+}
+
+/// Read recipient addresses only from the named recipient controls of a mail
+/// draft. Subject/body controls are deliberately ignored even if they contain
+/// address-shaped text.
+pub fn read_draft_recipients_from_named_controls(
+    controls: &[MailDraftControl],
+) -> MailDraftRecipients {
+    let mut recipients = MailDraftRecipients::default();
+    for control in controls {
+        match normalized_recipient_control_name(&control.name) {
+            Some("to") => recipients
+                .to
+                .extend(extract_email_addresses(&control.value)),
+            Some("cc") => recipients
+                .cc
+                .extend(extract_email_addresses(&control.value)),
+            Some("bcc") => recipients
+                .bcc
+                .extend(extract_email_addresses(&control.value)),
+            _ => {}
+        }
+    }
+    recipients
 }
 
 #[derive(Deserialize)]
@@ -652,6 +687,55 @@ fn no_osl_forward_confirmation(no_osl_recipients: &[String]) -> String {
                     .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
         })
         && domain.contains('.')
+fn normalized_recipient_control_name(name: &str) -> Option<&'static str> {
+    let mut value = name.trim();
+    if let Some(stripped) = value.strip_suffix(':') {
+        value = stripped.trim_end();
+    }
+    if value.eq_ignore_ascii_case("to") {
+        Some("to")
+    } else if value.eq_ignore_ascii_case("cc") {
+        Some("cc")
+    } else if value.eq_ignore_ascii_case("bcc") {
+        Some("bcc")
+    } else {
+        None
+    }
+}
+
+fn extract_email_addresses(value: &str) -> Vec<String> {
+    value
+        .split(|byte: char| byte.is_whitespace() || matches!(byte, ',' | ';'))
+        .filter_map(normalized_email_token)
+        .collect()
+}
+
+fn normalized_email_token(token: &str) -> Option<String> {
+    let token = token
+        .trim_matches(|byte: char| matches!(byte, '<' | '>' | '"' | '\'' | '(' | ')' | '[' | ']'));
+    if token.is_empty()
+        || token.len() > 254
+        || token.matches('@').count() != 1
+        || token.chars().any(|byte| byte.is_control())
+    {
+        return None;
+    }
+    let (local, domain) = token.split_once('@')?;
+    if local.is_empty()
+        || domain.is_empty()
+        || domain.starts_with('.')
+        || domain.ends_with('.')
+        || !domain.contains('.')
+    {
+        return None;
+    }
+    let local_ok = local
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+-/=?^_`{|}~.".contains(&byte));
+    let domain_ok = domain
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'));
+    (local_ok && domain_ok).then(|| token.to_owned())
 }
 
 fn active_identity(core: &HubCoreState) -> Result<keystore::Identity, String> {

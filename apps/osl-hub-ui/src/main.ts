@@ -140,6 +140,7 @@ import { createDiscordQaGeometryKeeper } from "./discord-qa-geometry";
 import { browserLogo, serviceLogo, providerLogo } from "./logos";
 import { activateLocalLoopbackContext, activateManualPeerContext, activateNativeManualPeerContext, activateOslChatContext, addOslFriend, addOslFriendByUsername, burnActiveHubContext, burnHubServiceAccount, captureProtectionEnforced, closeOslChatContext, copyHubFriendInvite, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubRevocationStatus, getHubServiceBurnReadiness, getOslUsernameStatus, isHubPlaintext, isNormalizedOslUsername, listHubIdentities, listHubPeople, listOslChatHistory, loadActiveContextSecurity, loadAppNotifications, loadBuildIntegrityStatus, loadFriendProfile, openOslChatText, openPeerProseText, peerIsVerified, prepareLocalProtectedText, prepareOslChatText, preparePeerProseText, recoverHubIdentitySlot, saveActiveContextSecurity, revokeActiveHubFriendScope, setActiveHubFriendPermission, setActiveHubFriendReach, setHubFriendNickname, setLocalProtectedSheetOpen, setNativeDiscordProtectedOverlayOpen, setNativeDiscordProtectedOverlayOpenForQa, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, viewHubRecoveryPhrase, type AppNotification, type BuildIntegrityStatus, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type LocalPrivacyScanResult, type ManualPeerContext, type PersistedLocalPrivacyScanResult } from "./adapters";
 import { activateLocalLoopbackContext, activateManualPeerContext, activateNativeManualPeerContext, activateOslChatContext, addOslFriend, addOslFriendByUsername, answerHubChatApprovalSuggestion, burnActiveHubContext, burnHubServiceAccount, captureProtectionEnforced, closeOslChatContext, copyHubFriendInvite, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubRevocationStatus, getHubServiceBurnReadiness, getOslUsernameStatus, isHubPlaintext, isNormalizedOslUsername, listHubIdentities, listHubPeople, listOslChatHistory, loadActiveContextSecurity, loadAppNotifications, loadFriendProfile, openOslChatText, openPeerProseText, peerIsVerified, prepareLocalProtectedText, prepareOslChatText, preparePeerProseText, recoverHubIdentitySlot, saveActiveContextSecurity, revokeActiveHubFriendScope, setActiveHubFriendPermission, setActiveHubFriendReach, setHubChatApprovalSuggestionChoice, setHubFriendNickname, setLocalProtectedSheetOpen, setNativeDiscordProtectedOverlayOpen, setNativeDiscordProtectedOverlayOpenForQa, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, viewHubRecoveryPhrase, type AppNotification, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type LocalPrivacyScanResult, type ManualPeerContext, type PersistedLocalPrivacyScanResult } from "./adapters";
+import { activateLocalLoopbackContext, activateManualPeerContext, activateNativeManualPeerContext, activateOslChatContext, addOslFriend, addOslFriendByUsername, burnActiveHubContext, burnHubServiceAccount, captureProtectionEnforced, closeOslChatContext, copyHubFriendInvite, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubRevocationStatus, getHubServiceBurnReadiness, getOslUsernameStatus, isHubPlaintext, isNormalizedOslUsername, listHubIdentities, listHubPeople, listOslChatHistory, loadActiveContextSecurity, loadAppNotifications, loadFriendProfile, loadInstalledBuildChatWarningStatus, openOslChatText, openPeerProseText, peerIsVerified, prepareLocalProtectedText, prepareOslChatText, preparePeerProseText, recoverHubIdentitySlot, saveActiveContextSecurity, revokeActiveHubFriendScope, setActiveHubFriendPermission, setActiveHubFriendReach, setHubFriendNickname, setLocalProtectedSheetOpen, setNativeDiscordProtectedOverlayOpen, setNativeDiscordProtectedOverlayOpenForQa, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, viewHubRecoveryPhrase, type AppNotification, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type InstalledBuildChatWarning, type LocalPrivacyScanResult, type ManualPeerContext, type PersistedLocalPrivacyScanResult } from "./adapters";
 import { blankLocalProtectedModel, isLocalTtlSeconds, loadOrCreateLocalConversationId, localProtectedSheetMarkup, validLocalChatLabel, type LocalProtectedPane, type LocalProtectedSheetModel } from "./local-protected-sheet";
 import { blankPeerProtectedModel, boundedPeerProtectedDraft, peerProtectedDraftByteFeedback, peerProtectedSheetMarkup, type PeerProtectedPane, type PeerProtectedSheetModel } from "./peer-protected-sheet";
 import { peerIntegrityMarkup } from "./peer-integrity";
@@ -718,6 +719,7 @@ let ownedConfirmationBusy = false;
 let ownedConfirmationError = "";
 let navigationIntentEpoch = 0;
 let bootstrapEpoch = 0;
+let installedBuildChatWarning: InstalledBuildChatWarning | null = null;
 
 const sidebarStorageKey = "osl-hub-sidebar";
 const hiddenStorageKey = "osl-hub-sidebar-hidden";
@@ -1867,6 +1869,14 @@ function onboardingShellMarkup(setupNavigation = ""): string {
   return `<div class="app-frame with-titlebar">${desktopTitlebar()}<div class="onboarding-shell"><main class="onboarding-panel onboarding-${onboardingRoute}">${onboardingContent()}${setupNavigation}</main></div>${scrubReviewDialogMarkup()}</div>`;
 }
 
+function setupOnboardingNavigationMarkup(): string {
+  return `<div class="setup-footer onboarding-actions onboarding-nav"><button class="button ghost onboarding-back" id="onboarding-back" type="button">Back</button></div>`;
+}
+
+function isSetupOnboardingRoute(candidate: OnboardingRoute): boolean {
+  return ["pro", "forward-secrecy", "privacy", "defaults", "tor", "sending", "cover", "passwords", "burnpass", "browser", "detected", "install", "apps", "mullvad"].includes(candidate);
+}
+
 /**
  * Back used to render as a bare link pinned to the viewport's bottom-left
  * corner while the step's own Continue sat centred in the middle of the panel;
@@ -1908,6 +1918,7 @@ function renderOnboarding(): void {
   const setupNavigation = setupScreen
     ? `<div class="setup-footer onboarding-actions onboarding-nav"><button class="button ghost onboarding-back" id="onboarding-back" type="button">Back</button></div>`
     : "";
+  const setupNavigation = isSetupOnboardingRoute(onboardingRoute) ? setupOnboardingNavigationMarkup() : "";
   const markup = onboardingShellMarkup(setupNavigation);
   lastWorkspaceMarkup = null;
   lastWorkspaceViewKey = "";
@@ -2065,6 +2076,7 @@ function welcomeOnboardingContent(): string {
 function proSetupContent(): string {
   const pro = licenseState.access === "pro" || licenseState.access === "offlineGrace";
   if (pro && !proOnboardingCodeEntryRequested) return `<section class="pro-setup onboarding-centered-step" aria-labelledby="route-heading">${statusTag("Pro active", "active")}<h1 id="route-heading" tabindex="-1">OSL Pro is ready</h1><p class="compact-lead onboarding-centered-copy">Pro features are available on this device.</p><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-pro-ready" type="button">Continue</button></div></section>`;
+  if (pro) return `<section class="pro-setup onboarding-centered-step" aria-labelledby="route-heading">${statusTag("Pro active", "active")}<h1 id="route-heading" tabindex="-1">Pro is ready</h1><div class="setup-footer onboarding-actions"><button class="button primary" data-onboarding="forward-secrecy" type="button">Continue</button></div></section>`;
   // The submit and the Skip escape hatch sit in the step's own action row, so
   // the docking pass folds Back in beside them instead of leaving a third,
   // separate footer below a loose text link.
@@ -5121,6 +5133,7 @@ function oslChatContent(): string {
     deletionUnconfirmed: oslChatDeletionUnconfirmed,
     buildIntegrity: buildIntegrityStatus,
     verificationWarningSurface: oslChatVerificationWarningSurface,
+    buildWarning: installedBuildChatWarning,
   })}${offlineStatus}${receipt}${attachments}${settings}</main>`;
 }
 
@@ -8987,7 +9000,7 @@ async function refreshIdentityScopedState(): Promise<void> {
     throw new Error("OSL Chat could not close before changing identity state");
   }
   resetOslChatUiState(true);
-  const [nextCore, loadedIdentities, profile, people, linkedServices, notifications] = await Promise.all([
+  const [nextCore, loadedIdentities, profile, people, linkedServices, notifications, buildWarning] = await Promise.all([
     loadCoreIntegration().catch(() => structuredClone(unavailableCoreIntegration)),
     listHubIdentities(),
     loadFriendProfile().then(async (value) => {
@@ -8997,6 +9010,7 @@ async function refreshIdentityScopedState(): Promise<void> {
     listHubPeople().then((value) => value ?? []),
     loadLinkedServices().catch(() => []),
     notificationsEnabled ? loadAppNotifications() : Promise.resolve([]),
+    loadInstalledBuildChatWarningStatus(),
   ]);
   core = nextCore;
   refreshActiveBrowserAccountsReady();
@@ -9007,6 +9021,7 @@ async function refreshIdentityScopedState(): Promise<void> {
   hubPeople = people;
   services = linkedServices;
   appNotifications = mergePersistedOslChatNotifications(notifications);
+  installedBuildChatWarning = buildWarning;
   passwordRoleStatus = await loadHubPasswordRoleStatus().catch(() => null);
 }
 
@@ -9532,6 +9547,10 @@ function startReadyWorkspaceLoads(): void {
   void ensureOslChatSecureLocalStore();
   void openMullvadOnStartup();
   void loadHubPasswordRoleStatus().then((status) => { passwordRoleStatus = status; if (route === "settings" && settingsSection === "account") renderWhenIdle(); }).catch(() => undefined);
+  void loadInstalledBuildChatWarningStatus().then((warning) => {
+    installedBuildChatWarning = warning;
+    if (route === "osl-chat") renderWhenIdle();
+  }).catch(() => undefined);
   void refreshUpdateStatus(true);
   void refreshAutoScrubFleetStatus();
   void getOslUsernameStatus("osl").catch(() => null);
@@ -10580,6 +10599,11 @@ export const __oslHubUiTest = {
     onboardingRoute = "tutorial";
     onboardingTourStep = step;
     return onboardingContent();
+  renderOnboardingShellForTest(destination: OnboardingRoute): string {
+    route = "onboarding";
+    onboardingRoute = onboardingRouteForBuild(destination);
+    const setupNavigation = isSetupOnboardingRoute(onboardingRoute) ? setupOnboardingNavigationMarkup() : "";
+    return onboardingShellMarkup(setupNavigation);
   },
   /**
    * Supply the account-recovery back end. The shipping build has none (no Tauri

@@ -246,6 +246,19 @@ mod tests {
         );
     }
 
+    fn stored_gate_role_for_password(
+        marker: &ipc::main_password::PasswordMarker,
+        password: &str,
+    ) -> &'static str {
+        match ipc::main_password::verify_gate_password_with_marker(marker, password).unwrap() {
+            ipc::main_password::GateMatch::Main(_) => "main",
+            ipc::main_password::GateMatch::Stealth => "stealth",
+            ipc::main_password::GateMatch::Duress => "duress",
+            ipc::main_password::GateMatch::Burn => "burn",
+            ipc::main_password::GateMatch::Wrong => "wrong",
+        }
+    }
+
     #[test]
     fn every_gate_role_has_exactly_one_action() {
         let actions = [
@@ -448,5 +461,105 @@ mod tests {
         let _ = std::fs::remove_dir_all(threshold_dir);
         let _ = std::fs::remove_dir_all(burn_config);
         let _ = std::fs::remove_dir_all(burn_local);
+    }
+
+    #[test]
+    fn task_0308_only_saved_burn_password_returns_burn_action_for_disposable_account() {
+        let _serial = crate::global_keystore_test_lock();
+        let _reset = KeystoreGlobalReset;
+
+        let (config_dir, local_data_dir, core_dir, service_profiles, native_profiles) =
+            populate_cleanup_roots("task-0308");
+        keystore::set_active_account_dir(None);
+        keystore::set_base_dir_override(Some(core_dir.clone()));
+        let state = HubCoreState::default();
+        let disposable_account = "osl_task_0308_disposable";
+        *state.osl.identity.lock().unwrap() = Some(keystore::identity_from_entropy(
+            [30; 16],
+            disposable_account.to_owned(),
+        ));
+        std::fs::write(
+            core_dir.join("identity.json"),
+            disposable_account.as_bytes(),
+        )
+        .unwrap();
+        std::fs::write(core_dir.join("prekeys.json"), b"prekeys").unwrap();
+
+        let main_password = "main-pass-0308";
+        let duress_password = "duress-pass-0308";
+        let burn_password = "burn-pass-0308";
+        ipc::main_password::set_main_password(&core_dir, main_password).unwrap();
+        ipc::main_password::set_duress_password(&core_dir, main_password, duress_password).unwrap();
+        ipc::main_password::set_burn_password(&core_dir, main_password, burn_password).unwrap();
+
+        let marker = ipc::main_password::read_marker_pub(&core_dir).unwrap();
+        assert!(marker.burn_password_hash_b64.is_some());
+
+        let main_role = stored_gate_role_for_password(&marker, main_password);
+        let duress_role = stored_gate_role_for_password(&marker, duress_password);
+        let wrong_role = stored_gate_role_for_password(&marker, "wrong-pass-0308");
+        let saved_burn_role = stored_gate_role_for_password(&marker, burn_password);
+
+        assert_eq!(main_role, "main");
+        assert_eq!(duress_role, "duress");
+        assert_eq!(wrong_role, "wrong");
+        assert_eq!(saved_burn_role, "burn");
+
+        let non_burn_actions = [
+            (main_role, false),
+            (
+                HubGateUnlockResult::duress(GatePasswordVerification {
+                    role: VerifiedGateRole::Duress,
+                    lockout_seconds_remaining: 0,
+                    attempts_used: 0,
+                })
+                .outcome,
+                false,
+            ),
+            (
+                HubGateUnlockResult::wrong(GatePasswordVerification {
+                    role: VerifiedGateRole::Wrong,
+                    lockout_seconds_remaining: 0,
+                    attempts_used: 1,
+                })
+                .outcome,
+                false,
+            ),
+        ];
+        assert!(non_burn_actions
+            .iter()
+            .all(|(_, burn_action)| !*burn_action));
+
+        let burn_verification =
+            verify_password_role(&state, burn_password.to_owned()).expect("saved burn password");
+        assert_eq!(burn_verification.role, VerifiedGateRole::Burn);
+        let burn_result =
+            gate_result_for_verification(&state, burn_verification, &config_dir, &local_data_dir);
+        assert_cleanup_result_removed(&burn_result, "burned", "hub_core", &core_dir);
+        assert_cleanup_result_removed(
+            &burn_result,
+            "burned",
+            "service_profiles",
+            &service_profiles,
+        );
+        assert_cleanup_result_removed(&burn_result, "burned", "native_profiles", &native_profiles);
+
+        println!("TASK0308 disposable_account={disposable_account}");
+        println!("TASK0308 main_password.role={main_role} burn_action=false");
+        println!("TASK0308 duress_password.role={duress_role} burn_action=false");
+        println!("TASK0308 wrong_password.role={wrong_role} burn_action=false");
+        println!(
+            "TASK0308 saved_burn_password.role={} action={} burn_payload={}",
+            saved_burn_role,
+            burn_result.outcome,
+            burn_result.burn.is_some()
+        );
+        println!(
+            "TASK0308 removed_targets={}",
+            burn_result.burn.as_ref().unwrap().removed_targets.join(",")
+        );
+
+        let _ = std::fs::remove_dir_all(config_dir);
+        let _ = std::fs::remove_dir_all(local_data_dir);
     }
 }

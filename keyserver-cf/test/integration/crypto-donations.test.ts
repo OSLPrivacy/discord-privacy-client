@@ -348,7 +348,7 @@ describe("anonymous node-verified crypto donations", () => {
     expect(invalidSignature.status).toBe(401);
   });
 
-  it("deduplicates concurrent callbacks and returns exact recorded acknowledgements", async () => {
+  it("deduplicates concurrent callbacks and refuses a later exact replay", async () => {
     const invoice = await donationQuote("xmr", 1_000);
     const evidence = await evidenceFor(invoice, "xmr", 10);
     const send = async () => await handleCryptoSettlement(new Request(
@@ -365,7 +365,8 @@ describe("anonymous node-verified crypto donations", () => {
       await expect(response.json()).resolves.toMatchObject({ ok: true, status: "recorded" });
     }
     const retry = await send();
-    await expect(retry.json()).resolves.toEqual({ ok: true, duplicate: true, status: "recorded" });
+    expect(retry.status).toBe(409);
+    await expect(retry.json()).resolves.toEqual({ error: "payment message already handled" });
     const alertId = await paymentAlertId("crypto_donation", invoice.invoice_id);
     const counts = await env.DB.prepare(
       `SELECT

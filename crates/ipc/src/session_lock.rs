@@ -134,6 +134,17 @@ fn idle_window_for_state(state: &AppState) -> Option<Duration> {
         .idle_lock_time_choice
         .seconds()
         .map(Duration::from_secs)
+fn idle_window_for_choice(choice: crate::app_preferences::IdleLockTimeChoice) -> Option<Duration> {
+    choice.seconds().map(Duration::from_secs)
+}
+
+fn idle_window_for_state(state: &AppState) -> Option<Duration> {
+    let choice = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .idle_lock_time_choice;
+    idle_window_for_choice(choice)
 }
 
 /// Start the idle clock for a freshly unlocked session. Until this runs, the
@@ -159,11 +170,25 @@ pub fn disarm_idle_lock() {
 
 /// True when the idle clock is running and its window has already elapsed.
 pub fn idle_lock_is_due_at(now: Instant) -> bool {
+    idle_lock_is_due_with_window_at(Some(idle_window()), now)
+}
+
+/// True when the idle clock is running and this state's chosen idle window has
+/// already elapsed. `Never` makes the clock inert without clearing it, so a
+/// later explicit lock still follows the same cleanup path.
+pub fn idle_lock_is_due_for_state_at(state: &AppState, now: Instant) -> bool {
+    idle_lock_is_due_with_window_at(idle_window_for_state(state), now)
+}
+
+fn idle_lock_is_due_with_window_at(window: Option<Duration>, now: Instant) -> bool {
+    let Some(window) = window else {
+        return false;
+    };
     let slot = last_activity_slot()
         .lock()
         .expect("session idle clock mutex poisoned");
     match *slot {
-        Some(last) => now.saturating_duration_since(last) >= idle_window(),
+        Some(last) => now.saturating_duration_since(last) >= window,
         None => false,
     }
 }
@@ -191,15 +216,27 @@ pub fn note_activity() {
 }
 
 pub fn note_activity_at(now: Instant) {
+    note_activity_with_window_at(Some(idle_window()), now);
+}
+
+pub fn note_activity_for_state_at(state: &AppState, now: Instant) {
+    note_activity_with_window_at(idle_window_for_state(state), now);
+}
+
+pub fn note_activity_for_state(state: &AppState) {
+    note_activity_for_state_at(state, Instant::now());
+}
+
+fn note_activity_with_window_at(window: Option<Duration>, now: Instant) {
     let mut slot = last_activity_slot()
         .lock()
         .expect("session idle clock mutex poisoned");
-    match *slot {
+    match (*slot, window) {
         // Latched: the window elapsed, so this activity does not count.
-        Some(last) if now.saturating_duration_since(last) >= idle_window() => {}
-        Some(_) => *slot = Some(now),
+        (Some(last), Some(window)) if now.saturating_duration_since(last) >= window => {}
+        (Some(_), _) => *slot = Some(now),
         // Not armed — nothing to extend.
-        None => {}
+        (None, _) => {}
     }
 }
 
@@ -468,6 +505,12 @@ pub fn unlock_session(state: &AppState, account_dir: &Path) -> Result<SessionUnl
     //    post-gate reload has always used, so file-format and migration
     //    semantics are unchanged.
     report.reload = crate::state_reload::reload_encrypted_state_after_unlock(state, account_dir)?;
+    let idle_choice = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .idle_lock_time_choice;
+    crate::main_password::configure_file_key_inactivity_auto_lock_for_choice(idle_choice);
 
     // 3. Message store, keyed off the now-loaded identity secret.
     report.message_store_reopened = reopen_message_store(state, account_dir);

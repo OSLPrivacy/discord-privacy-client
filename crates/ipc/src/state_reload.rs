@@ -96,7 +96,7 @@ pub fn reload_encrypted_state_after_unlock(
         // list and accrued scope-membership would disappear from view
         // (file intact but unreachable) until the next persist
         // overwrote it. Mirror the same non-destructive rename here.
-        "burned_scopes.json",
+        crate::burned_scopes_file::BURNED_SCOPES_FILE_NAME,
         "membership.json",
     ] {
         let path = config_dir.join(name);
@@ -224,7 +224,7 @@ pub fn reload_encrypted_state_after_unlock(
     // what a deletion looks like, and the loader can only tell a deletion from
     // a first run once it can read the enrolment marker — i.e. here, post-gate.
     // So call it unconditionally and let it decide.
-    let bs_path = config_dir.join("burned_scopes.json");
+    let bs_path = crate::burned_scopes_file::path_in_config_dir(config_dir);
     let bs_existed = bs_path.exists();
     let bs = crate::burned_scopes_file::load_burned_scopes(&bs_path);
     if crate::burned_scopes_file::burn_state_unreadable() {

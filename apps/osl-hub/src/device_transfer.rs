@@ -77,6 +77,27 @@ pub fn open_exported_identity(
     result
 }
 
+/// Verify and install a transfer bundle on the destination device.
+///
+/// All package identity and ciphertext integrity checks happen before the
+/// destination profile path is created or overwritten.
+pub fn restore_exported_identity(
+    bundle: &TransferBundle,
+    one_time_code: &str,
+    transfer_identifier: &str,
+    destination_identity_path: &Path,
+    destination_sealer: &dyn Sealer,
+) -> Result<Identity, String> {
+    let identity = open_exported_identity(bundle, one_time_code, transfer_identifier)?;
+    if let Some(parent) = destination_identity_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|_| "OSL transfer destination profile is unavailable".to_owned())?;
+    }
+    keystore::save_identity(destination_identity_path, &identity, destination_sealer)
+        .map_err(|_| "OSL transfer destination profile could not be created".to_owned())?;
+    Ok(identity)
+}
+
 fn seal_identity_for_transfer(
     identity: &Identity,
     one_time_code: &str,
@@ -215,6 +236,96 @@ mod tests {
             open_exported_identity(&bundle, "000000", "destination-transfer-id").is_err(),
             "a wrong code must fail closed"
         );
+
+        let _ = fs::remove_file(source_path);
+    }
+
+    #[test]
+    fn task_0456_package_identity_and_integrity_stop_before_profile_creation() {
+        let source_path = test_path("source-task-0456");
+        let source_sealer = keystore::MemorySealer::new();
+        let destination_sealer = keystore::MemorySealer::new();
+        let identity = keystore::identity_from_entropy([45; 16], "task-0456-source".to_owned());
+        keystore::save_identity(&source_path, &identity, &source_sealer).unwrap();
+
+        let bundle = export_identity_bundle(
+            &source_path,
+            &source_sealer,
+            "624891",
+            "destination-transfer-id",
+        )
+        .expect("a transfer bundle is produced");
+
+        let intact_dir = tempfile::TempDir::new().unwrap();
+        let intact_profile = intact_dir.path().join("identity.json");
+        let restored = restore_exported_identity(
+            &bundle,
+            "624891",
+            "destination-transfer-id",
+            &intact_profile,
+            &destination_sealer,
+        )
+        .expect("an intact package creates a destination profile");
+        let intact_created_profiles = usize::from(intact_profile.exists());
+        assert_eq!(restored.user_id, identity.user_id);
+        assert_eq!(intact_created_profiles, 1);
+
+        let wrong_identity_dir = tempfile::TempDir::new().unwrap();
+        let wrong_identity_profile = wrong_identity_dir.path().join("identity.json");
+        let wrong_identity_error = match restore_exported_identity(
+            &bundle,
+            "624891",
+            "other-destination-transfer-id",
+            &wrong_identity_profile,
+            &destination_sealer,
+        ) {
+            Ok(_) => panic!("a package for another destination must not create a profile"),
+            Err(error) => error,
+        };
+        let wrong_identity_created_profiles = usize::from(wrong_identity_profile.exists());
+        assert!(
+            wrong_identity_error.contains("not for this destination"),
+            "{wrong_identity_error}"
+        );
+        assert_eq!(wrong_identity_created_profiles, 0);
+
+        let mut changed_package = bundle.clone();
+        let mut sealed_identity = STANDARD
+            .decode(&changed_package.sealed_identity_b64)
+            .unwrap();
+        let changed_byte_index = sealed_identity
+            .len()
+            .checked_sub(1)
+            .expect("sealed transfer package is non-empty");
+        sealed_identity[changed_byte_index] ^= 0x01;
+        changed_package.sealed_identity_b64 = STANDARD.encode(sealed_identity);
+
+        let tampered_dir = tempfile::TempDir::new().unwrap();
+        let tampered_profile = tampered_dir.path().join("identity.json");
+        let tampered_error = match restore_exported_identity(
+            &changed_package,
+            "624891",
+            "destination-transfer-id",
+            &tampered_profile,
+            &destination_sealer,
+        ) {
+            Ok(_) => panic!("a tampered package must not create a profile"),
+            Err(error) => error,
+        };
+        let tampered_created_profiles = usize::from(tampered_profile.exists());
+        assert!(
+            tampered_error.contains("could not be opened"),
+            "{tampered_error}"
+        );
+        assert_eq!(tampered_created_profiles, 0);
+
+        println!("TASK0456 intact_restore_created_profiles={intact_created_profiles}");
+        println!("TASK0456 package_identity_created_profiles={wrong_identity_created_profiles}");
+        println!("TASK0456 changed_package_bytes=1");
+        println!("TASK0456 changed_package_byte_index={changed_byte_index}");
+        println!("TASK0456 tampered_restore_created_profiles={tampered_created_profiles}");
+        println!("TASK0456 tampered_restore_result=refused_before_profile_create");
+        println!("TASK0456 tampered_restore_error={tampered_error}");
 
         let _ = fs::remove_file(source_path);
     }

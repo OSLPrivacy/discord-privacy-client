@@ -39,6 +39,7 @@ import {
   isPositiveInt,
   isProtocolId,
   isU32,
+  isViewOnceDisplayDurationSeconds,
 } from "../lib/validation.js";
 
 const ALLOWED_CONTENT_TYPES = new Set(["text", "attachment", "system"]);
@@ -134,8 +135,10 @@ export async function handleWrappedKeysPost(
   if (typeof b.single_use !== "boolean") {
     return badRequest("single_use must be a boolean");
   }
-  if (b.single_use && !isU32(b.display_duration_seconds)) {
-    return badRequest("display_duration_seconds required when single_use=true");
+  if (b.single_use && !isViewOnceDisplayDurationSeconds(b.display_duration_seconds)) {
+    return badRequest(
+      "display_duration_seconds must be an integer from 1 through 60 when single_use=true",
+    );
   }
   if (!b.single_use && b.display_duration_seconds != null) {
     return badRequest("display_duration_seconds only valid when single_use=true");

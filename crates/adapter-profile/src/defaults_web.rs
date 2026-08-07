@@ -7,6 +7,8 @@ use crate::schema::{
     ActionLevel, AdapterAuthority, AdapterService, AdapterSurface, BindingRequirement, Capability,
     CapabilityGrant, ProfileDoc, SelectorStrategy, SendOutcomeContract, SignedProfileDoc,
     PROFILE_DOC_ENVELOPE_VERSION, PROFILE_DOC_VERSION,
+    CapabilityGrant, ProfileDoc, SelectorKind, SelectorStrategy, SendOutcomeContract,
+    SignedProfileDoc, TypedSelector, PROFILE_DOC_ENVELOPE_VERSION, PROFILE_DOC_VERSION,
 };
 use std::collections::BTreeSet;
 
@@ -316,6 +318,109 @@ fn validate_required_email_web_control_targets(
     Ok(())
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WebMailTarget {
+    pub name: &'static str,
+    pub selector: TypedSelector,
+}
+
+pub type YahooWebTarget = WebMailTarget;
+pub type TutaWebTarget = WebMailTarget;
+
+/// Data-only targets for Yahoo Mail's reviewed web surface.
+pub fn yahoo_web_mail_targets() -> Vec<YahooWebTarget> {
+    vec![
+        web_mail_accessibility_target(
+            "compose",
+            SelectorKind::ComposeButton,
+            "button",
+            Some("Compose"),
+        ),
+        web_mail_accessibility_target(
+            "body",
+            SelectorKind::BodyInput,
+            "textbox",
+            Some("Message body"),
+        ),
+        web_mail_accessibility_target("Send", SelectorKind::SendButton, "button", Some("Send")),
+        web_mail_accessibility_target(
+            "folders",
+            SelectorKind::FolderList,
+            "navigation",
+            Some("Folders"),
+        ),
+        web_mail_accessibility_target(
+            "thread view",
+            SelectorKind::ThreadView,
+            "list",
+            Some("Messages"),
+        ),
+        web_mail_accessibility_target(
+            "reading pane",
+            SelectorKind::ReadingPane,
+            "region",
+            Some("Reading pane"),
+        ),
+    ]
+}
+
+/// Data-only targets for Tuta's reviewed web surface.
+pub fn tuta_web_mail_targets() -> Vec<TutaWebTarget> {
+    vec![
+        web_mail_accessibility_target(
+            "compose",
+            SelectorKind::ComposeButton,
+            "button",
+            Some("New email"),
+        ),
+        web_mail_accessibility_target(
+            "body",
+            SelectorKind::BodyInput,
+            "textbox",
+            Some("Message body"),
+        ),
+        web_mail_accessibility_target("Send", SelectorKind::SendButton, "button", Some("Send")),
+        web_mail_accessibility_target(
+            "folders",
+            SelectorKind::FolderList,
+            "navigation",
+            Some("Folders"),
+        ),
+        web_mail_accessibility_target(
+            "thread view",
+            SelectorKind::ThreadView,
+            "list",
+            Some("Conversations"),
+        ),
+        web_mail_accessibility_target(
+            "reading pane",
+            SelectorKind::ReadingPane,
+            "region",
+            Some("Mail"),
+        ),
+    ]
+}
+
+fn web_mail_accessibility_target(
+    name: &'static str,
+    kind: SelectorKind,
+    role: &'static str,
+    accessible_name: Option<&'static str>,
+) -> WebMailTarget {
+    WebMailTarget {
+        name,
+        selector: TypedSelector {
+            kind,
+            strategy: SelectorStrategy::Accessibility {
+                role: role.to_owned(),
+                name: accessible_name.map(str::to_owned),
+                automation_id: None,
+            },
+            required: true,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -410,6 +515,9 @@ mod tests {
 
         println!("icloud target count={}", names.len());
         println!("icloud targets={}", names.join(","));
+    fn task_1248_yahoo_mapping_contains_all_six_named_targets() {
+        let targets = yahoo_web_mail_targets();
+        let names = targets.iter().map(|target| target.name).collect::<Vec<_>>();
 
         assert_eq!(
             names,
@@ -443,5 +551,40 @@ mod tests {
                 format!("missing required iCloud web control target: {missing_name}")
             );
         }
+                "reading pane"
+            ]
+        );
+        assert!(targets.iter().all(|target| target.selector.required));
+
+        println!(
+            "TASK1248 yahoo_targets={} names={}",
+            targets.len(),
+            names.join("|")
+        );
+    }
+
+    #[test]
+    fn task_1278_tuta_mapping_contains_all_six_named_targets() {
+        let targets = tuta_web_mail_targets();
+        let names = targets.iter().map(|target| target.name).collect::<Vec<_>>();
+
+        assert_eq!(
+            names,
+            vec![
+                "compose",
+                "body",
+                "Send",
+                "folders",
+                "thread view",
+                "reading pane"
+            ]
+        );
+        assert!(targets.iter().all(|target| target.selector.required));
+
+        println!(
+            "TASK1278 tuta_targets={} names={}",
+            targets.len(),
+            names.join("|")
+        );
     }
 }

@@ -163,6 +163,22 @@ describe("OSL chats view", () => {
     console.log(`TASK0434 unsupported_peers_cannot_silently_send_weakly=${unsupportedWeaklyBlocked ? 1 : 0} state=one-way`);
     expect(supportedEnabled).toBe(2);
     expect(unsupportedWeaklyBlocked).toBe(true);
+  it("shows the changed-build warning for changed and corrupt proofs while send stays available", () => {
+    for (const [reason, marker] of [["changed", "changed"], ["corruptProof", "corrupt-proof"]] as const) {
+      const markup = oslChatsViewMarkup(model({
+        draft: "Hello",
+        buildWarning: {
+          kind: "changedBuild",
+          reason,
+          message: "OSL build changed after its startup proof. Sending stays available.",
+          messageSendingAvailable: true,
+        },
+      }));
+      expect(markup).toContain(`data-osl-chat-build-warning="${marker}"`);
+      expect(markup).toContain("Changed build warning");
+      expect(markup).toContain('data-message-sending-available="true"');
+      expect(markup).toMatch(/class="osl-chat-send" type="submit"(?![^>]* disabled)[^>]*>/u);
+    }
   });
 
   it("accepts the backend maximum and blocks the first draft the backend would reject", () => {

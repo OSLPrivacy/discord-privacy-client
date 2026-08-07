@@ -840,12 +840,12 @@ commands.allow = ["verify_hub_friend_safety_number"]
 
 [[permission]]
 identifier = "allow-set-owner-profile-picture"
-description = "Persist one bounded owner-scoped profile picture record in encrypted local OSL storage."
+description = "Set the unlocked owner's bounded profile picture into encrypted owner-scoped local storage."
 commands.allow = ["set_owner_profile_picture"]
 
 [[permission]]
 identifier = "allow-clear-owner-profile-picture"
-description = "Clear the owner-scoped profile picture record through the local OSL profile-picture store."
+description = "Clear only the unlocked owner's encrypted profile-picture record."
 commands.allow = ["clear_owner_profile_picture"]
 
 [[permission]]
@@ -870,7 +870,7 @@ commands.allow = ["set_hub_friend_account_reach_everywhere"]
 
 [[permission]]
 identifier = "allow-compare-allowed-place-direction-state"
-description = "Read only whether the two saved local allowed-place directions for one direct-message pair are absent, one-way, or two-way."
+description = "Compare the two saved allowed-place directions for the same pair of local reachable accounts."
 commands.allow = ["compare_allowed_place_direction_state"]
 
 [[permission]]
@@ -974,19 +974,9 @@ description = "Read whether the burn notices already queued for one canonical OS
 commands.allow = ["get_hub_revocation_status"]
 
 [[permission]]
-identifier = "allow-set-owner-profile-picture"
-description = "Set the unlocked owner's bounded profile picture into encrypted owner-scoped local storage."
-commands.allow = ["set_owner_profile_picture"]
-
-[[permission]]
 identifier = "allow-read-owner-profile-picture"
 description = "Read only the unlocked owner's encrypted profile-picture record and report whether an image is present."
 commands.allow = ["read_owner_profile_picture"]
-
-[[permission]]
-identifier = "allow-clear-owner-profile-picture"
-description = "Clear only the unlocked owner's encrypted profile-picture record."
-commands.allow = ["clear_owner_profile_picture"]
 
 [[permission]]
 identifier = "allow-get-osl-chat-local-state-key"
@@ -1051,11 +1041,6 @@ commands.allow = ["list_allowed_place_records"]
 identifier = "allow-query-allowed-place-allowed"
 description = "Ask whether one bounded allowed-place query is allowed by encrypted device-local state."
 commands.allow = ["query_allowed_place_allowed"]
-
-[[permission]]
-identifier = "allow-compare-allowed-place-direction-state"
-description = "Compare the two saved allowed-place directions for the same pair of local reachable accounts."
-commands.allow = ["compare_allowed_place_direction_state"]
 
 [[permission]]
 identifier = "allow-list-whatsapp-whitelist-kinds"
@@ -1201,4 +1186,29 @@ commands.allow = ["set_hub_friend_account_reach_choice"]
 identifier = "allow-list-hub-friend-account-reach-choices"
 description = "List one verified friend's saved reach choices across local service accounts from encrypted device-local state."
 commands.allow = ["list_hub_friend_account_reach_choices"]
+
+[[permission]]
+identifier = "allow-installed-build-record"
+description = "Read the startup-installed build version and file fingerprint record; it copies an already-managed value and performs no I/O, no network operation and no key access."
+commands.allow = ["installed_build_record"]
+
+[[permission]]
+identifier = "allow-installed-build-chat-warning-status"
+description = "Read whether the local installed-build proof now requires a non-blocking chat warning; it rehashes only the recorded executable path and never reads message content, keys, credentials or network state."
+commands.allow = ["installed_build_chat_warning_status"]
+
+[[permission]]
+identifier = "allow-drop-osl-chat-attachments"
+description = "Allow only the trusted main OSL window to add dropped local files to the OSL Chats attachment tray without sending them."
+commands.allow = ["drop_osl_chat_attachments"]
+
+[[permission]]
+identifier = "allow-list-group-verification-build-entries"
+description = "List local group verification rows with member id, two-way state, and unmodified or modified build state."
+commands.allow = ["list_group_verification_build_entries"]
+
+[[permission]]
+identifier = "allow-read-owner-profile-picture-for-friend"
+description = "Read the unlocked owner's encrypted profile-picture record only for a backend-accepted friend; non-friends receive image-absent."
+commands.allow = ["read_owner_profile_picture_for_friend"]
 

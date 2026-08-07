@@ -470,6 +470,16 @@ pub struct ProseTokenRecvOutput {
     pub blob_id: String,
 }
 
+/// Pointer material recovered from a prepared prose carrier without fetching
+/// the ciphertext it names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProseTokenPointer {
+    /// The cipher-store id encoded into the carrier under the active bridge
+    /// protocol. This is enough to prove the prepared copy still names a
+    /// retrievable object; no fetch token or wire bytes are exposed.
+    pub blob_id: String,
+}
+
 /// Encrypt-and-upload: takes a `DPC0::<base64>` wire string produced by the
 /// existing encrypt pipeline, uploads the underlying cipher bytes to the
 /// cipher-store under a client-derived id with the chosen TTL, and encodes the
@@ -597,6 +607,44 @@ pub enum ProseTokenRecv {
     Missed(ProseTokenMiss),
 }
 
+fn prose_token_decode_carrier(
+    scope_input: &ScopeInput,
+    detection_key: &[u8; MAC_KEY_LEN],
+    msg: &str,
+) -> Result<Option<[u8; stego::TOKEN_ID_BYTES]>, ProseTokenError> {
+    let cipher = derive_scope_cipher(scope_input)?;
+    // D-231: the scope-bound detector, never the caller's. A cover minted for a
+    // different conversation fails the detect tag here and returns `None`, so
+    // callers can check prepared text without opening any cipher-store route.
+    let scoped_detector = scope_bound_detection_key(detection_key, scope_input)?;
+    Ok(stego::decode_token(&cipher, &scoped_detector, msg))
+}
+
+/// Recover only the pointer/id encoded in prepared cover text.
+///
+/// This is the local read-back check for a post copy that OSL is about to hand
+/// to a native surface. It deliberately stops before `CipherStoreClient` is
+/// constructed: failure here means the prepared visible text no longer carries
+/// a recoverable OSL pointer, and success says only that the pointer can be
+/// decoded under this scope and detector.
+pub fn prose_token_recover_pointer(
+    scope_input: &ScopeInput,
+    detection_key: &[u8; MAC_KEY_LEN],
+    msg: &str,
+) -> Result<Option<ProseTokenPointer>, ProseTokenError> {
+    let Some(carrier) = prose_token_decode_carrier(scope_input, detection_key, msg)? else {
+        return Ok(None);
+    };
+    // BRIDGE (B0-01). Under the deployed bridge, the carrier holds the
+    // server-assigned id plus the seed that derives the fetch token. The
+    // quality check reports only the public id; the fetch token remains local
+    // to the receive path that actually opens the ciphertext.
+    let (id, _seed) = bridge_unpack(&carrier);
+    Ok(Some(ProseTokenPointer {
+        blob_id: hex_lower(&id),
+    }))
+}
+
 /// Try to decode a Discord message as an OSL prose-token, keeping the two
 /// distinct reasons a cover can produce nothing apart.
 ///
@@ -610,12 +658,7 @@ pub fn prose_token_recv_classified(
     detection_key: &[u8; MAC_KEY_LEN],
     msg: &str,
 ) -> Result<ProseTokenRecv, ProseTokenError> {
-    let cipher = derive_scope_cipher(scope_input)?;
-    // D-231: the scope-bound detector, never the caller's. A cover minted for a
-    // different conversation fails the detect tag here and returns `NoToken`,
-    // so nothing below this line runs and the cipher store is never contacted.
-    let scoped_detector = scope_bound_detection_key(detection_key, scope_input)?;
-    let carrier = match stego::decode_token(&cipher, &scoped_detector, msg) {
+    let carrier = match prose_token_decode_carrier(scope_input, detection_key, msg)? {
         Some(bytes) => bytes,
         None => return Ok(ProseTokenRecv::Missed(ProseTokenMiss::NoToken)),
     };
@@ -835,6 +878,44 @@ mod tests {
         hk.expand(PROSE_TOKEN_MAC_HKDF_INFO, &mut key)
             .expect("HKDF expand to 32 bytes is infallible");
         Ok(key)
+    }
+
+    #[test]
+    fn prepared_post_copy_pointer_recovery_accepts_shaped_copy_and_refuses_plaintext() {
+        let scope = ScopeInput {
+            kind: crate::scope::ScopeKind::Dm,
+            id: "task-0664-peer".to_owned(),
+            server_id: None,
+            channel_id: Some("task-0664-dm-channel".to_owned()),
+        };
+        let detection_key = [0x66u8; MAC_KEY_LEN];
+        let cipher = derive_scope_cipher(&scope).expect("scope cipher");
+        let scoped_detector =
+            scope_bound_detection_key(&detection_key, &scope).expect("scope-bound detector");
+        let mut carrier = [0u8; stego::TOKEN_ID_BYTES];
+        carrier[..BRIDGE_ID_BYTES].copy_from_slice(&[0x42u8; BRIDGE_ID_BYTES]);
+        carrier[BRIDGE_ID_BYTES..].copy_from_slice(&[0x24u8; BRIDGE_SEED_BYTES]);
+        let prepared = stego::encode_token(&cipher, &scoped_detector, &carrier);
+        let shaped = prepared.replacen(' ', "\n", 1);
+
+        let recovered = prose_token_recover_pointer(&scope, &detection_key, &shaped)
+            .expect("local pointer recovery")
+            .expect("prepared post copy recovers a pointer");
+        println!("TASK0664_RECOVERABLE_POINTER_BLOB_ID={}", recovered.blob_id);
+        assert_eq!(
+            recovered.blob_id,
+            "42".repeat(BRIDGE_ID_BYTES),
+            "TASK0664_RECOVERABLE_POINTER_BLOB_ID={}",
+            recovered.blob_id
+        );
+        assert!(prose_token_recover_pointer(
+            &scope,
+            &detection_key,
+            "ordinary prose with no recoverable pointer",
+        )
+        .expect("ordinary prose is a local miss")
+        .is_none());
+        println!("TASK0664_UNRECOVERABLE_POINTER_RECOVERED=false");
     }
 
     /// D-232. The burn dispatch must refuse, loudly and by a distinguishable

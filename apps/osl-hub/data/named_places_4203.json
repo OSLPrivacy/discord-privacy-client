@@ -1,0 +1,106 @@
+[
+  {
+    "app": "Telegram",
+    "placeName": "Telegram supergroup",
+    "state": "approved",
+    "sourceTask": "1027",
+    "provingCheck": "task-1027-real-typing-box",
+    "personCanDo": "Post a protected message into a Telegram supergroup composer."
+  },
+  {
+    "app": "Telegram",
+    "placeName": "Telegram saved messages",
+    "state": "approved",
+    "sourceTask": "1028",
+    "provingCheck": "task-1028-real-typing-box",
+    "personCanDo": "Save a protected message to the operator's Telegram saved messages."
+  },
+  {
+    "app": "Signal",
+    "placeName": "Signal story",
+    "state": "approved",
+    "sourceTask": "1029a",
+    "provingCheck": "task-1029a-real-typing-box",
+    "personCanDo": "Write a protected Signal story update."
+  },
+  {
+    "app": "WhatsApp",
+    "placeName": "WhatsApp community",
+    "state": "approved",
+    "sourceTask": "1055",
+    "provingCheck": "task-1055-real-typing-box",
+    "personCanDo": "Post a protected message to a WhatsApp community surface."
+  },
+  {
+    "app": "WhatsApp",
+    "placeName": "WhatsApp community group",
+    "state": "approved",
+    "sourceTask": "1089a",
+    "provingCheck": "task-1089a-real-typing-box",
+    "personCanDo": "Post a protected message inside a WhatsApp community group."
+  },
+  {
+    "app": "WhatsApp",
+    "placeName": "WhatsApp broadcast list",
+    "state": "approved",
+    "sourceTask": "1089b",
+    "provingCheck": "task-1089b-real-typing-box",
+    "personCanDo": "Send a protected message through a WhatsApp broadcast list."
+  },
+  {
+    "app": "X",
+    "placeName": "X group direct message",
+    "state": "approved",
+    "sourceTask": "1089c",
+    "provingCheck": "task-1089c-real-typing-box",
+    "personCanDo": "Write a protected message in an X group direct message."
+  },
+  {
+    "app": "X",
+    "placeName": "X reply",
+    "state": "approved",
+    "sourceTask": "1089d",
+    "provingCheck": "task-1089d-real-typing-box",
+    "personCanDo": "Write a protected reply in X."
+  },
+  {
+    "app": "Instagram",
+    "placeName": "Instagram comment",
+    "state": "approved",
+    "sourceTask": "1125",
+    "provingCheck": "task-1125-real-typing-box",
+    "personCanDo": "Write a protected Instagram comment."
+  },
+  {
+    "app": "Instagram",
+    "placeName": "Instagram story",
+    "state": "approved",
+    "sourceTask": "1127",
+    "provingCheck": "task-1127-real-typing-box",
+    "personCanDo": "Write a protected Instagram story update."
+  },
+  {
+    "app": "Messenger",
+    "placeName": "Messenger community",
+    "state": "approved",
+    "sourceTask": "1154",
+    "provingCheck": "task-1154-real-typing-box",
+    "personCanDo": "Post a protected message to a Messenger community surface."
+  },
+  {
+    "app": "Telegram",
+    "placeName": "Telegram story",
+    "state": "look-only-refused",
+    "sourceTask": "1155",
+    "provingCheck": "task-1155-look-only-no-typing-box",
+    "personCanDo": "Look at Telegram stories; OSL refuses protected writing there."
+  },
+  {
+    "app": "WhatsApp",
+    "placeName": "WhatsApp Status",
+    "state": "look-only-refused",
+    "sourceTask": "1190",
+    "provingCheck": "task-1190-look-only-no-typing-box",
+    "personCanDo": "Look at WhatsApp Status; OSL refuses protected writing there."
+  }
+]

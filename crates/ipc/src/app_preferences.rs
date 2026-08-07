@@ -33,6 +33,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::str::FromStr;
 use std::path::Path;
@@ -270,6 +271,13 @@ pub enum VerificationWarningChoice {
     #[serde(rename = "before sending")]
     BeforeSending,
     #[serde(rename = "never")]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum VerificationWarningChoice {
+    EveryTime,
+    Once,
+    BeforeSending,
+    #[default]
     Never,
 }
 
@@ -282,6 +290,7 @@ impl VerificationWarningChoice {
     ];
 
     pub fn label(self) -> &'static str {
+    pub fn words(self) -> &'static str {
         match self {
             Self::EveryTime => "every time",
             Self::Once => "once",
@@ -383,6 +392,12 @@ impl FromStr for StartWithWindowsChoice {
             )),
         }
     }
+pub fn parse_verification_warning_choice(input: &str) -> Result<VerificationWarningChoice, String> {
+    let normalized = input.trim().to_ascii_lowercase().replace(['-', '_'], " ");
+    VerificationWarningChoice::ALL
+        .into_iter()
+        .find(|choice| normalized == choice.words())
+        .ok_or_else(|| format!("OSL: unknown verification warning choice '{input}'"))
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -616,6 +631,43 @@ impl NewFriendAccountReach {
     pub fn id(self) -> &'static str {
         match self {
             Self::ApprovedChatsOnly => "approved_chats_only",
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PrivacyLevelRuleSet {
+    pub before_send_warnings: bool,
+    pub attachment_cleaning: bool,
+    pub cleanup_review_days: u16,
+    pub public_post_checks: bool,
+    pub vpn_required_actions: bool,
+    pub protected_contacts_required: bool,
+}
+
+impl PrivacyLevelRuleSet {
+    pub fn for_level(level: PrivacyLevel) -> Self {
+        match level {
+            PrivacyLevel::Basic => Self {
+                before_send_warnings: false,
+                attachment_cleaning: false,
+                cleanup_review_days: 0,
+                public_post_checks: false,
+                vpn_required_actions: false,
+                protected_contacts_required: false,
+            },
+            PrivacyLevel::Balanced => Self {
+                before_send_warnings: true,
+                attachment_cleaning: true,
+                cleanup_review_days: 30,
+                public_post_checks: false,
+                vpn_required_actions: false,
+                protected_contacts_required: false,
+            },
+            PrivacyLevel::Maximum => Self {
+                before_send_warnings: true,
+                attachment_cleaning: true,
+                cleanup_review_days: 7,
+                public_post_checks: true,
+                vpn_required_actions: true,
+                protected_contacts_required: true,
+            },
         }
     }
 }
@@ -723,6 +775,12 @@ pub struct NewFriendDefaults {
     pub verification_warnings: NewFriendVerificationWarnings,
 }
 
+impl Default for PrivacyLevelRuleSet {
+    fn default() -> Self {
+        Self::for_level(PrivacyLevel::Balanced)
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppPreferences {
@@ -826,6 +884,20 @@ impl Default for AppPreferences {
 pub const APP_PREFERENCES_VERSION: u32 = 4;
 pub const APP_PREFERENCES_VERSION: u32 = 5;
     pub new_friend_defaults: NewFriendDefaults,
+}
+
+pub const APP_PREFERENCES_VERSION: u32 = 3;
+    pub allowed_place_records: BTreeMap<String, crate::allowed_places::AllowedPlaceRecord>,
+    #[serde(default)]
+    pub privacy_level: PrivacyLevel,
+    #[serde(default)]
+    pub privacy_level_rule_sets: HashMap<String, PrivacyLevelRuleSet>,
+    #[serde(default)]
+    pub verification_warning_choice: VerificationWarningChoice,
+    #[serde(default)]
+    pub alert_mode_choice: AlertModeChoice,
+    #[serde(default)]
+    pub idle_lock_time_choice: IdleLockTimeChoice,
 }
 
 pub const APP_PREFERENCES_VERSION: u32 = 3;

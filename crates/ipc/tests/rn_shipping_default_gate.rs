@@ -359,6 +359,212 @@ fn direct_chat_peer_downgrade_command_is_refused_and_saved_state_is_unchanged() 
     );
 }
 
+#[test]
+fn task0436_stolen_key_check_is_red_when_direct_chat_default_is_not_stronger() {
+    let config_dir = tempfile::tempdir().expect("isolated OSL config dir");
+    let _config_guard = use_osl_config_dir(config_dir.path());
+    let alice_identity = generate_identity("rn-0436-alice".to_owned());
+    let bob_identity = generate_identity("rn-0436-bob".to_owned());
+    let port = start_keyserver(vec![
+        ("GET /v1/pubkeys/", signed_pubkeys_response(&bob_identity)),
+        (
+            "GET /v1/prekey-bundle/",
+            prekey_bundle_response(&bob_identity),
+        ),
+    ]);
+    let alice_state =
+        shipping_state_with_current_build_peer(alice_identity, &bob_identity, BOB_DID, port);
+
+    let wire_version = osl_ratchet_next::peek_wire_version(&wire);
+    assert_eq!(wire_version, Some(osl_ratchet_next::WIRE_VERSION_RN));
+    let store =
+        ipc::wire_rn::RnSessionStore::for_config_dir(config_dir.path()).expect("RN session store");
+    let session_persisted = store
+        .load_session(bob.x25519_public.as_bytes())
+        .expect("load persisted RN session")
+        .is_some();
+    let pin_rn = store
+        .load_pin(bob.x25519_public.as_bytes())
+        .expect("load RN pin")
+        .is_pinned_to_rn();
+    assert!(
+        session_persisted,
+        "eligible direct chat must persist an RN session"
+    );
+    assert!(pin_rn, "eligible direct chat must raise the RN pin");
+
+    println!(
+        "TASK 0428 direct_chat=one_to_one eligible=1 forward_secrecy=on \
+         user_setting=none wire_version=0x{:02x} session_persisted={} pin_rn={}",
+        wire_version.expect("already asserted RN wire"),
+        usize::from(session_persisted),
+        usize::from(pin_rn)
+    );
+}
+
+#[test]
+fn direct_chat_peer_downgrade_command_is_refused_and_saved_state_is_unchanged() {
+    let config_dir = tempfile::tempdir().expect("isolated OSL config dir");
+    let _config_guard = use_osl_config_dir(config_dir.path());
+    let alice = generate_identity("rn-downgrade-alice".to_owned());
+    let bob = generate_identity("rn-downgrade-bob".to_owned());
+    let (port, requests) = start_keyserver_with_request_log(vec![
+        ("GET /v1/pubkeys/", signed_pubkeys_response(&bob)),
+        ("GET /v1/prekey-bundle/", prekey_bundle_response(&bob)),
+        ("GET /v1/pubkeys/", signed_downgrade_pubkeys_response(&bob)),
+    ]);
+    let alice_state = shipping_state_with_current_build_peer(alice, &bob, BOB_DID, port);
+
+    let agreed_wire = cmd_osl_encrypt_message_v2_wire(
+        &alice_state,
+        "agreed stronger sequence".to_owned(),
+        ScopeInput::from(&Scope::dm(BOB_DID)),
+        vec![BOB_DID.to_owned()],
+        ALICE_DID.to_owned(),
+    )
+    .map(|wire| wire.content)
+    .expect("first direct-chat send should establish OSL-RN");
+    assert_eq!(
+        osl_ratchet_next::peek_wire_version(&agreed_wire),
+        Some(osl_ratchet_next::WIRE_VERSION_RN),
+        "test fixture must first agree the stronger sequence"
+    );
+
+    let store =
+        ipc::wire_rn::RnSessionStore::for_config_dir(config_dir.path()).expect("RN session store");
+    assert!(store
+        .load_session(bob.x25519_public.as_bytes())
+        .expect("load agreed RN session")
+        .is_some());
+    assert!(store
+        .load_pin(bob.x25519_public.as_bytes())
+        .expect("load agreed RN pin")
+        .is_pinned_to_rn());
+    let (before_sha256, before_files) = snapshot_rn_saved_state(config_dir.path());
+
+    let refused = cmd_osl_encrypt_message_v2_wire(
+        &alice_state,
+        "attempt weaker sequence".to_owned(),
+        ScopeInput::from(&Scope::dm(BOB_DID)),
+        vec![BOB_DID.to_owned()],
+        ALICE_DID.to_owned(),
+    )
+    .expect_err("downgraded direct-chat capability must refuse the send command");
+    let refusal = "peer is pinned to OSL-RN; refusing to send a legacy v=3 message";
+    assert!(
+        refused.contains(refusal),
+        "downgrade command returned the wrong refusal: {refused}"
+    );
+
+    let (after_sha256, after_files) = snapshot_rn_saved_state(config_dir.path());
+    assert_eq!(
+        before_files, after_files,
+        "refused downgrade must leave the RN state file count unchanged"
+    );
+    assert_eq!(
+        before_sha256, after_sha256,
+        "refused downgrade must leave saved RN state bytes unchanged"
+    );
+    assert!(store
+        .load_pin(bob.x25519_public.as_bytes())
+        .expect("reload RN pin after refusal")
+        .is_pinned_to_rn());
+
+    let request_lines: Vec<String> = (0..3)
+        .map(|_| requests.recv().expect("keyserver request line"))
+        .collect();
+    assert!(request_lines[0].starts_with("GET /v1/pubkeys/"));
+    assert!(request_lines[1].starts_with("GET /v1/prekey-bundle/"));
+    assert!(request_lines[2].starts_with("GET /v1/pubkeys/"));
+
+    println!(
+        "TASK 0431 downgrade_command=refused refusal=\"{refusal}\" \
+         saved_state_unchanged={} before_files={} after_files={} \
+         before_sha256={} after_sha256={} downgraded_capabilities={}",
+        usize::from(before_sha256 == after_sha256 && before_files == after_files),
+        before_files,
+        after_files,
+        before_sha256,
+        after_sha256,
+        0
+        alice_state.rn_wire_in_enabled(),
+        "TASK0436 chat is not stronger"
+    );
+    let wire = cmd_osl_encrypt_message_v2_wire(
+        &alice_state,
+        "TASK0436 default-strength probe".to_owned(),
+        ScopeInput::from(&Scope::dm(BOB_DID)),
+        vec![BOB_DID.to_owned()],
+        ALICE_DID.to_owned(),
+    )
+    .map(|wire| wire.content)
+    .expect("TASK0436 chat is not stronger");
+    assert_eq!(
+        osl_ratchet_next::peek_wire_version(&wire),
+        Some(osl_ratchet_next::WIRE_VERSION_RN),
+        "TASK0436 chat is not stronger"
+    );
+    println!("TASK0436 direct_chat_default=stronger wire_version=0x10");
+
+    let (mut alice, mut bob, mut rng) = osl_ratchet_next::test_support::established_pair(0x0436);
+    let old_0 = alice
+        .encrypt(0, b"TASK0436 old protected 0", &mut rng)
+        .expect("old 0 encrypts");
+    let old_1 = alice
+        .encrypt(0, b"TASK0436 old protected 1", &mut rng)
+        .expect("old 1 encrypts");
+    assert_eq!(
+        bob.decrypt(&old_0, &mut rng)
+            .expect("live bob opens old 0")
+            .plaintext,
+        b"TASK0436 old protected 0"
+    );
+    assert_eq!(
+        bob.decrypt(&old_1, &mut rng)
+            .expect("live bob opens old 1")
+            .plaintext,
+        b"TASK0436 old protected 1"
+    );
+
+    let current = alice
+        .encrypt(0, b"TASK0436 current protected", &mut rng)
+        .expect("current encrypts");
+    let stolen_current_key = bob.export_state().expect("export stolen current key");
+    let mut current_reader =
+        osl_ratchet_next::Session::import_state(&stolen_current_key).expect("import current key");
+    let current_plaintext = current_reader
+        .decrypt(&current, &mut rng)
+        .expect("stolen current key opens current message")
+        .plaintext;
+    assert_eq!(current_plaintext, b"TASK0436 current protected");
+
+    let earlier = [&old_0, &old_1];
+    let mut earlier_locked = 0usize;
+    let mut old_message_opened = 0usize;
+    for protected_message in earlier {
+        let mut replay_reader = osl_ratchet_next::Session::import_state(&stolen_current_key)
+            .expect("import replay key");
+        if replay_reader.decrypt(protected_message, &mut rng).is_err() {
+            earlier_locked += 1;
+        } else {
+            old_message_opened += 1;
+        }
+    }
+
+    println!(
+        "TASK0436 current_opened=1 plaintext={}",
+        String::from_utf8(current_plaintext).expect("fixture plaintext is UTF-8")
+    );
+    println!(
+        "TASK0436 old_message_opened={} earlier_locked={} total_earlier={}",
+        old_message_opened,
+        earlier_locked,
+        earlier.len()
+    );
+    assert_eq!(old_message_opened, 0, "TASK0436 old message opens");
+    assert_eq!(earlier_locked, earlier.len());
+}
+
 /// The other half of the same gate, and it is deliberately asymmetric:
 /// **receive is open, send is closed.**
 ///

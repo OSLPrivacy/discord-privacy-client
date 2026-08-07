@@ -189,6 +189,21 @@ pub fn read_active_profile_picture(owner: &str) -> Result<OwnerProfilePictureDto
     read_profile_picture_with_key(&active_profile_picture_path()?, owner, &key)
 }
 
+pub fn read_active_profile_picture_for_reader(
+    owner: &str,
+    reader_id: &str,
+    accepted_friend_ids: &[String],
+) -> Result<OwnerProfilePictureDto, String> {
+    let key = active_file_key()?;
+    read_profile_picture_for_reader_with_key(
+        &active_profile_picture_path()?,
+        owner,
+        reader_id,
+        accepted_friend_ids,
+        &key,
+    )
+}
+
 pub fn clear_active_profile_picture(owner: &str) -> Result<OwnerProfilePictureDto, String> {
     clear_profile_picture_at_path(&active_profile_picture_path()?, owner)
 }
@@ -526,6 +541,24 @@ pub fn read_profile_picture_with_key(
     Ok(present_picture(image))
 }
 
+pub fn read_profile_picture_for_reader_with_key(
+    path: &Path,
+    owner: &str,
+    reader_id: &str,
+    accepted_friend_ids: &[String],
+    key: &[u8; 32],
+) -> Result<OwnerProfilePictureDto, String> {
+    validate_owner(owner)?;
+    validate_owner(reader_id)?;
+    if !accepted_friend_ids
+        .iter()
+        .any(|accepted_id| accepted_id == reader_id)
+    {
+        return Ok(absent_picture());
+    }
+    read_profile_picture_with_key(path, owner, key)
+}
+
 pub fn clear_profile_picture_at_path(
     path: &Path,
     owner: &str,
@@ -682,6 +715,56 @@ mod tests {
         let read_after_clear =
             read_profile_picture_with_key(&path, "osl-user-a", &TEST_KEY).unwrap();
         assert_eq!(read_after_clear.status(), "image-absent");
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn task_0232_profile_picture_requires_accepted_friendship() {
+        let path = temporary_file("task-0232-picture").with_file_name(PROFILE_PICTURE_FILE);
+        let image =
+            "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==".to_owned();
+        set_profile_picture_with_key(&path, "900000000000023200", image.clone(), &TEST_KEY)
+            .expect("owner picture is stored before friend reads");
+
+        let accepted_friend_ids = vec![
+            "900000000000023201".to_owned(),
+            "900000000000023200".to_owned(),
+        ];
+        let friend_read = read_profile_picture_for_reader_with_key(
+            &path,
+            "900000000000023200",
+            "900000000000023201",
+            &accepted_friend_ids,
+            &TEST_KEY,
+        )
+        .expect("accepted friend read succeeds");
+        println!("TASK0232 friend_read.status={}", friend_read.status());
+        println!(
+            "TASK0232 friend_read.image_matches={}",
+            friend_read.image.as_deref() == Some(image.as_str())
+        );
+        assert_eq!(friend_read.status(), "image-present");
+        assert_eq!(friend_read.image.as_deref(), Some(image.as_str()));
+
+        let non_friend_read = read_profile_picture_for_reader_with_key(
+            &path,
+            "900000000000023200",
+            "900000000000023299",
+            &accepted_friend_ids,
+            &TEST_KEY,
+        )
+        .expect("non-friend read is redacted, not disclosed as an error");
+        println!(
+            "TASK0232 non_friend_read.status={}",
+            non_friend_read.status()
+        );
+        println!(
+            "TASK0232 non_friend_read.image_present={}",
+            non_friend_read.image.is_some()
+        );
+        assert_eq!(non_friend_read.status(), "image-absent");
+        assert!(non_friend_read.image.is_none());
 
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }

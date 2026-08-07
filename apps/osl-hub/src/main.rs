@@ -57,6 +57,9 @@ use osl_privacy_hub::identity_registry::{
 };
 use osl_privacy_hub::installed_build_version::{
     record_current_executable_at_start, InstalledBuildVersionRecord,
+use osl_privacy_hub::installed_build::{
+    installed_build_chat_warning, record_current_installed_build, InstalledBuildChatWarning,
+    InstalledBuildRecord, INSTALLED_BUILD_RECORD_FILE,
 };
 use osl_privacy_hub::main_window_reveal::{
     main_window_reveal, main_window_should_start_hidden, CaptureAffinity, MainWindowReveal,
@@ -88,6 +91,7 @@ use osl_privacy_hub::native_window_host::{
     DiscordSessionMode, DiscordTakeover, NativeWindowHostReason, NativeWindowHostResult,
     NativeWindowHostState,
 };
+use osl_privacy_hub::osl_chat_drag_drop::{OslChatAttachmentTray, OslChatDropIntakeReceipt};
 use osl_privacy_hub::osl_mail::{self, OslMailState, OslMailStatus};
 use osl_privacy_hub::osl_profile::{self, HubProfileDto, HubProfileInput, OwnerProfilePictureDto};
 use osl_privacy_hub::password_lifecycle::{
@@ -126,6 +130,9 @@ use osl_privacy_hub::security::{
     FriendCodeExport, FriendWideWhitelistActionHelp, HubRevocationStatusDto, HubScopeBurnResult,
     HubSecurityState, PersonDto, PrivateContactLinkExport, PrivateContactLinkStatus,
     RemoveFriendResult, ScopeSecurityDto,
+    self, AddFriendResult, AllowedPlaceDirectionStateDto, FriendCodeExport,
+    GroupVerificationBuildListEntryDto, HubRevocationStatusDto, HubScopeBurnResult,
+    HubSecurityState, PersonDto, RemoveFriendResult, ScopeSecurityDto,
 };
 use osl_privacy_hub::security_credentials::{self, HubPasswordRoleStatus};
 use osl_privacy_hub::server_records::{NamedServerRecord, NamedServerRegistryState};
@@ -292,6 +299,11 @@ use osl_privacy_hub::hub_command_surface::{
 
 #[derive(Default)]
 struct WhatsAppQaProtectionState(Mutex<WhatsAppAccessibilityState>);
+
+#[derive(Default)]
+struct OslChatAttachmentTrayState(Mutex<OslChatAttachmentTray>);
+
+struct InstalledBuildRecordPath(std::path::PathBuf);
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -4874,6 +4886,28 @@ async fn send_native_discord_qa_atomic_text(
             });
         };
         qa_discord_send_stage("send_carrier_text_ready");
+        if let Err(error) = broker::read_back_prepared_native_overlay_post_copy(
+            &app.state::<HubCoreState>(),
+            &app.state::<HubBrokerState>(),
+            &carrier_text,
+        ) {
+            qa_discord_send_stage("send_refused_carrier_pointer_unrecoverable");
+            qa_atomic_send_receipt(
+                &registration,
+                "post",
+                "error",
+                Some(&error),
+                Some("carrier_pointer_unrecoverable"),
+                None,
+            );
+            qa_discord_send_stage("send_receipt_written");
+            return Ok(NativeDiscordQaAtomicText {
+                prepared: broker::PreparedNativeDiscordOverlayText { prepared, flagtext },
+                carrier: failed_carrier(),
+                visible_carrier_row: None,
+            });
+        }
+        qa_discord_send_stage("send_carrier_pointer_recovered");
         if require_same_overlay_context(&app, context_epoch, &host).is_err() {
             qa_discord_send_stage("send_pre_placement_context_changed");
             qa_atomic_send_receipt(
@@ -6081,6 +6115,28 @@ async fn select_osl_chat_attachment(
     })
     .await
     .map_err(|error| format!("OSL Chat attachment worker failed: {error}"))?
+}
+
+#[tauri::command]
+async fn drop_osl_chat_attachments(
+    caller: tauri::WebviewWindow,
+    session: State<'_, HubAccountSessionState>,
+    tray: State<'_, OslChatAttachmentTrayState>,
+    paths: Vec<String>,
+) -> Result<OslChatDropIntakeReceipt, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may drop OSL Chat attachments".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    let paths = paths
+        .into_iter()
+        .map(std::path::PathBuf::from)
+        .collect::<Vec<_>>();
+    let mut tray = tray
+        .0
+        .lock()
+        .map_err(|_| "OSL Chat attachment tray is unavailable".to_owned())?;
+    tray.accept_dropped_files(paths)
 }
 
 #[tauri::command]
@@ -7323,6 +7379,23 @@ async fn read_owner_profile_picture(
 }
 
 #[tauri::command]
+async fn read_owner_profile_picture_for_friend(
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    reader_id: String,
+) -> Result<OwnerProfilePictureDto, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    let accepted_friend_ids = core
+        .osl
+        .friend_ids
+        .lock()
+        .map_err(|_| "OSL accepted friend state is unavailable".to_owned())?
+        .clone();
+    osl_profile::read_active_profile_picture_for_reader(&owner, &reader_id, &accepted_friend_ids)
+}
+
+#[tauri::command]
 async fn clear_owner_profile_picture(
     core: State<'_, HubCoreState>,
     session: State<'_, HubAccountSessionState>,
@@ -7454,6 +7527,17 @@ async fn compare_allowed_place_direction_state(
 ) -> Result<AllowedPlaceDirectionStateDto, String> {
     let _session = session.transition.lock().await;
     security::compare_allowed_place_direction_state(app, first_account, second_account, kind)
+}
+
+#[tauri::command]
+async fn list_group_verification_build_entries(
+    session: State<'_, HubAccountSessionState>,
+    app: String,
+    local_account: String,
+    group_id: String,
+) -> Result<Vec<GroupVerificationBuildListEntryDto>, String> {
+    let _session = session.transition.lock().await;
+    security::list_group_verification_build_entries(app, local_account, group_id)
 }
 
 #[tauri::command]
@@ -8629,13 +8713,14 @@ mod qa_selftest {
     /// `send_native_discord_qa_atomic_text` appends them. Each failure site in
     /// that command writes a *different* label, so a missing entry here names
     /// the exact hop that stopped the send.
-    const EXPECTED_STAGES: [&str; 11] = [
+    const EXPECTED_STAGES: [&str; 12] = [
         "send_command_entered",
         "send_registration_ready",
         "send_session_locked",
         "send_plaintext_accepted",
         "send_encryption_done",
         "send_carrier_text_ready",
+        "send_carrier_pointer_recovered",
         "send_place_carrier_called",
         "send_carrier_typed",
         "send_enter_injected",
@@ -10838,6 +10923,7 @@ fn build_integrity_status(state: tauri::State<'_, BuildIntegrity>) -> BuildInteg
 fn installed_build_version_record(
     state: tauri::State<'_, InstalledBuildVersionRecord>,
 ) -> InstalledBuildVersionRecord {
+fn installed_build_record(state: tauri::State<'_, InstalledBuildRecord>) -> InstalledBuildRecord {
     state.inner().clone()
 }
 
@@ -10846,6 +10932,10 @@ fn verify_peer_build_integrity(peer_exe_sha256: String) -> Result<PeerBuildCheck
     verify_peer_build_from_hex(&peer_exe_sha256)
 fn list_bad_message_rules() -> Vec<BadMessageRuleChoice> {
     osl_privacy_hub::bad_message_rules::list_bad_message_rules()
+fn installed_build_chat_warning_status(
+    state: State<'_, InstalledBuildRecordPath>,
+) -> Option<InstalledBuildChatWarning> {
+    installed_build_chat_warning(&state.0)
 }
 
 macro_rules! hub_tauri_generate_handler {
@@ -11321,6 +11411,7 @@ fn main() {
         startup_breadcrumb("setup_step_24_core_state_managed"); // STARTUP-TRACE
         app.manage(HubBrokerState::default());
         startup_breadcrumb("setup_step_25_broker_state_managed"); // STARTUP-TRACE
+        app.manage(OslChatAttachmentTrayState::default());
         app.manage(security_state);
         revocation_drain_timer::spawn(app.handle().clone());
         startup_breadcrumb("setup_step_26_security_state_managed"); // STARTUP-TRACE
@@ -11379,6 +11470,10 @@ fn main() {
         // can present a local integrity verdict.
         app.manage(check_current());
         app.manage(installed_build_record);
+        app.manage(record_current_installed_build(&config_dir)?);
+        app.manage(InstalledBuildRecordPath(
+            config_dir.join(INSTALLED_BUILD_RECORD_FILE),
+        ));
         app.manage(OverlaySessionState::default());
         startup_breadcrumb("setup_step_32_overlay_session_state_managed"); // STARTUP-TRACE
         app.manage(native_surface_capture::NativeSurfaceCaptureState::default());
@@ -12020,6 +12115,17 @@ mod tauri_command_acl_tests {
         ]);
         let source = include_str!("main.rs");
         assert!(source.contains("app.manage(check_current());"));
+    }
+
+    #[test]
+    fn task_3168_installed_build_record_is_read_at_startup_and_exposed_to_the_ui() {
+        assert_registered_and_acl_granted(&[
+            "installed_build_record",
+            "installed_build_chat_warning_status",
+        ]);
+        let source = include_str!("main.rs");
+        assert!(source.contains("app.manage(record_current_installed_build(&config_dir)?);"));
+        assert!(source.contains("config_dir.join(INSTALLED_BUILD_RECORD_FILE)"));
     }
 
     #[test]

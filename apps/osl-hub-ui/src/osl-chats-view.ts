@@ -133,6 +133,13 @@ export interface OslChatMessage {
   timestampLabel: string;
 }
 
+export interface OslChatBuildWarning {
+  kind: "changedBuild";
+  reason: "changed" | "corruptProof";
+  message: string;
+  messageSendingAvailable: true;
+}
+
 export interface OslChatsViewModel {
   friends: readonly OslChatFriend[];
   activePersonId: string | null;
@@ -151,6 +158,7 @@ export interface OslChatsViewModel {
   deletionUnconfirmed?: number;
   buildIntegrity?: OslChatBuildIntegrityStatus | null;
   verificationWarningSurface?: VerificationWarningSurface;
+  buildWarning?: OslChatBuildWarning | null;
 }
 
 export type OslChatBuildIntegrityStatus = "verified" | "mismatch" | "unknown";
@@ -355,6 +363,12 @@ function buildIntegrityWarningRow(status: OslChatBuildIntegrityStatus | null | u
     ? "This app copy does not match OSL's signed build list. You can still send messages, but update or reinstall OSL before trusting this build."
     : "OSL could not verify this app copy against its signed build list. You can still send messages, but update or reinstall OSL before trusting this build.";
   return `<p class="osl-chat-build-warning warning" role="status" data-osl-build-integrity="${status}"><strong>Build verification warning</strong><small>${escapeHtml(detail)}</small></p>`;
+function buildWarningRow(warning: OslChatBuildWarning | null | undefined): string {
+  if (!warning || warning.kind !== "changedBuild" || warning.messageSendingAvailable !== true) {
+    return "";
+  }
+  const reason = warning.reason === "corruptProof" ? "corrupt-proof" : "changed";
+  return `<p class="osl-chat-build-warning warning" role="status" data-osl-chat-build-warning="${reason}" data-message-sending-available="true"><strong>Changed build warning</strong><small>${escapeHtml(warning.message)}</small></p>`;
 }
 
 function emptyThread(): string {
@@ -390,6 +404,7 @@ function activeThread(model: OslChatsViewModel, friend: OslChatFriend): string {
     <header class="osl-chat-thread-header">${avatar(friend.nickname, "is-thread")}<div><h2>${escapeHtml(friend.nickname)}</h2><span>${friend.ready ? "Ready" : "Connecting"} · ${friend.verified ? "Verified" : "Unverified"}</span></div><button class="osl-chat-thread-settings" type="button" data-osl-chat-settings="${escapeHtml(friend.personId)}" aria-label="Chat settings">${settingsIcon}</button></header>
     <div class="osl-chat-message-list" role="log" aria-live="polite" aria-relevant="additions text">${messages}</div>
     ${buildIntegrityWarningRow(model.buildIntegrity)}
+    ${buildWarningRow(model.buildWarning)}
     ${deletionUnconfirmedRow(model.deletionUnconfirmed ?? 0)}
     <form class="osl-chat-composer" data-osl-chat-compose="${escapeHtml(friend.personId)}">
       <label for="osl-chat-draft">Message</label>

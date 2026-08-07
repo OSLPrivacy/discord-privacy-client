@@ -1755,6 +1755,8 @@ macro_rules! hub_tauri_commands {
             installed_build_version_record,
             verify_peer_build_integrity,
             list_bad_message_rules,
+            installed_build_record,
+            installed_build_chat_warning_status,
             list_hub_app_notifications,
             set_hub_notifications_enabled,
             get_hub_chat_approval_suggestion_choice,
@@ -1917,6 +1919,7 @@ macro_rules! hub_tauri_commands {
             query_osl_chat_visible_records,
             burn_osl_chat_history,
             select_osl_chat_attachment,
+            drop_osl_chat_attachments,
             list_osl_chat_attachments,
             intake_osl_chat_clipboard_image,
             open_osl_chat_attachment,
@@ -1968,6 +1971,7 @@ macro_rules! hub_tauri_commands {
             get_osl_profile,
             set_owner_profile_picture,
             read_owner_profile_picture,
+            read_owner_profile_picture_for_friend,
             clear_owner_profile_picture,
             get_osl_chat_local_state_key,
             save_osl_profile,
@@ -1983,6 +1987,8 @@ macro_rules! hub_tauri_commands {
             get_hub_friend_wide_whitelist_action_help,
             set_hub_friend_account_reach_everywhere,
             compare_allowed_place_direction_state,
+            compare_allowed_place_direction_state,
+            list_group_verification_build_entries,
             set_hub_friend_nickname,
             add_group_member_permission,
             remove_group_member_permission,
@@ -4500,6 +4506,43 @@ mod tauri_registration_surface_tests {
         );
     }
 
+    #[test]
+    fn recovery_word_retype_check_is_registered_and_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &["check_hub_recovery_word_retype"],
+        );
+    }
+
+    #[test]
+    fn live_server_revision_report_is_registered_and_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &["get_live_server_revision_report"],
+        );
+    }
+
+    #[test]
+    fn burn_review_state_commands_are_registered_and_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &[
+                "save_burn_review_state",
+                "get_burn_review_state",
+                "back_burn_review",
+            ],
+        );
+    }
+
     /// D-108 — the missing construction site for the UI's `SecureLocalStore`.
     ///
     /// The store is implemented and unit-tested in `secure-local-store.ts` and
@@ -4781,6 +4824,20 @@ mod tauri_registration_surface_tests {
             &permissions,
             &capability,
             &["list_components", "install_component", "remove_component"],
+        );
+    }
+
+    #[test]
+    fn group_verification_build_queries_are_registered_and_acl_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &[
+                "compare_allowed_place_direction_state",
+                "list_group_verification_build_entries",
+            ],
         );
     }
 

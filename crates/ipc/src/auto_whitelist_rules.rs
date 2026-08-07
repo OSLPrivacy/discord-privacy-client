@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 pub enum AutoWhitelistChoice {
     #[default]
 //! Auto-whitelist rule names and per-place validation.
+//! Auto-whitelist rule names and per-place lookup keys.
 
 use serde::{Deserialize, Serialize};
 
@@ -558,6 +559,8 @@ pub fn normalize_auto_whitelist_app_kind(input: &str) -> Result<String, String> 
             ));
         }
     }
+pub fn normalize_auto_whitelist_app_kind(input: &str) -> Result<String, String> {
+    let normalized = input.trim().to_ascii_lowercase().replace('-', "_");
     if AUTO_WHITELIST_APP_KINDS.contains(&normalized.as_str()) {
         Ok(normalized)
     } else {
@@ -652,4 +655,13 @@ pub fn whatsapp_allowed_place_kind_for_rule_key(rule_key: &str) -> Option<&'stat
         .into_iter()
         .find(|kind| rest == kind.id())
         .map(WhatsAppWhitelistKind::allowed_place_kind)
+}
+
+pub fn app_kind_rule_lookup(app_kind: &str) -> Result<String, String> {
+    normalize_auto_whitelist_app_kind(app_kind)
+}
+
+pub fn telegram_kind_rule_lookup(kind: &str) -> Result<String, String> {
+    let kind = crate::allowed_places::normalize_telegram_whitelist_kind(kind)?;
+    Ok(format!("{}:{kind}", crate::allowed_places::APP_TELEGRAM))
 }

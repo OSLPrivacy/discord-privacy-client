@@ -42,7 +42,14 @@ CREATE TABLE wrapped_keys (
   single_use INTEGER NOT NULL,
   display_duration_seconds INTEGER,
   expires_at TEXT NOT NULL,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  CHECK (
+    (single_use = 1
+      AND typeof(display_duration_seconds) = 'integer'
+      AND display_duration_seconds BETWEEN 1 AND 60)
+    OR
+    (single_use = 0 AND display_duration_seconds IS NULL)
+  )
 ) WITHOUT ROWID;
 
 CREATE INDEX idx_wrapped_keys_recipient

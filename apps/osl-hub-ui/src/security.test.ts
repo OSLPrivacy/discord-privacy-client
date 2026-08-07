@@ -566,6 +566,7 @@ describe("bundled preview security boundary", () => {
       "allow-remove-hub-friend",
       "allow-list-hub-people",
       "allow-compare-allowed-place-direction-state",
+      "allow-list-group-verification-build-entries",
       "allow-set-hub-friend-nickname",
       "allow-set-active-hub-friend-permission",
       "allow-set-active-hub-friend-reach",
@@ -588,9 +589,11 @@ describe("bundled preview security boundary", () => {
       // the owner ruled must stay unreachable, but scrub_erasure.rs:1-5 says it
       // "deliberately has no transport dependency ... prepares plain text for the
       // user to send from their own mailbox". OSL deletes nothing; it helps the
-      // user ask. `build_integrity_status` returns a Copy struct out of state.
-      // Neither is invoked by any UI today, so nothing observable changes.
+      // user ask. The build commands are read-only status/proof readers used for
+      // local warnings, not send authority.
       "allow-build-integrity-status",
+      "allow-installed-build-record",
+      "allow-installed-build-chat-warning-status",
       "allow-compose-scrub-erasure-request",
       "allow-burn-active-hub-context",
       // A7 manual "Lock now" (Settings → Password & security). Purely local

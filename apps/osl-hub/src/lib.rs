@@ -42,6 +42,8 @@ pub mod autoscrub_bridge;
 #[cfg(feature = "core")]
 pub mod autoscrub_run;
 pub mod background_priority;
+#[cfg(feature = "core")]
+pub mod bad_message_rules;
 pub mod browser_companion;
 // The persistent footprint store is sealed with `ipc`'s process key, so it
 // belongs to the same runtime boundary as the other core storage modules.
@@ -98,6 +100,7 @@ pub mod hosted_port;
 pub mod hosted_provider_recipe;
 pub mod hosted_session_port;
 pub mod installed_build_version;
+pub mod installed_build;
 pub mod invite_clipboard;
 /// The landing oracle: did this exact text land in the composer? Judged
 /// through channels that did not write it. Pure above its syscall seam, so the
@@ -111,16 +114,22 @@ pub mod messenger_whitelist_kinds;
 pub mod model_pack_install;
 pub mod models;
 pub mod mullvad_window_host;
+pub mod named_places;
 pub mod native_a11y;
 pub mod native_apps;
 pub mod native_attachment_jobs;
 pub mod native_attachment_jobs_bridge;
 pub mod native_discord_adapter;
+#[cfg(feature = "core")]
 pub mod native_outlook_adapter;
 pub mod native_signal_adapter;
 pub mod native_telegram_adapter;
 pub mod native_whatsapp_adapter;
 pub mod native_window_host;
+#[cfg(feature = "core")]
+pub mod osl_chat_drag_drop;
+#[cfg(feature = "core")]
+pub mod osl_chat_file_limits;
 #[cfg(feature = "core")]
 pub mod osl_chat_local_state_key;
 #[cfg(feature = "core")]
@@ -161,6 +170,8 @@ pub mod revocation_drain_timer;
 pub mod rn_attribution;
 #[cfg(feature = "core")]
 pub mod rn_recovery;
+#[cfg(feature = "core")]
+pub mod run_choices;
 pub mod scrub_hosted_port;
 pub mod scrub_setup_store;
 /// **Binding Ledger 9, the seam ledger.** Adapters declared vs adapters with a
@@ -177,6 +188,8 @@ pub mod secure_disk_backend;
 pub mod service_connections;
 #[cfg(feature = "core")]
 pub mod server_records;
+#[cfg(feature = "core")]
+pub mod service_connections;
 pub mod service_host;
 #[cfg(feature = "core")]
 pub mod services;
@@ -267,6 +280,7 @@ pub mod password_lifecycle;
 pub mod view_once_eligibility;
 pub mod view_once_open;
 pub mod view_once_watch;
+pub mod visible_osl_mark;
 // The pure half of the headless QA self-test driver in `main.rs`. It lives here
 // only so it can actually be tested: the `osl-privacy-hub` binary cannot be
 // built on a Linux host, so every `#[cfg(test)]` inside `main.rs` is compiled
