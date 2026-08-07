@@ -993,7 +993,7 @@ impl EmailServiceConnection {
 
     pub fn request_compose_controls(
         &self,
-        driver: &impl WebsiteDriver,
+        driver: &mut impl WebsiteDriver,
         page: &WebsitePage,
     ) -> Result<EmailComposeControls, ServiceConnectionError> {
         if self.service_id != "email" {
@@ -1028,9 +1028,8 @@ impl EmailServiceConnection {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::website_driver::{WebsiteDriverKind, WebsitePageSnapshot};
+    use crate::website_driver::{WebsiteDriverKind, WebsitePageRequest, WebsitePageText};
     use std::sync::Mutex;
-    use url::Url;
 
     #[derive(Default)]
     struct FixtureDriver {
@@ -1053,26 +1052,35 @@ mod tests {
             WebsiteDriverKind::FakeTestBrowser
         }
 
-        fn find_page(&mut self, url: &Url) -> Result<WebsitePage, WebsiteDriverError> {
+        fn find_page(
+            &mut self,
+            request: WebsitePageRequest,
+        ) -> Result<WebsitePage, WebsiteDriverError> {
             Ok(WebsitePage {
-                target_id: "task-1205-fixture-page".to_owned(),
-                url: url.to_string(),
+                target_id: Some("task-1205-fixture-page".to_owned()),
+                url: request.url,
             })
         }
 
-        fn read_page(&self, page: &WebsitePage) -> Result<WebsitePageSnapshot, WebsiteDriverError> {
-            Ok(WebsitePageSnapshot {
+        fn read_page(&mut self, page: &WebsitePage) -> Result<WebsitePageText, WebsiteDriverError> {
+            Ok(WebsitePageText {
+                page: page.clone(),
                 title: "Task 1205 fixture".to_owned(),
-                url: page.url.clone(),
+                text: "Task 1205 fixture".to_owned(),
+                controls: crate::website_driver::WebsitePageControls {
+                    editable_boxes: vec!["compose box".to_owned()],
+                    buttons: vec!["Send button".to_owned()],
+                    visible_message_areas: Vec::new(),
+                },
             })
         }
 
         fn read_named_controls(
-            &self,
+            &mut self,
             page: &WebsitePage,
             required: &[WebsiteNamedControlRequest],
         ) -> Result<Vec<WebsiteNamedControl>, WebsiteDriverError> {
-            if page.target_id != "task-1205-fixture-page" {
+            if page.target_id.as_deref() != Some("task-1205-fixture-page") {
                 return Err(WebsiteDriverError::PageUnavailable);
             }
             self.requested
@@ -1097,29 +1105,50 @@ mod tests {
             }
             Ok(vec![
                 WebsiteNamedControl {
+                    page: page.clone(),
                     name: "compose box".to_owned(),
                     kind: WebsiteControlKind::EditableBox,
                 },
                 WebsiteNamedControl {
+                    page: page.clone(),
                     name: "Send button".to_owned(),
                     kind: WebsiteControlKind::Button,
                 },
             ])
+        }
+
+        fn place_text(
+            &mut self,
+            placement: crate::website_driver::WebsiteTextPlacement,
+        ) -> Result<crate::website_driver::WebsitePlacementProof, WebsiteDriverError> {
+            Ok(crate::website_driver::WebsitePlacementProof {
+                page: placement.page,
+                editable_box_name: placement.editable_box_name,
+                utf16_units: placement.text.encode_utf16().count(),
+                placed_sha256: String::new(),
+            })
+        }
+
+        fn press_named_control(
+            &mut self,
+            _control: WebsiteNamedControl,
+        ) -> Result<(), WebsiteDriverError> {
+            Ok(())
         }
     }
 
     #[test]
     fn task_1205_sample_email_connection_receives_compose_box_and_send_button_from_fixture() {
         let mut driver = FixtureDriver::default();
-        let url = Url::parse("https://mail.google.com/task-1205-fixture")
-            .expect("task 1205 fixture URL parses");
         let page = driver
-            .find_page(&url)
+            .find_page(WebsitePageRequest {
+                url: "https://mail.google.com/task-1205-fixture".to_owned(),
+            })
             .expect("task 1205 fixture page opens");
         let connection = EmailServiceConnection::new("email", "sample-email-account");
 
         let controls = connection
-            .request_compose_controls(&driver, &page)
+            .request_compose_controls(&mut driver, &page)
             .expect("sample email service connection receives fixture controls");
         let requested_names = driver.requested_names();
 
