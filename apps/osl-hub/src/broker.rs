@@ -5431,6 +5431,18 @@ fn drain_peer_inbox_text(
     security::require_person_not_blocked(&manual.person_id)?;
     let display = security::scope_security(manual.scope.clone())?;
     let allow_messages = display.decrypt_display_enabled;
+    if !allow_messages {
+        return Ok(OpenedNativeOverlayTextBatch {
+            messages: Vec::new(),
+            pending_view_once: Vec::new(),
+            acknowledgments: Vec::new(),
+            fetched: 0,
+            decrypt_display_enabled: false,
+            deferred_rows: 0,
+            unrecognized_wire_rows: 0,
+            content_gone_rows: 0,
+        });
+    }
     // The conversation this drain is bound to, named the way the burn ledger
     // names it. `scope_security` above has already refused an unconvertible
     // scope, so this cannot fail for a drain that got this far.
@@ -5643,9 +5655,7 @@ fn drain_peer_inbox_text(
             acknowledgments.push(receipt);
             continue;
         }
-        if !allow_messages
-            || messages.len().saturating_add(pending_view_once.len())
-                >= MAX_NATIVE_OVERLAY_OPEN_BATCH
+        if messages.len().saturating_add(pending_view_once.len()) >= MAX_NATIVE_OVERLAY_OPEN_BATCH
         {
             continue;
         }
