@@ -61,6 +61,15 @@ pub struct WebsitePage {
     target_id: Option<String>,
 }
 
+impl WebsitePage {
+    pub fn synthetic(url: impl Into<String>) -> Self {
+        Self {
+            url: url.into(),
+            target_id: None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WebsiteTextPlacement {
     pub page: WebsitePage,
