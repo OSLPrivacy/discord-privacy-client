@@ -260,9 +260,6 @@ impl BrowserCompanionState {
         owner_osl_user_id: &str,
         trusted_parent: isize,
     ) -> BrowserCompanionAction {
-        if service_id == FirefoxServiceId::Outlook {
-            return BrowserCompanionAction::failed(BrowserCompanionReason::NativeAppRequired);
-        }
         #[cfg(target_os = "windows")]
         {
             windows::host(
@@ -1134,7 +1131,7 @@ mod tests {
     }
 
     #[test]
-    fn outlook_is_rejected_before_any_browser_resolution() {
+    fn task_4505_outlook_web_uses_the_browser_window_path() {
         let action = BrowserCompanionState::default().host(
             FirefoxServiceId::Outlook,
             None,
@@ -1143,9 +1140,13 @@ mod tests {
             "owner-a",
             0,
         );
-        assert_eq!(action.status, BrowserCompanionActionKind::Failed);
-        assert_eq!(action.reason, BrowserCompanionReason::NativeAppRequired);
-        assert_eq!(action.mode, "none");
+        println!("TASK4505_OUTLOOK_WEB_WINDOW_STATUS={:?}", action.status);
+        println!("TASK4505_OUTLOOK_WEB_WINDOW_REASON={:?}", action.reason);
+        println!("TASK4505_OUTLOOK_WEB_WINDOW_MODE={}", action.mode);
+        #[cfg(target_os = "windows")]
+        assert_ne!(action.reason, BrowserCompanionReason::NativeAppRequired);
+        #[cfg(not(target_os = "windows"))]
+        assert_eq!(action.reason, BrowserCompanionReason::PlatformUnsupported);
     }
 
     #[test]

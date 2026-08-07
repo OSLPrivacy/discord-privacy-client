@@ -203,6 +203,17 @@ const EMAIL_GMAIL: ServiceManifest = ServiceManifest {
     allowed_hosts: &["mail.google.com", "accounts.google.com"],
     launch_active: true,
 };
+const EMAIL_OUTLOOK: ServiceManifest = ServiceManifest {
+    id: "email",
+    display_name: "Outlook on the web",
+    initial_url: "https://outlook.live.com/mail/",
+    allowed_hosts: &[
+        "outlook.live.com",
+        "login.live.com",
+        "login.microsoftonline.com",
+    ],
+    launch_active: true,
+};
 const EMAIL_PROTON: ServiceManifest = ServiceManifest {
     id: "email",
     display_name: "Proton Mail",
@@ -301,9 +312,7 @@ pub fn service_manifest_for_provider(
     }
     Ok(match provider.unwrap_or_default() {
         EmailProvider::Gmail => &EMAIL_GMAIL,
-        // Outlook is native-only. Keep its reviewed web manifest as inert
-        // navigation-policy metadata, but never create an embedded profile.
-        EmailProvider::Outlook => return Err(ServiceHostError::ServiceUnavailable),
+        EmailProvider::Outlook => &EMAIL_OUTLOOK,
         EmailProvider::Proton => &EMAIL_PROTON,
         EmailProvider::Tuta => &EMAIL_TUTA,
         EmailProvider::Yahoo => &EMAIL_YAHOO,
@@ -2025,6 +2034,7 @@ mod tests {
     fn email_providers_use_only_fixed_exact_https_origins() {
         let cases = [
             (EmailProvider::Gmail, "mail.google.com"),
+            (EmailProvider::Outlook, "outlook.live.com"),
             (EmailProvider::Proton, "mail.proton.me"),
             (EmailProvider::Tuta, "app.tuta.com"),
             (EmailProvider::Yahoo, "mail.yahoo.com"),
@@ -2047,11 +2057,54 @@ mod tests {
     }
 
     #[test]
-    fn outlook_is_native_only_and_has_no_embedded_profile() {
-        assert_eq!(
-            service_manifest_for_provider("email", Some(EmailProvider::Outlook)),
-            Err(ServiceHostError::ServiceUnavailable)
+    fn task_4505_outlook_web_has_the_same_openable_manifest_shape_as_webmail() {
+        let provider_manifests = [
+            service_manifest_for_provider("email", Some(EmailProvider::Gmail)).unwrap(),
+            service_manifest_for_provider("email", Some(EmailProvider::Outlook)).unwrap(),
+            service_manifest_for_provider("email", Some(EmailProvider::Proton)).unwrap(),
+            service_manifest_for_provider("email", Some(EmailProvider::Tuta)).unwrap(),
+            service_manifest_for_provider("email", Some(EmailProvider::Yahoo)).unwrap(),
+            service_manifest_for_provider("email", Some(EmailProvider::Aol)).unwrap(),
+            service_manifest_for_provider("email", Some(EmailProvider::Gmx)).unwrap(),
+            service_manifest_for_provider("email", Some(EmailProvider::Maildotcom)).unwrap(),
+            service_manifest_for_provider("email", Some(EmailProvider::Icloud)).unwrap(),
+        ];
+        let outlook = provider_manifests[1];
+        let initial = validated_initial_url(outlook).unwrap();
+        println!("TASK4505_OUTLOOK_WEB_ADDRESS={}", outlook.initial_url);
+        println!(
+            "TASK4505_OUTLOOK_WEB_ALLOWED_PAGE_LIST={}",
+            outlook.allowed_hosts.join(",")
         );
+        println!(
+            "TASK4505_WEBMAIL_SHAPE_MATCH_COUNT={}",
+            provider_manifests
+                .iter()
+                .filter(|manifest| {
+                    manifest.id == "email"
+                        && manifest.launch_active
+                        && validated_initial_url(manifest).is_ok()
+                        && !manifest.allowed_hosts.is_empty()
+                })
+                .count()
+        );
+
+        assert_eq!(outlook.display_name, "Outlook on the web");
+        assert_eq!(outlook.initial_url, "https://outlook.live.com/mail/");
+        assert_eq!(initial.host_str(), Some("outlook.live.com"));
+        assert_eq!(
+            outlook.allowed_hosts,
+            &[
+                "outlook.live.com",
+                "login.live.com",
+                "login.microsoftonline.com"
+            ]
+        );
+        assert!(navigation_allowed(outlook, &initial));
+        assert!(!navigation_allowed(
+            outlook,
+            &Url::parse("https://outlook.live.com.evil.example/mail/").unwrap()
+        ));
     }
 
     #[test]
