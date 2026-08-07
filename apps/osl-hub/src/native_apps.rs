@@ -162,6 +162,10 @@ pub struct NativeAppStatus {
     /// every capability the app does not have says so plainly, in a label the
     /// allowlist permits.
     pub claim_note: &'static str,
+    /// Direct status-page data, derived from the same claim-state row that
+    /// creates `support_status`. The page must not invent a second label or a
+    /// second capability explanation.
+    pub status_page: NativeAppStatusPageData,
     /// The strongest protected-mode handoff the public UI may offer today.
     pub protected_mode: NativeAppProtectedMode,
     /// True only when the current integration has a verified secondary-instance
@@ -170,6 +174,24 @@ pub struct NativeAppStatus {
     /// Remains false until a service-specific Windows accessibility adapter
     /// can prove the exact account, conversation, recipients, and composer.
     pub supports_overlay: bool,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAppStatusPageData {
+    pub capability: &'static str,
+    pub generated_label: &'static str,
+    pub explanation: &'static str,
+}
+
+impl From<crate::claim_state::StatusPageData> for NativeAppStatusPageData {
+    fn from(data: crate::claim_state::StatusPageData) -> Self {
+        Self {
+            capability: data.capability,
+            generated_label: data.generated_label,
+            explanation: data.explanation,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize)]
@@ -902,6 +924,7 @@ fn list_native_apps_with_claims_and_installer_probe(
                     .map(|blocker| blocker.slug())
                     .collect(),
                 claim_note: claim.reason,
+                status_page: crate::claim_state::status_page_data_for(claim).into(),
                 protected_mode: native_app_protected_mode(app.id),
                 isolated_profile_available: isolated_native_profile_available(app.id),
                 supports_overlay: false,
@@ -2847,6 +2870,12 @@ pub(crate) mod tests {
             claim_blockers: vec!["open-security-finding", "unknown-recheck-required"],
             claim_note: "OSL has never carried a message through Discord and back in a recorded \
                          two-party run.",
+            status_page: NativeAppStatusPageData {
+                capability: "carrier capability is wired but not live-proven",
+                generated_label: "Not claimed",
+                explanation: "OSL has never carried a message through Discord and back in a \
+                              recorded two-party run.",
+            },
             protected_mode: NativeAppProtectedMode::AssistOnly,
             isolated_profile_available: true,
             supports_overlay: false,
@@ -2923,6 +2952,12 @@ pub(crate) mod tests {
             claim_blockers: vec!["open-security-finding", "unknown-recheck-required"],
             claim_note: "OSL has never carried a message through Discord and back in a recorded \
                          two-party run.",
+            status_page: NativeAppStatusPageData {
+                capability: "carrier capability is wired but not live-proven",
+                generated_label: "Not claimed",
+                explanation: "OSL has never carried a message through Discord and back in a \
+                              recorded two-party run.",
+            },
             protected_mode: NativeAppProtectedMode::AssistOnly,
             isolated_profile_available: true,
             supports_overlay: false,
@@ -2943,6 +2978,7 @@ pub(crate) mod tests {
                 "id",
                 "isolatedProfileAvailable",
                 "protectedMode",
+                "statusPage",
                 "supportStatus",
                 "supportsOverlay"
             ]),
@@ -2953,6 +2989,12 @@ pub(crate) mod tests {
         assert_eq!(json["id"], "discord");
         assert_eq!(json["availability"], "installed");
         assert_eq!(json["supportStatus"], "noClaim");
+        assert_eq!(
+            json["statusPage"]["capability"],
+            "carrier capability is wired but not live-proven"
+        );
+        assert_eq!(json["statusPage"]["generatedLabel"], "Not claimed");
+        assert_eq!(json["statusPage"]["explanation"], json["claimNote"]);
         assert_eq!(json["protectedMode"], "assistOnly");
         assert_eq!(json["isolatedProfileAvailable"], true);
         assert_eq!(json["supportsOverlay"], false);
@@ -3000,6 +3042,47 @@ pub(crate) mod tests {
                 !status.claim_note.is_empty(),
                 "{:?} ships a label with no reason line",
                 status.id
+            );
+        }
+    }
+
+    #[test]
+    fn task_0852_direct_status_data_names_real_capability_and_matching_generated_label() {
+        let statuses = list_native_apps_with_installer_probe(|| true);
+        assert_eq!(statuses.len(), NATIVE_APPS.len());
+        println!("task_0852_direct_status_data_count={}", statuses.len());
+
+        for status in statuses {
+            let surface = claim_surface(status.id);
+            let claim = crate::claim_state::claim_of(surface);
+            let direct = &status.status_page;
+            let expected_capability =
+                crate::claim_state::capability_name(claim.carrier, claim.delivery);
+            let expected_label = crate::claim_state::public_claim(surface).label();
+
+            assert_eq!(
+                direct.capability, expected_capability,
+                "{:?} status-page capability must be derived from the same carrier/delivery facts \
+                 as its tile label",
+                status.id
+            );
+            assert_eq!(
+                direct.generated_label, expected_label,
+                "{:?} status-page generated label must match the generated tile label",
+                status.id
+            );
+            assert_eq!(
+                direct.explanation, status.claim_note,
+                "{:?} status-page explanation must not be a second source of truth",
+                status.id
+            );
+
+            println!(
+                "task_0852_status_page {} capability=\"{}\" generated_label=\"{}\" support_status={}",
+                claim.surface.ruling_slug(),
+                direct.capability,
+                direct.generated_label,
+                crate::claim_state::public_claim(surface).slug()
             );
         }
     }

@@ -1406,6 +1406,7 @@ struct Peer {
     security: osl_privacy_hub::security::HubSecurityState,
     broker: osl_privacy_hub::broker::HubBrokerState,
     friend_code: String,
+    peer_person_id: Mutex<Option<String>>,
 }
 
 impl Peer {
@@ -1430,6 +1431,7 @@ impl Peer {
             security: osl_privacy_hub::security::HubSecurityState::default(),
             broker: osl_privacy_hub::broker::HubBrokerState::default(),
             friend_code: exported.friend_code,
+            peer_person_id: Mutex::new(None),
         }
     }
 
@@ -1465,6 +1467,10 @@ impl Peer {
             binding,
         )
         .expect("activate OSL chat context");
+        *self
+            .peer_person_id
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(activated.person_id.clone());
         osl_privacy_hub::security::set_manual_peer_scope_permission(
             &self.core,
             &self.security,
@@ -1855,9 +1861,207 @@ fn fetch_and_verify(
     Ok(download_path)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReadyDecision {
+    Ready,
+    NonReady(&'static str),
+}
+
+impl ReadyDecision {
+    fn as_label(self) -> &'static str {
+        match self {
+            ReadyDecision::Ready => "Ready",
+            ReadyDecision::NonReady(reason) => reason,
+        }
+    }
+}
+
+fn attachment_ready_decision(
+    object_state: Option<ObjectState>,
+    pending_for_second_person: usize,
+    second_person_present: bool,
+) -> ReadyDecision {
+    if object_state != Some(ObjectState::Ready) {
+        return ReadyDecision::NonReady("object-not-ready");
+    }
+    if !second_person_present {
+        return ReadyDecision::NonReady("missing-second-person");
+    }
+    if pending_for_second_person == 0 {
+        return ReadyDecision::NonReady("missing-recipient-notice");
+    }
+    ReadyDecision::Ready
+}
+
 // ---------------------------------------------------------------------------
 // Tests.
 // ---------------------------------------------------------------------------
+
+/// TASK 0810: a store placement is not enough to call an attachment ready; a
+/// completed two-person attachment proof is enough.
+#[test]
+fn task_0810_ready_proof_rule_requires_completion_not_placement() {
+    let _serial = fixture_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let relay = RelayServer::start();
+    let storage = TestStorage::new("task0810-ready-proof");
+    let relay_url = relay.base_url();
+    let (alice, bob) = verified_pair(&storage, &relay);
+    let client = CipherStoreClient::new(&relay_url).expect("build cipher-store client");
+
+    let placement_token_hex = hex_lower(&fresh_fetch_token());
+    let (placement_status, placement_body) = raw_request(
+        relay.address(),
+        "POST",
+        "/v1/attachment/session",
+        &[
+            ("x-osl-ttl-seconds", "3600"),
+            ("x-osl-fetch-token", &placement_token_hex),
+            ("x-osl-size-bytes", "4096"),
+        ],
+        b"",
+    );
+    assert_eq!(placement_status, 201);
+    let placement: Value =
+        serde_json::from_slice(&placement_body).expect("placement response is JSON");
+    let placement_id = placement["id"]
+        .as_str()
+        .expect("placement returned an id")
+        .to_owned();
+    assert_eq!(relay.row_state(&placement_id), Some(ObjectState::Uploading));
+
+    let (fetch_status, _) = raw_request(
+        relay.address(),
+        "GET",
+        &format!("/v1/attachment/{placement_id}"),
+        &[("x-osl-fetch-token", &placement_token_hex)],
+        b"",
+    );
+    assert_eq!(
+        fetch_status, 404,
+        "an Uploading placement must not be fetchable as Ready"
+    );
+    assert_eq!(
+        attachment_ready_decision(relay.row_state(&placement_id), 0, true),
+        ReadyDecision::NonReady("object-not-ready")
+    );
+    println!(
+        "TASK_0810 placement_only id={placement_id} state=Uploading fetch_status={fetch_status} ready=non-Ready"
+    );
+
+    alice.activate();
+    let alice_context_token = alice
+        .broker
+        .active_osl_chat_context_token()
+        .expect("Alice OSL Chat context is active");
+    let alice_scope = alice
+        .broker
+        .scope_for_context(&alice_context_token)
+        .expect("Alice OSL Chat context has a scope");
+    let alice_scope_security = osl_privacy_hub::security::scope_security(alice_scope.clone())
+        .expect("Alice scope security reads");
+    println!(
+        "TASK_0810 alice_scope ttl_seconds={} decrypt_display_enabled={}",
+        alice_scope_security.ttl_seconds, alice_scope_security.decrypt_display_enabled
+    );
+    let alice_peer_person_id = alice
+        .peer_person_id
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone()
+        .expect("Alice retained the peer person id");
+    osl_privacy_hub::security::require_manual_peer_scope_approved(
+        &alice.core,
+        "osl-chat",
+        "osl-main",
+        alice_peer_person_id,
+        alice_scope,
+    )
+    .expect("Alice manual peer scope is approved");
+
+    let source = write_plaintext_source(&storage.root.join("task0810-source.txt"), 200 * 1024);
+    let sent = send_attachment(&alice, &client, &source, "task0810-note.txt", false);
+    assert_eq!(relay.row_state(&sent.object_id), Some(ObjectState::Ready));
+
+    bob.activate();
+    let pending =
+        osl_privacy_hub::broker::list_osl_chat_attachments(&bob.core, &bob.security, &bob.broker)
+            .expect("list pending two-person attachment");
+    assert_eq!(pending.len(), 1);
+    let plan = osl_privacy_hub::broker::take_osl_chat_attachment(
+        &bob.core,
+        &bob.security,
+        &bob.broker,
+        &pending[0].attachment_id,
+    )
+    .expect("take two-person attachment plan");
+    assert_eq!(plan.object_id, sent.object_id);
+    assert_eq!(plan.sealed_size, sent.sealed_size);
+    assert_eq!(plan.ciphertext_sha256, sent.digest_hex);
+    assert_eq!(
+        attachment_ready_decision(relay.row_state(&sent.object_id), pending.len(), true),
+        ReadyDecision::Ready
+    );
+
+    let download_path =
+        fetch_and_verify(&bob, &client, &plan).expect("two-person proof fetch verifies");
+    osl_privacy_hub::peer_attachment_io::remove_staging_path_in_root(
+        &bob.local_root,
+        &download_path,
+    )
+    .expect("clear task 0810 download staging file");
+    println!(
+        "TASK_0810 two_person_proof object_id={} state=Ready pending_for_bob={} proof_alone_permits=Ready",
+        sent.object_id,
+        pending.len()
+    );
+}
+
+/// TASK 0811: the Ready decision must reject a completed object proof when no
+/// second person is present. The break proof copies this test target and
+/// changes `attachment_ready_decision` to return Ready for
+/// `missing-second-person`; that copied check must fail with the
+/// "false Ready decision" panic.
+#[test]
+fn task_0811_no_second_person_ready_decision_check_refuses_false_ready() {
+    let relay = RelayServer::start();
+    let forged_token_hex = hex_lower(&fresh_fetch_token());
+    let (status, body) = raw_request(
+        relay.address(),
+        "POST",
+        "/v1/attachment",
+        &[
+            ("x-osl-ttl-seconds", "3600"),
+            ("x-osl-fetch-token", &forged_token_hex),
+            ("content-type", "application/octet-stream"),
+        ],
+        b"opaque forged object proof without a recipient",
+    );
+    assert_eq!(status, 201);
+    let forged: Value = serde_json::from_slice(&body).expect("forged upload response is JSON");
+    let object_id = forged["id"]
+        .as_str()
+        .expect("forged upload returned an id")
+        .to_owned();
+    assert_eq!(relay.row_state(&object_id), Some(ObjectState::Ready));
+    let pending_for_second_person = relay.pending_for("task-0811-missing-second-person");
+    assert_eq!(pending_for_second_person, 0);
+
+    let decision = attachment_ready_decision(
+        relay.row_state(&object_id),
+        pending_for_second_person,
+        false,
+    );
+    println!(
+        "TASK_0811 forged_no_second_person object_id={object_id} state=Ready second_person_present=false pending_for_second_person={pending_for_second_person} decision={}",
+        decision.as_label()
+    );
+    if decision == ReadyDecision::Ready {
+        panic!("false Ready decision: forged proof with no second person became Ready");
+    }
+    assert_eq!(decision, ReadyDecision::NonReady("missing-second-person"));
+}
 
 /// The whole happy path for a non-image attachment small enough to take the
 /// **direct** upload route:

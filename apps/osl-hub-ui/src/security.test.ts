@@ -399,6 +399,8 @@ describe("bundled preview security boundary", () => {
       "allow-open-hosted-session-scan",
       "allow-request-hosted-session-scan",
       "allow-request-hosted-session-scan-command",
+      "allow-request-discord-guided-deletion-pause-after-current-screen",
+      "allow-request-discord-guided-deletion-stop-after-current-safe-step",
       // Scrub guided deletion, 2026-08-04 (db312820f). That commit registered
       // three commands and granted all three in capabilities/hub.json without
       // adding one line here. Two are recorded below. The third,
@@ -563,6 +565,7 @@ describe("bundled preview security boundary", () => {
       "allow-verify-hub-friend-safety-number",
       "allow-remove-hub-friend",
       "allow-list-hub-people",
+      "allow-compare-allowed-place-direction-state",
       "allow-set-hub-friend-nickname",
       "allow-set-active-hub-friend-permission",
       "allow-set-active-hub-friend-reach",

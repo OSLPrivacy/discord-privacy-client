@@ -108,12 +108,7 @@ pub fn save_pending_rotation(
         },
     };
     let json = serde_json::to_vec_pretty(&on_disk)?;
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)?;
-        }
-    }
-    std::fs::write(path, &json)?;
+    crate::recoverable_file::write_recoverable(path, &json)?;
     Ok(())
 }
 

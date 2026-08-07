@@ -25,6 +25,11 @@ const READ_KEY_RE = /^[0-9a-f]{32}$/;
 export interface DeleteGrantRecord {
   record: typeof DELETE_GRANT_RECORD;
   message: string;
+const NONCE_RE = /^[0-9a-f]{24}$/;
+const CIPHERTEXT_RE = /^[0-9a-f]+$/;
+
+export interface DeleteGrantRecord {
+  record: typeof DELETE_GRANT_RECORD;
   owner: string;
   scope: string;
 }
@@ -201,6 +206,21 @@ export function countUsableSenderDeleteGrants(value: unknown): number {
   readKeys: [MessageReadKeyRecord];
   senderDeleteGrants: [DeleteGrantRecord];
   recipientDeleteGrants: [DeleteGrantRecord];
+  readKeys: [MessageReadKeyRecord];
+  senderDeleteGrants: [DeleteGrantRecord];
+}
+
+export interface RecipientProtectedMessageData {
+  message: string;
+  readKeys: [MessageReadKeyRecord];
+  nonce: string;
+  ciphertext: string;
+}
+
+export interface RecipientProtectedMessageDataInput {
+  message: string;
+  readKey: string;
+  plaintext: string;
 }
 
 export type DeleteGrantParseResult =
@@ -239,6 +259,15 @@ export type DeleteGrantValidationResult =
       | "delete_grant_owner_mismatch"
       | "delete_grant_scope_mismatch"
       | "delete_grant_scope_not_allowed";
+export type RecipientProtectedMessageDataCreationResult =
+  | { ok: true; data: RecipientProtectedMessageData }
+  | { ok: false; code: "malformed_message_read_key" };
+
+export type RecipientProtectedMessageDecryptResult =
+  | { ok: true; plaintext: string }
+  | {
+    ok: false;
+    code: "malformed_message_data" | "missing_message_read_key" | "decrypt_failed";
   };
 
 function parseRecord(input: string | unknown): Record<string, unknown> | null {
@@ -258,6 +287,21 @@ function validName(value: unknown): value is string {
   return typeof value === "string" && NAME_RE.test(value);
 }
 
+function hex(bytes: Uint8Array): string {
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function bytesFromHex(value: string): Uint8Array {
+  return Uint8Array.from(value.match(/../g) ?? [], (pair) => Number.parseInt(pair, 16));
+}
+
+async function aesKey(readKey: string): Promise<CryptoKey> {
+  return crypto.subtle.importKey("raw", bytesFromHex(readKey), { name: "AES-GCM" }, false, [
+    "decrypt",
+    "encrypt",
+  ]);
+}
+
 export function parseDeleteGrantRecord(input: string | unknown): DeleteGrantParseResult {
   let record: Record<string, unknown> | null;
   try {
@@ -271,6 +315,10 @@ export function parseDeleteGrantRecord(input: string | unknown): DeleteGrantPars
     return { ok: false, code: "malformed_delete_grant" };
   }
   if (!validName(record.message) || !validName(record.owner) || !validName(record.scope)) {
+  if (!hasExactly(record, ["record", "owner", "scope"])) {
+    return { ok: false, code: "malformed_delete_grant" };
+  }
+  if (!validName(record.owner) || !validName(record.scope)) {
     return { ok: false, code: "malformed_delete_grant" };
   }
   return {
@@ -392,4 +440,90 @@ export function validateDeleteGrant(
   }
 
   return parsed;
+export async function createRecipientProtectedMessageData(
+  input: RecipientProtectedMessageDataInput,
+): Promise<RecipientProtectedMessageDataCreationResult> {
+  const readKey = parseMessageReadKeyRecord({
+    record: MESSAGE_READ_KEY_RECORD,
+    message: input.message,
+    readKey: input.readKey,
+  });
+  if (!readKey.ok) return { ok: false, code: "malformed_message_read_key" };
+
+  const nonce = crypto.getRandomValues(new Uint8Array(12));
+  const ciphertext = new Uint8Array(
+    await crypto.subtle.encrypt(
+      { name: "AES-GCM", iv: nonce },
+      await aesKey(readKey.key.readKey),
+      new TextEncoder().encode(input.plaintext),
+    ),
+  );
+  return {
+    ok: true,
+    data: {
+      message: input.message,
+      readKeys: [readKey.key],
+      nonce: hex(nonce),
+      ciphertext: hex(ciphertext),
+    },
+  };
+}
+
+export async function decryptRecipientProtectedMessageData(
+  data: RecipientProtectedMessageData,
+): Promise<RecipientProtectedMessageDecryptResult> {
+  if (
+    !validName(data.message)
+    || !Array.isArray(data.readKeys)
+    || data.readKeys.length !== 1
+    || typeof data.nonce !== "string"
+    || !NONCE_RE.test(data.nonce)
+    || typeof data.ciphertext !== "string"
+    || data.ciphertext.length === 0
+    || data.ciphertext.length % 2 !== 0
+    || !CIPHERTEXT_RE.test(data.ciphertext)
+  ) {
+    return { ok: false, code: "malformed_message_data" };
+  }
+  const readKey = parseMessageReadKeyRecord(data.readKeys[0]);
+  if (!readKey.ok || readKey.key.message !== data.message) {
+    return { ok: false, code: "missing_message_read_key" };
+  }
+  try {
+    const plaintext = await crypto.subtle.decrypt(
+      { name: "AES-GCM", iv: bytesFromHex(data.nonce) },
+      await aesKey(readKey.key.readKey),
+      bytesFromHex(data.ciphertext),
+    );
+    return { ok: true, plaintext: new TextDecoder().decode(plaintext) };
+  } catch {
+    return { ok: false, code: "decrypt_failed" };
+  }
+}
+
+export function usableSenderDeleteGrantCount(
+  data: unknown,
+  sender: string,
+  scope: string,
+): number {
+  const seen = new Set<unknown>();
+  const stack: unknown[] = [data];
+  let count = 0;
+  while (stack.length > 0) {
+    const value = stack.pop();
+    if (value === null || value === undefined || seen.has(value)) continue;
+    if (typeof value === "object") seen.add(value);
+
+    const parsed = parseDeleteGrantRecord(value);
+    if (parsed.ok && parsed.grant.owner === sender && parsed.grant.scope === scope) {
+      count += 1;
+    }
+
+    if (Array.isArray(value)) {
+      stack.push(...value);
+    } else if (typeof value === "object") {
+      stack.push(...Object.values(value as Record<string, unknown>));
+    }
+  }
+  return count;
 }

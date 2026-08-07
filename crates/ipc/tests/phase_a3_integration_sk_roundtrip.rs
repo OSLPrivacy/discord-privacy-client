@@ -12,7 +12,7 @@ use base64::Engine;
 use crypto::x25519;
 use ipc::commands::{
     cmd_osl_decrypt_message_v2, cmd_osl_encrypt_message_v2_wire, cmd_osl_membership_update,
-    OSL_RESULT_SKDM_APPLIED,
+    cmd_osl_note_scope_membership, cmd_osl_set_server_lock, OSL_RESULT_SKDM_APPLIED,
 };
 use ipc::peer_map::WhitelistEntry;
 use ipc::scope::{Scope, ScopeInput};
@@ -24,6 +24,8 @@ const ALICE_DID: &str = "1000000000000000001";
 const BOB_DID: &str = "1000000000000000002";
 const CAROL_DID: &str = "1000000000000000003";
 const GC_ID: &str = "9000000000000000001";
+const SERVER_ID: &str = "8000000000000000001";
+const CHANNEL_ID: &str = "8000000000000000002";
 
 fn fresh_state(name: &str) -> AppState {
     let s = AppState::new();
@@ -159,6 +161,44 @@ fn setup_three_member_gc() -> (AppState, AppState, AppState) {
     (alice, bob, carol)
 }
 
+fn setup_three_member_server_channel() -> (AppState, AppState, AppState) {
+    let alice = fresh_state("task1380-alice");
+    let bob = fresh_state("task1380-bob");
+    let carol = fresh_state("task1380-carol");
+
+    install_self(&alice, ALICE_DID);
+    install_self(&bob, BOB_DID);
+    install_self(&carol, CAROL_DID);
+
+    let alice_pub = pubkeys_of(alice.identity.lock().unwrap().as_ref().unwrap());
+    let bob_pub = pubkeys_of(bob.identity.lock().unwrap().as_ref().unwrap());
+    let carol_pub = pubkeys_of(carol.identity.lock().unwrap().as_ref().unwrap());
+
+    install_peer(&alice, BOB_DID, &bob_pub);
+    install_peer(&alice, CAROL_DID, &carol_pub);
+    install_peer(&bob, ALICE_DID, &alice_pub);
+    install_peer(&bob, CAROL_DID, &carol_pub);
+    install_peer(&carol, ALICE_DID, &alice_pub);
+    install_peer(&carol, BOB_DID, &bob_pub);
+
+    let scope = Scope::server_channel(SERVER_ID, CHANNEL_ID);
+    let members = vec![
+        ALICE_DID.to_string(),
+        BOB_DID.to_string(),
+        CAROL_DID.to_string(),
+    ];
+    for state in [&alice, &bob, &carol] {
+        cmd_osl_set_server_lock(state, SERVER_ID.to_string(), "green".to_string())
+            .expect("server lock green");
+        cmd_osl_note_scope_membership(state, ScopeInput::from(&scope), members.clone())
+            .expect("server membership refresh");
+        cmd_osl_membership_update(state, CHANNEL_ID.to_string(), members.clone())
+            .expect("sender-key membership cache");
+    }
+
+    (alice, bob, carol)
+}
+
 fn send_from(sender_state: &AppState, sender_did: &str, plaintext: &str) -> Vec<String> {
     send_from_with_members(
         sender_state,
@@ -242,13 +282,23 @@ fn deliver_skdm_synthetically(
 }
 
 fn decrypt_at(receiver_state: &AppState, sender_did: &str, wire: &str) -> Result<String, String> {
+    decrypt_at_scope(receiver_state, sender_did, GC_ID, &Scope::gc(GC_ID), wire)
+}
+
+fn decrypt_at_scope(
+    receiver_state: &AppState,
+    sender_did: &str,
+    channel_id: &str,
+    scope: &Scope,
+    wire: &str,
+) -> Result<String, String> {
     cmd_osl_decrypt_message_v2(
         receiver_state,
         Some(format!("msg-{}", rand_id())),
-        GC_ID.to_string(),
+        channel_id.to_string(),
         sender_did.to_string(),
         wire.to_string(),
-        Some(ScopeInput::from(&Scope::gc(GC_ID))),
+        Some(ScopeInput::from(scope)),
         None,
     )
 }
@@ -457,6 +507,136 @@ fn removal_rotates_without_reemitting_the_chain_root_to_the_removed_member() {
     assert!(
         decrypt_at(&bob, ALICE_DID, &after_removal.content).is_err(),
         "a removed member decrypted content from the replacement chain"
+    );
+}
+
+#[test]
+fn task_1380_removed_server_member_loses_read_and_send_reach_immediately() {
+    let (alice, bob, carol) = setup_three_member_server_channel();
+    let scope = Scope::server_channel(SERVER_ID, CHANNEL_ID);
+    let scope_key = scope.storage_key();
+    let all_members = vec![
+        ALICE_DID.to_string(),
+        BOB_DID.to_string(),
+        CAROL_DID.to_string(),
+    ];
+    let remaining_members = vec![ALICE_DID.to_string(), CAROL_DID.to_string()];
+
+    let alice_before_text = "TASK1380 alice message before bob removal";
+    let alice_before = cmd_osl_encrypt_message_v2_wire(
+        &alice,
+        alice_before_text.to_string(),
+        ScopeInput::from(&scope),
+        all_members.clone(),
+        ALICE_DID.to_string(),
+    )
+    .expect("alice sends before removal");
+    deliver_skdm_synthetically(&alice, ALICE_DID, &bob, &scope_key);
+    deliver_skdm_synthetically(&alice, ALICE_DID, &carol, &scope_key);
+    let pre_refresh_read_count = usize::from(
+        decrypt_at_scope(&bob, ALICE_DID, CHANNEL_ID, &scope, &alice_before.content)
+            .is_ok_and(|plaintext| plaintext == alice_before_text),
+    );
+
+    let bob_before_text = "TASK1380 bob message before removal";
+    let bob_before = cmd_osl_encrypt_message_v2_wire(
+        &bob,
+        bob_before_text.to_string(),
+        ScopeInput::from(&scope),
+        all_members,
+        BOB_DID.to_string(),
+    )
+    .expect("bob sends before removal");
+    deliver_skdm_synthetically(&bob, BOB_DID, &alice, &scope_key);
+    deliver_skdm_synthetically(&bob, BOB_DID, &carol, &scope_key);
+
+    for state in [&alice, &bob, &carol] {
+        cmd_osl_note_scope_membership(state, ScopeInput::from(&scope), remaining_members.clone())
+            .expect("one refresh removes bob from server channel membership");
+        cmd_osl_membership_update(state, CHANNEL_ID.to_string(), remaining_members.clone())
+            .expect("one refresh updates sender-key membership cache");
+    }
+
+    let alice_after_text = "TASK1380 alice message after bob removal";
+    let alice_after = cmd_osl_encrypt_message_v2_wire(
+        &alice,
+        alice_after_text.to_string(),
+        ScopeInput::from(&scope),
+        remaining_members.clone(),
+        ALICE_DID.to_string(),
+    )
+    .expect("alice sends after removal");
+    assert_eq!(
+        alice_after.control_messages.len(),
+        1,
+        "only carol receives the rotated server-channel root after bob is removed"
+    );
+    assert_eq!(
+        decrypt_at_scope(
+            &carol,
+            ALICE_DID,
+            CHANNEL_ID,
+            &scope,
+            &alice_after.control_messages[0],
+        )
+        .unwrap(),
+        OSL_RESULT_SKDM_APPLIED
+    );
+
+    let post_refresh_read_count = usize::from(
+        decrypt_at_scope(&bob, ALICE_DID, CHANNEL_ID, &scope, &alice_after.content)
+            .is_ok_and(|plaintext| plaintext == alice_after_text),
+    );
+    assert_eq!(
+        decrypt_at_scope(&carol, ALICE_DID, CHANNEL_ID, &scope, &alice_after.content).unwrap(),
+        alice_after_text,
+        "the remaining server member still reads post-removal traffic"
+    );
+
+    let send_refusal = cmd_osl_encrypt_message_v2_wire(
+        &bob,
+        "TASK1380 bob attempted send after removal".to_string(),
+        ScopeInput::from(&scope),
+        remaining_members,
+        BOB_DID.to_string(),
+    )
+    .expect_err("removed bob's live server send must be refused");
+
+    let everybody_else_count = [&alice, &carol]
+        .into_iter()
+        .filter(|state| {
+            decrypt_at_scope(state, BOB_DID, CHANNEL_ID, &scope, &bob_before.content)
+                .is_ok_and(|plaintext| plaintext == bob_before_text)
+        })
+        .count();
+
+    println!(
+        "TASK1380 server={} channel={} removed={} pre_refresh_read_count={} post_refresh_read_count={} send_refusal=\"{}\" everybody_else_pre_removal_count={} pre_removal_text=\"{}\"",
+        SERVER_ID,
+        CHANNEL_ID,
+        BOB_DID,
+        pre_refresh_read_count,
+        post_refresh_read_count,
+        send_refusal,
+        everybody_else_count,
+        bob_before_text
+    );
+
+    assert!(
+        pre_refresh_read_count > 0,
+        "removed member must have been able to read before removal"
+    );
+    assert_eq!(
+        post_refresh_read_count, 0,
+        "removed member must lose read reach within one membership refresh"
+    );
+    assert_eq!(
+        send_refusal,
+        "OSL: send refused for removed server member 1000000000000000002: not present in current server channel member refresh"
+    );
+    assert_eq!(
+        everybody_else_count, 2,
+        "both remaining people still read bob's pre-removal message"
     );
 }
 

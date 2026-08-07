@@ -89,6 +89,26 @@ use ipc::commands::{
     BurnScopeDataDto, BurnedScopeDto, FetchPubkeysResponse, GateVerifyDto,
     GenerateIdentityResponse, IdentityInfoDto, LockoutStatusDto, PasswordStatusDto,
     RegisterResponse, ScopeEncryptionState, ScopeWhitelistSummary, StatusResponse,
+    cmd_osl_encrypt_message_v2, cmd_osl_get_identity_info, cmd_osl_get_license_state,
+    cmd_osl_get_scope_encryption_state, cmd_osl_get_scope_whitelist_summary,
+    cmd_osl_get_self_user_id, cmd_osl_get_tier_gate_status, cmd_osl_list_all_whitelists,
+    cmd_osl_list_burned_scopes, cmd_osl_list_email_send_modes,
+    cmd_osl_list_email_whitelist_kinds,
+    cmd_osl_load_channel_history, cmd_osl_lockout_status, cmd_osl_mark_scope_burned,
+    cmd_osl_password_status, cmd_osl_persist_edit, cmd_osl_register_self_snowflake,
+    cmd_osl_remove_burn_password, cmd_osl_remove_main_password,
+    cmd_osl_remove_sender_message_records, cmd_osl_remove_stealth_password,
+    cmd_osl_send_burn_marker, cmd_osl_set_burn_password, cmd_osl_set_main_password,
+    cmd_osl_set_main_password_after_recovery, cmd_osl_set_stealth_password,
+    cmd_osl_set_whitelist, cmd_osl_stealth_mode_engage, cmd_osl_stealth_password_status,
+    cmd_osl_toggle_scope_encryption, cmd_osl_unburn_scope, cmd_osl_unwhitelist_scope,
+    cmd_osl_validate_license, cmd_osl_verify_gate_password, cmd_osl_verify_main_password,
+    cmd_osl_verify_recovery_phrase, cmd_osl_view_recovery_phrase, cmd_register,
+    cmd_save_identity, cmd_status, cmd_stego_decode, cmd_stego_encode, cmd_x25519_diffie_hellman,
+    AeadOpenRequest, AeadSealRequest, AeadSealResponse, BurnScopeDataDto, BurnedScopeDto,
+    EmailSendModeDto, EmailWhitelistKindDto, FetchPubkeysResponse, GateVerifyDto,
+    GenerateIdentityResponse, IdentityInfoDto, LockoutStatusDto, PasswordStatusDto, RegisterResponse,
+    RemoveSenderMessageRecordsDto, ScopeEncryptionState, ScopeWhitelistSummary, StatusResponse,
     StegoDecodeResponse, StegoEncodeRequest, StegoEncodeResponse, StoredMessageDto,
     TheirSideBurnDto, TierGateStatusDto, WhitelistRowDto,
     RecoveryWordRetypeCheckDto, RecoveryWordRetypeEntryDto, RegisterResponse, ScopeEncryptionState,
@@ -468,6 +488,7 @@ async fn osl_persist_edit(
     channel_id: Option<String>,
     editor_discord_id: String,
 ) -> Result<(), String> {
+) -> Result<Option<StoredMessageDto>, String> {
     let app_handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app_handle.state::<AppState>();
@@ -494,7 +515,8 @@ async fn osl_persist_outbound(
     channel_id: String,
     discord_message_id: String,
     plaintext: String,
-) -> Result<(), String> {
+    reply_parent_id: Option<String>,
+) -> Result<Option<StoredMessageDto>, String> {
     let app_handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app_handle.state::<AppState>();
@@ -503,6 +525,7 @@ async fn osl_persist_outbound(
             channel_id,
             discord_message_id,
             plaintext,
+            reply_parent_id,
         )
     })
     .await
@@ -1211,6 +1234,20 @@ async fn osl_list_all_whitelists(app: tauri::AppHandle) -> Result<Vec<WhitelistR
     })
     .await
     .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+#[tauri::command]
+async fn osl_list_email_whitelist_kinds() -> Result<Vec<EmailWhitelistKindDto>, String> {
+    tauri::async_runtime::spawn_blocking(cmd_osl_list_email_whitelist_kinds)
+        .await
+        .map_err(|e| format!("OSL: join error: {e}"))
+}
+
+#[tauri::command]
+async fn osl_list_email_send_modes() -> Result<Vec<EmailSendModeDto>, String> {
+    tauri::async_runtime::spawn_blocking(cmd_osl_list_email_send_modes)
+        .await
+        .map_err(|e| format!("OSL: join error: {e}"))
 }
 
 // ===== Phase 7d-B1: main-password gate commands. =====
@@ -2478,6 +2515,21 @@ async fn osl_burn_message(app: tauri::AppHandle, discord_message_id: String) -> 
     .map_err(|e| format!("OSL: join error: {e}"))?
 }
 
+/// Physically remove selected sender message records from this local OSL copy.
+#[tauri::command]
+async fn osl_remove_sender_message_records(
+    app: tauri::AppHandle,
+    discord_message_ids: Vec<String>,
+) -> Result<RemoveSenderMessageRecordsDto, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        cmd_osl_remove_sender_message_records(state.inner(), discord_message_ids)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
 /// Phase 7d-B1: bundled boot-gate HTML. Served via the
 /// `osl-gate://` custom URI scheme when `password_marker.json`
 /// exists in the OSL config dir. The page handles password +
@@ -3392,6 +3444,7 @@ fn main() {
             osl_decrypt_message,
             osl_load_channel_history,
             osl_burn_message,
+            osl_remove_sender_message_records,
             osl_persist_edit,
             osl_persist_outbound,
             osl_encrypt_message_v2,
@@ -3423,6 +3476,8 @@ fn main() {
             osl_clear_license,
             osl_get_tier_gate_status,
             osl_list_all_whitelists,
+            osl_list_email_send_modes,
+            osl_list_email_whitelist_kinds,
             osl_password_status,
             osl_set_main_password,
             osl_change_main_password,

@@ -208,6 +208,8 @@ fn seed_message(state: &AppState, channel_id: &str, msg_id: &str) {
             sender_osl_user_id: "henry".to_string(),
             plaintext: "old readable message".to_string(),
             decrypted_at: 1_000_000_000,
+            reply_parent_id: None,
+            edit_revision: 1,
             burned: false,
         })
         .expect("seed message");

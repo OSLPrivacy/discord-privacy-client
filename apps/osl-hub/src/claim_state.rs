@@ -296,6 +296,17 @@ impl PublicClaim {
             Self::Available => "available",
         }
     }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::NoClaim => "Not claimed",
+            Self::ExternallyBlocked => "Externally blocked",
+            Self::Planned => "Coming later",
+            Self::Experimental => "Experimental",
+            Self::Beta => "Beta",
+            Self::Available => "Available",
+        }
+    }
 }
 
 /// The weaker of two claims, or `NoClaim` when they are not comparable.
@@ -560,6 +571,46 @@ pub fn claim_for(row: &SurfaceClaim) -> PublicClaim {
     match matrix_ceiling(row.matrix) {
         Some(ceiling) => weaker_of(derived, ceiling),
         None => derived,
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct StatusPageData {
+    pub capability: &'static str,
+    pub generated_label: &'static str,
+    pub explanation: &'static str,
+}
+
+pub const fn capability_name(carrier: CarrierEvidence, delivery: DeliveryEvidence) -> &'static str {
+    match (carrier, delivery) {
+        (CarrierEvidence::NotBuilt, _) => "no carrier capability is wired",
+        (CarrierEvidence::BuiltNeverProvenLive, _) => {
+            "carrier capability is wired but not live-proven"
+        }
+        (CarrierEvidence::MeasuredAndRefused, _) => {
+            "carrier write capability was measured and refused"
+        }
+        (CarrierEvidence::ExternallyBlocked, _) => "provider capability is externally blocked",
+        (CarrierEvidence::NoCarrierByConstruction, DeliveryEvidence::ProvenLiveBothWays) => {
+            "first-party delivery capability is live-proven both ways"
+        }
+        (CarrierEvidence::NoCarrierByConstruction, _) => {
+            "first-party service capability is not deliverable"
+        }
+        (CarrierEvidence::ProvenLiveWithReceipt, DeliveryEvidence::ProvenLiveBothWays) => {
+            "live carry and delivery capability are proven"
+        }
+        (CarrierEvidence::ProvenLiveWithReceipt, _) => {
+            "live carry capability is proven; delivery is not live-proven"
+        }
+    }
+}
+
+pub fn status_page_data_for(row: &SurfaceClaim) -> StatusPageData {
+    StatusPageData {
+        capability: capability_name(row.carrier, row.delivery),
+        generated_label: claim_for(row).label(),
+        explanation: row.reason,
     }
 }
 

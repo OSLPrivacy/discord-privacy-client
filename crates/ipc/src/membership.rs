@@ -133,6 +133,49 @@ impl ScopeMembership {
         }
     }
 
+    /// Replace the current observed membership for one server channel.
+    ///
+    /// Gateway refreshes can prove removals for the open channel. Accruing only
+    /// additions would leave a departed member in both the channel key and the
+    /// server roll-up forever, so command callers use this exact-refresh form.
+    pub fn set_server_channel_members<I, S>(
+        &mut self,
+        server_id: &str,
+        channel_id: &str,
+        members: I,
+    ) where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let channel = channel_key(server_id, channel_id);
+        let next: HashSet<String> = members
+            .into_iter()
+            .map(|member| member.as_ref().to_string())
+            .collect();
+        if next.is_empty() {
+            self.map.remove(&channel);
+        } else {
+            self.map.insert(channel, next);
+        }
+        self.rebuild_server_rollup(server_id);
+    }
+
+    fn rebuild_server_rollup(&mut self, server_id: &str) {
+        let prefix = format!("server_channel:{server_id}:");
+        let mut union = HashSet::new();
+        for (key, members) in &self.map {
+            if key.starts_with(&prefix) {
+                union.extend(members.iter().cloned());
+            }
+        }
+        let server = server_key(server_id);
+        if union.is_empty() {
+            self.map.remove(&server);
+        } else {
+            self.map.insert(server, union);
+        }
+    }
+
     /// Bulk form: note every id in `members` for a GC.
     pub fn note_gc_members<I, S>(&mut self, gc_id: &str, members: I)
     where
@@ -299,9 +342,7 @@ pub fn write_scope_membership(path: &Path, m: &ScopeMembership) -> std::io::Resu
     let body = serde_json::to_vec_pretty(m).map_err(std::io::Error::other)?;
     let out_bytes =
         crate::main_password::encrypt_at_rest(&body, &key).map_err(std::io::Error::other)?;
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, &out_bytes)?;
-    std::fs::rename(&tmp, path)?;
+    crate::recoverable_file::write_recoverable(path, &out_bytes)?;
     Ok(())
 }
 
@@ -507,6 +548,34 @@ mod tests {
         assert!(m.is_server_member(SRV, B));
         assert!(m.is_gc_member(GC, A));
         assert!(!m.is_gc_member(GC, C));
+    }
+
+    #[test]
+    fn server_channel_refresh_replaces_removed_member_and_rollup() {
+        let mut m = ScopeMembership::new();
+        m.set_server_channel_members(SRV, CH1, [A, B]);
+        m.set_server_channel_members(SRV, CH2, [C]);
+        assert!(m.is_channel_member(SRV, CH1, B));
+        assert!(m.is_server_member(SRV, B));
+
+        m.set_server_channel_members(SRV, CH1, [A]);
+
+        assert!(m.is_channel_member(SRV, CH1, A));
+        assert!(!m.is_channel_member(SRV, CH1, B));
+        assert!(!m.is_server_member(SRV, B));
+        assert!(m.is_server_member(SRV, C));
+        assert_eq!(
+            m.server_channel_candidates(SRV, CH1, false),
+            vec![A.to_string()]
+        );
+        assert_eq!(
+            m.server_channel_candidates(SRV, CH2, false),
+            vec![C.to_string()]
+        );
+        assert_eq!(
+            m.server_channel_candidates(SRV, CH1, true),
+            vec![A.to_string(), C.to_string()]
+        );
     }
 
     #[test]

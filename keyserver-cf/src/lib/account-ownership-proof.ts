@@ -14,6 +14,7 @@ export type AccountOwnershipError =
   | "no_proof_presented"
   | "proof_for_different_account"
   | "proof_for_different_owner"
+  | "proof_for_different_public_name"
   | "proof_stale"
   | "proof_replayed"
   | "proof_malformed"

@@ -34,6 +34,7 @@ const SECURITY_PREFS_FILE: &str = "hub_security_preferences.json";
 const ONE_USE_INVITE_LINK_TTL_SECONDS: i64 = 7 * 24 * 60 * 60;
 const ONE_USE_INVITE_LINK_PREFIX: &str = "https://invite.osl.local/one-use/";
 const PEER_REPLAY_FILE: &str = "hub_peer_replay.json";
+const PRIVATE_CONTACT_LINKS_FILE: &str = "hub_private_contact_links.json";
 const ATTACHMENT_BURN_FILE: &str = "scope_attachments.json";
 /// Receiver-side bilateral-burn replay state. Encrypted at rest, and keyed
 /// entirely by pair-specific commitments — it contains no scope name, service
@@ -78,6 +79,10 @@ const RATCHET_PUBLIC_BYTES: usize = 32;
 const SAFETY_NUMBER_BUNDLE_REFUSAL: &str = "OSL friend key bundle is invalid";
 const SAFETY_NUMBER_MISMATCH_REFUSAL: &str = "OSL safety number does not match";
 const PENDING_KEY_CHANGE_REFUSAL: &str = "OSL friend key change state is incomplete";
+const PRIVATE_CONTACT_LINK_PREFIX: &str = "OSLPC1.";
+const PRIVATE_CONTACT_LINK_VERSION: u32 = 1;
+const MAX_PRIVATE_CONTACT_LINK_BYTES: usize = 16 * 1024;
+const PRIVATE_CONTACT_LINK_USES_ALLOWED: u32 = 1;
 
 #[derive(Debug, Default)]
 pub struct HubSecurityState {
@@ -96,6 +101,24 @@ pub struct HubSecurityState {
 pub struct FriendCodeExport {
     pub friend_code: String,
     pub osl_user_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrivateContactLinkExport {
+    pub link: String,
+    pub osl_user_id: String,
+    pub uses_allowed: u32,
+    pub uses_remaining: u32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrivateContactLinkStatus {
+    pub osl_user_id: String,
+    pub uses_allowed: u32,
+    pub uses_remaining: u32,
+    pub consumed: bool,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
@@ -221,6 +244,35 @@ pub struct PersonWhitelistScopeDto {
     /// Mirrors the recorded entry's `user_specific` flag: `true` when the
     /// approval covers only this person inside a shared conversation.
     pub user_specific: bool,
+}
+
+pub const FRIEND_WIDE_WHITELIST_EVERYWHERE_ACTION: &str = "everywhere";
+pub const FRIEND_WIDE_WHITELIST_NOWHERE_ACTION: &str = "nowhere";
+pub const FRIEND_WIDE_WHITELIST_EVERYWHERE_COMMAND: &str =
+    "set_hub_friend_account_reach_everywhere";
+pub const FRIEND_WIDE_WHITELIST_NOWHERE_COMMAND: &str = "set_hub_friend_account_reach_nowhere";
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FriendWideWhitelistActionHelp {
+    pub action: String,
+    pub command: String,
+    pub effect: String,
+}
+
+pub fn friend_wide_whitelist_action_help() -> Vec<FriendWideWhitelistActionHelp> {
+    vec![
+        FriendWideWhitelistActionHelp {
+            action: FRIEND_WIDE_WHITELIST_EVERYWHERE_ACTION.to_owned(),
+            command: FRIEND_WIDE_WHITELIST_EVERYWHERE_COMMAND.to_owned(),
+            effect: "allow this friend on every owned account".to_owned(),
+        },
+        FriendWideWhitelistActionHelp {
+            action: FRIEND_WIDE_WHITELIST_NOWHERE_ACTION.to_owned(),
+            command: FRIEND_WIDE_WHITELIST_NOWHERE_COMMAND.to_owned(),
+            effect: "allow this friend on no owned account".to_owned(),
+        },
+    ]
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -353,6 +405,16 @@ pub struct AllowedPlaceDirectionState {
     pub first_to_second_allowed: bool,
     pub second_to_first_allowed: bool,
     pub state: String,
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AllowedPlaceDirectionStateDto {
+    /// `none`, `one-way`, or `two-way`.
+    pub state: String,
+    /// `visible` only when the reciprocal direct-message whitelist exists.
+    pub verification_state: String,
+    pub saved_directions: usize,
+    pub first_to_second: bool,
+    pub second_to_first: bool,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
@@ -483,6 +545,21 @@ pub struct AppNotificationNoticeRecord {
     pub title: String,
     pub detail: String,
     pub created_at: String,
+pub struct FriendAccountReachTickDto {
+    pub account: String,
+    pub ticked: bool,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FriendAccountReachEverywhereResult {
+    pub action: String,
+    pub command: String,
+    pub app: String,
+    pub friend_account: String,
+    pub account_count: usize,
+    pub ticked_count: usize,
+    pub accounts: Vec<FriendAccountReachTickDto>,
 }
 
 /// The minimum friend state needed to create a manual peer-messaging lease.
@@ -749,6 +826,23 @@ struct SignedFriendCode {
     signature: String,
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PrivateContactLinkEntry {
+    osl_user_id: String,
+    friend_code: String,
+    uses_allowed: u32,
+    uses_remaining: u32,
+}
+
+#[derive(Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PrivateContactLinksFile {
+    version: u32,
+    #[serde(default)]
+    links: BTreeMap<String, PrivateContactLinkEntry>,
+}
+
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct PersonMetadata {
     osl_user_id: String,
@@ -900,6 +994,10 @@ struct SecurityPreferences {
     /// there is deliberately no OSL-name field to infer or later bind.
     #[serde(default)]
     one_use_invite_links: BTreeMap<String, OneUseInviteLink>,
+    /// Directional allowed-place records. A direct conversation is complete
+    /// only when both people saved the reciprocal record for the same app kind.
+    #[serde(default)]
+    allowed_place_directions: BTreeSet<String>,
     #[serde(default)]
     chat_approval_suggestion: ChatApprovalSuggestionChoice,
 }
@@ -1105,6 +1203,89 @@ pub fn export_friend_code(core: &HubCoreState) -> Result<FriendCodeExport, Strin
         // the export gets a copy and the original is still wiped on the way out.
         osl_user_id: identity.user_id.clone(),
     })
+}
+
+pub fn create_private_contact_link(
+    core: &HubCoreState,
+    security: &HubSecurityState,
+) -> Result<PrivateContactLinkExport, String> {
+    require_unlocked()?;
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL private contact link state is unavailable".to_owned())?;
+    let export = export_friend_code(core)?;
+    let token = URL_SAFE_NO_PAD.encode(crypto::random::random_bytes(32));
+    let link = format!("{PRIVATE_CONTACT_LINK_PREFIX}{token}");
+    let dir = config_dir()?;
+    let path = dir.join(PRIVATE_CONTACT_LINKS_FILE);
+    let mut ledger = load_private_contact_links(&path)?;
+    ledger.links.insert(
+        token,
+        PrivateContactLinkEntry {
+            osl_user_id: export.osl_user_id.clone(),
+            friend_code: export.friend_code,
+            uses_allowed: PRIVATE_CONTACT_LINK_USES_ALLOWED,
+            uses_remaining: PRIVATE_CONTACT_LINK_USES_ALLOWED,
+        },
+    );
+    ledger.version = PRIVATE_CONTACT_LINK_VERSION;
+    write_encrypted_json(&path, &ledger)?;
+    Ok(PrivateContactLinkExport {
+        link,
+        osl_user_id: export.osl_user_id,
+        uses_allowed: PRIVATE_CONTACT_LINK_USES_ALLOWED,
+        uses_remaining: PRIVATE_CONTACT_LINK_USES_ALLOWED,
+    })
+}
+
+pub fn private_contact_link_status(link: &str) -> Result<PrivateContactLinkStatus, String> {
+    require_unlocked()?;
+    let token = parse_private_contact_link(link)?;
+    let path = config_dir()?.join(PRIVATE_CONTACT_LINKS_FILE);
+    let ledger = load_private_contact_links(&path)?;
+    let entry = ledger
+        .links
+        .get(&token)
+        .ok_or_else(|| "OSL private contact link is unknown".to_owned())?;
+    Ok(PrivateContactLinkStatus {
+        osl_user_id: entry.osl_user_id.clone(),
+        uses_allowed: entry.uses_allowed,
+        uses_remaining: entry.uses_remaining,
+        consumed: entry.uses_remaining == 0,
+    })
+}
+
+pub fn add_private_contact_link(
+    core: &HubCoreState,
+    security: &HubSecurityState,
+    link: String,
+    alias: Option<String>,
+) -> Result<AddFriendResult, String> {
+    require_unlocked()?;
+    let alias = normalise_alias(alias.as_deref())?;
+    let token = parse_private_contact_link(&link)?;
+    let friend_code = {
+        let _transition = security
+            .transition
+            .lock()
+            .map_err(|_| "OSL private contact link state is unavailable".to_owned())?;
+        let dir = config_dir()?;
+        let path = dir.join(PRIVATE_CONTACT_LINKS_FILE);
+        let mut ledger = load_private_contact_links(&path)?;
+        let entry = ledger
+            .links
+            .get_mut(&token)
+            .ok_or_else(|| "OSL private contact link is unknown".to_owned())?;
+        if entry.uses_remaining != PRIVATE_CONTACT_LINK_USES_ALLOWED {
+            return Err("OSL private contact link is already used".to_owned());
+        }
+        entry.uses_remaining = 0;
+        let friend_code = entry.friend_code.clone();
+        write_encrypted_json(&path, &ledger)?;
+        friend_code
+    };
+    add_friend_code(core, security, friend_code, alias)
 }
 
 pub fn add_friend_code(
@@ -5213,6 +5394,40 @@ fn lower_hex(bytes: &[u8; 32]) -> String {
     out
 }
 
+fn load_private_contact_links(path: &Path) -> Result<PrivateContactLinksFile, String> {
+    let ledger = load_encrypted_json::<PrivateContactLinksFile>(path)?;
+    if ledger.version > PRIVATE_CONTACT_LINK_VERSION
+        || ledger.links.values().any(|entry| {
+            entry.osl_user_id.is_empty()
+                || entry.osl_user_id.len() > 160
+                || entry.uses_allowed != PRIVATE_CONTACT_LINK_USES_ALLOWED
+                || entry.uses_remaining > PRIVATE_CONTACT_LINK_USES_ALLOWED
+                || parse_friend_code(&entry.friend_code).is_err()
+        })
+    {
+        return Err("OSL private contact link state is malformed".to_owned());
+    }
+    Ok(ledger)
+}
+
+fn parse_private_contact_link(value: &str) -> Result<String, String> {
+    if value.len() > MAX_PRIVATE_CONTACT_LINK_BYTES {
+        return Err("OSL private contact link is too large".to_owned());
+    }
+    let token = value
+        .strip_prefix(PRIVATE_CONTACT_LINK_PREFIX)
+        .ok_or_else(|| "OSL private contact link has an unsupported version".to_owned())?;
+    if token.is_empty()
+        || token.len() > 96
+        || !token
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    {
+        return Err("OSL private contact link payload is invalid".to_owned());
+    }
+    Ok(token.to_owned())
+}
+
 fn parse_friend_code(value: &str) -> Result<SignedFriendCode, String> {
     if value.len() > MAX_FRIEND_CODE_BYTES {
         return Err("OSL friend code is too large".to_owned());
@@ -5592,6 +5807,14 @@ fn validate_allowed_place_id(value: &str, message: &str) -> Result<(), String> {
         || value.chars().any(char::is_whitespace)
     {
         return Err(message.to_owned());
+fn validate_allowed_place_component(value: &str, label: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > 80
+        || value
+            .bytes()
+            .any(|byte| !byte.is_ascii_alphanumeric() && !matches!(byte, b'-' | b'_'))
+    {
+        return Err(format!("OSL allowed-place {label} is invalid"));
     }
     Ok(())
 }
@@ -5671,6 +5894,152 @@ fn look_choice_records(prefs: &SecurityPreferences) -> Vec<LookChoiceRecord> {
             value: value.clone(),
         })
         .collect()
+fn allowed_place_direction_key(app: &str, account: &str, kind: &str, stable_id: &str) -> String {
+    format!("{app}:{account}:{kind}:{stable_id}")
+}
+
+fn validate_allowed_place_direction(
+    app: &str,
+    first_account: &str,
+    second_account: &str,
+    kind: &str,
+) -> Result<(), String> {
+    validate_allowed_place_component(app, "app")?;
+    validate_allowed_place_component(kind, "kind")?;
+    if kind != "direct_message" {
+        return Err("OSL allowed-place kind is invalid".to_owned());
+    }
+    if first_account == second_account {
+        return Err("OSL allowed-place direction needs two different people".to_owned());
+    }
+    if app == "discord" {
+        if !is_discord_snowflake_shaped(first_account)
+            || !is_discord_snowflake_shaped(second_account)
+        {
+            return Err("OSL allowed-place Discord account is invalid".to_owned());
+        }
+    } else {
+        validate_allowed_place_component(first_account, "account")?;
+        validate_allowed_place_component(second_account, "account")?;
+    }
+    Ok(())
+}
+
+fn compare_allowed_place_direction_state_from_prefs(
+    prefs: &SecurityPreferences,
+    app: &str,
+    first_account: &str,
+    second_account: &str,
+    kind: &str,
+) -> Result<AllowedPlaceDirectionStateDto, String> {
+    validate_allowed_place_direction(app, first_account, second_account, kind)?;
+    let first_key = allowed_place_direction_key(app, first_account, kind, second_account);
+    let second_key = allowed_place_direction_key(app, second_account, kind, first_account);
+    let first_to_second = prefs.allowed_place_directions.contains(&first_key);
+    let second_to_first = prefs.allowed_place_directions.contains(&second_key);
+    let saved_directions = usize::from(first_to_second) + usize::from(second_to_first);
+    let state = match saved_directions {
+        0 => "none",
+        1 => "one-way",
+        2 => "two-way",
+        _ => unreachable!("only two directions are compared"),
+    }
+    .to_owned();
+    let verification_state = if saved_directions == 2 {
+        "visible"
+    } else {
+        "hidden"
+    }
+    .to_owned();
+    Ok(AllowedPlaceDirectionStateDto {
+        state,
+        verification_state,
+        saved_directions,
+        first_to_second,
+        second_to_first,
+    })
+}
+
+pub fn compare_allowed_place_direction_state(
+    app: String,
+    first_account: String,
+    second_account: String,
+    kind: String,
+) -> Result<AllowedPlaceDirectionStateDto, String> {
+    require_unlocked()?;
+    let prefs = load_security_preferences()?;
+    compare_allowed_place_direction_state_from_prefs(
+        &prefs,
+        &app,
+        &first_account,
+        &second_account,
+        &kind,
+    )
+}
+
+fn friend_account_reach_ticks_from_prefs(
+    prefs: &SecurityPreferences,
+    app: &str,
+    friend_account: &str,
+    owned_accounts: &[String],
+) -> Result<Vec<FriendAccountReachTickDto>, String> {
+    validate_allowed_place_component(app, "app")?;
+    let mut seen = BTreeSet::new();
+    let mut ticks = Vec::with_capacity(owned_accounts.len());
+    for account in owned_accounts {
+        if !seen.insert(account.as_str()) {
+            return Err("OSL owned account list contains a duplicate account".to_owned());
+        }
+        validate_allowed_place_direction(app, account, friend_account, "direct_message")?;
+        let key = allowed_place_direction_key(app, account, "direct_message", friend_account);
+        ticks.push(FriendAccountReachTickDto {
+            account: account.clone(),
+            ticked: prefs.allowed_place_directions.contains(&key),
+        });
+    }
+    Ok(ticks)
+}
+
+pub fn set_friend_account_reach_everywhere(
+    app: String,
+    friend_account: String,
+    owned_accounts: Vec<String>,
+) -> Result<FriendAccountReachEverywhereResult, String> {
+    require_unlocked()?;
+    let dir = config_dir()?;
+    let path = dir.join(SECURITY_PREFS_FILE);
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
+    let mut seen = BTreeSet::new();
+    for account in &owned_accounts {
+        if !seen.insert(account.as_str()) {
+            return Err("OSL owned account list contains a duplicate account".to_owned());
+        }
+        validate_allowed_place_direction(&app, account, &friend_account, "direct_message")?;
+    }
+    prefs.version = 2;
+    for account in &owned_accounts {
+        prefs
+            .allowed_place_directions
+            .insert(allowed_place_direction_key(
+                &app,
+                account,
+                "direct_message",
+                &friend_account,
+            ));
+    }
+    write_encrypted_json(&path, &prefs)?;
+    let accounts =
+        friend_account_reach_ticks_from_prefs(&prefs, &app, &friend_account, &owned_accounts)?;
+    let ticked_count = accounts.iter().filter(|account| account.ticked).count();
+    Ok(FriendAccountReachEverywhereResult {
+        action: FRIEND_WIDE_WHITELIST_EVERYWHERE_ACTION.to_owned(),
+        command: FRIEND_WIDE_WHITELIST_EVERYWHERE_COMMAND.to_owned(),
+        app,
+        friend_account,
+        account_count: accounts.len(),
+        ticked_count,
+        accounts,
+    })
 }
 
 fn manual_approved_scopes_for_person(
@@ -8162,6 +8531,77 @@ mod tests {
     }
 
     #[test]
+    fn task0704_chat_approval_suggestion_respects_choice_and_approval() {
+        let harness = FileBackedSecurityHarness::new("task0704");
+        let core = HubCoreState::default();
+        let security = HubSecurityState::default();
+        install_self_identity(&core);
+        let (person_id, metadata, peer) = test_friend(0x70);
+        write_people(harness.path(), &person_id, metadata);
+        install_peer_map(&core, harness.path(), &person_id, peer);
+        let scope = dm_scope_input(
+            manual_peer_scope_id("osl-chat", "osl-main", &person_id).expect("manual scope id"),
+        );
+
+        let saved_on =
+            save_chat_approval_suggestion_choice(&security, "on".to_owned()).expect("save on");
+        println!("TASK0704 saved_choice_on={}", saved_on.choice);
+        let unchecked_on = chat_approval_suggestion_for_manual_peer_scope(
+            &core,
+            "osl-chat",
+            "osl-main",
+            person_id.clone(),
+            scope.clone(),
+        )
+        .expect("answer unchecked chat with choice on");
+        println!(
+            "TASK0704 unchecked_chat_choice_on={}",
+            unchecked_on.suggestion
+        );
+        assert_eq!(saved_on.choice, "on");
+        assert_eq!(unchecked_on.suggestion, "offer_approval");
+
+        let saved_off =
+            save_chat_approval_suggestion_choice(&security, "off".to_owned()).expect("save off");
+        println!("TASK0704 saved_choice_off={}", saved_off.choice);
+        let unchecked_off = chat_approval_suggestion_for_manual_peer_scope(
+            &core,
+            "osl-chat",
+            "osl-main",
+            person_id.clone(),
+            scope.clone(),
+        )
+        .expect("answer unchecked chat with choice off");
+        println!(
+            "TASK0704 unchecked_chat_choice_off={}",
+            unchecked_off.suggestion
+        );
+        assert_eq!(saved_off.choice, "off");
+        assert_eq!(unchecked_off.suggestion, "no_suggestion");
+
+        save_chat_approval_suggestion_choice(&security, "on".to_owned()).expect("restore on");
+        set_manual_peer_scope_permission(
+            &core,
+            &security,
+            "osl-chat",
+            "osl-main",
+            person_id.clone(),
+            scope.clone(),
+            true,
+        )
+        .expect("approve chat");
+        let approved_on = chat_approval_suggestion_for_manual_peer_scope(
+            &core, "osl-chat", "osl-main", person_id, scope,
+        )
+        .expect("answer approved chat with choice on");
+        println!(
+            "TASK0704 approved_chat_choice_on={}",
+            approved_on.suggestion
+        );
+        assert_eq!(approved_on.suggestion, "no_suggestion");
+    }
+
+    #[test]
     fn manual_peer_scope_accepts_broker_dm_channel_binding() {
         let (person_id, _, _) = test_friend(6);
         let binding = test_manual_binding(person_id.clone());
@@ -8760,6 +9200,54 @@ mod tests {
         assert!(peers
             .values()
             .any(|peer| peer.osl_user_id.as_deref() == Some(friend_osl_user_id.as_str())));
+    }
+
+    #[test]
+    fn task_0310_private_contact_links_are_one_use() {
+        let harness = FileBackedSecurityHarness::new("task-0310-private-contact-links");
+        let core = HubCoreState::default();
+        let security = HubSecurityState::default();
+        install_self_identity(&core);
+
+        let first = create_private_contact_link(&core, &security).unwrap();
+        let second = create_private_contact_link(&core, &security).unwrap();
+        let first_status = private_contact_link_status(&first.link).unwrap();
+        let second_status = private_contact_link_status(&second.link).unwrap();
+
+        assert_eq!(first.osl_user_id, second.osl_user_id);
+        assert_ne!(first.link, second.link);
+        assert_eq!(first_status.uses_allowed, 1);
+        assert_eq!(second_status.uses_allowed, 1);
+        assert_eq!(first_status.uses_remaining, 1);
+        assert_eq!(second_status.uses_remaining, 1);
+        assert!(!first_status.consumed);
+        assert!(!second_status.consumed);
+        assert!(
+            !harness.path().join("hub_profile.json").exists(),
+            "private contact links must not create the public username profile"
+        );
+
+        println!(
+            "TASK0310 same_person={}",
+            first.osl_user_id == second.osl_user_id
+        );
+        println!("TASK0310 link1={}", first.link);
+        println!("TASK0310 link2={}", second.link);
+        println!("TASK0310 links_different={}", first.link != second.link);
+        println!("TASK0310 link1_uses_allowed={}", first_status.uses_allowed);
+        println!("TASK0310 link2_uses_allowed={}", second_status.uses_allowed);
+        println!(
+            "TASK0310 link1_uses_remaining={}",
+            first_status.uses_remaining
+        );
+        println!(
+            "TASK0310 link2_uses_remaining={}",
+            second_status.uses_remaining
+        );
+        println!(
+            "TASK0310 public_username_created={}",
+            harness.path().join("hub_profile.json").exists()
+        );
     }
 
     #[test]
@@ -11370,6 +11858,221 @@ key"
         ));
         prefs.burned_manual_scopes.insert(discord_a.clone());
         assert!(!manual_scope_preference_approved(&prefs, &discord_a));
+    }
+
+    #[test]
+    fn direct_allowed_place_direction_state_moves_from_one_way_to_two_way() {
+        let harness = FileBackedSecurityHarness::new("task0170-direction-state");
+        let first_account = "900000000000000170";
+        let second_account = "900000000000000171";
+        let first_to_second =
+            allowed_place_direction_key("discord", first_account, "direct_message", second_account);
+        let second_to_first =
+            allowed_place_direction_key("discord", second_account, "direct_message", first_account);
+        let prefs_path = harness.path().join(SECURITY_PREFS_FILE);
+        let mut prefs = SecurityPreferences {
+            version: 2,
+            ..SecurityPreferences::default()
+        };
+        prefs.allowed_place_directions.insert(first_to_second);
+        write_encrypted_json(&prefs_path, &prefs).unwrap();
+
+        let one_way = compare_allowed_place_direction_state(
+            "discord".to_owned(),
+            first_account.to_owned(),
+            second_account.to_owned(),
+            "direct_message".to_owned(),
+        )
+        .unwrap();
+        println!(
+            "TASK0170 allowed_place_direction saved_directions={} state={} first_to_second={} second_to_first={}",
+            one_way.saved_directions,
+            one_way.state,
+            one_way.first_to_second,
+            one_way.second_to_first
+        );
+        assert_eq!(one_way.saved_directions, 1);
+        assert_eq!(one_way.state, "one-way");
+        assert!(one_way.first_to_second);
+        assert!(!one_way.second_to_first);
+
+        prefs.allowed_place_directions.insert(second_to_first);
+        write_encrypted_json(&prefs_path, &prefs).unwrap();
+        let two_way = compare_allowed_place_direction_state(
+            "discord".to_owned(),
+            first_account.to_owned(),
+            second_account.to_owned(),
+            "direct_message".to_owned(),
+        )
+        .unwrap();
+        println!(
+            "TASK0170 allowed_place_direction saved_directions={} state={} first_to_second={} second_to_first={}",
+            two_way.saved_directions,
+            two_way.state,
+            two_way.first_to_second,
+            two_way.second_to_first
+        );
+        assert_eq!(two_way.saved_directions, 2);
+        assert_eq!(two_way.state, "two-way");
+        assert!(two_way.first_to_second);
+        assert!(two_way.second_to_first);
+    }
+
+    #[test]
+    fn verification_state_is_visible_only_for_two_way_allowed_place_direction() {
+        let harness = FileBackedSecurityHarness::new("task0171-verification-state");
+        let first_account = "900000000000000172";
+        let second_account = "900000000000000173";
+        let first_to_second =
+            allowed_place_direction_key("discord", first_account, "direct_message", second_account);
+        let second_to_first =
+            allowed_place_direction_key("discord", second_account, "direct_message", first_account);
+        let prefs_path = harness.path().join(SECURITY_PREFS_FILE);
+        let mut prefs = SecurityPreferences {
+            version: 2,
+            ..SecurityPreferences::default()
+        };
+        prefs.allowed_place_directions.insert(first_to_second);
+        write_encrypted_json(&prefs_path, &prefs).unwrap();
+
+        let one_way = compare_allowed_place_direction_state(
+            "discord".to_owned(),
+            first_account.to_owned(),
+            second_account.to_owned(),
+            "direct_message".to_owned(),
+        )
+        .unwrap();
+        println!(
+            "TASK0171 verification_command=compare_allowed_place_direction_state saved_directions={} whitelist_state={} verification_state={} first_to_second={} second_to_first={}",
+            one_way.saved_directions,
+            one_way.state,
+            one_way.verification_state,
+            one_way.first_to_second,
+            one_way.second_to_first
+        );
+        assert_eq!(one_way.saved_directions, 1);
+        assert_eq!(one_way.state, "one-way");
+        assert_eq!(one_way.verification_state, "hidden");
+        assert!(one_way.first_to_second);
+        assert!(!one_way.second_to_first);
+
+        prefs.allowed_place_directions.insert(second_to_first);
+        write_encrypted_json(&prefs_path, &prefs).unwrap();
+        let two_way = compare_allowed_place_direction_state(
+            "discord".to_owned(),
+            first_account.to_owned(),
+            second_account.to_owned(),
+            "direct_message".to_owned(),
+        )
+        .unwrap();
+        println!(
+            "TASK0171 verification_command=compare_allowed_place_direction_state saved_directions={} whitelist_state={} verification_state={} first_to_second={} second_to_first={}",
+            two_way.saved_directions,
+            two_way.state,
+            two_way.verification_state,
+            two_way.first_to_second,
+            two_way.second_to_first
+        );
+        assert_eq!(two_way.saved_directions, 2);
+        assert_eq!(two_way.state, "two-way");
+        assert_eq!(two_way.verification_state, "visible");
+        assert!(two_way.first_to_second);
+        assert!(two_way.second_to_first);
+    }
+
+    #[test]
+    fn direct_friend_wide_whitelist_help_lists_everywhere_and_nowhere_actions() {
+        let help = friend_wide_whitelist_action_help();
+        let actions = help
+            .iter()
+            .map(|entry| entry.action.as_str())
+            .collect::<Vec<_>>();
+        let commands = help
+            .iter()
+            .map(|entry| entry.command.as_str())
+            .collect::<Vec<_>>();
+        println!(
+            "TASK0255 direct_command_help action_count={} actions={} commands={}",
+            help.len(),
+            actions.join(","),
+            commands.join(",")
+        );
+        assert_eq!(
+            actions,
+            vec![
+                FRIEND_WIDE_WHITELIST_EVERYWHERE_ACTION,
+                FRIEND_WIDE_WHITELIST_NOWHERE_ACTION
+            ]
+        );
+        assert_eq!(
+            commands,
+            vec![
+                FRIEND_WIDE_WHITELIST_EVERYWHERE_COMMAND,
+                FRIEND_WIDE_WHITELIST_NOWHERE_COMMAND
+            ]
+        );
+        assert!(help[0].effect.contains("every owned account"));
+        assert!(help[1].effect.contains("no owned account"));
+    }
+
+    #[test]
+    fn whitelist_everywhere_ticks_every_current_owned_account_for_one_friend() {
+        let harness = FileBackedSecurityHarness::new("task0256-whitelist-everywhere");
+        let friend_account = "900000000000000256";
+        let owned_accounts = vec![
+            "900000000000000257".to_owned(),
+            "900000000000000258".to_owned(),
+            "900000000000000259".to_owned(),
+        ];
+
+        let result = set_friend_account_reach_everywhere(
+            "discord".to_owned(),
+            friend_account.to_owned(),
+            owned_accounts.clone(),
+        )
+        .unwrap();
+        assert_eq!(result.command, FRIEND_WIDE_WHITELIST_EVERYWHERE_COMMAND);
+        assert_eq!(result.action, FRIEND_WIDE_WHITELIST_EVERYWHERE_ACTION);
+        assert_eq!(result.account_count, 3);
+        assert_eq!(result.ticked_count, 3);
+
+        let prefs =
+            load_encrypted_json::<SecurityPreferences>(&harness.path().join(SECURITY_PREFS_FILE))
+                .unwrap();
+        let direct_account_list = friend_account_reach_ticks_from_prefs(
+            &prefs,
+            "discord",
+            friend_account,
+            &owned_accounts,
+        )
+        .unwrap();
+        let ticked_count = direct_account_list
+            .iter()
+            .filter(|account| account.ticked)
+            .count();
+        let account_ids = direct_account_list
+            .iter()
+            .map(|account| account.account.as_str())
+            .collect::<Vec<_>>()
+            .join(",");
+        let ticks = direct_account_list
+            .iter()
+            .map(|account| account.ticked.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        println!(
+            "TASK0256 command={} action={} friend_account={} direct_account_list={} account_count={} ticked_count={} ticks={}",
+            result.command,
+            result.action,
+            friend_account,
+            account_ids,
+            direct_account_list.len(),
+            ticked_count,
+            ticks
+        );
+        assert_eq!(direct_account_list.len(), 3);
+        assert_eq!(ticked_count, 3);
+        assert!(direct_account_list.iter().all(|account| account.ticked));
     }
 
     #[test]

@@ -120,6 +120,8 @@ pub struct OnboardingPreferences {
     pub show_plaintext_preview: bool,
     #[serde(default = "default_true")]
     pub window_capture_enabled: bool,
+    #[serde(default)]
+    pub rn_wire_policy_requested: bool,
     pub acknowledge_experimental_send_risk: bool,
     #[serde(default)]
     pub forward_secrecy_mode: ForwardSecrecyMode,
@@ -138,6 +140,7 @@ impl Default for OnboardingPreferences {
             cover_insertion: None,
             show_plaintext_preview: true,
             window_capture_enabled: true,
+            rn_wire_policy_requested: false,
             acknowledge_experimental_send_risk: false,
             forward_secrecy_mode: ForwardSecrecyMode::default(),
         }
@@ -159,6 +162,8 @@ impl<'de> Deserialize<'de> for OnboardingPreferences {
             show_plaintext_preview: bool,
             #[serde(default = "default_true")]
             window_capture_enabled: bool,
+            #[serde(default)]
+            rn_wire_policy_requested: bool,
             acknowledge_experimental_send_risk: bool,
             #[serde(default)]
             forward_secrecy_mode: ForwardSecrecyMode,
@@ -172,6 +177,7 @@ impl<'de> Deserialize<'de> for OnboardingPreferences {
             cover_insertion: preferences.cover_insertion,
             show_plaintext_preview: preferences.show_plaintext_preview,
             window_capture_enabled: preferences.window_capture_enabled,
+            rn_wire_policy_requested: preferences.rn_wire_policy_requested,
             acknowledge_experimental_send_risk: preferences.acknowledge_experimental_send_risk,
             forward_secrecy_mode: preferences.forward_secrecy_mode,
         }
@@ -384,6 +390,7 @@ mod tests {
             "coverInsertion": null,
             "showPlaintextPreview": true,
             "windowCaptureEnabled": true,
+            "rnWirePolicyRequested": false,
             "acknowledgeExperimentalSendRisk": false,
             // Added when `forward_secrecy_mode` joined OnboardingPreferences;
             // this literal was never updated, and the name collision that kept
@@ -409,6 +416,7 @@ mod tests {
             "coverInsertion": null,
             "showPlaintextPreview": true,
             "windowCaptureEnabled": true,
+            "rnWirePolicyRequested": false,
             "acknowledgeExperimentalSendRisk": false,
         });
         assert!(
@@ -447,6 +455,7 @@ mod tests {
             cover_insertion: Some(CoverInsertion::InsertOnSend),
             show_plaintext_preview: true,
             window_capture_enabled: true,
+            rn_wire_policy_requested: false,
             acknowledge_experimental_send_risk: false,
             forward_secrecy_mode: ForwardSecrecyMode::default(),
         }

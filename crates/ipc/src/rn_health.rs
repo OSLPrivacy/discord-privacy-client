@@ -6,7 +6,6 @@
 
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::wire_rn::{RnError, RN_SESSION_DIR};
 
@@ -47,7 +46,6 @@ pub fn tofu_change_needs_session_reset(
 
 const HEALTH_BLOB_VERSION: u32 = 1;
 const MAX_HEALTH_FILE_BYTES: u64 = 16 * 1024;
-static NEXT_TEMP_SUFFIX: AtomicU64 = AtomicU64::new(0);
 
 /// The user-visible health of one peer's OSL-RN session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -335,29 +333,8 @@ fn read_bounded(path: &Path) -> Result<Option<Vec<u8>>, RnError> {
 }
 
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), RnError> {
-    use std::io::Write as _;
-
-    let parent = path
-        .parent()
-        .ok_or_else(|| RnError::Storage("RN health path has no parent".into()))?;
-    std::fs::create_dir_all(parent)
-        .map_err(|error| RnError::Storage(format!("create RN health directory: {error}")))?;
-    let suffix = NEXT_TEMP_SUFFIX.fetch_add(1, Ordering::Relaxed);
-    let tmp = path.with_extension(format!("health.{}.{}.tmp", std::process::id(), suffix));
-    let result = (|| {
-        let mut file = std::fs::File::create(&tmp)
-            .map_err(|error| RnError::Storage(format!("create RN health temp file: {error}")))?;
-        file.write_all(bytes)
-            .map_err(|error| RnError::Storage(format!("write RN health temp file: {error}")))?;
-        file.sync_all()
-            .map_err(|error| RnError::Storage(format!("fsync RN health temp file: {error}")))?;
-        std::fs::rename(&tmp, path)
-            .map_err(|error| RnError::Storage(format!("rename RN health file: {error}")))
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
-    result
+    crate::recoverable_file::write_recoverable(path, bytes)
+        .map_err(|error| RnError::Storage(format!("write RN health file: {error}")))
 }
 
 #[cfg(test)]

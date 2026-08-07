@@ -54,6 +54,8 @@ fn message() -> StoredMessage {
         sender_osl_user_id: "cross-device-user".to_string(),
         plaintext: "a mutation advances the anchor".to_string(),
         decrypted_at: 1,
+        reply_parent_id: None,
+        edit_revision: 1,
         burned: false,
     }
 }

@@ -3,6 +3,12 @@
 //! Normal photo-sized images use a redundant luminance stripe that survives
 //! provider resize and PNG re-save. Tiny images fall back to the original
 //! lossless low-bit carrier so existing small fixtures continue to work.
+//! Lossless image carrier for the fixed OSL pointer payload.
+//!
+//! The carrier writes a small OSL marker plus the full protected pointer
+//! (`20-byte message name || 4-byte check mark`) into the low bit of RGB
+//! samples in a newly encoded PNG copy. The source image is only read; callers
+//! choose a distinct output path for the post copy.
 
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Cursor};

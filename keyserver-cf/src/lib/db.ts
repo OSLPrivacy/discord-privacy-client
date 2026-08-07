@@ -159,27 +159,9 @@ export async function rotateUserKeys(
 ): Promise<{ last_rotated_at: string } | null> {
   const now = new Date().toISOString();
   const results = await db.batch([
-    // Retire the directory identity before invalidating its signing key.
-    // The migration trigger is a defence-in-depth backstop for rename and
-    // future deletion sites; doing this explicitly keeps the release atomic
-    // and documents why rotation must never free a username.
-    db.prepare(
-      `INSERT INTO username_tombstones (username, skeleton, retired_at)
-       SELECT username, username_skeleton, ?3 FROM username_directory
-        WHERE user_id = ?1
-          AND EXISTS (
-            SELECT 1 FROM users
-             WHERE user_id = ?1 AND ik_ed25519_pub = ?2
-          )`,
-    ).bind(input.user_id, expectedCurrentEd25519Pub, now),
-    db.prepare(
-      `DELETE FROM username_directory
-        WHERE user_id = ?1
-          AND EXISTS (
-            SELECT 1 FROM users
-             WHERE user_id = ?1 AND ik_ed25519_pub = ?2
-          )`,
-    ).bind(input.user_id, expectedCurrentEd25519Pub),
+    // Rotation does not release or tombstone a public name. The saved_names
+    // row remains pinned to this previous key until the username-claim route
+    // sees old-key approval plus a fresh public-name proof for the new key.
     db.prepare(
       `UPDATE users
           SET ik_x25519_pub = ?2,
@@ -204,7 +186,7 @@ export async function rotateUserKeys(
       input.rn_capabilities ?? 0,
     ),
   ]);
-  if ((results[2]?.meta?.changes ?? 0) !== 1) return null;
+  if ((results[0]?.meta?.changes ?? 0) !== 1) return null;
   return { last_rotated_at: now };
 }
 
@@ -277,6 +259,20 @@ export async function unregisterUserIfCurrent(
             AND ${ownsCurrentKey}`,
         )
         .bind(userId, userId, expectedCurrentEd25519Pub),
+      db
+        .prepare(
+          `DELETE FROM public_name_proofs
+          WHERE owner_user_id = ?
+            AND ${ownsCurrentKey}`,
+        )
+        .bind(userId, userId, expectedCurrentEd25519Pub),
+      db
+        .prepare(
+          `DELETE FROM saved_names
+          WHERE public_identity_key = ?
+            AND ${ownsCurrentKey}`,
+        )
+        .bind(expectedCurrentEd25519Pub, userId, expectedCurrentEd25519Pub),
       db
         .prepare(
           `DELETE FROM opk_pool

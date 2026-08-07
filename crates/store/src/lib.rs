@@ -94,6 +94,18 @@ pub struct StoredMessage {
     /// [`MessageStore::list_by_channel`] results.
     pub decrypted_at: i64,
 
+    /// Discord-side parent message snowflake when this row is a reply.
+    ///
+    /// Stored inside the sealed metadata envelope. `None` means a normal
+    /// top-level message.
+    pub reply_parent_id: Option<String>,
+
+    /// Authenticated content revision for this row.
+    ///
+    /// This is derived from the row's encrypted content version: the first
+    /// successful write is `1`, and each accepted sender edit increments it.
+    pub edit_revision: i64,
+
     /// `true` after [`MessageStore::mark_burned`] has been
     /// called; burned rows are excluded from `get` and
     /// `list_by_channel`. Carried in the struct so callers
@@ -844,6 +856,7 @@ impl MessageStore {
             sender_discord_id: msg.sender_discord_id.clone(),
             sender_osl_user_id: msg.sender_osl_user_id.clone(),
             decrypted_at: msg.decrypted_at,
+            reply_parent_id: msg.reply_parent_id.clone(),
         };
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
@@ -2175,6 +2188,8 @@ impl MessageStore {
             sender_osl_user_id: meta.sender_osl_user_id,
             plaintext,
             decrypted_at: meta.decrypted_at,
+            reply_parent_id: meta.reply_parent_id,
+            edit_revision: row.content_version,
             burned: row.burned != 0,
         })
     }

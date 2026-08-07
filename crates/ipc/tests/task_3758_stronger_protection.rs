@@ -20,6 +20,12 @@ const BOB_DID: &str = "900000000000003759";
 
 static IO_LOCK: Mutex<()> = Mutex::new(());
 
+struct AuditedMessage {
+    name: &'static str,
+    label: &'static str,
+    material_present: bool,
+}
+
 struct ConfigDirGuard;
 
 impl Drop for ConfigDirGuard {
@@ -248,12 +254,33 @@ fn task_3758_prepared_messages_prove_stronger_material_not_just_label() {
         .count();
 
     println!("TASK3758 on_label=on");
+    let rn_label = "on";
+    let legacy_label = "off";
+    let audited_messages = [
+        AuditedMessage {
+            name: "task-3758-rn-message",
+            label: rn_label,
+            material_present: rn_material_present,
+        },
+        AuditedMessage {
+            name: "task-3758-legacy-message",
+            label: legacy_label,
+            material_present: !legacy_material_absent,
+        },
+    ];
+    let label_on_material_absent: Vec<&AuditedMessage> = audited_messages
+        .iter()
+        .filter(|message| message.label == "on" && !message.material_present)
+        .collect();
+
+    println!("TASK3758 on_label={rn_label}");
     println!(
         "TASK3758 on_wire_version={:?}",
         osl_ratchet_next::peek_wire_version(&rn_wire)
     );
     println!("TASK3758 on_mlkem_bootstrap_material_present={rn_material_present}");
     println!("TASK3758 off_label=off");
+    println!("TASK3758 off_label={legacy_label}");
     println!("TASK3758 off_wire_version={}", raw_wire(&legacy_wire)[0]);
     println!(
         "TASK3758 off_mlkem_bootstrap_material_present={}",
@@ -264,4 +291,20 @@ fn task_3758_prepared_messages_prove_stronger_material_not_just_label() {
     assert!(rn_material_present);
     assert!(legacy_material_absent);
     assert_eq!(label_on_material_absent_count, 0);
+    println!(
+        "TASK3758 label_on_material_absent_count={}",
+        label_on_material_absent.len()
+    );
+
+    assert!(rn_material_present);
+    assert!(legacy_material_absent);
+    assert!(
+        label_on_material_absent.is_empty(),
+        "TASK3758 label lied for message {}",
+        label_on_material_absent
+            .iter()
+            .map(|message| message.name)
+            .collect::<Vec<_>>()
+            .join(",")
+    );
 }

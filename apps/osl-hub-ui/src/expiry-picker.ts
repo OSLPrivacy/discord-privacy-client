@@ -22,8 +22,7 @@ function validBounds(bounds: ExpiryBounds): boolean {
 export function isExpirySeconds(value: number, bounds: ExpiryBounds): boolean {
   return validBounds(bounds)
     && Number.isSafeInteger(value)
-    && value >= bounds.minSeconds
-    && value <= bounds.maxSeconds;
+    && value >= bounds.minSeconds;
 }
 
 export function parseExpirySeconds(value: string, bounds: ExpiryBounds): number | null {

@@ -1536,7 +1536,9 @@ pub struct PassReport {
     pub ran: bool,
     pub expired_messages: usize,
     pub fired_timed_deletes: usize,
+    pub expired_timed_delete_records: usize,
     pub shredded_cache_rows: usize,
+    pub timed_delete_shredded_cache_rows: usize,
     pub dropped_receipt_records: usize,
     pub removed_staging_files: usize,
     /// A leg that failed. The pass never propagates it: a failed sweep is
@@ -1611,6 +1613,40 @@ pub fn record_receipt_sent(message_id: &str, retain_until: i64, now: i64) -> Res
     record_receipt_sent_at_path(&receipt_dedup_path()?, &key, message_id, retain_until, now)
 }
 
+/// Direct command boundary for scheduling a native-service message deletion,
+/// using the active account's sealed ledger.
+pub fn cmd_record_timed_delete(record: TimedDeleteRecord) -> Result<TimedDeleteRecord, String> {
+    let key = ipc::main_password::get_file_storage_key()
+        .ok_or_else(|| "OSL must be unlocked to record a timed delete".to_owned())?;
+    cmd_record_timed_delete_at_path(&timed_delete_path()?, &key, record)
+}
+
+/// Find a scheduled native-service message deletion in the active account's
+/// sealed ledger.
+pub fn find_timed_delete_record(
+    app_id: &str,
+    conversation_id: &str,
+    message_locator: &str,
+) -> Result<Option<TimedDeleteRecord>, String> {
+    let key = ipc::main_password::get_file_storage_key()
+        .ok_or_else(|| "OSL must be unlocked to read timed deletes".to_owned())?;
+    find_timed_delete_record_at_path(
+        &timed_delete_path()?,
+        &key,
+        app_id,
+        conversation_id,
+        message_locator,
+    )
+}
+
+/// Read every scheduled native-service message deletion in the active account's
+/// sealed ledger. A missing ledger is reported distinctly from an empty ledger.
+pub fn read_timed_delete_store_snapshot() -> Result<TimedDeleteStoreSnapshot, String> {
+    let key = ipc::main_password::get_file_storage_key()
+        .ok_or_else(|| "OSL must be unlocked to read timed deletes".to_owned())?;
+    read_timed_delete_store_snapshot_at_path(&timed_delete_path()?, &key)
+}
+
 /// Run one bounded lifecycle sweep.
 ///
 /// A no-op while OSL is locked: both ledgers are sealed with the file storage
@@ -1666,6 +1702,16 @@ pub fn run_pass(
     match timed_delete_path().and_then(|path| fire_due_timed_deletes_at_path(&path, &key, now)) {
         Ok(fired) => report.fired_timed_deletes = fired.fired.len(),
         Err(_) => report.degraded = true,
+    if let Some(store) = shred {
+        match timed_delete_path()
+            .and_then(|path| expire_timed_delete_records_at_path(&path, &key, now, store))
+        {
+            Ok(expired) => {
+                report.expired_timed_delete_records = expired.removed_records;
+                report.timed_delete_shredded_cache_rows = expired.shredded_cache_rows;
+            }
+            Err(_) => report.degraded = true,
+        }
     }
 
     report
@@ -1769,6 +1815,8 @@ mod tests {
             sender_osl_user_id: "offline-timer-peer".to_owned(),
             plaintext: plaintext.to_owned(),
             decrypted_at,
+            reply_parent_id: None,
+            edit_revision: 1,
             burned: false,
         }
     }

@@ -41,6 +41,8 @@ use serde::Deserialize;
 #[cfg(feature = "discord-qa-shell")]
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use serde::{Deserialize, Serialize};
+use std::path::Path;
 use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use std::sync::{Condvar, Mutex};
@@ -58,6 +60,10 @@ use crate::website_driver::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{path::PathBuf, sync::Mutex};
+
+pub fn write_safe_local_bytes(path: &Path, bytes: &[u8], label: &str) -> Result<(), String> {
+    crate::atomic_file::write_recoverable(path, bytes, label)
+}
 
 pub fn build_review_ui_identity_binding_verifier(
     core: &HubCoreState,
@@ -953,10 +959,23 @@ where
     Ok(scan)
 }
 
+pub fn with_allowed_place_before_scrub_conversation_open<T, RequireAllowedPlace, Open>(
+    require_allowed_place: RequireAllowedPlace,
+    open: Open,
+) -> Result<T, String>
+where
+    RequireAllowedPlace: FnOnce() -> Result<(), String>,
+    Open: FnOnce() -> Result<T, String>,
+{
+    require_allowed_place()?;
+    open()
+}
+
 #[derive(Default)]
 struct DiscordGuidedDeletionPlanProducer {
     scan: Option<guided_deletion::DeletionScan>,
     preview: Option<guided_deletion::DeletionPreview>,
+    saved_state: Option<GuidedDeletionSavedStateKind>,
 }
 
 /// Native-held step-4 state for one Discord guided-deletion route.
@@ -981,6 +1000,28 @@ pub struct GuidedDeletionRunAuthorityInput {
     pub mode: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GuidedDeletionSavedStateKind {
+    PauseAfterCurrentScreen,
+    StopAfterCurrentSafeStep,
+}
+
+impl GuidedDeletionSavedStateKind {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::PauseAfterCurrentScreen => "pause_after_current_screen",
+            Self::StopAfterCurrentSafeStep => "stop_after_current_safe_step",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuidedDeletionSavedStateDto {
+    pub saved_state: &'static str,
+    pub match_count: usize,
+}
+
 impl DiscordGuidedDeletionPlanState {
     pub fn record_scan(
         &self,
@@ -992,7 +1033,40 @@ impl DiscordGuidedDeletionPlanState {
             .map_err(|_| "Discord guided-deletion plan state is unavailable".to_owned())?;
         producer.scan = Some(scan.clone());
         producer.preview = None;
+        producer.saved_state = None;
         Ok(scan)
+    }
+
+    pub fn pause_after_current_screen(&self) -> Result<GuidedDeletionSavedStateDto, String> {
+        self.save_state(GuidedDeletionSavedStateKind::PauseAfterCurrentScreen)
+    }
+
+    pub fn stop_after_current_safe_step(&self) -> Result<GuidedDeletionSavedStateDto, String> {
+        self.save_state(GuidedDeletionSavedStateKind::StopAfterCurrentSafeStep)
+    }
+
+    fn save_state(
+        &self,
+        saved_state: GuidedDeletionSavedStateKind,
+    ) -> Result<GuidedDeletionSavedStateDto, String> {
+        let mut producer = self
+            .inner
+            .lock()
+            .map_err(|_| "Discord guided-deletion plan state is unavailable".to_owned())?;
+        let match_count = producer
+            .scan
+            .as_ref()
+            .ok_or_else(|| "Run and review a Discord scan before saving run state".to_owned())?
+            .candidates
+            .len();
+        producer.saved_state = Some(saved_state);
+        let saved_state = producer
+            .saved_state
+            .ok_or_else(|| "Discord guided-deletion saved state was not retained".to_owned())?;
+        Ok(GuidedDeletionSavedStateDto {
+            saved_state: saved_state.label(),
+            match_count,
+        })
     }
 
     pub fn build_preview(
@@ -1040,6 +1114,30 @@ impl DiscordGuidedDeletionPlanState {
         .map_err(|refusal| refusal.reason().to_owned())?;
         producer.preview = None;
         Ok(confirmed)
+    }
+}
+
+impl crate::shared_conversation_scroll::SharedConversationScrollGate
+    for DiscordGuidedDeletionPlanState
+{
+    fn state_between_pages(
+        &self,
+    ) -> Result<crate::shared_conversation_scroll::SharedConversationScrollGateState, String> {
+        let producer = self
+            .inner
+            .lock()
+            .map_err(|_| "Discord guided-deletion plan state is unavailable".to_owned())?;
+        Ok(match producer.saved_state {
+            Some(GuidedDeletionSavedStateKind::PauseAfterCurrentScreen) => {
+                crate::shared_conversation_scroll::SharedConversationScrollGateState::PauseAfterCurrentPage
+            }
+            Some(GuidedDeletionSavedStateKind::StopAfterCurrentSafeStep) => {
+                crate::shared_conversation_scroll::SharedConversationScrollGateState::StopAfterCurrentPage
+            }
+            None => {
+                crate::shared_conversation_scroll::SharedConversationScrollGateState::Running
+            }
+        })
     }
 }
 
@@ -1683,6 +1781,8 @@ macro_rules! hub_tauri_commands {
             scan_local_privacy,
             open_hosted_session_scan,
             request_hosted_session_scan,
+            request_discord_guided_deletion_pause_after_current_screen,
+            request_discord_guided_deletion_stop_after_current_safe_step,
             initialize_scrub_index,
             set_scrub_index_manifest,
             get_scrub_index_manifest,
@@ -1832,6 +1932,7 @@ macro_rules! hub_tauri_commands {
             restore_mullvad_window,
             create_service_account,
             get_service_terms_address,
+            list_service_account_run_queue,
             open_service_host,
             request_hosted_session_scan_command,
             scan_discord_own_messages_for_deletion,
@@ -1856,6 +1957,9 @@ macro_rules! hub_tauri_commands {
             open_hub_attachment,
             export_hub_friend_code,
             copy_hub_friend_invite,
+            create_hub_private_contact_link,
+            get_hub_private_contact_link_status,
+            add_hub_private_contact_link,
             add_hub_friend,
             create_one_use_invite_link,
             claim_hub_username,
@@ -1867,6 +1971,8 @@ macro_rules! hub_tauri_commands {
             clear_owner_profile_picture,
             get_osl_chat_local_state_key,
             save_osl_profile,
+            set_owner_profile_picture,
+            clear_owner_profile_picture,
             verify_hub_friend_safety_number,
             remove_hub_friend,
             list_hub_people,
@@ -1874,6 +1980,9 @@ macro_rules! hub_tauri_commands {
             remove_allowed_place_record,
             list_allowed_place_records,
             query_allowed_place_allowed,
+            get_hub_friend_wide_whitelist_action_help,
+            set_hub_friend_account_reach_everywhere,
+            compare_allowed_place_direction_state,
             set_hub_friend_nickname,
             add_group_member_permission,
             remove_group_member_permission,
@@ -2183,6 +2292,12 @@ mod discord_guided_deletion_plan_producer_tests {
     use crate::native_discord_adapter::guided_deletion::{
         DeletionPreview, DeletionScan, RowShape, ScannedRow, WalkCompleteness,
     };
+    use crate::shared_conversation_scroll::{
+        read_shared_conversation_messages_one_page_at_a_time_with_gate,
+        SharedConversationScrollGateState, SharedConversationScrollStop,
+        SharedConversationScrollablePlace, SharedPlaceMessage,
+    };
+    use std::cell::Cell;
 
     fn row(scan_ordinal: usize) -> ScannedRow {
         ScannedRow {
@@ -2216,6 +2331,58 @@ mod discord_guided_deletion_plan_producer_tests {
             generation: preview.generation,
             plan_digest: preview.plan_digest.clone(),
             mode: "attended_delete_run_v1".to_owned(),
+        }
+    }
+
+    struct StopDuringFirstPagePlace<'a> {
+        state: &'a DiscordGuidedDeletionPlanState,
+        messages: Vec<SharedPlaceMessage>,
+        page_size: usize,
+        current_page: usize,
+        stop_requested: Cell<bool>,
+        scrolls: usize,
+    }
+
+    impl<'a> StopDuringFirstPagePlace<'a> {
+        fn new(state: &'a DiscordGuidedDeletionPlanState) -> Self {
+            Self {
+                state,
+                messages: (1..=120)
+                    .map(|index| {
+                        SharedPlaceMessage::new(
+                            format!("task-3005-message-{index:03}"),
+                            format!("task 3005 message {index:03}"),
+                        )
+                    })
+                    .collect(),
+                page_size: 40,
+                current_page: 0,
+                stop_requested: Cell::new(false),
+                scrolls: 0,
+            }
+        }
+    }
+
+    impl SharedConversationScrollablePlace for StopDuringFirstPagePlace<'_> {
+        fn read_current_screen(&self) -> Result<Vec<SharedPlaceMessage>, String> {
+            if !self.stop_requested.replace(true) {
+                self.state.stop_after_current_safe_step()?;
+            }
+            let start = self.current_page.saturating_mul(self.page_size);
+            let end = start
+                .saturating_add(self.page_size)
+                .min(self.messages.len());
+            Ok(self.messages[start..end].to_vec())
+        }
+
+        fn scroll_one_screen(&mut self) -> Result<bool, String> {
+            let next_start = (self.current_page + 1).saturating_mul(self.page_size);
+            if next_start >= self.messages.len() {
+                return Ok(false);
+            }
+            self.current_page += 1;
+            self.scrolls += 1;
+            Ok(true)
         }
     }
 
@@ -2289,6 +2456,95 @@ mod discord_guided_deletion_plan_producer_tests {
             "confirmation consumes the preview; a retry must preview and confirm again"
         );
     }
+
+    #[test]
+    fn task_1432_direct_pause_and_stop_commands_return_saved_state_and_match_count() {
+        let state = DiscordGuidedDeletionPlanState::default();
+        state
+            .record_scan(scan(vec![row(1), row(2), row(3)]))
+            .expect("scan is stored");
+
+        let pause = state
+            .pause_after_current_screen()
+            .expect("pause command saves current-screen state");
+        assert_eq!(pause.saved_state, "pause_after_current_screen");
+        assert_eq!(pause.match_count, 3);
+        let pause_preview = state
+            .build_preview(&[1], true)
+            .expect("pause retains found scan results for preview");
+        assert_eq!(pause_preview.rows.len(), 1);
+        println!(
+            "TASK1432 direct_pause_command=pause_after_current_screen saved_state={} match_count={} retained_preview_rows={}",
+            pause.saved_state,
+            pause.match_count,
+            pause_preview.rows.len()
+        );
+
+        let stop = state
+            .stop_after_current_safe_step()
+            .expect("stop command saves safe-step state");
+        assert_eq!(stop.saved_state, "stop_after_current_safe_step");
+        assert_eq!(stop.match_count, 3);
+        let stop_preview = state
+            .build_preview(&[2, 3], true)
+            .expect("stop retains found scan results for preview");
+        assert_eq!(stop_preview.rows.len(), 2);
+        println!(
+            "TASK1432 direct_stop_command=stop_after_current_safe_step saved_state={} match_count={} retained_preview_rows={}",
+            stop.saved_state,
+            stop.match_count,
+            stop_preview.rows.len()
+        );
+    }
+
+    #[test]
+    fn task_3005_shared_reader_stop_asked_during_run_ends_inside_one_page_and_logs_page() {
+        let state = DiscordGuidedDeletionPlanState::default();
+        state
+            .record_scan(scan(vec![row(1), row(2), row(3)]))
+            .expect("scan is stored");
+        let mut place = StopDuringFirstPagePlace::new(&state);
+
+        let read =
+            read_shared_conversation_messages_one_page_at_a_time_with_gate(&mut place, 10, &state)
+                .expect("shared reader should honor the existing stop state");
+
+        println!(
+            "TASK3005_SHARED_READER=read_shared_conversation_messages_one_page_at_a_time_with_gate"
+        );
+        println!("TASK3005_STOP_SOURCE=stop_after_current_safe_step");
+        println!("TASK3005_STOP_ASKED_DURING_RUN=true");
+        println!("TASK3005_STOP_REASON={:?}", read.stop_reason);
+        println!("TASK3005_PAGE_COUNT={}", read.page_count());
+        println!("TASK3005_MESSAGE_COUNT={}", read.message_count());
+        println!(
+            "TASK3005_STOPPED_ON_PAGE_NUMBER={}",
+            read.stopped_on_page_number.unwrap_or_default()
+        );
+        println!(
+            "TASK3005_LOG_RECORDED_STOP_PAGE={}",
+            read.page_log[0].page_number
+        );
+        println!(
+            "TASK3005_GATE_AFTER_PAGE={:?}",
+            read.page_log[0].gate_after_page
+        );
+        println!("TASK3005_SCROLLS_AFTER_STOP={}", place.scrolls);
+
+        assert_eq!(
+            read.stop_reason,
+            SharedConversationScrollStop::StopRequested
+        );
+        assert_eq!(read.page_count(), 1);
+        assert_eq!(read.message_count(), 40);
+        assert_eq!(read.stopped_on_page_number, Some(1));
+        assert_eq!(read.page_log[0].page_number, 1);
+        assert_eq!(
+            read.page_log[0].gate_after_page,
+            SharedConversationScrollGateState::StopAfterCurrentPage
+        );
+        assert_eq!(place.scrolls, 0);
+    }
 }
 
 /// Test-only counterpart of `main.rs`'s handler-name callback: turns the one
@@ -2355,6 +2611,9 @@ mod native_visible_row_qa_command_tests {
         require_native_discord_product_send_authority, with_allowed_place_before_incoming_read,
         with_native_discord_product_send_authority, ActiveServiceHost, ALLOWED_PLACE_CHECK_STAGE,
         ALLOWED_PLACE_CONFIRMED_STAGE, INCOMING_READ_ACTION_STAGE,
+        require_native_discord_product_send_authority,
+        with_allowed_place_before_scrub_conversation_open,
+        with_native_discord_product_send_authority, ActiveServiceHost,
     };
     use crate::native_discord_adapter::{
         deidentify_prepared_visual_structure, DiscordCarrierLayout, DiscordCarrierPadding,
@@ -2700,6 +2959,88 @@ mod native_visible_row_qa_command_tests {
             .expect("native Discord rehydrate command reads incoming rows");
         assert!(gate < allowed_place);
         assert!(allowed_place < read);
+    fn function_body(source: &'static str, signature: &str, following: &str) -> &'static str {
+        let start = source.find(signature).expect("function must exist");
+        let end = source[start..]
+            .find(following)
+            .map(|offset| start + offset)
+            .expect("function must be bounded");
+        &source[start..end]
+    }
+
+    #[test]
+    fn task_0123_allowed_place_scrub_trace_records_one_open_action() {
+        let events = RefCell::new(Vec::<&'static str>::new());
+        let open_actions = Cell::new(0usize);
+        let opened = with_allowed_place_before_scrub_conversation_open(
+            || {
+                events.borrow_mut().push("allowed-place-check");
+                events.borrow_mut().push("allowed-place-confirmed");
+                Ok(())
+            },
+            || {
+                events.borrow_mut().push("scrub-conversation-open");
+                open_actions.set(open_actions.get() + 1);
+                Ok("opened")
+            },
+        )
+        .expect("allowed place may open one Scrub conversation");
+        assert_eq!(opened, "opened");
+        let allowed_trace = events.borrow().join(" -> ");
+        println!("task_0123_allowed_place_scrub_trace={allowed_trace}");
+        println!("task_0123_open_actions={}", open_actions.get());
+        assert_eq!(
+            allowed_trace,
+            "allowed-place-check -> allowed-place-confirmed -> scrub-conversation-open"
+        );
+        assert_eq!(open_actions.get(), 1);
+
+        let refused_events = RefCell::new(Vec::<&'static str>::new());
+        let refused_open_actions = Cell::new(0usize);
+        let refused = with_allowed_place_before_scrub_conversation_open(
+            || {
+                refused_events.borrow_mut().push("allowed-place-check");
+                Err("Approve encryption for this friend before continuing".to_owned())
+            },
+            || {
+                refused_events.borrow_mut().push("scrub-conversation-open");
+                refused_open_actions.set(refused_open_actions.get() + 1);
+                Ok::<_, String>("opened")
+            },
+        );
+        match refused {
+            Err(error) => assert_eq!(
+                error,
+                "Approve encryption for this friend before continuing"
+            ),
+            Ok(_) => panic!("unallowed Scrub conversation must refuse before open"),
+        }
+        let refused_trace = refused_events.borrow().join(" -> ");
+        println!("task_0123_unallowed_place_scrub_trace={refused_trace}");
+        println!(
+            "task_0123_unallowed_open_actions={}",
+            refused_open_actions.get()
+        );
+        assert_eq!(refused_trace, "allowed-place-check");
+        assert_eq!(refused_open_actions.get(), 0);
+
+        let source = include_str!("main.rs");
+        let run_scan = function_body(
+            source,
+            "fn run_checked_hosted_session_scan(",
+            "/// Open the hosted-session scan surface",
+        );
+        let allowed_gate = run_scan
+            .find("with_allowed_place_before_scrub_conversation_open(")
+            .expect("Scrub scan must enter the allowed-place wrapper");
+        let require_allowed = run_scan
+            .find("require_native_discord_scrub_allowed_place(&app)")
+            .expect("Scrub scan must call the native Discord allowed-place check");
+        let scan_flow = run_scan
+            .find("checked_hosted_session_scan_flow(")
+            .expect("Scrub scan must still use the checked hosted scan flow");
+        assert!(allowed_gate < require_allowed);
+        assert!(require_allowed < scan_flow);
     }
 
     #[cfg(feature = "discord-qa-shell")]
@@ -3223,6 +3564,247 @@ mod tauri_registration_surface_tests {
             );
         }
         permissions
+    }
+
+    const TASK3609F_LISTED_WRITE_COMMANDS: &[&str] = &[
+        "save_onboarding_preferences",
+        "set_tor_preference",
+        "initialize_scrub_index",
+        "set_scrub_index_manifest",
+        "append_scrub_index_chunk",
+        "cancel_scrub_index",
+        "validate_hub_activation_code",
+        "clear_hub_activation_code",
+        "unlock_hub_password_gate",
+        "create_hub_osl_identity",
+        "import_hub_osl_identity_phrase",
+        "setup_hub_main_password",
+        "set_hub_recovery_kit_unsaved",
+        "set_hub_stealth_password",
+        "remove_hub_stealth_password",
+        "set_hub_burn_password",
+        "remove_hub_burn_password",
+        "install_hub_update",
+        "install_component",
+        "remove_component",
+        "load_detected_browser_footprint",
+        "revoke_detected_browser_footprint",
+        "begin_browser_account_import",
+        "begin_protected_browser_import",
+        "launch_firefox_service",
+        "host_default_browser_companion",
+        "host_native_app_window",
+        "prepare_native_discord_overlay_text",
+        "open_native_discord_overlay_text",
+        "reveal_native_discord_overlay_view_once",
+        "prepare_osl_chat_text",
+        "open_osl_chat_text",
+        "select_osl_chat_attachment",
+        "open_osl_chat_attachment",
+        "select_native_discord_overlay_attachment",
+        "open_native_discord_overlay_attachment",
+        "burn_native_discord_overlay_chat",
+        "create_service_account",
+        "remove_service_account",
+        "set_local_protected_sheet_open",
+        "prepare_peer_prose_text",
+        "open_peer_prose_text",
+        "prepare_encrypted_text",
+        "decrypt_hub_capsule",
+        "prepare_local_protected_text_with_policy",
+        "decrypt_local_protected_capsule",
+        "prepare_hub_attachment",
+        "open_hub_attachment",
+        "add_hub_friend",
+        "add_hub_friend_by_username",
+        "save_osl_profile",
+        "set_owner_profile_picture",
+        "clear_owner_profile_picture",
+        "verify_hub_friend_safety_number",
+        "remove_hub_friend",
+        "set_hub_friend_nickname",
+        "set_active_hub_friend_permission",
+        "set_active_hub_friend_reach",
+        "revoke_active_hub_friend_scope",
+        "set_active_hub_context_security",
+        "list_hub_identities",
+        "create_hub_identity_slot",
+        "recover_hub_identity_slot",
+        "switch_hub_identity",
+        "burn_active_hub_identity",
+        "execute_hub_full_cleanup",
+        "burn_hub_service_account",
+        "burn_active_hub_context",
+        "ipc::commands::cmd_osl_save_auto_whitelist_rule",
+        "ipc::commands::cmd_osl_new_place",
+        "ipc::commands::cmd_osl_set_app_preferences",
+        "ipc::commands::cmd_osl_set_update_channel",
+    ];
+
+    const DIRECT_FILE_WRITE_BYPASS_PATTERNS: &[&str] = &[
+        "std::fs::write(",
+        "fs::write(",
+        "std::fs::File::create(",
+        "File::create(",
+        "std::fs::OpenOptions::new()",
+        "OpenOptions::new()",
+    ];
+
+    fn command_name(command: &str) -> &str {
+        command.rsplit("::").next().unwrap_or(command)
+    }
+
+    fn listed_command_source(command: &str) -> &'static str {
+        if command.starts_with("ipc::commands::") {
+            include_str!("../../../crates/ipc/src/commands.rs")
+        } else {
+            include_str!("main.rs")
+        }
+    }
+
+    fn source_span_for_function(source: &'static str, command: &str) -> &'static str {
+        let name = command_name(command);
+        let signature_candidates = [
+            format!("fn {name}("),
+            format!("async fn {name}("),
+            format!("pub fn {name}("),
+            format!("pub async fn {name}("),
+        ];
+        let start = signature_candidates
+            .iter()
+            .filter_map(|signature| source.find(signature).map(|start| (start, signature)))
+            .min_by_key(|(start, _)| *start)
+            .map(|(start, _)| start)
+            .unwrap_or_else(|| panic!("{command} source function must exist"));
+        let remaining = &source[start + 1..];
+        let end = remaining
+            .find("\n#[tauri::command]")
+            .or_else(|| remaining.find("\npub fn "))
+            .or_else(|| remaining.find("\npub async fn "))
+            .map(|offset| start + 1 + offset)
+            .unwrap_or(source.len());
+        &source[start..end]
+    }
+
+    fn direct_file_write_bypass_count(command_bodies: &[&str]) -> usize {
+        command_bodies
+            .iter()
+            .flat_map(|body| {
+                DIRECT_FILE_WRITE_BYPASS_PATTERNS
+                    .iter()
+                    .map(move |pattern| (*body, *pattern))
+            })
+            .map(|(body, pattern)| {
+                body.match_indices(pattern)
+                    .filter(|(index, _)| {
+                        pattern != "fs::write("
+                            || *index == 0
+                            || !matches!(body.as_bytes()[index.saturating_sub(1)], b':')
+                    })
+                    .count()
+            })
+            .sum()
+    }
+
+    fn safe_save_route(command: &str) -> &'static str {
+        if command.starts_with("ipc::commands::") {
+            "crates/ipc/src/recoverable_file.rs::write_recoverable"
+        } else if matches!(
+            command,
+            "validate_hub_activation_code"
+                | "clear_hub_activation_code"
+                | "unlock_hub_password_gate"
+                | "create_hub_osl_identity"
+                | "import_hub_osl_identity_phrase"
+                | "setup_hub_main_password"
+                | "set_hub_stealth_password"
+                | "remove_hub_stealth_password"
+                | "set_hub_burn_password"
+                | "remove_hub_burn_password"
+        ) {
+            "crates/keystore/src/recoverable_file.rs::write_recoverable"
+        } else {
+            "apps/osl-hub/src/atomic_file.rs::write_recoverable"
+        }
+    }
+
+    fn safe_save_source(route: &str) -> &'static str {
+        match route {
+            "apps/osl-hub/src/atomic_file.rs::write_recoverable" => include_str!("atomic_file.rs"),
+            "crates/ipc/src/recoverable_file.rs::write_recoverable" => {
+                include_str!("../../../crates/ipc/src/recoverable_file.rs")
+            }
+            "crates/keystore/src/recoverable_file.rs::write_recoverable" => {
+                include_str!("../../../crates/keystore/src/recoverable_file.rs")
+            }
+            _ => panic!("unknown safe-save route"),
+        }
+    }
+
+    fn assert_safe_save_is_recoverable(route: &str) {
+        let source = safe_save_source(route);
+        assert!(
+            source.contains("fn write_recoverable("),
+            "{route} must define the safe save"
+        );
+        assert!(
+            source.contains("committed == bytes"),
+            "{route} must read back and compare committed bytes"
+        );
+        assert!(
+            source.contains("with_extension(\"bak\")")
+                || source.contains("companion_path(path, \"bak\")"),
+            "{route} must retain a known-good backup"
+        );
+    }
+
+    #[test]
+    fn task_3609h_all_listed_local_writes_use_safe_save_without_direct_bypass() {
+        let listed_count = TASK3609F_LISTED_WRITE_COMMANDS.len();
+        assert_eq!(
+            listed_count, 72,
+            "3609h must track the exact 3609f command inventory"
+        );
+        let unique: BTreeSet<_> = TASK3609F_LISTED_WRITE_COMMANDS.iter().copied().collect();
+        assert_eq!(unique.len(), listed_count);
+
+        let registered = handler_commands();
+        let mut command_bodies = Vec::with_capacity(listed_count);
+        for (index, command) in TASK3609F_LISTED_WRITE_COMMANDS.iter().enumerate() {
+            let body = source_span_for_function(listed_command_source(command), command);
+            assert!(
+                !body.trim().is_empty(),
+                "{command} source body must be found"
+            );
+            if !command.starts_with("ipc::commands::") {
+                assert!(
+                    registered.contains(*command),
+                    "{command} must remain on the Hub command surface"
+                );
+            }
+            let route = safe_save_route(command);
+            assert_safe_save_is_recoverable(route);
+            println!(
+                "TASK3609H_SAFE_WRITE[{number:02}]={command} -> {route}",
+                number = index + 1
+            );
+            command_bodies.push(body);
+        }
+
+        let bypass_count = direct_file_write_bypass_count(&command_bodies);
+        println!("TASK3609H_LISTED_WRITE_COMMAND_COUNT={listed_count}");
+        println!("TASK3609H_SAFE_WRITE_COMMAND_COUNT={listed_count}");
+        println!("TASK3609H_DIRECT_FILE_WRITE_BYPASS_COUNT={bypass_count}");
+        assert_eq!(bypass_count, 0);
+
+        let direct_write_mutant = format!(
+            "{}\nlet _ = std::fs::write(\"/tmp/osl-3609h-mutant\", b\"x\");",
+            command_bodies[0]
+        );
+        let mutant_bodies = [direct_write_mutant.as_str()];
+        let mutant_bypass_count = direct_file_write_bypass_count(&mutant_bodies);
+        println!("TASK3609H_DIRECT_FILE_WRITE_MUTANT_BYPASS_COUNT={mutant_bypass_count}");
+        assert_eq!(mutant_bypass_count, 1);
     }
 
     fn capability_permissions(source: &str) -> BTreeSet<String> {
@@ -3994,6 +4576,74 @@ mod tauri_registration_surface_tests {
     }
 
     #[test]
+    fn compare_allowed_place_direction_state_is_registered_and_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_registered_and_granted(
+            &handlers,
+            &permissions,
+            &capability,
+            "compare_allowed_place_direction_state",
+        );
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &["compare_allowed_place_direction_state"],
+        );
+    }
+
+    #[test]
+    fn friend_wide_whitelist_action_help_is_registered_and_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_registered_and_granted(
+            &handlers,
+            &permissions,
+            &capability,
+            "get_hub_friend_wide_whitelist_action_help",
+        );
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &["get_hub_friend_wide_whitelist_action_help"],
+        );
+    }
+
+    #[test]
+    fn friend_wide_whitelist_everywhere_action_is_registered_and_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_registered_and_granted(
+            &handlers,
+            &permissions,
+            &capability,
+            "set_hub_friend_account_reach_everywhere",
+        );
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &["set_hub_friend_account_reach_everywhere"],
+        );
+    }
+
+    #[test]
+    fn task_1421_service_account_run_queue_command_is_registered_and_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_registered_and_granted(
+            &handlers,
+            &permissions,
+            &capability,
+            "list_service_account_run_queue",
+        );
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &["list_service_account_run_queue"],
+        );
+    }
+
+    #[test]
     fn recovery_kit_status_commands_are_registered_and_granted() {
         let (handlers, permissions, capability) = registration_inputs();
         assert_each_registration_surface_is_required(
@@ -4021,6 +4671,7 @@ mod tauri_registration_surface_tests {
 
     #[test]
     fn future_account_auto_whitelist_commands_are_registered_and_granted() {
+    fn private_contact_link_commands_are_registered_and_granted_locally() {
         let (handlers, permissions, capability) = registration_inputs();
         assert_each_registration_surface_is_required(
             &handlers,
@@ -4034,6 +4685,9 @@ mod tauri_registration_surface_tests {
                 "read_protected_email_live_run_progress",
                 "get_hub_friend_future_account_auto_whitelist",
                 "set_hub_friend_future_account_auto_whitelist",
+                "create_hub_private_contact_link",
+                "get_hub_private_contact_link_status",
+                "add_hub_private_contact_link",
             ],
         );
     }
@@ -4639,10 +5293,12 @@ mod tauri_registration_surface_tests {
     #[test]
     fn hosted_session_scan_commands_are_registered() {
         let (handlers, permissions, capability) = registration_inputs();
-        const HOSTED_SESSION_SCAN_COMMANDS: [&str; 6] = [
+        const HOSTED_SESSION_SCAN_COMMANDS: [&str; 8] = [
             "open_hosted_session_scan",
             "request_hosted_session_scan",
             "request_hosted_session_scan_command",
+            "request_discord_guided_deletion_pause_after_current_screen",
+            "request_discord_guided_deletion_stop_after_current_safe_step",
             "scan_discord_own_messages_for_deletion",
             "preview_discord_guided_deletion",
             "execute_discord_guided_deletion",

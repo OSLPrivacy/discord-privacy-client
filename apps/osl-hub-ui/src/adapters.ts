@@ -544,11 +544,12 @@ export async function closeOslChatContext(): Promise<boolean> {
   catch (error) { recordBackendFailure("close_osl_chat_context", error); return false; }
 }
 
-export async function prepareOslChatText(plaintext: string, viewOnce = false): Promise<PreparedOslChatText | null> {
-  if (!isTauriRuntime() || !isHubPlaintext(plaintext) || typeof viewOnce !== "boolean") return null;
+export async function prepareOslChatText(plaintext: string, viewOnce = false, displayDurationSeconds?: number): Promise<PreparedOslChatText | null> {
+  if (!isTauriRuntime() || !isHubPlaintext(plaintext) || typeof viewOnce !== "boolean"
+    || (displayDurationSeconds !== undefined && (!Number.isSafeInteger(displayDurationSeconds) || displayDurationSeconds < 1 || displayDurationSeconds > 60))) return null;
   try {
     return checkedBackendResponse("prepare_osl_chat_text",
-      parsePreparedOslChatText(await invoke<unknown>("prepare_osl_chat_text", { plaintext, viewOnce })),
+      parsePreparedOslChatText(await invoke<unknown>("prepare_osl_chat_text", displayDurationSeconds === undefined ? { plaintext, viewOnce } : { plaintext, viewOnce, displayDurationSeconds })),
       "the prepared message did not match the expected shape");
   } catch (error) { recordBackendFailure("prepare_osl_chat_text", error, [plaintext]); return null; }
 }

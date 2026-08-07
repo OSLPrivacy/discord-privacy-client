@@ -29,6 +29,7 @@ import { buildRegMsg, buildRotMsg } from "../../src/lib/signed-request.js";
 import {
   base64Encode,
   generateEd25519Pair,
+  publicNameProofFields,
   registerTestUser,
   signEd25519,
   STUB_MLKEM_PUB_B64,
@@ -77,13 +78,14 @@ async function claim(
   const signature_b64 = await signEd25519(pair.signingKey, usernameClaimMessage({
     username, user_id: uid, friend_code, request_id, timestamp_ms,
   }));
+  const proofFields = await publicNameProofFields(SELF, uid, pair.signingKey, username);
   return SELF.fetch("http://test/v1/usernames/claim", {
     method: "POST",
     headers: {
       "content-type": "application/json",
       "cf-connecting-ip": `198.51.100.${(sequence++ % 240) + 1}`,
     },
-    body: JSON.stringify({ username, user_id: uid, friend_code, request_id, timestamp_ms, signature_b64 }),
+    body: JSON.stringify({ username, user_id: uid, friend_code, request_id, timestamp_ms, signature_b64, ...proofFields }),
   });
 }
 

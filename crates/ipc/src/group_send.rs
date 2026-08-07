@@ -344,6 +344,8 @@ pub(crate) fn encrypt_v5_send(
         content: wire,
         control_messages: skdm_wires,
         skdm_peer_status,
+        key_sequence: "sender-keys-v5".to_string(),
+        basic_path_used: false,
     })
 }
 

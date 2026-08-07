@@ -24,6 +24,15 @@ fn stored_record(dir: &Path) -> (String, String, String) {
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     )
     .expect("read SABLE-0140 allowed place")
+fn friend_results(dir: &Path) -> Vec<ipc::commands::AllowedPlaceSearchResultDto> {
+    cmd_osl_search_allowed_places(dir.to_path_buf(), FRIEND_LABEL.to_string())
+        .expect("search allowed places")
+}
+
+fn stored_record(dir: &Path) -> (String, String, String) {
+    let mut results = friend_results(dir);
+    let record = results.pop().expect("read SABLE-0140 allowed place");
+    (record.account, record.person_name, record.stable_id)
 }
 
 #[test]
@@ -44,11 +53,14 @@ fn task_0140_friend_only_auto_whitelist_adds_friend_and_refuses_non_friend_copy(
         cmd_osl_search_allowed_places(dir.path().to_path_buf(), FRIEND_LABEL.to_string())
             .expect("empty search initializes allowed DB");
     let count_before = allowed_count(dir.path());
+    let before_results = friend_results(dir.path());
+    let count_before = before_results.len();
 
     cmd_osl_set_friend_ids(&state, vec![FRIEND_LABEL.to_string()]).expect("seed friend");
     let friend_add = cmd_osl_new_place(&state, place.clone(), Some(dir.path().to_path_buf()))
         .expect("friend place is auto-added");
     let count_after_friend = allowed_count(dir.path());
+    let count_after_friend = friend_results(dir.path()).len();
     let (stored_account, stored_person, stored_fingerprint) = stored_record(dir.path());
 
     cmd_osl_set_friend_ids(&state, Vec::new()).expect("relationship changed to non-friend");
@@ -58,6 +70,7 @@ fn task_0140_friend_only_auto_whitelist_adds_friend_and_refuses_non_friend_copy(
         cmd_osl_new_place(&state, non_friend_copy, Some(dir.path().to_path_buf()))
             .expect_err("non-friend copy must be refused");
     let count_after_non_friend = allowed_count(dir.path());
+    let count_after_non_friend = friend_results(dir.path()).len();
 
     println!(
         "TASK_0140_FRIEND_ONLY_AUTO_WHITELIST before_count={} before_readable_sable_results={} account_label={} friend_add_name={} friend_add_status={} count_after_friend={} non_friend_copy_only_changed_field=relationship non_friend_error=\"{}\" count_after_non_friend={} fingerprint_before={} stored_fingerprint={} non_friend_fingerprint={} stored_account={} stored_person={}",

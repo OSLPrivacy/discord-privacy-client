@@ -46,6 +46,8 @@ pub mod control_inbox_dead_letter;
 pub mod control_messages;
 pub mod decoy_mp4;
 pub mod destruct_ack;
+pub mod email_send_modes;
+pub mod email_whitelist_kinds;
 pub mod fresh_start;
 pub mod friend_request;
 pub mod group_manifest;
@@ -63,6 +65,7 @@ pub mod peer_map;
 pub mod private_contact_link;
 pub mod prose_token;
 pub mod receipt_wire;
+mod recoverable_file;
 pub mod recovery;
 // OSL-RN ciphertexts are single-use.  This sealed cache lets transcript
 // rendering reuse an already-decrypted payload without advancing the ratchet.

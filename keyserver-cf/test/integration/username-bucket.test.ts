@@ -1,7 +1,7 @@
 import { SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { usernameClaimMessage } from "../../src/lib/username.js";
-import { base64Encode, generateEd25519Pair, registerTestUser, signEd25519, STUB_MLKEM_PUB_B64, STUB_RATCHET_PUB_B64, STUB_X25519_PUB_B64 } from "./helpers.js";
+import { base64Encode, generateEd25519Pair, publicNameProofFields, registerTestUser, signEd25519, STUB_MLKEM_PUB_B64, STUB_RATCHET_PUB_B64, STUB_X25519_PUB_B64 } from "./helpers.js";
 
 function url(bytes: Uint8Array): string { return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); }
 async function bucket(name: string): Promise<{ prefix: string; suffix: string }> {
@@ -14,7 +14,7 @@ async function claim(name: string, id: string, pair: { publicKeyB64: string; sig
   const invite = `OSLFR1.${url(new TextEncoder().encode(JSON.stringify({ payload, signature: url(new Uint8Array(await crypto.subtle.sign({ name: "Ed25519" }, pair.signingKey, new TextEncoder().encode(JSON.stringify(payload))))) })))} `;
   const request_id = url(crypto.getRandomValues(new Uint8Array(32))); const timestamp_ms = Date.now();
   const signature_b64 = await signEd25519(pair.signingKey, usernameClaimMessage({ username: name, user_id: id, friend_code: invite.trim(), request_id, timestamp_ms }));
-  return SELF.fetch("http://test/v1/usernames/claim", { method: "POST", headers: { "content-type": "application/json", "cf-connecting-ip": "203.0.113.90" }, body: JSON.stringify({ username: name, user_id: id, friend_code: invite.trim(), request_id, timestamp_ms, signature_b64 }) });
+  return SELF.fetch("http://test/v1/usernames/claim", { method: "POST", headers: { "content-type": "application/json", "cf-connecting-ip": "203.0.113.90" }, body: JSON.stringify({ username: name, user_id: id, friend_code: invite.trim(), request_id, timestamp_ms, signature_b64, ...(await publicNameProofFields(SELF, id, pair.signingKey, name)) }) });
 }
 
 describe("username bucket", () => {

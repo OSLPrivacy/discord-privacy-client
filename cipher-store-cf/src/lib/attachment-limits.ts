@@ -173,6 +173,9 @@ export const MAX_SEALED_ATTACHMENT_BYTES = ATTACHMENT_TIER_LIMITS.pro.maxBytesPe
 
 export const MAX_DIRECT_ATTACHMENT_BYTES = ATTACHMENT_TIER_LIMITS.free.max_file_bytes;
 export const MAX_SEALED_ATTACHMENT_BYTES = ATTACHMENT_TIER_LIMITS.pro.max_file_bytes;
+// Leaves a bounded allowance for chunk framing and AEAD tags without asking
+// the store to infer plaintext size from opaque ciphertext.
+export const MAX_SEALED_ATTACHMENT_BYTES = ATTACHMENT_TIER_LIMITS.pro.maxBytesPerFile;
 export const MAX_ATTACHMENT_PART_BYTES = 8 * 1024 * 1024;
 export const MAX_ATTACHMENT_PARTS = Math.ceil(
   MAX_SEALED_ATTACHMENT_BYTES / MAX_ATTACHMENT_PART_BYTES,

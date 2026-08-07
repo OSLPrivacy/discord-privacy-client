@@ -99,6 +99,7 @@ use osl_privacy_hub::preferences::{
     DiscordScrubConsentFactsInput, DiscordScrubConsentFactsRead, DiscordScrubRiskAgreementRead,
     PreviewState, ScrubAccountPermissionInput, ScrubAccountPermissionRead,
 };
+use osl_privacy_hub::preferences::{apply_saved_message_runtime_preferences, PreviewState};
 use osl_privacy_hub::privacy_scan::{self, LocalMessageCandidate, LocalPrivacyScanResult};
 use osl_privacy_hub::pro_context_cover::LocalCoverState;
 use osl_privacy_hub::remove_everything::{self, RemoveEverythingReadiness, RemoveEverythingResult};
@@ -121,18 +122,24 @@ use osl_privacy_hub::security::{
     self, AddFriendResult, AppNotificationChoiceRecord, FriendAccountReachChoiceRecord,
     FriendCodeExport, GroupMemberPermissionRecord, HubRevocationStatusDto, HubScopeBurnResult,
     HubSecurityState, LookChoiceRecord, PersonDto, RemoveFriendResult, ScopeSecurityDto,
+    self, AddFriendResult, AllowedPlaceDirectionStateDto, FriendAccountReachEverywhereResult,
+    FriendCodeExport, FriendWideWhitelistActionHelp, HubRevocationStatusDto, HubScopeBurnResult,
+    HubSecurityState, PersonDto, PrivateContactLinkExport, PrivateContactLinkStatus,
+    RemoveFriendResult, ScopeSecurityDto,
 };
 use osl_privacy_hub::security_credentials::{self, HubPasswordRoleStatus};
 use osl_privacy_hub::server_records::{NamedServerRecord, NamedServerRegistryState};
 use osl_privacy_hub::service_host::{self, ActiveServiceHost, ServiceHostState};
 use osl_privacy_hub::service_scope_index::{ImmutableServiceBurnManifest, ServiceScopeIndexState};
 use osl_privacy_hub::services::{ScrubAccountDescriptor, ServiceRegistryState};
+use osl_privacy_hub::services::{ServiceAccountRunQueue, ServiceRegistryState};
 use osl_privacy_hub::startup_gate::{self, HubGateUnlockResult, VerifiedGateRole};
 use osl_privacy_hub::tor_pref::{TorPreference, TorPreferenceState};
 use osl_privacy_hub::update_apply;
 use osl_privacy_hub::update_state_backup;
 use osl_privacy_hub::updates::{
-    bounded_plain_notes, bounded_version, RELEASES_URL, SOURCE_REPOSITORY_URL,
+    bounded_plain_notes, bounded_version, expected_download_fingerprint,
+    prepare_verified_update_install, RELEASES_URL, SOURCE_REPOSITORY_URL,
 };
 use osl_privacy_hub::website_driver::RealBrowserWebsiteDriver;
 use osl_privacy_hub::whatsapp_accessibility::{
@@ -142,7 +149,6 @@ use osl_privacy_hub::whatsapp_accessibility::{
 use osl_privacy_hub::whatsapp_qa_host::{WhatsAppQaHostState, WhatsAppQaResult};
 use runtime::UsbMonitor;
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "whatsapp-qa-shell")]
 use std::io::Write as _;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -265,6 +271,8 @@ use osl_privacy_hub::hub_command_surface::{
     NativeDiscordProductSendAuthority, ProtectedEmailLiveRunProgressRequest,
     ProtectedEmailOpenMessageRead, ProtectedEmailOpenMessageReadRequest, ProtonMailboxForScrubRead,
     ProtonMailboxForScrubReadRequest,
+    start_autoscrub_reviewed_run_inner, with_allowed_place_before_scrub_conversation_open,
+    with_native_discord_product_send_authority,
     with_native_discord_product_send_authority_for_switch, BrowserFootprintConsentRequest,
     CheckedHost, DiscordGuidedDeletionPlanState, GuidedDeletionRunAuthorityInput,
     NativeDiscordProductSendAuthority,
@@ -873,6 +881,47 @@ fn run_checked_hosted_session_scan(
             |checked| require_same_overlay_context(&app, checked.context_epoch, &checked.active),
         )
     })
+    with_allowed_place_before_scrub_conversation_open(
+        || require_native_discord_scrub_allowed_place(&app),
+        || {
+            checked_hosted_session_scan_flow(
+                || checked_host_for_hosted_session_scan(&app),
+                |checked| checked.attended_operator_names(),
+                |checked, operator_names| {
+                    osl_privacy_hub::native_discord_adapter::scan_own_messages_for_deletion(
+                        &app.state::<NativeWindowHostState>(),
+                        &checked.owner_osl_user_id,
+                        &checked.scope_binding,
+                        checked.active.generation,
+                        operator_names,
+                    )
+                },
+                |checked| {
+                    require_same_overlay_context(&app, checked.context_epoch, &checked.active)
+                },
+            )
+        },
+    )
+}
+
+fn require_native_discord_scrub_allowed_place(app: &tauri::AppHandle) -> Result<(), String> {
+    let core = app.state::<HubCoreState>();
+    let broker = app.state::<HubBrokerState>();
+    app.state::<OverlaySessionState>()
+        .with_bootstrap_context(|context_token, host| {
+            broker.validate_active_host(context_token, host)?;
+            let target = broker
+                .manual_burn_target(context_token)?
+                .ok_or_else(|| "The native Discord friend context is unavailable".to_owned())?;
+            security::require_manual_peer_scope_approved(
+                &core,
+                &target.service_id,
+                &target.account_id,
+                target.person_id,
+                target.scope,
+            )?;
+            Ok(())
+        })
 }
 
 /// Open the hosted-session scan surface only after proving the same native
@@ -949,6 +998,20 @@ async fn request_hosted_session_scan_command(
         .await
         .map_err(|_| "Hosted session scan worker was interrupted".to_owned())??;
     plans.record_scan(scan)
+}
+
+#[tauri::command]
+fn request_discord_guided_deletion_pause_after_current_screen(
+    plans: State<'_, DiscordGuidedDeletionPlanState>,
+) -> Result<osl_privacy_hub::hub_command_surface::GuidedDeletionSavedStateDto, String> {
+    plans.pause_after_current_screen()
+}
+
+#[tauri::command]
+fn request_discord_guided_deletion_stop_after_current_safe_step(
+    plans: State<'_, DiscordGuidedDeletionPlanState>,
+) -> Result<osl_privacy_hub::hub_command_surface::GuidedDeletionSavedStateDto, String> {
+    plans.stop_after_current_safe_step()
 }
 
 #[tauri::command]
@@ -1052,6 +1115,104 @@ async fn save_osl_profile(
         return Err(error);
     }
     Ok(saved)
+}
+
+const MAX_OWNER_PROFILE_PICTURE_BYTES: usize = 512 * 1024;
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OwnerProfilePictureInput {
+    mime: String,
+    bytes: Vec<u8>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OwnerProfilePictureStatus {
+    saved: bool,
+    owner_osl_user_id: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OwnerProfilePictureRecord<'a> {
+    owner_osl_user_id: &'a str,
+    mime: &'a str,
+    bytes: &'a [u8],
+}
+
+fn owner_profile_picture_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let config_dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|_| "OSL profile-picture storage is unavailable".to_owned())?;
+    Ok(config_dir
+        .join("osl-core")
+        .join("owner_profile_picture.json"))
+}
+
+#[tauri::command]
+async fn set_owner_profile_picture(
+    app: tauri::AppHandle,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    input: OwnerProfilePictureInput,
+) -> Result<OwnerProfilePictureStatus, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    if input.bytes.is_empty() || input.bytes.len() > MAX_OWNER_PROFILE_PICTURE_BYTES {
+        return Err("OSL profile picture is outside the local size limit".to_owned());
+    }
+    if !matches!(
+        input.mime.as_str(),
+        "image/png" | "image/jpeg" | "image/webp"
+    ) {
+        return Err("OSL profile picture type is unsupported".to_owned());
+    }
+    let path = owner_profile_picture_path(&app)?;
+    let record = OwnerProfilePictureRecord {
+        owner_osl_user_id: &owner,
+        mime: &input.mime,
+        bytes: &input.bytes,
+    };
+    let encoded = serde_json::to_vec(&record)
+        .map_err(|_| "OSL profile picture could not be encoded".to_owned())?;
+    osl_privacy_hub::hub_command_surface::write_safe_local_bytes(
+        &path,
+        &encoded,
+        "OSL owner profile picture",
+    )?;
+    Ok(OwnerProfilePictureStatus {
+        saved: true,
+        owner_osl_user_id: owner,
+    })
+}
+
+#[tauri::command]
+async fn clear_owner_profile_picture(
+    app: tauri::AppHandle,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<OwnerProfilePictureStatus, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    let path = owner_profile_picture_path(&app)?;
+    let record = OwnerProfilePictureRecord {
+        owner_osl_user_id: &owner,
+        mime: "",
+        bytes: &[],
+    };
+    let encoded = serde_json::to_vec(&record)
+        .map_err(|_| "OSL profile picture could not be encoded".to_owned())?;
+    osl_privacy_hub::hub_command_surface::write_safe_local_bytes(
+        &path,
+        &encoded,
+        "OSL owner profile picture",
+    )?;
+    Ok(OwnerProfilePictureStatus {
+        saved: false,
+        owner_osl_user_id: owner,
+    })
 }
 
 fn active_unlocked_osl_user_id(core: &HubCoreState) -> Result<String, String> {
@@ -2299,6 +2460,56 @@ async fn answer_hub_chat_approval_suggestion(
 }
 
 #[tauri::command]
+async fn get_hub_chat_approval_suggestion_choice(
+    caller: tauri::WebviewWindow,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<security::ChatApprovalSuggestionChoiceDto, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may read chat approval suggestions".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    security::chat_approval_suggestion_choice()
+}
+
+#[tauri::command]
+async fn set_hub_chat_approval_suggestion_choice(
+    caller: tauri::WebviewWindow,
+    security_state: State<'_, HubSecurityState>,
+    session: State<'_, HubAccountSessionState>,
+    choice: String,
+) -> Result<security::ChatApprovalSuggestionChoiceDto, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may set chat approval suggestions".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    security::save_chat_approval_suggestion_choice(&security_state, choice)
+}
+
+#[tauri::command]
+async fn answer_hub_chat_approval_suggestion(
+    caller: tauri::WebviewWindow,
+    broker_state: State<'_, HubBrokerState>,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    context_token: String,
+    person_id: String,
+) -> Result<security::ChatApprovalSuggestionAnswer, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may ask for chat approval suggestions".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    let active_token = broker_state.active_osl_chat_context_token()?;
+    if active_token != context_token {
+        return Err("OSL Chat context is stale or belongs to another account".to_owned());
+    }
+    let person_id = broker_state.manual_permission_target(&context_token, &person_id, false)?;
+    let scope = broker_state.scope_for_context(&context_token)?;
+    security::chat_approval_suggestion_for_manual_peer_scope(
+        &core, "osl-chat", "osl-main", person_id, scope,
+    )
+}
+
+#[tauri::command]
 async fn check_hub_for_updates(
     app: tauri::AppHandle,
     state: State<'_, HubUpdaterState>,
@@ -2381,6 +2592,32 @@ async fn install_hub_update(
         .await
         .map_err(|_| "The update could not be verified and was not installed".to_owned())?;
     update_apply::record_replaced_built_files(pending_apply, vec![built_file])?;
+    let expected_fingerprint = expected_download_fingerprint(&update.raw_json, &update.target)
+        .ok_or_else(|| {
+            "The update manifest has no expected download fingerprint; nothing was installed"
+                .to_owned()
+        })?;
+    let bytes = update
+        .download(|_, _| {}, || {})
+        .await
+        .map_err(|_| "The update could not be verified and was not installed".to_owned())?;
+    let local_data_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|_| "OSL local update staging is unavailable".to_owned())?;
+    let staged = prepare_verified_update_install(
+        &local_data_dir,
+        &expected_version,
+        &expected_fingerprint,
+        |writer| writer.write_all(&bytes),
+    )
+    .map_err(|error| format!("The update download failed its fingerprint check: {error}"))?;
+    let staged_bytes = std::fs::read(&staged.staged_path)
+        .map_err(|_| "The verified update download could not be read for install".to_owned())?;
+    update
+        .install(staged_bytes)
+        .map_err(|_| "The update could not be verified and was not installed".to_owned())?;
+    let _ = std::fs::remove_file(staged.staged_path);
     app.restart();
 }
 
@@ -4382,6 +4619,7 @@ async fn prepare_native_discord_overlay_text(
     plaintext: String,
     view_once: bool,
     timer_picker: Option<security::TimerPickerStateDto>,
+    display_duration_seconds: Option<u64>,
 ) -> Result<broker::PreparedNativeDiscordOverlayText, String> {
     if caller.label() != native_discord_overlay::OVERLAY_LABEL {
         return Err("Only the trusted native Discord overlay may protect text".to_owned());
@@ -4424,6 +4662,17 @@ async fn prepare_native_discord_overlay_text(
                 &store_client,
                 keyserver_client.as_ref(),
             )?;
+        let carrier = broker::prepare_native_discord_overlay_text_with_route_clients(
+            &app.state::<HubCoreState>(),
+            &app.state::<HubSecurityState>(),
+            &app.state::<HubBrokerState>(),
+            &app.state::<AiCarrierState>(),
+            plaintext,
+            view_once,
+            display_duration_seconds,
+            &store_client,
+            keyserver_client.as_ref(),
+        )?;
         require_same_overlay_context(&app, context_epoch, &host)?;
         // Exactly one String: the composer remembers the cover it will type, and
         // the receipt echoes that same cover so the renderer can label the Discord
@@ -4562,6 +4811,7 @@ async fn send_native_discord_qa_atomic_text(
             plaintext,
             view_once,
             timer_picker,
+            None,
         ) {
             Ok(prepared) => prepared,
             Err(error) => {
@@ -4873,6 +5123,7 @@ async fn send_native_discord_qa_probe(
             &app.state::<AiCarrierState>(),
             QA_PROBE_PLAINTEXT.to_owned(),
             false,
+            None,
         ) {
             // The headless probe never touches Discord, so the carrier
             // flagtext this send produced is deliberately dropped here.
@@ -5090,6 +5341,7 @@ async fn run_native_discord_headless_qa(
                 &app.state::<AiCarrierState>(),
                 QA_PROBE_PLAINTEXT.to_owned(),
                 false,
+                None,
             )?
             .prepared;
             let current = app
@@ -5610,6 +5862,7 @@ async fn prepare_osl_chat_text(
     plaintext: String,
     view_once: bool,
     timer_picker: Option<security::TimerPickerStateDto>,
+    display_duration_seconds: Option<u64>,
 ) -> Result<PreparedNativeOverlayText, String> {
     if caller.label() != "main" {
         return Err("Only the trusted OSL window may send OSL Chats".to_owned());
@@ -5631,6 +5884,7 @@ async fn prepare_osl_chat_text(
             plaintext,
             view_once,
             timer_picker,
+            display_duration_seconds,
             &store_client,
             keyserver_client.as_ref(),
         )
@@ -6179,6 +6433,16 @@ async fn create_service_account(
 #[tauri::command]
 async fn get_service_terms_address(service_id: String) -> Result<ServiceTermsAddress, String> {
     service_terms_address(&service_id)
+async fn list_service_account_run_queue(
+    core: State<'_, HubCoreState>,
+    registry: State<'_, ServiceRegistryState>,
+    session: State<'_, HubAccountSessionState>,
+    service_id: ServiceKind,
+    approved_account_ids: Vec<String>,
+) -> Result<ServiceAccountRunQueue, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    registry.run_queue_for_owner(&owner, service_id, &approved_account_ids)
 }
 
 #[tauri::command]
@@ -6835,6 +7099,37 @@ fn write_windows_clipboard_text(value: &str) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn create_hub_private_contact_link(
+    core: State<'_, HubCoreState>,
+    security_state: State<'_, HubSecurityState>,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<PrivateContactLinkExport, String> {
+    let _session = session.transition.lock().await;
+    security::create_private_contact_link(&core, &security_state)
+}
+
+#[tauri::command]
+async fn get_hub_private_contact_link_status(
+    session: State<'_, HubAccountSessionState>,
+    link: String,
+) -> Result<PrivateContactLinkStatus, String> {
+    let _session = session.transition.lock().await;
+    security::private_contact_link_status(&link)
+}
+
+#[tauri::command]
+async fn add_hub_private_contact_link(
+    core: State<'_, HubCoreState>,
+    security_state: State<'_, HubSecurityState>,
+    session: State<'_, HubAccountSessionState>,
+    link: String,
+    alias: Option<String>,
+) -> Result<AddFriendResult, String> {
+    let _session = session.transition.lock().await;
+    security::add_private_contact_link(&core, &security_state, link, alias)
+}
+
+#[tauri::command]
 async fn add_hub_friend(
     core: State<'_, HubCoreState>,
     security_state: State<'_, HubSecurityState>,
@@ -7134,6 +7429,31 @@ async fn query_allowed_place_allowed(
     let _session = session.transition.lock().await;
     let store = allowed_place_store_dir(&app)?;
     osl_privacy_hub::allowed_place_commands::allowed_place_allowed_json(&store, query)
+fn get_hub_friend_wide_whitelist_action_help() -> Vec<FriendWideWhitelistActionHelp> {
+    security::friend_wide_whitelist_action_help()
+}
+
+#[tauri::command]
+async fn set_hub_friend_account_reach_everywhere(
+    session: State<'_, HubAccountSessionState>,
+    app: String,
+    friend_account: String,
+    owned_accounts: Vec<String>,
+) -> Result<FriendAccountReachEverywhereResult, String> {
+    let _session = session.transition.lock().await;
+    security::set_friend_account_reach_everywhere(app, friend_account, owned_accounts)
+}
+
+#[tauri::command]
+async fn compare_allowed_place_direction_state(
+    session: State<'_, HubAccountSessionState>,
+    app: String,
+    first_account: String,
+    second_account: String,
+    kind: String,
+) -> Result<AllowedPlaceDirectionStateDto, String> {
+    let _session = session.transition.lock().await;
+    security::compare_allowed_place_direction_state(app, first_account, second_account, kind)
 }
 
 #[tauri::command]
@@ -10985,6 +11305,12 @@ fn main() {
             &security_state,
         )?;
         app.manage(core);
+        {
+            let core = app.state::<HubCoreState>();
+            let preferences = app.state::<PreviewState>();
+            let _ = apply_saved_message_runtime_preferences(&core, &preferences);
+        }
+        startup_breadcrumb("setup_step_24a_message_runtime_preferences_applied"); // STARTUP-TRACE
         entitlement_refresh::spawn(app.handle().clone());
         #[cfg(feature = "whatsapp-qa-shell")]
         {
@@ -11867,6 +12193,8 @@ mod tauri_command_acl_tests {
             "open_hosted_session_scan",
             "request_hosted_session_scan",
             "request_hosted_session_scan_command",
+            "request_discord_guided_deletion_pause_after_current_screen",
+            "request_discord_guided_deletion_stop_after_current_safe_step",
             "scan_discord_own_messages_for_deletion",
             "preview_discord_guided_deletion",
             "execute_discord_guided_deletion",

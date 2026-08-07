@@ -533,6 +533,7 @@ CREATE TABLE attachments_v4 (
                     sender_discord_id: sender.clone(),
                     sender_osl_user_id: osl,
                     decrypted_at,
+                    reply_parent_id: None,
                 };
                 let mid_bi = cipher::blind_index(index_key, cipher::BI_MESSAGE_ID, &mid)?;
                 let chan_bi = cipher::blind_index(index_key, cipher::BI_CHANNEL_ID, &chan)?;

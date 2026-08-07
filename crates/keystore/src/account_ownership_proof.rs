@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 
 pub const ACCOUNT_OWNERSHIP_PROOF_DOMAIN: &str = "OSL-ACCOUNT-OWNERSHIP-PROOF-v1\0";
 pub const ACCOUNT_OWNERSHIP_PROOF_TYPE_ED25519_CHALLENGE_V1: &str = "ed25519_identity_challenge_v1";
+pub const PUBLIC_NAME_PROOF_DOMAIN: &str = "OSL-PUBLIC-NAME-PROOF-v1\0";
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AccountOwnershipEvidence {
@@ -43,6 +44,13 @@ pub struct AccountOwnershipProof {
     pub platform_id: String,
     pub proof_type: String,
     pub e: AccountOwnershipEvidence,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublicNameProof {
+    pub public_name: String,
+    pub account_proof: AccountOwnershipProof,
+    pub signature_b64: String,
 }
 
 impl AccountOwnershipProof {
@@ -151,6 +159,40 @@ impl fmt::Display for AccountOwnershipProof {
     }
 }
 
+impl PublicNameProof {
+    pub fn from_account_proof(
+        identity: &Identity,
+        public_name: impl Into<String>,
+        account_proof: AccountOwnershipProof,
+    ) -> Result<Self, AccountOwnershipError> {
+        let public_name = public_name.into();
+        if public_name.is_empty() {
+            return Err(AccountOwnershipError::ProofMalformed);
+        }
+        let message = canonical_public_name_proof_bytes(&public_name, &account_proof)?;
+        let signature = ed25519::sign(&identity.ed25519_secret, &message);
+
+        use base64::engine::general_purpose::STANDARD;
+        use base64::Engine as _;
+
+        Ok(Self {
+            public_name,
+            account_proof,
+            signature_b64: STANDARD.encode(signature.as_bytes()),
+        })
+    }
+}
+
+impl fmt::Debug for PublicNameProof {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PublicNameProof")
+            .field("public_name", &self.public_name)
+            .field("account_proof", &self.account_proof)
+            .field("signature_b64", &"[REDACTED]")
+            .finish()
+    }
+}
+
 pub fn canonical_account_ownership_proof_bytes(
     proof_type: &str,
     platform_id: &str,
@@ -175,6 +217,22 @@ pub fn canonical_account_ownership_proof_bytes(
     out.extend_from_slice(&nonce);
     out.extend_from_slice(&issued_at_unix_seconds.to_be_bytes());
     out.extend_from_slice(&expires_at_unix_seconds.to_be_bytes());
+    Ok(out)
+}
+
+pub fn canonical_public_name_proof_bytes(
+    public_name: &str,
+    account_proof: &AccountOwnershipProof,
+) -> Result<Vec<u8>, AccountOwnershipError> {
+    if public_name.is_empty() {
+        return Err(AccountOwnershipError::ProofMalformed);
+    }
+    let account_proof_bytes = account_proof.canonical_bytes()?;
+    let mut out = Vec::new();
+    lp_text(&mut out, PUBLIC_NAME_PROOF_DOMAIN);
+    lp_text(&mut out, public_name);
+    out.extend_from_slice(&(account_proof_bytes.len() as u32).to_be_bytes());
+    out.extend_from_slice(&account_proof_bytes);
     Ok(out)
 }
 

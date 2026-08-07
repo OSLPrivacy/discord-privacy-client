@@ -28,6 +28,9 @@ pub use defaults_web::{
     instagram_web_default_trusted_signing_key_b64, messenger_web_default_profile,
     messenger_web_default_trusted_signing_key_b64, x_web_default_capability_profile,
     x_web_default_profile, x_web_default_trusted_signing_key_b64,
+    capabilities_from_profile, icloud_web_control_targets, proton_web_control_targets,
+    validate_icloud_web_control_targets, x_web_default_capability_profile, x_web_default_profile,
+    x_web_default_trusted_signing_key_b64, EmailWebControlStrategy, EmailWebControlTarget,
 };
 pub use envelope::{
     canonical_profile_digest, EnvelopeError, SignedProfile, ADAPTER_PROFILE_ENVELOPE_DOMAIN,

@@ -824,6 +824,8 @@ mod tests {
             sender_osl_user_id: "journal-service".to_string(),
             plaintext: "journal body".to_string(),
             decrypted_at: 1,
+            reply_parent_id: None,
+            edit_revision: 1,
             burned: false,
         }
     }

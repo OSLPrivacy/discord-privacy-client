@@ -319,6 +319,11 @@ description = "Create local metadata for one fresh isolated service profile; sto
 commands.allow = ["create_service_account"]
 
 [[permission]]
+identifier = "allow-list-service-account-run-queue"
+description = "Read the active/waiting run order for approved local service profiles owned by the unlocked OSL identity."
+commands.allow = ["list_service_account_run_queue"]
+
+[[permission]]
 identifier = "allow-remove-service-account"
 description = "Close and atomically detach one exact isolated service profile, then remove its local registry record."
 commands.allow = ["remove_service_account"]
@@ -699,6 +704,16 @@ description = "Request one read-only scan of the exact checked native-hosted Dis
 commands.allow = ["request_hosted_session_scan_command"]
 
 [[permission]]
+identifier = "allow-request-discord-guided-deletion-pause-after-current-screen"
+description = "Persist a pause-after-current-screen request against the last native-held Discord guided-deletion scan while retaining its content-free found row metadata."
+commands.allow = ["request_discord_guided_deletion_pause_after_current_screen"]
+
+[[permission]]
+identifier = "allow-request-discord-guided-deletion-stop-after-current-safe-step"
+description = "Persist a stop-after-current-safe-step request against the last native-held Discord guided-deletion scan while retaining its content-free found row metadata."
+commands.allow = ["request_discord_guided_deletion_stop_after_current_safe_step"]
+
+[[permission]]
 identifier = "allow-scan-discord-own-messages-for-deletion"
 description = "Request one read-only native Discord guided-deletion scan and store its content-free row metadata as the only source from which a later exact preview may be built; accepts no account, handle, credential, profile, path, URL, conversation, row, deletion, navigation, or network authority."
 commands.allow = ["scan_discord_own_messages_for_deletion"]
@@ -799,6 +814,21 @@ description = "Validate and add one signed OSL friend code to encrypted local Pe
 commands.allow = ["add_hub_friend"]
 
 [[permission]]
+identifier = "allow-create-hub-private-contact-link"
+description = "Create one fresh one-use private contact link for the unlocked identity without claiming or resolving any public username."
+commands.allow = ["create_hub_private_contact_link"]
+
+[[permission]]
+identifier = "allow-get-hub-private-contact-link-status"
+description = "Read the encrypted local use count for one private contact link without touching the username directory."
+commands.allow = ["get_hub_private_contact_link_status"]
+
+[[permission]]
+identifier = "allow-add-hub-private-contact-link"
+description = "Consume one encrypted local private contact link and import its signed friend code through the normal People path."
+commands.allow = ["add_hub_private_contact_link"]
+
+[[permission]]
 identifier = "allow-get-hub-username-status"
 description = "Check bounded public username availability metadata without granting any claim or account mutation authority."
 commands.allow = ["get_hub_username_status"]
@@ -809,6 +839,16 @@ description = "Record explicit out-of-band verification of one friend's safety n
 commands.allow = ["verify_hub_friend_safety_number"]
 
 [[permission]]
+identifier = "allow-set-owner-profile-picture"
+description = "Persist one bounded owner-scoped profile picture record in encrypted local OSL storage."
+commands.allow = ["set_owner_profile_picture"]
+
+[[permission]]
+identifier = "allow-clear-owner-profile-picture"
+description = "Clear the owner-scoped profile picture record through the local OSL profile-picture store."
+commands.allow = ["clear_owner_profile_picture"]
+
+[[permission]]
 identifier = "allow-remove-hub-friend"
 description = "Remove one verified friend from encrypted local People state and queue only local revocation notices; it grants no remote account or provider authority."
 commands.allow = ["remove_hub_friend"]
@@ -817,6 +857,21 @@ commands.allow = ["remove_hub_friend"]
 identifier = "allow-list-hub-people"
 description = "List bounded People metadata from encrypted local state."
 commands.allow = ["list_hub_people"]
+
+[[permission]]
+identifier = "allow-get-hub-friend-wide-whitelist-action-help"
+description = "List the fixed friend-wide account whitelist action names the trusted local UI may present; this changes no account reach state."
+commands.allow = ["get_hub_friend_wide_whitelist_action_help"]
+
+[[permission]]
+identifier = "allow-set-hub-friend-account-reach-everywhere"
+description = "Allow one direct-message friend account from every current owned account in encrypted local allowed-place state."
+commands.allow = ["set_hub_friend_account_reach_everywhere"]
+
+[[permission]]
+identifier = "allow-compare-allowed-place-direction-state"
+description = "Read only whether the two saved local allowed-place directions for one direct-message pair are absent, one-way, or two-way."
+commands.allow = ["compare_allowed_place_direction_state"]
 
 [[permission]]
 identifier = "allow-set-hub-friend-nickname"

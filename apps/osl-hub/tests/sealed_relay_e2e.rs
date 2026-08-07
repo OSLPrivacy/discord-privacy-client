@@ -950,6 +950,7 @@ pub fn osl_chat_message_survives_a_lost_wrapped_key_response() {
         &ai_carrier,
         plaintext.clone(),
         true,
+        None,
     )
     .unwrap();
     assert!(prepared.person_to_person_e2ee);
@@ -1044,6 +1045,163 @@ pub fn osl_chat_message_survives_a_lost_wrapped_key_response() {
         false,
     )
     .is_err());
+}
+
+#[test]
+fn task_1369_live_two_way_direct_messages_read_exactly_once() {
+    let relay = RelayServer::start();
+    let storage = TestStorage::new();
+    let relay_url = relay.base_url();
+    let alice_dir = storage.account("task1369-alice-copy", &relay_url);
+    let bob_dir = storage.account("task1369-bob-copy", &relay_url);
+
+    let alice_identity = keystore::generate_identity("task1369-alice-copy".to_owned());
+    let bob_identity = keystore::generate_identity("task1369-bob-copy".to_owned());
+    let alice_id = alice_identity.user_id.clone();
+    let bob_id = bob_identity.user_id.clone();
+    relay.register_floor_identity(&alice_identity);
+    relay.register_floor_identity(&bob_identity);
+    let alice = core(alice_identity, &relay_url);
+    let bob = core(bob_identity, &relay_url);
+    let alice_security = HubSecurityState::default();
+    let bob_security = HubSecurityState::default();
+    let alice_broker = HubBrokerState::default();
+    let bob_broker = HubBrokerState::default();
+
+    let alice_code = export_friend_code(&alice).unwrap();
+    let bob_code = export_friend_code(&bob).unwrap();
+
+    TestStorage::activate(&alice_dir);
+    let bob_friend = add_friend_code(
+        &alice,
+        &alice_security,
+        bob_code.friend_code,
+        Some("task1369-bob-copy".to_owned()),
+    )
+    .unwrap();
+    verify_friend_safety_number(
+        &alice,
+        &alice_security,
+        bob_friend.person_id.clone(),
+        bob_friend.safety_number.clone(),
+    )
+    .unwrap();
+    let alice_binding = manual_peer_binding(&alice, bob_friend.person_id.clone()).unwrap();
+    let alice_context =
+        activate_owned_osl_chat_context(&alice_broker, &alice_id, alice_binding).unwrap();
+    set_manual_peer_scope_permission(
+        &alice,
+        &alice_security,
+        "osl-chat",
+        "osl-main",
+        alice_context.person_id.clone(),
+        alice_context.scope.clone(),
+        true,
+    )
+    .unwrap();
+    set_scope_security(&alice_security, alice_context.scope.clone(), 3600, true).unwrap();
+
+    TestStorage::activate(&bob_dir);
+    let alice_friend = add_friend_code(
+        &bob,
+        &bob_security,
+        alice_code.friend_code,
+        Some("task1369-alice-copy".to_owned()),
+    )
+    .unwrap();
+    verify_friend_safety_number(
+        &bob,
+        &bob_security,
+        alice_friend.person_id.clone(),
+        alice_friend.safety_number.clone(),
+    )
+    .unwrap();
+    let bob_binding = manual_peer_binding(&bob, alice_friend.person_id.clone()).unwrap();
+    let bob_context = activate_owned_osl_chat_context(&bob_broker, &bob_id, bob_binding).unwrap();
+    set_manual_peer_scope_permission(
+        &bob,
+        &bob_security,
+        "osl-chat",
+        "osl-main",
+        bob_context.person_id.clone(),
+        bob_context.scope.clone(),
+        true,
+    )
+    .unwrap();
+    set_scope_security(&bob_security, bob_context.scope.clone(), 3600, true).unwrap();
+
+    let alice_to_bob = format!("TASK1369-Alice-to-Bob-{:032x}", rand::random::<u128>());
+    let bob_to_alice = format!("TASK1369-Bob-to-Alice-{:032x}", rand::random::<u128>());
+    assert_ne!(alice_to_bob, bob_to_alice);
+    let ai_carrier = osl_privacy_hub::ai_carrier::AiCarrierState::default();
+
+    TestStorage::activate(&alice_dir);
+    let alice_prepared = prepare_osl_chat_text(
+        &alice,
+        &alice_security,
+        &alice_broker,
+        &ai_carrier,
+        alice_to_bob.clone(),
+        true,
+        None,
+    )
+    .unwrap();
+    assert!(alice_prepared.person_to_person_e2ee);
+    assert!(alice_prepared.delivered_to_osl_inbox);
+
+    TestStorage::activate(&bob_dir);
+    let bob_prepared = prepare_osl_chat_text(
+        &bob,
+        &bob_security,
+        &bob_broker,
+        &ai_carrier,
+        bob_to_alice.clone(),
+        true,
+        None,
+    )
+    .unwrap();
+    assert!(bob_prepared.person_to_person_e2ee);
+    assert!(bob_prepared.delivered_to_osl_inbox);
+
+    TestStorage::activate(&bob_dir);
+    let bob_opened = drain_osl_chat_text(&bob, &bob_security, &bob_broker, true).unwrap();
+    let bob_received_count = bob_opened
+        .messages
+        .iter()
+        .filter(|message| message.plaintext == alice_to_bob)
+        .count();
+
+    TestStorage::activate(&alice_dir);
+    let alice_opened = drain_osl_chat_text(&alice, &alice_security, &alice_broker, true).unwrap();
+    let alice_received_count = alice_opened
+        .messages
+        .iter()
+        .filter(|message| message.plaintext == bob_to_alice)
+        .count();
+
+    println!(
+        "TASK1369 copy=task1369-bob-copy received_from=task1369-alice-copy exact_text=\"{}\" count={} total_messages={}",
+        alice_to_bob,
+        bob_received_count,
+        bob_opened.messages.len()
+    );
+    println!(
+        "TASK1369 copy=task1369-alice-copy received_from=task1369-bob-copy exact_text=\"{}\" count={} total_messages={}",
+        bob_to_alice,
+        alice_received_count,
+        alice_opened.messages.len()
+    );
+
+    assert_eq!(
+        bob_received_count, 1,
+        "Bob copy must read Alice copy's exact marked text once"
+    );
+    assert_eq!(
+        alice_received_count, 1,
+        "Alice copy must read Bob copy's exact marked text once"
+    );
+
+    drop(relay);
 }
 
 /// D-223, both halves, end to end.
@@ -1170,6 +1328,7 @@ pub fn osl_chat_queues_a_relay_notice_the_key_server_never_accepted() {
         &ai_carrier,
         plaintext.clone(),
         true,
+        None,
     ) {
         Ok(_) => panic!("an unreachable relay notice lane cannot report a delivered send"),
         Err(refusal) => refusal,

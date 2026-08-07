@@ -1,0 +1,2 @@
+password_screen_access=require-password-screen
+safe_sending=live-send-requires-authority

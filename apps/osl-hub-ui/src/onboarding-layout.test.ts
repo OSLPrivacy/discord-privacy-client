@@ -828,6 +828,7 @@ describe("fresh-account continuation", () => {
     expect(completion).toContain("if (!canCompleteSetup(completedSetup)) throw new Error");
     expect(completion).toContain("setup = completedSetup");
     expect(completion).toContain("saveOnboardingPreferences({ onboardingComplete: true, setup, coverInsertion, showPlaintextPreview: true, windowCaptureEnabled, forwardSecrecyMode })");
+    expect(completion).toContain("saveOnboardingPreferences({ onboardingComplete: true, setup, showPlaintextPreview: true, windowCaptureEnabled, rnWirePolicyRequested, forwardSecrecyMode })");
     expect(completion).toContain("onboardingComplete = true");
     expect(completion).toContain("clearServiceOnboardingResume()");
     expect(completion).toContain("resetOnboardingBranch()");

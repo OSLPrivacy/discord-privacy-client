@@ -27,6 +27,8 @@ fn message(id: &str, channel: &str, sender: &str, osl: &str, body: &str, at: i64
         sender_osl_user_id: osl.to_string(),
         plaintext: body.to_string(),
         decrypted_at: at,
+        reply_parent_id: None,
+        edit_revision: 1,
         burned: false,
     }
 }

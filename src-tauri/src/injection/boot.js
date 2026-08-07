@@ -2181,6 +2181,27 @@
         return window.__oslAttachmentUrlCache.get(msgId) || null;
     }
 
+    function oslReplyParentIdFromMessageApiPayload(message) {
+        if (!message || typeof message !== "object") return null;
+        const ref = message.message_reference || message.messageReference;
+        if (ref && typeof ref === "object") {
+            const parentId = ref.message_id || ref.messageId;
+            if (typeof parentId === "string" && parentId.length > 0) {
+                return parentId;
+            }
+        }
+        const referenced = message.referenced_message || message.referencedMessage;
+        if (
+            referenced &&
+            typeof referenced === "object" &&
+            typeof referenced.id === "string" &&
+            referenced.id.length > 0
+        ) {
+            return referenced.id;
+        }
+        return null;
+    }
+
     /**
      * Walk a parsed message-API response payload and cache any
      * `attachments[]` URLs found. Handles both shapes Discord ships:
@@ -2244,6 +2265,8 @@
                             channelId: data.channel_id,
                             discordMessageId: data.id,
                             plaintext: _pt,
+                            replyParentId:
+                                oslReplyParentIdFromMessageApiPayload(data),
                         })
                         .catch(function (e) {
                             console.log(
@@ -13056,6 +13079,8 @@
                                         channelId: channelId,
                                         discordMessageId: parsed.id,
                                         plaintext: pt,
+                                        replyParentId:
+                                            oslReplyParentIdFromMessageApiPayload(parsed),
                                     })
                                     .catch(function (e) {
                                         console.log(

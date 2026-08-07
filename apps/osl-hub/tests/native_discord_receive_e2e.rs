@@ -1255,6 +1255,7 @@ fn p1_sends_encrypted_message_into_live_conversation() {
         &ai_carrier_fixture(),
         FIXTURE.to_owned(),
         false,
+        None,
     )
     .expect("prepare the protected message");
 
@@ -1443,6 +1444,7 @@ fn first_party_osl_chat_reopen_backfills_waiting_rows_in_order_without_push() {
             &ai_carrier_fixture(),
             fixture.to_owned(),
             false,
+            None,
             &store_client,
             alice.core.osl.keyserver.lock().unwrap().as_ref(),
         )
@@ -1543,6 +1545,7 @@ fn first_party_osl_chat_reopen_backfills_waiting_rows_in_order_without_push() {
             &ai_carrier_fixture(),
             fixture.to_owned(),
             false,
+            None,
             &store_client,
             alice.core.osl.keyserver.lock().unwrap().as_ref(),
         )
@@ -1610,6 +1613,7 @@ fn first_party_osl_chat_reopen_sorts_shuffled_waiting_rows_by_sender_order() {
             &ai_carrier_fixture(),
             fixture.to_owned(),
             false,
+            None,
             &store_client,
             alice.core.osl.keyserver.lock().unwrap().as_ref(),
         )
@@ -1729,6 +1733,7 @@ fn native_discord_inbound_opens_once_and_refuses_foreign_malformed_and_replayed_
         &ai_carrier_fixture(),
         "fixture text addressed to a third identity".to_owned(),
         false,
+        None,
     )
     .expect("prepare the misaddressed fixture message");
     let misaddressed = relay.posted_row(&alice.identity_id, &charlie.identity_id);
@@ -1773,6 +1778,7 @@ fn native_discord_inbound_opens_once_and_refuses_foreign_malformed_and_replayed_
         &ai_carrier_fixture(),
         FIXTURE.to_owned(),
         false,
+        None,
     )
     .expect("prepare the protected message");
     assert!(
@@ -2073,6 +2079,7 @@ fn view_once_list_appears_on_b() {
         &ai_carrier_fixture(),
         FIXTURE.to_owned(),
         true,
+        None,
     )
     .expect("prepare the view-once protected message");
     assert!(
@@ -2145,6 +2152,8 @@ fn reveal_once_consumes_on_b() {
     bob.open_native_context_to(&alice.friend_code);
 
     const FIXTURE: &str = "TASK-1348 marked content";
+    const FIXTURE: &str = "B74 native Discord reveal-once fixture";
+    const SELECTED_DISPLAY_DURATION_SECONDS: u64 = 15;
     alice.activate();
     let prepared = prepare_native_discord_overlay_text(
         &alice.core,
@@ -2153,6 +2162,7 @@ fn reveal_once_consumes_on_b() {
         &ai_carrier_fixture(),
         FIXTURE.to_owned(),
         true,
+        Some(SELECTED_DISPLAY_DURATION_SECONDS),
     )
     .expect("prepare the view-once protected message");
     let honest = relay.posted_row(&alice.identity_id, &bob.identity_id);
@@ -2172,6 +2182,10 @@ fn reveal_once_consumes_on_b() {
     assert!(
         listed.pending_view_once[0].message_id == prepared.prepared.message_id,
         "B's pending entry names A's prepared message"
+    );
+    assert_eq!(
+        listed.pending_view_once[0].display_duration_seconds, SELECTED_DISPLAY_DURATION_SECONDS,
+        "B's direct pending session query reports the selected display duration"
     );
     assert!(
         relay.still_pending(&honest.id),
@@ -2196,6 +2210,16 @@ fn reveal_once_consumes_on_b() {
     assert!(
         opened.message_id == prepared.prepared.message_id,
         "the revealed message keeps the listed correlation id"
+    );
+    assert_eq!(
+        opened.display_duration_seconds,
+        Some(SELECTED_DISPLAY_DURATION_SECONDS),
+        "B's claimed display session reports the selected display duration"
+    );
+    println!(
+        "TASK0562 selected_duration_seconds={} claimed_session_display_duration_seconds={}",
+        SELECTED_DISPLAY_DURATION_SECONDS,
+        opened.display_duration_seconds.unwrap()
     );
     assert!(
         !relay.still_pending(&honest.id),
@@ -2591,6 +2615,7 @@ fn native_discord_multi_chunk_message_reassembles_exactly_once() {
         &ai_carrier_fixture(),
         fixture.clone(),
         false,
+        None,
     )
     .expect("prepare the chunked protected message");
     assert!(
@@ -2694,6 +2719,7 @@ fn native_discord_chunk_group_survives_reversed_and_split_arrival() {
         &ai_carrier_fixture(),
         fixture.clone(),
         false,
+        None,
     )
     .expect("prepare the chunked protected message");
 
@@ -2870,6 +2896,7 @@ fn sender_filtered_text_and_attachment_drains_bypass_64_foreign_rows_and_preserv
         &ai_carrier_fixture(),
         B_FIXTURE.to_owned(),
         false,
+        None,
     )
     .expect("prepare B's protected message");
     let b_honest = relay.posted_row(&sender_b.identity_id, &receiver.identity_id);
@@ -2906,6 +2933,7 @@ fn sender_filtered_text_and_attachment_drains_bypass_64_foreign_rows_and_preserv
         &ai_carrier_fixture(),
         A_FIXTURE.to_owned(),
         false,
+        None,
     )
     .expect("prepare A's protected message");
     let expected_attachment = deliver_fixture_attachment(&sender_a);
@@ -3076,6 +3104,7 @@ fn assert_text_and_attachment_refuse_reply(reply: ControlInboxGetReply) {
         &ai_carrier_fixture(),
         "closed-path text fixture".to_owned(),
         false,
+        None,
     )
     .expect("prepare the refusal text row");
     deliver_fixture_attachment(&sender);

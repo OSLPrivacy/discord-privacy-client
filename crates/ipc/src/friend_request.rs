@@ -546,9 +546,8 @@ pub fn save_friend_request_file_state(
     let sealed = crate::main_password::maybe_encrypt(&body)
         .map_err(|_| FriendRequestError::StorageUnavailable)?;
     let path = dir.join(FRIEND_REQUEST_STATE_FILE);
-    let tmp = dir.join(format!("{FRIEND_REQUEST_STATE_FILE}.tmp"));
-    fs::write(&tmp, sealed).map_err(|_| FriendRequestError::StorageUnavailable)?;
-    fs::rename(&tmp, &path).map_err(|_| FriendRequestError::StorageUnavailable)?;
+    crate::recoverable_file::write_recoverable(&path, &sealed)
+        .map_err(|_| FriendRequestError::StorageUnavailable)?;
     Ok(())
 }
 

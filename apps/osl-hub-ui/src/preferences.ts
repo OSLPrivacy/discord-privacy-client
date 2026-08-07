@@ -50,6 +50,7 @@ export async function loadOnboardingPreferences(): Promise<OnboardingPreferences
     }).coverInsertion,
     showPlaintextPreview: true,
     windowCaptureEnabled: true,
+    rnWirePolicyRequested: false,
     forwardSecrecyMode: "keepGroupDelivery",
   };
 }
@@ -109,6 +110,7 @@ export async function saveFirstRunOnboardingPreferences(selection: {
     coverInsertion: "insert-on-send",
     showPlaintextPreview: true,
     windowCaptureEnabled: selection.windowCaptureEnabled !== false,
+    rnWirePolicyRequested: false,
     forwardSecrecyMode: "keepGroupDelivery",
   });
 }

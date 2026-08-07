@@ -75,6 +75,7 @@ import {
   loadLinkedServices,
   loadMullvadStatus,
   loadNativeApps,
+  nativeAppGeneratedLabel,
   nativeAppTakeoverRequiresConsent,
   openEmbeddedHomeApp,
   parseDiscordSessionMode,
@@ -214,6 +215,7 @@ import { offlineCapabilityStatus, type OfflineUnavailableCapability, type OslCon
 import type { NativeDiscordOverlayOpenedBatch } from "./overlay-state";
 import type { NativeOverlayPendingAttachment } from "./overlay-state";
 import { listOslChatAttachments, openOslChatAttachment, selectOslChatAttachment } from "./native-overlay-adapter";
+import { VerificationWarningMemory, verificationWarningDecision, type VerificationWarningSetting, type VerificationWarningSurface } from "./verification-warning";
 import {
   pollNativeDiscordHeadlessQa,
   requestNativeDiscordVisibleRowRuntimeReceipt,
@@ -258,31 +260,9 @@ function statusTag(label: string, extra = ""): string {
   return `<span class="${classes}">${label}</span>`;
 }
 
-/**
- * The user-facing word for a connected app's public claim.
- *
- * Every value here is a label `osl-public-claim-allowlist.md` permits, and none
- * of them says the app works — because no connected app has earned a live carry
- * receipt. `PLAN.md` r5-6: `carry-receipts/` does not exist as a directory.
- *
- * "Not claimed" is allowlist §E's *no badge, no claim*. It is deliberately not
- * "Coming soon": saying a surface is planned when OSL has already built and
- * driven it is as false as saying it works (D-203, D-206).
- */
-function nativeClaimLabel(status: NativeApp["supportStatus"]): string {
-  switch (status) {
-    case "available": return "Available";
-    case "beta": return "Beta";
-    case "experimental": return "Experimental";
-    case "comingSoon": return "Coming later";
-    case "externallyBlocked": return "Externally blocked";
-    case "noClaim": return "Not claimed";
-  }
-}
-
 /** The claim row for one connected app: the label, and the sentence behind it. */
 function nativeClaimMarkup(app: NativeApp): string {
-  return `<p class="native-claim-note" data-claim-status="${app.supportStatus}" data-carrier-evidence="${app.carrierEvidence}" data-delivery-evidence="${app.deliveryEvidence}">${statusTag(nativeClaimLabel(app.supportStatus))} ${escapeHtml(app.claimNote)}</p>`;
+  return `<p class="native-claim-note" data-claim-status="${app.supportStatus}" data-carrier-evidence="${app.carrierEvidence}" data-delivery-evidence="${app.deliveryEvidence}" data-status-page-capability="${escapeHtml(app.statusPage.capability)}">${statusTag(app.statusPage.generatedLabel)} ${escapeHtml(app.statusPage.explanation)}</p>`;
 }
 
 /**
@@ -679,6 +659,9 @@ let oslChatBusy = false;
 let oslChatOperationEpoch = 0;
 const oslChatMessages = new Map<string, OslChatMessage[]>();
 const oslChatUnread = new Map<string, number>();
+let oslChatVerificationWarningSetting: VerificationWarningSetting = "every-time";
+const oslChatVerificationWarningMemory = new VerificationWarningMemory();
+let oslChatVerificationWarningSurface: VerificationWarningSurface = "none";
 let oslChatPreviewsVisible = true;
 let oslChatMutedPeople = new Set<string>();
 let oslChatSettingsPersonId: string | null = null;
@@ -3141,6 +3124,16 @@ function previousSetupRoute(current: OnboardingRoute): OnboardingRoute {
   return onboardingRouteForBuild(previousOnboardingRoute(current, onboardingBranch) ?? "welcome");
 }
 
+async function saveSendingSetupDraft(): Promise<void> {
+  await saveOnboardingPreferences({
+    onboardingComplete: false,
+    setup,
+    showPlaintextPreview: true,
+    windowCaptureEnabled,
+    forwardSecrecyMode,
+  });
+}
+
 function bindOnboarding(): void {
   document.querySelectorAll<HTMLButtonElement>("[data-onboarding]").forEach((button) => button.addEventListener("click", () => {
     onboardingRoute = onboardingRouteForBuild(button.dataset.onboarding as OnboardingRoute);
@@ -3365,20 +3358,24 @@ function bindOnboarding(): void {
     setup.placementMode = "atomic";
     setup.acceptedRisk = false;
     setup.acceptedRiskForMode = null;
+    void saveSendingSetupDraft().catch(() => undefined);
     render();
   }));
   document.querySelector<HTMLInputElement>("#accept-send-risk")?.addEventListener("change", (event) => {
     const accepted = (event.currentTarget as HTMLInputElement).checked;
     setup.acceptedRisk = accepted;
     setup.acceptedRiskForMode = accepted ? setup.sendMode : null;
+    void saveSendingSetupDraft().catch(() => undefined);
     render();
   });
   document.querySelector("#finish-onboarding")?.addEventListener("click", () => {
     if (onboardingRoute !== "sending") return;
     if (!canCompleteSetup(setup)) return;
     setup.placementMode = "atomic";
-    onboardingRoute = "cover";
-    render();
+    void saveSendingSetupDraft().then(() => {
+      onboardingRoute = "cover";
+      render();
+    }).catch(() => undefined);
   });
   document.querySelector("#continue-defaults-review")?.addEventListener("click", () => {
     if (deleteChoices === null) {
@@ -3414,7 +3411,9 @@ function bindOnboarding(): void {
     if (forwardSecrecyOnboarding.choice === null) return;
     const selectedForwardSecrecyMode = forwardSecrecyOnboarding.choice === "protect-past" ? "protectPast" : "keepGroupDelivery";
     void saveOnboardingPreferences({ onboardingComplete: false, setup, coverInsertion, showPlaintextPreview: true, windowCaptureEnabled, forwardSecrecyMode: selectedForwardSecrecyMode }).then((saved) => {
+    void saveOnboardingPreferences({ onboardingComplete: false, setup, showPlaintextPreview: true, windowCaptureEnabled, rnWirePolicyRequested, forwardSecrecyMode: selectedForwardSecrecyMode }).then((saved) => {
       forwardSecrecyMode = saved.forwardSecrecyMode;
+      rnWirePolicyRequested = saved.rnWirePolicyRequested;
       onboardingRoute = "privacy";
       render();
     }).catch(() => undefined);
@@ -3491,6 +3490,7 @@ function bindOnboarding(): void {
     await setScreenshotProtection(windowCaptureEnabled).catch(() => false);
     screenshotProtectionEnabled = windowCaptureEnabled && captureProtectionEnforced();
     if (windowCaptureEnabled && !screenshotProtectionEnabled) showToast("Windows capture resistance is unavailable on this device");
+    await saveSendingSetupDraft().catch(() => undefined);
     render();
   });
   document.querySelector("#skip-mullvad")?.addEventListener("click", () => { skipMullvadSetup(); });
@@ -3649,9 +3649,11 @@ async function completeSixStepOnboarding(): Promise<void> {
   if (!canCompleteSetup(completedSetup)) throw new Error("setup missing required sending consent");
   setup = completedSetup;
   const saved = await saveOnboardingPreferences({ onboardingComplete: true, setup, coverInsertion, showPlaintextPreview: true, windowCaptureEnabled, forwardSecrecyMode });
+  const saved = await saveOnboardingPreferences({ onboardingComplete: true, setup, showPlaintextPreview: true, windowCaptureEnabled, rnWirePolicyRequested, forwardSecrecyMode });
   setup = saved.setup;
   coverInsertion = saved.coverInsertion;
   windowCaptureEnabled = saved.windowCaptureEnabled;
+  rnWirePolicyRequested = saved.rnWirePolicyRequested;
   onboardingComplete = true;
   clearServiceOnboardingResume();
   resetOnboardingBranch();
@@ -4754,7 +4756,7 @@ function workspaceContent(): string {
     // has a claim for this app, that claim is what the tile says; where it does
     // not, the tile keeps the roadmap wording it always had.
     const claim = nativeApps.find((candidate) => candidate.id === app.id as NativeAppId);
-    const caption = claim ? nativeClaimLabel(claim.supportStatus) : "Coming soon";
+    const caption = claim ? nativeAppGeneratedLabel(claim.supportStatus) : "Coming soon";
     const claimTitle = claim ? ` title="${escapeHtml(claim.claimNote)}"` : "";
     return `<article class="app-tile ${available ? "" : "app-unavailable"} ${hidden ? "tile-hidden" : ""} ${pending ? "pending" : ""}" data-tile-id="${app.id}" draggable="${homeEditMode}" data-service-kind="${app.serviceId ?? "none"}" data-launch-state="${app.launchState}" data-claim-status="${claim ? claim.supportStatus : "comingSoon"}" aria-disabled="${available ? "false" : "true"}"><button id="home-app-${app.id}" type="button" ${available ? `data-home-app="${app.id}"` : ""} aria-label="${escapeHtml(`${app.displayName}, ${pending ? "Opening" : state}`)}"${claimTitle} ${disabled ? "disabled" : ""}><span class="app-logo-plate">${homeAppLogo(app)}</span><span class="app-tile-copy"><strong>${escapeHtml(app.displayName)}</strong>${pending ? "<small>Opening…</small>" : available ? "" : `<small>${escapeHtml(caption)}</small>`}</span></button>${controls}</article>`;
   };
@@ -5118,6 +5120,7 @@ function oslChatContent(): string {
     homeLogoUrl: oslVectorLogoUrl,
     deletionUnconfirmed: oslChatDeletionUnconfirmed,
     buildIntegrity: buildIntegrityStatus,
+    verificationWarningSurface: oslChatVerificationWarningSurface,
   })}${offlineStatus}${receipt}${attachments}${settings}</main>`;
 }
 
@@ -6107,8 +6110,10 @@ async function changeSendingMode(mode: SendMode): Promise<void> {
   render();
   try {
     const saved = await saveOnboardingPreferences({ onboardingComplete: true, setup, coverInsertion, showPlaintextPreview: true, windowCaptureEnabled, forwardSecrecyMode });
+    const saved = await saveOnboardingPreferences({ onboardingComplete: true, setup, showPlaintextPreview: true, windowCaptureEnabled, rnWirePolicyRequested, forwardSecrecyMode });
     setup = saved.setup;
     windowCaptureEnabled = saved.windowCaptureEnabled;
+    rnWirePolicyRequested = saved.rnWirePolicyRequested;
     showToast(`${formatSendMode(mode)} selected`);
   } catch {
     setup = previous;
@@ -7759,9 +7764,18 @@ function bindWorkspace(): void {
     render();
   });
   document.querySelector<HTMLInputElement>("#rn-wire-policy-toggle")?.addEventListener("change", (event) => {
+    const previous = rnWirePolicyRequested;
     rnWirePolicyRequested = (event.currentTarget as HTMLInputElement).checked;
     localStorage.setItem(rnWirePolicyStorageKey, String(rnWirePolicyRequested));
     render();
+    void saveOnboardingPreferences({ onboardingComplete, setup, showPlaintextPreview: true, windowCaptureEnabled, rnWirePolicyRequested, forwardSecrecyMode }).then((saved) => {
+      rnWirePolicyRequested = saved.rnWirePolicyRequested;
+      render();
+    }).catch(() => {
+      rnWirePolicyRequested = previous;
+      showToast("Message format preference could not be saved");
+      render();
+    });
   });
   document.querySelectorAll<HTMLButtonElement>("[data-notification-settings]").forEach((button) => button.addEventListener("click", () => { route = "settings"; settingsSection = "notifications"; render(); }));
   document.querySelector<HTMLButtonElement>("[data-privacy-primary-action]")?.addEventListener("click", privacyPrimaryAction);
@@ -8498,6 +8512,16 @@ function oslChatTimestamp(): string {
   return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date());
 }
 
+function decideOslChatVerificationWarning(personId: string, moment: "open-conversation" | "prepare-send"): VerificationWarningSurface {
+  const checked = oslChatHandshakeConfirmed(oslChatMessages.get(personId) ?? []);
+  return verificationWarningDecision(
+    oslChatVerificationWarningSetting,
+    { conversationId: personId, checked },
+    moment,
+    oslChatVerificationWarningMemory,
+  ).surface;
+}
+
 async function openOslChat(personId: string): Promise<void> {
   const person = hubPeople.find((candidate) => candidate.personId === personId);
   if (!person || !peerIsVerified(person) || oslChatBusy) return;
@@ -8506,6 +8530,7 @@ async function openOslChat(personId: string): Promise<void> {
     : [];
   const epoch = ++oslChatOperationEpoch;
   oslChatBusy = true;
+  oslChatVerificationWarningSurface = "none";
   oslChatSettingsPersonId = null;
   render();
   let shouldRefresh = false;
@@ -8547,6 +8572,7 @@ async function openOslChat(personId: string): Promise<void> {
       oslChatAttachments = await listOslChatAttachments() ?? [];
       shouldRefresh = true;
     }
+    oslChatVerificationWarningSurface = decideOslChatVerificationWarning(personId, "open-conversation");
   } finally {
     if (epoch === oslChatOperationEpoch) {
       oslChatBusy = false;
@@ -8771,6 +8797,7 @@ async function sendOslChat(event: SubmitEvent): Promise<void> {
   const handshakeConfirmed = personId ? oslChatHandshakeConfirmed(oslChatMessages.get(personId) ?? []) : false;
   if (!context?.scopeApproved || !personId || !handshakeConfirmed || oslChatBusy || !isHubPlaintext(draft) || refuseOfflineCapability("sendMessage")) return;
   const epoch = oslChatOperationEpoch;
+  oslChatVerificationWarningSurface = decideOslChatVerificationWarning(personId, "prepare-send");
   oslChatBusy = true;
   render();
   const sent = await prepareOslChatText(draft, oslChatViewOnce);
@@ -8802,6 +8829,7 @@ function resetOslChatUiState(clearMessages: boolean): void {
   oslChatDraft = "";
   oslChatBusy = false;
   oslChatAttachments = [];
+  oslChatVerificationWarningSurface = "none";
   if (clearMessages) oslChatMessages.clear();
 }
 
@@ -10057,6 +10085,7 @@ async function bootstrap(): Promise<void> {
       coverInsertion: null,
       showPlaintextPreview: true,
       windowCaptureEnabled: true,
+      rnWirePolicyRequested,
       forwardSecrecyMode: "keepGroupDelivery" as const,
     };
     await recoveryKitUnsavedFlag.load();
@@ -10064,6 +10093,7 @@ async function bootstrap(): Promise<void> {
     setup = preferences.setup;
     coverInsertion = preferences.coverInsertion;
     windowCaptureEnabled = preferences.windowCaptureEnabled;
+    rnWirePolicyRequested = preferences.rnWirePolicyRequested;
     onboardingComplete = preferences.onboardingComplete;
     forwardSecrecyMode = preferences.forwardSecrecyMode;
     if (discordQaShell) {
@@ -10702,6 +10732,8 @@ export const __oslHubUiTest = {
     coverInsertion: CoverInsertionChoice | null;
     forwardSecrecyChoice: ForwardSecrecyChoice | null;
     forwardSecrecyMode: "protectPast" | "keepGroupDelivery";
+    setup: SetupState;
+    windowCaptureEnabled: boolean;
   } {
     return {
       route,
@@ -10725,6 +10757,8 @@ export const __oslHubUiTest = {
       coverInsertion,
       forwardSecrecyChoice: forwardSecrecyOnboarding.choice,
       forwardSecrecyMode,
+      setup: { ...setup },
+      windowCaptureEnabled,
     };
   },
 };

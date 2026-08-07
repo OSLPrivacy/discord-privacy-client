@@ -38,6 +38,14 @@ pub struct ScrubAccountSelection {
     pub account_id: String,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ScrubAccountPermissionRow {
+    pub service_id: String,
+    pub account_id: String,
+    pub ticked: bool,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ScrubIndexSource {
@@ -146,6 +154,23 @@ pub struct ScrubIndexState {
 }
 
 impl ScrubIndexState {
+    pub fn initialize_approved_account_scan(
+        &self,
+        owner: &str,
+        requested: ScrubAccountSelection,
+        rows: Vec<ScrubAccountPermissionRow>,
+        source: ScrubIndexSource,
+    ) -> Result<ScrubIndexStatus, String> {
+        let requested = validate_selections(vec![requested])?
+            .pop()
+            .ok_or_else(|| "Scrub account selection is invalid".to_owned())?;
+        let selections = selected_account_permissions(rows)?;
+        if !selections.contains(&requested) {
+            return Err("Scrub account not approved".into());
+        }
+        self.initialize(owner, ScrubIndexInitializeRequest { selections, source })
+    }
+
     pub fn initialize(
         &self,
         owner: &str,
@@ -294,7 +319,7 @@ impl ScrubIndexState {
         if request.messages.iter().any(|message| {
             !allowed.contains(&message.service_id)
         }) {
-            return Err("A message does not belong to a selected Scrub account".into());
+            return Err("Scrub account not approved".into());
         }
         let scan = scan_local_messages(request.messages.clone());
         if scan.truncated
@@ -599,6 +624,24 @@ fn validate_selections(
     Ok(selections)
 }
 
+fn selected_account_permissions(
+    rows: Vec<ScrubAccountPermissionRow>,
+) -> Result<Vec<ScrubAccountSelection>, String> {
+    let selections = rows
+        .into_iter()
+        .filter(|row| row.ticked)
+        .map(|row| ScrubAccountSelection {
+            service_id: row.service_id,
+            account_id: row.account_id,
+        })
+        .collect::<Vec<_>>();
+    if selections.is_empty() {
+        Ok(selections)
+    } else {
+        validate_selections(selections)
+    }
+}
+
 fn validate_owner(value: &str) -> Result<(), String> {
     if !value.is_empty()
         && value.len() <= 128
@@ -891,6 +934,39 @@ mod tests {
         }
     }
 
+    fn message_for_account(account_id: &str, locator: &str, text: &str) -> LocalMessageCandidate {
+        LocalMessageCandidate {
+            service_id: "discord".into(),
+            account_id: account_id.into(),
+            conversation_id: "maple-chat".into(),
+            message_locator: locator.into(),
+            authored_by_self: true,
+            created_at_unix_ms: Some(1_700_000_004_172),
+            text: text.into(),
+            attachments: Vec::new(),
+        }
+    }
+
+    fn opened_accounts_with_marker(
+        state: &ScrubIndexState,
+        import_id: &str,
+        marker: &str,
+    ) -> Vec<String> {
+        let scan = state
+            .get_scrub_index_scan(OWNER, import_id)
+            .expect("read persisted scan")
+            .expect("scan exists");
+        let mut accounts = scan
+            .findings
+            .into_iter()
+            .filter(|finding| finding.local_preview.contains(marker))
+            .map(|finding| finding.account_id)
+            .collect::<Vec<_>>();
+        accounts.sort();
+        accounts.dedup();
+        accounts
+    }
+
     #[test]
     fn encrypted_lifecycle_is_resumable_and_identity_scoped() {
         let root = root("lifecycle");
@@ -982,8 +1058,85 @@ mod tests {
                 messages: vec![wrong],
             },
         );
-        assert!(result.unwrap_err().contains("selected"));
+        assert_eq!(result.unwrap_err(), "Scrub account not approved");
         assert!(!chunk_path(&root, 0).exists());
+        state.cancel(OWNER, &initial.import_id).unwrap();
+    }
+
+    #[test]
+    fn task_1403_ticked_no_account_is_refused_without_opening_a_second_account() {
+        const ACCOUNT: &str = "discord-maple";
+        const MARKER: &str = "MAPLE-4172";
+
+        let root = root("task-1403");
+        let state = ScrubIndexState::for_test(root.clone());
+        let requested = ScrubAccountSelection {
+            service_id: "discord".to_owned(),
+            account_id: ACCOUNT.to_owned(),
+        };
+        let ticked_yes = ScrubAccountPermissionRow {
+            service_id: "discord".to_owned(),
+            account_id: ACCOUNT.to_owned(),
+            ticked: true,
+        };
+        let initial = state
+            .initialize_approved_account_scan(
+                OWNER,
+                requested.clone(),
+                vec![ticked_yes.clone()],
+                ScrubIndexSource::OslVisibleData,
+            )
+            .expect("ticked account initializes scan");
+        let before_accounts = opened_accounts_with_marker(&state, &initial.import_id, MARKER);
+
+        state
+            .append_chunk(
+                OWNER,
+                ScrubIndexChunkRequest {
+                    import_id: initial.import_id.clone(),
+                    sequence: 0,
+                    final_chunk: false,
+                    messages: vec![message_for_account(
+                        ACCOUNT,
+                        "maple-opened",
+                        "token=MAPLE-4172",
+                    )],
+                },
+            )
+            .expect("approved ticked account opens");
+        let after_good_accounts = opened_accounts_with_marker(&state, &initial.import_id, MARKER);
+
+        let mut ticked_no = ticked_yes.clone();
+        ticked_no.ticked = false;
+        let bad_selection_count = usize::from(ticked_no.ticked);
+        let bad = state.initialize_approved_account_scan(
+            OWNER,
+            requested,
+            vec![ticked_no],
+            ScrubIndexSource::OslVisibleData,
+        );
+        let refusal = bad.expect_err("unticked account must be refused");
+        let after_bad_accounts = opened_accounts_with_marker(&state, &initial.import_id, MARKER);
+
+        println!(
+            "TASK1403_BREAK_ACCOUNT_PERMISSION before_opened_account_count={} after_opened_account_count={} opened_account={} marker={} ticked_no_selected_count={} ticked_no_refusal=\"{}\" final_opened_accounts={} final_opened_account_count={}",
+            before_accounts.len(),
+            after_good_accounts.len(),
+            after_good_accounts.join(","),
+            MARKER,
+            bad_selection_count,
+            refusal,
+            after_bad_accounts.join(","),
+            after_bad_accounts.len()
+        );
+
+        assert_eq!(before_accounts.len(), 0);
+        assert_eq!(after_good_accounts, vec![ACCOUNT.to_owned()]);
+        assert_eq!(bad_selection_count, 0);
+        assert_eq!(refusal, "Scrub account not approved");
+        assert_eq!(after_bad_accounts, vec![ACCOUNT.to_owned()]);
+        assert!(!chunk_path(&root, 1).exists());
+
         state.cancel(OWNER, &initial.import_id).unwrap();
     }
 
