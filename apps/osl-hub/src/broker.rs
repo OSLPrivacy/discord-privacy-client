@@ -4332,6 +4332,7 @@ pub fn prepare_native_discord_overlay_text(
         plaintext,
         view_once,
         None,
+        display_duration_seconds,
     )
 }
 
@@ -4354,7 +4355,7 @@ pub fn prepare_native_discord_overlay_text_with_timer_picker(
         plaintext,
         view_once,
         timer_picker,
-        display_duration_seconds,
+        None,
     )
 }
 
@@ -4385,6 +4386,7 @@ pub fn prepare_native_discord_overlay_text_with_route_clients(
         plaintext,
         view_once,
         None,
+        display_duration_seconds,
         Some(store_client),
         keyserver_client,
     )
@@ -4392,7 +4394,6 @@ pub fn prepare_native_discord_overlay_text_with_route_clients(
 
 #[allow(clippy::too_many_arguments)]
 pub fn prepare_native_discord_overlay_text_with_timer_picker_and_route_clients(
-pub fn prepare_active_messaging_service_overlay_text_with_route_clients(
     core: &HubCoreState,
     security_state: &HubSecurityState,
     broker: &HubBrokerState,
@@ -4404,10 +4405,6 @@ pub fn prepare_active_messaging_service_overlay_text_with_route_clients(
     keyserver_client: Option<&keystore::KeyServerClient>,
 ) -> Result<PreparedNativeOverlayCarrier, String> {
     let context_token = broker.active_native_manual_context_token()?;
-    store_client: &ipc::cipher_store_client::CipherStoreClient,
-    keyserver_client: Option<&keystore::KeyServerClient>,
-) -> Result<PreparedNativeOverlayCarrier, String> {
-    let context_token = broker.active_messaging_service_context_token()?;
     prepare_peer_inbox_text_with_route_clients(
         core,
         security_state,
@@ -4417,7 +4414,7 @@ pub fn prepare_active_messaging_service_overlay_text_with_route_clients(
         plaintext,
         view_once,
         timer_picker,
-        display_duration_seconds,
+        None,
         Some(store_client),
         keyserver_client,
     )
@@ -6626,16 +6623,7 @@ fn begin_peer_attachment(
         crate::view_once_eligibility::require_view_once_attachment_eligibility(&mime_type)?;
     }
     let tier = active_attachment_account_tier(core)?;
-    if crate::attachment_limits::check_attachment_size(plaintext_size, tier).is_err() {
     if crate::attachment_limits::check_attachment_request(plaintext_size, 1, tier).is_err() {
-    let plaintext_limit = if osl_chat {
-        crate::osl_chat_file_limits::current_osl_chat_file_size_limit(core).max_bytes
-    } else {
-        ipc::attachment_wire::MAX_STREAMED_ATTACHMENT_BYTES
-    };
-    if plaintext_size == 0 || plaintext_size > plaintext_limit {
-    let tier = active_attachment_account_tier(core);
-    if crate::attachment_limits::check_attachment_limits(tier, plaintext_size, 1).is_err() {
         return Err(ERROR.to_owned());
     }
     let ttl_seconds = security::scope_security(manual.scope.clone())
@@ -6687,12 +6675,6 @@ fn active_attachment_account_tier(
         }
         keystore::LicenseState::Free => crate::attachment_limits::AttachmentAccountTier::Free,
     })
-) -> crate::attachment_limits::AttachmentAccountTier {
-    if ipc::tier_gate::is_paid_equivalent(&core.osl) {
-        crate::attachment_limits::AttachmentAccountTier::Pro
-    } else {
-        crate::attachment_limits::AttachmentAccountTier::Free
-    }
 }
 
 #[allow(clippy::too_many_arguments)]
