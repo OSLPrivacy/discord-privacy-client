@@ -91,17 +91,26 @@ describe("TASK 0853 honest tile status routes", () => {
     expect(opens.length + chat.length).toBe(routes.length);
   });
 
+  /**
+   * TASK 0856 superseded the two-paragraph render this test used to name.
+   * `tileStatusRouteMarkup` in main.ts is gone; the service route now returns
+   * `tileStatusPageMarkup(claimedApp)` (`tile-status-page.ts`), which is built
+   * from this same route data. The contract this test exists for is unchanged
+   * — the route shows the route data and never a typed sentence — so it is
+   * checked against the module that renders it now.
+   */
   it("renders the route data on the service route rather than a typed sentence", () => {
-    expect(mainSource).toContain("function tileStatusRouteMarkup(app: NativeApp): string");
-    expect(mainSource).toContain("const tileStatus = claimedApp ? tileStatusRouteMarkup(claimedApp) : \"\"");
-    expect(mainSource).toContain("${mailScope}${tileStatus}");
-    // The markup reads the route data and nothing else.
-    const start = mainSource.indexOf("function tileStatusRouteMarkup");
-    const body = mainSource.slice(start, mainSource.indexOf("\n}\n", start));
+    expect(mainSource).toContain(`import { tileStatusPageMarkup } from "./tile-status-page"`);
+    expect(mainSource).toContain("const claimedApp = activeNativeApp();");
+    expect(mainSource).toContain("return tileStatusPageMarkup(claimedApp, {");
+    expect(mainSource).not.toContain("function tileStatusRouteMarkup");
+
+    const body = readFileSync(new URL("./tile-status-page.ts", import.meta.url), "utf8");
+    const markup = body.slice(body.indexOf("export function tileStatusPageMarkup"));
     for (const phrase of FUTURE_PROMISE_PHRASES) {
-      expect(futurePromisesIn(body).includes(phrase), `service-route markup promises "${phrase}"`).toBe(false);
+      expect(futurePromisesIn(markup).includes(phrase), `service-route markup promises "${phrase}"`).toBe(false);
     }
-    console.log(`task_0853_service_route_markup_future_promises=${futurePromisesIn(body).length}`);
+    console.log(`task_0853_service_route_markup_future_promises=${futurePromisesIn(markup).length}`);
   });
 
   it("goes red when a status route is given a hand-written promise", async () => {

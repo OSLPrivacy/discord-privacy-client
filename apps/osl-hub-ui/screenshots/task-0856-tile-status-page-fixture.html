@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>App status</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module">
+      import "/src/styles.css";
+      const { loadNativeApps } = await import("/src/services.ts");
+      const { tileStatusPageMarkup, tileStatusPageFor } = await import("/src/tile-status-page.ts");
+
+      // The catalog, not a hand-written fixture object. Outside Tauri
+      // loadNativeApps() answers with the shipped fallback catalog, which is the
+      // same list `services.test.ts` holds against claim_state.rs. Every word on
+      // screen is therefore either generated from that catalog or comes out of
+      // the two closed tables in tile-status-page.ts.
+      const catalog = await loadNativeApps();
+
+      window.task0856Render = (tileId) => {
+        const app = catalog.find((candidate) => candidate.id === tileId);
+        if (!app) throw new Error(`no connected app called ${tileId}`);
+        document.querySelector("#app").innerHTML = tileStatusPageMarkup(app);
+        document.title = app.displayName;
+        document.documentElement.dataset.task0856 = "ready";
+      };
+
+      window.task0856Catalog = () => catalog.map((app) => ({
+        id: app.id,
+        page: tileStatusPageFor(app),
+      }));
+
+      window.task0856Render("telegram");
+    </script>
+  </body>
+</html>

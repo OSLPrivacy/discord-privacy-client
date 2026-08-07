@@ -7957,3 +7957,153 @@ code {
 
 /* Fixed width so "Fix now" and "Open OSL Chat" occupy the same box. */
 .home-summary-action { box-sizing: border-box; width: 180px; text-align: center; }
+
+/* --- TASK 0856: the honest tile status page ------------------------------- */
+
+/* The page a connected-app tile opens. It has four jobs and the layout follows
+   them in order: the real capability (heading + generated chips), the plain
+   limits (a ✕ list that is never collapsed away), one useful action, and Back
+   to Home. The two lists are deliberately the same shape, because "can" and
+   "cannot" carry equal weight here -- shrinking the limits into a footnote is
+   how "Coming soon" got written in the first place. */
+.tile-status-page {
+  display: flex;
+  justify-content: center;
+  padding: 40px 32px;
+}
+
+.tile-status-card {
+  width: min(620px, 100%);
+  display: grid;
+  gap: 18px;
+  align-content: start;
+  padding: 28px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.tile-status-header {
+  display: grid;
+  gap: 10px;
+}
+
+.tile-status-header h1 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 27px;
+  line-height: 1.15;
+  color: var(--text);
+}
+
+.tile-status-labels {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* The capability chip is the generated answer to "what does OSL actually do
+   here", so it leads. It is painted in the warning tone rather than the success
+   tone on purpose: a partial capability is not a good state. */
+.status-tag.tile-status-capability-tag {
+  border-color: color-mix(in srgb, var(--warn) 55%, var(--line));
+  color: var(--warn);
+}
+
+.tile-status-capability-sentence {
+  margin: 0;
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.tile-status-explanation {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.tile-status-group {
+  display: grid;
+  gap: 10px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.tile-status-group h2 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--subtle);
+}
+
+.tile-status-facts {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 8px;
+}
+
+.tile-status-fact {
+  display: grid;
+  grid-template-columns: 16px 1fr;
+  gap: 10px;
+  align-items: baseline;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.tile-status-fact-mark {
+  font-size: 13px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.tile-status-fact-can .tile-status-fact-mark { color: var(--success); }
+.tile-status-fact-limit .tile-status-fact-mark { color: var(--danger); }
+.tile-status-fact-limit .tile-status-fact-text { color: var(--muted); }
+
+.tile-status-actions {
+  margin-top: 4px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line-soft);
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.tile-status-actions .tile-status-back { margin-left: auto; }
+
+/* The claim chip is the public badge. It stays neutral: an unresolved claim is
+   not a good state, and colour is never the only signal here -- the word
+   ("Not claimed") spells it out. */
+.status-tag.tile-status-claim-tag {
+  border-color: var(--line);
+  color: var(--muted);
+}
+
+/* The two lists are the same shape on purpose, so neither reads as a footnote
+   to the other. Only the marker colour separates them. */
+.tile-status-group-can,
+.tile-status-group-limits {
+  margin: 0;
+}
+
+/* The one action worth taking about this status leads the row and never
+   shrinks below a readable target. */
+.tile-status-next {
+  min-height: 36px;
+}
+
+.tile-status-evidence,
+.tile-status-burn {
+  font-size: 13px;
+}
