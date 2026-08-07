@@ -14,6 +14,7 @@ export const ONBOARDING_SEQUENCE = [
   "sending",
   "cover",
   "silent-visible",
+  "visibility",
   "passwords",
   "burnpass",
   "mullvad",

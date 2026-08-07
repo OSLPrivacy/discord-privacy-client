@@ -3,9 +3,10 @@
 //! Verifies the `cmd_osl_persist_edit` IPC behaves correctly for
 //! the two semantics callers care about:
 //!
-//! - Known id: row is upserted with the new plaintext, the
-//!   non-plaintext metadata (channel_id, sender ids) survives,
-//!   `decrypted_at` advances to the edit time.
+//! - Known id: the stored sender can upsert the row with the new
+//!   plaintext, the non-plaintext metadata (channel_id, sender ids)
+//!   survives, `decrypted_at` advances to the edit time, and another
+//!   editor is refused.
 //! - Unknown id: idempotent no-op (returns `Ok(())`). See the
 //!   fn-doc on `cmd_osl_persist_edit` for why we don't
 //!   synthesize a row from just `(message_id, plaintext)`.
@@ -24,9 +25,8 @@ const SECRET: &[u8; 32] = &[7u8; 32];
 
 /// Build an `AppState` with a fresh `MessageStore` at `dir`.
 /// The keystore identity / peer_map / pubkey cache are NOT
-/// populated — `cmd_osl_persist_edit` does not consult them
-/// (it only goes through the store), so the test stays a
-/// store-only integration test.
+/// populated for known rows — `cmd_osl_persist_edit` only consults
+/// them for unknown-row self upserts, so most tests stay store-only.
 fn fresh_state(dir: &std::path::Path) -> AppState {
     let state = AppState::new();
     let store = MessageStore::open(dir, SECRET).expect("open store");
@@ -39,6 +39,14 @@ fn fresh_state(dir: &std::path::Path) -> AppState {
 fn put_row(state: &AppState, msg: &StoredMessage) {
     let guard = state.message_store.lock().unwrap();
     guard.as_ref().unwrap().put(msg).expect("put");
+}
+
+fn plaintext_count(state: &AppState, channel_id: &str, plaintext: &str) -> usize {
+    cmd_osl_load_channel_history(state, channel_id.to_string(), None)
+        .expect("history")
+        .into_iter()
+        .filter(|row| row.plaintext == plaintext)
+        .count()
 }
 
 #[test]
@@ -64,6 +72,7 @@ fn persist_edit_overwrites_existing_row() {
         "msg-edit-1".to_string(),
         "after edit (fresh plaintext)".to_string(),
         None,
+        "900000000000000003".to_string(),
     )
     .expect("persist_edit on known id");
 
@@ -90,6 +99,71 @@ fn persist_edit_overwrites_existing_row() {
 }
 
 #[test]
+fn persist_edit_refuses_editor_who_is_not_sender() {
+    let tmp = TempDir::new().unwrap();
+    let state = fresh_state(tmp.path());
+
+    let original = StoredMessage {
+        discord_message_id: "msg-1361".to_string(),
+        channel_id: "ch-1361".to_string(),
+        sender_discord_id: "Ava".to_string(),
+        sender_osl_user_id: "Ava".to_string(),
+        plaintext: "MAPLE-4172".to_string(),
+        decrypted_at: 1_000_000_000,
+        burned: false,
+    };
+    put_row(&state, &original);
+
+    let before_edit_count = plaintext_count(&state, "ch-1361", "PINE-4172");
+    println!("before_edit_count={before_edit_count}");
+    assert_eq!(before_edit_count, 0, "PINE-4172 count before edit");
+
+    cmd_osl_persist_edit(
+        &state,
+        "msg-1361".to_string(),
+        "PINE-4172".to_string(),
+        None,
+        "Ava".to_string(),
+    )
+    .expect("Ava is the sender and can edit");
+
+    let after_ava_history =
+        cmd_osl_load_channel_history(&state, "ch-1361".to_string(), None).expect("history");
+    assert_eq!(after_ava_history.len(), 1, "one row after Ava edit");
+    println!("after_ava_plaintext={}", after_ava_history[0].plaintext);
+    assert_eq!(after_ava_history[0].plaintext, "PINE-4172");
+    let after_ava_edit_count = plaintext_count(&state, "ch-1361", "PINE-4172");
+    println!("after_ava_edit_count={after_ava_edit_count}");
+    assert_eq!(after_ava_edit_count, 1, "PINE-4172 count after Ava edit");
+
+    let ben_err = cmd_osl_persist_edit(
+        &state,
+        "msg-1361".to_string(),
+        "CEDAR-4172".to_string(),
+        None,
+        "Ben".to_string(),
+    )
+    .expect_err("Ben is not the sender and must be refused");
+    assert_eq!(
+        ben_err,
+        "OSL: persist_edit refused: only the sender can edit"
+    );
+    println!("ben_refusal={ben_err}");
+
+    let after_ben_history =
+        cmd_osl_load_channel_history(&state, "ch-1361".to_string(), None).expect("history");
+    assert_eq!(after_ben_history.len(), 1, "one row after Ben refusal");
+    println!("after_ben_plaintext={}", after_ben_history[0].plaintext);
+    assert_eq!(after_ben_history[0].plaintext, "PINE-4172");
+    let after_ben_edit_count = plaintext_count(&state, "ch-1361", "PINE-4172");
+    println!("after_ben_edit_count={after_ben_edit_count}");
+    assert_eq!(
+        after_ben_edit_count, 1,
+        "PINE-4172 count stays 1 after Ben refusal"
+    );
+}
+
+#[test]
 fn persist_edit_for_unknown_id_without_channel_is_idempotent_no_op() {
     // When `channel_id` is None we cannot construct a complete row
     // (sender metadata is unrecoverable for arbitrary message ids),
@@ -103,6 +177,7 @@ fn persist_edit_for_unknown_id_without_channel_is_idempotent_no_op() {
         "never-seen-this-id".to_string(),
         "some plaintext".to_string(),
         None,
+        "editor".to_string(),
     )
     .expect("persist_edit on unknown id (no channel) is Ok");
 
@@ -120,6 +195,7 @@ fn persist_edit_for_unknown_id_without_channel_is_idempotent_no_op() {
         "never-seen-this-id".to_string(),
         "different plaintext".to_string(),
         None,
+        "editor".to_string(),
     )
     .expect("persist_edit unknown id second call still Ok");
 }
@@ -143,6 +219,7 @@ fn persist_edit_for_unknown_id_with_channel_upserts_as_self() {
         "fresh-id-after-edit".to_string(),
         "the typed plaintext".to_string(),
         Some("ch-upsert".to_string()),
+        "1111".to_string(),
     )
     .expect("persist_edit upsert with channel_id is Ok");
 
@@ -171,6 +248,7 @@ fn persist_edit_with_store_disabled_is_ok() {
         "any-id".to_string(),
         "any plaintext".to_string(),
         None,
+        "any-editor".to_string(),
     )
     .expect("persist_edit on disabled store is Ok no-op");
 }
@@ -201,6 +279,7 @@ fn persist_edit_after_burn_is_no_op() {
         "burn-then-edit".to_string(),
         "tried to edit after burn".to_string(),
         None,
+        "did".to_string(),
     )
     .expect("persist_edit on burned row is Ok no-op");
 

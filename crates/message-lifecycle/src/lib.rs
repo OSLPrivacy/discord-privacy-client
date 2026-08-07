@@ -35,6 +35,7 @@ pub const HARD_MAX_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
 /// Longest relative open clock this crate will admit, in seconds.
 ///
 /// Deliberately the same thirty days as the longest product deadline: the
+/// Deliberately the same thirty days as the longest marked message timer: the
 /// relative clock is a *tighter* promise layered under the absolute one, never
 /// a way to extend content past the hard deadline.
 pub const HARD_MAX_OPEN_TTL_SECONDS: u32 = 30 * 24 * 60 * 60;

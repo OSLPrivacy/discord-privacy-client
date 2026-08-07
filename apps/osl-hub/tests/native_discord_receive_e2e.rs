@@ -41,7 +41,7 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Barrier, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use store::MessageStore;
@@ -197,6 +197,18 @@ impl RelayServer {
             .inbox
             .iter()
             .filter(|row| row.recipient_id == recipient_id)
+            .count()
+    }
+
+    fn live_wrapped_keys_for(&self, sender_id: &str, recipient_id: &str) -> usize {
+        self.state
+            .lock()
+            .unwrap()
+            .wrapped_keys
+            .values()
+            .filter(|row| {
+                row.sender_id == sender_id && row.recipient_id == recipient_id && !row.consumed
+            })
             .count()
     }
 
@@ -1962,7 +1974,7 @@ fn reveal_once_consumes_on_b() {
     alice.open_native_context_to(&bob.friend_code);
     bob.open_native_context_to(&alice.friend_code);
 
-    const FIXTURE: &str = "B74 native Discord reveal-once fixture";
+    const FIXTURE: &str = "TASK-1348 marked content";
     alice.activate();
     let prepared = prepare_native_discord_overlay_text(
         &alice.core,
@@ -2032,10 +2044,12 @@ fn reveal_once_consumes_on_b() {
         &bob.broker,
         &prepared.prepared.message_id,
     );
-    assert!(
-        replay.is_err(),
-        "B must refuse a replayed copy of an already consumed view-once row"
-    );
+    if let Ok(opened_again) = replay {
+        panic!(
+            "second open returned marked content: {}",
+            opened_again.plaintext
+        );
+    }
     let replay_drain = drain_native_discord_overlay_text(&bob.core, &bob.security, &bob.broker)
         .expect("B drains the replayed already-consumed row");
     assert!(
@@ -2048,6 +2062,146 @@ fn reveal_once_consumes_on_b() {
         "the replayed row is retired after the refusal"
     );
     if let Some(leaked) = file_containing(&storage.root, FIXTURE.as_bytes()) {
+        panic!("view-once plaintext reached persistent storage at {leaked:?}");
+    }
+
+    drop(alice);
+    drop(bob);
+    drop(storage);
+}
+
+#[test]
+fn race_two_view_once_reveals_opens_exactly_once() {
+    let _serial = fixture_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let relay = RelayServer::start();
+    let storage = TestStorage::new("view-once-race-3610");
+    let relay_url = relay.base_url();
+
+    let alice = Peer::new(&storage, "alice", &relay_url, "r36a5050");
+    let bob = Peer::new(&storage, "bob", &relay_url, "r36b5050");
+    alice.open_native_context_to(&bob.friend_code);
+    bob.open_native_context_to(&alice.friend_code);
+
+    const PRIVATE_TEXT: &str = "RACE-3610 exact private text";
+    const ALREADY_OPENED: &str = "This view-once message was already opened";
+    alice.activate();
+    let prepared = prepare_native_discord_overlay_text(
+        &alice.core,
+        &alice.security,
+        &alice.broker,
+        &ai_carrier_fixture(),
+        PRIVATE_TEXT.to_owned(),
+        true,
+    )
+    .expect("prepare the RACE-3610 view-once protected message");
+    assert!(
+        prepared.prepared.view_once,
+        "the staged RACE-3610 item is marked view-once"
+    );
+
+    bob.activate();
+    let listed = drain_native_discord_overlay_text(&bob.core, &bob.security, &bob.broker)
+        .expect("B lists the RACE-3610 view-once row before the race");
+    assert_eq!(
+        listed.pending_view_once.len(),
+        1,
+        "B sees one pending RACE-3610 view-once item before the race"
+    );
+    assert!(
+        listed.pending_view_once[0].message_id == prepared.prepared.message_id,
+        "B's pending RACE-3610 entry names the prepared message"
+    );
+    let relay_before = relay.pending_for(&bob.identity_id);
+    let wrapped_before = relay.live_wrapped_keys_for(&alice.identity_id, &bob.identity_id);
+    println!("RACE-3610 before relay_store={relay_before} wrapped_key_store={wrapped_before}");
+    assert_eq!(
+        relay_before, 1,
+        "the relay notice store has one live RACE-3610 item before the race"
+    );
+    assert_eq!(
+        wrapped_before, 1,
+        "the wrapped-key store has one live RACE-3610 item before the race"
+    );
+
+    let barrier = Arc::new(Barrier::new(3));
+    let message_id = prepared.prepared.message_id.clone();
+    let (left, right) = thread::scope(|scope| {
+        let left_barrier = Arc::clone(&barrier);
+        let left_message_id = message_id.clone();
+        let left_core = &bob.core;
+        let left_security = &bob.security;
+        let left_broker = &bob.broker;
+        let left = scope.spawn(move || {
+            left_barrier.wait();
+            reveal_native_discord_overlay_view_once(
+                left_core,
+                left_security,
+                left_broker,
+                &left_message_id,
+            )
+        });
+
+        let right_barrier = Arc::clone(&barrier);
+        let right_message_id = message_id.clone();
+        let right_core = &bob.core;
+        let right_security = &bob.security;
+        let right_broker = &bob.broker;
+        let right = scope.spawn(move || {
+            right_barrier.wait();
+            reveal_native_discord_overlay_view_once(
+                right_core,
+                right_security,
+                right_broker,
+                &right_message_id,
+            )
+        });
+
+        barrier.wait();
+        (
+            left.join().expect("left RACE-3610 reveal thread"),
+            right.join().expect("right RACE-3610 reveal thread"),
+        )
+    });
+    let results = [left, right];
+    let exact_private_text = results
+        .iter()
+        .filter(|result| {
+            result
+                .as_ref()
+                .is_ok_and(|opened| opened.plaintext == PRIVATE_TEXT)
+        })
+        .count();
+    let already_opened = results
+        .iter()
+        .filter(|result| result.as_ref().is_err_and(|error| error == ALREADY_OPENED))
+        .count();
+    println!(
+        "RACE-3610 returns exact_private_text_count={exact_private_text} exact_private_text=\"{PRIVATE_TEXT}\" already_opened_count={already_opened} already_opened_text=\"{ALREADY_OPENED}\""
+    );
+    assert_eq!(
+        exact_private_text, 1,
+        "exactly one simultaneous RACE-3610 reveal returns the private text"
+    );
+    assert_eq!(
+        already_opened, 1,
+        "exactly one simultaneous RACE-3610 reveal returns already opened"
+    );
+
+    let relay_after = relay.pending_for(&bob.identity_id);
+    let wrapped_after = relay.live_wrapped_keys_for(&alice.identity_id, &bob.identity_id);
+    println!("RACE-3610 after relay_store={relay_after} wrapped_key_store={wrapped_after}");
+    assert_eq!(
+        relay_after, 0,
+        "the relay notice store has no live RACE-3610 item after the race"
+    );
+    assert_eq!(
+        wrapped_after, 0,
+        "the wrapped-key store has no live RACE-3610 item after the race"
+    );
+
+    if let Some(leaked) = file_containing(&storage.root, PRIVATE_TEXT.as_bytes()) {
         panic!("view-once plaintext reached persistent storage at {leaked:?}");
     }
 

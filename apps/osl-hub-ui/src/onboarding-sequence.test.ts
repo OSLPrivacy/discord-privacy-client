@@ -28,6 +28,7 @@ describe("T15-C1 onboarding sequence", () => {
       "sending",
       "cover",
       "silent-visible",
+      "visibility",
       "passwords",
       "burnpass",
       "mullvad",

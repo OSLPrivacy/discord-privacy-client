@@ -1,0 +1,113 @@
+/* ---------------------------------------------------------------------------
+   Can people tell you use OSL. 2026-08-06 capture fixture.
+
+   The screen is deliberately sparse: one question, two equal choices, then the
+   shared setup controls. The screenshot gate owns the fixed 1280x800 render.
+   --------------------------------------------------------------------------- */
+.onboarding-shell:has(.cv-onboarding),
+.onboarding-panel:has(.cv-onboarding) {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: var(--osl-setup-bg);
+  display: grid;
+  place-items: center;
+  align-content: center;
+}
+
+.cv-onboarding {
+  width: 640px;
+  max-width: 100%;
+  margin: 0;
+  transform: translateY(-28px);
+  text-align: center;
+  font-family: "Onest Variable", Onest, var(--font-ui);
+}
+
+.onboarding-panel .cv-title,
+.cv-title {
+  margin: 0 0 30px;
+  font-family: inherit;
+  font-size: 34px;
+  font-weight: 600;
+  line-height: 1.16;
+  letter-spacing: 0;
+  color: var(--osl-setup-text);
+}
+
+.cv-choice-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+.cv-choice {
+  min-height: 104px;
+  border: 1px solid var(--osl-setup-line);
+  border-radius: 2px;
+  background: var(--osl-setup-card);
+  color: var(--osl-setup-muted);
+  font-family: inherit;
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: .1em;
+  cursor: pointer;
+  transition: border-color .2s, color .2s, background-color .2s;
+}
+
+.cv-choice.selected {
+  border-color: var(--osl-setup-accent);
+  color: var(--osl-setup-text);
+  background: rgba(42, 192, 240, .08);
+}
+
+.cv-choice:hover,
+.cv-choice:focus-visible {
+  border-color: var(--osl-setup-accent);
+  color: var(--osl-setup-text);
+}
+
+.cv-actions {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 18px;
+  margin-block: 24px 0;
+  padding: 0;
+  border: 0;
+}
+
+.cv-continue { order: 1; }
+
+.onboarding-panel .cv-back,
+.cv-back {
+  order: 2;
+  width: auto;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  font-family: "Source Sans 3 Variable", "Source Sans 3", var(--font-ui);
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--osl-setup-second);
+  text-align: center;
+  cursor: pointer;
+}
+
+.cv-back::before { content: "\2190\00a0"; }
+.cv-back:hover { color: var(--osl-setup-text); background: transparent; }
+
+@media (prefers-reduced-motion: reduce) {
+  .cv-choice { transition: none; }
+}
+
+@media (max-width: 40rem) {
+  .cv-onboarding { width: 100%; padding: 0 16px; }
+  .cv-choice-row { grid-template-columns: 1fr; }
+}

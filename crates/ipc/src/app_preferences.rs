@@ -20,6 +20,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path::Path;
 
 /// Active stego envelope. Mode 0 is the production `DPC0::<b64>`
@@ -104,6 +105,31 @@ impl VerificationWarningChoice {
             Self::Once => "once",
             Self::BeforeSending => "before sending",
             Self::Never => "never",
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum PrivacyLevel {
+    Basic,
+    #[default]
+    Balanced,
+    Maximum,
+}
+
+impl PrivacyLevel {
+    pub const ALL: [Self; 3] = [Self::Basic, Self::Balanced, Self::Maximum];
+
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Basic => "basic",
+            Self::Balanced => "balanced",
+            Self::Maximum => "maximum",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Basic => "Basic",
+            Self::Balanced => "Balanced",
+            Self::Maximum => "Maximum",
         }
     }
 }
@@ -148,6 +174,51 @@ impl BehaviourChoiceName {
             Self::Sound => "sound",
             Self::Mute => "mute",
             Self::QuietHours => "quiet hours",
+pub fn parse_privacy_level(input: &str) -> Result<PrivacyLevel, String> {
+    let normalized = input.trim().to_ascii_lowercase().replace('-', "_");
+    PrivacyLevel::ALL
+        .into_iter()
+        .find(|level| normalized == level.id())
+        .ok_or_else(|| format!("OSL: unknown privacy level '{input}'"))
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PrivacyLevelRuleSet {
+    pub before_send_warnings: bool,
+    pub attachment_cleaning: bool,
+    pub cleanup_review_days: u16,
+    pub public_post_checks: bool,
+    pub vpn_required_actions: bool,
+    pub protected_contacts_required: bool,
+}
+
+impl PrivacyLevelRuleSet {
+    pub fn for_level(level: PrivacyLevel) -> Self {
+        match level {
+            PrivacyLevel::Basic => Self {
+                before_send_warnings: false,
+                attachment_cleaning: false,
+                cleanup_review_days: 0,
+                public_post_checks: false,
+                vpn_required_actions: false,
+                protected_contacts_required: false,
+            },
+            PrivacyLevel::Balanced => Self {
+                before_send_warnings: true,
+                attachment_cleaning: true,
+                cleanup_review_days: 30,
+                public_post_checks: false,
+                vpn_required_actions: false,
+                protected_contacts_required: false,
+            },
+            PrivacyLevel::Maximum => Self {
+                before_send_warnings: true,
+                attachment_cleaning: true,
+                cleanup_review_days: 7,
+                public_post_checks: true,
+                vpn_required_actions: true,
+                protected_contacts_required: true,
+            },
         }
     }
 }
@@ -166,6 +237,60 @@ pub fn normalize_behaviour_choice_value(value: &str) -> Result<String, String> {
         return Err("OSL: behaviour choice value is invalid".to_string());
     }
     Ok(value.to_string())
+impl Default for PrivacyLevelRuleSet {
+    fn default() -> Self {
+        Self::for_level(PrivacyLevel::Balanced)
+    }
+}
+
+/// Saved defaults applied when the user starts a new message.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageScopeDefault {
+    #[default]
+    Message,
+    Conversation,
+    App,
+}
+
+/// Saved preference for how outgoing text is written.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageWriterDefault {
+    #[default]
+    Plaintext,
+    AiCovertext,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MessageDefaults {
+    #[serde(default)]
+    pub scope: MessageScopeDefault,
+    #[serde(default = "default_message_timer_seconds")]
+    pub timer_seconds: u32,
+    #[serde(default = "default_display_length_seconds")]
+    pub display_length_seconds: u32,
+    #[serde(default)]
+    pub writer: MessageWriterDefault,
+}
+
+impl Default for MessageDefaults {
+    fn default() -> Self {
+        Self {
+            scope: MessageScopeDefault::default(),
+            timer_seconds: default_message_timer_seconds(),
+            display_length_seconds: default_display_length_seconds(),
+            writer: MessageWriterDefault::default(),
+        }
+    }
+}
+
+fn default_message_timer_seconds() -> u32 {
+    300
+}
+
+fn default_display_length_seconds() -> u32 {
+    10
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -184,6 +309,11 @@ pub struct AppPreferences {
     pub verification_warning: VerificationWarningChoice,
     #[serde(default)]
     pub behaviour_choices: HashMap<String, String>,
+    pub privacy_level: PrivacyLevel,
+    #[serde(default)]
+    pub privacy_level_rule_sets: BTreeMap<String, PrivacyLevelRuleSet>,
+    #[serde(default)]
+    pub message_defaults: MessageDefaults,
 }
 
 pub const APP_PREFERENCES_VERSION: u32 = 2;

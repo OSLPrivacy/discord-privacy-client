@@ -118,7 +118,7 @@ export function recoveryScreenMarkup(flow: AccountRecoveryFlow): string {
   // similar names and different consequences is the confusion worth spending a
   // line on.
   return `<section class="stealth-screen restore-screen forgot-screen" aria-labelledby="route-heading">
-    <h1 id="route-heading" tabindex="-1" class="stealth-title forgot-title">Forgot password?</h1>
+    <h1 id="route-heading" tabindex="-1" class="stealth-title forgot-title">Password reset</h1>
     <p class="stealth-quiet">Your password recovery phrase sets a new password. It is not your identity phrase</p>
     <form class="password-form stealth-form" data-account-recovery-phrase novalidate>
       <span class="restore-label-row"><label for="account-recovery-phrase">Password recovery phrase</label><em>stays on this device</em></span>

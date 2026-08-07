@@ -4,6 +4,7 @@
   "manifest_id": "osl-public-surface",
   "html": [
     "docs/compare.html",
+    "docs/donate.html",
     "docs/download.html",
     "docs/faq.html",
     "docs/prototypes/osl-chats-lab/index.html",

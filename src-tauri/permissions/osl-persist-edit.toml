@@ -9,5 +9,5 @@
 
 [[permission]]
 identifier = "allow-osl-persist-edit"
-description = "Permits the discord.com main webview to invoke `osl_persist_edit` (re-persist a stored decrypted message under a fresh plaintext after the user edited it through Discord's edit flow). The IPC takes the *original plaintext* the user typed plus the discord_message_id from the PATCH URL; the existing row's channel_id and sender metadata are preserved, and decrypted_at advances to the edit time. Idempotent no-op when the row is unknown (edit-before-decrypt corner case)."
+description = "Permits the discord.com main webview to invoke `osl_persist_edit` (re-persist a stored decrypted message under a fresh plaintext after the sender edited it through Discord's edit flow). The IPC takes the *original plaintext* the user typed, the discord_message_id from the PATCH URL, and the current editor id; known rows are refused unless the editor matches the stored sender. The existing row's channel_id and sender metadata are preserved, and decrypted_at advances to the edit time. Idempotent no-op when the row is unknown without a channel (edit-before-decrypt corner case)."
 commands.allow = ["osl_persist_edit"]

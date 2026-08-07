@@ -388,6 +388,7 @@ describe("fresh-account continuation", () => {
     // the inlined comparisons it replaced.
     expect(pending).toContain("resumeOnboardingRoute(localStorage, onboardingResumeStorageKey)");
     for (const route of ["pro", "privacy", "defaults", "tor", "sending", "cover", "silent-visible", "passwords", "burnpass", "mullvad", "browser", "tutorial"] as const) {
+    for (const route of ["pro", "privacy", "defaults", "tor", "sending", "cover", "visibility", "passwords", "burnpass", "mullvad", "browser", "tutorial"] as const) {
       expect(RESUMABLE_ONBOARDING_ROUTES).toContain(route);
       expect(resumeOnboardingRoute(fakeResumeStorage({ [RESUME_STORAGE_KEY]: route }), RESUME_STORAGE_KEY)).toBe(route);
     }
@@ -767,6 +768,7 @@ describe("fresh-account continuation", () => {
     expect(onboardingRender).not.toContain('id="skip-onboarding"');
     expect(onboardingRender).not.toContain("Skip · manual setup");
     expect(onboardingRender).toContain('["pro", "forward-secrecy", "privacy", "defaults", "tor", "sending", "cover", "silent-visible", "passwords", "burnpass", "browser", "detected", "install", "apps", "mullvad"]');
+    expect(onboardingRender).toContain('["pro", "forward-secrecy", "privacy", "defaults", "tor", "sending", "cover", "visibility", "passwords", "burnpass", "browser", "detected", "install", "apps", "mullvad"]');
     expect(onboardingRender).not.toContain('"tutorial"');
     expect(onboardingRender).not.toContain('"scrub"].includes(onboardingRoute)');
     expect(binding).not.toContain('document.querySelector("#skip-onboarding")');
@@ -802,6 +804,8 @@ describe("fresh-account continuation", () => {
     expect(indexOf("sending")).toBeLessThan(indexOf("cover"));
     expect(indexOf("cover")).toBeLessThan(indexOf("silent-visible"));
     expect(indexOf("silent-visible")).toBeLessThan(indexOf("passwords"));
+    expect(indexOf("cover")).toBeLessThan(indexOf("passwords"));
+    expect(indexOf("visibility")).toBeLessThan(indexOf("passwords"));
     expect(indexOf("passwords")).toBeLessThan(indexOf("burnpass"));
     expect(indexOf("browser")).toBeLessThan(indexOf("detected"));
     // 2026-08-06: the tour left the first-run spine on the owner's instruction.
@@ -868,8 +872,8 @@ describe("fresh-account continuation", () => {
     const binding = functionSource("bindOnboarding", "completeOnboarding");
     expect(content).toContain("Optional network privacy");
     expect(content).toContain('id="install-mullvad"');
-    expect(content).toContain('id="open-mullvad"');
-    expect(content).toContain("Use my session");
+    expect(content).toContain('id="found-session-mullvad"');
+    expect(content).toContain("Found session");
     expect(content).toContain('id="continue-mullvad"');
     expect(content).toContain('id="skip-mullvad"');
     expect(content).not.toMatch(/mullvad-connected|mullvad-autostart|refresh-mullvad|Mullvad pixels|does not copy or read/);
@@ -892,9 +896,10 @@ describe("fresh-account continuation", () => {
     ]) {
       expect(content, `the Mullvad screen must not claim ${claim.source}`).not.toMatch(claim);
     }
-    expect(binding).toContain('runMullvadSetupAction("install")');
-    expect(binding).toContain('runMullvadSetupAction("open")');
-    expect(binding).toMatch(/#continue-mullvad[\s\S]*?onboardingRoute = "browser"[\s\S]*?refreshBrowserImportReadiness\(\)/);
+    expect(binding).toContain("openMullvadInstallPage()");
+    expect(binding).toContain("confirmMullvadFoundSession()");
+    expect(binding).toMatch(/#continue-mullvad[\s\S]*?continueMullvadSetup\(\)/);
+    expect(binding).toMatch(/#skip-mullvad[\s\S]*?skipMullvadSetup\(\)/);
   });
 
   it("keeps Mullvad installation and hosting behind one setup action", () => {

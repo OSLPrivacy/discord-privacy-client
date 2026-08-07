@@ -180,6 +180,7 @@ const MAX_REVOCATION_POSTS_PER_DRAIN: usize = 8;
 const MAX_PEER_LIFETIME_SECONDS: i64 = 7 * 24 * 60 * 60;
 const MAX_PEER_CLOCK_SKEW_SECONDS: i64 = 5 * 60;
 const VIEW_ONCE_UNAVAILABLE: &str = "This view-once message is unavailable or expired";
+const VIEW_ONCE_ALREADY_OPENED: &str = "This view-once message was already opened";
 const LOCAL_PROTECTED_MESSAGE_TYPE: u8 = 0x80;
 const LOCAL_PROTECTED_FILE: &str = "hub_local_protected.json";
 const NATIVE_OVERLAY_RECEIPTS_FILE: &str = "hub_native_overlay_receipts.json";
@@ -320,6 +321,7 @@ struct BrokerInner {
 pub struct HubBrokerState {
     inner: Mutex<BrokerInner>,
     local_protected_transition: Mutex<()>,
+    native_overlay_view_once_reveal_transition: Mutex<()>,
     native_overlay_receipt_transition: Mutex<()>,
     inbound_privacy_receipts: Mutex<BTreeMap<([u8; 32], [u8; 32]), ReceiptState>>,
     native_overlay_received_view_once: Mutex<BTreeMap<String, i64>>,
@@ -331,6 +333,7 @@ impl core::fmt::Debug for HubBrokerState {
         f.debug_struct("HubBrokerState")
             .field("inner", &"<redacted>")
             .field("local_protected_transition", &"<mutex>")
+            .field("native_overlay_view_once_reveal_transition", &"<mutex>")
             .field("native_overlay_receipt_transition", &"<mutex>")
             .field("inbound_privacy_receipts", &"<mutex>")
             .field(
@@ -4649,6 +4652,10 @@ pub fn reveal_native_discord_overlay_view_once(
     if !valid_peer_attachment_id(message_id) {
         return Err(VIEW_ONCE_UNAVAILABLE.to_owned());
     }
+    let _reveal = broker
+        .native_overlay_view_once_reveal_transition
+        .lock()
+        .map_err(|_| VIEW_ONCE_UNAVAILABLE.to_owned())?;
     let context_token = broker.active_native_manual_context_token()?;
     let manual = broker.manual_peer_for(&context_token)?;
     let now = ipc::main_password::now_unix_secs_pub();
@@ -4656,7 +4663,7 @@ pub fn reveal_native_discord_overlay_view_once(
         .unwrap_or(false)
     {
         let _ = broker.record_view_once_second_reveal_refusal(message_id, now);
-        return Err(VIEW_ONCE_UNAVAILABLE.to_owned());
+        return Err(VIEW_ONCE_ALREADY_OPENED.to_owned());
     }
     let mut batch = drain_peer_inbox_text(
         core,
@@ -5699,7 +5706,8 @@ fn begin_peer_attachment(
     if view_once {
         crate::view_once_eligibility::require_view_once_attachment_eligibility(&mime_type)?;
     }
-    if plaintext_size == 0 || plaintext_size > ipc::attachment_wire::MAX_STREAMED_ATTACHMENT_BYTES {
+    let tier = active_attachment_account_tier(core)?;
+    if crate::attachment_limits::check_attachment_size(plaintext_size, tier).is_err() {
         return Err(ERROR.to_owned());
     }
     let ttl_seconds = security::scope_security(manual.scope.clone())
@@ -5734,6 +5742,22 @@ fn begin_peer_attachment(
         peer_osl_user_id: manual.peer_osl_user_id,
         conversation_binding: context.conversation_id,
         self_osl_user_id: context.self_osl_id,
+    })
+}
+
+fn active_attachment_account_tier(
+    core: &HubCoreState,
+) -> Result<crate::attachment_limits::AttachmentAccountTier, String> {
+    let license = core
+        .osl
+        .license_state
+        .lock()
+        .map_err(|_| "OSL activation state is unavailable".to_owned())?;
+    Ok(match license.state {
+        keystore::LicenseState::Paid | keystore::LicenseState::PaidOfflineGrace => {
+            crate::attachment_limits::AttachmentAccountTier::Pro
+        }
+        keystore::LicenseState::Free => crate::attachment_limits::AttachmentAccountTier::Free,
     })
 }
 
@@ -9354,6 +9378,12 @@ fn validate_context(context: &HubConversationContext) -> Result<(), String> {
             return Err("OSL broker participant set contains duplicates".to_owned());
         }
     }
+    if context.conversation_kind == HubConversationKind::Dm {
+        unique.insert(&context.self_osl_id);
+        if unique.len() != 2 {
+            return Err("OSL broker direct messages require exactly two members".to_owned());
+        }
+    }
     Ok(())
 }
 
@@ -10851,7 +10881,10 @@ mod tests {
         widened_server.join().expect("widened audit server exits");
 
         let (legacy_url, legacy_requests, legacy_server) =
-            spawn_control_inbox_test_server(vec![serde_json::json!({ "ok": true })]);
+            spawn_control_inbox_test_server_with_floor(
+                &identity,
+                vec![serde_json::json!({ "ok": true })],
+            );
         let legacy_client =
             keystore::KeyServerClient::new(&legacy_url).expect("build legacy audit client");
         let legacy_error = fetch_peer_control_inbox(&identity, &legacy_client, sender_a)
@@ -10859,10 +10892,16 @@ mod tests {
         assert!(
             legacy_error
                 .to_string()
-                .contains("sender-filter capability unavailable"),
+                .contains("control-inbox sender-filter capability downgrade refused"),
             "legacy capability absence must be an explicit refusal"
         );
         assert_health_request(&legacy_requests.recv().expect("capture legacy health"));
+        assert_sender_filter_floor_request(
+            &legacy_requests
+                .recv()
+                .expect("capture legacy sender-filter floor"),
+            &identity,
+        );
         assert!(
             legacy_requests.try_recv().is_err(),
             "legacy refusal must stop before any unfiltered active-peer GET"
@@ -10997,7 +11036,10 @@ mod tests {
         widened_server.join().expect("widened audit server exits");
 
         let (legacy_url, legacy_requests, legacy_server) =
-            spawn_control_inbox_test_server(vec![serde_json::json!({ "ok": true })]);
+            spawn_control_inbox_test_server_with_floor(
+                &identity,
+                vec![serde_json::json!({ "ok": true })],
+            );
         let legacy_client =
             keystore::KeyServerClient::new(&legacy_url).expect("build legacy audit client");
         let legacy = fetch_peer_control_inbox(&identity, &legacy_client, sender_a)
@@ -11005,10 +11047,16 @@ mod tests {
         assert!(
             legacy
                 .to_string()
-                .contains("sender-filter capability unavailable"),
+                .contains("control-inbox sender-filter capability downgrade refused"),
             "missing sender-filter authority is a refusal, never permission"
         );
         assert_health_request(&legacy_requests.recv().expect("capture legacy health"));
+        assert_sender_filter_floor_request(
+            &legacy_requests
+                .recv()
+                .expect("capture legacy sender-filter floor"),
+            &identity,
+        );
         assert!(
             legacy_requests.try_recv().is_err(),
             "legacy refusal must stop before an unfiltered active-peer GET"
@@ -11070,8 +11118,17 @@ mod tests {
         let address = listener.local_addr().expect("read test server address");
         let (request_tx, request_rx) = std::sync::mpsc::channel();
         let server = std::thread::spawn(move || {
+            let mut floor_responses_remaining = floor_identity
+                .as_ref()
+                .map(|_| {
+                    responses
+                        .iter()
+                        .filter(|response| response.get("ok").is_some())
+                        .count()
+                })
+                .unwrap_or(0);
             let mut responses = VecDeque::from(responses);
-            while !responses.is_empty() {
+            while !responses.is_empty() || floor_responses_remaining > 0 {
                 let (mut stream, _) = listener.accept().expect("accept control-inbox request");
                 stream
                     .set_read_timeout(Some(Duration::from_secs(5)))
@@ -11117,6 +11174,11 @@ mod tests {
                     .expect("record control-inbox request");
 
                 let body = if target.starts_with("/v1/sender-filter-capability-floor/") {
+                    assert!(
+                        floor_responses_remaining > 0,
+                        "unexpected sender-filter floor request"
+                    );
+                    floor_responses_remaining -= 1;
                     let (user_id, ed25519_public) = floor_identity
                         .as_ref()
                         .expect("test floor response has a bound identity");
@@ -12073,20 +12135,29 @@ mod tests {
         let sender_a = "peer-a";
 
         let (legacy_url, legacy_requests, legacy_server) =
-            spawn_control_inbox_test_server(vec![serde_json::json!({ "ok": true })]);
+            spawn_control_inbox_test_server_with_floor(
+                &identity,
+                vec![serde_json::json!({ "ok": true })],
+            );
         let legacy_client = keystore::KeyServerClient::new(&legacy_url).expect("legacy client");
         let legacy_error = fetch_peer_control_inbox(&identity, &legacy_client, sender_a)
             .expect_err("legacy Worker must not widen to an unfiltered page");
         assert!(
             legacy_error
                 .to_string()
-                .contains("sender-filter capability unavailable"),
+                .contains("control-inbox sender-filter capability downgrade refused"),
             "legacy capability absence is an explicit refusal"
         );
         assert_health_request(&legacy_requests.recv().expect("capture legacy health"));
+        assert_sender_filter_floor_request(
+            &legacy_requests
+                .recv()
+                .expect("capture legacy sender-filter floor"),
+            &identity,
+        );
         assert!(
             legacy_requests.try_recv().is_err(),
-            "legacy refusal must stop before any floor or inbox GET"
+            "legacy refusal must stop before any inbox GET"
         );
         legacy_server.join().expect("legacy server exits");
 
@@ -12128,7 +12199,10 @@ mod tests {
         final_server.join().expect("final server exits");
 
         let (rolled_back_url, rollback_requests, rollback_server) =
-            spawn_control_inbox_test_server(vec![serde_json::json!({ "ok": true })]);
+            spawn_control_inbox_test_server_with_floor(
+                &identity,
+                vec![serde_json::json!({ "ok": true })],
+            );
         let restarted_client =
             keystore::KeyServerClient::new(&rolled_back_url).expect("fresh client after restart");
         let error = fetch_peer_control_inbox(&identity, &restarted_client, sender_a)
@@ -12136,13 +12210,19 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("sender-filter capability unavailable"),
+                .contains("control-inbox sender-filter capability downgrade refused"),
             "rollback is refused before any unfiltered fallback GET"
         );
         assert_health_request(&rollback_requests.recv().expect("capture rollback health"));
+        assert_sender_filter_floor_request(
+            &rollback_requests
+                .recv()
+                .expect("capture rollback sender-filter floor"),
+            &identity,
+        );
         assert!(
             rollback_requests.try_recv().is_err(),
-            "rollback refusal must stop before any floor or inbox GET"
+            "rollback refusal must stop before any inbox GET"
         );
         rollback_server.join().expect("rollback server exits");
         remove_sender_filter_test_account(&account_dir);
@@ -14174,6 +14254,258 @@ mod tests {
         let _ = std::fs::remove_dir_all(&receipt_dir);
     }
 
+    fn task_3580_counts(
+        dir: &Path,
+        file_key: &[u8; 32],
+        unlock_scope_key: &str,
+    ) -> (usize, usize, usize) {
+        let readable = load_local_ledger(&dir.join(LOCAL_PROTECTED_FILE), file_key)
+            .expect("read protected ledger")
+            .records
+            .len();
+        let unlock = match std::fs::read(dir.join("scope_blobs.json")) {
+            Ok(sealed) => {
+                let plain = ipc::main_password::decrypt_at_rest(&sealed, file_key)
+                    .expect("decrypt unlock-key ledger");
+                let ledger: ipc::scope_blobs_file::ScopeBlobsFile =
+                    serde_json::from_slice(&plain).expect("decode unlock-key ledger");
+                ipc::scope_blobs_file::count_for(&ledger, unlock_scope_key)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
+            Err(error) => panic!("read unlock-key ledger: {error}"),
+        };
+        let send_success =
+            load_native_overlay_receipts(&dir.join(NATIVE_OVERLAY_RECEIPTS_FILE), file_key)
+                .expect("read send-success ledger")
+                .records
+                .values()
+                .filter(|record| record.status == NativeOverlayReceiptStatus::Sent)
+                .count();
+        (readable, unlock, send_success)
+    }
+
+    fn task_3580_unlock_key_fingerprints(
+        dir: &Path,
+        file_key: &[u8; 32],
+        unlock_scope_key: &str,
+    ) -> Vec<String> {
+        let sealed = std::fs::read(dir.join("scope_blobs.json")).expect("read unlock-key ledger");
+        let plain = ipc::main_password::decrypt_at_rest(&sealed, file_key)
+            .expect("decrypt unlock-key ledger");
+        let ledger: ipc::scope_blobs_file::ScopeBlobsFile =
+            serde_json::from_slice(&plain).expect("decode unlock-key ledger");
+        let mut fingerprints = ledger
+            .burn_capabilities
+            .get(unlock_scope_key)
+            .into_iter()
+            .flat_map(|by_blob| by_blob.values())
+            .map(|capability| sha256_hex(capability.as_bytes()))
+            .collect::<Vec<_>>();
+        fingerprints.sort();
+        fingerprints
+    }
+
+    #[test]
+    fn task_3580_disk_full_during_each_message_write_keeps_prior_control_exact() {
+        let _serial = crate::global_keystore_test_lock();
+        let _globals = KeystoreGlobalsGuard;
+        const PASSWORD: &str = "task3580-main-password";
+        const CONTROL_TEXT: &str = "TASK-3580 marked control message stays exact";
+        let dir = std::env::temp_dir().join(format!(
+            "osl-hub-task-3580-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        keystore::set_base_dir_override(Some(dir.clone()));
+        keystore::set_active_account_dir(Some(dir.clone()));
+        ipc::main_password::set_main_password(&dir, PASSWORD).unwrap();
+
+        let identity = keystore::generate_identity("self-liam".to_owned());
+        let key_fingerprint = sha256_hex(identity.x25519_public.as_bytes());
+        let core = HubCoreState::default();
+        *core.osl.identity.lock().unwrap() = Some(identity.clone());
+        let broker = HubBrokerState::default();
+        let security_state = HubSecurityState::default();
+        let lease = broker
+            .activate(context("email-task-3580", "dm-task-3580"), 3580)
+            .unwrap();
+        let manual = ManualPeerContext {
+            service_id: "email".to_owned(),
+            account_id: "email-task-3580".to_owned(),
+            person_id: "peer-rose".to_owned(),
+            peer_osl_user_id: "peer-rose-osl".to_owned(),
+            scope: ScopeInput {
+                kind: ScopeKind::Dm,
+                id: "scope-task-3580".to_owned(),
+                server_id: None,
+                channel_id: Some("dm-task-3580".to_owned()),
+            },
+        };
+        let hub_context = broker.context_for(&lease.context_token).unwrap();
+        let unlock_scope: ipc::scope::Scope = manual.scope.clone().try_into().unwrap();
+        let unlock_scope_key = unlock_scope.storage_key();
+
+        let control = prepare_local_protected_text(
+            &core,
+            &broker,
+            &lease.context_token,
+            CONTROL_TEXT.to_owned(),
+        )
+        .expect("save marked readable control message");
+        let control_read = decrypt_local_protected_capsule(
+            &core,
+            &broker,
+            &lease.context_token,
+            control.capsule.clone(),
+        )
+        .expect("read marked control message");
+        assert_eq!(control_read.plaintext, CONTROL_TEXT);
+
+        let control_unlock_key = "22222222222222222222222222222222".to_owned();
+        security::record_peer_prose_blob(
+            &security_state,
+            manual.scope.clone(),
+            "1111111111111111".to_owned(),
+            Some(control_unlock_key.clone()),
+        )
+        .expect("save one unlock key for the control message");
+        record_native_overlay_sent_after_verified_native_posts(
+            1,
+            1,
+            &core,
+            &broker,
+            &hub_context,
+            &manual,
+            "msg-task-3580-control",
+            1_700_003_600,
+            false,
+        )
+        .expect("save one send-success receipt for the control message");
+
+        let file_key =
+            ipc::main_password::get_file_storage_key().expect("main password installs file key");
+        let before = task_3580_counts(&dir, &file_key, &unlock_scope_key);
+        let unlock_fingerprints_before =
+            task_3580_unlock_key_fingerprints(&dir, &file_key, &unlock_scope_key);
+        assert_eq!(before, (1, 1, 1));
+        assert_eq!(
+            unlock_fingerprints_before,
+            vec![sha256_hex(control_unlock_key.as_bytes())]
+        );
+        eprintln!(
+            "TASK3580 before readable-message={} unlock-key={} send-success={}",
+            before.0, before.1, before.2
+        );
+        eprintln!("TASK3580 control-text={CONTROL_TEXT}");
+        eprintln!("TASK3580 identity-key-fingerprint={key_fingerprint}");
+        eprintln!(
+            "TASK3580 unlock-key-fingerprints={}",
+            unlock_fingerprints_before.join(",")
+        );
+
+        crate::atomic_file::fail_next_write_with_label("OSL protected ledger");
+        let readable_error = match prepare_local_protected_text(
+            &core,
+            &broker,
+            &lease.context_token,
+            "TASK-3580 second message readable write must fail".to_owned(),
+        ) {
+            Ok(_) => panic!("disk-full readable-message write must fail"),
+            Err(error) => error,
+        };
+        let after_readable = task_3580_counts(&dir, &file_key, &unlock_scope_key);
+        assert_eq!(after_readable, before);
+        eprintln!("TASK3580 failure=readable-message error={readable_error}");
+        eprintln!(
+            "TASK3580 after-readable-message readable-message={} unlock-key={} send-success={}",
+            after_readable.0, after_readable.1, after_readable.2
+        );
+
+        crate::atomic_file::fail_next_write_with_label("OSL security state");
+        let unlock_error = security::record_peer_prose_blob(
+            &security_state,
+            manual.scope.clone(),
+            "3333333333333333".to_owned(),
+            Some("44444444444444444444444444444444".to_owned()),
+        )
+        .expect_err("disk-full unlock-key write must fail");
+        let after_unlock = task_3580_counts(&dir, &file_key, &unlock_scope_key);
+        assert_eq!(after_unlock, before);
+        eprintln!("TASK3580 failure=unlock-key error={unlock_error}");
+        eprintln!(
+            "TASK3580 after-unlock-key readable-message={} unlock-key={} send-success={}",
+            after_unlock.0, after_unlock.1, after_unlock.2
+        );
+
+        crate::atomic_file::fail_next_write_with_label("OSL native overlay receipt ledger");
+        let send_error = record_native_overlay_sent_after_verified_native_posts(
+            1,
+            1,
+            &core,
+            &broker,
+            &hub_context,
+            &manual,
+            "msg-task-3580-second",
+            1_700_003_600,
+            false,
+        )
+        .expect_err("disk-full send-success write must fail");
+        let after_send = task_3580_counts(&dir, &file_key, &unlock_scope_key);
+        assert_eq!(after_send, before);
+        eprintln!("TASK3580 failure=send-success error={send_error}");
+        eprintln!(
+            "TASK3580 after-send-success readable-message={} unlock-key={} send-success={}",
+            after_send.0, after_send.1, after_send.2
+        );
+
+        ipc::main_password::set_file_storage_key(None);
+        match ipc::main_password::verify_gate_password_attempt(&dir, PASSWORD).unwrap() {
+            ipc::main_password::GatePasswordAttemptResult::Main(_) => {}
+            _ => panic!("restart unlock did not return main-password success"),
+        }
+        let restart_key =
+            ipc::main_password::get_file_storage_key().expect("restart unlock installs file key");
+        assert_eq!(restart_key, file_key);
+        let restarted_core = HubCoreState::default();
+        *restarted_core.osl.identity.lock().unwrap() = Some(identity);
+        let restarted_broker = HubBrokerState::default();
+        let restarted_lease = restarted_broker
+            .activate(context("email-task-3580", "dm-task-3580"), 3581)
+            .unwrap();
+        let restarted_read = decrypt_local_protected_capsule(
+            &restarted_core,
+            &restarted_broker,
+            &restarted_lease.context_token,
+            control.capsule,
+        )
+        .expect("read marked control message after restart");
+        assert_eq!(restarted_read.plaintext, CONTROL_TEXT);
+        let after_restart = task_3580_counts(&dir, &restart_key, &unlock_scope_key);
+        let unlock_fingerprints_after =
+            task_3580_unlock_key_fingerprints(&dir, &restart_key, &unlock_scope_key);
+        assert_eq!(after_restart, before);
+        assert_eq!(unlock_fingerprints_after, unlock_fingerprints_before);
+        eprintln!(
+            "TASK3580 after-restart readable-message={} unlock-key={} send-success={}",
+            after_restart.0, after_restart.1, after_restart.2
+        );
+        eprintln!(
+            "TASK3580 after-restart-control-text={}",
+            restarted_read.plaintext
+        );
+        eprintln!("TASK3580 after-restart-identity-key-fingerprint={key_fingerprint}");
+        eprintln!(
+            "TASK3580 after-restart-unlock-key-fingerprints={}",
+            unlock_fingerprints_after.join(",")
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn owned_loopback_context_derives_self_only_and_exact_host_generation() {
         // temporary_registry() flips the process-wide main-password test key
@@ -16038,6 +16370,75 @@ mod tests {
     }
 
     #[test]
+    fn task1309_direct_messages_reject_a_third_member() {
+        fn active_conversation_count(broker: &HubBrokerState) -> usize {
+            broker
+                .inner
+                .lock()
+                .expect("broker lock")
+                .active
+                .iter()
+                .count()
+        }
+
+        fn direct_members(context: &HubConversationContext) -> Vec<String> {
+            let mut members = vec![context.self_osl_id.clone()];
+            members.extend(context.participant_osl_ids.iter().cloned());
+            members.sort();
+            members.dedup();
+            members
+        }
+
+        let broker = HubBrokerState::default();
+        let before = active_conversation_count(&broker);
+        eprintln!("task1309: before conversation count={before}");
+        assert_eq!(before, 0);
+
+        let maple_dm = HubConversationContext {
+            service_id: "osl-chat".to_owned(),
+            account_id: "maple-account".to_owned(),
+            conversation_kind: HubConversationKind::Dm,
+            conversation_id: "maple-dm".to_owned(),
+            space_id: None,
+            participant_osl_ids: vec!["Ben".to_owned()],
+            self_osl_id: "Ava".to_owned(),
+        };
+        let lease = broker.activate(maple_dm.clone(), 1).unwrap();
+        let stored = broker.context_for(&lease.context_token).unwrap();
+        let after_create = active_conversation_count(&broker);
+        let stored_members = direct_members(&stored);
+        eprintln!(
+            "task1309: after create conversation count={after_create}; {} members={}",
+            stored.conversation_id,
+            stored_members.join(", ")
+        );
+        assert_eq!(after_create, 1);
+        assert_eq!(stored.conversation_id, "maple-dm");
+        assert_eq!(stored_members, vec!["Ava".to_owned(), "Ben".to_owned()]);
+
+        let mut third_member = maple_dm;
+        third_member.participant_osl_ids = vec!["Ben".to_owned(), "Cy".to_owned()];
+        let refusal = broker.activate(third_member, 2).unwrap_err();
+        eprintln!("task1309: three member refusal={refusal}");
+        assert_eq!(
+            refusal,
+            "OSL broker direct messages require exactly two members"
+        );
+
+        let still_stored = broker.context_for(&lease.context_token).unwrap();
+        let after_refusal = active_conversation_count(&broker);
+        let still_members = direct_members(&still_stored);
+        eprintln!(
+            "task1309: after refusal conversation count={after_refusal}; {} members={}",
+            still_stored.conversation_id,
+            still_members.join(", ")
+        );
+        assert_eq!(after_refusal, 1);
+        assert_eq!(still_stored.conversation_id, "maple-dm");
+        assert_eq!(still_members, vec!["Ava".to_owned(), "Ben".to_owned()]);
+    }
+
+    #[test]
     fn lease_is_bound_to_exact_active_host_generation() {
         let broker = HubBrokerState::default();
         let lease = broker
@@ -16116,6 +16517,145 @@ mod tests {
             0
         );
 
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn service_burn_preserves_other_service_local_messages() {
+        let _serial = crate::global_keystore_test_lock();
+        let unique = format!(
+            "osl-hub-service-burn-{}-{}",
+            std::process::id(),
+            random_local_message_id()
+        );
+        let dir = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&dir).unwrap();
+        keystore::set_base_dir_override(Some(dir.clone()));
+        keystore::set_active_account_dir(Some(dir.clone()));
+        ipc::main_password::set_main_password(&dir, "aB3!z9").unwrap();
+        let file_key =
+            ipc::main_password::get_file_storage_key().expect("main password installs file key");
+        let ledger_path = dir.join(LOCAL_PROTECTED_FILE);
+        let count_for_binding = |binding: &str| {
+            load_local_ledger(&ledger_path, &file_key)
+                .unwrap()
+                .records
+                .values()
+                .filter(|record| record.context_binding == binding)
+                .count()
+        };
+
+        let owner = "self-liam";
+        let chosen_context = HubConversationContext {
+            service_id: "email".to_owned(),
+            account_id: "burn-boundary-account".to_owned(),
+            conversation_kind: HubConversationKind::Dm,
+            conversation_id: "dm-burn-boundary".to_owned(),
+            space_id: None,
+            participant_osl_ids: vec![owner.to_owned()],
+            self_osl_id: owner.to_owned(),
+        };
+        let other_context = HubConversationContext {
+            service_id: "discord".to_owned(),
+            account_id: "burn-boundary-account".to_owned(),
+            conversation_kind: HubConversationKind::Dm,
+            conversation_id: "dm-burn-boundary".to_owned(),
+            space_id: None,
+            participant_osl_ids: vec![owner.to_owned()],
+            self_osl_id: owner.to_owned(),
+        };
+        let chosen_binding = local_context_binding(&chosen_context);
+        let other_binding = local_context_binding(&other_context);
+        assert_ne!(
+            chosen_binding, other_binding,
+            "service id must be part of the local burn boundary"
+        );
+
+        let core = HubCoreState::default();
+        *core.osl.identity.lock().unwrap() = Some(keystore::generate_identity(owner.to_owned()));
+        let broker = HubBrokerState::default();
+        let chosen_lease = broker.activate(chosen_context.clone(), 11).unwrap();
+        let chosen_mark = format!("EMBER-0535-chosen:{}", hex(&crypto::random::random_bytes(8)));
+        let chosen_message = prepare_local_protected_text(
+            &core,
+            &broker,
+            &chosen_lease.context_token,
+            chosen_mark.clone(),
+        )
+        .unwrap();
+        let chosen_read = decrypt_local_protected_capsule(
+            &core,
+            &broker,
+            &chosen_lease.context_token,
+            chosen_message.capsule.clone(),
+        )
+        .unwrap();
+        assert_eq!(chosen_read.plaintext, chosen_mark);
+
+        let other_lease = broker.activate(other_context.clone(), 12).unwrap();
+        let mut other_messages = Vec::new();
+        for index in 0..3 {
+            let mark = format!(
+                "EMBER-0535-other-{index}:{}",
+                hex(&crypto::random::random_bytes(8))
+            );
+            let prepared = prepare_local_protected_text(
+                &core,
+                &broker,
+                &other_lease.context_token,
+                mark.clone(),
+            )
+            .unwrap();
+            let read = decrypt_local_protected_capsule(
+                &core,
+                &broker,
+                &other_lease.context_token,
+                prepared.capsule.clone(),
+            )
+            .unwrap();
+            assert_eq!(read.plaintext, mark);
+            other_messages.push((mark, prepared.capsule));
+        }
+
+        let before_chosen = count_for_binding(&chosen_binding);
+        let before_other = count_for_binding(&other_binding);
+        eprintln!("TASK-0535 before chosen_service_count={before_chosen}");
+        eprintln!("TASK-0535 before other_service_count={before_other}");
+        eprintln!("TASK-0535 readable chosen mark={chosen_mark}");
+        for (mark, _) in &other_messages {
+            eprintln!("TASK-0535 readable other mark={mark}");
+        }
+        assert_eq!(before_chosen, 1);
+        assert_eq!(before_other, 3);
+
+        let chosen_burn_lease = broker.activate(chosen_context, 13).unwrap();
+        let burned = burn_local_protected_context(&core, &broker, &chosen_burn_lease.context_token)
+            .unwrap();
+        eprintln!("TASK-0535 burn removed={burned}");
+        assert_eq!(burned, 1);
+
+        let after_chosen = count_for_binding(&chosen_binding);
+        let after_other = count_for_binding(&other_binding);
+        eprintln!("TASK-0535 after chosen_service_count={after_chosen}");
+        eprintln!("TASK-0535 after other_service_count={after_other}");
+        assert_eq!(after_chosen, 0);
+        assert_eq!(after_other, 3);
+
+        let other_read_lease = broker.activate(other_context, 14).unwrap();
+        for (mark, capsule) in other_messages {
+            let read = decrypt_local_protected_capsule(
+                &core,
+                &broker,
+                &other_read_lease.context_token,
+                capsule,
+            )
+            .unwrap();
+            eprintln!("TASK-0535 after readable other mark={}", read.plaintext);
+            assert_eq!(read.plaintext, mark);
+        }
+
+        keystore::set_active_account_dir(None);
+        keystore::set_base_dir_override(None);
         let _ = std::fs::remove_dir_all(dir);
     }
 
