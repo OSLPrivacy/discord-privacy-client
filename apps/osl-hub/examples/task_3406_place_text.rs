@@ -52,6 +52,7 @@ mod windows_place_text {
     const MIN_TREE_ELEMENTS: i32 = 10;
     const TREE_WAIT_MS: u64 = 1_000;
     const SETTLE_MS: u64 = 160;
+    const DEFAULT_WAIT_TIMEOUT_SECONDS: u64 = 120;
     const COMPOSER_STEMS: &[&str] = &["message", "nachricht", "mensaje"];
     const NON_COMPOSER_STEMS: &[&str] = &["search", "filter", "buscar"];
 
@@ -166,20 +167,31 @@ mod windows_place_text {
             )));
         }
 
-        request_front_window(discord.hwnd);
-        thread::sleep(Duration::from_millis(SETTLE_MS));
-        let grabbed = foreground_window().ok_or_else(|| {
-            CommandError::exit1("Windows reported no foreground window after grab")
-        })?;
-        println!(
-            "after_grab_front={}",
-            describe_window(&grabbed).replace('\n', " ")
-        );
-        if !same_root(grabbed.hwnd, discord.hwnd) {
-            return Err(CommandError::exit1(format!(
-                "{} did not become the foreground window",
-                args.app
-            )));
+        if args.wait_for_person {
+            println!("front_window_grab=off");
+            println!("placement_waiting_for_person=true");
+            println!("placement_attempted_before_front=false");
+            wait_for_person_to_front(
+                &discord,
+                Duration::from_secs(args.wait_timeout_seconds),
+                &args.app,
+            )?;
+        } else {
+            request_front_window(discord.hwnd);
+            thread::sleep(Duration::from_millis(SETTLE_MS));
+            let grabbed = foreground_window().ok_or_else(|| {
+                CommandError::exit1("Windows reported no foreground window after grab")
+            })?;
+            println!(
+                "after_grab_front={}",
+                describe_window(&grabbed).replace('\n', " ")
+            );
+            if !same_root(grabbed.hwnd, discord.hwnd) {
+                return Err(CommandError::exit1(format!(
+                    "{} did not become the foreground window",
+                    args.app
+                )));
+            }
         }
 
         let _com = initialize_com()?;
@@ -252,6 +264,8 @@ mod windows_place_text {
         initial_front: String,
         app: String,
         text: String,
+        wait_for_person: bool,
+        wait_timeout_seconds: u64,
     }
 
     impl Args {
@@ -259,6 +273,8 @@ mod windows_place_text {
             let mut initial_front = DEFAULT_INITIAL_FRONT.to_owned();
             let mut app = DEFAULT_APP.to_owned();
             let mut text = DEFAULT_TEXT.to_owned();
+            let mut wait_for_person = false;
+            let mut wait_timeout_seconds = DEFAULT_WAIT_TIMEOUT_SECONDS;
             let mut args = std::env::args().skip(1);
             while let Some(arg) = args.next() {
                 match arg.as_str() {
@@ -277,9 +293,20 @@ mod windows_place_text {
                             .next()
                             .ok_or_else(|| CommandError::usage("--text needs a value"))?;
                     }
+                    "--wait-for-person" => {
+                        wait_for_person = true;
+                    }
+                    "--wait-timeout-seconds" => {
+                        let value = args.next().ok_or_else(|| {
+                            CommandError::usage("--wait-timeout-seconds needs a value")
+                        })?;
+                        wait_timeout_seconds = value.parse().map_err(|_| {
+                            CommandError::usage("--wait-timeout-seconds must be a positive integer")
+                        })?;
+                    }
                     "--help" | "-h" => {
                         return Err(CommandError::usage(
-                            "usage: task_3406_place_text [--initial-front Photos] [--app Discord] [--text MAPLE-3406]",
+                            "usage: task_3406_place_text [--initial-front Photos] [--app Discord] [--text MAPLE-3406] [--wait-for-person] [--wait-timeout-seconds 120]",
                         ));
                     }
                     other => {
@@ -290,10 +317,17 @@ mod windows_place_text {
             if text.is_empty() || text.chars().any(|ch| matches!(ch, '\n' | '\r')) {
                 return Err(CommandError::usage("text must be one non-empty line"));
             }
+            if wait_timeout_seconds == 0 {
+                return Err(CommandError::usage(
+                    "--wait-timeout-seconds must be a positive integer",
+                ));
+            }
             Ok(Self {
                 initial_front,
                 app,
                 text,
+                wait_for_person,
+                wait_timeout_seconds,
             })
         }
     }
@@ -513,6 +547,31 @@ mod windows_place_text {
         (!hwnd.is_null()).then(|| window_info(hwnd))
     }
 
+    fn wait_for_person_to_front(
+        target: &WindowInfo,
+        timeout: Duration,
+        app: &str,
+    ) -> Result<(), CommandError> {
+        let started = Instant::now();
+        loop {
+            if let Some(front) = foreground_window() {
+                if same_root(front.hwnd, target.hwnd) {
+                    println!(
+                        "after_person_front={}",
+                        describe_window(&front).replace('\n', " ")
+                    );
+                    return Ok(());
+                }
+            }
+            if started.elapsed() >= timeout {
+                return Err(CommandError::exit1(format!(
+                    "{app} was not brought to the foreground by the person"
+                )));
+            }
+            thread::sleep(Duration::from_millis(200));
+        }
+    }
+
     fn window_info(hwnd: HWND) -> WindowInfo {
         WindowInfo {
             hwnd,
@@ -686,9 +745,7 @@ mod windows_place_text {
                 }
                 let size = unsafe { GlobalSize(handle as _) };
                 if size == 0 {
-                    return Err(format!(
-                        "clipboard format {format} is not byte-copyable"
-                    ));
+                    return Err(format!("clipboard format {format} is not byte-copyable"));
                 }
                 let source = unsafe { GlobalLock(handle as _) };
                 if source.is_null() {
