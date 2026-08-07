@@ -64,6 +64,7 @@ pub mod named_places;
 pub mod offline_send_queue;
 pub mod peer_capabilities;
 pub mod peer_map;
+pub mod permission_catalogue;
 pub mod private_contact_link;
 pub mod prose_token;
 pub mod receipt_wire;
