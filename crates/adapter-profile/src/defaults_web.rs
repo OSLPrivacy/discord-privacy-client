@@ -459,6 +459,94 @@ mod tests {
     }
 
     #[test]
+    fn task_1238_outlook_web_fake_page_compose_place_readback_and_send_flow() {
+        let targets = outlook_web_mail_targets();
+        let targets_without_send = targets
+            .iter()
+            .filter(|target| target.name != "Send")
+            .cloned()
+            .collect::<Vec<_>>();
+        let missing_send = OutlookWebFakePageFixture::from_targets(&targets_without_send)
+            .expect_err("mapping without Send must be refused");
+        assert_eq!(missing_send.name, "Send");
+
+        let mut fixture = OutlookWebFakePageFixture::from_targets(&targets)
+            .expect("complete Outlook web mapped controls create fake page fixture");
+        let initial = fixture.counts();
+        assert_eq!(initial.sent_emails, 0);
+        assert_eq!(
+            fixture.named_controls(),
+            OUTLOOK_WEB_FAKE_PAGE_CONTROL_NAMES
+        );
+
+        let composed = fixture.compose().expect("Compose opens Outlook web draft");
+        assert_eq!(composed, OSL_OUTLOOK_WEB_1238_WORDS);
+
+        let placed = fixture.place().expect("Place writes Outlook web words");
+        assert_eq!(placed, OSL_OUTLOOK_WEB_1238_WORDS);
+        let after_place = fixture.counts();
+        assert_eq!(after_place.placed_messages, 1);
+        assert_eq!(after_place.sent_emails, 0);
+
+        let readback = fixture
+            .readback()
+            .expect("Readback returns placed Outlook web words");
+        assert_eq!(readback, OSL_OUTLOOK_WEB_1238_WORDS);
+
+        let sent = fixture.send().expect("Send sends Outlook web words");
+        assert_eq!(sent, OSL_OUTLOOK_WEB_1238_WORDS);
+        let after_send = fixture.counts();
+        assert_eq!(after_send.placed_messages, 1);
+        assert_eq!(after_send.sent_emails, 1);
+
+        let before_remove = fixture.counts();
+        let removal = fixture
+            .remove_control("Send")
+            .expect_err("removing mapped Send must be refused");
+        let after_remove = fixture.counts();
+        assert_eq!(after_remove, before_remove);
+
+        println!(
+            "TASK1238 outlook_missing_send_refused={}",
+            missing_send.name
+        );
+        println!("TASK1238 outlook_initial_sent={}", initial.sent_emails);
+        println!(
+            "TASK1238 outlook_named_controls={}",
+            fixture.named_controls().join("|")
+        );
+        println!("TASK1238 outlook_compose_words={composed}");
+        println!("TASK1238 outlook_place_words={placed}");
+        println!("TASK1238 outlook_readback_words={readback}");
+        println!("TASK1238 outlook_send_words={sent}");
+        println!(
+            "TASK1238 outlook_after_place_placed_messages={}",
+            after_place.placed_messages
+        );
+        println!(
+            "TASK1238 outlook_after_place_sent_emails={}",
+            after_place.sent_emails
+        );
+        println!(
+            "TASK1238 outlook_after_send_placed_messages={}",
+            after_send.placed_messages
+        );
+        println!(
+            "TASK1238 outlook_after_send_sent_emails={}",
+            after_send.sent_emails
+        );
+        println!("TASK1238 outlook_remove_send_refusal={removal}");
+        println!(
+            "TASK1238 outlook_after_remove_placed_messages={}",
+            after_remove.placed_messages
+        );
+        println!(
+            "TASK1238 outlook_after_remove_sent_emails={}",
+            after_remove.sent_emails
+        );
+    }
+
+    #[test]
     fn task_1278_tuta_mapping_contains_all_six_named_targets() {
         let targets = tuta_web_mail_targets();
         let names = targets.iter().map(|target| target.name).collect::<Vec<_>>();
@@ -564,7 +652,20 @@ pub struct WebMailTarget {
 }
 
 pub type YahooWebTarget = WebMailTarget;
+pub type OutlookWebTarget = WebMailTarget;
 pub type TutaWebTarget = WebMailTarget;
+
+pub const OUTLOOK_WEB_TARGET_NAMES: [&str; 6] = [
+    "compose",
+    "body",
+    "Send",
+    "folders",
+    "thread view",
+    "reading pane",
+];
+
+pub const OUTLOOK_WEB_FAKE_PAGE_CONTROL_NAMES: [&str; 4] = ["Compose", "Place", "Readback", "Send"];
+pub const OSL_OUTLOOK_WEB_1238_WORDS: &str = "OSL-OUTLOOK-WEB-1238 words";
 
 pub const YAHOO_WEB_TARGET_NAMES: [&str; 6] = [
     "compose",
@@ -581,6 +682,151 @@ pub const OSL_YAHOO_1249_COVER_MESSAGE: &str = "OSL-YAHOO-1249 cover message";
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MissingYahooWebTarget {
     pub name: &'static str,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MissingOutlookWebTarget {
+    pub name: &'static str,
+}
+
+/// Data-only targets for Outlook on the web's reviewed webmail surface.
+pub fn outlook_web_mail_targets() -> Vec<OutlookWebTarget> {
+    vec![
+        web_mail_accessibility_target(
+            "compose",
+            SelectorKind::ComposeButton,
+            "button",
+            Some("New mail"),
+        ),
+        web_mail_accessibility_target(
+            "body",
+            SelectorKind::BodyInput,
+            "textbox",
+            Some("Message body"),
+        ),
+        web_mail_accessibility_target("Send", SelectorKind::SendButton, "button", Some("Send")),
+        web_mail_accessibility_target(
+            "folders",
+            SelectorKind::FolderList,
+            "navigation",
+            Some("Folders"),
+        ),
+        web_mail_accessibility_target(
+            "thread view",
+            SelectorKind::ThreadView,
+            "list",
+            Some("Message list"),
+        ),
+        web_mail_accessibility_target(
+            "reading pane",
+            SelectorKind::ReadingPane,
+            "region",
+            Some("Reading pane"),
+        ),
+    ]
+}
+
+pub fn validate_outlook_web_mail_targets(
+    targets: &[OutlookWebTarget],
+) -> Result<(), MissingOutlookWebTarget> {
+    for required in OUTLOOK_WEB_TARGET_NAMES {
+        if !targets
+            .iter()
+            .any(|target| target.name == required && target.selector.required)
+        {
+            return Err(MissingOutlookWebTarget { name: required });
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct OutlookWebFakePageCounts {
+    pub placed_messages: usize,
+    pub sent_emails: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OutlookWebFakePageFixture {
+    composer_open: bool,
+    placed_messages: Vec<String>,
+    sent_emails: usize,
+    named_controls: Vec<&'static str>,
+}
+
+impl OutlookWebFakePageFixture {
+    pub fn from_targets(targets: &[OutlookWebTarget]) -> Result<Self, MissingOutlookWebTarget> {
+        validate_outlook_web_mail_targets(targets)?;
+        Ok(Self {
+            composer_open: false,
+            placed_messages: Vec::new(),
+            sent_emails: 0,
+            named_controls: OUTLOOK_WEB_FAKE_PAGE_CONTROL_NAMES.to_vec(),
+        })
+    }
+
+    pub fn named_controls(&self) -> &[&'static str] {
+        &self.named_controls
+    }
+
+    pub fn counts(&self) -> OutlookWebFakePageCounts {
+        OutlookWebFakePageCounts {
+            placed_messages: self.placed_messages.len(),
+            sent_emails: self.sent_emails,
+        }
+    }
+
+    pub fn compose(&mut self) -> Result<&'static str, String> {
+        self.require_control("Compose")?;
+        self.composer_open = true;
+        Ok(OSL_OUTLOOK_WEB_1238_WORDS)
+    }
+
+    pub fn place(&mut self) -> Result<&'static str, String> {
+        self.require_control("Place")?;
+        if !self.composer_open {
+            return Err("Outlook web fake page composer is closed".to_owned());
+        }
+        self.placed_messages
+            .push(OSL_OUTLOOK_WEB_1238_WORDS.to_owned());
+        Ok(OSL_OUTLOOK_WEB_1238_WORDS)
+    }
+
+    pub fn readback(&self) -> Result<String, String> {
+        self.require_control("Readback")?;
+        self.placed_messages
+            .last()
+            .filter(|message| *message == OSL_OUTLOOK_WEB_1238_WORDS)
+            .cloned()
+            .ok_or_else(|| "Outlook web fake page has no OSL-OUTLOOK-WEB-1238 words".to_owned())
+    }
+
+    pub fn send(&mut self) -> Result<&'static str, String> {
+        self.require_control("Send")?;
+        if self.readback()? != OSL_OUTLOOK_WEB_1238_WORDS {
+            return Err("Outlook web fake page readback mismatch".to_owned());
+        }
+        self.sent_emails += 1;
+        Ok(OSL_OUTLOOK_WEB_1238_WORDS)
+    }
+
+    pub fn remove_control(&mut self, name: &str) -> Result<(), String> {
+        if OUTLOOK_WEB_FAKE_PAGE_CONTROL_NAMES.contains(&name) {
+            return Err(format!(
+                "Outlook web fake page mapped control removal refused: {name}"
+            ));
+        }
+        self.named_controls.retain(|control| *control != name);
+        Ok(())
+    }
+
+    fn require_control(&self, name: &str) -> Result<(), String> {
+        self.named_controls
+            .iter()
+            .any(|control| *control == name)
+            .then_some(())
+            .ok_or_else(|| format!("Outlook web fake page missing mapped control: {name}"))
+    }
 }
 
 /// Data-only targets for Yahoo Mail's reviewed web surface.
