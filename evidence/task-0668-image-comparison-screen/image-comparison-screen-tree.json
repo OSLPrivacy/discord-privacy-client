@@ -1,0 +1,23 @@
+{
+  "figures": [
+    {
+      "name": "Private original",
+      "role": "figure"
+    },
+    {
+      "name": "Prepared post copy",
+      "role": "figure"
+    }
+  ],
+  "quality": {
+    "result": "passed",
+    "role": "status",
+    "text": "Quality check passed"
+  },
+  "schema": "osl-task-0668-image-comparison-screen-tree-v1",
+  "screen": "1024x768x24",
+  "title": {
+    "name": "Image comparison",
+    "role": "heading"
+  }
+}

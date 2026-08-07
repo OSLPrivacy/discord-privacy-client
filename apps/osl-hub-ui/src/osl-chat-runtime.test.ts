@@ -33,6 +33,7 @@ function batchWithUnrecognized(): NativeDiscordOverlayOpenedBatch {
     decryptDisplayEnabled: true,
     deferredRows: 0,
     unrecognizedWireRows: 1,
+    contentGoneRows: 0,
   };
 }
 

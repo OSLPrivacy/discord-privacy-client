@@ -213,6 +213,7 @@ function unrecognizedWireRowsBatch(count: number): NativeDiscordOverlayOpenedBat
     decryptDisplayEnabled: true,
     deferredRows: 0,
     unrecognizedWireRows: 0,
+    contentGoneRows: 0,
   };
 }
 

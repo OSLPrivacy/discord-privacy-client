@@ -1,0 +1,139 @@
+/* ---------------------------------------------------------------------------
+   Message defaults.
+
+   Four saved choices, one card each, in one column of two. Each card carries
+   its own heading and one plain sentence, because the four choices are easy to
+   confuse with each other: a timer and a view-once length are both a number of
+   seconds, and "burn" and "timer" both end with a message going away. The
+   sentence under the heading is what tells them apart, so it is never smaller
+   than the choice labels it explains.
+   --------------------------------------------------------------------------- */
+.message-defaults-page {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 20px 32px 18px;
+  overflow-y: auto;
+  color: var(--text);
+  font-family: var(--font-ui);
+}
+
+.msg-def-head h1 {
+  margin: 0 0 6px;
+  font-family: var(--font-display);
+  font-size: 26px;
+  font-weight: 650;
+  letter-spacing: -.02em;
+  color: var(--text);
+}
+
+.msg-def-intro {
+  margin: 0;
+  max-width: 110ch;
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.msg-def-groups {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.msg-def-group {
+  margin: 0;
+  padding: 12px 16px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.msg-def-group legend {
+  padding: 0;
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 650;
+  letter-spacing: -.01em;
+  color: var(--text);
+}
+
+.msg-def-why {
+  margin: 5px 0 10px;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.msg-def-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.msg-def-choice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  cursor: pointer;
+}
+
+.msg-def-choice.selected {
+  border-color: var(--brand);
+  background: var(--brand-wash);
+}
+
+/* One of four, so it has to READ as one of four. styles.css squares every
+   corner in the product on purpose, which turns a native radio into the same
+   box a tick-list uses; the shared drawn ring from `onboarding-controls` is how
+   the rest of OSL shows a one-of-many choice, so this screen uses it too. The
+   real radio stays in the markup, screen-reader-only, and still carries the
+   name, the group and the checked state. */
+.msg-def-choice .osl-radio-ring { stroke: var(--muted); }
+.msg-def-choice .osl-radio-dot { fill: transparent; }
+.msg-def-choice.selected .osl-radio-ring { stroke: var(--brand); }
+.msg-def-choice.selected .osl-radio-dot { fill: var(--brand); }
+
+.msg-def-choice-label {
+  flex: 1;
+  font-size: 15px;
+  font-weight: 550;
+  color: var(--text);
+}
+
+.msg-def-saved-tag {
+  padding: 2px 8px;
+  border: 1px solid var(--brand);
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--brand);
+}
+
+.msg-def-actions {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding-top: 4px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.msg-def-status {
+  flex: 1;
+  margin: 0;
+  padding-top: 10px;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.msg-def-buttons {
+  display: flex;
+  gap: 10px;
+  padding-top: 10px;
+}

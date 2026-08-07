@@ -17973,6 +17973,137 @@ pub fn cmd_osl_set_thread_permissions(
         .map_err(|error| error.to_string())
 }
 
+pub fn cmd_osl_set_channel_role_permission_overrides(
+    state: &AppState,
+    server_id: String,
+    channel_id: String,
+    cells: Vec<crate::server_membership::RolePermissionOverrideCell>,
+) -> Result<crate::server_membership::RolePermissionOverrideTable, String> {
+    record_activity_on_command_entry();
+    let mut threads = state
+        .server_thread_permissions
+        .lock()
+        .expect("server_thread_permissions mutex poisoned");
+    threads
+        .set_channel_role_permission_overrides(server_id, channel_id, cells)
+        .map_err(|error| error.to_string())
+}
+
+pub fn cmd_osl_read_channel_role_permission_overrides(
+    state: &AppState,
+    server_id: String,
+    channel_id: String,
+) -> Result<crate::server_membership::RolePermissionOverrideTable, String> {
+    record_activity_on_command_entry();
+    let threads = state
+        .server_thread_permissions
+        .lock()
+        .expect("server_thread_permissions mutex poisoned");
+    threads
+        .read_channel_role_permission_overrides(server_id, channel_id)
+        .map_err(|error| error.to_string())
+}
+
+pub fn cmd_osl_set_thread_role_permission_overrides(
+    state: &AppState,
+    server_id: String,
+    channel_id: String,
+    thread_id: String,
+    cells: Vec<crate::server_membership::RolePermissionOverrideCell>,
+) -> Result<crate::server_membership::RolePermissionOverrideTable, String> {
+    record_activity_on_command_entry();
+    let mut threads = state
+        .server_thread_permissions
+        .lock()
+        .expect("server_thread_permissions mutex poisoned");
+    threads
+        .set_thread_role_permission_overrides(server_id, channel_id, thread_id, cells)
+        .map_err(|error| error.to_string())
+}
+
+pub fn cmd_osl_read_thread_role_permission_overrides(
+    state: &AppState,
+    server_id: String,
+    channel_id: String,
+    thread_id: String,
+) -> Result<crate::server_membership::RolePermissionOverrideTable, String> {
+    record_activity_on_command_entry();
+    let threads = state
+        .server_thread_permissions
+        .lock()
+        .expect("server_thread_permissions mutex poisoned");
+    threads
+        .read_thread_role_permission_overrides(server_id, channel_id, thread_id)
+        .map_err(|error| error.to_string())
+}
+
+pub fn cmd_osl_set_channel_reaction_policy(
+    state: &AppState,
+    server_id: String,
+    channel_id: String,
+    mode: crate::server_membership::ChannelReactionPolicyMode,
+    allowed_emoji: Vec<String>,
+) -> Result<crate::server_membership::ChannelReactionPolicy, String> {
+    record_activity_on_command_entry();
+    let mut threads = state
+        .server_thread_permissions
+        .lock()
+        .expect("server_thread_permissions mutex poisoned");
+    threads
+        .set_channel_reaction_policy(server_id, channel_id, mode, allowed_emoji)
+        .map_err(|error| error.to_string())
+}
+
+pub fn cmd_osl_read_channel_reaction_policy(
+    state: &AppState,
+    server_id: String,
+    channel_id: String,
+) -> Result<crate::server_membership::ChannelReactionPolicy, String> {
+    record_activity_on_command_entry();
+    let threads = state
+        .server_thread_permissions
+        .lock()
+        .expect("server_thread_permissions mutex poisoned");
+    threads
+        .read_channel_reaction_policy(server_id, channel_id)
+        .map_err(|error| error.to_string())
+}
+
+pub fn cmd_osl_add_channel_reaction(
+    state: &AppState,
+    server_id: String,
+    channel_id: String,
+    message_id: String,
+    actor_name: String,
+    emoji: String,
+) -> Result<crate::server_membership::ChannelReactionResult, String> {
+    record_activity_on_command_entry();
+    let mut threads = state
+        .server_thread_permissions
+        .lock()
+        .expect("server_thread_permissions mutex poisoned");
+    threads
+        .add_channel_reaction(server_id, channel_id, message_id, actor_name, emoji)
+        .map_err(|error| error.to_string())
+}
+
+pub fn cmd_osl_count_channel_reactions(
+    state: &AppState,
+    server_id: String,
+    channel_id: String,
+    message_id: String,
+) -> Result<usize, String> {
+    record_activity_on_command_entry();
+    let threads = state
+        .server_thread_permissions
+        .lock()
+        .expect("server_thread_permissions mutex poisoned");
+    threads
+        .read_channel_reaction_policy(server_id.clone(), channel_id.clone())
+        .map_err(|error| error.to_string())?;
+    Ok(threads.channel_reaction_count(&server_id, &channel_id, &message_id))
+}
+
 pub fn cmd_osl_save_allowed_place(
     state: &AppState,
     record: crate::allowed_places::AllowedPlaceRecord,

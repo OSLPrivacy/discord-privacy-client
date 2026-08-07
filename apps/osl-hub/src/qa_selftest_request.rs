@@ -1961,6 +1961,7 @@ mod tests {
             decrypt_display_enabled: true,
             deferred_rows: 0,
             unrecognized_wire_rows: 0,
+            content_gone_rows: 0,
         }
     }
 

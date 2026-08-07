@@ -151,8 +151,8 @@ pub enum InstagramWhitelistKind {
     DirectMessage,
     GroupChat,
     PublicPost,
+    Comment,
     Story,
-    Reel,
 }
 
 impl InstagramWhitelistKind {
@@ -160,8 +160,8 @@ impl InstagramWhitelistKind {
         Self::DirectMessage,
         Self::GroupChat,
         Self::PublicPost,
+        Self::Comment,
         Self::Story,
-        Self::Reel,
     ];
 
     pub fn id(self) -> &'static str {
@@ -169,8 +169,8 @@ impl InstagramWhitelistKind {
             Self::DirectMessage => "direct_message",
             Self::GroupChat => "group_chat",
             Self::PublicPost => "public_post",
+            Self::Comment => "comment",
             Self::Story => "story",
-            Self::Reel => "reel",
         }
     }
 
@@ -179,8 +179,8 @@ impl InstagramWhitelistKind {
             Self::DirectMessage => "direct message",
             Self::GroupChat => "group chat",
             Self::PublicPost => "public post",
+            Self::Comment => "comment",
             Self::Story => "story",
-            Self::Reel => "reel",
         }
     }
 }
@@ -396,6 +396,11 @@ pub fn auto_whitelist_rule_key_for_place(app: &str, kind: &str) -> Result<String
 pub fn normalize_auto_whitelist_app_kind(input: &str) -> Result<String, String> {
     let normalized = input.trim().to_ascii_lowercase().replace('-', "_");
     if let Some((app, kind)) = normalized.split_once(':') {
+        if app == "discord" {
+            return Ok(discord_auto_whitelist_rule_key(
+                parse_discord_whitelist_kind(kind)?,
+            ));
+        }
         if app == "instagram" {
             return Ok(instagram_auto_whitelist_rule_key(
                 parse_instagram_whitelist_kind(kind)?,

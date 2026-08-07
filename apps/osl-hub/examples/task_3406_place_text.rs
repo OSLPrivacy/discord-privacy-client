@@ -18,7 +18,7 @@ mod windows_place_text {
         UIA_DocumentControlTypeId, UIA_EditControlTypeId, UIA_TextControlTypeId,
         UIA_ValuePatternId,
     };
-    use windows_sys::Win32::Foundation::{CloseHandle, BOOL, HWND, LPARAM, POINT, TRUE};
+    use windows_sys::Win32::Foundation::{CloseHandle, BOOL, HWND, LPARAM, POINT, RECT, TRUE};
     use windows_sys::Win32::System::DataExchange::{
         CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardData, OpenClipboard,
         SetClipboardData,
@@ -38,8 +38,8 @@ mod windows_place_text {
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         EnumWindows, GetAncestor, GetCursorPos, GetForegroundWindow, GetSystemMetrics,
-        GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible,
-        SetCursorPos, SetForegroundWindow, ShowWindow, WindowFromPoint, GA_ROOT,
+        GetWindowRect, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
+        IsWindowVisible, SetCursorPos, SetForegroundWindow, ShowWindow, WindowFromPoint, GA_ROOT,
         SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_RESTORE,
     };
 
@@ -52,6 +52,7 @@ mod windows_place_text {
     const MIN_TREE_ELEMENTS: i32 = 10;
     const TREE_WAIT_MS: u64 = 1_000;
     const SETTLE_MS: u64 = 160;
+    const DEFAULT_WAIT_TIMEOUT_SECONDS: u64 = 120;
     const COMPOSER_STEMS: &[&str] = &["message", "nachricht", "mensaje"];
     const NON_COMPOSER_STEMS: &[&str] = &["search", "filter", "buscar"];
 
@@ -153,34 +154,52 @@ mod windows_place_text {
                 return Err(CommandError::exit1(format!("{} not found", args.app)));
             }
         };
+        verify_target_onscreen(discord.hwnd, &args.app)?;
         let initially_behind = !same_root(initial.hwnd, discord.hwnd);
         println!(
             "behind_window={} behind_initial={}",
             describe_window(&discord).replace('\n', " "),
             initially_behind
         );
-        if !initially_behind {
+        if !initially_behind && !args.allow_already_front {
             return Err(CommandError::exit1(format!(
                 "{} was already the foreground window",
                 args.app
             )));
         }
 
-        request_front_window(discord.hwnd);
-        thread::sleep(Duration::from_millis(SETTLE_MS));
-        let grabbed = foreground_window().ok_or_else(|| {
-            CommandError::exit1("Windows reported no foreground window after grab")
-        })?;
-        println!(
-            "after_grab_front={}",
-            describe_window(&grabbed).replace('\n', " ")
-        );
-        if !same_root(grabbed.hwnd, discord.hwnd) {
-            return Err(CommandError::exit1(format!(
-                "{} did not become the foreground window",
-                args.app
-            )));
+        if args.wait_for_person {
+            println!("front_window_grab=off");
+            println!("placement_waiting_for_person=true");
+            println!("placement_attempted_before_front=false");
+            wait_for_person_to_front(
+                &discord,
+                Duration::from_secs(args.wait_timeout_seconds),
+                &args.app,
+            )?;
+        } else if initially_behind {
+            request_front_window(discord.hwnd);
+            thread::sleep(Duration::from_millis(SETTLE_MS));
+            let grabbed = foreground_window().ok_or_else(|| {
+                CommandError::exit1("Windows reported no foreground window after grab")
+            })?;
+            println!(
+                "after_grab_front={}",
+                describe_window(&grabbed).replace('\n', " ")
+            );
+            if !same_root(grabbed.hwnd, discord.hwnd) {
+                return Err(CommandError::exit1(format!(
+                    "{} did not become the foreground window",
+                    args.app
+                )));
+            }
+        } else {
+            println!(
+                "after_grab_front={}",
+                describe_window(&initial).replace('\n', " ")
+            );
         }
+        verify_target_onscreen(discord.hwnd, &args.app)?;
 
         let _com = initialize_com()?;
         let automation = automation()?;
@@ -196,15 +215,12 @@ mod windows_place_text {
             bounds[0], bounds[1], bounds[2], bounds[3]
         );
 
-        click_composer(bounds, discord.hwnd)?;
-        thread::sleep(Duration::from_millis(180));
-        let focus = unsafe { composer.CurrentHasKeyboardFocus() }
-            .map(|value| value.as_bool())
-            .unwrap_or(false);
-        println!("composer_has_keyboard_focus={focus}");
-        if !focus {
+        verify_focused_typing_point(&automation, &composer, discord.hwnd, &args.app)?;
+        let before_readback = value_of(&composer).unwrap_or_default();
+        println!("before_readback={before_readback:?}");
+        if !before_readback.is_empty() {
             return Err(CommandError::exit1(format!(
-                "{} composer did not take keyboard focus",
+                "{} composer was not empty before placement",
                 args.app
             )));
         }
@@ -233,6 +249,7 @@ mod windows_place_text {
         println!("clipboard_after_digest={after_digest:016x}");
         println!("clipboard_restored_exact={}", before_digest == after_digest);
         println!("osl_clipboard_entries=0");
+        println!("placed_count=1");
 
         if readback != args.text {
             return Err(CommandError::exit1(format!(
@@ -248,10 +265,79 @@ mod windows_place_text {
         Ok(())
     }
 
+    fn verify_target_onscreen(hwnd: HWND, app: &str) -> Result<(), CommandError> {
+        let rect = window_rect(hwnd).ok_or_else(|| {
+            CommandError::exit1(format!("{app} window bounds could not be read"))
+        })?;
+        let origin_x = unsafe { GetSystemMetrics(SM_XVIRTUALSCREEN) };
+        let origin_y = unsafe { GetSystemMetrics(SM_YVIRTUALSCREEN) };
+        let width = unsafe { GetSystemMetrics(SM_CXVIRTUALSCREEN) };
+        let height = unsafe { GetSystemMetrics(SM_CYVIRTUALSCREEN) };
+        if width <= 1 || height <= 1 {
+            return Err(CommandError::exit1("virtual desktop metrics are invalid"));
+        }
+        let desktop = RECT {
+            left: origin_x,
+            top: origin_y,
+            right: origin_x + width,
+            bottom: origin_y + height,
+        };
+        let intersects = rect.right > desktop.left
+            && rect.left < desktop.right
+            && rect.bottom > desktop.top
+            && rect.top < desktop.bottom;
+        println!("target_onscreen={intersects}");
+        if !intersects {
+            return Err(CommandError::exit1(format!("{app} window is off screen")));
+        }
+        Ok(())
+    }
+
+    fn verify_focused_typing_point(
+        automation: &IUIAutomation,
+        composer: &IUIAutomationElement,
+        expected_root: HWND,
+        app: &str,
+    ) -> Result<(), CommandError> {
+        let front = foreground_window().ok_or_else(|| {
+            CommandError::exit1("Windows reported no foreground window before paste")
+        })?;
+        if !same_root(front.hwnd, expected_root) {
+            println!(
+                "placement_refused_focused_app={}",
+                describe_window(&front).replace('\n', " ")
+            );
+            return Err(CommandError::exit1(format!(
+                "{app} placement refused: focused app was not {app}"
+            )));
+        }
+
+        let focused = unsafe { automation.GetFocusedElement() }.map_err(|error| {
+            CommandError::exit1(format!("focused typing point could not be read: {error:?}"))
+        })?;
+        let focused_name = element_name(&focused);
+        println!("focused_box_name={focused_name:?}");
+        let composer_has_focus = unsafe { composer.CurrentHasKeyboardFocus() }
+            .map(|value| value.as_bool())
+            .unwrap_or(false);
+        let focused_is_message_box = composer_has_focus && element_is_composer(&focused);
+        println!("typing_point_in_message_box={focused_is_message_box}");
+        if !focused_is_message_box {
+            println!("placement_refused_focused_box={focused_name:?}");
+            return Err(CommandError::exit1(format!(
+                "{app} placement refused: focused box was {focused_name:?}, not the conversation message box"
+            )));
+        }
+        Ok(())
+    }
+
     struct Args {
         initial_front: String,
         app: String,
         text: String,
+        wait_for_person: bool,
+        wait_timeout_seconds: u64,
+        allow_already_front: bool,
     }
 
     impl Args {
@@ -259,6 +345,9 @@ mod windows_place_text {
             let mut initial_front = DEFAULT_INITIAL_FRONT.to_owned();
             let mut app = DEFAULT_APP.to_owned();
             let mut text = DEFAULT_TEXT.to_owned();
+            let mut wait_for_person = false;
+            let mut wait_timeout_seconds = DEFAULT_WAIT_TIMEOUT_SECONDS;
+            let mut allow_already_front = false;
             let mut args = std::env::args().skip(1);
             while let Some(arg) = args.next() {
                 match arg.as_str() {
@@ -277,9 +366,23 @@ mod windows_place_text {
                             .next()
                             .ok_or_else(|| CommandError::usage("--text needs a value"))?;
                     }
+                    "--wait-for-person" => {
+                        wait_for_person = true;
+                    }
+                    "--allow-already-front" => {
+                        allow_already_front = true;
+                    }
+                    "--wait-timeout-seconds" => {
+                        let value = args.next().ok_or_else(|| {
+                            CommandError::usage("--wait-timeout-seconds needs a value")
+                        })?;
+                        wait_timeout_seconds = value.parse().map_err(|_| {
+                            CommandError::usage("--wait-timeout-seconds must be a positive integer")
+                        })?;
+                    }
                     "--help" | "-h" => {
                         return Err(CommandError::usage(
-                            "usage: task_3406_place_text [--initial-front Photos] [--app Discord] [--text MAPLE-3406]",
+                            "usage: task_3406_place_text [--initial-front Photos] [--app Discord] [--text MAPLE-3406] [--wait-for-person] [--wait-timeout-seconds 120] [--allow-already-front]",
                         ));
                     }
                     other => {
@@ -290,10 +393,18 @@ mod windows_place_text {
             if text.is_empty() || text.chars().any(|ch| matches!(ch, '\n' | '\r')) {
                 return Err(CommandError::usage("text must be one non-empty line"));
             }
+            if wait_timeout_seconds == 0 {
+                return Err(CommandError::usage(
+                    "--wait-timeout-seconds must be a positive integer",
+                ));
+            }
             Ok(Self {
                 initial_front,
                 app,
                 text,
+                wait_for_person,
+                wait_timeout_seconds,
+                allow_already_front,
             })
         }
     }
@@ -447,9 +558,19 @@ mod windows_place_text {
 
     fn value_of(element: &IUIAutomationElement) -> Option<String> {
         let pattern = value_pattern(element)?;
-        unsafe { pattern.CurrentValue() }
+        let raw = unsafe { pattern.CurrentValue() }
             .ok()
-            .map(|value| value.to_string())
+            .map(|value| value.to_string())?;
+        Some(normalize_discord_composer_value(&raw))
+    }
+
+    fn normalize_discord_composer_value(raw: &str) -> String {
+        let value = raw.strip_prefix('\u{feff}').unwrap_or(raw);
+        value
+            .strip_prefix("\r\n")
+            .or_else(|| value.strip_prefix('\n'))
+            .unwrap_or(value)
+            .to_owned()
     }
 
     fn element_name(element: &IUIAutomationElement) -> String {
@@ -513,12 +634,50 @@ mod windows_place_text {
         (!hwnd.is_null()).then(|| window_info(hwnd))
     }
 
+    fn wait_for_person_to_front(
+        target: &WindowInfo,
+        timeout: Duration,
+        app: &str,
+    ) -> Result<(), CommandError> {
+        let started = Instant::now();
+        loop {
+            if let Some(front) = foreground_window() {
+                if same_root(front.hwnd, target.hwnd) {
+                    println!(
+                        "after_person_front={}",
+                        describe_window(&front).replace('\n', " ")
+                    );
+                    return Ok(());
+                }
+            }
+            if started.elapsed() >= timeout {
+                return Err(CommandError::exit1(format!(
+                    "{app} was not brought to the foreground by the person"
+                )));
+            }
+            thread::sleep(Duration::from_millis(200));
+        }
+    }
+
     fn window_info(hwnd: HWND) -> WindowInfo {
         WindowInfo {
             hwnd,
             title: window_title(hwnd),
             process_name: window_process_name(hwnd).unwrap_or_default(),
         }
+    }
+
+    fn window_rect(hwnd: HWND) -> Option<RECT> {
+        let mut rect = RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
+        (unsafe { GetWindowRect(hwnd, &mut rect) } != 0
+            && rect.right > rect.left
+            && rect.bottom > rect.top)
+            .then_some(rect)
     }
 
     fn window_matches(window: &WindowInfo, wanted: &str) -> bool {
@@ -686,9 +845,7 @@ mod windows_place_text {
                 }
                 let size = unsafe { GlobalSize(handle as _) };
                 if size == 0 {
-                    return Err(format!(
-                        "clipboard format {format} is not byte-copyable"
-                    ));
+                    return Err(format!("clipboard format {format} is not byte-copyable"));
                 }
                 let source = unsafe { GlobalLock(handle as _) };
                 if source.is_null() {

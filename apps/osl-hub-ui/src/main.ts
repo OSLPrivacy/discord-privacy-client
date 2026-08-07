@@ -152,6 +152,7 @@ import { activateLocalLoopbackContext, activateManualPeerContext, activateNative
 import { blankLocalProtectedModel, isLocalTtlSeconds, loadOrCreateLocalConversationId, localProtectedSheetMarkup, validLocalChatLabel, type LocalProtectedPane, type LocalProtectedSheetModel } from "./local-protected-sheet";
 import { blankPeerProtectedModel, boundedPeerProtectedDraft, peerProtectedDraftByteFeedback, peerProtectedSheetMarkup, type PeerProtectedPane, type PeerProtectedSheetModel } from "./peer-protected-sheet";
 import { peerIntegrityMarkup } from "./peer-integrity";
+import { futureAccountSwitchMarkup } from "./future-account-switch";
 import oslLogoUrl from "../../osl-hub/icons/icon-cyan.png";
 import oslVectorLogoUrl from "./assets/logo-mark.svg";
 import oslGhostMarkUrl from "./assets/Ghost-white.svg";
@@ -730,6 +731,9 @@ let serviceGuideStep: ServiceGuideStep | null = null;
 let nativeHostFailureNotice = "";
 let friendsDialogOpen = false;
 let friendsDialogPage = 0;
+// Per-friend "Auto-whitelist new accounts" state. TASK 0267 draws the switch;
+// TASK 0268 fills this from the Hub command and writes changes back.
+const friendFutureAccountAutoWhitelist = new Map<string, boolean>();
 let burnDialogOpen = false;
 let burnScope: BurnScope = "chat";
 let burnBusy = false;
@@ -5360,7 +5364,7 @@ function oslChatFriendSettingsMarkup(person: HubPerson): string {
   const isActive = activeOslChatPersonId === person.personId;
   const approved = isActive && activeOslChatContext?.scopeApproved === true;
   const muted = oslChatMutedPeople.has(person.personId);
-  return `<dialog class="friends-dialog osl-chat-settings-dialog" id="osl-chat-settings-dialog" aria-labelledby="osl-chat-settings-title"><div class="friends-dialog-card"><header><div><span>Encrypted chat</span><h2 id="osl-chat-settings-title">${escapeHtml(person.alias ?? "Verified friend")}</h2></div><button class="icon-button" id="osl-chat-settings-close" type="button" aria-label="Close chat settings">×</button></header><div class="settings-list">${peerIntegrityMarkup("unknown")}<label class="setting-line interactive"><span><strong>Mute notifications</strong><small>Messages still arrive without creating a local alert.</small></span><input id="osl-chat-mute-toggle" type="checkbox" ${muted ? "checked" : ""}/></label><label class="setting-line interactive"><span><strong>Message previews</strong><small>Hide previews on this device.</small></span><input id="osl-chat-preview-toggle" type="checkbox" ${chatPreviewHidingVisible(oslChatPreviewsVisible) ? "checked" : ""}/></label><div class="setting-line"><span><strong>Chat permission</strong><small>${approved ? "This friend may exchange encrypted OSL messages with you." : "Open this friend to configure its exact chat permission."}</small></span>${isActive ? `<button class="button compact ${approved ? "danger" : "primary"}" id="osl-chat-permission-toggle" type="button" ${oslChatBusy ? "disabled" : ""}>${approved ? "Revoke" : "Enable"}</button>` : `<button class="button compact" data-osl-chat-open="${escapeHtml(person.personId)}" type="button">Open chat</button>`}</div></div></div></dialog>`;
+  return `<dialog class="friends-dialog osl-chat-settings-dialog" id="osl-chat-settings-dialog" aria-labelledby="osl-chat-settings-title"><div class="friends-dialog-card"><header><div><span>Encrypted chat</span><h2 id="osl-chat-settings-title">${escapeHtml(person.alias ?? "Verified friend")}</h2></div><button class="icon-button" id="osl-chat-settings-close" type="button" aria-label="Close chat settings">×</button></header><div class="settings-list">${peerIntegrityMarkup("unknown")}<label class="setting-line interactive"><span><strong>Mute notifications</strong><small>Messages still arrive without creating a local alert.</small></span><input id="osl-chat-mute-toggle" type="checkbox" ${muted ? "checked" : ""}/></label><label class="setting-line interactive"><span><strong>Message previews</strong><small>Hide previews on this device.</small></span><input id="osl-chat-preview-toggle" type="checkbox" ${chatPreviewHidingVisible(oslChatPreviewsVisible) ? "checked" : ""}/></label><div class="setting-line"><span><strong>Allowed reactions</strong><small>All reactions are allowed unless this channel is set to a chosen set or none. This reaction setting runs in every honest app the same way automatic rules do.</small></span></div><div class="setting-line"><span><strong>Chat permission</strong><small>${approved ? "This friend may exchange encrypted OSL messages with you." : "Open this friend to configure its exact chat permission."}</small></span>${isActive ? `<button class="button compact ${approved ? "danger" : "primary"}" id="osl-chat-permission-toggle" type="button" ${oslChatBusy ? "disabled" : ""}>${approved ? "Revoke" : "Enable"}</button>` : `<button class="button compact" data-osl-chat-open="${escapeHtml(person.personId)}" type="button">Open chat</button>`}</div></div></div></dialog>`;
 }
 
 function oslServersContent(): string {
@@ -5521,7 +5525,13 @@ function peopleListMarkup(mode: PeopleListMode, limit?: number, offset = 0): str
       : "";
     const nicknameForm = mode === "manage" ? `<form class="friend-nickname-form" data-nickname-person="${escapeHtml(person.personId)}"><label><span>Nickname on this device</span><input name="nickname" maxlength="48" value="${escapeHtml(person.alias ?? "")}" placeholder="Add a nickname" autocomplete="off" spellcheck="false"/></label><button class="button compact" type="submit">Save</button></form>` : "";
     const removeControl = mode === "manage" ? friendRemovalButtonMarkup(person.personId, escapeHtml) : "";
-    const management = `<details class="friend-management"><summary>Manage</summary><div>${nicknameForm}<div class="friend-approvals"><span>Approved chats</span><div>${scopes}</div>${truncated}</div><details class="friend-security"><summary>Security details</summary><div><span>OSL ID</span><code>${escapeHtml(identity)}</code><span>Verification code</span><code>${escapeHtml(person.safetyNumber)}</code></div></details>${removeControl}</div></details>`;
+    const futureAccountSwitch = mode === "manage"
+      ? futureAccountSwitchMarkup({
+        personId: person.personId,
+        enabled: friendFutureAccountAutoWhitelist.get(person.personId) ?? false,
+      })
+      : "";
+    const management = `<details class="friend-management"><summary>Manage</summary><div>${nicknameForm}<div class="friend-approvals"><span>Approved chats</span><div>${scopes}</div>${truncated}</div>${futureAccountSwitch}<details class="friend-security"><summary>Security details</summary><div><span>OSL ID</span><code>${escapeHtml(identity)}</code><span>Verification code</span><code>${escapeHtml(person.safetyNumber)}</code></div></details>${removeControl}</div></details>`;
     return `<article class="person-row person-profile"><header><div><strong>${escapeHtml(nickname)}</strong><small>${escapeHtml(friendHandshakeSummary(person.safetyNumberVerified, person.pendingKeyChange))}</small></div>${action}</header>${management}</article>`;
   }).join("");
 }

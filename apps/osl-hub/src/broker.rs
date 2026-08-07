@@ -1497,6 +1497,13 @@ pub struct OpenedNativeOverlayTextBatch {
     /// build.  As with every receive-side tally, it carries no row identifier
     /// or content-derived data across the Tauri boundary.
     pub unrecognized_wire_rows: u32,
+    /// Rows whose public cover was recognized as an OSL protected message, but
+    /// whose cipher-store content was already gone before the fetch completed.
+    ///
+    /// Permanent, not retryable, and count-only. The renderer uses this to show
+    /// the same fixed refusal sentence it uses for other non-retryable opens,
+    /// without exposing the cover, blob id, sender, or message id.
+    pub content_gone_rows: u32,
 }
 
 /// Counts of acknowledgement states in one broker batch.
@@ -5424,6 +5431,18 @@ fn drain_peer_inbox_text(
     security::require_person_not_blocked(&manual.person_id)?;
     let display = security::scope_security(manual.scope.clone())?;
     let allow_messages = display.decrypt_display_enabled;
+    if !allow_messages {
+        return Ok(OpenedNativeOverlayTextBatch {
+            messages: Vec::new(),
+            pending_view_once: Vec::new(),
+            acknowledgments: Vec::new(),
+            fetched: 0,
+            decrypt_display_enabled: false,
+            deferred_rows: 0,
+            unrecognized_wire_rows: 0,
+            content_gone_rows: 0,
+        });
+    }
     // The conversation this drain is bound to, named the way the burn ledger
     // names it. `scope_security` above has already refused an unconvertible
     // scope, so this cannot fail for a drain that got this far.
@@ -5464,6 +5483,7 @@ fn drain_peer_inbox_text(
     // empty inbox.  The row is retained: this build cannot authenticate and
     // consume it, but a compatible build may be able to after an update.
     let mut unrecognized_wire_rows = 0u32;
+    let mut content_gone_rows = 0u32;
     for item in items {
         // Unrelated inbox traffic must never consume this bounded display
         // budget. Stop only after 64 messages for this exact friend/scope were
@@ -5635,9 +5655,7 @@ fn drain_peer_inbox_text(
             acknowledgments.push(receipt);
             continue;
         }
-        if !allow_messages
-            || messages.len().saturating_add(pending_view_once.len())
-                >= MAX_NATIVE_OVERLAY_OPEN_BATCH
+        if messages.len().saturating_add(pending_view_once.len()) >= MAX_NATIVE_OVERLAY_OPEN_BATCH
         {
             continue;
         }
@@ -5695,6 +5713,8 @@ fn drain_peer_inbox_text(
             Err(failure) => {
                 if failure.retryable() {
                     deferred_rows = deferred_rows.saturating_add(1);
+                } else if failure == PeerProsePointerFailure::PointerBlobGone {
+                    content_gone_rows = content_gone_rows.saturating_add(1);
                 }
                 continue;
             }
@@ -6200,6 +6220,7 @@ fn drain_peer_inbox_text(
         decrypt_display_enabled: allow_messages,
         deferred_rows,
         unrecognized_wire_rows,
+        content_gone_rows,
     })
 }
 
@@ -14283,6 +14304,7 @@ mod tests {
             decrypt_display_enabled: true,
             deferred_rows: 0,
             unrecognized_wire_rows: 0,
+            content_gone_rows: 0,
         })
         .unwrap();
         assert_eq!(value["fetched"], 2);
@@ -14544,6 +14566,7 @@ mod tests {
             decrypt_display_enabled: true,
             deferred_rows: 0,
             unrecognized_wire_rows: 0,
+            content_gone_rows: 0,
         };
         let counters = batch.acknowledgment_counters();
         assert_eq!(counters.received, 1);
@@ -14579,6 +14602,7 @@ mod tests {
             decrypt_display_enabled: true,
             deferred_rows: 0,
             unrecognized_wire_rows: 0,
+            content_gone_rows: 0,
         };
 
         assert_eq!(
@@ -14655,6 +14679,7 @@ mod tests {
             decrypt_display_enabled: true,
             deferred_rows: 0,
             unrecognized_wire_rows: 0,
+            content_gone_rows: 0,
         };
 
         let statuses = batch
@@ -14703,6 +14728,7 @@ mod tests {
                 decrypt_display_enabled: true,
                 deferred_rows: 0,
                 unrecognized_wire_rows: 0,
+                content_gone_rows: 0,
             };
         let labels = |batch: &OpenedNativeOverlayTextBatch| {
             batch
@@ -14850,6 +14876,7 @@ mod tests {
             decrypt_display_enabled: true,
             deferred_rows: 0,
             unrecognized_wire_rows: 0,
+            content_gone_rows: 0,
         };
 
         let value = serde_json::to_value(batch).expect("B-side batch serializes");

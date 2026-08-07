@@ -576,6 +576,7 @@ pub enum ProseTokenMiss {
 }
 
 /// What one `prose_token_recv_classified` produced.
+#[derive(Debug)]
 pub enum ProseTokenRecv {
     Recovered(ProseTokenRecvOutput),
     Missed(ProseTokenMiss),
