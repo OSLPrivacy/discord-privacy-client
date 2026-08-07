@@ -60,6 +60,20 @@ export function declineRequest(state: PendingRequestsState, requestId: string): 
   };
 }
 
+/**
+ * Add: a new incoming request lands in Pending. This is what redeeming an
+ * invite link produces -- `cmd_osl_redeem_friend_invite_link`
+ * (crates/ipc/src/commands.rs) returns a `PendingFriendRequestRecord`, and
+ * that record becomes exactly one new Pending row here, never touching All.
+ */
+export function addPendingRequest(state: PendingRequestsState, request: PendingRequest): PendingRequestsState {
+  if (state.pending.some((entry) => entry.id === request.id)) return state;
+  return {
+    pending: [...state.pending, request],
+    all: state.all,
+  };
+}
+
 function escapeHtml(value: string): string {
   return value
     .replace(/&/gu, "&amp;")
