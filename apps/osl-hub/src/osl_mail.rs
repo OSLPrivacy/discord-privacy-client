@@ -106,6 +106,27 @@ pub struct OslMailThreadSummary {
     pub transit: &'static str,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OslMailThreadMessage {
+    pub message_id: String,
+    pub from: String,
+    pub to: Vec<String>,
+    pub subject: String,
+    pub body: String,
+    pub received_at: i64,
+    pub transit: &'static str,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OslMailRetrievedThread {
+    pub thread_id: String,
+    pub retrieval_id: String,
+    pub expires_at: i64,
+    pub messages: Vec<OslMailThreadMessage>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OslMailSealedEnvelope {
@@ -204,6 +225,29 @@ struct ListResponseMessage {
     #[serde(default)]
     opaque_thread_token: Option<String>,
     received_at: i64,
+}
+
+#[derive(Deserialize)]
+struct FetchResponse {
+    message_id: String,
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    sender_user_id: Option<String>,
+    #[serde(default)]
+    sender: Option<String>,
+    #[serde(default)]
+    sender_address: Option<String>,
+    #[serde(default)]
+    subject: Option<String>,
+    #[serde(default)]
+    ciphertext_b64: Option<String>,
+    #[serde(default)]
+    envelope: Option<OslMailSealedEnvelope>,
+    #[serde(default)]
+    body: Option<String>,
+    #[serde(default)]
+    received_at: Option<i64>,
 }
 
 pub fn get_status(core: &HubCoreState, state: &OslMailState) -> Result<OslMailStatus, String> {
@@ -319,6 +363,46 @@ pub fn list_my_threads(
         .json()
         .map_err(|_| "OSL Mail thread list response was malformed".to_owned())?;
     Ok(thread_summaries_from_list(listed.messages))
+}
+
+pub fn open_thread(
+    core: &HubCoreState,
+    state: &OslMailState,
+    thread_id: String,
+) -> Result<OslMailRetrievedThread, String> {
+    let identity = active_identity(core)?;
+    let own_address = state
+        .addresses
+        .lock()
+        .map_err(|_| "OSL Mail state is unavailable".to_owned())?
+        .get(&identity.user_id)
+        .cloned()
+        .ok_or_else(|| "Provision OSL Mail before reading threads".to_owned())?;
+    let base_url = mail_base_url()?;
+    ensure_capabilities(&base_url)?;
+    let listed = list_messages_for_identity(&identity, &base_url)?;
+    let matching = listed
+        .into_iter()
+        .filter(|message| effective_thread_id(message) == thread_id)
+        .collect::<Vec<_>>();
+    if matching.is_empty() {
+        return Err(format!(
+            "OSL Mail thread '{thread_id}' was not found for this account"
+        ));
+    }
+
+    let mut opened = Vec::new();
+    for row in &matching {
+        let fetched = fetch_one_message(&identity, &base_url, &row.message_id)?;
+        opened.push(open_fetched_message(&identity, &own_address, row, fetched)?);
+    }
+    let expires_at = now_millis()?.saturating_add(i64::from(RETENTION_SECONDS) * 1_000);
+    Ok(OslMailRetrievedThread {
+        retrieval_id: retrieval_id_for_messages(&thread_id, &opened),
+        thread_id,
+        expires_at,
+        messages: opened,
+    })
 }
 
 /// Send a sealed message body to the relay. The relay still receives the three
@@ -717,12 +801,7 @@ fn thread_summaries_from_list(messages: Vec<ListResponseMessage>) -> Vec<OslMail
         if threads.len() >= OSL_MAIL_THREAD_LIST_CAP {
             break;
         }
-        let thread_id = message
-            .opaque_thread_token
-            .as_deref()
-            .filter(|token| !token.is_empty())
-            .unwrap_or(&message.message_id)
-            .to_owned();
+        let thread_id = effective_thread_id(&message);
         if !seen.insert(thread_id.clone()) {
             continue;
         }
@@ -740,6 +819,177 @@ fn thread_summaries_from_list(messages: Vec<ListResponseMessage>) -> Vec<OslMail
         });
     }
     threads
+}
+
+fn effective_thread_id(message: &ListResponseMessage) -> String {
+    message
+        .opaque_thread_token
+        .as_deref()
+        .filter(|token| !token.is_empty())
+        .unwrap_or(&message.message_id)
+        .to_owned()
+}
+
+fn list_messages_for_identity(
+    identity: &keystore::Identity,
+    base_url: &str,
+) -> Result<Vec<ListResponseMessage>, String> {
+    let mut unsigned = Map::new();
+    unsigned.insert(
+        "limit".to_owned(),
+        Value::from(OSL_MAIL_THREAD_LIST_CAP as u64),
+    );
+    unsigned.insert("timestamp_ms".to_owned(), Value::from(now_millis()?));
+    unsigned.insert("request_id".to_owned(), Value::String(request_id()));
+    unsigned.insert(
+        "user_id".to_owned(),
+        Value::String(identity.user_id.clone()),
+    );
+    let message = signed_message("LIST", &unsigned)?;
+    unsigned.insert(
+        "signature_b64".to_owned(),
+        Value::String(
+            STANDARD.encode(crypto::ed25519::sign(&identity.ed25519_secret, &message).as_bytes()),
+        ),
+    );
+
+    let response = http_client()?
+        .post(format!("{base_url}/v1/mail/list"))
+        .json(&unsigned)
+        .send()
+        .map_err(|_| "OSL Mail thread list is unavailable".to_owned())?;
+    if !response.status().is_success() {
+        return Err("OSL Mail thread list was refused".to_owned());
+    }
+    response
+        .json::<ListResponse>()
+        .map(|listed| listed.messages)
+        .map_err(|_| "OSL Mail thread list response was malformed".to_owned())
+}
+
+fn fetch_one_message(
+    identity: &keystore::Identity,
+    base_url: &str,
+    message_id: &str,
+) -> Result<FetchResponse, String> {
+    let mut unsigned = Map::new();
+    unsigned.insert(
+        "message_id".to_owned(),
+        Value::String(message_id.to_owned()),
+    );
+    unsigned.insert("timestamp_ms".to_owned(), Value::from(now_millis()?));
+    unsigned.insert("request_id".to_owned(), Value::String(request_id()));
+    unsigned.insert(
+        "user_id".to_owned(),
+        Value::String(identity.user_id.clone()),
+    );
+    let message = signed_message("FETCH", &unsigned)?;
+    unsigned.insert(
+        "signature_b64".to_owned(),
+        Value::String(
+            STANDARD.encode(crypto::ed25519::sign(&identity.ed25519_secret, &message).as_bytes()),
+        ),
+    );
+    let response = http_client()?
+        .post(format!("{base_url}/v1/mail/fetch"))
+        .json(&unsigned)
+        .send()
+        .map_err(|_| "OSL Mail message fetch is unavailable".to_owned())?;
+    if !response.status().is_success() {
+        return Err(format!("OSL Mail message '{message_id}' fetch was refused"));
+    }
+    response
+        .json()
+        .map_err(|_| format!("OSL Mail message '{message_id}' fetch response was malformed"))
+}
+
+fn open_fetched_message(
+    identity: &keystore::Identity,
+    own_address: &str,
+    listed: &ListResponseMessage,
+    fetched: FetchResponse,
+) -> Result<OslMailThreadMessage, String> {
+    if fetched.message_id != listed.message_id {
+        return Err(format!(
+            "OSL Mail message '{}' fetch returned the wrong message",
+            listed.message_id
+        ));
+    }
+    let kind = fetched.kind.as_deref().unwrap_or(&listed.kind);
+    let from = visible_fetch_sender(listed, &fetched);
+    let subject = if let Some(subject) = fetched
+        .subject
+        .as_deref()
+        .map(str::trim)
+        .filter(|subject| subject.as_bytes().len() <= 512)
+        .filter(|subject| !subject.chars().any(char::is_control))
+    {
+        subject.to_owned()
+    } else {
+        visible_list_subject(listed)
+    };
+    let body = if let (Some(ciphertext), Some(envelope)) =
+        (fetched.ciphertext_b64.as_ref(), fetched.envelope.as_ref())
+    {
+        let sealed_body = STANDARD.decode(ciphertext).map_err(|_| {
+            format!(
+                "OSL Mail message '{}' sealed body was malformed",
+                listed.message_id
+            )
+        })?;
+        open_mail_body(identity, own_address, &subject, &envelope, &sealed_body)?
+    } else if kind == "external_envelope" {
+        fetched.body.clone().unwrap_or_default()
+    } else {
+        return Err(format!(
+            "OSL Mail message '{}' did not include a sealed body",
+            listed.message_id
+        ));
+    };
+
+    Ok(OslMailThreadMessage {
+        message_id: listed.message_id.clone(),
+        from,
+        to: vec![own_address.to_owned()],
+        subject,
+        body,
+        received_at: fetched.received_at.unwrap_or(listed.received_at),
+        transit: match kind {
+            "external_envelope" => "externalSmtp",
+            _ => "oslE2ee",
+        },
+    })
+}
+
+fn visible_fetch_sender(listed: &ListResponseMessage, fetched: &FetchResponse) -> String {
+    fetched
+        .sender_address
+        .as_deref()
+        .or(fetched.sender.as_deref())
+        .or(listed.sender_address.as_deref())
+        .or(listed.sender.as_deref())
+        .filter(|sender| valid_forward_email_address(sender))
+        .map(str::to_owned)
+        .or_else(|| {
+            fetched
+                .sender_user_id
+                .as_deref()
+                .or(listed.sender_user_id.as_deref())
+                .map(|sender| format!("{}@{MAIL_DOMAIN}", sender.to_ascii_lowercase()))
+                .filter(|sender| valid_forward_email_address(sender))
+        })
+        .unwrap_or_else(|| format!("unknown@{MAIL_DOMAIN}"))
+}
+
+fn retrieval_id_for_messages(thread_id: &str, messages: &[OslMailThreadMessage]) -> String {
+    let mut hash = Sha256::new();
+    hash.update(b"OSL-MAIL-RETRIEVAL-v1");
+    hash.update(thread_id.as_bytes());
+    for message in messages {
+        hash.update(message.message_id.as_bytes());
+        hash.update(message.received_at.to_be_bytes());
+    }
+    URL_SAFE_NO_PAD.encode(&hash.finalize()[..18])
 }
 
 fn visible_list_sender(message: &ListResponseMessage) -> String {
