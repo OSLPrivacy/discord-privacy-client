@@ -58,6 +58,7 @@ import { lastBackendFailure, recordBackendFailure } from "./backend-failure";
 import { unlockAttemptWarning } from "./unlock-attempts";
 import { chatPreviewHidingVisible } from "./entitlement-gates";
 import { entitlementCopy } from "./entitlement-copy";
+import { viewOnceCreationAllowed } from "./view-once-tier";
 import { entitlementView } from "./entitlement-view";
 import { bindProtectedTextBoxShortcutGuards } from "./protected-box-shortcuts";
 import {
@@ -733,6 +734,13 @@ let serviceGuideStep: ServiceGuideStep | null = null;
 let nativeHostFailureNotice = "";
 let friendsDialogOpen = false;
 let friendsDialogPage = 0;
+/**
+ * TASK 0816. Settings and Profile both land on `settings`/`account`, so the
+ * section alone cannot say which of the two top-bar controls owns the page.
+ * This records that the owner arrived through a `data-profile-settings`
+ * control, which is what separates "Profile" from "Settings" in the top bar.
+ */
+let profileSettingsFocus = false;
 let burnDialogOpen = false;
 let burnScope: BurnScope = "chat";
 let burnBusy = false;
@@ -4249,11 +4257,23 @@ function bindImportForm(): void {
   });
 }
 
+/**
+ * TASK 0594. The one place the UI asks "may this account make a view once
+ * message?". Opening one is never asked about here: that path is free (0591).
+ */
+function viewOnceCreationAllowedHere(): boolean {
+  return viewOnceCreationAllowed(licenseState.access);
+}
+
 function workspaceProtectedSheetMarkup(): string {
+  // TASK 0594. Creating a view once message needs Pro (0590); the control is
+  // drawn from the live entitlement so a Free account sees it off with a reason
+  // rather than a native refusal after the fact.
+  const viewOnceCreationAllowed = viewOnceCreationAllowedHere();
   const protectedSheet = protectedSheetMode === "local"
-    ? localProtectedSheetMarkup(localProtectedSheet, setup.sendMode)
+    ? localProtectedSheetMarkup({ ...localProtectedSheet, viewOnceCreationAllowed }, setup.sendMode)
     : activeEmbeddedHost
-      ? peerProtectedSheetMarkup(peerProtectedSheet, hubPeople)
+      ? peerProtectedSheetMarkup({ ...peerProtectedSheet, viewOnceCreationAllowed }, hubPeople)
       : "";
   return `${protectedSheet}${nativeDiscordProtectPickerMarkup()}${whitelistRosterMarkup()}${peopleDialogMarkup()}${friendsDialogMarkup()}${scrubReviewDialogMarkup()}${burnDialogMarkup()}${ownedConfirmationMarkup()}${updateDialogMarkup()}`;
 }
@@ -4589,7 +4609,10 @@ function nativeDiscordHeaderControls(): string {
 
 function trustedHeader(): string {
   // Service controls stay compact; deeper setup remains progressively disclosed.
-  if (route === "home" || route === "inbox" || route === "people" || route === "privacy" || route === "activity" || route === "connections" || route === "osl-chat" || route === "osl-mail") return homeHeader();
+  // TASK 0816: `settings` joined this list. Notifications, Settings and Profile
+  // all navigate to it, so without the top bar on that route their
+  // current-page state would be state no owner could ever see.
+  if (route === "home" || route === "settings" || route === "inbox" || route === "people" || route === "privacy" || route === "activity" || route === "connections" || route === "osl-chat" || route === "osl-mail") return homeHeader();
   if (route === "mullvad") {
     return `<div class="trusted-stack"><header class="workspace-header mullvad-host-header"><button class="button compact" id="mullvad-return" type="button">${mullvadReturnRoute === "onboarding" ? "Back to setup" : "Back to Home"}</button><div class="service-context"><span><strong>Mullvad</strong><small>Existing session · capture resistance does not cover Mullvad</small></span></div></header></div>`;
   }
@@ -4623,16 +4646,111 @@ function trustedHeader(): string {
   return `<div class="trusted-stack"><header class="workspace-header"><div class="hub-command"><button class="command-brand" data-route="home" aria-label="OSL Privacy home"><img class="osl-logo logo-treatment" src="${oslVectorLogoUrl}" alt=""/><span><strong>OSL Privacy</strong></span></button>${appLauncherStrip()}${simpleDeviceStatusMarkup()}</div>${nativeDiscordHeaderControls()}${serviceControls ? `<div class="context-command">${serviceControls}</div>` : ""}${onboardingContinue}${settingsButtonMarkup("workspace-settings")}</header>${updateBannerMarkup()}</div>`;
 }
 
+/** TASK 0816. The five controls the Home top bar carries, left to right. */
+export type HomeTopBarControlId = "logo" | "friends" | "notifications" | "settings" | "profile";
+
+export const homeTopBarControlIds: readonly HomeTopBarControlId[] = ["logo", "friends", "notifications", "settings", "profile"];
+
+/** The word each control paints beside its mark. Never abbreviated -- the label is the control. */
+export const homeTopBarControlLabels: Readonly<Record<HomeTopBarControlId, string>> = {
+  logo: "Home",
+  friends: "Friends",
+  notifications: "Notifications",
+  settings: "Settings",
+  profile: "Profile",
+};
+
+export interface HomeTopBarPage {
+  route: Route;
+  settingsSection: SettingsSection;
+  friendsDialogOpen: boolean;
+  profileSettingsFocus: boolean;
+}
+
+/**
+ * TASK 0816. Which control -- if any -- owns the page currently on screen.
+ *
+ * Exactly one control can be current, and the answer is derived from the same
+ * state the controls navigate to, so the highlight cannot disagree with where
+ * the owner actually is. Pages that belong to the sidebar rather than to the
+ * top bar (Inbox, People, Privacy, Activity, Connections, a service window)
+ * return `null`: nothing is highlighted, which is itself the honest answer.
+ */
+export function homeTopBarCurrentControl(page: HomeTopBarPage): HomeTopBarControlId | null {
+  // The Friends dialog opens over Home, so it is checked before the route.
+  if (page.friendsDialogOpen) return "friends";
+  if (page.route === "settings") {
+    if (page.settingsSection === "notifications") return "notifications";
+    return page.profileSettingsFocus ? "profile" : "settings";
+  }
+  if (page.route === "home") return "logo";
+  return null;
+}
+
+function homeTopBarPage(): HomeTopBarPage {
+  return { route, settingsSection, friendsDialogOpen, profileSettingsFocus };
+}
+
 function homeHeader(): string {
   const friendRequests = hubPeople.filter((person) => !person.safetyNumberVerified || person.pendingKeyChange).length;
   const notificationCount = notificationsEnabled ? visibleAppNotifications().length : 0;
-  return `<div class="trusted-stack home-trusted-stack"><header class="home-header home-command-bar"><button class="home-logo-button in-dom-tooltip-anchor" data-route="home" aria-label="OSL Privacy home"><img src="${oslVectorLogoUrl}" alt=""/>${inDomTooltipMarkup("OSL Privacy")}</button><nav class="home-command-actions" aria-label="Home controls"><button class="home-command-icon in-dom-tooltip-anchor" data-open-friends type="button" aria-label="Friends${friendRequests ? `, ${friendRequests} pending` : ""}">${homeCommandIcon("friends")}${friendRequests ? `<span class="home-command-badge">${Math.min(friendRequests, 99)}</span>` : ""}${inDomTooltipMarkup("Friends")}</button><button class="home-command-icon in-dom-tooltip-anchor" data-notification-settings type="button" aria-label="Notifications${notificationCount ? `, ${notificationCount} new` : ""}">${homeCommandIcon("notifications")}${notificationCount ? `<span class="home-command-dot" aria-hidden="true"></span>` : ""}${inDomTooltipMarkup("Notifications")}</button><button class="home-command-icon in-dom-tooltip-anchor" data-route="settings" type="button" aria-label="Settings">${homeCommandIcon("settings")}${inDomTooltipMarkup("Settings")}</button></nav></header>${updateBannerMarkup()}</div>`;
+  const current = homeTopBarCurrentControl(homeTopBarPage());
+  const logo = homeTopBarControl("logo", current === "logo", `data-route="home"`, "", "");
+  const friends = homeTopBarControl(
+    "friends",
+    current === "friends",
+    "data-open-friends",
+    friendRequests ? `, ${friendRequests} pending` : "",
+    friendRequests ? `<span class="home-command-badge">${Math.min(friendRequests, 99)}</span>` : "",
+  );
+  const notifications = homeTopBarControl(
+    "notifications",
+    current === "notifications",
+    "data-notification-settings",
+    notificationCount ? `, ${notificationCount} new` : "",
+    notificationCount ? `<span class="home-command-dot" aria-hidden="true"></span>` : "",
+  );
+  const settings = homeTopBarControl("settings", current === "settings", `data-route="settings"`, "", "");
+  const profile = homeTopBarControl("profile", current === "profile", `data-route="settings" data-profile-settings`, "", "");
+  // Settings keeps the device-protection status it has always shown; on Home
+  // the bar stays the owner's own chrome and does not repeat it.
+  const status = route === "settings" ? simpleDeviceStatusMarkup() : "";
+  return `<div class="trusted-stack home-trusted-stack"><header class="home-header home-command-bar">${logo}${status}<nav class="home-command-actions" aria-label="Home controls">${friends}${notifications}${settings}${profile}</nav></header>${updateBannerMarkup()}</div>`;
 }
 
-function homeCommandIcon(id: "friends" | "notifications" | "settings" | "organize"): string {
+/**
+ * One top-bar control: the OSL mark or an icon, then the word it is called.
+ *
+ * `data-current-page` is the machine-readable half of the current-page state
+ * and `aria-current` / the `current` class are the halves the owner and a
+ * screen reader get. All three are written from the same boolean, so the
+ * highlight, the assistive-technology state and the attribute a check reads
+ * cannot disagree with each other.
+ *
+ * The logo control keeps `home-logo-button` and the official vector mark; the
+ * other four keep `home-command-icon`, so the badge and dot styling they
+ * already had still applies.
+ */
+function homeTopBarControl(
+  id: HomeTopBarControlId,
+  current: boolean,
+  attributes: string,
+  ariaSuffix: string,
+  extra: string,
+): string {
+  const label = homeTopBarControlLabels[id];
+  const mark = id === "logo" ? `<img src="${oslVectorLogoUrl}" alt=""/>` : homeCommandIcon(id);
+  const opening = id === "logo"
+    ? `<button class="home-logo-button home-top-bar-control`
+    : `<button class="home-command-icon home-top-bar-control`;
+  return `${opening} ${current ? "current" : ""} in-dom-tooltip-anchor" type="button" data-top-bar-control="${id}" data-current-page="${current}" ${attributes} aria-label="${label}${ariaSuffix}${current ? ", current page" : ""}" ${current ? 'aria-current="page"' : ""}>${mark}<span class="home-top-bar-label">${label}</span>${extra}${inDomTooltipMarkup(label)}</button>`;
+}
+
+function homeCommandIcon(id: "logo" | "friends" | "notifications" | "settings" | "profile" | "organize"): string {
   if (id === "friends") return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 20v-1.8c0-2-1.8-3.7-4-3.7H7c-2.2 0-4 1.7-4 3.7V20M9.5 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7ZM16 11.2c1.7-.3 2.8-1.7 2.8-3.4 0-1.6-1.1-3-2.6-3.3M17.5 14.8c2 .5 3.5 1.9 3.5 3.7V20"/></svg>`;
   if (id === "notifications") return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 7h18s-3 0-3-7ZM10 20h4"/></svg>`;
   if (id === "organize") return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h2M10 17h10M14 4v6M6 14v6"/></svg>`;
+  if (id === "profile") return `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.6"/><path d="M4.8 20v-1.2c0-2.6 3.2-4.2 7.2-4.2s7.2 1.6 7.2 4.2V20"/></svg>`;
   return `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.6v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/></svg>`;
 }
 
@@ -5249,6 +5367,7 @@ function oslChatContent(): string {
     draft: oslChatDraft,
     busy: oslChatBusy,
     viewOnce: oslChatViewOnce,
+    viewOnceCreationAllowed: viewOnceCreationAllowedHere(),
     homeLogoUrl: oslVectorLogoUrl,
     deletionUnconfirmed: oslChatDeletionUnconfirmed,
     buildIntegrity: buildIntegrityStatus,
@@ -7876,7 +7995,10 @@ function bindWorkspace(): void {
     }
     route = requestedRoute;
     if (button.dataset.settings) settingsSection = button.dataset.settings as SettingsSection;
-    if (button.hasAttribute("data-profile-settings")) settingsSection = "account";
+    // TASK 0816: which of Settings / Profile is the current page is decided
+    // here, by the control that was actually pressed.
+    profileSettingsFocus = button.hasAttribute("data-profile-settings");
+    if (profileSettingsFocus) settingsSection = "account";
     activeService = null;
     activeHomeAppId = null;
     appLaunchPendingId = null;
@@ -7901,6 +8023,8 @@ function bindWorkspace(): void {
     const next = button.dataset.settings as SettingsSection;
     if (settingsSection === "scrub" && next !== "scrub") clearPrivacyScanState();
     if (settingsSection === "account" && next !== "account") newIdentityRecoveryPhrase = null;
+    // Moving around inside Settings by its own list is Settings, not Profile.
+    profileSettingsFocus = false;
     settingsSection = next;
     render();
     if (next === "scrub") void refreshAutoScrubFleetStatus();
@@ -8003,7 +8127,7 @@ function bindWorkspace(): void {
       render();
     });
   });
-  document.querySelectorAll<HTMLButtonElement>("[data-notification-settings]").forEach((button) => button.addEventListener("click", () => { route = "settings"; settingsSection = "notifications"; render(); }));
+  document.querySelectorAll<HTMLButtonElement>("[data-notification-settings]").forEach((button) => button.addEventListener("click", () => { route = "settings"; settingsSection = "notifications"; profileSettingsFocus = false; render(); }));
   document.querySelector<HTMLButtonElement>("[data-privacy-primary-action]")?.addEventListener("click", privacyPrimaryAction);
   document.querySelector<HTMLButtonElement>("[data-activity-primary-action]")?.addEventListener("click", activityPrimaryAction);
   document.querySelector<HTMLButtonElement>("[data-connections-primary-action]")?.addEventListener("click", connectionsPrimaryAction);
@@ -10633,6 +10757,9 @@ type OslHubUiTestStatePatch = {
   bootstrapStatus?: BootstrapStatus;
   enclaveAudienceRecords?: unknown[];
   buildIntegrityStatus?: BuildIntegrityStatus | null;
+  settingsSection?: SettingsSection;
+  friendsDialogOpen?: boolean;
+  profileSettingsFocus?: boolean;
   activeOslChatPersonId?: string | null;
   activeOslChatScopeApproved?: boolean;
   oslChatDraft?: string;
@@ -10685,7 +10812,8 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   coverInsertion = patch.coverInsertion ?? initialCoverInsertionChoice();
   deleteChoices = initialDeleteChoices();
   torOnboarding = initialTorOnboardingState();
-  settingsSection = "account";
+  settingsSection = patch.settingsSection ?? "account";
+  profileSettingsFocus = patch.profileSettingsFocus ?? false;
   activeService = null;
   activeHomeAppId = null;
   activeOslChatPersonId = patch.activeOslChatPersonId ?? null;
@@ -10703,7 +10831,7 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   activeOslChatContext = null;
   oslChatBusy = false;
   serviceAccountPickerOpen = false;
-  friendsDialogOpen = false;
+  friendsDialogOpen = patch.friendsDialogOpen ?? false;
   homeEditMode = false;
   homeTileOrder = [];
   hiddenHomeTiles.clear();
