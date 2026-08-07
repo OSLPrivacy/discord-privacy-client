@@ -1093,6 +1093,60 @@ export async function listHubFriendAccountReachChoices(personId: string): Promis
   } catch (error) { recordBackendFailure("list_hub_friend_account_reach_choices", error); return null; }
 }
 
+/** One row of TASK 0280's blocked-people store, as the backend records it. */
+export interface HubBlockedPerson {
+  peerDiscordId: string;
+  state: string;
+  blockedAtUnixSeconds: number;
+}
+
+export function parseHubBlockedPerson(raw: unknown): HubBlockedPerson | null {
+  if (!isRecord(raw) || !exact(raw, ["peerDiscordId", "state", "blockedAtUnixSeconds"])) return null;
+  if (!safe(raw.peerDiscordId, 180) || raw.state !== "Blocked" || !boundedCount(raw.blockedAtUnixSeconds)) return null;
+  return raw as unknown as HubBlockedPerson;
+}
+
+/** Ask the backend directly who is on the blocked-people list. */
+export async function listHubBlockedPeople(): Promise<HubBlockedPerson[] | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    const raw = await invoke<unknown>("list_hub_blocked_people");
+    if (!Array.isArray(raw) || raw.length > 10_000) {
+      return rejectBackendResponse("list_hub_blocked_people", "the blocked people list did not match the expected shape");
+    }
+    const people = raw.map(parseHubBlockedPerson);
+    return checkedBackendResponse("list_hub_blocked_people",
+      people.every((person): person is HubBlockedPerson => person !== null) ? people : null,
+      "a blocked person did not match the expected shape");
+  } catch (error) { recordBackendFailure("list_hub_blocked_people", error); return null; }
+}
+
+/** The result TASK 0280's unblock command reports back. */
+export interface HubUnblockPersonResult {
+  personId: string;
+  removedFromBlocked: boolean;
+  blockedCount: number;
+  friendshipState: string;
+  allowedPlaces: number;
+}
+
+export function parseHubUnblockPersonResult(raw: unknown): HubUnblockPersonResult | null {
+  if (!isRecord(raw) || !exact(raw, ["personId", "removedFromBlocked", "blockedCount", "friendshipState", "allowedPlaces"])) return null;
+  if (!safe(raw.personId, 180) || typeof raw.removedFromBlocked !== "boolean") return null;
+  if (!boundedCount(raw.blockedCount) || !safe(raw.friendshipState, 32) || !boundedCount(raw.allowedPlaces)) return null;
+  return raw as unknown as HubUnblockPersonResult;
+}
+
+/** Remove one person from the blocked-people list. One command, one person. */
+export async function unblockHubPerson(personId: string): Promise<HubUnblockPersonResult | null> {
+  if (!isTauriRuntime() || !safe(personId, 180)) return null;
+  try {
+    return checkedBackendResponse("unblock_hub_person",
+      parseHubUnblockPersonResult(await invoke<unknown>("unblock_hub_person", { peerDiscordId: personId })),
+      "the unblock result did not match the expected shape");
+  } catch (error) { recordBackendFailure("unblock_hub_person", error, [personId]); return null; }
+}
+
 export function parseHubPerson(raw: unknown): HubPerson | null {
   if (!isRecord(raw) || !exact(raw, ["personId", "oslUserId", "alias", "safetyNumber", "safetyNumberVerified", "whitelistCount", "whitelistedScopes", "whitelistedScopesTruncated", "pendingKeyChange", "reachBroadened", "reachBroadenedAt", "reachNarrowedScopes"])) return null;
   if (typeof raw.reachBroadened !== "boolean" || !(raw.reachBroadenedAt === null || safe(raw.reachBroadenedAt, 64))) return null;
