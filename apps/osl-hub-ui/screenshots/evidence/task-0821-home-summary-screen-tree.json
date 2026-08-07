@@ -1,0 +1,1674 @@
+{
+  "url": "http://127.0.0.1:5173/screenshots/task-0821-home-summary-fixture.html",
+  "window": {
+    "width": 1280,
+    "height": 800
+  },
+  "required": [
+    "Home",
+    "Protection",
+    "Trusted people",
+    "Connected apps",
+    "Next safe step",
+    "2 trusted people",
+    "2 connected apps",
+    "Open a protected conversation"
+  ],
+  "routeForStep": {
+    "Finish account protection": "settings",
+    "Connect an app": "connections",
+    "Add a trusted person": "people",
+    "Open a protected conversation": "osl-chat"
+  },
+  "direct": {
+    "protection_state": "protected",
+    "privacy_level": "maximum",
+    "protection_choices": {
+      "level": "maximum",
+      "label": "Maximum",
+      "warnings": "before_send_and_public_post_warnings",
+      "cleanup": "attachment_cleaning_plus_7_day_review",
+      "app_exceptions": "app_exceptions_restricted",
+      "contact_rules": "protected_contacts_required"
+    },
+    "verification_warning": "before sending",
+    "trusted_people_count": 2,
+    "trusted_people": "2 trusted people",
+    "connected_app_count": 2,
+    "allowed_place_count": 2,
+    "apps": "2 connected apps",
+    "next_safe_step": "Open a protected conversation"
+  },
+  "empty": {
+    "protection_state": "needs-attention",
+    "privacy_level": "balanced",
+    "protection_choices": {
+      "level": "balanced",
+      "label": "Balanced",
+      "warnings": "before_send_warnings",
+      "cleanup": "attachment_cleaning_plus_30_day_review",
+      "app_exceptions": "app_exceptions_reviewed",
+      "contact_rules": "verified_contacts_suggested"
+    },
+    "verification_warning": "every time",
+    "trusted_people_count": 0,
+    "trusted_people": "0 trusted people",
+    "connected_app_count": 0,
+    "allowed_place_count": 0,
+    "apps": "0 connected apps",
+    "next_safe_step": "Finish account protection"
+  },
+  "png": {
+    "path": "/home/liamw/osl-exec-j/apps/osl-hub-ui/screenshots/evidence/task-0821-home-summary-1280x800.png",
+    "bytes": 33201,
+    "sha256": "d12b690d3bcd68cdd592f29f049617eacc8f8fb450ce99cf0a370c0cb8fd484b"
+  },
+  "emptyPng": {
+    "path": "/home/liamw/osl-exec-j/apps/osl-hub-ui/screenshots/evidence/task-0821-home-summary-empty-1280x800.png",
+    "bytes": 29153,
+    "sha256": "defd92bcc9e346563fec0beb7f13d15c61c6eeeb0630b126731553abc974bf41"
+  },
+  "protected": {
+    "title": "Home",
+    "heading": "Home",
+    "text": "Home Your account is protected · 2 trusted people · 2 connected apps PROTECTION Protected TRUSTED PEOPLE 2 trusted people CONNECTED APPS 2 connected apps NEXT SAFE STEP Open a protected conversation Your account, apps and trusted people are ready. Open OSL Chat",
+    "summaryElements": 1,
+    "actionElements": 1,
+    "summarySentence": "Your account is protected · 2 trusted people · 2 connected apps",
+    "facts": {
+      "protectionState": "Protected",
+      "trustedPeople": "2 trusted people",
+      "connectedApps": "2 connected apps",
+      "nextSafeStep": "Open a protected conversation"
+    },
+    "protectionState": "protected",
+    "nextSafeStep": "Open a protected conversation",
+    "actionLabel": "Open OSL Chat",
+    "actionStep": "Open a protected conversation",
+    "actionRoute": "osl-chat",
+    "actionSettings": "",
+    "actionHomeModule": "osl-chats",
+    "rects": {
+      "heading": {
+        "x": 33,
+        "y": 59,
+        "width": 1214,
+        "height": 31.1875
+      },
+      "sentence": {
+        "x": 33,
+        "y": 96.1875,
+        "width": 1214,
+        "height": 44
+      },
+      "facts": {
+        "x": 33,
+        "y": 158.1875,
+        "width": 1214,
+        "height": 102
+      },
+      "nextStepFact": {
+        "x": 944.5,
+        "y": 168.1875,
+        "width": 286.5,
+        "height": 82
+      },
+      "actionRow": {
+        "x": 33,
+        "y": 278.1875,
+        "width": 1214,
+        "height": 72
+      },
+      "actionButton": {
+        "x": 1050,
+        "y": 292.1875,
+        "width": 180,
+        "height": 44
+      }
+    }
+  },
+  "emptyState": {
+    "title": "Home",
+    "heading": "Home",
+    "text": "Home Your account still needs attention · 0 trusted people · 0 connected apps PROTECTION Needs attention TRUSTED PEOPLE 0 trusted people CONNECTED APPS 0 connected apps NEXT SAFE STEP Finish account protection Your account is not protected yet. Fix now",
+    "summaryElements": 1,
+    "actionElements": 1,
+    "summarySentence": "Your account still needs attention · 0 trusted people · 0 connected apps",
+    "facts": {
+      "protectionState": "Needs attention",
+      "trustedPeople": "0 trusted people",
+      "connectedApps": "0 connected apps",
+      "nextSafeStep": "Finish account protection"
+    },
+    "protectionState": "needs-attention",
+    "nextSafeStep": "Finish account protection",
+    "actionLabel": "Fix now",
+    "actionStep": "Finish account protection",
+    "actionRoute": "settings",
+    "actionSettings": "account",
+    "actionHomeModule": "",
+    "rects": {
+      "heading": {
+        "x": 33,
+        "y": 59,
+        "width": 1214,
+        "height": 31.1875
+      },
+      "sentence": {
+        "x": 33,
+        "y": 96.1875,
+        "width": 1214,
+        "height": 44
+      },
+      "facts": {
+        "x": 33,
+        "y": 158.1875,
+        "width": 1214,
+        "height": 102
+      },
+      "nextStepFact": {
+        "x": 944.5,
+        "y": 168.1875,
+        "width": 286.5,
+        "height": 82
+      },
+      "actionRow": {
+        "x": 33,
+        "y": 278.1875,
+        "width": 1214,
+        "height": 72
+      },
+      "actionButton": {
+        "x": 1050,
+        "y": 292.1875,
+        "width": 180,
+        "height": 44
+      }
+    }
+  },
+  "diffs": {
+    "whole": 1.8585309244791666,
+    "sentence": 17.67695072637412,
+    "nextStepFact": 26.640137673153735,
+    "actionRow": 2.0981412837879065,
+    "actionButton": 11.540025252525252,
+    "heading": 0
+  },
+  "colours": {
+    "sentence": 533,
+    "facts": 1228,
+    "actionRow": 734
+  },
+  "changedShare": 0.06144140625,
+  "axNodes": [
+    {
+      "nodeId": "2",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "RootWebArea"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 144
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Home",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "attribute": "aria-label"
+          },
+          {
+            "type": "attribute",
+            "attribute": "aria-label",
+            "superseded": true
+          },
+          {
+            "type": "relatedElement",
+            "value": {
+              "type": "computedString",
+              "value": "Home"
+            },
+            "nativeSource": "title"
+          }
+        ]
+      },
+      "properties": [
+        {
+          "name": "focusable",
+          "value": {
+            "type": "booleanOrUndefined",
+            "value": true
+          }
+        },
+        {
+          "name": "focused",
+          "value": {
+            "type": "booleanOrUndefined",
+            "value": true
+          }
+        },
+        {
+          "name": "url",
+          "value": {
+            "type": "string",
+            "value": "http://127.0.0.1:5173/screenshots/task-0821-home-summary-fixture.html"
+          }
+        }
+      ],
+      "childIds": [
+        "5"
+      ],
+      "backendDOMNodeId": 2,
+      "frameId": "82610F8EDE577984C37C83305AFF3221"
+    },
+    {
+      "nodeId": "5",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "2",
+      "childIds": [
+        "3"
+      ],
+      "backendDOMNodeId": 5
+    },
+    {
+      "nodeId": "3",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "5",
+      "childIds": [
+        "13"
+      ],
+      "backendDOMNodeId": 3
+    },
+    {
+      "nodeId": "13",
+      "ignored": false,
+      "role": {
+        "type": "role",
+        "value": "generic"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 88
+      },
+      "name": {
+        "type": "computedString",
+        "value": "",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "attribute": "aria-label"
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "3",
+      "childIds": [
+        "4"
+      ],
+      "backendDOMNodeId": 13
+    },
+    {
+      "nodeId": "4",
+      "ignored": false,
+      "role": {
+        "type": "role",
+        "value": "region"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 143
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Home",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "value": {
+              "type": "computedString",
+              "value": "Home"
+            },
+            "attribute": "aria-labelledby",
+            "attributeValue": {
+              "type": "idrefList",
+              "value": "home-summary-title",
+              "relatedNodes": [
+                {
+                  "backendDOMNodeId": 15,
+                  "idref": "home-summary-title",
+                  "text": "Home"
+                }
+              ]
+            }
+          },
+          {
+            "type": "attribute",
+            "attribute": "aria-label",
+            "superseded": true
+          },
+          {
+            "type": "attribute",
+            "attribute": "title",
+            "superseded": true
+          }
+        ]
+      },
+      "properties": [
+        {
+          "name": "labelledby",
+          "value": {
+            "type": "nodeList",
+            "relatedNodes": [
+              {
+                "backendDOMNodeId": 15,
+                "idref": "home-summary-title",
+                "text": "Home"
+              }
+            ]
+          }
+        }
+      ],
+      "parentId": "13",
+      "childIds": [
+        "14",
+        "17",
+        "30"
+      ],
+      "backendDOMNodeId": 4
+    },
+    {
+      "nodeId": "14",
+      "ignored": false,
+      "role": {
+        "type": "role",
+        "value": "sectionheader"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 95
+      },
+      "name": {
+        "type": "computedString",
+        "value": "",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "attribute": "aria-label"
+          },
+          {
+            "type": "attribute",
+            "attribute": "title"
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "4",
+      "childIds": [
+        "15",
+        "16"
+      ],
+      "backendDOMNodeId": 14
+    },
+    {
+      "nodeId": "17",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "4",
+      "childIds": [
+        "18",
+        "21",
+        "24",
+        "27"
+      ],
+      "backendDOMNodeId": 17
+    },
+    {
+      "nodeId": "18",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "17",
+      "childIds": [
+        "19",
+        "20"
+      ],
+      "backendDOMNodeId": 18
+    },
+    {
+      "nodeId": "19",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "18",
+      "childIds": [
+        "36"
+      ],
+      "backendDOMNodeId": 19
+    },
+    {
+      "nodeId": "36",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "PROTECTION",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "PROTECTION"
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "19",
+      "childIds": [
+        "-1000000004"
+      ],
+      "backendDOMNodeId": 36
+    },
+    {
+      "nodeId": "20",
+      "ignored": false,
+      "role": {
+        "type": "role",
+        "value": "strong"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 160
+      },
+      "name": {
+        "type": "computedString",
+        "value": "",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "attribute": "aria-label"
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "18",
+      "childIds": [
+        "37"
+      ],
+      "backendDOMNodeId": 20
+    },
+    {
+      "nodeId": "21",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "17",
+      "childIds": [
+        "22",
+        "23"
+      ],
+      "backendDOMNodeId": 21
+    },
+    {
+      "nodeId": "22",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "21",
+      "childIds": [
+        "38"
+      ],
+      "backendDOMNodeId": 22
+    },
+    {
+      "nodeId": "38",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "TRUSTED PEOPLE",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "TRUSTED PEOPLE"
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "22",
+      "childIds": [
+        "-1000000006"
+      ],
+      "backendDOMNodeId": 38
+    },
+    {
+      "nodeId": "23",
+      "ignored": false,
+      "role": {
+        "type": "role",
+        "value": "strong"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 160
+      },
+      "name": {
+        "type": "computedString",
+        "value": "",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "attribute": "aria-label"
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "21",
+      "childIds": [
+        "39"
+      ],
+      "backendDOMNodeId": 23
+    },
+    {
+      "nodeId": "24",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "17",
+      "childIds": [
+        "25",
+        "26"
+      ],
+      "backendDOMNodeId": 24
+    },
+    {
+      "nodeId": "25",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "24",
+      "childIds": [
+        "40"
+      ],
+      "backendDOMNodeId": 25
+    },
+    {
+      "nodeId": "40",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "CONNECTED APPS",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "CONNECTED APPS"
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "25",
+      "childIds": [
+        "-1000000008"
+      ],
+      "backendDOMNodeId": 40
+    },
+    {
+      "nodeId": "26",
+      "ignored": false,
+      "role": {
+        "type": "role",
+        "value": "strong"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 160
+      },
+      "name": {
+        "type": "computedString",
+        "value": "",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "attribute": "aria-label"
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "24",
+      "childIds": [
+        "41"
+      ],
+      "backendDOMNodeId": 26
+    },
+    {
+      "nodeId": "27",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "17",
+      "childIds": [
+        "28",
+        "29"
+      ],
+      "backendDOMNodeId": 27
+    },
+    {
+      "nodeId": "28",
+      "ignored": true,
+      "ignoredReasons": [
+        {
+          "name": "uninteresting",
+          "value": {
+            "type": "boolean",
+            "value": true
+          }
+        }
+      ],
+      "role": {
+        "type": "role",
+        "value": "none"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 0
+      },
+      "parentId": "27",
+      "childIds": [
+        "42"
+      ],
+      "backendDOMNodeId": 28
+    },
+    {
+      "nodeId": "42",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "NEXT SAFE STEP",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "NEXT SAFE STEP"
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "28",
+      "childIds": [
+        "-1000000010"
+      ],
+      "backendDOMNodeId": 42
+    },
+    {
+      "nodeId": "29",
+      "ignored": false,
+      "role": {
+        "type": "role",
+        "value": "strong"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 160
+      },
+      "name": {
+        "type": "computedString",
+        "value": "",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "attribute": "aria-label"
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "27",
+      "childIds": [
+        "43"
+      ],
+      "backendDOMNodeId": 29
+    },
+    {
+      "nodeId": "30",
+      "ignored": false,
+      "role": {
+        "type": "role",
+        "value": "sectionfooter"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 86
+      },
+      "name": {
+        "type": "computedString",
+        "value": "",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "attribute": "aria-label"
+          },
+          {
+            "type": "attribute",
+            "attribute": "title"
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "4",
+      "childIds": [
+        "31",
+        "32"
+      ],
+      "backendDOMNodeId": 30
+    },
+    {
+      "nodeId": "15",
+      "ignored": false,
+      "role": {
+        "type": "role",
+        "value": "heading"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 96
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Home",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "attribute": "aria-label"
+          },
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "Home"
+            }
+          },
+          {
+            "type": "attribute",
+            "attribute": "title",
+            "superseded": true
+          }
+        ]
+      },
+      "properties": [
+        {
+          "name": "focusable",
+          "value": {
+            "type": "booleanOrUndefined",
+            "value": true
+          }
+        },
+        {
+          "name": "level",
+          "value": {
+            "type": "integer",
+            "value": 1
+          }
+        }
+      ],
+      "parentId": "14",
+      "childIds": [
+        "34"
+      ],
+      "backendDOMNodeId": 15
+    },
+    {
+      "nodeId": "16",
+      "ignored": false,
+      "role": {
+        "type": "role",
+        "value": "paragraph"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 133
+      },
+      "name": {
+        "type": "computedString",
+        "value": "",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "attribute": "aria-label"
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "14",
+      "childIds": [
+        "35"
+      ],
+      "backendDOMNodeId": 16
+    },
+    {
+      "nodeId": "-1000000004",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "PROTECTION"
+      },
+      "properties": [],
+      "parentId": "36",
+      "childIds": []
+    },
+    {
+      "nodeId": "37",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Protected",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "Protected"
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "20",
+      "childIds": [
+        "-1000000005"
+      ],
+      "backendDOMNodeId": 37
+    },
+    {
+      "nodeId": "-1000000006",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "TRUSTED PEOPLE"
+      },
+      "properties": [],
+      "parentId": "38",
+      "childIds": []
+    },
+    {
+      "nodeId": "39",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "2 trusted people",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "2 trusted people"
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "23",
+      "childIds": [
+        "-1000000007"
+      ],
+      "backendDOMNodeId": 39
+    },
+    {
+      "nodeId": "-1000000008",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "CONNECTED APPS"
+      },
+      "properties": [],
+      "parentId": "40",
+      "childIds": []
+    },
+    {
+      "nodeId": "41",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "2 connected apps",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "2 connected apps"
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "26",
+      "childIds": [
+        "-1000000009"
+      ],
+      "backendDOMNodeId": 41
+    },
+    {
+      "nodeId": "-1000000010",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "NEXT SAFE STEP"
+      },
+      "properties": [],
+      "parentId": "42",
+      "childIds": []
+    },
+    {
+      "nodeId": "43",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Open a protected conversation",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "Open a protected conversation"
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "29",
+      "childIds": [
+        "-1000000011",
+        "-1000000012"
+      ],
+      "backendDOMNodeId": 43
+    },
+    {
+      "nodeId": "31",
+      "ignored": false,
+      "role": {
+        "type": "role",
+        "value": "paragraph"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 133
+      },
+      "name": {
+        "type": "computedString",
+        "value": "",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "attribute": "aria-label"
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "30",
+      "childIds": [
+        "44"
+      ],
+      "backendDOMNodeId": 31
+    },
+    {
+      "nodeId": "32",
+      "ignored": false,
+      "role": {
+        "type": "role",
+        "value": "button"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 9
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Open OSL Chat",
+        "sources": [
+          {
+            "type": "relatedElement",
+            "attribute": "aria-labelledby"
+          },
+          {
+            "type": "attribute",
+            "attribute": "aria-label"
+          },
+          {
+            "type": "relatedElement",
+            "nativeSource": "label"
+          },
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "Open OSL Chat"
+            }
+          },
+          {
+            "type": "attribute",
+            "attribute": "title",
+            "superseded": true
+          }
+        ]
+      },
+      "properties": [
+        {
+          "name": "invalid",
+          "value": {
+            "type": "token",
+            "value": "false"
+          }
+        },
+        {
+          "name": "focusable",
+          "value": {
+            "type": "booleanOrUndefined",
+            "value": true
+          }
+        }
+      ],
+      "parentId": "30",
+      "childIds": [
+        "45"
+      ],
+      "backendDOMNodeId": 32
+    },
+    {
+      "nodeId": "34",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Home",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "Home"
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "15",
+      "childIds": [
+        "-1000000002"
+      ],
+      "backendDOMNodeId": 34
+    },
+    {
+      "nodeId": "35",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Your account is protected · 2 trusted people · 2 connected apps",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "Your account is protected · 2 trusted people · 2 connected apps"
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "16",
+      "childIds": [
+        "-1000000003"
+      ],
+      "backendDOMNodeId": 35
+    },
+    {
+      "nodeId": "-1000000005",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Protected"
+      },
+      "properties": [],
+      "parentId": "37",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000007",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "2 trusted people"
+      },
+      "properties": [],
+      "parentId": "39",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000009",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "2 connected apps"
+      },
+      "properties": [],
+      "parentId": "41",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000011",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Open a protected "
+      },
+      "properties": [],
+      "parentId": "43",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000012",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "conversation"
+      },
+      "properties": [],
+      "parentId": "43",
+      "childIds": []
+    },
+    {
+      "nodeId": "44",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Your account, apps and trusted people are ready.",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "Your account, apps and trusted people are ready."
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "31",
+      "childIds": [
+        "-1000000013"
+      ],
+      "backendDOMNodeId": 44
+    },
+    {
+      "nodeId": "45",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "StaticText"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 158
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Open OSL Chat",
+        "sources": [
+          {
+            "type": "contents",
+            "value": {
+              "type": "computedString",
+              "value": "Open OSL Chat"
+            }
+          }
+        ]
+      },
+      "properties": [],
+      "parentId": "32",
+      "childIds": [
+        "-1000000014"
+      ],
+      "backendDOMNodeId": 45
+    },
+    {
+      "nodeId": "-1000000002",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Home"
+      },
+      "properties": [],
+      "parentId": "34",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000003",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Your account is protected · 2 trusted people · 2 connected apps"
+      },
+      "properties": [],
+      "parentId": "35",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000013",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Your account, apps and trusted people are ready."
+      },
+      "properties": [],
+      "parentId": "44",
+      "childIds": []
+    },
+    {
+      "nodeId": "-1000000014",
+      "ignored": false,
+      "role": {
+        "type": "internalRole",
+        "value": "InlineTextBox"
+      },
+      "chromeRole": {
+        "type": "internalRole",
+        "value": 101
+      },
+      "name": {
+        "type": "computedString",
+        "value": "Open OSL Chat"
+      },
+      "properties": [],
+      "parentId": "45",
+      "childIds": []
+    }
+  ]
+}

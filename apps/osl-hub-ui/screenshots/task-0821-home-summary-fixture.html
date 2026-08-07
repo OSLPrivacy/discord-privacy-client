@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>Home</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module">
+      import "/src/styles.css";
+      const { homeProtectionSummaryMarkup } = await import("/src/home-protection-summary.ts");
+      const response = await fetch("/screenshots/fixtures/task-0821-home-summary-direct.json");
+      const direct = await response.json();
+
+      // Both models the capture photographs are written by
+      // cmd_osl_home_protection_summary itself (see
+      // crates/ipc/tests/task_0821_home_summary_action_route.rs), so what is on
+      // screen is the direct answer and nothing else.
+      window.task0821Render = (summary) => {
+        document.querySelector("#app").innerHTML = homeProtectionSummaryMarkup(summary);
+        document.documentElement.dataset.task0821 = "ready";
+      };
+
+      window.task0821Render(direct);
+    </script>
+  </body>
+</html>

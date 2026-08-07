@@ -1,0 +1,19 @@
+{
+  "protection_state": "needs-attention",
+  "privacy_level": "balanced",
+  "protection_choices": {
+    "level": "balanced",
+    "label": "Balanced",
+    "warnings": "before_send_warnings",
+    "cleanup": "attachment_cleaning_plus_30_day_review",
+    "app_exceptions": "app_exceptions_reviewed",
+    "contact_rules": "verified_contacts_suggested"
+  },
+  "verification_warning": "every time",
+  "trusted_people_count": 0,
+  "trusted_people": "0 trusted people",
+  "connected_app_count": 0,
+  "allowed_place_count": 0,
+  "apps": "0 connected apps",
+  "next_safe_step": "Finish account protection"
+}

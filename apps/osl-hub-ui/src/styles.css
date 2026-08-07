@@ -7581,3 +7581,106 @@ code {
   margin-top: 20px;
   align-self: center;
 }
+
+/* TASK 0821 - Home protection summary and its main action.
+   Every box below is sized so the protected state and the empty state lay out
+   identically. The capture compares the two photographs region by region; if a
+   longer sentence or a wider button moved anything, that comparison would be
+   measuring reflow instead of the facts. */
+
+.home-summary {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  width: 100%;
+  min-height: 100vh;
+  padding: 26px 32px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+}
+
+.home-summary-head { display: flex; flex-direction: column; gap: 6px; }
+
+.home-summary-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: -.01em;
+}
+
+/* Fixed height: the sentence is one line in both states, and stays one box
+   even when the wording is longer. */
+.home-summary-sentence {
+  display: flex;
+  align-items: center;
+  box-sizing: border-box;
+  height: 44px;
+  margin: 0;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  font-size: 14px;
+  color: var(--text);
+}
+
+.home-summary[data-protection-state="protected"] .home-summary-sentence {
+  border-color: var(--brand);
+  background: var(--brand-wash);
+}
+
+.home-summary-facts {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+}
+
+.home-summary-fact {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  height: 82px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.home-summary-fact-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.home-summary-fact-value { font-size: 15px; font-weight: 600; color: var(--text); }
+
+.home-summary-fact[data-summary-fact="protection-state"] .home-summary-fact-value { color: var(--warn); }
+
+.home-summary[data-protection-state="protected"] .home-summary-fact[data-summary-fact="protection-state"] .home-summary-fact-value {
+  color: var(--brand);
+}
+
+.home-summary-action-row {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  height: 72px;
+  padding: 0 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+}
+
+.home-summary-action-detail { flex: 1; margin: 0; font-size: 13px; color: var(--muted); }
+
+/* Fixed width so "Fix now" and "Open OSL Chat" occupy the same box. */
+.home-summary-action { box-sizing: border-box; width: 180px; text-align: center; }
