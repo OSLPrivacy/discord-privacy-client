@@ -1,0 +1,41 @@
+.message-timer-picker {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 16px;
+  border: 1px solid var(--line);
+  color: var(--text);
+}
+
+.message-timer-picker legend { padding: 0 4px; font-weight: 700; }
+.message-timer-picker p { margin: 0; color: var(--muted); }
+
+.message-timer-picker-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.message-timer-picker-field {
+  display: grid;
+  gap: 6px;
+  font-weight: 600;
+  min-width: 6rem;
+}
+
+.message-timer-picker-field input {
+  min-height: 40px;
+  border: 1px solid var(--line);
+  background: var(--surface, transparent);
+  color: inherit;
+  font: inherit;
+  padding: 7px 10px;
+}
+
+.message-timer-picker-field input:focus-visible {
+  outline: 3px solid var(--brand);
+  outline-offset: 2px;
+}
+
+.message-timer-picker-result { color: var(--muted); }
+.message-timer-picker-error { color: var(--danger, crimson); }
