@@ -3750,6 +3750,11 @@ code {
 .setting-line small { display: block; }
 .setting-line small { max-width: 520px; margin-top: 3px; color: var(--muted); }
 
+/* A row that reports a fixed state instead of offering a control, and the
+   sentence that says a screen saves itself. Both are read, never pressed. */
+.setting-state-word { color: var(--muted); font-size: 12px; }
+.settings-note { margin: 12px 0 18px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+
 /* THE CLAIM STATE. Every connected app ships the sentence that says what OSL
    has and has not proven there, next to the label it justifies. The row grows
    to fit it rather than clipping it: a reason that does not fit is a reason
