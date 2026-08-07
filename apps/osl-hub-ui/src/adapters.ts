@@ -1006,6 +1006,49 @@ export async function setActiveHubFriendPermission(contextToken: string, personI
   catch (error) { recordBackendFailure("set_active_hub_friend_permission", error); return false; }
 }
 
+// Group-member permissions back the group whitelist dropdown's tick boxes.
+// The id rule mirrors the backend's [A-Za-z0-9_-]{1,128} charset exactly, so a
+// malformed group or member id is refused before any command is invoked.
+export interface GroupMemberPermissionRecord { groupId: string; memberId: string; allowed: boolean; }
+const groupMemberPermissionId = /^[A-Za-z0-9_-]{1,128}$/;
+
+export function parseGroupMemberPermissionRecord(raw: unknown): GroupMemberPermissionRecord | null {
+  if (!isRecord(raw) || !exact(raw, ["groupId", "memberId", "allowed"])) return null;
+  if (!groupMemberPermissionId.test(String(raw.groupId)) || !groupMemberPermissionId.test(String(raw.memberId)) || typeof raw.allowed !== "boolean") return null;
+  return { groupId: String(raw.groupId), memberId: String(raw.memberId), allowed: raw.allowed };
+}
+
+export async function addGroupMemberPermission(groupId: string, memberId: string): Promise<GroupMemberPermissionRecord | null> {
+  if (!isTauriRuntime() || !groupMemberPermissionId.test(groupId) || !groupMemberPermissionId.test(memberId)) return null;
+  try {
+    const raw = await invoke<unknown>("add_group_member_permission", { groupId, memberId, allowed: true });
+    return checkedBackendResponse("add_group_member_permission", parseGroupMemberPermissionRecord(raw),
+      "the saved group-member permission did not match the expected shape");
+  } catch (error) { recordBackendFailure("add_group_member_permission", error); return null; }
+}
+
+export async function removeGroupMemberPermission(groupId: string, memberId: string): Promise<boolean | null> {
+  if (!isTauriRuntime() || !groupMemberPermissionId.test(groupId) || !groupMemberPermissionId.test(memberId)) return null;
+  try {
+    const raw = await invoke<unknown>("remove_group_member_permission", { groupId, memberId });
+    return typeof raw === "boolean"
+      ? raw
+      : checkedBackendResponse("remove_group_member_permission", null, "the removal result was not a boolean");
+  } catch (error) { recordBackendFailure("remove_group_member_permission", error); return null; }
+}
+
+export async function listGroupMemberPermissions(groupId: string): Promise<GroupMemberPermissionRecord[] | null> {
+  if (!isTauriRuntime() || !groupMemberPermissionId.test(groupId)) return null;
+  try {
+    const raw = await invoke<unknown>("list_group_member_permissions", { groupId });
+    if (!Array.isArray(raw) || raw.length > 4_096) return null;
+    const records = raw.map(parseGroupMemberPermissionRecord);
+    return checkedBackendResponse("list_group_member_permissions",
+      records.every((record): record is GroupMemberPermissionRecord => record !== null) ? records : null,
+      "a group-member permission row did not match the expected shape");
+  } catch (error) { recordBackendFailure("list_group_member_permissions", error); return null; }
+}
+
 // Widen or withdraw one verified friend's reach across the scopes shared with
 // them. A separate command from the ordinary approval above, so reach is only
 // ever changed by this deliberate action.

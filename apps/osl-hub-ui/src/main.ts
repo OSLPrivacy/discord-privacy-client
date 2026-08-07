@@ -144,11 +144,7 @@ import {
 import { checkHubForUpdates, installHubUpdate, openHubReleasesPage, openHubSourceRepository, type UpdateStatus } from "./updates";
 import { createDiscordQaGeometryKeeper } from "./discord-qa-geometry";
 import { browserLogo, serviceLogo, providerLogo } from "./logos";
-import { activateLocalLoopbackContext, activateManualPeerContext, activateNativeManualPeerContext, activateOslChatContext, addOslFriend, addOslFriendByUsername, burnActiveHubContext, burnHubServiceAccount, captureProtectionEnforced, closeOslChatContext, copyHubFriendInvite, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubRevocationStatus, getHubServiceBurnReadiness, getOslUsernameStatus, isHubPlaintext, isNormalizedOslUsername, listHubIdentities, listHubPeople, listOslChatHistory, loadActiveContextSecurity, loadAppNotifications, loadBuildIntegrityStatus, loadFriendProfile, openOslChatText, openPeerProseText, peerIsVerified, prepareLocalProtectedText, prepareOslChatText, preparePeerProseText, recoverHubIdentitySlot, saveActiveContextSecurity, revokeActiveHubFriendScope, setActiveHubFriendPermission, setActiveHubFriendReach, setHubFriendNickname, setLocalProtectedSheetOpen, setNativeDiscordProtectedOverlayOpen, setNativeDiscordProtectedOverlayOpenForQa, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, viewHubRecoveryPhrase, type AppNotification, type BuildIntegrityStatus, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type LocalPrivacyScanResult, type ManualPeerContext, type PersistedLocalPrivacyScanResult } from "./adapters";
-import { activateLocalLoopbackContext, activateManualPeerContext, activateNativeManualPeerContext, activateOslChatContext, addOslFriend, addOslFriendByUsername, answerHubChatApprovalSuggestion, burnActiveHubContext, burnHubServiceAccount, captureProtectionEnforced, closeOslChatContext, copyHubFriendInvite, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubRevocationStatus, getHubServiceBurnReadiness, getOslUsernameStatus, isHubPlaintext, isNormalizedOslUsername, listHubIdentities, listHubPeople, listOslChatHistory, loadActiveContextSecurity, loadAppNotifications, loadFriendProfile, openOslChatText, openPeerProseText, peerIsVerified, prepareLocalProtectedText, prepareOslChatText, preparePeerProseText, recoverHubIdentitySlot, saveActiveContextSecurity, revokeActiveHubFriendScope, setActiveHubFriendPermission, setActiveHubFriendReach, setHubChatApprovalSuggestionChoice, setHubFriendNickname, setLocalProtectedSheetOpen, setNativeDiscordProtectedOverlayOpen, setNativeDiscordProtectedOverlayOpenForQa, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, viewHubRecoveryPhrase, type AppNotification, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type LocalPrivacyScanResult, type ManualPeerContext, type PersistedLocalPrivacyScanResult } from "./adapters";
-import { activateLocalLoopbackContext, activateManualPeerContext, activateNativeManualPeerContext, activateOslChatContext, addOslFriend, addOslFriendByUsername, burnActiveHubContext, burnHubServiceAccount, captureProtectionEnforced, closeOslChatContext, copyHubFriendInvite, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubRevocationStatus, getHubServiceBurnReadiness, getOslUsernameStatus, isHubPlaintext, isNormalizedOslUsername, listHubIdentities, listHubPeople, listOslChatHistory, loadActiveContextSecurity, loadAppNotifications, loadFriendProfile, loadInstalledBuildChatWarningStatus, openOslChatText, openPeerProseText, peerIsVerified, prepareLocalProtectedText, prepareOslChatText, preparePeerProseText, recoverHubIdentitySlot, saveActiveContextSecurity, revokeActiveHubFriendScope, setActiveHubFriendPermission, setActiveHubFriendReach, setHubFriendNickname, setLocalProtectedSheetOpen, setNativeDiscordProtectedOverlayOpen, setNativeDiscordProtectedOverlayOpenForQa, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, viewHubRecoveryPhrase, type AppNotification, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type InstalledBuildChatWarning, type LocalPrivacyScanResult, type ManualPeerContext, type PersistedLocalPrivacyScanResult } from "./adapters";
-import { activateLocalLoopbackContext, activateManualPeerContext, activateNativeManualPeerContext, activateOslChatContext, addOslChatReaction, addOslFriend, addOslFriendByUsername, burnActiveHubContext, burnHubServiceAccount, captureProtectionEnforced, closeOslChatContext, copyHubFriendInvite, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubRevocationStatus, getHubServiceBurnReadiness, getOslUsernameStatus, isHubPlaintext, isNormalizedOslUsername, listHubIdentities, listHubPeople, listOslChatHistory, loadActiveContextSecurity, loadAppNotifications, loadFriendProfile, openOslChatText, openPeerProseText, peerIsVerified, prepareLocalProtectedText, prepareOslChatText, preparePeerProseText, recoverHubIdentitySlot, removeOslChatReaction, saveActiveContextSecurity, revokeActiveHubFriendScope, setActiveHubFriendPermission, setActiveHubFriendReach, setHubFriendNickname, setLocalProtectedSheetOpen, setNativeDiscordProtectedOverlayOpen, setNativeDiscordProtectedOverlayOpenForQa, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, viewHubRecoveryPhrase, type AppNotification, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type LocalPrivacyScanResult, type ManualPeerContext, type PersistedLocalPrivacyScanResult } from "./adapters";
-import { activateLocalLoopbackContext, activateManualPeerContext, activateNativeManualPeerContext, activateOslChatContext, addOslFriend, addOslFriendByUsername, answerHubChatApprovalSuggestion, burnActiveHubContext, burnHubServiceAccount, captureProtectionEnforced, closeOslChatContext, copyHubFriendInvite, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubRevocationStatus, getHubServiceBurnReadiness, getOslUsernameStatus, isHubPlaintext, isNormalizedOslUsername, listHubIdentities, listHubPeople, listOslChatHistory, loadActiveContextSecurity, loadAppNotifications, loadFriendProfile, openOslChatText, openPeerProseText, peerIsVerified, prepareLocalProtectedText, prepareOslChatText, preparePeerProseText, recoverHubIdentitySlot, saveActiveContextSecurity, revokeActiveHubFriendScope, setActiveHubFriendPermission, setActiveHubFriendReach, setHubChatApprovalSuggestionChoice, setHubFriendNickname, setLocalProtectedSheetOpen, setNativeDiscordProtectedOverlayOpen, setNativeDiscordProtectedOverlayOpenForQa, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, viewHubRecoveryPhrase, type AppNotification, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type LocalPrivacyScanResult, type ManualPeerContext, type PersistedLocalPrivacyScanResult } from "./adapters";
+import { activateLocalLoopbackContext, activateManualPeerContext, activateNativeManualPeerContext, activateOslChatContext, addGroupMemberPermission, addOslChatReaction, addOslFriend, addOslFriendByUsername, answerHubChatApprovalSuggestion, burnActiveHubContext, burnHubServiceAccount, captureProtectionEnforced, closeOslChatContext, copyHubFriendInvite, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubRevocationStatus, getHubServiceBurnReadiness, getOslUsernameStatus, isHubPlaintext, isNormalizedOslUsername, listGroupMemberPermissions, listHubIdentities, listHubPeople, listOslChatHistory, loadActiveContextSecurity, loadAppNotifications, loadBuildIntegrityStatus, loadFriendProfile, loadInstalledBuildChatWarningStatus, openOslChatText, openPeerProseText, peerIsVerified, prepareLocalProtectedText, prepareOslChatText, preparePeerProseText, recoverHubIdentitySlot, removeGroupMemberPermission, removeOslChatReaction, saveActiveContextSecurity, revokeActiveHubFriendScope, setActiveHubFriendPermission, setActiveHubFriendReach, setHubChatApprovalSuggestionChoice, setHubFriendNickname, setLocalProtectedSheetOpen, setNativeDiscordProtectedOverlayOpen, setNativeDiscordProtectedOverlayOpenForQa, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, viewHubRecoveryPhrase, type AppNotification, type BuildIntegrityStatus, type GroupMemberPermissionRecord, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type InstalledBuildChatWarning, type LocalPrivacyScanResult, type ManualPeerContext, type PersistedLocalPrivacyScanResult } from "./adapters";
 import { blankLocalProtectedModel, isLocalTtlSeconds, loadOrCreateLocalConversationId, localProtectedSheetMarkup, validLocalChatLabel, type LocalProtectedPane, type LocalProtectedSheetModel } from "./local-protected-sheet";
 import { blankPeerProtectedModel, boundedPeerProtectedDraft, peerProtectedDraftByteFeedback, peerProtectedSheetMarkup, type PeerProtectedPane, type PeerProtectedSheetModel } from "./peer-protected-sheet";
 import { peerIntegrityMarkup } from "./peer-integrity";
@@ -173,6 +169,7 @@ import { CoalescedRealignment, NativeCallGate } from "./native-realignment";
 import { bindWindowLifecycleRealignment } from "./window-lifecycle-bindings";
 import { FrameRenderScheduler } from "./render-scheduler";
 import { whitelistDropdownMarkup } from "./whitelist-dropdown";
+import { applyGroupMemberTick, bindWhitelistDropdownTicks } from "./whitelist-dropdown-ticks";
 import { defaultScrubSignalGroups, enabledScrubFindings, parseScrubSignalGroups, scrubSignalDefinitions, scrubSignalGroupFor, type ScrubSignalGroup } from "./scrub";
 import { loadMassCleanupCapabilities, type MassCleanupCapabilityManifest } from "./mass-cleanup";
 import { projectAutoScrubFleetStatus, type AutoScrubFleetStatus } from "./autoscrub-contract";
@@ -660,6 +657,10 @@ let discordQaTranscriptVisibilityOutcome: DiscordQaTranscriptVisibilityOutcome =
 // might still need.
 let discordMarkerAvailable = true;
 let whitelistRosterOpen = false;
+// The group-member permission rows behind the open roster dropdown's ticks.
+// Null until the dropdown loads them; a failed load stays null and no tick
+// state is invented for it.
+let whitelistRosterMemberPermissions: GroupMemberPermissionRecord[] | null = null;
 let onboardingComplete = false;
 let screenshotProtectionEnabled = false;
 let linkedServicesChecked = false;
@@ -5660,14 +5661,40 @@ function whitelistRosterPersonMarkup(person: HubPerson, activePersonId: string |
   return `<article class="whitelist-roster-row person-row" data-whitelist-person="${escapeHtml(person.personId)}"><header><div><strong>${escapeHtml(nickname)}</strong><small>${escapeHtml(whitelistReachLine(person))}</small></div>${reachButton}</header><div class="whitelist-roster-scopes">${scopes}${narrowedRows}</div>${truncated}${reachNote}</article>`;
 }
 
+// The permission store's group identity for the open roster: the active
+// protected context's service and account, folded into the backend's
+// [A-Za-z0-9_-]{1,128} id charset. No context means no group, and every tick
+// is refused rather than written somewhere unnamed.
+function whitelistRosterGroupId(): string | null {
+  const context = activeVerifiedDiscordQaPeer()?.context ?? null;
+  if (!context) return null;
+  const groupId = `group-${context.serviceId}-${context.accountId}`.replace(/[^A-Za-z0-9_-]/g, "-");
+  return groupId.length <= 128 ? groupId : null;
+}
+
+async function refreshWhitelistRosterMemberPermissions(): Promise<void> {
+  const groupId = whitelistRosterGroupId();
+  whitelistRosterMemberPermissions = groupId ? await listGroupMemberPermissions(groupId) : null;
+}
+
 function whitelistRosterMarkup(): string {
   const active = activeVerifiedDiscordQaPeer();
+  const groupId = whitelistRosterGroupId();
+  const allowedMembers = new Set((whitelistRosterMemberPermissions ?? [])
+    .filter((record) => record.allowed && record.groupId === groupId)
+    .map((record) => record.memberId));
+  // A saved group-member permission ticks its row by appearing as one more
+  // scope on that person, keyed by this group alone.
+  const people = hubPeople.map((person) => allowedMembers.has(person.personId) && groupId
+    ? { ...person, whitelistedScopes: [...person.whitelistedScopes, { kind: "group" as const, contextId: null, storageKey: groupId, userSpecific: true }] }
+    : person);
   return whitelistDropdownMarkup({
     open: whitelistRosterOpen,
-    people: hubPeople,
+    people,
     activePersonId: active?.person.personId ?? null,
     activeScopeApproved: active?.context.scopeApproved === true,
     busy: discordQaHeaderBusy !== null,
+    groupStorageKey: groupId,
   });
 }
 
@@ -7014,6 +7041,34 @@ async function setDiscordQaWhitelistPermission(enabled: boolean): Promise<void> 
   render();
 }
 
+// One roster tick box changed: issue exactly one group-member add or remove
+// command for that row's person, then re-read the stored list so the ticks
+// shown are the rows that were actually written.
+async function applyWhitelistRosterTick(memberId: string, ticked: boolean): Promise<void> {
+  const groupId = whitelistRosterGroupId();
+  if (!groupId || discordQaHeaderBusy) {
+    showToast("Whitelist change stopped: the group is unavailable");
+    render();
+    return;
+  }
+  discordQaHeaderBusy = "whitelist";
+  render();
+  const outcome = await applyGroupMemberTick(
+    { add: addGroupMemberPermission, remove: removeGroupMemberPermission },
+    groupId,
+    memberId,
+    ticked,
+  );
+  await refreshWhitelistRosterMemberPermissions();
+  discordQaHeaderBusy = null;
+  showToast(outcome.status === "added"
+    ? "Group member allowed"
+    : outcome.status === "removed"
+      ? "Group member removed"
+      : `Whitelist change failed closed: ${outcome.reason}`);
+  render();
+}
+
 // Widening reach is deliberate: it is only ever reachable from the roster, it
 // names the friend behind the live protected context, and the hub re-checks that
 // context before and after the write.
@@ -8073,8 +8128,13 @@ function bindWorkspace(): void {
   });
   document.querySelector<HTMLButtonElement>("#discord-qa-whitelist-roster")?.addEventListener("click", () => {
     whitelistRosterOpen = !whitelistRosterOpen;
+    if (whitelistRosterOpen) void refreshWhitelistRosterMemberPermissions().then(render);
     render();
   });
+  bindWhitelistDropdownTicks(
+    { querySelectorAll: (selector) => document.querySelectorAll<HTMLInputElement>(selector) },
+    (memberId, ticked) => void applyWhitelistRosterTick(memberId, ticked),
+  );
   document.querySelector<HTMLButtonElement>("#whitelist-roster-close")?.addEventListener("click", () => {
     whitelistRosterOpen = false;
     render();
