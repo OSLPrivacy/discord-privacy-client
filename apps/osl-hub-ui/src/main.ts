@@ -248,6 +248,7 @@ import { defaultWindowSoundsSettings, loadWindowSoundsSettings, saveWindowSounds
 import { accentChoices, appearanceSettingsMarkup, avatarChoices, backgroundChoices, loadAppearancePreferences, resetAppearancePreferences, saveAppearancePreferences, windowPositionChoices, type AppearancePreferences } from "./appearance-preferences";
 import { applyLookState, defaultLookState, loadLookState, lookScreenMarkup, lookStorageKey, saveLookState, type LookMode, type LookState } from "./look-screen";
 import { inDomTooltipMarkup } from "./in-dom-tooltip";
+import { whitelistingSettingsMarkup } from "./auto-whitelist-settings";
 import { coverWritingControlsMarkup } from "./cover-writing-controls";
 import { pressAiCovertextButton } from "./ai-covertext-button";
 import { applyOslChatDraftToElement, applyOslChatReactionToggle, firstPartyOslSurfaceContract, OSL_CHAT_KEY_CHANGED_REFUSAL_REASON, OSL_CHAT_MAX_DRAFT_BYTES, oslChatDraftBytes, oslChatHandshakeConfirmed, oslChatsViewMarkup, senderReceiptStateFor, submitsOslChatDraft, type OslChatMessage } from "./osl-chats-view";
@@ -7192,7 +7193,7 @@ function serviceAccountsSettingsContent(): string {
     ? `<details class="saved-account-settings settings-disclosure account-opening-settings" open><summary>Account opening</summary><div class="account-opening-content">${nativeModeRows}</div></details>`
     : "";
   const browserSettings = `<details class="saved-account-settings settings-disclosure account-opening-settings" open><summary>Browser for web apps</summary><div class="account-opening-content">${browserChoices}</div></details>`;
-  return `<h2>Apps</h2><div class="account-settings-list">${rows}</div>${nativeModeSettings}${browserSettings}`;
+  return `<h2>Apps</h2><div class="account-settings-list">${rows}</div>${whitelistingSettingsMarkup()}${nativeModeSettings}${browserSettings}`;
 }
 
 async function scanPrivacyExport(input: HTMLInputElement): Promise<void> {
