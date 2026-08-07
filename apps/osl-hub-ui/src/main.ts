@@ -224,7 +224,7 @@ import { offlineCapabilityStatus, type OfflineUnavailableCapability, type OslCon
 import { activeVerifiedDiscordPeer } from "./verified-discord-peer";
 import type { NativeDiscordOverlayOpenedBatch } from "./overlay-state";
 import type { NativeOverlayPendingAttachment } from "./overlay-state";
-import { listOslChatAttachments, openOslChatAttachment, selectOslChatAttachment } from "./native-overlay-adapter";
+import { acceptOslChatClipboardImageAttachment, listOslChatAttachments, openOslChatAttachment, selectOslChatAttachment } from "./native-overlay-adapter";
 import { VerificationWarningMemory, verificationWarningDecision, type VerificationWarningSetting, type VerificationWarningSurface } from "./verification-warning";
 import {
   pollNativeDiscordHeadlessQa,
@@ -8003,6 +8003,7 @@ function bindWorkspace(): void {
     if (typeof form.requestSubmit === "function") form.requestSubmit(send);
     else send.click();
   });
+  oslChatDraftInput?.addEventListener("paste", (event) => void pasteOslChatClipboardImage(event as ClipboardEvent));
   document.querySelector<HTMLInputElement>("#osl-chat-view-once")?.addEventListener("change", (event) => { oslChatViewOnce = (event.currentTarget as HTMLInputElement).checked; });
   document.querySelector<HTMLFormElement>("[data-osl-chat-compose]")?.addEventListener("submit", (event) => void sendOslChat(event));
   document.querySelector<HTMLButtonElement>("#osl-chat-attach")?.addEventListener("click", () => void sendOslChatAttachment());
@@ -9234,6 +9235,21 @@ async function sendOslChatAttachment(): Promise<void> {
   oslChatBusy = false;
   if (result === null) showToast("Encrypted attachment was not sent");
   else if (result !== "cancelled") showToast("Encrypted attachment delivered");
+  render();
+}
+
+async function pasteOslChatClipboardImage(event: ClipboardEvent): Promise<void> {
+  if (!activeOslChatContext?.scopeApproved || oslChatBusy) return;
+  const items = event.clipboardData?.items;
+  if (!items) return;
+  const imageItem = [...items].find((item) => item.kind === "file" && item.type.startsWith("image/"));
+  if (!imageItem) return;
+  const file = imageItem.getAsFile();
+  if (!file) return;
+  event.preventDefault();
+  const card = await acceptOslChatClipboardImageAttachment(file.type, new Uint8Array(await file.arrayBuffer()));
+  if (!card) { showToast("Pasted image could not be attached"); return; }
+  attachmentProgressByContext.set(card.contextId, card);
   render();
 }
 
@@ -11790,6 +11806,13 @@ export const __oslHubUiTest = {
   },
   openOslChatConversation(personId: string): Promise<void> {
     return openOslChat(personId);
+  },
+  /** Run the real composer paste handler with a fixture ClipboardEvent. */
+  pasteOslChatClipboardImage(event: ClipboardEvent): Promise<void> {
+    return pasteOslChatClipboardImage(event);
+  },
+  oslChatAttachmentCards(): string[] {
+    return [...attachmentProgressByContext.values()].map((event) => event.job.metadata.mediaType);
   },
   setChatApprovalSuggestionChoice(enabled: boolean): Promise<void> {
     return setNotificationScopeSuggestions(enabled);
