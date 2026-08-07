@@ -1,3 +1,4 @@
+import { oslChatDropTargetAttributes } from "./osl-chat-drop-target";
 import type { VerificationWarningSurface } from "./verification-warning";
 import { viewOnceControlMarkup } from "./view-once-tier";
 
@@ -137,6 +138,13 @@ export interface OslChatFriend {
   online?: boolean;
   /** A terse sidebar timestamp supplied by the host, when one is available. */
   timeLabel?: string;
+  /**
+   * The owner picture this row is allowed to draw, as answered by the protected
+   * picture query for the signed-in friend (task 0237). Unset or null means the
+   * query did not grant a picture to this reader, and the row draws the stable
+   * coloured initial instead. The list payload never carries the image itself.
+   */
+  picture?: string | null;
 }
 
 /** Exact refusal shown everywhere an unreviewed friend key blocks a send. */
@@ -336,7 +344,10 @@ function initials(value: string): string {
   return value.split(/\s+/u).filter(Boolean).map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "?";
 }
 
-function avatar(value: string, className = "", online = false): string {
+function avatar(value: string, className = "", online = false, picture: string | null = null): string {
+  if (picture) {
+    return `<span class="osl-chat-avatar-shell"><img class="osl-chat-avatar friend-picture ${className}" src="${escapeHtml(picture)}" alt="" aria-hidden="true"/>${online ? '<i class="osl-chat-online"></i>' : ""}</span>`;
+  }
   return `<span class="osl-chat-avatar ${className}" aria-hidden="true">${escapeHtml(initials(value))}${online ? '<i class="osl-chat-online"></i>' : ""}</span>`;
 }
 
@@ -404,7 +415,7 @@ function friendRow(friend: OslChatFriend, activePersonId: string | null, busy: b
     : friendPreview(friend);
   return `<div class="osl-chat-friend${active ? " is-active" : ""}${keyChanged ? " is-key-changed" : ""}" data-person-id="${escapeHtml(friend.personId)}">
     <button class="osl-chat-friend-open" type="button" data-osl-chat-open="${escapeHtml(friend.personId)}" ${active ? 'aria-current="true"' : ""} ${busy ? 'disabled aria-disabled="true"' : ""}>
-      ${avatar(friend.nickname, "", friend.online !== false)}<span class="osl-chat-friend-copy"><strong class="${keyChanged ? "is-key-changed" : ""}">${escapeHtml(friend.nickname)}${keyChanged ? '<span class="osl-chat-key-changed-triangle" role="img" aria-label="Safety number changed">⚠</span>' : oslVerificationTickMarkup(friend.verificationTwoWay)}</strong>${preview}</span><span class="osl-chat-friend-end"><time class="osl-chat-status-style">${escapeHtml(friend.timeLabel ?? "")}</time>${friend.unreadCount > 0 ? `<b class="osl-chat-unread osl-chat-status-style" aria-label="${friend.unreadCount} unread">${Math.min(friend.unreadCount, 99)}</b>` : ""}</span>
+      ${avatar(friend.nickname, "", friend.online !== false, friend.picture ?? null)}<span class="osl-chat-friend-copy"><strong class="${keyChanged ? "is-key-changed" : ""}">${escapeHtml(friend.nickname)}${keyChanged ? '<span class="osl-chat-key-changed-triangle" role="img" aria-label="Safety number changed">⚠</span>' : oslVerificationTickMarkup(friend.verificationTwoWay)}</strong>${preview}</span><span class="osl-chat-friend-end"><time class="osl-chat-status-style">${escapeHtml(friend.timeLabel ?? "")}</time>${friend.unreadCount > 0 ? `<b class="osl-chat-unread osl-chat-status-style" aria-label="${friend.unreadCount} unread">${Math.min(friend.unreadCount, 99)}</b>` : ""}</span>
     </button>
   </div>`;
 }
@@ -577,7 +588,7 @@ function activeThread(model: OslChatsViewModel, friend: OslChatFriend): string {
     ? `<aside class="osl-chat-blocked-panel" role="alert"><strong>Message not sent</strong><p>${escapeHtml(model.sendBlockedReason)}</p><button type="button" data-osl-chat-blocked-close>Back to chat</button></aside>`
     : "";
   return `<section class="osl-chat-thread" aria-label="OSL direct chat with ${escapeHtml(friend.nickname)}">
-    <header class="osl-chat-thread-header">${avatar(friend.nickname, "is-thread", friend.online !== false)}<button class="osl-chat-thread-identity" type="button" data-open-safety-number="${escapeHtml(friend.personId)}"><h2>${escapeHtml(friend.nickname)}${oslVerificationTickMarkup(friend.verificationTwoWay)}</h2><span class="osl-chat-status-style is-${friend.pendingKeyChange ? "key-changed" : friend.verified ? "verified" : "unverified"}">${verification}</span></button><button class="osl-chat-thread-settings" type="button" data-osl-chat-settings="${escapeHtml(friend.personId)}" aria-label="Chat settings">${moreIcon}</button></header>
+    <header class="osl-chat-thread-header">${avatar(friend.nickname, "is-thread", friend.online !== false, friend.picture ?? null)}<button class="osl-chat-thread-identity" type="button" data-open-safety-number="${escapeHtml(friend.personId)}"><h2>${escapeHtml(friend.nickname)}${oslVerificationTickMarkup(friend.verificationTwoWay)}</h2><span class="osl-chat-status-style is-${friend.pendingKeyChange ? "key-changed" : friend.verified ? "verified" : "unverified"}">${verification}</span></button><button class="osl-chat-thread-settings" type="button" data-osl-chat-settings="${escapeHtml(friend.personId)}" aria-label="Chat settings">${moreIcon}</button></header>
     ${keyBanner}${unconfirmed}${blocked}
     <div class="osl-chat-message-list" role="log" aria-live="polite" aria-relevant="additions text">${messages}</div>
     ${buildIntegrityWarningRow(model.buildIntegrity)}
@@ -585,7 +596,7 @@ function activeThread(model: OslChatsViewModel, friend: OslChatFriend): string {
     ${deletionUnconfirmedRow(model.deletionUnconfirmed ?? 0)}
     <form class="osl-chat-composer${keyChanged ? " is-key-blocked" : ""}" data-osl-chat-compose="${escapeHtml(friend.personId)}"${keyChanged ? ' aria-disabled="true"' : ""}>
       <label for="osl-chat-draft">Message</label>
-      <div class="osl-chat-composer-bar"><button class="osl-chat-attach" id="osl-chat-attach" type="button" aria-label="Attach a file" ${model.attachmentAvailable && !model.busy && !keyChanged ? "" : 'disabled title="Attachments are available in this approved chat with OSL Pro"'}>${attachIcon}</button><textarea id="osl-chat-draft" rows="1" placeholder="${keyChanged ? "Verify the key change before you send anything" : `Message ${escapeHtml(friend.nickname)}`}" autocomplete="off" spellcheck="true" aria-describedby="osl-chat-draft-count osl-chat-readiness" ${keyChanged ? "disabled" : ""}>${escapeHtml(model.draft)}</textarea>${viewOnceControlMarkup({
+      <div class="osl-chat-composer-bar"><button class="osl-chat-attach" id="osl-chat-attach" type="button" aria-label="Attach a file" ${model.attachmentAvailable && !model.busy && !keyChanged ? "" : 'disabled title="Attachments are available in this approved chat with OSL Pro"'}>${attachIcon}</button><textarea id="osl-chat-draft" ${oslChatDropTargetAttributes()} rows="1" placeholder="${keyChanged ? "Verify the key change before you send anything" : `Message ${escapeHtml(friend.nickname)}`}" autocomplete="off" spellcheck="true" aria-describedby="osl-chat-draft-count osl-chat-readiness" ${keyChanged ? "disabled" : ""}>${escapeHtml(model.draft)}</textarea>${viewOnceControlMarkup({
         id: "osl-chat-view-once",
         layout: "composer",
         className: "osl-chat-view-once",
