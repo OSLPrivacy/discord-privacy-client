@@ -47,6 +47,8 @@ impl WebPageControls {
     }
 }
 
+/// AOL Mail fake page target map for the task 1257 email flow.
+pub mod aol;
 /// GMX Mail target map. Kept as service-local data until a live GMX backend
 /// proves the fixed-origin controls against a signed-in account.
 pub mod gmx;
