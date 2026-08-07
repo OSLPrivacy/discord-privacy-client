@@ -13,6 +13,11 @@ ROOT = Path(__file__).resolve().parents[2]
 BROKER = ROOT / "apps" / "osl-hub" / "src" / "broker.rs"
 SHARED_SENTENCE = "This encrypted message could not be opened"
 CASES = ("not_a_token", "pointer_blob_gone", "rejected")
+CASE_VARIANTS = {
+    "not_a_token": "NotAToken",
+    "pointer_blob_gone": "PointerBlobGone",
+    "rejected": "Rejected",
+}
 COUNTERS = {
     "not_a_token": "rehydrate_decode_pointer_absent",
     "pointer_blob_gone": "rehydrate_decode_pointer_blob_gone",
@@ -51,23 +56,62 @@ def require(pattern: str, body: str, message: str) -> re.Match[str]:
     return found
 
 
+def variant_sentence(body: str, variant: str) -> str | None:
+    match = re.search(
+        rf"Self::{variant}\b(?P<variants>(?:\s*\|\s*Self::[A-Za-z0-9_]+)*)"
+        r"\s*=>\s*\{\s*\"(?P<sentence>[^\"]+)\"\.to_owned\(\)",
+        body,
+        re.DOTALL,
+    )
+    if match:
+        return match.group("sentence")
+
+    for arm in re.finditer(
+        r"(?P<variants>Self::[A-Za-z0-9_]+(?:\s*\|\s*Self::[A-Za-z0-9_]+)*)"
+        r"\s*=>\s*\{\s*\"(?P<sentence>[^\"]+)\"\.to_owned\(\)",
+        body,
+        re.DOTALL,
+    ):
+        variants = set(re.findall(r"Self::([A-Za-z0-9_]+)", arm.group("variants")))
+        if variant in variants:
+            return arm.group("sentence")
+
+    return None
+
+
+def refusal_sentences(body: str) -> list[tuple[str, str]]:
+    sentences = []
+    for label, variant in CASE_VARIANTS.items():
+        sentence = variant_sentence(body, variant)
+        if sentence is None:
+            fail(f"missing by-hand sentence for {label}")
+        sentences.append((label, sentence))
+    return sentences
+
+
+def fail_if_refusal_sentences_differ(sentences: list[tuple[str, str]]) -> None:
+    expected_label, expected_sentence = sentences[0]
+    for label, sentence in sentences[1:]:
+        if sentence != expected_sentence:
+            fail(
+                "by-hand refusal sentences differ: "
+                f'{expected_label}="{expected_sentence}" {label}="{sentence}"'
+            )
+
+
 def main() -> int:
     source = BROKER.read_text(encoding="utf-8")
 
     user_message_body = source_function(source, "fn user_message(self) -> String")
-    shared = require(
-        r"Self::NotAToken\s*\|\s*Self::PointerBlobGone\s*\|\s*Self::Rejected\s*=>\s*\{\s*\"([^\"]+)\"\.to_owned\(\)",
-        user_message_body,
-        "the three by-hand refusal variants do not share one arm",
-    ).group(1)
+    by_hand = refusal_sentences(user_message_body)
+    fail_if_refusal_sentences_differ(by_hand)
+    shared = by_hand[0][1]
     if shared != SHARED_SENTENCE:
         fail(f"by-hand sentence changed: {shared!r}")
 
-    by_hand = []
     by_hand_times = []
     for label in CASES:
         started = time.perf_counter_ns()
-        by_hand.append((label, shared))
         by_hand_times.append(f"{label}:{time.perf_counter_ns() - started}")
 
     helper = source_function(source, "fn record_rehydrate_pointer_failure")
