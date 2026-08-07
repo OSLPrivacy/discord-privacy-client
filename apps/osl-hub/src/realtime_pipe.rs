@@ -64,6 +64,10 @@ impl RealtimeEndpoint {
         format!("{}:{}", self.host, self.port)
     }
 
+    pub fn as_url(&self) -> String {
+        format!("ws://{}{}", self.authority(), self.path_and_query)
+    }
+
     fn socket_addrs(&self) -> Result<Vec<SocketAddr>, RealtimePipeError> {
         self.authority()
             .to_socket_addrs()

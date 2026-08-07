@@ -1877,6 +1877,61 @@ async fn clear_hub_activation_code(app: tauri::AppHandle) -> Result<HubLicenseSt
     .map_err(|_| "OSL activation worker failed".to_owned())?
 }
 
+const REALTIME_WAKEUP_URL_ENV: &str = "OSL_REALTIME_WAKEUP_URL";
+
+fn realtime_wakeup_endpoint() -> Result<osl_privacy_hub::realtime_pipe::RealtimeEndpoint, String> {
+    let url = match std::env::var(REALTIME_WAKEUP_URL_ENV) {
+        Ok(url) if !url.trim().is_empty() => url,
+        _ => {
+            let config_dir =
+                keystore::osl_config_dir().map_err(|_| "OSL account storage is unavailable")?;
+            let base = ipc::cipher_store_client::resolve_cipher_store_base_url(&config_dir)
+                .map_err(|error| format!("OSL cipher-store route unavailable: {error}"))?;
+            realtime_websocket_url_from_base(&base)?
+        }
+    };
+    osl_privacy_hub::realtime_pipe::RealtimeEndpoint::parse(&url)
+        .map_err(|error| format!("OSL realtime wake-up endpoint refused {url:?}: {error:?}"))
+}
+
+fn realtime_websocket_url_from_base(base: &str) -> Result<String, String> {
+    let parsed = url::Url::parse(base)
+        .map_err(|error| format!("OSL cipher-store base URL is invalid: {error}"))?;
+    let scheme = match parsed.scheme() {
+        "http" => "ws",
+        "https" => "ws",
+        "ws" => "ws",
+        other => return Err(format!("OSL cipher-store scheme cannot carry wake-up: {other}")),
+    };
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| "OSL cipher-store base URL has no host".to_owned())?;
+    let authority = match parsed.port() {
+        Some(port) => format!("{host}:{port}"),
+        None => host.to_owned(),
+    };
+    Ok(format!("{scheme}://{authority}/v1/realtime"))
+}
+
+#[tauri::command]
+fn get_realtime_wakeup_status(
+    app: tauri::AppHandle,
+) -> osl_privacy_hub::realtime_wakeup::RealtimeWakeupStatus {
+    app.state::<osl_privacy_hub::realtime_wakeup::RealtimeWakeupRuntime>()
+        .status()
+}
+
+fn note_account_unlocked(app: &tauri::AppHandle) {
+    match realtime_wakeup_endpoint() {
+        Ok(endpoint) => app
+            .state::<osl_privacy_hub::realtime_wakeup::RealtimeWakeupRuntime>()
+            .connect_after_unlock(endpoint),
+        Err(error) => app
+            .state::<osl_privacy_hub::realtime_wakeup::RealtimeWakeupRuntime>()
+            .record_start_error(error),
+    }
+}
+
 #[tauri::command]
 // D80: ONE credential argument, ONE verifier. This command used to take a
 // second duress-PIN argument fed by a second, labelled input on the unlock
@@ -1919,6 +1974,7 @@ async fn unlock_hub_password_gate(
             // sweep itself happens on the tick thread.
             app.state::<LifecycleTickState>().nudge();
             let readiness = startup_gate::readiness_after_main(&app.state::<HubCoreState>());
+            note_account_unlocked(&app);
             Ok(HubGateUnlockResult::unlocked(verification, readiness))
         }
         VerifiedGateRole::Stealth => {
@@ -2013,12 +2069,21 @@ async fn setup_hub_main_password(
     app: tauri::AppHandle,
     password: String,
 ) -> Result<HubMainPasswordSetupResult, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let state = app.state::<HubCoreState>();
+    let setup_app = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let state = setup_app.state::<HubCoreState>();
         password_lifecycle::setup_main_password(&state, password)
     })
     .await
-    .map_err(|_| "OSL password setup worker failed".to_string())?
+    .map_err(|_| "OSL password setup worker failed".to_string())?;
+    if result
+        .as_ref()
+        .map(|result| result.readiness.unlocked)
+        .unwrap_or(false)
+    {
+        note_account_unlocked(&app);
+    }
+    result
 }
 
 #[tauri::command]
@@ -2027,8 +2092,9 @@ async fn reset_hub_main_password_after_recovery(
     recovery_phrase: String,
     new_password: String,
 ) -> Result<HubPasswordReadiness, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let state = app.state::<HubCoreState>();
+    let reset_app = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let state = reset_app.state::<HubCoreState>();
         password_lifecycle::reset_main_password_after_recovery(
             &state,
             recovery_phrase,
@@ -2036,7 +2102,11 @@ async fn reset_hub_main_password_after_recovery(
         )
     })
     .await
-    .map_err(|_| "OSL password reset worker failed".to_string())?
+    .map_err(|_| "OSL password reset worker failed".to_string())?;
+    if result.as_ref().map(|ready| ready.unlocked).unwrap_or(false) {
+        note_account_unlocked(&app);
+    }
+    result
 }
 
 /// T15-A3/A4: read the password-recovery phrase back after onboarding.
@@ -2133,12 +2203,18 @@ async fn set_hub_recovery_kit_unsaved(unsaved: bool) -> Result<(), String> {
 /// password gate runs again.
 #[tauri::command]
 async fn lock_hub_session(app: tauri::AppHandle) -> Result<ipc::commands::SessionLockDto, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let state = app.state::<HubCoreState>();
+    let lock_app = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let state = lock_app.state::<HubCoreState>();
         ipc::commands::cmd_osl_lock_session(&state.osl)
     })
     .await
-    .map_err(|_| "OSL session lock worker failed".to_string())?
+    .map_err(|_| "OSL session lock worker failed".to_string())?;
+    if result.is_ok() {
+        app.state::<osl_privacy_hub::realtime_wakeup::RealtimeWakeupRuntime>()
+            .stop_after_lock();
+    }
+    result
 }
 
 /// Send a ratchet-independent SESSION_RESET to the currently authorised peer
@@ -11857,6 +11933,7 @@ fn main() {
                                                                              // This is also why `scavenge_staging_on_startup` above cannot be the
                                                                              // home for any of it: no key exists yet at that point.
         app.manage(LifecycleTickState::default());
+        app.manage(osl_privacy_hub::realtime_wakeup::RealtimeWakeupRuntime::default());
         spawn_lifecycle_tick(app.handle().clone(), local_data_dir.clone());
         startup_breadcrumb("setup_step_45_lifecycle_tick_spawned"); // STARTUP-TRACE
                                                                     // Last, so every state the driver reads is already managed. It only

@@ -295,8 +295,6 @@ impl RealtimeClient {
             self.scheduled_fetches
                 .push_back(ScheduledFetch::Decoy(DecoyFetch::random()));
         }
-        self.scheduled_fetches
-            .push_back(ScheduledFetch::Decoy(DecoyFetch::random()));
         Ok(())
     }
 

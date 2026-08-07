@@ -265,6 +265,7 @@ pub mod realtime_decoy;
 pub mod realtime_pipe;
 pub mod realtime_resume;
 pub mod realtime_subscription;
+pub mod realtime_wakeup;
 #[cfg(feature = "core")]
 pub mod receipt_emit;
 pub mod row_who_wrote_it;

@@ -875,6 +875,7 @@ macro_rules! hub_tauri_commands {
             compose_scrub_erasure_request,
             validate_hub_activation_code,
             clear_hub_activation_code,
+            get_realtime_wakeup_status,
             unlock_hub_password_gate,
             create_hub_osl_identity,
             import_hub_osl_identity_phrase,
