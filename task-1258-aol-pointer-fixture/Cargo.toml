@@ -1,0 +1,12 @@
+[package]
+name = "task-1258-aol-pointer-fixture"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "task_1258_aol_pointer_fixture"
+path = "src/lib.rs"
+
+[workspace]
+resolver = "2"
