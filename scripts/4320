@@ -1,0 +1,103 @@
+#!/usr/bin/env python3
+"""Task 4320 mailbox read/send source gate.
+
+The original 4320 evidence was source-probe based because osl-hub did not
+compile. This command makes the Gmail read half falsifiable: it compares the
+saved 4320 answer with what the Gmail reader source currently implements.
+"""
+
+from __future__ import annotations
+
+import argparse
+import re
+import sys
+from pathlib import Path
+
+
+ALLOWED = {"works", "refuses by name", "does nothing", "command does not exist"}
+
+
+def extract_gmail_read_answer(evidence: str) -> str:
+    for line in evidence.splitlines():
+        if line.startswith("| Gmail |"):
+            cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+            if len(cells) != 5:
+                raise ValueError("Gmail row does not have 5 columns")
+            answer = cells[3]
+            if answer not in ALLOWED:
+                raise ValueError(f"Gmail read answer is not allowed: {answer}")
+            return answer
+    raise ValueError("Gmail row not found in 4320 evidence")
+
+
+def find_rust_function(source: str, name: str) -> str | None:
+    marker = f"pub fn {name}"
+    start = source.find(marker)
+    if start == -1:
+        return None
+    brace = source.find("{", start)
+    if brace == -1:
+        return None
+    depth = 0
+    for index in range(brace, len(source)):
+        char = source[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return source[brace + 1 : index]
+    raise ValueError(f"{name} has an unclosed body")
+
+
+def classify_gmail_read(repo: Path) -> tuple[str, str]:
+    source_path = repo / "apps/osl-hub/src/service_connections.rs"
+    source = source_path.read_text()
+    body = find_rust_function(source, "read_gmail_shared_mailbox_messages")
+    if body is None:
+        return "command does not exist", "read_gmail_shared_mailbox_messages not found"
+
+    compact = re.sub(r"\s+", " ", body)
+    empty_pos = compact.find("Ok(Vec::new())")
+    filter_pos = compact.find(".filter(|message| message.label_id == label_id)")
+    summary_pos = compact.find("SharedMailMessageSummary")
+
+    if empty_pos != -1 and (filter_pos == -1 or empty_pos < filter_pos):
+        return "does nothing", "read_gmail_shared_mailbox_messages returns Ok(Vec::new())"
+    if filter_pos != -1 and summary_pos != -1 and ".collect()" in compact:
+        return (
+            "works",
+            "read_gmail_shared_mailbox_messages filters the requested label and builds summaries",
+        )
+    return "does nothing", "read_gmail_shared_mailbox_messages exists but no message-producing path was found"
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--repo", default=".", help="repository root to inspect")
+    parser.add_argument(
+        "--evidence",
+        default="/home/liamw/osl-plan/OSL-AUDITS/evidence/4320.md",
+        help="accepted 4320 evidence file",
+    )
+    args = parser.parse_args()
+
+    repo = Path(args.repo).resolve()
+    evidence_path = Path(args.evidence)
+
+    expected = extract_gmail_read_answer(evidence_path.read_text())
+    actual, reason = classify_gmail_read(repo)
+
+    print(f"TASK4320_GMAIL_READ_EXPECTED={expected}")
+    print(f"TASK4320_GMAIL_READ_ACTUAL={actual}")
+    print(f"TASK4320_GMAIL_READ_REASON={reason}")
+
+    if expected != actual:
+        print("TASK4320_RESULT=FAIL gmail-read answer no longer matches command behavior")
+        return 1
+    print("TASK4320_RESULT=PASS")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
