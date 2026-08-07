@@ -19,6 +19,8 @@ export interface Env {
   PAYLOADS: R2Bucket;
   /** Read-bucket rate limiting only. Mutation buckets count in `DB`. */
   RATE_LIMIT: KVNamespace;
+  /** Anonymous realtime wakeup sockets, one hibernatable Durable Object per connection. */
+  PUSH_CONNECTION: DurableObjectNamespace;
   /** Server-only key used to make short-lived rate-limit identifiers opaque. */
   RATE_LIMIT_HASH_KEY: string;
   /**

@@ -1,4 +1,5 @@
 import {
+  SELF,
   env,
   evictDurableObject,
   runDurableObjectAlarm,
@@ -360,5 +361,28 @@ describe("T1-T51 push Durable Object", () => {
         private_needle_total: privateNeedleTotal,
       }),
     );
+  });
+
+  it("routes /v1/realtime through the Worker to a real PushConnection object", async () => {
+    const response = await SELF.fetch("https://cipher.test/v1/realtime", {
+      headers: { Upgrade: "websocket" },
+    });
+    expect(response.status).toBe(101);
+    const socket = response.webSocket;
+    if (!socket) throw new Error("the Worker route did not return a WebSocket");
+
+    const frames: string[] = [];
+    socket.addEventListener("message", (event) => {
+      frames.push(String((event as MessageEvent).data));
+    });
+    socket.accept();
+    socket.send(IDLE_TICK);
+
+    const deadline = Date.now() + 10_000;
+    while (frames.length === 0) {
+      if (Date.now() > deadline) throw new Error("realtime route did not answer a tick");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(frames[0]).toBe(EMPTY_FRAME);
   });
 });

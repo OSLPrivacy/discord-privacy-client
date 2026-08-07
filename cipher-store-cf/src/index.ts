@@ -139,6 +139,12 @@ async function dispatch(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   const path = url.pathname;
 
+  if (path === "/v1/realtime") {
+    if (request.method !== "GET") return notFound();
+    const id = env.PUSH_CONNECTION.newUniqueId();
+    return env.PUSH_CONNECTION.get(id).fetch(request);
+  }
+
   if (path === "/v1/healthz" && request.method === "GET") {
     return handleHealthz(env);
   }
