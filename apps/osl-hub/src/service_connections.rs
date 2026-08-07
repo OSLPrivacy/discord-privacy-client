@@ -987,6 +987,85 @@ impl EmailServiceConnection {
     }
 }
 
+pub const OUTLOOK_TASK_1239_MESSAGE_ID: &str = "maple-mail-1";
+pub const OUTLOOK_TASK_1239_FINGERPRINT: &str = "MAPLE-4172";
+pub const OUTLOOK_READING_PANE_MISSING: &str = "Outlook reading pane missing";
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct OutlookWebReadResult {
+    pub message_id: String,
+    pub fingerprint: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum OutlookWebCommandError {
+    ReadingPaneMissing,
+    MessageMissing,
+}
+
+impl OutlookWebCommandError {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::ReadingPaneMissing => OUTLOOK_READING_PANE_MISSING,
+            Self::MessageMissing => "Outlook message missing",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct FakeOutlookWebPage {
+    reading_pane_present: bool,
+    read_count: usize,
+    saved_result: Option<OutlookWebReadResult>,
+}
+
+impl Default for FakeOutlookWebPage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FakeOutlookWebPage {
+    pub fn new() -> Self {
+        Self {
+            reading_pane_present: true,
+            read_count: 0,
+            saved_result: None,
+        }
+    }
+
+    pub fn read_count(&self) -> usize {
+        self.read_count
+    }
+
+    pub fn saved_result(&self) -> Option<&OutlookWebReadResult> {
+        self.saved_result.as_ref()
+    }
+
+    pub fn set_reading_pane_present(&mut self, present: bool) {
+        self.reading_pane_present = present;
+    }
+
+    pub fn read_message(
+        &mut self,
+        message_id: &str,
+    ) -> Result<OutlookWebReadResult, OutlookWebCommandError> {
+        if !self.reading_pane_present {
+            return Err(OutlookWebCommandError::ReadingPaneMissing);
+        }
+        if message_id != OUTLOOK_TASK_1239_MESSAGE_ID {
+            return Err(OutlookWebCommandError::MessageMissing);
+        }
+        let result = OutlookWebReadResult {
+            message_id: OUTLOOK_TASK_1239_MESSAGE_ID.to_owned(),
+            fingerprint: OUTLOOK_TASK_1239_FINGERPRINT.to_owned(),
+        };
+        self.read_count += 1;
+        self.saved_result = Some(result.clone());
+        Ok(result)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1281,5 +1360,44 @@ mod tests {
             .is_err(),
             "blank sender addresses must fail closed too"
         );
+    }
+
+    #[test]
+    fn task_1239_outlook_web_refuses_missing_reading_pane_without_losing_saved_result() {
+        let mut page = FakeOutlookWebPage::new();
+        let before_count = page.read_count();
+        println!("TASK1239_OUTLOOK_WEB_READ_COUNT_BEFORE={before_count}");
+        assert_eq!(before_count, 0);
+
+        let read = page
+            .read_message(OUTLOOK_TASK_1239_MESSAGE_ID)
+            .expect("reading pane present returns the Outlook web fixture");
+        let after_count = page.read_count();
+        println!("TASK1239_OUTLOOK_WEB_READ_COUNT_AFTER={after_count}");
+        println!("TASK1239_READ_MESSAGE_ID={}", read.message_id);
+        println!("TASK1239_READ_FINGERPRINT={}", read.fingerprint);
+        assert_eq!(after_count, 1);
+        assert_eq!(read.message_id, OUTLOOK_TASK_1239_MESSAGE_ID);
+        assert_eq!(read.fingerprint, OUTLOOK_TASK_1239_FINGERPRINT);
+
+        page.set_reading_pane_present(false);
+        let refused = page
+            .read_message(OUTLOOK_TASK_1239_MESSAGE_ID)
+            .expect_err("missing Outlook reading pane must refuse");
+        println!("TASK1239_MISSING_REFUSED={}", refused.as_str());
+        assert_eq!(refused.as_str(), OUTLOOK_READING_PANE_MISSING);
+
+        let saved = page
+            .saved_result()
+            .expect("successful read remains the saved result");
+        println!("TASK1239_SAVED_MESSAGE_ID={}", saved.message_id);
+        println!("TASK1239_SAVED_FINGERPRINT={}", saved.fingerprint);
+        println!(
+            "TASK1239_OUTLOOK_WEB_READ_COUNT_FINAL={}",
+            page.read_count()
+        );
+        assert_eq!(saved.message_id, OUTLOOK_TASK_1239_MESSAGE_ID);
+        assert_eq!(saved.fingerprint, OUTLOOK_TASK_1239_FINGERPRINT);
+        assert_eq!(page.read_count(), 1);
     }
 }
