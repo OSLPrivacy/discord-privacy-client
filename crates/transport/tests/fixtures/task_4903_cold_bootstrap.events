@@ -1,0 +1,11 @@
+00.000s INFO arti::status: Bootstrapped 0% (starting): Starting
+05.000s INFO arti::status: Bootstrapped 5% (conn): Connecting to a relay
+12.000s INFO arti::status: Bootstrapped 10% (conn_done): Connected to a relay
+20.000s INFO arti::status: Bootstrapped 14% (handshake): Handshaking with a relay
+29.000s INFO arti::status: Bootstrapped 22% (handshake_done): Handshake with a relay done
+38.000s INFO arti::status: Bootstrapped 35% (onehop_create): Establishing an encrypted directory connection
+46.000s INFO arti::status: Bootstrapped 45% (requesting_status): Asking for network status consensus
+54.000s INFO arti::status: Bootstrapped 57% (loading_status): Loading network status consensus
+63.000s INFO arti::status: Bootstrapped 75% (enough_dirinfo): Loaded enough directory info to build circuits
+70.000s INFO arti::status: Bootstrapped 90% (ap_conn): Connecting to a relay for application circuits
+75.000s INFO arti::status: Bootstrapped 100% (done): Done
