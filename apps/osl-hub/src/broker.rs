@@ -5395,23 +5395,37 @@ pub fn drain_osl_chat_text(
     capture_protection_ready: bool,
 ) -> Result<OpenedNativeOverlayTextBatch, String> {
     let context_token = broker.active_osl_chat_context_token()?;
+    open_capture_gated_private_message_queue(capture_protection_ready, || {
+        // Reaching the inbox at all proves the key server is reachable, so this is
+        // the honest moment to finish anything the last outage stranded. A drain
+        // failure must not block receiving: the records stay queued for the next
+        // poll.
+        let _ = drain_osl_chat_send_queue(core);
+        drain_peer_inbox_text(
+            core,
+            security_state,
+            broker,
+            &context_token,
+            None,
+            false,
+            capture_protection_ready,
+        )
+    })
+}
+
+const OSL_CHAT_UNPROTECTED_MODE_REFUSAL: &str = "OSL Chat refused unprotected mode";
+
+fn open_capture_gated_private_message_queue<F>(
+    capture_protection_ready: bool,
+    open_queue: F,
+) -> Result<OpenedNativeOverlayTextBatch, String>
+where
+    F: FnOnce() -> Result<OpenedNativeOverlayTextBatch, String>,
+{
     if !capture_protection_ready {
-        return Err("OSL Chat refused unprotected mode".to_owned());
+        return Err(OSL_CHAT_UNPROTECTED_MODE_REFUSAL.to_owned());
     }
-    // Reaching the inbox at all proves the key server is reachable, so this is
-    // the honest moment to finish anything the last outage stranded. A drain
-    // failure must not block receiving: the records stay queued for the next
-    // poll.
-    let _ = drain_osl_chat_send_queue(core);
-    drain_peer_inbox_text(
-        core,
-        security_state,
-        broker,
-        &context_token,
-        None,
-        false,
-        capture_protection_ready,
-    )
+    open_queue()
 }
 
 /// Fetch the active peer's control rows through the signed sender-filtered
@@ -20310,6 +20324,95 @@ ok i will weekend again with you",
         payload.require_capture_protection = false;
         assert!(capture_policy_allows_plaintext(&payload, true));
         assert!(capture_policy_allows_plaintext(&payload, false));
+    }
+
+    #[test]
+    fn task_4017_capture_required_private_message_is_held_until_protection_is_ready() {
+        let source = include_str!("broker.rs");
+        let drain_osl_chat_text_body = source
+            .split_once("pub fn drain_osl_chat_text(")
+            .and_then(|(_, tail)| {
+                tail.split_once("/// Fetch the active peer's control rows")
+                    .map(|(body, _)| body)
+            })
+            .expect("production OSL Chat drain source is present");
+        assert!(
+            drain_osl_chat_text_body.contains(
+                "open_capture_gated_private_message_queue(capture_protection_ready,"
+            ),
+            "the shipping OSL Chat drain must use the same capture gate this test exercises"
+        );
+
+        let mut queue = vec![PeerProtectedPayload {
+            version: PEER_PROTECTED_VERSION,
+            message_id: "peer-4017000000000000000000000000000".to_owned(),
+            send_seq: None,
+            scope_commitment: None,
+            created_at: 1_786_996_400,
+            expires_at: 1_787_000_000,
+            service_id: "osl-chat".to_owned(),
+            conversation_binding: "manual-dm-task-4017".to_owned(),
+            sender_osl_user_id: "osl-sender-4017".to_owned(),
+            recipient_osl_user_id: "osl-recipient-4017".to_owned(),
+            plaintext: "task 4017 private message".to_owned(),
+            view_once: false,
+            display_duration_seconds: None,
+            require_capture_protection: true,
+            logical_message_id: None,
+            chunk_index: None,
+            chunk_count: None,
+            whole_sha256: None,
+        }];
+        assert_eq!(queue.len(), 1);
+        assert!(capture_policy_allows_plaintext(&queue[0], true));
+        assert!(!capture_policy_allows_plaintext(&queue[0], false));
+        println!("TASK4017_MESSAGE_DEMANDS_CAPTURE_PROTECTION=true");
+
+        let protected_off = open_capture_gated_private_message_queue(false, || {
+            panic!("capture-off open must not touch the private-message queue")
+        });
+        let refusal_sentence = protected_off.expect_err("capture-off open is refused");
+        let opened_private_messages_off = 0usize;
+        let queue_after_refusal = queue.len();
+        println!(
+            "TASK4017_OPENED_PRIVATE_MESSAGES_WITH_PROTECTION_OFF={opened_private_messages_off}"
+        );
+        println!("TASK4017_REFUSAL_SENTENCE={refusal_sentence}");
+        println!("TASK4017_QUEUE_COUNT_AFTER_REFUSAL={queue_after_refusal}");
+        assert_eq!(opened_private_messages_off, 0);
+        assert_eq!(refusal_sentence, OSL_CHAT_UNPROTECTED_MODE_REFUSAL);
+        assert_eq!(queue_after_refusal, 1);
+
+        let protected_on = open_capture_gated_private_message_queue(true, || {
+            let payload = queue.pop().expect("one held private message opens");
+            assert!(capture_policy_allows_plaintext(&payload, true));
+            Ok(OpenedNativeOverlayTextBatch {
+                messages: vec![OpenedNativeOverlayText::test_fixture(
+                    &payload.message_id,
+                    None,
+                    &payload.plaintext,
+                    true,
+                    true,
+                    false,
+                    payload.created_at,
+                    payload.expires_at,
+                )],
+                pending_view_once: Vec::new(),
+                acknowledgments: Vec::new(),
+                fetched: 1,
+                decrypt_display_enabled: true,
+                deferred_rows: 0,
+                unrecognized_wire_rows: 0,
+            })
+        })
+        .expect("capture-on open succeeds");
+        let opened_private_messages_on = protected_on.messages.len();
+        println!(
+            "TASK4017_OPENED_PRIVATE_MESSAGES_WITH_PROTECTION_ON={opened_private_messages_on}"
+        );
+        println!("TASK4017_QUEUE_COUNT_AFTER_PROTECTED_OPEN={}", queue.len());
+        assert_eq!(opened_private_messages_on, 1);
+        assert_eq!(queue.len(), 0);
     }
 
     #[test]
