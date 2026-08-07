@@ -1,0 +1,202 @@
+/* ---------------------------------------------------------------------------
+   TASK 1228 -- the shared protected email overlay: draft (compose) and
+   reading, side by side in the fixture that captures both at once.
+   --------------------------------------------------------------------------- */
+.email-overlay-stage {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 100%;
+  padding: 32px;
+  background: #080c0d;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  align-items: start;
+}
+
+.email-draft-overlay,
+.email-reading-overlay {
+  --eo-bg: #0d1114;
+  --eo-line: #2a343a;
+  --eo-text: #f4f7f8;
+  --eo-second: #b8c2c7;
+  --eo-muted: #97a3a9;
+  --eo-accent: #2ac0f0;
+
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 22px 24px 24px;
+  background: var(--eo-bg);
+  border: 1px solid var(--eo-line);
+  color: var(--eo-text);
+  font-family: "Onest Variable", Onest, var(--font-ui);
+}
+
+.email-draft-overlay *,
+.email-reading-overlay * {
+  box-sizing: border-box;
+}
+
+.email-overlay-head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.email-overlay-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.email-overlay-lead {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--eo-muted);
+}
+
+.email-overlay-recipients {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--eo-second);
+}
+
+.email-overlay-recipients-bcc {
+  color: var(--eo-muted);
+  font-style: italic;
+}
+
+.email-overlay-subject {
+  padding: 8px 10px;
+  background: #101619;
+  border: 1px solid var(--eo-line);
+  color: var(--eo-text);
+  font-family: inherit;
+  font-size: 13px;
+}
+
+.email-overlay-body {
+  min-height: 96px;
+  padding: 10px;
+  background: #101619;
+  border: 1px solid var(--eo-line);
+  color: var(--eo-text);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.email-overlay-controls {
+  display: flex;
+  gap: 16px;
+  font-size: 12px;
+  color: var(--eo-second);
+}
+
+.email-overlay-controls select {
+  display: block;
+  margin-top: 4px;
+  padding: 6px 8px;
+  background: #101619;
+  border: 1px solid var(--eo-line);
+  color: var(--eo-text);
+  font-family: inherit;
+  font-size: 12px;
+}
+
+.email-overlay-files {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.email-overlay-file {
+  display: flex;
+  justify-content: space-between;
+  padding: 6px 10px;
+  background: #101619;
+  border: 1px solid var(--eo-line);
+  font-size: 12px;
+}
+
+.email-overlay-file-size {
+  color: var(--eo-muted);
+}
+
+.email-overlay-files-empty {
+  padding: 6px 10px;
+  color: var(--eo-muted);
+  font-size: 12px;
+  font-style: italic;
+}
+
+.email-overlay-add-file {
+  min-width: 96px;
+  padding: 6px 14px;
+}
+
+.email-overlay-send-review {
+  margin-top: 6px;
+  padding: 14px 16px 16px;
+  background: #101619;
+  border: 1px solid var(--eo-line);
+  border-left: 2px solid var(--eo-accent);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.email-overlay-send-review-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.email-overlay-send-review-recipients,
+.email-overlay-send-review-mode {
+  margin: 0;
+  font-size: 12px;
+  color: var(--eo-second);
+}
+
+.email-draft-overlay .email-overlay-send {
+  align-self: flex-end;
+  min-width: 108px;
+  padding: 8px 18px;
+}
+
+.email-overlay-subject-display {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.email-overlay-body-display {
+  margin: 0;
+  padding: 10px;
+  background: #101619;
+  border: 1px solid var(--eo-line);
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.email-overlay-timer-display {
+  padding: 8px 10px;
+  background: #101619;
+  border: 1px solid var(--eo-line);
+  border-left: 2px solid var(--eo-accent);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--eo-accent);
+}
