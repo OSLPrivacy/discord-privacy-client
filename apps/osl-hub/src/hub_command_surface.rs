@@ -819,6 +819,7 @@ pub fn service_kind_id(kind: ServiceKind) -> &'static str {
         ServiceKind::WhatsApp => "whatsapp",
         ServiceKind::Email => "email",
         ServiceKind::Signal => "signal",
+        ServiceKind::X => "x",
     }
 }
 

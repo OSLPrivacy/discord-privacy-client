@@ -12,6 +12,7 @@ import {
   siTelegram,
   siTuta,
   siWhatsapp,
+  siX,
 } from "simple-icons";
 import type { SimpleIcon } from "simple-icons";
 import type { BrowserImportId, ServiceId } from "./services";
@@ -21,6 +22,7 @@ const serviceIcons: Partial<Record<ServiceId | "signal", SimpleIcon>> = {
   telegram: siTelegram,
   signal: siSignal,
   whatsapp: siWhatsapp,
+  x: siX,
 };
 
 const providerIcons: Record<string, SimpleIcon> = {

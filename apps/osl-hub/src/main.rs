@@ -6826,7 +6826,11 @@ async fn create_service_account(
     let _session = session.transition.lock().await;
     if matches!(
         service_id,
-        ServiceKind::Discord | ServiceKind::Telegram | ServiceKind::Signal | ServiceKind::WhatsApp
+        ServiceKind::Discord
+            | ServiceKind::Telegram
+            | ServiceKind::Signal
+            | ServiceKind::WhatsApp
+            | ServiceKind::X
     ) {
         return Err("This service requires its dedicated native app".to_owned());
     }

@@ -5,6 +5,7 @@ pub const DEFAULT_HOME_TILE_ORDER: &[&str] = &[
     "telegram",
     "signal",
     "whatsapp",
+    "x",
     "gmail",
     "outlook",
     "proton",
@@ -661,6 +662,7 @@ pub enum ServiceKind {
     WhatsApp,
     Email,
     Signal,
+    X,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Eq, Hash, PartialEq, Serialize)]

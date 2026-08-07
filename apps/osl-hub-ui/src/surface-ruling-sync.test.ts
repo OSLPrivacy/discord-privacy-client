@@ -112,7 +112,7 @@ describe("surface ruling synchronization", () => {
     const supportMatrix = JSON.parse(source("docs/status/support-matrix.json")) as { surface_ruling: Ruling };
     const pricing = JSON.parse(source("data/pricing.json")) as { surface_policy: { surface_ruling: Ruling } };
 
-    assertSameSet("ruling chat carriers", ruling.chat_carriers, ["discord", "signal", "whatsapp", "telegram"]);
+    assertSameSet("ruling chat carriers", ruling.chat_carriers, ["discord", "signal", "whatsapp", "telegram", "x"]);
     assertSameSet("ruling email carriers", ruling.email_carriers, ["gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud", "tuta"]);
     assertSameSet("ruling first-party non-carriers", ruling.first_party_surfaces, ["osl-chats", "osl-mail"]);
 

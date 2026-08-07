@@ -39,6 +39,7 @@ pub enum NativeAppId {
     Signal,
     Whatsapp,
     Outlook,
+    X,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
@@ -617,6 +618,18 @@ const NATIVE_APPS: &[NativeAppManifest] = &[
         publisher: Some(ExecutablePublisher::Microsoft),
         store_package_family_name: None,
     },
+    NativeAppManifest {
+        id: NativeAppId::X,
+        display_name: "X",
+        adapter_service: AdapterService::X,
+        adapter_surface: AdapterSurface::FixedOfficialWebOrigin,
+        adapter_support: SupportLevel::ComingSoon,
+        package_id: "",
+        package_source: "unavailable",
+        candidates: &[],
+        publisher: None,
+        store_package_family_name: None,
+    },
 ];
 
 #[cfg(any(target_os = "windows", test))]
@@ -798,6 +811,7 @@ fn manifest(id: NativeAppId) -> &'static NativeAppManifest {
         NativeAppId::Signal => &NATIVE_APPS[2],
         NativeAppId::Whatsapp => &NATIVE_APPS[3],
         NativeAppId::Outlook => &NATIVE_APPS[4],
+        NativeAppId::X => &NATIVE_APPS[5],
     }
 }
 
@@ -830,6 +844,7 @@ pub(crate) const fn claim_surface(id: NativeAppId) -> crate::claim_state::Surfac
         NativeAppId::Signal => Surface::Signal,
         NativeAppId::Whatsapp => Surface::Whatsapp,
         NativeAppId::Outlook => Surface::OutlookDesktop,
+        NativeAppId::X => Surface::X,
     }
 }
 
@@ -857,7 +872,8 @@ fn native_app_protected_mode(id: NativeAppId) -> NativeAppProtectedMode {
         NativeAppId::Telegram
         | NativeAppId::Signal
         | NativeAppId::Whatsapp
-        | NativeAppId::Outlook => NativeAppProtectedMode::Unavailable,
+        | NativeAppId::Outlook
+        | NativeAppId::X => NativeAppProtectedMode::Unavailable,
     }
 }
 
@@ -903,6 +919,7 @@ fn list_native_apps_with_claims_and_installer_probe(
             let installed = match app.id {
                 NativeAppId::Whatsapp => whatsapp_store_package_installed(),
                 NativeAppId::Outlook => !outlook_native_executable_paths().is_empty(),
+                NativeAppId::X => false,
                 _ => installed_executable(app).is_some(),
             };
             let availability = if installed {
@@ -942,7 +959,7 @@ fn list_native_apps_with_claims_and_installer_probe(
     {
         for status in &mut statuses {
             if status.availability == NativeAppAvailability::Unavailable
-                && status.id != NativeAppId::Outlook
+                && !matches!(status.id, NativeAppId::Outlook | NativeAppId::X)
             {
                 status.availability = NativeAppAvailability::Installable;
             }
@@ -1307,9 +1324,9 @@ pub fn install_native_app(id: NativeAppId) -> Result<NativeInstallResult, String
     #[cfg(target_os = "windows")]
     {
         let app = manifest(id);
-        if id == NativeAppId::Outlook {
+        if matches!(id, NativeAppId::Outlook | NativeAppId::X) {
             return Err(
-                "Outlook installation is managed by Microsoft 365 or the Microsoft Store"
+                "This app is not installable by OSL Privacy"
                     .to_owned(),
             );
         }
@@ -2608,13 +2625,17 @@ pub(crate) mod tests {
 
     #[test]
     fn manifest_is_exhaustive_unique_and_uses_fixed_packages() {
-        assert_eq!(NATIVE_APPS.len(), 5);
+        assert_eq!(NATIVE_APPS.len(), 6);
         for (index, app) in NATIVE_APPS.iter().enumerate() {
             assert!(!app.display_name.is_empty());
+            let expected_surface = if app.id == NativeAppId::X {
+                AdapterSurface::FixedOfficialWebOrigin
+            } else {
+                AdapterSurface::InstalledNativeClient
+            };
             assert_eq!(
-                app.adapter_surface,
-                AdapterSurface::InstalledNativeClient,
-                "{:?} native inventory must bind to installed native adapter surface",
+                app.adapter_surface, expected_surface,
+                "{:?} native inventory must bind to its fixed adapter surface",
                 app.id
             );
             // The public status is no longer a second reading of
@@ -2635,7 +2656,7 @@ pub(crate) mod tests {
                  rows, and no carrier surface has earned one.",
                 app.id
             );
-            if app.id == NativeAppId::Outlook {
+            if matches!(app.id, NativeAppId::Outlook | NativeAppId::X) {
                 assert!(app.package_id.is_empty());
                 assert_eq!(app.package_source, "unavailable");
             } else {
@@ -2647,7 +2668,11 @@ pub(crate) mod tests {
                     .all(|byte| byte.is_ascii_alphanumeric() || byte == b'.'));
                 assert!(matches!(app.package_source, "winget" | "msstore"));
             }
-            assert!(!app.candidates.is_empty());
+            if app.id == NativeAppId::X {
+                assert!(app.candidates.is_empty());
+            } else {
+                assert!(!app.candidates.is_empty());
+            }
             assert!(NATIVE_APPS[..index]
                 .iter()
                 .all(|previous| previous.id != app.id));
@@ -2695,6 +2720,7 @@ pub(crate) mod tests {
             &manifest(NativeAppId::Outlook).adapter_service,
             &AdapterService::Outlook
         );
+        assert_eq!(&manifest(NativeAppId::X).adapter_service, &AdapterService::X);
         assert_eq!(manifest(NativeAppId::Whatsapp).package_source, "msstore");
         assert_eq!(
             native_app_publisher(NativeAppId::Discord),
@@ -2713,11 +2739,13 @@ pub(crate) mod tests {
             native_app_publisher(NativeAppId::Outlook),
             Some(ExecutablePublisher::Microsoft)
         );
+        assert_eq!(native_app_publisher(NativeAppId::X), None);
         assert!(isolated_native_profile_available(NativeAppId::Discord));
         assert!(isolated_native_profile_available(NativeAppId::Telegram));
         assert!(!isolated_native_profile_available(NativeAppId::Signal));
         assert!(!isolated_native_profile_available(NativeAppId::Whatsapp));
         assert!(!isolated_native_profile_available(NativeAppId::Outlook));
+        assert!(!isolated_native_profile_available(NativeAppId::X));
     }
 
     #[test]
@@ -3030,7 +3058,10 @@ pub(crate) mod tests {
                     assert_eq!(status.support_status, NativeAppSupportStatus::NoClaim);
                     assert_eq!(status.protected_mode, NativeAppProtectedMode::Unavailable);
                 }
-                NativeAppId::Signal | NativeAppId::Whatsapp | NativeAppId::Outlook => {
+                NativeAppId::Signal
+                | NativeAppId::Whatsapp
+                | NativeAppId::Outlook
+                | NativeAppId::X => {
                     assert_eq!(status.support_status, NativeAppSupportStatus::ComingSoon);
                     assert_eq!(status.protected_mode, NativeAppProtectedMode::Unavailable);
                 }
@@ -3178,7 +3209,7 @@ pub(crate) mod tests {
             NativeAppId::Telegram => CarrySeam::Uia2Substrate,
             NativeAppId::Signal => CarrySeam::ProviderOwnedBackend,
             NativeAppId::Whatsapp => CarrySeam::Uia2Substrate,
-            NativeAppId::Outlook => CarrySeam::NoCarryPath,
+            NativeAppId::Outlook | NativeAppId::X => CarrySeam::NoCarryPath,
         }
     }
 
@@ -4270,6 +4301,7 @@ pub(crate) mod tests {
             CarrySeam::ProviderOwnedBackend
         );
         assert_eq!(carry_seam(NativeAppId::Outlook), CarrySeam::NoCarryPath);
+        assert_eq!(carry_seam(NativeAppId::X), CarrySeam::NoCarryPath);
     }
 
     /// **D-203's unguarded axis.** The lane's first guard bound TS to Rust, which
@@ -4443,6 +4475,7 @@ pub(crate) mod tests {
                 NativeAppId::Signal => "signal",
                 NativeAppId::Whatsapp => "whatsapp",
                 NativeAppId::Outlook => "outlook",
+                NativeAppId::X => "x",
             }
         }
 
@@ -4456,6 +4489,7 @@ pub(crate) mod tests {
                 NativeAppId::Signal => Some("src/native_signal_adapter.rs"),
                 NativeAppId::Whatsapp => Some("src/native_whatsapp_adapter.rs"),
                 NativeAppId::Outlook => None,
+                NativeAppId::X => None,
             }
         }
 
@@ -5788,7 +5822,7 @@ pub(crate) mod tests {
         assert_eq!(statuses.len(), NATIVE_APPS.len());
         #[cfg(not(target_os = "windows"))]
         for status in statuses {
-            let expected = if status.id == NativeAppId::Outlook {
+            let expected = if matches!(status.id, NativeAppId::Outlook | NativeAppId::X) {
                 NativeAppAvailability::Unavailable
             } else {
                 NativeAppAvailability::Installable

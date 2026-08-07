@@ -3,13 +3,13 @@ import { describe, expect, it } from "vitest";
 import { configuredTopStripApps, embeddedAccountsForHomeApp, escapeHtml, homeAppsFromServices, loadLinkedServices, loadNativeApps, nativeAppGeneratedLabel, notificationIntegrationEligibility, parseEmbeddedServiceHost, parseFirefoxStatus, parseLinkedAccount, parseLinkedServices, parseMullvadStatus, parseNativeAppAction, parseNativeApps, serviceAccountsForProvider } from "./services";
 
 const originalAppRoster = [
-  "discord", "telegram", "signal", "whatsapp",
+  "discord", "telegram", "signal", "whatsapp", "x",
   "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud", "tuta",
 ] as const;
 const unsupportedOriginalApps = originalAppRoster.filter((id) => id !== "discord");
 
 function validRegistry(): unknown[] {
-  const ids = ["discord", "telegram", "email", "signal", "whatsapp"];
+  const ids = ["discord", "telegram", "email", "signal", "whatsapp", "x"];
   return ids.map((id, sidebarOrder) => ({
     id,
     displayName: id,
@@ -25,7 +25,7 @@ function validRegistry(): unknown[] {
 
 describe("linked-service contract", () => {
   it("accepts and orders the exact ruled-service Rust payload", () => {
-    expect(parseLinkedServices(validRegistry())).toHaveLength(5);
+    expect(parseLinkedServices(validRegistry())).toHaveLength(6);
   });
 
   it("keeps WhatsApp in the service registry without making it a launch tile", async () => {
@@ -50,7 +50,7 @@ describe("linked-service contract", () => {
     const malformed = validRegistry();
     ((malformed[1] as Record<string, unknown>).accounts as Array<Record<string, unknown>>)[0].id = "../cookie";
     const parsed = parseLinkedServices(malformed);
-    expect(parsed).toHaveLength(5);
+    expect(parsed).toHaveLength(6);
     expect(parsed?.find((service) => service.id === "telegram")?.accounts).toEqual([]);
     expect(parsed?.find((service) => service.id === "discord")?.accounts).toHaveLength(1);
   });
@@ -151,7 +151,7 @@ describe("linked-service contract", () => {
       expect(apps.find((app) => app.id === unsupported)).toMatchObject({ launchState: "comingSoon", setupEligible: false });
     }
     expect(launch.filter((app) => app.section === "social").map((app) => app.id)).toEqual([
-      "discord", "telegram", "signal", "whatsapp",
+      "discord", "telegram", "signal", "whatsapp", "x",
     ]);
     expect(launch.filter((app) => app.section === "email").map((app) => app.id)).toEqual([
       "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud", "tuta",
@@ -246,6 +246,7 @@ describe("linked-service contract", () => {
       expect.objectContaining({ id: "telegram", setupEligible: false }),
       expect.objectContaining({ id: "signal", setupEligible: false }),
       expect.objectContaining({ id: "whatsapp", setupEligible: false }),
+      expect.objectContaining({ id: "x", setupEligible: false }),
       expect.objectContaining({ id: "gmail", setupEligible: false }),
       expect.objectContaining({ id: "outlook", setupEligible: false }),
       expect.objectContaining({ id: "proton", setupEligible: false }),
@@ -358,15 +359,15 @@ describe("native app catalog agrees with the Rust support decision", () => {
   }
 
   it("reads a support level per app, and they are not all the same", () => {
-    const levels = ["Discord", "Telegram", "Signal", "Whatsapp", "Outlook"].map(rustSupportLevel);
-    expect(levels).toHaveLength(5);
+    const levels = ["Discord", "Telegram", "Signal", "Whatsapp", "Outlook", "X"].map(rustSupportLevel);
+    expect(levels).toHaveLength(6);
     expect(new Set(levels).size).toBeGreaterThan(1);
   });
 
   it("never claims more than Rust does", async () => {
     const rustSurfaceFor: Record<string, string> = {
       discord: "Discord", telegram: "Telegram", signal: "Signal",
-      whatsapp: "Whatsapp", outlook: "OutlookDesktop",
+      whatsapp: "Whatsapp", outlook: "OutlookDesktop", x: "X",
     };
     const catalog = await loadNativeApps();
     expect(catalog.length).toBe(Object.keys(rustSurfaceFor).length);

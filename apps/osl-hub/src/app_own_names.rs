@@ -231,6 +231,7 @@ const fn service_rank(service_id: ServiceKind) -> u8 {
         ServiceKind::WhatsApp => 3,
         ServiceKind::Email => 4,
         ServiceKind::Signal => 5,
+        ServiceKind::X => 6,
     }
 }
 

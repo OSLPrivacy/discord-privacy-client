@@ -1890,6 +1890,7 @@ pub fn service_kind_from_id(service_id: &str) -> Option<ServiceKind> {
         "whatsapp" => ServiceKind::WhatsApp,
         "email" => ServiceKind::Email,
         "signal" => ServiceKind::Signal,
+        "x" => ServiceKind::X,
         _ => return None,
     })
 }
@@ -3146,9 +3147,9 @@ pub fn service_descriptor(id: ServiceKind) -> ServiceDescriptor {
         .expect("every ServiceKind has a descriptor")
 }
 
-fn service_descriptors() -> [ServiceDescriptor; 5] {
+fn service_descriptors() -> [ServiceDescriptor; 6] {
     use ServiceCategory::Consumer;
-    use ServiceLaunchState::Available;
+    use ServiceLaunchState::{Available, ComingSoon};
     [
         descriptor(
             ServiceKind::Discord,
@@ -3179,6 +3180,7 @@ fn service_descriptors() -> [ServiceDescriptor; 5] {
         // only through the separately spawned, OSL-owned native profile; the
         // web host remains disabled in `service_host`.
         descriptor(ServiceKind::Signal, "Signal", "SG", 80, Consumer, Available),
+        descriptor(ServiceKind::X, "X", "X", 90, Consumer, ComingSoon),
     ]
 }
 
@@ -3412,7 +3414,7 @@ mod tests {
         let path = temporary_registry();
         let state = ServiceRegistryState::load(path.clone());
         let services = state.list_for_owner(OWNER_A).unwrap();
-        assert_eq!(services.len(), 5);
+        assert_eq!(services.len(), 6);
         assert!(services.iter().all(|service| service.accounts.is_empty()));
         let signal = services
             .iter()
@@ -3420,6 +3422,13 @@ mod tests {
             .unwrap();
         assert_eq!(signal.launch_state, ServiceLaunchState::Available);
         assert!(signal.supports_native_preview);
+        let x = services
+            .iter()
+            .find(|service| service.id == ServiceKind::X)
+            .unwrap();
+        assert_eq!(x.display_name, "X");
+        assert_eq!(x.launch_state, ServiceLaunchState::ComingSoon);
+        assert!(!x.supports_native_preview);
         assert!(services
             .windows(2)
             .all(|pair| pair[0].sidebar_order < pair[1].sidebar_order));
@@ -3491,6 +3500,7 @@ mod tests {
             Some(ServiceKind::WhatsApp)
         );
         assert_eq!(service_kind_from_id("signal"), Some(ServiceKind::Signal));
+        assert_eq!(service_kind_from_id("x"), Some(ServiceKind::X));
         // Superseded by the owner ruling on 2026-08-05: social and enterprise
         // IDs are cut surfaces, not service aliases.
         for cut in [

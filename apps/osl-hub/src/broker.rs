@@ -1069,7 +1069,8 @@ pub fn activate_owned_local_loopback_context(
         ServiceKind::Discord
         | ServiceKind::Telegram
         | ServiceKind::WhatsApp
-        | ServiceKind::Signal => ProtectedContextOrigin::NativeApp {
+        | ServiceKind::Signal
+        | ServiceKind::X => ProtectedContextOrigin::NativeApp {
             app_id: service_id.to_owned(),
         },
         _ => ProtectedContextOrigin::Standalone {
