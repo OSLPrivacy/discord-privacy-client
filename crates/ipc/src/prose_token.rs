@@ -149,6 +149,8 @@ pub struct BridgePointer {
 }
 
 impl BridgePointer {
+    }
+
     pub fn from_carrier(carrier: &[u8; stego::TOKEN_ID_BYTES]) -> Self {
         let (server_blob_id, seed) = bridge_unpack(carrier);
         Self {

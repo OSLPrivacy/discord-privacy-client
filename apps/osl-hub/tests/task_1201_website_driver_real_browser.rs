@@ -1350,12 +1350,6 @@ impl MarkingOrdinarySendDriver {
 }
 
 impl WebsiteDriver for MarkingOrdinarySendDriver {
-    fn find_page(
-        &mut self,
-        request: WebsitePageRequest,
-    ) -> Result<WebsitePage, WebsiteDriverError> {
-        Ok(WebsitePage::synthetic(request.url))
-    }
 
     fn read_page(&mut self, page: &WebsitePage) -> Result<WebsitePageText, WebsiteDriverError> {
         Ok(WebsitePageText {
@@ -1366,19 +1360,7 @@ impl WebsiteDriver for MarkingOrdinarySendDriver {
         })
     }
 
-    fn read_selected_email(
-        &mut self,
-        _page: &WebsitePage,
-    ) -> Result<WebsiteSelectedEmail, WebsiteDriverError> {
-        Err(WebsiteDriverError::ReadFailed)
-    }
 
-    fn read_live_run_progress(
-        &mut self,
-        _page: &WebsitePage,
-    ) -> Result<WebsiteLiveRunProgress, WebsiteDriverError> {
-        Err(WebsiteDriverError::ReadFailed)
-    }
 
     fn place_text(&mut self, placement: WebsiteTextPlacement) -> Result<(), WebsiteDriverError> {
         assert_eq!(placement.text, self.mark);

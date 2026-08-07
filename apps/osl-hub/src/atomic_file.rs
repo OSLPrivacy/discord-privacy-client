@@ -224,6 +224,8 @@ fn remove_if_present(path: &Path, label: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    }
+
 
     fn test_path(label: &str) -> std::path::PathBuf {
         let nonce = std::time::SystemTime::now()
@@ -381,6 +383,8 @@ mod tests {
         assert_eq!(restart_fingerprints.len(), 4);
         assert_eq!(mixed_fingerprint_count, 0);
         assert_eq!(control_unchanged_run_count, restart_fingerprints.len());
+    }
+
     fn fingerprint(bytes: &[u8]) -> String {
         let mut hash = 0xcbf29ce484222325_u64;
         for byte in bytes {

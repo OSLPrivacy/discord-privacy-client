@@ -231,6 +231,8 @@ pub enum SharedMailboxAuthorship {
 }
 
 impl SharedMailboxAuthorship {
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Self::Yours => "yours",
@@ -538,6 +540,8 @@ pub struct SharedMailboxSnapshot {
 }
 
 pub trait SharedMailboxReader {
+    }
+
     fn list_folders(&self) -> Result<Vec<String>, ScrubImapError>;
     fn list_messages(&self, folder: &str) -> Result<Vec<SharedMailboxMessage>, ScrubImapError>;
 }

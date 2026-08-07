@@ -2623,6 +2623,8 @@ mod password_policy_tests {
     }
 
     fn gate_attempt_label(result: GatePasswordAttemptResult) -> &'static str {
+    }
+
     fn gate_attempt_result_label(result: GatePasswordAttemptResult) -> &'static str {
         match result {
             GatePasswordAttemptResult::Main(_) => "main",

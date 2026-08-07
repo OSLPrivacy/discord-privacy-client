@@ -9,8 +9,6 @@ use ipc::commands::{
     cmd_osl_list_friend_requests, FriendRequestDecision,
 };
 use ipc::peer_map::{PeerEntry, WhitelistEntry};
-use ipc::scope::Scope;
-use ipc::state::AppState;
 use ipc::tofu::KeyBundle;
 use std::path::Path;
 use std::sync::Mutex;

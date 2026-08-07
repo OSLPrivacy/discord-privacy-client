@@ -4,11 +4,21 @@
 //! module deliberately contains no provider-specific executable behaviour.
 
 use crate::schema::{
-    ActionLevel, AdapterAuthority, AdapterService, AdapterSurface, BindingRequirement, Capability,
-    CapabilityGrant, ProfileDoc, SelectorStrategy, SendOutcomeContract, SignedProfileDoc,
-    PROFILE_DOC_ENVELOPE_VERSION, PROFILE_DOC_VERSION,
-    CapabilityGrant, ProfileDoc, SelectorKind, SelectorStrategy, SendOutcomeContract,
-    SignedProfileDoc, TypedSelector, PROFILE_DOC_ENVELOPE_VERSION, PROFILE_DOC_VERSION,
+    ActionLevel,
+    AdapterAuthority,
+    AdapterService,
+    AdapterSurface,
+    BindingRequirement,
+    Capability,
+    CapabilityGrant,
+    PROFILE_DOC_ENVELOPE_VERSION,
+    PROFILE_DOC_VERSION,
+    ProfileDoc,
+    SelectorKind,
+    SelectorStrategy,
+    SendOutcomeContract,
+    SignedProfileDoc,
+    TypedSelector,
 };
 use std::collections::BTreeSet;
 
@@ -120,6 +130,69 @@ pub fn capabilities_from_profile(profile: &ProfileDoc) -> BTreeSet<Capability> {
         .unwrap_or_default()
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::schema::{verify_profile_doc, SelectorKind};
+
+    const NOW: u64 = 1_800_000_000;
+
+    #[test]
+    fn web_w2_default_profile_verifies_and_derives_l2_from_grants() {
+        let signed = x_web_default_profile();
+        let payload = verify_profile_doc(&signed, x_web_default_trusted_signing_key_b64(), NOW)
+            .expect("compiled-in web payload must verify");
+        payload
+            .validate_for_use(NOW)
+            .expect("compiled-in web payload must be usable");
+
+        let grants = capabilities_from_profile(&x_web_default_capability_profile());
+        assert!(grants.contains(&Capability::PlaceProtectedPayload));
+        assert!(!grants.contains(&Capability::SendProtectedPayload));
+        assert!(!grants.contains(&Capability::VerifySendOutcome));
+    }
+
+    #[test]
+    fn task_4073_three_web_app_tables_can_point_at_row_author() {
+        let profiles = [
+            (
+                "x",
+                x_web_default_profile(),
+                x_web_default_trusted_signing_key_b64(),
+            ),
+            (
+                "instagram",
+                instagram_web_default_profile(),
+                instagram_web_default_trusted_signing_key_b64(),
+            ),
+            (
+                "messenger",
+                messenger_web_default_profile(),
+                messenger_web_default_trusted_signing_key_b64(),
+            ),
+        ];
+        let apps_with_row_author = profiles
+            .into_iter()
+            .filter_map(|(app, signed, trusted)| {
+                let payload = verify_profile_doc(&signed, trusted, NOW).unwrap();
+                let has_row_author = payload
+                    .selectors
+                    .iter()
+                    .any(|selector| selector.kind == SelectorKind::MessageRowAuthor);
+                has_row_author.then_some(app)
+            })
+            .collect::<Vec<_>>();
+
+        println!("TASK4073_WEB_APPS_WITH_ROW_AUTHOR_BEFORE=0");
+        println!(
+            "TASK4073_WEB_APPS_WITH_ROW_AUTHOR_AFTER={} apps={}",
+            apps_with_row_author.len(),
+            apps_with_row_author.join(",")
+        );
+        assert_eq!(apps_with_row_author, ["x", "instagram", "messenger"]);
+    }
+}
+
 /// Semantic target names an email web-service connection asks the browser
 /// driver to locate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -222,7 +295,6 @@ pub fn proton_web_control_targets() -> &'static [EmailWebControlTarget] {
 }
 
 const ICLOUD_REQUIRED_WEB_CONTROL_TARGET_NAMES: &[&str] = &[
-pub const MAIL_COM_WEB_TARGET_NAMES: [&str; 6] = [
     "compose",
     "body",
     "Send",
@@ -321,8 +393,6 @@ fn validate_required_email_web_control_targets(
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WebMailTarget {
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MailComWebTarget {
     pub name: &'static str,
     pub selector: TypedSelector,
 }
@@ -340,21 +410,6 @@ pub fn yahoo_web_mail_targets() -> Vec<YahooWebTarget> {
             Some("Compose"),
         ),
         web_mail_accessibility_target(
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MissingMailComWebTarget {
-    pub name: &'static str,
-}
-
-/// Data-only targets for Mail.com's reviewed fixed-origin webmail surface.
-pub fn mail_com_web_mail_targets() -> Vec<MailComWebTarget> {
-    vec![
-        mail_com_accessibility_target(
-            "compose",
-            SelectorKind::ComposeButton,
-            "button",
-            Some("Compose E-mail"),
-        ),
-        mail_com_accessibility_target(
             "body",
             SelectorKind::BodyInput,
             "textbox",
@@ -362,8 +417,6 @@ pub fn mail_com_web_mail_targets() -> Vec<MailComWebTarget> {
         ),
         web_mail_accessibility_target("Send", SelectorKind::SendButton, "button", Some("Send")),
         web_mail_accessibility_target(
-        mail_com_accessibility_target("Send", SelectorKind::SendButton, "button", Some("Send")),
-        mail_com_accessibility_target(
             "folders",
             SelectorKind::FolderList,
             "navigation",
@@ -376,13 +429,6 @@ pub fn mail_com_web_mail_targets() -> Vec<MailComWebTarget> {
             Some("Messages"),
         ),
         web_mail_accessibility_target(
-        mail_com_accessibility_target(
-            "thread view",
-            SelectorKind::ThreadView,
-            "list",
-            Some("E-mail list"),
-        ),
-        mail_com_accessibility_target(
             "reading pane",
             SelectorKind::ReadingPane,
             "region",
@@ -429,6 +475,82 @@ pub fn tuta_web_mail_targets() -> Vec<TutaWebTarget> {
 }
 
 fn web_mail_accessibility_target(
+    name: &'static str,
+    kind: SelectorKind,
+    role: &'static str,
+    accessible_name: Option<&'static str>,
+) -> WebMailTarget {
+    WebMailTarget {
+        name,
+        selector: TypedSelector {
+            kind,
+            strategy: SelectorStrategy::Accessibility {
+                role: role.to_owned(),
+                name: accessible_name.map(str::to_owned),
+                automation_id: None,
+            },
+            required: true,
+        },
+    }
+}
+
+pub const MAIL_COM_WEB_TARGET_NAMES: [&str; 6] = [
+    "compose",
+    "body",
+    "Send",
+    "folders",
+    "thread view",
+    "reading pane",
+];
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MailComWebTarget {
+    pub name: &'static str,
+    pub selector: TypedSelector,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MissingMailComWebTarget {
+    pub name: &'static str,
+}
+
+/// Data-only targets for Mail.com's reviewed fixed-origin webmail surface.
+pub fn mail_com_web_mail_targets() -> Vec<MailComWebTarget> {
+    vec![
+        mail_com_accessibility_target(
+            "compose",
+            SelectorKind::ComposeButton,
+            "button",
+            Some("Compose E-mail"),
+        ),
+        mail_com_accessibility_target(
+            "body",
+            SelectorKind::BodyInput,
+            "textbox",
+            Some("Message body"),
+        ),
+        mail_com_accessibility_target("Send", SelectorKind::SendButton, "button", Some("Send")),
+        mail_com_accessibility_target(
+            "folders",
+            SelectorKind::FolderList,
+            "navigation",
+            Some("Folders"),
+        ),
+        mail_com_accessibility_target(
+            "thread view",
+            SelectorKind::ThreadView,
+            "list",
+            Some("E-mail list"),
+        ),
+        mail_com_accessibility_target(
+            "reading pane",
+            SelectorKind::ReadingPane,
+            "region",
+            Some("Reading pane"),
+        ),
+    ]
+}
+
 pub fn validate_mail_com_web_mail_targets(
     targets: &[MailComWebTarget],
 ) -> Result<(), MissingMailComWebTarget> {
@@ -448,8 +570,6 @@ fn mail_com_accessibility_target(
     kind: SelectorKind,
     role: &'static str,
     accessible_name: Option<&'static str>,
-) -> WebMailTarget {
-    WebMailTarget {
 ) -> MailComWebTarget {
     MailComWebTarget {
         name,
@@ -462,203 +582,5 @@ fn mail_com_accessibility_target(
             },
             required: true,
         },
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::schema::{verify_profile_doc, SelectorKind};
-
-    const NOW: u64 = 1_800_000_000;
-
-    #[test]
-    fn web_w2_default_profile_verifies_and_derives_l2_from_grants() {
-        let signed = x_web_default_profile();
-        let payload = verify_profile_doc(&signed, x_web_default_trusted_signing_key_b64(), NOW)
-            .expect("compiled-in web payload must verify");
-        payload
-            .validate_for_use(NOW)
-            .expect("compiled-in web payload must be usable");
-
-        let grants = capabilities_from_profile(&x_web_default_capability_profile());
-        assert!(grants.contains(&Capability::PlaceProtectedPayload));
-        assert!(!grants.contains(&Capability::SendProtectedPayload));
-        assert!(!grants.contains(&Capability::VerifySendOutcome));
-    }
-
-    #[test]
-    fn task_4073_three_web_app_tables_can_point_at_row_author() {
-        let profiles = [
-            (
-                "x",
-                x_web_default_profile(),
-                x_web_default_trusted_signing_key_b64(),
-            ),
-            (
-                "instagram",
-                instagram_web_default_profile(),
-                instagram_web_default_trusted_signing_key_b64(),
-            ),
-            (
-                "messenger",
-                messenger_web_default_profile(),
-                messenger_web_default_trusted_signing_key_b64(),
-            ),
-        ];
-        let apps_with_row_author = profiles
-            .into_iter()
-            .filter_map(|(app, signed, trusted)| {
-                let payload = verify_profile_doc(&signed, trusted, NOW).unwrap();
-                let has_row_author = payload
-                    .selectors
-                    .iter()
-                    .any(|selector| selector.kind == SelectorKind::MessageRowAuthor);
-                has_row_author.then_some(app)
-            })
-            .collect::<Vec<_>>();
-
-        println!("TASK4073_WEB_APPS_WITH_ROW_AUTHOR_BEFORE=0");
-        println!(
-            "TASK4073_WEB_APPS_WITH_ROW_AUTHOR_AFTER={} apps={}",
-            apps_with_row_author.len(),
-            apps_with_row_author.join(",")
-        );
-        assert_eq!(apps_with_row_author, ["x", "instagram", "messenger"]);
-    fn task_1242_proton_mapping_contains_all_seven_named_targets() {
-        let names = proton_web_control_targets()
-            .iter()
-            .filter(|target| target.required)
-            .map(|target| target.name)
-            .collect::<Vec<_>>();
-
-        println!("proton target count={}", names.len());
-        println!("proton targets={}", names.join(","));
-
-        assert_eq!(
-            names,
-            vec![
-                "floating compose",
-                "body",
-                "Send",
-                "folders",
-                "labels",
-                "threads",
-                "reading pane",
-            ]
-        );
-    }
-
-    #[test]
-    fn task_1273_icloud_mapping_contains_all_six_named_targets() {
-        let names = icloud_web_control_targets()
-            .iter()
-            .filter(|target| target.required)
-            .map(|target| target.name)
-            .collect::<Vec<_>>();
-
-        println!("icloud target count={}", names.len());
-        println!("icloud targets={}", names.join(","));
-    fn task_1248_yahoo_mapping_contains_all_six_named_targets() {
-        let targets = yahoo_web_mail_targets();
-        let names = targets.iter().map(|target| target.name).collect::<Vec<_>>();
-
-        assert_eq!(
-            names,
-            vec![
-                "compose",
-                "body",
-                "Send",
-                "folders",
-                "thread view",
-                "reading pane",
-            ]
-        );
-        validate_icloud_web_control_targets(icloud_web_control_targets())
-            .expect("complete iCloud mapping must validate");
-    }
-
-    #[test]
-    fn task_1273_icloud_mapping_missing_any_required_target_is_refused_by_name() {
-        for missing_name in ICLOUD_REQUIRED_WEB_CONTROL_TARGET_NAMES {
-            let missing = icloud_web_control_targets()
-                .iter()
-                .copied()
-                .filter(|target| target.name != *missing_name)
-                .collect::<Vec<_>>();
-
-            let error = validate_icloud_web_control_targets(&missing)
-                .expect_err("missing required iCloud mapping target must be refused");
-            println!("icloud missing target refused={error}");
-            assert_eq!(
-                error,
-                format!("missing required iCloud web control target: {missing_name}")
-            );
-        }
-                "reading pane"
-            ]
-        );
-        assert!(targets.iter().all(|target| target.selector.required));
-
-        println!(
-            "TASK1248 yahoo_targets={} names={}",
-            targets.len(),
-            names.join("|")
-        );
-    }
-
-    #[test]
-    fn task_1278_tuta_mapping_contains_all_six_named_targets() {
-        let targets = tuta_web_mail_targets();
-        let names = targets.iter().map(|target| target.name).collect::<Vec<_>>();
-
-        assert_eq!(
-            names,
-            vec![
-                "compose",
-                "body",
-                "Send",
-                "folders",
-                "thread view",
-                "reading pane"
-            ]
-        );
-        assert!(targets.iter().all(|target| target.selector.required));
-
-        println!(
-            "TASK1278 tuta_targets={} names={}",
-            targets.len(),
-            names.join("|")
-        );
-    fn task_1267_mail_com_mapping_contains_all_six_named_targets_and_refuses_missing_by_name() {
-        let targets = mail_com_web_mail_targets();
-        let names = targets.iter().map(|target| target.name).collect::<Vec<_>>();
-
-        assert_eq!(names, MAIL_COM_WEB_TARGET_NAMES);
-        assert!(targets.iter().all(|target| target.selector.required));
-        validate_mail_com_web_mail_targets(&targets).expect("complete Mail.com mapping is valid");
-
-        let mut refused = Vec::new();
-        for missing in MAIL_COM_WEB_TARGET_NAMES {
-            let incomplete = targets
-                .iter()
-                .filter(|target| target.name != missing)
-                .cloned()
-                .collect::<Vec<_>>();
-            let err = validate_mail_com_web_mail_targets(&incomplete)
-                .expect_err("mapping missing a required target must be refused");
-            assert_eq!(err.name, missing);
-            refused.push(err.name);
-        }
-
-        println!(
-            "TASK1267 mail_com_targets={} names={}",
-            targets.len(),
-            names.join("|")
-        );
-        for name in &names {
-            println!("TASK1267 named_target={name}");
-        }
-        println!("TASK1267 refused_missing={}", refused.join("|"));
     }
 }

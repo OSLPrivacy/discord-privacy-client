@@ -166,6 +166,8 @@ fn check_paid_feature_allowed(state: &AppState, feature: &str) -> Result<(), Tie
 mod tests {
     use super::*;
     use keystore::{LicenseState, LicenseStateDto};
+    }
+
 
     fn paid_state() -> LicenseStateDto {
         LicenseStateDto {
@@ -298,6 +300,8 @@ mod tests {
         install(&free, free_state());
         let err = check_view_once_create_allowed(&free)
             .expect_err("free user should be blocked from creating view-once");
+    }
+
     fn view_once_message_creation_is_paid_only_by_name() {
         let paid = AppState::new();
         install(&paid, paid_state());

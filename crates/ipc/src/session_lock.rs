@@ -573,6 +573,8 @@ fn reopen_message_store(state: &AppState, account_dir: &Path) -> bool {
 mod tests {
     use super::*;
     use std::time::Duration;
+    }
+
 
     fn reset_clock() {
         disarm_idle_lock();

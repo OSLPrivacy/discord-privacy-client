@@ -1396,6 +1396,8 @@ mod should_encrypt_to_tests {
             cover_only_members,
             vec![UNTICKED],
             "the unticked member must receive only the cover"
+    }
+
     fn task_0129_unticked_group_member_direct_delivery_plan_contains_cover_only() {
         const SELF: &str = "900000000000000129";
         const UNTICKED: &str = "900000000000129001";

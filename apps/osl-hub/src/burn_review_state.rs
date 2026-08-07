@@ -46,6 +46,8 @@ struct BurnReviewDocument {
 }
 
 impl Default for BurnReviewDocument {
+    }
+
     fn default() -> Self {
         Self {
             version: BURN_REVIEW_STATE_VERSION,

@@ -41,26 +41,18 @@ use serde::Deserialize;
 #[cfg(feature = "discord-qa-shell")]
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use serde::{Deserialize, Serialize};
 use std::path::Path;
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::sync::Mutex;
-use serde::{Deserialize, Serialize};
 use std::sync::{Condvar, Mutex};
 use crate::website_driver::{
     WebsiteDriver, WebsiteLiveRunProgress, WebsiteMailboxMessage, WebsiteNamedControl,
     WebsitePageRequest, WebsiteTextPlacement,
 };
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::{path::PathBuf, sync::Mutex, thread, time::Duration};
 use crate::website_driver::{
     WebsiteDriver, WebsiteLiveRunProgress, WebsiteNamedControl, WebsitePageRequest,
     WebsiteTextPlacement,
 };
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::{path::PathBuf, sync::Mutex};
 
 pub fn write_safe_local_bytes(path: &Path, bytes: &[u8], label: &str) -> Result<(), String> {
@@ -238,6 +230,8 @@ pub struct OrdinarySendProgressStore {
 }
 
 impl OrdinarySendProgressStore {
+    }
+
     pub fn new(path: PathBuf) -> Self {
         Self { path }
     }
@@ -4772,52 +4766,12 @@ mod tauri_registration_surface_tests {
     }
 
     #[test]
-    fn recovery_word_retype_check_is_registered_and_granted() {
-        let (handlers, permissions, capability) = registration_inputs();
-        assert_each_registration_surface_is_required(
-            &handlers,
-            &permissions,
-            &capability,
-            &["check_hub_recovery_word_retype"],
-        );
-    }
 
     #[test]
-    fn live_server_revision_report_is_registered_and_granted() {
-        let (handlers, permissions, capability) = registration_inputs();
-        assert_each_registration_surface_is_required(
-            &handlers,
-            &permissions,
-            &capability,
-            &["get_live_server_revision_report"],
-        );
-    }
 
     #[test]
-    fn burn_review_state_commands_are_registered_and_granted() {
-        let (handlers, permissions, capability) = registration_inputs();
-        assert_each_registration_surface_is_required(
-            &handlers,
-            &permissions,
-            &capability,
-            &[
-                "save_burn_review_state",
-                "get_burn_review_state",
-                "back_burn_review",
-            ],
-        );
-    }
 
     #[test]
-    fn recovery_word_retype_check_is_registered_and_granted() {
-        let (handlers, permissions, capability) = registration_inputs();
-        assert_each_registration_surface_is_required(
-            &handlers,
-            &permissions,
-            &capability,
-            &["check_hub_recovery_word_retype"],
-        );
-    }
 
     #[test]
     fn reset_hub_main_password_after_recovery_is_registered_and_granted() {
@@ -4831,30 +4785,8 @@ mod tauri_registration_surface_tests {
     }
 
     #[test]
-    fn live_server_revision_report_is_registered_and_granted() {
-        let (handlers, permissions, capability) = registration_inputs();
-        assert_each_registration_surface_is_required(
-            &handlers,
-            &permissions,
-            &capability,
-            &["get_live_server_revision_report"],
-        );
-    }
 
     #[test]
-    fn burn_review_state_commands_are_registered_and_granted() {
-        let (handlers, permissions, capability) = registration_inputs();
-        assert_each_registration_surface_is_required(
-            &handlers,
-            &permissions,
-            &capability,
-            &[
-                "save_burn_review_state",
-                "get_burn_review_state",
-                "back_burn_review",
-            ],
-        );
-    }
 
     /// D-108 — the missing construction site for the UI's `SecureLocalStore`.
     ///

@@ -149,9 +149,6 @@ impl SpaceMemberId {
         Ok(Self(digest))
     }
 
-    pub fn as_bytes(&self) -> &[u8; Self::LENGTH] {
-        &self.0
-    }
 }
 
 /// Local display identity for a Space member in channel membership UI.
@@ -182,11 +179,6 @@ impl SpaceChannelId {
     pub const LENGTH: usize = 16;
 
     /// Creates an unlinkable channel id from the operating-system CSPRNG.
-    pub fn generate() -> Self {
-        let mut bytes = [0_u8; Self::LENGTH];
-        OsRng.fill_bytes(&mut bytes);
-        Self(bytes)
-    }
 
     pub const fn from_bytes(bytes: [u8; Self::LENGTH]) -> Self {
         Self(bytes)
@@ -450,9 +442,6 @@ impl MembershipEventLog {
         }
     }
 
-    pub fn epoch(&self) -> SpaceEpoch {
-        self.epoch
-    }
 }
 
 /// Authoritative membership state for every locally known Space.

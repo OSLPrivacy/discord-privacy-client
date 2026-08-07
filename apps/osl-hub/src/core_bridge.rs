@@ -12,8 +12,9 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 use crate::runtime_switches::{
-    read_startup_test_only_runtime_switches, ResolvedTestOnlyRunTimeSwitches,
-    ResolvedTestOnlyRunTimeSwitches, PASSWORD_SCREEN_ACCESS_SKIP_FOR_TEST,
+    read_startup_test_only_runtime_switches,
+    ResolvedTestOnlyRunTimeSwitches,
+    PASSWORD_SCREEN_ACCESS_SKIP_FOR_TEST,
 };
 
 pub struct HubCoreState {

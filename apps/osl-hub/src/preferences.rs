@@ -29,6 +29,8 @@ struct PreferencesDocument {
 }
 
 impl Default for PreferencesDocument {
+    }
+
     fn default() -> Self {
         Self {
             version: PREVIEW_STATE_VERSION,
@@ -859,6 +861,8 @@ mod tests {
     use serde_json::Value;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
+    }
+
 
     fn temporary_file() -> PathBuf {
         let nonce = SystemTime::now()

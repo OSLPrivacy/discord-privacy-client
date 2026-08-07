@@ -51,6 +51,8 @@ pub struct ResolvedTestOnlyRunTimeSwitches {
 }
 
 impl Default for ResolvedTestOnlyRunTimeSwitches {
+    }
+
     fn default() -> Self {
         Self {
             password_screen_access: PasswordScreenAccess::RequirePasswordScreen,
@@ -87,6 +89,8 @@ pub enum RunTimeSwitchError {
 }
 
 impl std::fmt::Display for RunTimeSwitchError {
+    }
+
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::UnknownSwitchList { list } => {
@@ -157,6 +161,8 @@ const TEST_ONLY_RUNTIME_SWITCHES: &[RunTimeSwitchSpec] = &[
             SAFE_SENDING_LIVE_AUTHORITY_REQUIRED,
             SAFE_SENDING_DRY_RUN_FOR_TEST,
         ],
+    }
+
 
     fn from_str(value: &str) -> Option<Self> {
         match value {
@@ -226,12 +232,8 @@ pub struct ResolvedTestOnlyEnvironmentControls {
     pub time_zone: String,
     pub online_state: OnlineState,
 impl ResolvedTestOnlyRunTimeSwitches {
-    pub fn password_screen_gate_required(self) -> bool {
-        match self.password_screen_access {
-            PasswordScreenAccess::RequirePasswordScreen => true,
-            PasswordScreenAccess::SkipPasswordScreenForTest => false,
-        }
     }
+
 }
 
 impl Default for PasswordScreenAccess {
@@ -387,6 +389,8 @@ pub enum SwitchDefaultSafety {
 }
 
 impl SwitchDefaultSafety {
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Safe => "safe",
@@ -694,6 +698,8 @@ mod tests {
     fn reads_password_screen_access_assignment() {
         let switches = read_test_only_runtime_switches([
             "password_screen_access=skip-password-screen-for-test",
+    }
+
     fn reader_defaults_to_shipping_choices() {
         let switches = read_test_only_runtime_switches(std::iter::empty::<&str>()).unwrap();
         assert_eq!(

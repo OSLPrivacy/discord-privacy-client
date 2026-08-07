@@ -25,21 +25,18 @@
 //! whether the OSL window follows whichever app is in front. Missing legacy
 //! files load as off.
 
-use serde::{Deserialize, Serialize};
+use serde::{
+    Deserialize,
+    Serialize,
+};
 use std::collections::HashMap;
+use std::path::Path;
+use std::str::FromStr;
+use std::collections::{
+    BTreeMap,
+    HashMap,
+};
 use std::collections::BTreeMap;
-//! 0247 added `new_friend_defaults`. Missing fields load to the
-//! fail-closed defaults used for newly added friends.
-
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::collections::{BTreeMap, HashMap};
-use std::path::Path;
-use std::str::FromStr;
-use std::path::Path;
-use std::str::FromStr;
-use std::path::Path;
-use std::str::FromStr;
 
 pub const DEFAULT_LANGUAGE_CHOICE: &str = "en";
 
@@ -100,35 +97,6 @@ impl UpdateChannel {
     }
 }
 
-/// When to warn before interacting with a conversation whose verification has
-/// not been confirmed by the user.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub enum VerificationWarningChoice {
-    #[default]
-    #[serde(rename = "every time")]
-    EveryTime,
-    #[serde(rename = "once")]
-    Once,
-    #[serde(rename = "before sending")]
-    BeforeSending,
-    #[serde(rename = "never")]
-    Never,
-}
-
-impl VerificationWarningChoice {
-    pub const ALL: [Self; 4] = [
-        Self::EveryTime,
-        Self::Once,
-        Self::BeforeSending,
-        Self::Never,
-    ];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::EveryTime => "every time",
-            Self::Once => "once",
-            Self::BeforeSending => "before sending",
-            Self::Never => "never",
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum PrivacyLevel {
@@ -158,46 +126,6 @@ impl PrivacyLevel {
     }
 }
 
-pub fn parse_verification_warning_choice(
-    choice: &str,
-) -> Result<VerificationWarningChoice, String> {
-    VerificationWarningChoice::ALL
-        .into_iter()
-        .find(|candidate| candidate.label() == choice)
-        .ok_or_else(|| format!("OSL: unknown verification warning choice '{choice}'"))
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BehaviourChoiceName {
-    Position,
-    RememberPlace,
-    Movement,
-    TrayPicture,
-    Sound,
-    Mute,
-    QuietHours,
-}
-
-impl BehaviourChoiceName {
-    pub const ALL: [Self; 7] = [
-        Self::Position,
-        Self::RememberPlace,
-        Self::Movement,
-        Self::TrayPicture,
-        Self::Sound,
-        Self::Mute,
-        Self::QuietHours,
-    ];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Position => "position",
-            Self::RememberPlace => "remember place",
-            Self::Movement => "movement",
-            Self::TrayPicture => "tray picture",
-            Self::Sound => "sound",
-            Self::Mute => "mute",
-            Self::QuietHours => "quiet hours",
 pub fn parse_privacy_level(input: &str) -> Result<PrivacyLevel, String> {
     let normalized = input.trim().to_ascii_lowercase().replace('-', "_");
     PrivacyLevel::ALL
@@ -243,12 +171,6 @@ impl PrivacyLevelRuleSet {
                 vpn_required_actions: true,
                 protected_contacts_required: true,
             },
-/// Saved user request for the next-generation protected-message wire path.
-/// Default is off so a missing or legacy preferences file cannot silently
-/// enable the newer message format.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum NextGenerationMessagePolicy {
         }
     }
 }
@@ -271,13 +193,6 @@ pub enum VerificationWarningChoice {
     #[serde(rename = "before sending")]
     BeforeSending,
     #[serde(rename = "never")]
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum VerificationWarningChoice {
-    EveryTime,
-    Once,
-    BeforeSending,
-    #[default]
     Never,
 }
 
@@ -290,7 +205,6 @@ impl VerificationWarningChoice {
     ];
 
     pub fn label(self) -> &'static str {
-    pub fn words(self) -> &'static str {
         match self {
             Self::EveryTime => "every time",
             Self::Once => "once",
@@ -351,8 +265,6 @@ pub enum StartWithWindowsChoice {
     Off,
 }
 
-impl NextGenerationMessagePolicy {
-    pub fn label(self) -> &'static str {
 impl StartWithWindowsChoice {
     pub fn as_value(self) -> &'static str {
         match self {
@@ -360,24 +272,6 @@ impl StartWithWindowsChoice {
             Self::Off => "off",
         }
     }
-
-    pub fn rn_wire_in_enabled(self) -> bool {
-        matches!(self, Self::On)
-    }
-}
-
-pub fn parse_next_generation_message_policy(
-    input: &str,
-) -> Result<NextGenerationMessagePolicy, String> {
-    match input.trim().to_ascii_lowercase().as_str() {
-        "on" => Ok(NextGenerationMessagePolicy::On),
-        "off" => Ok(NextGenerationMessagePolicy::Off),
-        _ => Err(format!(
-            "OSL: unknown next-generation message policy '{input}'"
-        )),
-    }
-}
-
 }
 
 impl FromStr for StartWithWindowsChoice {
@@ -392,12 +286,6 @@ impl FromStr for StartWithWindowsChoice {
             )),
         }
     }
-pub fn parse_verification_warning_choice(input: &str) -> Result<VerificationWarningChoice, String> {
-    let normalized = input.trim().to_ascii_lowercase().replace(['-', '_'], " ");
-    VerificationWarningChoice::ALL
-        .into_iter()
-        .find(|choice| normalized == choice.words())
-        .ok_or_else(|| format!("OSL: unknown verification warning choice '{input}'"))
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -467,107 +355,10 @@ impl IdleLockTimeChoice {
             Self::Never => "never",
             Self::AfterSeconds(60) => "one_minute",
             Self::AfterSeconds(_) => "seconds",
-}
-
-impl FromStr for StartWithWindowsChoice {
-    type Err = String;
-
-    fn from_str(raw: &str) -> Result<Self, Self::Err> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "on" => Ok(Self::On),
-            "off" => Ok(Self::Off),
-            _ => Err(format!(
-                "OSL: unknown start-with-Windows choice {raw:?}; valid choices: on, off"
-            )),
         }
     }
 }
 
-pub fn parse_behaviour_choice_name(name: &str) -> Result<BehaviourChoiceName, String> {
-    let name = name.trim();
-    BehaviourChoiceName::ALL
-        .into_iter()
-        .find(|candidate| candidate.label() == name)
-        .ok_or_else(|| format!("OSL: unknown behaviour choice '{name}'"))
-}
-
-pub fn normalize_behaviour_choice_value(value: &str) -> Result<String, String> {
-    let value = value.trim();
-    if value.is_empty() || value.len() > 256 {
-        return Err("OSL: behaviour choice value is invalid".to_string());
-    }
-    Ok(value.to_string())
-impl Default for PrivacyLevelRuleSet {
-    fn default() -> Self {
-        Self::for_level(PrivacyLevel::Balanced)
-    }
-}
-
-/// Saved defaults applied when the user starts a new message.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum MessageScopeDefault {
-    #[default]
-    Message,
-    Conversation,
-    App,
-}
-
-/// Saved preference for how outgoing text is written.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum MessageWriterDefault {
-    #[default]
-    Plaintext,
-    AiCovertext,
-pub const DEFAULT_MESSAGE_BURN_SCOPE: &str = "chat";
-pub const DEFAULT_MESSAGE_TIMER_SECONDS: u32 = crate::scope_ttl_file::DEFAULT_TTL_SECONDS;
-pub const DEFAULT_VIEW_ONCE_LENGTH_SECONDS: u32 = 30;
-pub const DEFAULT_COVER_WRITING: &str = "covertext";
-
-fn default_message_burn_scope() -> String {
-    DEFAULT_MESSAGE_BURN_SCOPE.to_owned()
-}
-
-fn default_message_timer_seconds() -> u32 {
-    DEFAULT_MESSAGE_TIMER_SECONDS
-}
-
-fn default_view_once_length_seconds() -> u32 {
-    DEFAULT_VIEW_ONCE_LENGTH_SECONDS
-}
-
-fn default_cover_writing() -> String {
-    DEFAULT_COVER_WRITING.to_owned()
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct MessageDefaults {
-    #[serde(default)]
-    pub scope: MessageScopeDefault,
-    #[serde(default = "default_message_timer_seconds")]
-    pub timer_seconds: u32,
-    #[serde(default = "default_display_length_seconds")]
-    pub display_length_seconds: u32,
-    #[serde(default)]
-    pub writer: MessageWriterDefault,
-    #[serde(default = "default_message_burn_scope")]
-    pub burn_scope: String,
-    #[serde(default = "default_message_timer_seconds")]
-    pub timer_seconds: u32,
-    #[serde(default = "default_view_once_length_seconds")]
-    pub view_once_length_seconds: u32,
-    #[serde(default = "default_cover_writing")]
-    pub cover_writing: String,
-}
-
-impl Default for MessageDefaults {
-    fn default() -> Self {
-        Self {
-            scope: MessageScopeDefault::default(),
-            timer_seconds: default_message_timer_seconds(),
-            display_length_seconds: default_display_length_seconds(),
-            writer: MessageWriterDefault::default(),
 pub fn parse_idle_lock_time_choice(input: &str) -> Result<IdleLockTimeChoice, String> {
     let normalized = input.trim().to_ascii_lowercase();
     match normalized.as_str() {
@@ -587,22 +378,6 @@ pub fn parse_idle_lock_time_choice(input: &str) -> Result<IdleLockTimeChoice, St
     Ok(IdleLockTimeChoice::AfterSeconds(seconds as u64))
 }
 
-/// Default account reach for a friend who is newly accepted.
-/// Default reach granted to a newly added friend.
-/// Default reach granted when a new friend is added.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum NewFriendAccountReach {
-    #[default]
-    ApprovedChatsOnly,
-    AllSharedChats,
-}
-
-impl NewFriendAccountReach {
-    pub fn as_value(self) -> &'static str {
-        match self {
-            Self::ApprovedChatsOnly => "approved_chats_only",
-            Self::AllSharedChats => "all_shared_chats",
 /// Whether the OSL window should follow whichever app currently has focus.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -625,163 +400,10 @@ impl FollowActiveAppChoice {
         match self {
             Self::On => "on",
             Self::Off => "off",
-}
-
-impl NewFriendAccountReach {
-    pub fn id(self) -> &'static str {
-        match self {
-            Self::ApprovedChatsOnly => "approved_chats_only",
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub struct PrivacyLevelRuleSet {
-    pub before_send_warnings: bool,
-    pub attachment_cleaning: bool,
-    pub cleanup_review_days: u16,
-    pub public_post_checks: bool,
-    pub vpn_required_actions: bool,
-    pub protected_contacts_required: bool,
-}
-
-impl PrivacyLevelRuleSet {
-    pub fn for_level(level: PrivacyLevel) -> Self {
-        match level {
-            PrivacyLevel::Basic => Self {
-                before_send_warnings: false,
-                attachment_cleaning: false,
-                cleanup_review_days: 0,
-                public_post_checks: false,
-                vpn_required_actions: false,
-                protected_contacts_required: false,
-            },
-            PrivacyLevel::Balanced => Self {
-                before_send_warnings: true,
-                attachment_cleaning: true,
-                cleanup_review_days: 30,
-                public_post_checks: false,
-                vpn_required_actions: false,
-                protected_contacts_required: false,
-            },
-            PrivacyLevel::Maximum => Self {
-                before_send_warnings: true,
-                attachment_cleaning: true,
-                cleanup_review_days: 7,
-                public_post_checks: true,
-                vpn_required_actions: true,
-                protected_contacts_required: true,
-            },
         }
     }
 }
 
-fn default_message_timer_seconds() -> u32 {
-    300
-}
-
-fn default_display_length_seconds() -> u32 {
-    10
-impl FromStr for NewFriendAccountReach {
-    type Err = String;
-
-    fn from_str(raw: &str) -> Result<Self, Self::Err> {
-        match raw
-            .trim()
-            .to_ascii_lowercase()
-            .replace(['-', ' '], "_")
-            .as_str()
-        {
-        match raw.trim().to_ascii_lowercase().replace(['-', ' '], "_").as_str() {
-            "approved_chats_only" => Ok(Self::ApprovedChatsOnly),
-            "all_shared_chats" => Ok(Self::AllSharedChats),
-            _ => Err(format!(
-                "OSL: unknown new-friend account reach {raw:?}; valid choices: approved_chats_only, all_shared_chats"
-            )),
-        }
-    }
-}
-
-/// Whether new-friend verification warnings are shown by default.
-/// Default verification-warning posture for a newly added friend.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum NewFriendVerificationWarnings {
-    #[default]
-    Enabled,
-    Disabled,
-pub enum NewFriendVerificationWarnings {
-    #[default]
-    #[serde(rename = "always", alias = "enabled")]
-    Always,
-    #[serde(rename = "only for new people")]
-    OnlyForNewPeople,
-    #[serde(rename = "never", alias = "disabled")]
-    Never,
-}
-
-impl NewFriendVerificationWarnings {
-    pub fn as_value(self) -> &'static str {
-        match self {
-            Self::Enabled => "enabled",
-            Self::Disabled => "disabled",
-            Self::Always => "always",
-            Self::OnlyForNewPeople => "only for new people",
-            Self::Never => "never",
-}
-
-impl NewFriendVerificationWarnings {
-    pub fn id(self) -> &'static str {
-        match self {
-            Self::Enabled => "enabled",
-        }
-    }
-}
-
-impl FromStr for NewFriendVerificationWarnings {
-    type Err = String;
-
-    fn from_str(raw: &str) -> Result<Self, Self::Err> {
-        match raw
-            .trim()
-            .to_ascii_lowercase()
-            .replace(['-', ' '], "_")
-            .as_str()
-        {
-        match raw.trim().to_ascii_lowercase().replace(['-', ' '], "_").as_str() {
-            "enabled" => Ok(Self::Enabled),
-            "disabled" => Ok(Self::Disabled),
-            _ => Err(format!(
-                "OSL: unknown new-friend verification warnings {raw:?}; valid choices: enabled, disabled"
-            .replace(['-', '_'], " ")
-            .as_str()
-        {
-            "always" | "enabled" => Ok(Self::Always),
-            "only for new people" => Ok(Self::OnlyForNewPeople),
-            "never" | "disabled" => Ok(Self::Never),
-            _ => Err(format!(
-                "OSL: unknown warning choice {raw:?}; valid choices: always, only for new people, never"
-            )),
-            burn_scope: default_message_burn_scope(),
-            timer_seconds: default_message_timer_seconds(),
-            view_once_length_seconds: default_view_once_length_seconds(),
-            cover_writing: default_cover_writing(),
-        }
-    }
-/// Saved defaults applied by friend-onboarding flows.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct NewFriendDefaults {
-    #[serde(default)]
-    pub account_reach: NewFriendAccountReach,
-    #[serde(default)]
-    pub auto_whitelist: crate::auto_whitelist_rules::AutoWhitelistChoice,
-    #[serde(default)]
-    pub verification_warnings: NewFriendVerificationWarnings,
-}
-
-impl Default for PrivacyLevelRuleSet {
-    fn default() -> Self {
-        Self::for_level(PrivacyLevel::Balanced)
-    }
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppPreferences {
     #[serde(default)]
@@ -793,44 +415,6 @@ pub struct AppPreferences {
     #[serde(default)]
     pub update_channel: UpdateChannel,
     #[serde(default)]
-    pub auto_whitelist_rules: HashMap<String, crate::auto_whitelist_rules::AutoWhitelistChoice>,
-    #[serde(default)]
-    pub verification_warning: VerificationWarningChoice,
-    #[serde(default)]
-    pub behaviour_choices: HashMap<String, String>,
-    pub privacy_level: PrivacyLevel,
-    #[serde(default)]
-    pub privacy_level_rule_sets: BTreeMap<String, PrivacyLevelRuleSet>,
-    #[serde(default)]
-    pub message_defaults: MessageDefaults,
-    pub next_generation_message_policy: NextGenerationMessagePolicy,
-    #[serde(default)]
-    pub idle_lock_time_choice: IdleLockTimeChoice,
-    pub bad_message_rules: HashMap<String, crate::bad_message_rules::BadMessageRule>,
-    #[serde(default)]
-    pub new_friend_account_reach: NewFriendAccountReach,
-    #[serde(default)]
-    pub new_friend_auto_whitelist: crate::auto_whitelist_rules::AutoWhitelistChoice,
-    #[serde(default)]
-    pub new_friend_verification_warnings: NewFriendVerificationWarnings,
-    pub message_defaults: MessageDefaults,
-    pub ask_before_irreversible_actions: AskBeforeIrreversibleActionsChoice,
-}
-
-pub const APP_PREFERENCES_VERSION: u32 = 3;
-    pub auto_whitelist_rules: HashMap<String, crate::auto_whitelist_rules::AutoWhitelistRule>,
-    #[serde(default)]
-    pub new_friend_account_reach: NewFriendAccountReach,
-    #[serde(default)]
-    pub new_friend_auto_whitelist: crate::auto_whitelist_rules::AutoWhitelistRule,
-    #[serde(default)]
-    pub new_friend_verification_warnings: NewFriendVerificationWarnings,
-    #[serde(default)]
-    pub start_with_windows: StartWithWindowsChoice,
-    #[serde(default = "default_language_choice")]
-    pub language: String,
-}
-
     pub ask_before_irreversible_actions: AskBeforeIrreversibleActionsChoice,
     #[serde(default)]
     pub rn_wire_policy_requested: bool,
@@ -861,12 +445,6 @@ impl Default for AppPreferences {
             stego_mode: StegoMode::default(),
             tour: TourState::default(),
             update_channel: UpdateChannel::default(),
-            auto_whitelist_rules: HashMap::new(),
-            new_friend_account_reach: NewFriendAccountReach::default(),
-            new_friend_auto_whitelist: crate::auto_whitelist_rules::AutoWhitelistRule::default(),
-            new_friend_verification_warnings: NewFriendVerificationWarnings::default(),
-            start_with_windows: StartWithWindowsChoice::default(),
-            language: default_language_choice(),
             ask_before_irreversible_actions: AskBeforeIrreversibleActionsChoice::default(),
             rn_wire_policy_requested: false,
             start_with_windows: StartWithWindowsChoice::default(),
@@ -882,26 +460,7 @@ impl Default for AppPreferences {
     }
 }
 
-pub const APP_PREFERENCES_VERSION: u32 = 4;
 pub const APP_PREFERENCES_VERSION: u32 = 5;
-    pub new_friend_defaults: NewFriendDefaults,
-}
-
-pub const APP_PREFERENCES_VERSION: u32 = 3;
-    pub allowed_place_records: BTreeMap<String, crate::allowed_places::AllowedPlaceRecord>,
-    #[serde(default)]
-    pub privacy_level: PrivacyLevel,
-    #[serde(default)]
-    pub privacy_level_rule_sets: HashMap<String, PrivacyLevelRuleSet>,
-    #[serde(default)]
-    pub verification_warning_choice: VerificationWarningChoice,
-    #[serde(default)]
-    pub alert_mode_choice: AlertModeChoice,
-    #[serde(default)]
-    pub idle_lock_time_choice: IdleLockTimeChoice,
-}
-
-pub const APP_PREFERENCES_VERSION: u32 = 3;
 
 pub fn load_app_preferences(path: &Path) -> AppPreferences {
     let Ok(blob) = std::fs::read(path) else {
@@ -918,12 +477,174 @@ pub fn load_app_preferences(path: &Path) -> AppPreferences {
 }
 
 pub fn write_app_preferences(path: &Path, prefs: &AppPreferences) -> Result<(), String> {
-    let body = serialized_app_preferences_preserving_unknown_fields(path, prefs)?;
+    let body = serde_json::to_vec_pretty(prefs)
+        .map_err(|e| format!("OSL: serialize app_preferences: {e}"))?;
     let out = crate::main_password::maybe_encrypt(&body)
         .map_err(|e| format!("OSL: encrypt app_preferences: {e}"))?;
-    crate::recoverable_file::write_recoverable(path, &out)
-        .map_err(|e| format!("OSL: recoverable write {}: {e}", path.display()))?;
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, &out).map_err(|e| format!("OSL: write {}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, path).map_err(|e| format!("OSL: rename {}: {e}", path.display()))?;
     Ok(())
+}
+
+/// Saved user request for the next-generation protected-message wire path.
+/// Default is off so a missing or legacy preferences file cannot silently
+/// enable the newer message format.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NextGenerationMessagePolicy {
+    On,
+    #[default]
+    Off,
+}
+
+impl NextGenerationMessagePolicy {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::On => "on",
+            Self::Off => "off",
+        }
+    }
+
+    pub fn rn_wire_in_enabled(self) -> bool {
+        matches!(self, Self::On)
+    }
+}
+
+pub fn parse_next_generation_message_policy(
+    input: &str,
+) -> Result<NextGenerationMessagePolicy, String> {
+    match input.trim().to_ascii_lowercase().as_str() {
+        "on" => Ok(NextGenerationMessagePolicy::On),
+        "off" => Ok(NextGenerationMessagePolicy::Off),
+        _ => Err(format!(
+            "OSL: unknown next-generation message policy '{input}'"
+        )),
+    }
+}
+
+/// Default account reach for a friend who is newly accepted.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NewFriendAccountReach {
+    #[default]
+    ApprovedChatsOnly,
+    AllSharedChats,
+}
+
+impl NewFriendAccountReach {
+    pub fn as_value(self) -> &'static str {
+        match self {
+            Self::ApprovedChatsOnly => "approved_chats_only",
+            Self::AllSharedChats => "all_shared_chats",
+        }
+    }
+}
+
+impl FromStr for NewFriendAccountReach {
+    type Err = String;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw
+            .trim()
+            .to_ascii_lowercase()
+            .replace(['-', ' '], "_")
+            .as_str()
+        {
+            "approved_chats_only" => Ok(Self::ApprovedChatsOnly),
+            "all_shared_chats" => Ok(Self::AllSharedChats),
+            _ => Err(format!(
+                "OSL: unknown new-friend account reach {raw:?}; valid choices: approved_chats_only, all_shared_chats"
+            )),
+        }
+    }
+}
+
+/// Whether new-friend verification warnings are shown by default.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NewFriendVerificationWarnings {
+    #[default]
+    Enabled,
+    Disabled,
+}
+
+impl NewFriendVerificationWarnings {
+    pub fn as_value(self) -> &'static str {
+        match self {
+            Self::Enabled => "enabled",
+            Self::Disabled => "disabled",
+        }
+    }
+}
+
+impl FromStr for NewFriendVerificationWarnings {
+    type Err = String;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw
+            .trim()
+            .to_ascii_lowercase()
+            .replace(['-', ' '], "_")
+            .as_str()
+        {
+            "enabled" => Ok(Self::Enabled),
+            "disabled" => Ok(Self::Disabled),
+            _ => Err(format!(
+                "OSL: unknown new-friend verification warnings {raw:?}; valid choices: enabled, disabled"
+            )),
+        }
+    }
+}
+
+/// Saved defaults applied when the user starts a new message.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageScopeDefault {
+    #[default]
+    Message,
+    Conversation,
+    App,
+}
+
+/// Saved preference for how outgoing text is written.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageWriterDefault {
+    #[default]
+    Plaintext,
+    AiCovertext,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MessageDefaults {
+    #[serde(default)]
+    pub scope: MessageScopeDefault,
+    #[serde(default = "default_message_timer_seconds")]
+    pub timer_seconds: u32,
+    #[serde(default = "default_display_length_seconds")]
+    pub display_length_seconds: u32,
+    #[serde(default)]
+    pub writer: MessageWriterDefault,
+}
+
+impl Default for MessageDefaults {
+    fn default() -> Self {
+        Self {
+            scope: MessageScopeDefault::default(),
+            timer_seconds: default_message_timer_seconds(),
+            display_length_seconds: default_display_length_seconds(),
+            writer: MessageWriterDefault::default(),
+        }
+    }
+}
+
+fn default_message_timer_seconds() -> u32 {
+    300
+}
+
+fn default_display_length_seconds() -> u32 {
+    10
 }
 
 fn serialized_app_preferences_preserving_unknown_fields(
@@ -947,4 +668,83 @@ fn serialized_app_preferences_preserving_unknown_fields(
         }
     }
     serde_json::to_vec_pretty(&next).map_err(|e| format!("OSL: serialize app_preferences: {e}"))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BehaviourChoiceName {
+    Position,
+    RememberPlace,
+    Movement,
+    TrayPicture,
+    Sound,
+    Mute,
+    QuietHours,
+}
+
+impl BehaviourChoiceName {
+    pub const ALL: [Self; 7] = [
+        Self::Position,
+        Self::RememberPlace,
+        Self::Movement,
+        Self::TrayPicture,
+        Self::Sound,
+        Self::Mute,
+        Self::QuietHours,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Position => "position",
+            Self::RememberPlace => "remember place",
+            Self::Movement => "movement",
+            Self::TrayPicture => "tray picture",
+            Self::Sound => "sound",
+            Self::Mute => "mute",
+            Self::QuietHours => "quiet hours",
+        }
+    }
+}
+
+pub fn parse_behaviour_choice_name(name: &str) -> Result<BehaviourChoiceName, String> {
+    let name = name.trim();
+    BehaviourChoiceName::ALL
+        .into_iter()
+        .find(|candidate| candidate.label() == name)
+        .ok_or_else(|| format!("OSL: unknown behaviour choice '{name}'"))
+}
+
+pub fn normalize_behaviour_choice_value(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    if value.is_empty() || value.len() > 256 {
+        return Err("OSL: behaviour choice value is invalid".to_string());
+    }
+    Ok(value.to_string())
+}
+
+pub const DEFAULT_MESSAGE_BURN_SCOPE: &str = "chat";
+pub const DEFAULT_MESSAGE_TIMER_SECONDS: u32 = crate::scope_ttl_file::DEFAULT_TTL_SECONDS;
+pub const DEFAULT_VIEW_ONCE_LENGTH_SECONDS: u32 = 30;
+pub const DEFAULT_COVER_WRITING: &str = "covertext";
+
+fn default_message_burn_scope() -> String {
+    DEFAULT_MESSAGE_BURN_SCOPE.to_owned()
+}
+
+fn default_view_once_length_seconds() -> u32 {
+    DEFAULT_VIEW_ONCE_LENGTH_SECONDS
+}
+
+fn default_cover_writing() -> String {
+    DEFAULT_COVER_WRITING.to_owned()
+}
+
+/// Saved defaults applied by friend-onboarding flows.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NewFriendDefaults {
+    #[serde(default)]
+    pub account_reach: NewFriendAccountReach,
+    #[serde(default)]
+    pub auto_whitelist: crate::auto_whitelist_rules::AutoWhitelistChoice,
+    #[serde(default)]
+    pub verification_warnings: NewFriendVerificationWarnings,
 }

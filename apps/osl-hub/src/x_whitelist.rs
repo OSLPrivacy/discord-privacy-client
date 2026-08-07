@@ -48,6 +48,8 @@ mod tests {
             vec!["direct message", "public post", "reply", "quote post"]
         );
         assert_eq!(kinds.len(), names.len());
+    }
+
     fn x_kinds_command_returns_exactly_two_named_kinds() {
         let kinds = cmd_list_x_whitelist_kinds();
         let names = kinds.iter().map(|kind| kind.name).collect::<Vec<_>>();

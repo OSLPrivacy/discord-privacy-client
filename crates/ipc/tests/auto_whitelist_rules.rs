@@ -1,8 +1,9 @@
 use ipc::commands::{
-    cmd_osl_get_auto_whitelist_rule_choices, cmd_osl_read_auto_whitelist_rule,
-    cmd_osl_get_auto_whitelist_rule_choices, cmd_osl_new_place, cmd_osl_read_auto_whitelist_rule,
-    cmd_osl_get_auto_whitelist_rule_choices, cmd_osl_get_discord_whitelist_kinds,
-    cmd_osl_get_telegram_whitelist_kinds, cmd_osl_read_auto_whitelist_rule,
+    cmd_osl_get_auto_whitelist_rule_choices,
+    cmd_osl_read_auto_whitelist_rule,
+    cmd_osl_new_place,
+    cmd_osl_get_discord_whitelist_kinds,
+    cmd_osl_get_telegram_whitelist_kinds,
     cmd_osl_save_auto_whitelist_rule,
 };
 use ipc::state::AppState;

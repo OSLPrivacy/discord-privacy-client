@@ -12,12 +12,9 @@ use core::fmt;
 //! Real website driver contract and browser-backed open email identity read.
 
 use base64::Engine;
-use core::fmt;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-use base64::Engine;
-use core::fmt;
 use serde::{Deserialize, Serialize};
 use std::{
     fs,

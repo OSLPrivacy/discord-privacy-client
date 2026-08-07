@@ -246,6 +246,8 @@ impl NativeAttachmentJobRegistry {
             .position(|record| record.removable_id == removable_id)
             .ok_or(NativeAttachmentJobError::JobNotFound)?;
         Ok(records.remove(index))
+    }
+
     pub fn stage_clipboard_image(
         &mut self,
         context_id: &str,
@@ -1112,6 +1114,8 @@ mod tests {
             "TASK0046 attachment_tray result=refused staged_count=0 limit_bytes={} attempted_bytes={}",
             crate::attachment_limits::MAX_ATTACHMENT_BYTES,
             crate::attachment_limits::MAX_ATTACHMENT_BYTES + 1
+    }
+
     fn clipboard_image_intake_creates_one_selected_image_attachment_card() {
         let mut registry = NativeAttachmentJobRegistry::default();
         let card = registry

@@ -179,6 +179,8 @@ pub struct NamedViewOnceCopies {
 }
 
 impl NamedViewOnceCopies {
+    }
+
     pub fn insert_mark(
         &mut self,
         machine: impl Into<String>,

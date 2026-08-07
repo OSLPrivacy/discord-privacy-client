@@ -1795,6 +1795,8 @@ mod tests {
     const SCOPE: &str = "dm:aaaabbbbccccdddd";
     const MESSAGE: &str = "peer-0123456789abcdef0123456789abcdef";
     const MARKED_CACHE_ID: &str = "marked-message-1343";
+    }
+
 
     fn global_fixture_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();

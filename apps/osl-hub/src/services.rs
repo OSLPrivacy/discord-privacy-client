@@ -382,12 +382,6 @@ pub struct MailboxFolderCandidate {
 }
 
 impl MailboxFolderCandidate {
-    pub fn new(folder_id: impl Into<String>, label: impl Into<String>) -> Self {
-        Self {
-            folder_id: folder_id.into(),
-            label: label.into(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
@@ -1854,6 +1848,8 @@ fn tuta_scrub_summaries(
         })
         .collect()
 impl DetectedAccountStore for ServiceRegistryState {
+    }
+
     fn detected_accounts_for_owner(
         &self,
         owner_osl_user_id: &str,

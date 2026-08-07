@@ -310,6 +310,8 @@ pub struct OutlookDesktopMailbox {
 }
 
 impl OutlookDesktopMailbox {
+    }
+
     pub fn new(
         owner_osl_user_id: impl Into<String>,
         account_id: impl Into<String>,

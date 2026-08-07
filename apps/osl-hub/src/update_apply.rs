@@ -840,6 +840,8 @@ fn fail_interrupted_recovery(
 struct GetPathSha256;
 
 impl GetPathSha256 {
+    }
+
     fn sha256(path: &Path) -> Result<String, String> {
         fs::read(path)
             .map_err(|_| "OSL update recovery could not read built file".to_owned())

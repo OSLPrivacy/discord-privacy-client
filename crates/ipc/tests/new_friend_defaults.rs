@@ -6,8 +6,6 @@ use keystore::{set_active_account_dir, set_base_dir_override};
 use std::fs;
 use std::path::Path;
 use ipc::commands::{cmd_osl_get_new_friend_defaults, cmd_osl_save_new_friend_defaults};
-use ipc::AppState;
-use keystore::{set_active_account_dir, set_base_dir_override};
 use std::sync::Mutex;
 
 static OSL_PROCESS_GLOBALS_LOCK: Mutex<()> = Mutex::new(());

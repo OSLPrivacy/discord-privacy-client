@@ -30,14 +30,23 @@ use osl_privacy_hub::hub_command_surface::{
     NATIVE_DISCORD_OVERLAY_TEXT_COMMAND_CALLER_LABEL, OPEN_NATIVE_DISCORD_OVERLAY_TEXT_COMMAND,
 };
 use osl_privacy_hub::security::{
-    add_friend_code, export_friend_code, list_friend_account_reach_choices, list_people,
-    manual_peer_binding, set_friend_alias, set_friend_relationship,
-    set_hub_friend_account_reach_everywhere, set_hub_friend_account_reach_nowhere,
-    set_manual_peer_scope_permission, set_scope_security, verify_friend_safety_number,
-    FriendAccountReachAccount, FriendRelationship, HubSecurityState, FRIEND_BLOCKED_ERROR,
-    add_friend_code, export_friend_code, manual_peer_binding, set_friend_account_reach_choice,
-    set_manual_peer_scope_permission, set_scope_security, verify_friend_safety_number,
+    add_friend_code,
+    export_friend_code,
+    list_friend_account_reach_choices,
+    list_people,
+    manual_peer_binding,
+    set_friend_alias,
+    set_friend_relationship,
+    set_hub_friend_account_reach_everywhere,
+    set_hub_friend_account_reach_nowhere,
+    set_manual_peer_scope_permission,
+    set_scope_security,
+    verify_friend_safety_number,
+    FriendAccountReachAccount,
+    FriendRelationship,
     HubSecurityState,
+    FRIEND_BLOCKED_ERROR,
+    set_friend_account_reach_choice,
 };
 use osl_privacy_hub::service_host::ServiceHostState;
 use serde::Serialize;

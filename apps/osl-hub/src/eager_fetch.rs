@@ -167,6 +167,8 @@ impl LocalMessageStore for MessageStoreArrivalOpener<'_> {
         self.store
             .mark_burned(blob_id)
             .map_err(|error| error.to_string())
+    }
+
     pub fn from_config_dir(config_dir: &Path) -> Result<Self, String> {
         let base_url = ipc::cipher_store_client::resolve_cipher_store_base_url(config_dir)
             .map_err(|error| format!("OSL: cipher-store config: {error}"))?;

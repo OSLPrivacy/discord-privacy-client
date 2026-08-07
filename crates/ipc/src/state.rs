@@ -1255,13 +1255,6 @@ mod identity_authority_tests {
         }
     }
 
-    fn use_temp_config_dir(dir: &Path) -> ConfigDirGuard {
-        let serial = crate::test_process_globals::serialize();
-        keystore::set_active_account_dir(None);
-        keystore::set_base_dir_override(Some(dir.to_path_buf()));
-        crate::main_password::set_file_storage_key(None);
-        ConfigDirGuard(serial)
-    }
 
     #[test]
     fn default_state_has_no_identity_authority() {
