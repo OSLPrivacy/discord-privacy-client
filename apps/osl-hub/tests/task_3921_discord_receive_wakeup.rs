@@ -56,12 +56,19 @@ fn task_3921_ten_wakeup_notices_inside_one_second_run_at_most_once() {
         }
     }
 
-    assert_eq!(receive_jobs.get(), 1);
+    let runs = receive_jobs.get();
+    if runs > 1 {
+        panic!(
+            "TASK3921_RECEIVE_JOBS_ABOVE_LIMIT={} TASK3921_BURST_RECEIVE_JOBS={runs} TASK3921_LIMIT=1",
+            runs - 1
+        );
+    }
+    assert_eq!(runs, 1);
     assert_eq!(ran, 1);
     assert_eq!(suppressed, 9);
     println!("TASK3921_BURST_NOTICES=10");
     println!("TASK3921_BURST_WINDOW_MS=900");
-    println!("TASK3921_BURST_RECEIVE_JOBS={}", receive_jobs.get());
+    println!("TASK3921_BURST_RECEIVE_JOBS={runs}");
     println!("TASK3921_BURST_SUPPRESSED={suppressed}");
 }
 
