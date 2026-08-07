@@ -521,8 +521,52 @@ mod tests {
         );
     }
 
+    #[test]
+    fn task_1270_mail_com_pointer_file_ignores_mail_size() {
+        let mut page = MailComFakePage::new();
+        let file_record = MailComPointerFileRecord {
+            display_name: "task1270-mailcom-pointer-file-31mb.bin",
+            size_bytes: TASK_1270_FILE_RECORD_BYTES,
+        };
+
+        let sent = page
+            .send_protected_pointer_file(TASK_1270_COVER_DRAFT, &file_record)
+            .expect("Mail.com fake flow sends the pointer cover");
+        let ordinary_refusal = MailComFakePage::ordinary_attachment_limit_check(&file_record)
+            .expect_err("the same file record must fail as ordinary Mail.com mail");
+
+        assert_eq!(sent.sent_before, 0);
+        assert_eq!(sent.placed_before, 0);
+        assert_eq!(sent.sent_after, 1);
+        assert_eq!(sent.placed_after, 1);
+        assert_eq!(sent.cover_draft_bytes, TASK_1270_COVER_DRAFT.len());
+        assert!(sent.cover_draft_bytes < MAIL_COM_FREE_LIMIT_BYTES);
+        assert_eq!(sent.file_record_bytes, TASK_1270_FILE_RECORD_BYTES);
+        assert!(sent.file_record_bytes > MAIL_COM_FREE_LIMIT_BYTES);
+        assert_eq!(sent.ordinary_counted_bytes, 0);
+        assert!(ordinary_refusal.contains("Mail.com Free"));
+        assert!(ordinary_refusal.contains("30 MB"));
+        assert!(ordinary_refusal.contains("31 MB"));
+        assert!(ordinary_refusal.contains(file_record.display_name));
+
+        println!(
+            "TASK1270 mailcom_pointer_file_send status=sent cover_draft_bytes={} cover_draft_mb={} mail_limit_mb=30 file_record_name={} file_record_bytes={} file_record_mb={} ordinary_counted_bytes={} ordinary_refusal=\"{}\"",
+            sent.cover_draft_bytes,
+            bytes_to_whole_mb(sent.cover_draft_bytes),
+            file_record.display_name,
+            sent.file_record_bytes,
+            bytes_to_whole_mb(sent.file_record_bytes),
+            sent.ordinary_counted_bytes,
+            ordinary_refusal
+        );
+    }
+
     const TASK_1269_WORDS: &str = "OSL-MAILCOM-1269";
     const TASK_1269_CONTROLS: [&str; 5] = ["Compose", "Place", "Reading pane", "Readback", "Send"];
+    const MAIL_COM_FREE_LIMIT_BYTES: usize = 30 * 1024 * 1024;
+    const TASK_1270_FILE_RECORD_BYTES: usize = 31 * 1024 * 1024;
+    const TASK_1270_COVER_DRAFT: &str =
+        "OSL protected pointer task1270: osl://pointer/mail-com/free/file-record-31mb";
 
     #[derive(Clone, Debug, Eq, PartialEq)]
     struct MailComFakePage {
@@ -541,6 +585,23 @@ mod tests {
         reading_pane_words: &'static str,
         readback_words: &'static str,
         send_words: &'static str,
+        placed_after: usize,
+        sent_after: usize,
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct MailComPointerFileRecord {
+        display_name: &'static str,
+        size_bytes: usize,
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct MailComPointerFileEvidence {
+        sent_before: usize,
+        placed_before: usize,
+        cover_draft_bytes: usize,
+        file_record_bytes: usize,
+        ordinary_counted_bytes: usize,
         placed_after: usize,
         sent_after: usize,
     }
@@ -611,6 +672,50 @@ mod tests {
             })
         }
 
+        fn send_protected_pointer_file(
+            &mut self,
+            cover_draft: &'static str,
+            file_record: &MailComPointerFileRecord,
+        ) -> Result<MailComPointerFileEvidence, MailComFlowRefusal> {
+            for control in TASK_1269_CONTROLS {
+                self.require_control(control)?;
+            }
+
+            let sent_before = self.sent_emails;
+            let placed_before = self.placed_messages;
+            let cover_draft_bytes = cover_draft.len();
+
+            self.draft_words = Some(cover_draft);
+            assert_eq!(self.draft_words, Some(cover_draft));
+            self.placed_messages += 1;
+            assert_eq!(self.draft_words, Some(cover_draft));
+            assert_eq!(self.draft_words, Some(cover_draft));
+            self.sent_emails += 1;
+
+            Ok(MailComPointerFileEvidence {
+                sent_before,
+                placed_before,
+                cover_draft_bytes,
+                file_record_bytes: file_record.size_bytes,
+                ordinary_counted_bytes: 0,
+                placed_after: self.placed_messages,
+                sent_after: self.sent_emails,
+            })
+        }
+
+        fn ordinary_attachment_limit_check(
+            file_record: &MailComPointerFileRecord,
+        ) -> Result<(), String> {
+            if file_record.size_bytes > MAIL_COM_FREE_LIMIT_BYTES {
+                return Err(format!(
+                    "Mail.com Free refuses ordinary attachments over 30 MB: {} makes the ordinary attachment set {} MB",
+                    file_record.display_name,
+                    bytes_to_whole_mb(file_record.size_bytes)
+                ));
+            }
+            Ok(())
+        }
+
         fn require_control(&self, name: &'static str) -> Result<(), MailComFlowRefusal> {
             self.controls
                 .contains(&name)
@@ -644,6 +749,10 @@ mod tests {
             self.sent_emails += 1;
             TASK_1269_WORDS
         }
+    }
+
+    fn bytes_to_whole_mb(bytes: usize) -> usize {
+        bytes / (1024 * 1024)
     }
 
     #[test]
