@@ -10,17 +10,15 @@ import {
 const styles = readFileSync(new URL("./onboarding-cover.css", import.meta.url), "utf8");
 
 describe("Cover insertion onboarding screen", () => {
-  it("starts on the option that is actually built", () => {
-    // "Type naturally" is the Pro AI writer, which does not ship yet. Starting
-    // there would preselect something that cannot happen.
-    expect(initialCoverInsertionChoice()).toBe("insert-on-send");
+  it("starts without a saved option", () => {
+    expect(initialCoverInsertionChoice()).toBeNull();
     const markup = onboardingCoverMarkup(initialCoverInsertionChoice());
-    expect(markup).toContain('value="insert-on-send" checked');
+    expect(markup).not.toContain('value="insert-on-send" checked');
     expect(markup).not.toContain('value="type-naturally" checked');
   });
 
   it("moves the selection to either option", () => {
-    expect(chooseCoverInsertion("insert-on-send", "type-naturally")).toBe("type-naturally");
+    expect(chooseCoverInsertion(null, "type-naturally")).toBe("type-naturally");
     expect(onboardingCoverMarkup("type-naturally")).toContain('value="type-naturally" checked');
     expect(onboardingCoverMarkup("type-naturally")).not.toContain('value="insert-on-send" checked');
   });

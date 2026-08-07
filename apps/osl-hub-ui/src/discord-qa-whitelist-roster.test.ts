@@ -325,6 +325,13 @@ describe("whitelist roster", () => {
     expect(bulkModal).toContain("wlData = null;\n    renderWhitelist();");
   });
 
+  it("keeps Whitelist Manager Remove local-only", () => {
+    const remove = body("async function onRemoveWhitelist(row)", "async function onBurnScope(row)", settingsWindow);
+    expect(remove).toContain("does NOT burn existing messages");
+    expect(remove).toContain('const result = await oslInvoke("osl_local_unwhitelist_scope", {');
+    expect(remove).not.toContain('oslInvoke("osl_unwhitelist_scope"');
+  });
+
   it("keeps broadening a separate, verified, recorded backend action", () => {
     // Ordinary approval still refuses a broadened request outright.
     expect(hubBroker).toContain("if manual.person_id != requested_person_id || requested_broadened {");

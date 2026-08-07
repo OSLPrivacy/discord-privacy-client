@@ -54,6 +54,23 @@ pub struct SafeAttachmentMetadata {
     pub size: u64,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AttachmentTrayFileInput {
+    pub name: String,
+    pub r#type: String,
+    pub size: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AttachmentTrayRecord {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub r#type: String,
+    pub size: u64,
+    pub removable_id: String,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NativeAttachmentJobDto {
@@ -172,9 +189,63 @@ impl std::error::Error for NativeAttachmentJobError {}
 #[derive(Default)]
 pub struct NativeAttachmentJobRegistry {
     jobs: HashMap<String, NativeAttachmentJob>,
+    tray_records: HashMap<String, Vec<AttachmentTrayRecord>>,
 }
 
 impl NativeAttachmentJobRegistry {
+    pub fn store_tray_records(
+        &mut self,
+        context_id: &str,
+        files: impl IntoIterator<Item = AttachmentTrayFileInput>,
+    ) -> Result<Vec<AttachmentTrayRecord>, NativeAttachmentJobError> {
+        validate_context(context_id)?;
+        let mut records = Vec::new();
+        for file in files {
+            let (Ok(name), Ok(file_type), Ok(size)) = (
+                sanitize_filename(&file.name),
+                sanitize_media_type(&file.r#type),
+                validate_size(file.size),
+            ) else {
+                continue;
+            };
+            let removable_id = self.mint_unique_tray_removable_id()?;
+            records.push(AttachmentTrayRecord {
+                name,
+                r#type: file_type,
+                size,
+                removable_id,
+            });
+        }
+        self.tray_records
+            .entry(context_id.to_owned())
+            .or_default()
+            .extend(records.iter().cloned());
+        Ok(records)
+    }
+
+    pub fn query_tray_records(&self, context_id: &str) -> Vec<AttachmentTrayRecord> {
+        self.tray_records
+            .get(context_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    pub fn remove_tray_record(
+        &mut self,
+        context_id: &str,
+        removable_id: &str,
+    ) -> Result<AttachmentTrayRecord, NativeAttachmentJobError> {
+        let records = self
+            .tray_records
+            .get_mut(context_id)
+            .ok_or(NativeAttachmentJobError::JobNotFound)?;
+        let index = records
+            .iter()
+            .position(|record| record.removable_id == removable_id)
+            .ok_or(NativeAttachmentJobError::JobNotFound)?;
+        Ok(records.remove(index))
+    }
+
     pub fn stage(
         &mut self,
         context_id: &str,
@@ -442,6 +513,22 @@ impl NativeAttachmentJobRegistry {
             removed.dto.caption.zeroize();
             removed.secrets.zeroize_now();
         }
+        self.tray_records.remove(context_id);
+    }
+
+    fn mint_unique_tray_removable_id(&self) -> Result<String, NativeAttachmentJobError> {
+        let mut removable_id = mint_opaque_job_id()?;
+        for _ in 0..8 {
+            if self.tray_records.values().all(|records| {
+                records
+                    .iter()
+                    .all(|record| record.removable_id != removable_id)
+            }) {
+                return Ok(removable_id);
+            }
+            removable_id = mint_opaque_job_id()?;
+        }
+        Err(NativeAttachmentJobError::EntropyUnavailable)
     }
 
     fn matching_job(
@@ -655,6 +742,108 @@ mod tests {
                 1_000,
             )
             .unwrap()
+    }
+
+    #[test]
+    fn direct_attachment_tray_query_returns_all_four_fields_for_one_file() {
+        let mut registry = NativeAttachmentJobRegistry::default();
+        let stored = registry
+            .store_tray_records(
+                CONTEXT,
+                [
+                    AttachmentTrayFileInput {
+                        name: "C:\\Users\\liam\\Quarterly Report.pdf".to_owned(),
+                        r#type: "application/pdf".to_owned(),
+                        size: 4_096,
+                    },
+                    AttachmentTrayFileInput {
+                        name: "..".to_owned(),
+                        r#type: "application/pdf".to_owned(),
+                        size: 128,
+                    },
+                ],
+            )
+            .unwrap();
+        assert_eq!(stored.len(), 1);
+
+        let records = registry.query_tray_records(CONTEXT);
+        assert_eq!(records.len(), 1);
+        let record = &records[0];
+        let removable_id_is_hex = record
+            .removable_id
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit());
+        println!(
+            "TASK0621 direct_attachment_tray_query records={} name={} type={} size={} removable_id={} removable_id_len={} removable_id_hex={}",
+            records.len(),
+            record.name,
+            record.r#type,
+            record.size,
+            record.removable_id,
+            record.removable_id.len(),
+            removable_id_is_hex
+        );
+
+        assert_eq!(record.name, "Quarterly Report.pdf");
+        assert_eq!(record.r#type, "application/pdf");
+        assert_eq!(record.size, 4_096);
+        assert_eq!(record.removable_id.len(), 64);
+        assert!(removable_id_is_hex);
+
+        let removed = registry
+            .remove_tray_record(CONTEXT, &record.removable_id)
+            .unwrap();
+        assert_eq!(removed, *record);
+        assert!(registry.query_tray_records(CONTEXT).is_empty());
+    }
+
+    #[test]
+    fn removing_one_attachment_by_tray_record_id_leaves_the_other_id() {
+        let mut registry = NativeAttachmentJobRegistry::default();
+        let stored = registry
+            .store_tray_records(
+                CONTEXT,
+                [
+                    AttachmentTrayFileInput {
+                        name: "first.txt".to_owned(),
+                        r#type: "text/plain".to_owned(),
+                        size: 11,
+                    },
+                    AttachmentTrayFileInput {
+                        name: "second.txt".to_owned(),
+                        r#type: "text/plain".to_owned(),
+                        size: 22,
+                    },
+                ],
+            )
+            .unwrap();
+        assert_eq!(stored.len(), 2);
+        assert_ne!(stored[0].removable_id, stored[1].removable_id);
+
+        let removed = registry
+            .remove_tray_record(CONTEXT, &stored[0].removable_id)
+            .unwrap();
+        let remaining = registry.query_tray_records(CONTEXT);
+        let other = &stored[1];
+        println!(
+            "TASK0622 remove_one_attachment removed_id={} other_id={} tray_count={} remaining_id={} remaining_name={}",
+            removed.removable_id,
+            other.removable_id,
+            remaining.len(),
+            remaining
+                .first()
+                .map(|record| record.removable_id.as_str())
+                .unwrap_or("<none>"),
+            remaining
+                .first()
+                .map(|record| record.name.as_str())
+                .unwrap_or("<none>")
+        );
+
+        assert_eq!(removed, stored[0]);
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].removable_id, other.removable_id);
+        assert_eq!(remaining[0].name, "second.txt");
     }
 
     #[test]

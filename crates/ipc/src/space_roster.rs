@@ -154,6 +154,22 @@ impl SpaceMemberId {
     }
 }
 
+/// Local display identity for a Space member in channel membership UI.
+///
+/// The stable authority is still `member_id`; `name` is the local label shown
+/// in refusals and member lists so users can tell who a channel includes.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SpacePerson {
+    pub member_id: SpaceMemberId,
+    pub name: String,
+}
+
+impl SpacePerson {
+    pub fn new(member_id: SpaceMemberId, name: String) -> Self {
+        Self { member_id, name }
+    }
+}
+
 /// Opaque client-generated identity of one channel within a Space.
 ///
 /// The ID is local roster data, not a routing address.  In particular it is
@@ -204,6 +220,8 @@ pub struct SpaceChannel {
     pub kind: SpaceChannelKind,
     pub position: u32,
     pub name: String,
+    #[serde(default)]
+    pub member_list: SpaceChannelMemberList,
 }
 
 impl SpaceChannel {
@@ -213,8 +231,87 @@ impl SpaceChannel {
             kind,
             position,
             name,
+            member_list: SpaceChannelMemberList::OpenToServer,
         }
     }
+
+    pub fn with_member_list(mut self, member_list: SpaceChannelMemberList) -> Self {
+        self.member_list = member_list;
+        self
+    }
+
+    pub fn read_member_list_as(
+        &self,
+        reader: &SpacePerson,
+        server_members: &[SpacePerson],
+    ) -> Result<Vec<SpacePerson>, SpaceChannelAccessError> {
+        self.member_list.read_as(reader, server_members)
+    }
+}
+
+/// The read membership for a channel.
+///
+/// Open channels inherit the current server roster. Limited channels have an
+/// explicit named list, independent of governance roles.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case", tag = "scope")]
+pub enum SpaceChannelMemberList {
+    OpenToServer,
+    Limited { people: Vec<SpacePerson> },
+}
+
+impl Default for SpaceChannelMemberList {
+    fn default() -> Self {
+        Self::OpenToServer
+    }
+}
+
+impl SpaceChannelMemberList {
+    pub fn open_to_server() -> Self {
+        Self::OpenToServer
+    }
+
+    pub fn limited_to(people: impl IntoIterator<Item = SpacePerson>) -> Self {
+        Self::Limited {
+            people: people.into_iter().collect(),
+        }
+    }
+
+    pub fn read_as(
+        &self,
+        reader: &SpacePerson,
+        server_members: &[SpacePerson],
+    ) -> Result<Vec<SpacePerson>, SpaceChannelAccessError> {
+        let people = match self {
+            Self::OpenToServer => {
+                if !contains_member(server_members, reader.member_id) {
+                    return Err(SpaceChannelAccessError::ReaderNotInChannel {
+                        person_name: reader.name.clone(),
+                    });
+                }
+                server_members.to_vec()
+            }
+            Self::Limited { people } => {
+                if !contains_member(people, reader.member_id) {
+                    return Err(SpaceChannelAccessError::ReaderNotInChannel {
+                        person_name: reader.name.clone(),
+                    });
+                }
+                people.clone()
+            }
+        };
+        Ok(people)
+    }
+}
+
+fn contains_member(people: &[SpacePerson], member_id: SpaceMemberId) -> bool {
+    people.iter().any(|person| person.member_id == member_id)
+}
+
+#[derive(Debug, thiserror::Error, Eq, PartialEq)]
+pub enum SpaceChannelAccessError {
+    #[error("OSL: channel read refused for {person_name}")]
+    ReaderNotInChannel { person_name: String },
 }
 
 /// Membership state for one Space, held only in the encrypted local roster.

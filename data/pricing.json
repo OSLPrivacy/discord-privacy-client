@@ -8,11 +8,12 @@
   "authority": "docs/design/osl-master-decision-2026-07-26.md sections 7.1, 7.6, 7.10, 7.14 and 8 (revision OSL-MASTER-2026-07-26-r12), plus docs/decisions/pro-prepaid-monthly-codes-2026-07-26.md, both in the discord-privacy-client repository.",
   "model": {
     "name": "Prepaid activation codes",
-    "summary": "$5 is the intended price for one month of Pro. Checkout is paused until one-month redemption and expiry are implemented. It is not a subscription: nothing auto-renews, no payment details are stored, and no account is required.",
+    "summary": "5 dollars buys one month of Pro from code entry. It is not a subscription: nothing auto-renews, no payment details are stored, and no account is required.",
+    "approved_pricing_text": "5 dollars, one month from code entry, no renewal, no OSL card storage.",
     "no_stored_payment_data": true,
     "no_auto_renewal": true,
     "no_account_required": true,
-    "period_starts_on_redemption": false,
+    "period_starts_on_redemption": true,
     "intended_period_starts_on_redemption": true,
     "truth_contract": {
       "accept_requires_top_level": [
@@ -27,21 +28,21 @@
       "local_contract_test": "node scripts/test-pricing-manifest.mjs",
       "checkout_state": "paused_until_redemption_records_and_automatic_one_month_expiry_exist",
       "absence_rule": "Absence of implementation evidence, consent, binding, or authority means refusal or a Planned label; it never means permission.",
-      "publication_rule": "Public copy may use the intended $5 one-month price and the no-renewal, no-stored-payment, no-account-required claims, but must not promise redemption-start timing or sell any capability whose registry entry is not sellable.",
+      "publication_rule": "Public copy may use the approved pricing text, no-account-required claim, and sellable capability claims, but must not sell any capability whose registry entry is not sellable.",
       "must_not_publish_until_implemented": [
-        "Your month starts when you enter the code.",
-        "Automatic Pro expiry is implemented.",
         "Processing credits are on sale.",
         "A Planned capability is included in a purchase today."
       ]
     },
-    "$redemption_note": "Owner decision 2026-07-26: the month does NOT start at purchase. It starts when the code is entered into the OSL client, so a code bought and left unused for months still delivers a full 30 days. Two separate clocks: shelf life (how long an unredeemed code may still be entered) and entitlement period (the 30 days of Pro). This is product truth, but see publication.not_publishable below -- the client does not implement it yet, so the WEBSITE must not claim it.",
+    "$redemption_note": "Owner decision 2026-07-26: the month does NOT start at purchase. It starts when the code is entered into the OSL client, so a code bought and left unused for months still delivers a full 30 days. Two separate clocks: shelf life (how long an unredeemed code may still be entered) and entitlement period (the 30 days of Pro).",
     "$why_this_matters": "Owner decision 2026-07-26: payment information is NEVER saved, including for repeat purchases. The website may state the $5-per-month rate, but must never imply a stored card, a recurring mandate, or a cancellation obligation."
   },
   "publication": {
-    "$note": "Master 7.14 draws the line explicitly: the website may publish the price and the nothing-renews / nothing-stored claims, but not the redemption-start claim, because the deployed client does not implement it. Publishing a shorter entitlement than the code currently grants understates what a buyer gets, which is the safe direction (master 0.2 rule 5); publishing a redemption-start promise the client cannot keep would be a false claim.",
+    "$note": "Master 7.14 draws the line explicitly: the website may publish the price, code-entry month, nothing-renews and nothing-stored claims after the redemption timestamp and automatic expiry path exist.",
     "publishable": [
+      "5 dollars, one month from code entry, no renewal, no OSL card storage.",
       "$5 is the price of one month of Pro.",
+      "Your month starts when you enter the code.",
       "Nothing renews automatically and there is nothing to cancel.",
       "OSL never stores payment details, including for repeat purchases.",
       "No OSL account is required; the intended flow unlocks Pro by pasting an activation code.",
@@ -49,17 +50,6 @@
       "Checkout is paused until redemption records and automatic one-month expiry are implemented."
     ],
     "not_publishable": [
-      {
-        "claim": "Your month starts when you enter the code.",
-        "reason": "Master 7.14: no redemption timestamp exists anywhere in the client or keyserver. A paid code currently grants lifetime access (subscription-state.ts: checkout.session.completed -> lifetime ACTIVE) and comp codes have their period fixed at mint.",
-        "unblocks_when": [
-          "the keyserver records a redemption timestamp on an explicit redeem call, not as a side effect of validation",
-          "the entitlement period is computed from that timestamp",
-          "/v1/license/validate returns EXPIRED after the period ends",
-          "the app degrades Pro features to Free at expiry without breaking the encryption path"
-        ],
-        "owner": "keyserver/app lane -- NOT the website lane"
-      },
       {
         "claim": "Processing credits are on sale.",
         "reason": "Master 7.14 and 7.1: no credit purchase or balance endpoint exists on the deployed keyserver (verified 2026-07-26: nothing matching credits/compute in keyserver-cf/src/endpoints/). Credits may be EXPLAINED as Planned; they must not be offered for sale.",
@@ -97,7 +87,7 @@
       "stores_payment_method": false,
       "requires_account": false,
       "intended_grant_days": 30,
-      "$intended_grant_days_note": "This is the approved future entitlement length, not current implementation state. Paid codes currently grant lifetime access; checkout remains paused until explicit redemption and automatic expiry exist.",
+      "$intended_grant_days_note": "Paid codes are issued unredeemed. The month starts only when the license is redeemed, and expires_at is stamped from that redemption time.",
       "status": "Beta",
       "no_renewal_note": "$5 is the intended price for one month of Pro. Nothing renews, and OSL never stores your payment details.",
       "$no_renewal_note_why": "Allowlist A6 rule 3: the limitation must ship with the price on the same page, in the same section, at comparable prominence -- a limitation in a linked FAQ does not count. index.html showed '$5 / month' on two checkout buttons with no renewal disclosure anywhere on the page, which reads as a subscription and contradicts master 7.14. Pinned in required_phrases for index.html and download.html so it cannot regress.",

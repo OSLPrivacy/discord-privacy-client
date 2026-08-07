@@ -11,9 +11,14 @@ use std::fmt;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
+use crate::runtime_switches::{
+    read_startup_test_only_runtime_switches, ResolvedTestOnlyRunTimeSwitches,
+};
+
 pub struct HubCoreState {
     pub osl: Arc<AppState>,
     bootstrap_attempted: bool,
+    runtime_switches: ResolvedTestOnlyRunTimeSwitches,
     /// Serialises trusted identity/password transitions so Create, Import,
     /// Setup, and Unlock cannot race each other into replacing disk state.
     pub(crate) lifecycle_lock: Mutex<()>,
@@ -24,6 +29,7 @@ impl Default for HubCoreState {
         Self {
             osl: production_osl_state(),
             bootstrap_attempted: false,
+            runtime_switches: ResolvedTestOnlyRunTimeSwitches::default(),
             lifecycle_lock: Mutex::new(()),
         }
     }
@@ -42,9 +48,18 @@ impl HubCoreState {
     /// Load the original OSL account and security state from its sealed local
     /// configuration. Missing, locked, or corrupt state remains unavailable.
     pub fn bootstrap_from_disk() -> Self {
+        Self::bootstrap_from_disk_with_runtime_switches(
+            read_startup_test_only_runtime_switches().unwrap_or_default(),
+        )
+    }
+
+    pub fn bootstrap_from_disk_with_runtime_switches(
+        runtime_switches: ResolvedTestOnlyRunTimeSwitches,
+    ) -> Self {
         let state = Self {
             osl: production_osl_state(),
             bootstrap_attempted: true,
+            runtime_switches,
             lifecycle_lock: Mutex::new(()),
         };
         // The entitlement cache is device-level, not account-level. Stamp it
@@ -55,6 +70,10 @@ impl HubCoreState {
         }
         crate::original_bootstrap::run_autostart_local(&state.osl);
         state
+    }
+
+    pub fn runtime_switches(&self) -> ResolvedTestOnlyRunTimeSwitches {
+        self.runtime_switches
     }
 
     pub fn register_after_local_bootstrap(&self) {
@@ -229,12 +248,12 @@ fn hub_license_state(value: keystore::LicenseStateDto) -> HubLicenseState {
 
 pub fn readiness(state: &HubCoreState) -> CoreReadiness {
     let status = ipc::commands::cmd_status(&state.osl);
-    let password_gate_required = if cfg!(feature = "discord-qa-shell") {
-        false
-    } else {
+    let password_gate_required = if state.runtime_switches.password_screen_gate_required() {
         ipc::commands::cmd_osl_password_status()
             .map(|value| value.is_set)
             .unwrap_or(true)
+    } else {
+        false
     };
     // D-207: NOT `get_file_storage_key().is_some()`. A device-bound fallback
     // key minted behind the user's back put 32 bytes in that slot, made this
@@ -263,7 +282,8 @@ pub fn readiness(state: &HubCoreState) -> CoreReadiness {
     // generated public identity registers in the background. Protected-send
     // commands still enforce registration themselves; only the setup UI gate
     // is bypassed in this compile-time-only build.
-    let bootstrap_status = if cfg!(feature = "discord-qa-shell")
+    let password_screen_skipped_for_test = !state.runtime_switches.password_screen_gate_required();
+    let bootstrap_status = if password_screen_skipped_for_test
         && state.bootstrap_attempted
         && status.identity_loaded
         && unlocked
@@ -281,7 +301,7 @@ pub fn readiness(state: &HubCoreState) -> CoreReadiness {
             // that as satisfying the local password prerequisite rather than
             // letting the classifier read it as "not set yet" and route back
             // to setupRequired.
-            password_gate_required || cfg!(feature = "discord-qa-shell"),
+            password_gate_required || password_screen_skipped_for_test,
             unlocked,
             status.keyserver_initialised,
             state.osl.cloud_registration_state() == ipc::state::CloudRegistrationState::Registered,

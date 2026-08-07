@@ -6,6 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
+use std::collections::BTreeMap;
 
 /// Platform and storage operations needed to reveal one view-once payload.
 ///
@@ -32,7 +33,7 @@ pub trait ViewOnceOpenEffects {
     /// Record the local Opened event immediately before rendering begins.
     fn emit_opened(&mut self) -> Result<(), Self::Error>;
 
-    /// Destroy the sealed local payload after a successful open.
+    /// Destroy the sealed local payload after an Opened event commits.
     fn shred(&mut self) -> Result<(), Self::Error>;
 }
 
@@ -158,6 +159,55 @@ fn validate_token(value: &str, label: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!("{label} is invalid"))
+    match effects.render(&plaintext) {
+        Ok(()) => effects.shred(),
+        Err(error) => {
+            let _ = effects.shred();
+            Err(error)
+        }
+    }
+}
+
+/// Local view-once copy ledger keyed by explicit chat-machine names.
+///
+/// The ledger stores only opaque marks in this layer. A successful open on one
+/// machine destroys every local copy of the same item before returning the mark
+/// to the caller that is allowed to render it.
+#[derive(Default)]
+pub struct NamedViewOnceCopies {
+    copies: BTreeMap<String, BTreeMap<String, String>>,
+}
+
+impl NamedViewOnceCopies {
+    pub fn insert_mark(
+        &mut self,
+        machine: impl Into<String>,
+        item_id: impl Into<String>,
+        mark: impl Into<String>,
+    ) {
+        self.copies
+            .entry(machine.into())
+            .or_default()
+            .insert(item_id.into(), mark.into());
+    }
+
+    pub fn count(&self, machine: &str) -> usize {
+        self.copies.get(machine).map(BTreeMap::len).unwrap_or(0)
+    }
+
+    pub fn read_mark(&self, machine: &str, item_id: &str) -> Option<&str> {
+        self.copies
+            .get(machine)
+            .and_then(|copy| copy.get(item_id))
+            .map(String::as_str)
+    }
+
+    pub fn open_and_destroy_all(&mut self, machine: &str, item_id: &str) -> Option<String> {
+        let mark = self.read_mark(machine, item_id)?.to_owned();
+        for copy in self.copies.values_mut() {
+            copy.remove(item_id);
+        }
+        Some(mark)
     }
 }
 
@@ -558,6 +608,46 @@ mod tests {
             first_copy,
             later.as_deref().unwrap_or("<none>")
         );
+        let item_id = "peer-13471347134713471347134713471347";
+        let mark = "TASK1347-MARK";
+        let mut copies = NamedViewOnceCopies::default();
+        copies.insert_mark("chat-machine-a", item_id, mark);
+        copies.insert_mark("chat-machine-b", item_id, mark);
+
+        let first_a = copies.read_mark("chat-machine-a", item_id);
+        let first_b = copies.read_mark("chat-machine-b", item_id);
+        let before_a = copies.count("chat-machine-a");
+        let before_b = copies.count("chat-machine-b");
+        println!(
+            "TASK1347 before machine_a_count={before_a} machine_b_count={before_b} \
+             machine_a_mark={} machine_b_mark={}",
+            first_a.unwrap_or("ABSENT"),
+            first_b.unwrap_or("ABSENT")
+        );
+        assert_eq!(first_a, Some(mark));
+        assert_eq!(first_b, Some(mark));
+        assert_eq!(first_a, first_b);
+        assert_eq!(before_a, 1);
+        assert_eq!(before_b, 1);
+
+        let opened_mark = copies
+            .open_and_destroy_all("chat-machine-b", item_id)
+            .expect("one open returns the view-once mark");
+        let after_a = copies.count("chat-machine-a");
+        let after_b = copies.count("chat-machine-b");
+        let absent_a = copies.read_mark("chat-machine-a", item_id).is_none();
+        let absent_b = copies.read_mark("chat-machine-b", item_id).is_none();
+        println!(
+            "TASK1347 after opened_mark={opened_mark} machine_a_count={after_a} \
+             machine_b_count={after_b} machine_a_mark_absent={absent_a} \
+             machine_b_mark_absent={absent_b}"
+        );
+
+        assert_eq!(opened_mark, mark);
+        assert_eq!(after_a, 0);
+        assert_eq!(after_b, 0);
+        assert!(absent_a);
+        assert!(absent_b);
     }
 
     #[test]

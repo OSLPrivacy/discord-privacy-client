@@ -877,3 +877,83 @@ commands.allow = ["get_osl_chat_local_state_key"]
 identifier = "allow-add-hub-friend-by-username"
 description = "Resolve one OSL username to its published key through the signed keyserver and store the resulting friend request locally. Network-touching, so it is granted through the separate osl-network capability rather than the local-only hub capability."
 commands.allow = ["add_hub_friend_by_username"]
+[[permission]]
+identifier = "allow-installed-build-version-record"
+description = "Read the startup-recorded app version and installed executable SHA-256 fingerprint; it copies a status value and performs no I/O, no network operation and no key access."
+commands.allow = ["installed_build_version_record"]
+
+[[permission]]
+identifier = "allow-verify-peer-build-integrity"
+description = "Classify one peer-reported executable hash against the bundled signed build list and return only a warning state; it never disables OSL Chat sending."
+commands.allow = ["verify_peer_build_integrity"]
+
+[[permission]]
+identifier = "allow-query-osl-chat-visible-records"
+description = "Allow only the trusted main OSL window to query bounded local OSL Chat history with a local-only recipient-authored visibility filter."
+commands.allow = ["query_osl_chat_visible_records"]
+
+[[permission]]
+identifier = "allow-list-scrub-accounts"
+description = "Read only the active identity's supported signed-in accounts that Scrub can use, with account and app/browser labels."
+commands.allow = ["list_scrub_accounts"]
+
+[[permission]]
+identifier = "allow-get-service-terms-address"
+description = "Return the fixed terms address for one supported service; this does not open, navigate to, or host the service."
+commands.allow = ["get_service_terms_address"]
+
+[[permission]]
+identifier = "allow-create-one-use-invite-link"
+description = "Create one fresh one-use invite link for a locally labelled person with no OSL username; the record is saved unused in encrypted device-local state."
+commands.allow = ["create_one_use_invite_link"]
+
+[[permission]]
+identifier = "allow-add-group-member-permission"
+description = "Save one bounded member permission for one local group or server in encrypted device-local state."
+commands.allow = ["add_group_member_permission"]
+
+[[permission]]
+identifier = "allow-remove-group-member-permission"
+description = "Remove one saved member permission from one local group or server in encrypted device-local state."
+commands.allow = ["remove_group_member_permission"]
+
+[[permission]]
+identifier = "allow-list-group-member-permissions"
+description = "List saved member permissions for one exact local group or server from encrypted device-local state."
+commands.allow = ["list_group_member_permissions"]
+
+[[permission]]
+identifier = "allow-add-allowed-place-record"
+description = "Save one bounded allowed-place record in encrypted device-local state."
+commands.allow = ["add_allowed_place_record"]
+
+[[permission]]
+identifier = "allow-remove-allowed-place-record"
+description = "Remove one saved allowed-place record from encrypted device-local state."
+commands.allow = ["remove_allowed_place_record"]
+
+[[permission]]
+identifier = "allow-query-allowed-place-record"
+description = "Query one saved allowed-place record from encrypted device-local state."
+commands.allow = ["query_allowed_place_record"]
+
+[[permission]]
+identifier = "allow-list-allowed-place-records"
+description = "List saved allowed-place records from encrypted device-local state."
+commands.allow = ["list_allowed_place_records"]
+
+[[permission]]
+identifier = "allow-query-allowed-place-allowed"
+description = "Ask whether one bounded allowed-place query is allowed by encrypted device-local state."
+commands.allow = ["query_allowed_place_allowed"]
+
+[[permission]]
+identifier = "allow-compare-allowed-place-direction-state"
+description = "Compare the two saved allowed-place directions for the same pair of local reachable accounts."
+commands.allow = ["compare_allowed_place_direction_state"]
+
+[[permission]]
+identifier = "allow-list-whatsapp-whitelist-kinds"
+description = "List the static WhatsApp whitelist scope kinds supported by the local OSL UI."
+commands.allow = ["list_whatsapp_whitelist_kinds"]
+

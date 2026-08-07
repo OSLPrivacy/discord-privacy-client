@@ -20,6 +20,7 @@ pub mod recorder;
 pub mod revalidation;
 pub mod rotation;
 pub mod screenshot;
+pub mod screenshot_compare;
 pub mod screenshot_gate;
 pub mod usb;
 
@@ -36,6 +37,10 @@ pub use rotation::{RotationConfig, RotationController, RotationReason, Suspiciou
 pub use screenshot::{
     apply_to_hwnd, apply_to_hwnd_and_children, capture_protection_is_enforced, ScreenshotError,
     ScreenshotProtection,
+};
+pub use screenshot_compare::{
+    compare_fixed_screen_captures, FixedScreenCapture, PixelMismatch, ScreenshotCompareError,
+    ScreenshotComparison,
 };
 pub use screenshot_gate::{
     verify_affinity_readback, verify_capture_protection, CaptureProtectionError,

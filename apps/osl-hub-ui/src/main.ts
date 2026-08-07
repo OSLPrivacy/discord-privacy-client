@@ -35,6 +35,7 @@ import { continueButton } from "./onboarding-controls";
 import { CLEAN_FILES_CHOICES, initialBeforeSendChecks, onboardingBeforeSendMarkup, type BeforeSendChecks, type CleanFilesChoice } from "./onboarding-before-send";
 import { initialDeleteChoices, onboardingDeleteMarkup, type DeleteChoices } from "./onboarding-delete";
 import { onboardingSendingMarkup } from "./onboarding-sending";
+import { continuePasswordSetup } from "./password-setup-continue";
 import { renderRecoveryStatesSettings } from "./recovery-states";
 import { continueFromProOnboarding, previousOnboardingRoute } from "./onboarding-sequence";
 import { componentPickerScreen } from "./component-picker";
@@ -398,6 +399,8 @@ function passwordEyeIcon(visible = false): string {
 let services: LinkedService[] = [];
 let core: CoreIntegration = structuredClone(unavailableCoreIntegration);
 let licenseState: HubLicenseState = structuredClone(unconfiguredLicenseState);
+let proOnboardingReadyResult = false;
+let proOnboardingCodeEntryRequested = false;
 let massCleanupCapabilities: MassCleanupCapabilityManifest | null = null;
 let massCleanupLoading = false;
 let autoScrubFleetStatus: AutoScrubFleetStatus | null = null;
@@ -441,6 +444,9 @@ let torOnboarding: TorOnboardingState = initialTorOnboardingState();
 // only "insert on send" is built, so this is the screen's own state.
 let coverInsertion: CoverInsertionChoice = initialCoverInsertionChoice();
 let silentVisibleMode: SilentVisibleMode | null = null;
+// Which of the two insertion styles is highlighted. It starts unset so setup
+// cannot silently accept a default the owner never chose.
+let coverInsertion: CoverInsertionChoice | null = initialCoverInsertionChoice();
 // The three before-send checks. Live on screen; not yet persisted, because
 // nothing reads them at send time yet.
 let beforeSendChecks: BeforeSendChecks = initialBeforeSendChecks();
@@ -2060,7 +2066,7 @@ function welcomeOnboardingContent(): string {
 
 function proSetupContent(): string {
   const pro = licenseState.access === "pro" || licenseState.access === "offlineGrace";
-  if (pro) return `<section class="pro-setup onboarding-centered-step" aria-labelledby="route-heading">${statusTag("Pro active", "active")}<h1 id="route-heading" tabindex="-1">OSL Pro is ready</h1><div class="setup-footer onboarding-actions"><button class="button primary" data-onboarding="sending" type="button">Continue</button></div></section>`;
+  if (pro && !proOnboardingCodeEntryRequested) return `<section class="pro-setup onboarding-centered-step" aria-labelledby="route-heading">${statusTag("Pro active", "active")}<h1 id="route-heading" tabindex="-1">OSL Pro is ready</h1><p class="compact-lead onboarding-centered-copy">Pro features are available on this device.</p><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-pro-ready" type="button">Continue</button></div></section>`;
   // The submit and the Skip escape hatch sit in the step's own action row, so
   // the docking pass folds Back in beside them instead of leaving a third,
   // separate footer below a loose text link.
@@ -3123,7 +3129,14 @@ function bindOnboarding(): void {
   }));
   bindAccountRecovery();
   document.querySelector<HTMLButtonElement>("#skip-pro-setup")?.addEventListener("click", () => {
+    proOnboardingReadyResult = false;
+    proOnboardingCodeEntryRequested = false;
     onboardingRoute = onboardingRouteForBuild(continueFromProOnboarding("skipped").route);
+    render();
+  });
+  document.querySelector<HTMLButtonElement>("#continue-pro-ready")?.addEventListener("click", () => {
+    if (!proOnboardingReadyResult) return;
+    onboardingRoute = onboardingRouteForBuild(continueFromProOnboarding("activated").route);
     render();
   });
   document.querySelector<HTMLFormElement>("#activation-form")?.addEventListener("submit", (event) => void activatePro(event));
@@ -3307,6 +3320,16 @@ function bindOnboarding(): void {
       return;
     }
     onboardingRoute = onboardingRoute === "mullvad" ? "cover" : previousSetupRoute(onboardingRoute);
+    if (onboardingRoute === "pro"
+      && (licenseState.access === "pro" || licenseState.access === "offlineGrace")
+      && !proOnboardingReadyResult
+      && !proOnboardingCodeEntryRequested
+    ) {
+      proOnboardingCodeEntryRequested = true;
+      render();
+      return;
+    }
+    onboardingRoute = previousSetupRoute(onboardingRoute);
     render();
     if (onboardingRoute === "browser") void refreshBrowserImportReadiness();
     if (onboardingRoute === "mullvad") void refreshMullvadSetup();
@@ -3361,7 +3384,7 @@ function bindOnboarding(): void {
   document.querySelector<HTMLButtonElement>("[data-forward-secrecy-continue]")?.addEventListener("click", () => {
     if (forwardSecrecyOnboarding.choice === null) return;
     const selectedForwardSecrecyMode = forwardSecrecyOnboarding.choice === "protect-past" ? "protectPast" : "keepGroupDelivery";
-    void saveOnboardingPreferences({ onboardingComplete: false, setup, showPlaintextPreview: true, windowCaptureEnabled, forwardSecrecyMode: selectedForwardSecrecyMode }).then((saved) => {
+    void saveOnboardingPreferences({ onboardingComplete: false, setup, coverInsertion, showPlaintextPreview: true, windowCaptureEnabled, forwardSecrecyMode: selectedForwardSecrecyMode }).then((saved) => {
       forwardSecrecyMode = saved.forwardSecrecyMode;
       onboardingRoute = "privacy";
       render();
@@ -3398,6 +3421,7 @@ function bindOnboarding(): void {
   document.querySelectorAll<HTMLInputElement>('input[name="cover-mode"]').forEach((input) => input.addEventListener("change", () => {
     if (input.checked && (input.value === "insert-on-send" || input.value === "type-naturally")) {
       coverInsertion = chooseCoverInsertion(coverInsertion, input.value);
+      void saveOnboardingPreferences({ onboardingComplete: false, setup, coverInsertion, showPlaintextPreview: true, windowCaptureEnabled, forwardSecrecyMode });
       render();
     }
   }));
@@ -3412,6 +3436,11 @@ function bindOnboarding(): void {
     if (silentVisibleMode === null) return;
     onboardingRoute = "passwords";
     render();
+  document.querySelector("#continue-cover-draft")?.addEventListener("click", () => {
+    if (!coverInsertion) return;
+    onboardingRoute = "mullvad";
+    render();
+    void refreshMullvadSetup();
   });
   bindOnboardingPasswordRole();
   document.querySelectorAll<HTMLButtonElement>("button[data-password-role-next]").forEach((button) => button.addEventListener("click", () => {
@@ -3590,8 +3619,9 @@ async function completeSixStepOnboarding(): Promise<void> {
   const completedSetup = balancedFirstRunSetup(setup);
   if (!canCompleteSetup(completedSetup)) throw new Error("setup missing required sending consent");
   setup = completedSetup;
-  const saved = await saveOnboardingPreferences({ onboardingComplete: true, setup, showPlaintextPreview: true, windowCaptureEnabled, forwardSecrecyMode });
+  const saved = await saveOnboardingPreferences({ onboardingComplete: true, setup, coverInsertion, showPlaintextPreview: true, windowCaptureEnabled, forwardSecrecyMode });
   setup = saved.setup;
+  coverInsertion = saved.coverInsertion;
   windowCaptureEnabled = saved.windowCaptureEnabled;
   onboardingComplete = true;
   clearServiceOnboardingResume();
@@ -3723,6 +3753,18 @@ function bindPasswordForm(): void {
     event.preventDefault();
     if (submit.disabled) return;
     const setupMode = form.dataset.passwordMode === "setup";
+    if (setupMode) {
+      const decision = continuePasswordSetup("create", password.value, confirm?.value ?? "");
+      if (!decision.accepted) {
+        error.textContent = decision.message;
+        submit.disabled = true;
+        confirm?.classList.toggle("input-mismatch", decision.reason === "mismatched-passwords");
+        password.disabled = false;
+        if (confirm) confirm.disabled = false;
+        password.focus();
+        return;
+      }
+    }
     const idleLabel = submit.textContent ?? (setupMode ? "Create account" : "Unlock");
     let secret = password.value;
     // D80: every unlock outcome leaves the busy state at the same wall-clock
@@ -6022,7 +6064,7 @@ async function changeSendingMode(mode: SendMode): Promise<void> {
   };
   render();
   try {
-    const saved = await saveOnboardingPreferences({ onboardingComplete: true, setup, showPlaintextPreview: true, windowCaptureEnabled, forwardSecrecyMode });
+    const saved = await saveOnboardingPreferences({ onboardingComplete: true, setup, coverInsertion, showPlaintextPreview: true, windowCaptureEnabled, forwardSecrecyMode });
     setup = saved.setup;
     windowCaptureEnabled = saved.windowCaptureEnabled;
     showToast(`${formatSendMode(mode)} selected`);
@@ -8898,7 +8940,10 @@ async function activatePro(event: SubmitEvent): Promise<void> {
   if (submit) { submit.disabled = true; submit.textContent = "Activating…"; }
   try {
     licenseState = await validateHubActivationCode(activationCode);
-    if (route === "onboarding" && onboardingRoute === "pro" && licenseState.access !== "free") onboardingRoute = "forward-secrecy";
+    if (route === "onboarding" && onboardingRoute === "pro" && licenseState.access !== "free") {
+      proOnboardingReadyResult = true;
+      proOnboardingCodeEntryRequested = false;
+    }
     render();
     showToast(licenseState.access === "free" ? "This code does not include active Pro access" : "Pro activated on this device");
   } catch (failure) {
@@ -9912,6 +9957,7 @@ async function bootstrap(): Promise<void> {
     const preferences = await preferencesRequest ?? {
       onboardingComplete: core.readiness.bootstrapStatus === "ready",
       setup: parseSetupState(null),
+      coverInsertion: null,
       showPlaintextPreview: true,
       windowCaptureEnabled: true,
       forwardSecrecyMode: "keepGroupDelivery" as const,
@@ -9919,6 +9965,7 @@ async function bootstrap(): Promise<void> {
     await recoveryKitUnsavedFlag.load();
     if (attempt !== bootstrapEpoch) return;
     setup = preferences.setup;
+    coverInsertion = preferences.coverInsertion;
     windowCaptureEnabled = preferences.windowCaptureEnabled;
     onboardingComplete = preferences.onboardingComplete;
     forwardSecrecyMode = preferences.forwardSecrecyMode;
@@ -10140,6 +10187,7 @@ type OslHubUiTestStatePatch = {
   onboardingComplete?: boolean;
   setup?: Partial<SetupState>;
   silentVisibleMode?: SilentVisibleMode | null;
+  coverInsertion?: CoverInsertionChoice | null;
   coreReady?: boolean;
   storageMethod?: string | null;
   services?: LinkedService[];
@@ -10204,6 +10252,7 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   onboardingComplete = patch.onboardingComplete ?? false;
   setup = { ...defaultSetup, ...patch.setup };
   silentVisibleMode = patch.silentVisibleMode ?? null;
+  coverInsertion = patch.coverInsertion ?? initialCoverInsertionChoice();
   settingsSection = "account";
   activeService = null;
   activeHomeAppId = null;
@@ -10251,6 +10300,8 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   appNotifications = patch.appNotifications ?? [];
   licenseState = { ...unconfiguredLicenseState, access: patch.licenseAccess ?? "free" };
   buildIntegrityStatus = patch.buildIntegrityStatus ?? null;
+  proOnboardingReadyResult = false;
+  proOnboardingCodeEntryRequested = false;
   autoScrubFleetStatus = patch.autoScrubFleetStatus ?? null;
   autoScrubStatusLoading = false;
   autoScrubStopPending = false;
@@ -10524,6 +10575,7 @@ export const __oslHubUiTest = {
     ownedConfirmationKind: OwnedConfirmation["kind"] | null;
     ownedConfirmationPersonId: string | null;
     silentVisibleMode: SilentVisibleMode | null;
+    coverInsertion: CoverInsertionChoice | null;
   } {
     return {
       route,
@@ -10544,6 +10596,7 @@ export const __oslHubUiTest = {
         ? ownedConfirmation.personId
         : null,
       silentVisibleMode,
+      coverInsertion,
     };
   },
 };

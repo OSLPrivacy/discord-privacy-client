@@ -256,6 +256,46 @@ impl ServiceScopeIndexState {
         Ok(removed)
     }
 
+    /// Remove the durable account coverage record after a confirmed
+    /// remove-everything action has burned every indexed scope.
+    pub fn remove_account(
+        &self,
+        owner: &str,
+        service: &str,
+        account: &str,
+    ) -> Result<bool, String> {
+        validate_account_binding(owner, service, account)?;
+        let mut cache = self.lock_loaded()?;
+        let key = account_key(owner, service, account);
+        if cache
+            .document
+            .accounts
+            .get(&key)
+            .is_some_and(|account| account.frozen)
+        {
+            return Err("OSL service account has a burn in progress".to_owned());
+        }
+        let removed = cache.document.accounts.remove(&key).is_some();
+        if removed {
+            persist(&self.path, &cache.document)?;
+        }
+        Ok(removed)
+    }
+
+    #[cfg(test)]
+    pub fn test_scope_count(&self, owner: &str, service: &str, account: &str) -> usize {
+        self.lock_loaded()
+            .ok()
+            .and_then(|cache| {
+                cache
+                    .document
+                    .accounts
+                    .get(&account_key(owner, service, account))
+                    .map(|account| account.scopes.len())
+            })
+            .unwrap_or(0)
+    }
+
     /// Freeze writes and return an immutable exact manifest. Incomplete legacy
     /// coverage fails before changing the frozen state.
     pub fn preview_complete_manifest(

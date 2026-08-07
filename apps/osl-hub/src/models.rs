@@ -93,6 +93,14 @@ pub enum PlacementMode {
     Compatibility,
 }
 
+/// How generated cover text should be inserted into the carrier composer.
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CoverInsertion {
+    InsertOnSend,
+    TypeNaturally,
+}
+
 /// The recovery/delivery policy explicitly selected during onboarding.
 #[derive(Debug, Clone, Copy, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -108,6 +116,7 @@ pub struct OnboardingPreferences {
     pub onboarding_complete: bool,
     pub send_mode: SendMode,
     pub placement_mode: PlacementMode,
+    pub cover_insertion: Option<CoverInsertion>,
     pub show_plaintext_preview: bool,
     #[serde(default = "default_true")]
     pub window_capture_enabled: bool,
@@ -126,6 +135,7 @@ impl Default for OnboardingPreferences {
             onboarding_complete: false,
             send_mode: SendMode::Manual,
             placement_mode: PlacementMode::Atomic,
+            cover_insertion: None,
             show_plaintext_preview: true,
             window_capture_enabled: true,
             acknowledge_experimental_send_risk: false,
@@ -145,6 +155,7 @@ impl<'de> Deserialize<'de> for OnboardingPreferences {
             onboarding_complete: bool,
             send_mode: SendMode,
             placement_mode: PlacementMode,
+            cover_insertion: Option<CoverInsertion>,
             show_plaintext_preview: bool,
             #[serde(default = "default_true")]
             window_capture_enabled: bool,
@@ -158,6 +169,7 @@ impl<'de> Deserialize<'de> for OnboardingPreferences {
             onboarding_complete: preferences.onboarding_complete,
             send_mode: preferences.send_mode,
             placement_mode: preferences.placement_mode,
+            cover_insertion: preferences.cover_insertion,
             show_plaintext_preview: preferences.show_plaintext_preview,
             window_capture_enabled: preferences.window_capture_enabled,
             acknowledge_experimental_send_risk: preferences.acknowledge_experimental_send_risk,
@@ -347,8 +359,8 @@ mod tests {
     use super::{
         AndroidWorkspaceBoundary, AndroidWorkspaceExecution, AndroidWorkspacePolicy,
         AndroidWorkspaceRefusalReason, AndroidWorkspaceStartDecision,
-        AndroidWorkspaceStartEvidence, ForwardSecrecyMode, OnboardingPreferences, PlacementMode,
-        SendMode, ServiceKind, ServiceLaunchState,
+        AndroidWorkspaceStartEvidence, CoverInsertion, ForwardSecrecyMode, OnboardingPreferences,
+        PlacementMode, SendMode, ServiceKind, ServiceLaunchState,
     };
 
     #[test]
@@ -369,6 +381,7 @@ mod tests {
             "onboardingComplete": false,
             "sendMode": "manual",
             "placementMode": "atomic",
+            "coverInsertion": null,
             "showPlaintextPreview": true,
             "windowCaptureEnabled": true,
             "acknowledgeExperimentalSendRisk": false,
@@ -393,6 +406,7 @@ mod tests {
             "onboardingComplete": true,
             "sendMode": "double",
             "placementMode": "atomic",
+            "coverInsertion": null,
             "showPlaintextPreview": true,
             "windowCaptureEnabled": true,
             "acknowledgeExperimentalSendRisk": false,
@@ -430,6 +444,7 @@ mod tests {
             onboarding_complete: true,
             send_mode: SendMode::SingleEnter,
             placement_mode: PlacementMode::Atomic,
+            cover_insertion: Some(CoverInsertion::InsertOnSend),
             show_plaintext_preview: true,
             window_capture_enabled: true,
             acknowledge_experimental_send_risk: false,

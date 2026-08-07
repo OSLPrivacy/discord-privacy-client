@@ -827,7 +827,7 @@ describe("fresh-account continuation", () => {
     expect(normalizer).toContain("needsRiskAcceptance(sendMode) && state.acceptedRisk && state.acceptedRiskForMode === sendMode");
     expect(completion).toContain("if (!canCompleteSetup(completedSetup)) throw new Error");
     expect(completion).toContain("setup = completedSetup");
-    expect(completion).toContain("saveOnboardingPreferences({ onboardingComplete: true, setup, showPlaintextPreview: true, windowCaptureEnabled, forwardSecrecyMode })");
+    expect(completion).toContain("saveOnboardingPreferences({ onboardingComplete: true, setup, coverInsertion, showPlaintextPreview: true, windowCaptureEnabled, forwardSecrecyMode })");
     expect(completion).toContain("onboardingComplete = true");
     expect(completion).toContain("clearServiceOnboardingResume()");
     expect(completion).toContain("resetOnboardingBranch()");
@@ -846,9 +846,10 @@ describe("fresh-account continuation", () => {
     const bootstrap = source.slice(source.indexOf("async function bootstrap"));
     expect(content).toContain("Enter Pro code");
     expect(content).toContain('id="activation-form"');
-    expect(content).toContain('data-onboarding="sending"');
+    expect(content).toContain('id="continue-pro-ready"');
     expect(binding).toContain('"#activation-form"');
     expect(activation).toContain("validateHubActivationCode(activationCode)");
+    expect(activation).toContain("proOnboardingReadyResult = true");
     expect(activation).toContain('onboardingRoute === "pro"');
     expect(content).not.toMatch(/localStorage|sessionStorage/);
     expect(bootstrap).toContain('onboardingRoute = "welcome"');

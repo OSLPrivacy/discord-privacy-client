@@ -8,6 +8,8 @@ pub mod account_recovery;
 pub mod adapter_profile_boot;
 pub mod adapters;
 #[cfg(feature = "core")]
+pub mod allowed_place_commands;
+#[cfg(feature = "core")]
 pub mod attachment_formats;
 #[cfg(feature = "core")]
 pub mod attachment_limits;
@@ -27,6 +29,8 @@ pub mod attachment_thumbnail_policy;
 // broker.rs takes `&crate::ai_carrier::AiCarrierState` unconditionally.
 pub mod ai_carrier;
 pub mod ai_consent;
+#[cfg(feature = "core")]
+pub mod app_own_names;
 pub mod attended_imap;
 #[cfg(feature = "core")]
 pub mod autoscrub_bridge;
@@ -79,10 +83,12 @@ pub mod entitlement_refresh;
 pub mod execution_consent;
 pub mod external_overlay;
 pub(crate) mod firefox_migration_coordinator;
+pub mod front_window_grab;
 pub mod hosted_audience;
 pub mod hosted_port;
 pub mod hosted_provider_recipe;
 pub mod hosted_session_port;
+pub mod installed_build_version;
 pub mod invite_clipboard;
 /// The landing oracle: did this exact text land in the composer? Judged
 /// through channels that did not write it. Pure above its syscall seam, so the
@@ -132,6 +138,8 @@ pub mod scrub_hosted {
     pub mod x_web;
 }
 pub mod messenger_whitelist_kinds;
+#[cfg(feature = "core")]
+pub mod remove_everything;
 #[cfg(all(feature = "core", feature = "desktop"))]
 pub mod revocation_drain_timer;
 #[cfg(feature = "core")]
@@ -153,6 +161,10 @@ pub mod secure_disk_backend;
 pub mod service_host;
 #[cfg(feature = "core")]
 pub mod services;
+#[cfg(feature = "core")]
+pub mod update_apply;
+#[cfg(feature = "core")]
+pub mod update_state_backup;
 pub mod updates;
 pub mod visual_binding;
 pub mod web_surface_adapter;
@@ -218,6 +230,8 @@ pub mod realtime_resume;
 pub mod realtime_subscription;
 #[cfg(feature = "core")]
 pub mod receipt_emit;
+#[cfg(feature = "core")]
+pub mod runtime_switches;
 // Timed deletion and view-once expiry. Needs `ipc` (sealed-at-rest storage) and
 // `store` (local plaintext cache), so it lives behind `core` like they do.
 pub mod expiry_clock;
@@ -267,6 +281,8 @@ pub mod service_burn_selection;
 #[cfg(feature = "core")]
 pub mod service_scope_index;
 pub mod signal_destination_binding;
+#[cfg(feature = "core")]
+pub mod signal_extra_device_sender;
 #[cfg(feature = "core")]
 pub mod spaces;
 #[cfg(feature = "core")]

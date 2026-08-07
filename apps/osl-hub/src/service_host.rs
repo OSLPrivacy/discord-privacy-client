@@ -23,7 +23,6 @@ pub const EMBEDDED_HOST_BROWSER_ARGUMENTS: &str = concat!(
     "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection"
 );
 static TOMBSTONE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
-#[cfg(feature = "desktop")]
 const PROFILE_NAMESPACE: &str = "service-profiles-v2";
 // The desktop shell no longer reserves a separate titlebar row above the
 // trusted chrome: the drag region and window controls (minimize/maximize/
@@ -63,6 +62,10 @@ pub(crate) fn owner_profile_namespace(owner_osl_user_id: &str) -> Result<String,
         let _ = write!(namespace, "{byte:02x}");
     }
     Ok(namespace)
+}
+
+pub fn service_profiles_root(app_local_data_dir: &Path) -> PathBuf {
+    app_local_data_dir.join(PROFILE_NAMESPACE)
 }
 
 #[cfg(any(feature = "desktop", test))]
@@ -1178,7 +1181,7 @@ pub mod desktop {
     fn profile_base(app: &AppHandle) -> Result<PathBuf, String> {
         app.path()
             .app_local_data_dir()
-            .map(|path| path.join(PROFILE_NAMESPACE))
+            .map(|path| service_profiles_root(&path))
             .map_err(|error| format!("could not resolve local app data directory: {error}"))
     }
 

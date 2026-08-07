@@ -7,6 +7,7 @@ use osl_privacy_hub::account_recovery;
 use osl_privacy_hub::ai_carrier::{
     ai_carrier_status_for, set_ai_carrier_preview_enabled_for, AiCarrierState,
 };
+use osl_privacy_hub::app_own_names::{AppOwnNameConfirmation, AppOwnNameState};
 use osl_privacy_hub::autoscrub_run::{self, AutoScrubFleetStatus, AutoScrubReviewedRunRequest};
 use osl_privacy_hub::broker::{
     self, DecryptedLocalProtectedMessage, HubBrokerState, OpenedHubAttachment,
@@ -24,7 +25,9 @@ use osl_privacy_hub::browser_profile_scan::{
     BrowserProfileConsentGrant, BrowserProfileDescriptor, BrowserProfileRoots,
     BrowserProfileScanReceipt, BrowserProfileScanState,
 };
-use osl_privacy_hub::build_integrity::{check_current, BuildIntegrity};
+use osl_privacy_hub::build_integrity::{
+    check_current, verify_peer_build_from_hex, BuildIntegrity, PeerBuildCheck,
+};
 use osl_privacy_hub::chat_capture_protection::{
     ChatCaptureProtectionState, ConsentTransition, EffectiveCaptureProtection,
 };
@@ -42,6 +45,9 @@ use osl_privacy_hub::identity_binding_verifier::{
 use osl_privacy_hub::identity_registry::{
     self, HubIdentityBurnResult, HubIdentityRegistryState, HubIdentitySlotCreation,
     HubIdentitySlotDto, HubIdentitySwitchResult,
+};
+use osl_privacy_hub::installed_build_version::{
+    record_current_executable_at_start, InstalledBuildVersionRecord,
 };
 use osl_privacy_hub::main_window_reveal::{
     main_window_reveal, main_window_should_start_hidden, CaptureAffinity, MainWindowReveal,
@@ -85,21 +91,26 @@ use osl_privacy_hub::preferences::{
 };
 use osl_privacy_hub::privacy_scan::{self, LocalMessageCandidate, LocalPrivacyScanResult};
 use osl_privacy_hub::pro_context_cover::LocalCoverState;
+use osl_privacy_hub::remove_everything::{self, RemoveEverythingReadiness, RemoveEverythingResult};
 use osl_privacy_hub::revocation_drain_timer;
 use osl_privacy_hub::scrub_index::{
     ScrubIndexChunkRequest, ScrubIndexInitializeRequest, ScrubIndexManifest, ScrubIndexState,
     ScrubIndexStatus,
 };
 use osl_privacy_hub::security::{
-    self, AddFriendResult, FriendCodeExport, HubRevocationStatusDto, HubScopeBurnResult,
-    HubSecurityState, PersonDto, RemoveFriendResult, ScopeSecurityDto,
+    self, AddFriendResult, AllowedPlaceDirectionState, AllowedPlaceQuery, AllowedPlaceRecord,
+    FriendCodeExport, GroupMemberPermissionRecord, HubRevocationStatusDto, HubScopeBurnResult,
+    HubSecurityState, OneUseInviteLink, PersonDto, RemoveFriendResult, ScopeSecurityDto,
+    WhatsAppWhitelistKind,
 };
 use osl_privacy_hub::security_credentials::{self, HubPasswordRoleStatus};
 use osl_privacy_hub::service_host::{self, ActiveServiceHost, ServiceHostState};
 use osl_privacy_hub::service_scope_index::{ImmutableServiceBurnManifest, ServiceScopeIndexState};
-use osl_privacy_hub::services::ServiceRegistryState;
+use osl_privacy_hub::services::{ScrubAccountDescriptor, ServiceRegistryState};
 use osl_privacy_hub::startup_gate::{self, HubGateUnlockResult, VerifiedGateRole};
 use osl_privacy_hub::tor_pref::{TorPreference, TorPreferenceState};
+use osl_privacy_hub::update_apply;
+use osl_privacy_hub::update_state_backup;
 use osl_privacy_hub::updates::{
     bounded_plain_notes, bounded_version, RELEASES_URL, SOURCE_REPOSITORY_URL,
 };
@@ -114,7 +125,7 @@ use serde::{Deserialize, Serialize};
 use std::io::Write as _;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Mutex,
+    Mutex, OnceLock,
 };
 use tauri::{Emitter, Manager, State};
 use tauri_plugin_updater::UpdaterExt;
@@ -151,6 +162,12 @@ fn startup_breadcrumb(label: &str) {
 const B6_PREFLIGHT_ONLY_ARG: &str = "--b6-preflight-only";
 #[cfg(feature = "discord-qa-shell")]
 const B6_PREFLIGHT_RECEIPT_FILE: &str = "osl-discord-qa-b6-preflight.v2.json";
+
+static ACTIVE_ACCOUNT_SCAN_QUEUE: OnceLock<ActiveAccountScanQueue> = OnceLock::new();
+
+fn active_account_scan_queue() -> &'static ActiveAccountScanQueue {
+    ACTIVE_ACCOUNT_SCAN_QUEUE.get_or_init(ActiveAccountScanQueue::default)
+}
 
 #[cfg(feature = "discord-qa-shell")]
 #[derive(Serialize)]
@@ -198,10 +215,13 @@ use osl_privacy_hub::hub_command_surface::{
     get_scrub_account_permissions_command, require_native_discord_product_send_authority,
     require_review_ui_identity_binding_from_verifier, save_discord_scrub_consent_facts_command,
     save_scrub_account_permissions_command, service_kind_id,
+    require_native_discord_product_send_authority,
+    require_review_ui_identity_binding_from_verifier, service_kind_id, service_terms_address,
     start_autoscrub_reviewed_run_after_review_ui_binding, start_autoscrub_reviewed_run_checked,
     start_autoscrub_reviewed_run_inner, with_native_discord_product_send_authority,
-    BrowserFootprintConsentRequest, CheckedHost, DiscordGuidedDeletionPlanState,
-    GuidedDeletionRunAuthorityInput, NativeDiscordProductSendAuthority,
+    ActiveAccountScanQueue, BrowserFootprintConsentRequest, CheckedHost,
+    DiscordGuidedDeletionPlanState, GuidedDeletionRunAuthorityInput,
+    NativeDiscordProductSendAuthority, ServiceTermsAddress,
 };
 use osl_privacy_hub::native_surface_capture;
 // The QA-evidence half of the surface is compiled only for the disposable QA
@@ -744,20 +764,22 @@ fn checked_host_for_hosted_session_scan(app: &tauri::AppHandle) -> Result<Checke
 fn run_checked_hosted_session_scan(
     app: tauri::AppHandle,
 ) -> Result<osl_privacy_hub::native_discord_adapter::guided_deletion::DeletionScan, String> {
-    checked_hosted_session_scan_flow(
-        || checked_host_for_hosted_session_scan(&app),
-        |checked| checked.attended_operator_names(),
-        |checked, operator_names| {
-            osl_privacy_hub::native_discord_adapter::scan_own_messages_for_deletion(
-                &app.state::<NativeWindowHostState>(),
-                &checked.owner_osl_user_id,
-                &checked.scope_binding,
-                checked.active.generation,
-                operator_names,
-            )
-        },
-        |checked| require_same_overlay_context(&app, checked.context_epoch, &checked.active),
-    )
+    active_account_scan_queue().run_service_connection_action(|| {
+        checked_hosted_session_scan_flow(
+            || checked_host_for_hosted_session_scan(&app),
+            |checked| checked.attended_operator_names(),
+            |checked, operator_names| {
+                osl_privacy_hub::native_discord_adapter::scan_own_messages_for_deletion(
+                    &app.state::<NativeWindowHostState>(),
+                    &checked.owner_osl_user_id,
+                    &checked.scope_binding,
+                    checked.active.generation,
+                    operator_names,
+                )
+            },
+            |checked| require_same_overlay_context(&app, checked.context_epoch, &checked.active),
+        )
+    })
 }
 
 /// Open the hosted-session scan surface only after proving the same native
@@ -1230,6 +1252,58 @@ async fn list_linked_services(
     let _session = session.transition.lock().await;
     let owner = active_unlocked_osl_user_id(&core)?;
     state.list_for_owner(&owner)
+}
+
+#[tauri::command]
+async fn list_scrub_accounts(
+    state: State<'_, ServiceRegistryState>,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<Vec<ScrubAccountDescriptor>, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    state.list_scrub_accounts_for_owner(&owner)
+}
+
+#[tauri::command]
+async fn record_connected_app_own_names(
+    state: State<'_, AppOwnNameState>,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    service_id: ServiceKind,
+    account_id: String,
+    observed_names: Vec<String>,
+) -> Result<AppOwnNameConfirmation, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    state.record_connected_account_names(&owner, service_id, &account_id, observed_names)
+}
+
+#[tauri::command]
+async fn get_connected_app_own_names(
+    state: State<'_, AppOwnNameState>,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    service_id: ServiceKind,
+    account_id: String,
+) -> Result<AppOwnNameConfirmation, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    state.confirmation_for_person(&owner, service_id, &account_id)
+}
+
+#[tauri::command]
+async fn correct_connected_app_own_names(
+    state: State<'_, AppOwnNameState>,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    service_id: ServiceKind,
+    account_id: String,
+    corrected_names: Vec<String>,
+) -> Result<AppOwnNameConfirmation, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    state.correction_for_person(&owner, service_id, &account_id, corrected_names)
 }
 
 #[tauri::command]
@@ -1964,10 +2038,41 @@ async fn install_hub_update(
     if update.version != expected_version {
         return Err("The available update changed; check again before installing".to_owned());
     }
+    let previous_version = app.package_info().version.to_string();
+    let app_config_dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|_| "OSL account storage is unavailable before update".to_owned())?;
+    let current_exe =
+        std::env::current_exe().map_err(|_| "OSL update install path is unavailable".to_owned())?;
+    let install_dir = current_exe
+        .parent()
+        .ok_or_else(|| "OSL update install path is unavailable".to_owned())?;
+    let built_file = current_exe
+        .file_name()
+        .ok_or_else(|| "OSL update install path is unavailable".to_owned())?
+        .to_string_lossy()
+        .to_string();
+    let state_copy = update_state_backup::copy_identity_and_history_before_update(
+        &app_config_dir,
+        &expected_version,
+    )?;
+    let state_copy_record_path = update_state_backup::update_state_copy_record_path(
+        std::path::Path::new(&state_copy.backup_dir),
+    );
+    let pending_apply = update_apply::begin_update_apply_with_old_files(
+        &app_config_dir,
+        install_dir,
+        &previous_version,
+        &expected_version,
+        vec![built_file.clone()],
+        Some(&state_copy_record_path),
+    )?;
     update
         .download_and_install(|_, _| {}, || {})
         .await
         .map_err(|_| "The update could not be verified and was not installed".to_owned())?;
+    update_apply::record_replaced_built_files(pending_apply, vec![built_file])?;
     app.restart();
 }
 
@@ -5170,6 +5275,28 @@ async fn open_osl_chat_history_result(
     })
     .await
     .map_err(|error| format!("OSL Chat history result worker failed: {error}"))?
+async fn query_osl_chat_visible_records(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+    session: State<'_, HubAccountSessionState>,
+    filter: Option<broker::OslChatHistoryVisibilityFilter>,
+) -> Result<broker::OslChatVisibleRecordsResult, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may read OSL Chat history".to_owned());
+    }
+    screenshot::apply_to_window(&caller, active_osl_capture_protection()).map_err(|_| {
+        "Windows capture resistance is required to read OSL Chat history".to_owned()
+    })?;
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        broker::load_osl_chat_visible_records(
+            &app.state::<HubCoreState>(),
+            &app.state::<HubBrokerState>(),
+            filter.unwrap_or_default(),
+        )
+    })
+    .await
+    .map_err(|error| format!("OSL Chat visible-record query failed: {error}"))?
 }
 
 #[tauri::command]
@@ -5526,6 +5653,11 @@ async fn create_service_account(
         return Err(error);
     }
     Ok(account)
+}
+
+#[tauri::command]
+async fn get_service_terms_address(service_id: String) -> Result<ServiceTermsAddress, String> {
+    service_terms_address(&service_id)
 }
 
 #[tauri::command]
@@ -6174,6 +6306,16 @@ async fn add_hub_friend(
     security::add_friend_code(&core, &security_state, friend_code, alias)
 }
 
+#[tauri::command]
+async fn create_one_use_invite_link(
+    security_state: State<'_, HubSecurityState>,
+    session: State<'_, HubAccountSessionState>,
+    recipient_label: String,
+) -> Result<OneUseInviteLink, String> {
+    let _session = session.transition.lock().await;
+    security::create_one_use_invite_link(&security_state, recipient_label)
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct HubUsernameClaim {
@@ -6390,6 +6532,112 @@ async fn set_hub_friend_nickname(
 ) -> Result<PersonDto, String> {
     let _session = session.transition.lock().await;
     security::set_friend_alias(&core, &security_state, person_id, nickname)
+}
+
+#[tauri::command]
+async fn add_group_member_permission(
+    security_state: State<'_, HubSecurityState>,
+    session: State<'_, HubAccountSessionState>,
+    group_id: String,
+    member_id: String,
+    allowed: bool,
+) -> Result<GroupMemberPermissionRecord, String> {
+    let _session = session.transition.lock().await;
+    security::set_group_member_permission(&security_state, group_id, member_id, allowed)
+}
+
+#[tauri::command]
+async fn remove_group_member_permission(
+    security_state: State<'_, HubSecurityState>,
+    session: State<'_, HubAccountSessionState>,
+    group_id: String,
+    member_id: String,
+) -> Result<bool, String> {
+    let _session = session.transition.lock().await;
+    security::remove_group_member_permission(&security_state, group_id, member_id)
+}
+
+#[tauri::command]
+async fn list_group_member_permissions(
+    security_state: State<'_, HubSecurityState>,
+    session: State<'_, HubAccountSessionState>,
+    group_id: String,
+) -> Result<Vec<GroupMemberPermissionRecord>, String> {
+    let _session = session.transition.lock().await;
+    security::list_group_member_permissions_for_group(&security_state, group_id)
+}
+
+#[tauri::command]
+async fn add_allowed_place_record(
+    security_state: State<'_, HubSecurityState>,
+    session: State<'_, HubAccountSessionState>,
+    record: AllowedPlaceRecord,
+) -> Result<AllowedPlaceRecord, String> {
+    let _session = session.transition.lock().await;
+    security::add_allowed_place_record(&security_state, record)
+}
+
+#[tauri::command]
+async fn remove_allowed_place_record(
+    security_state: State<'_, HubSecurityState>,
+    session: State<'_, HubAccountSessionState>,
+    stable_id: String,
+) -> Result<bool, String> {
+    let _session = session.transition.lock().await;
+    security::remove_allowed_place_record(&security_state, stable_id)
+}
+
+#[tauri::command]
+async fn query_allowed_place_record(
+    security_state: State<'_, HubSecurityState>,
+    session: State<'_, HubAccountSessionState>,
+    stable_id: String,
+) -> Result<Option<AllowedPlaceRecord>, String> {
+    let _session = session.transition.lock().await;
+    security::query_allowed_place_record(&security_state, stable_id)
+}
+
+#[tauri::command]
+async fn query_allowed_place_allowed(
+    security_state: State<'_, HubSecurityState>,
+    session: State<'_, HubAccountSessionState>,
+    query: AllowedPlaceQuery,
+) -> Result<bool, String> {
+    let _session = session.transition.lock().await;
+    security::query_allowed_place_allowed(&security_state, query)
+}
+
+#[tauri::command]
+async fn list_allowed_place_records(
+    security_state: State<'_, HubSecurityState>,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<Vec<AllowedPlaceRecord>, String> {
+    let _session = session.transition.lock().await;
+    security::list_allowed_place_records(&security_state)
+}
+
+#[tauri::command]
+async fn compare_allowed_place_direction_state(
+    security_state: State<'_, HubSecurityState>,
+    session: State<'_, HubAccountSessionState>,
+    app: String,
+    kind: String,
+    first_account: String,
+    second_account: String,
+) -> Result<AllowedPlaceDirectionState, String> {
+    let _session = session.transition.lock().await;
+    security::compare_allowed_place_direction_state(
+        &security_state,
+        app,
+        kind,
+        first_account,
+        second_account,
+    )
+}
+
+#[tauri::command]
+fn list_whatsapp_whitelist_kinds() -> Vec<WhatsAppWhitelistKind> {
+    security::list_whatsapp_whitelist_kinds()
 }
 
 #[tauri::command]
@@ -6960,6 +7208,60 @@ async fn burn_hub_service_account(
     })
     .await
     .map_err(|_| "OSL service burn worker failed".to_owned())?
+}
+
+#[tauri::command]
+async fn get_hub_remove_everything_readiness(
+    core: State<'_, HubCoreState>,
+    registry: State<'_, ServiceRegistryState>,
+    index: State<'_, ServiceScopeIndexState>,
+    session: State<'_, HubAccountSessionState>,
+    service_id: String,
+    account_id: String,
+) -> Result<RemoveEverythingReadiness, String> {
+    let _session = session.transition.lock().await;
+    remove_everything::current_account_remove_everything_readiness(
+        &core,
+        &registry,
+        &index,
+        &service_id,
+        &account_id,
+    )
+}
+
+#[tauri::command]
+async fn remove_everything_for_current_account(
+    app: tauri::AppHandle,
+    session: State<'_, HubAccountSessionState>,
+    service_id: String,
+    account_id: String,
+    confirmed_burn_id: String,
+) -> Result<RemoveEverythingResult, String> {
+    let _session = session.transition.lock().await;
+    app.state::<osl_privacy_hub::scrub_imap::ScrubImapState>()
+        .revoke_all()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let app_local_data = app
+            .path()
+            .app_local_data_dir()
+            .map_err(|error| format!("could not resolve local app data directory: {error}"))?;
+        let service_profiles_root = service_host::service_profiles_root(&app_local_data);
+        let result = remove_everything::current_account_remove_everything(
+            &app.state::<HubCoreState>(),
+            &app.state::<HubSecurityState>(),
+            &app.state::<ServiceRegistryState>(),
+            &app.state::<ServiceScopeIndexState>(),
+            &service_profiles_root,
+            &service_id,
+            &account_id,
+            &confirmed_burn_id,
+        )?;
+        native_discord_overlay::clear_and_hide(&app);
+        app.state::<HubBrokerState>().clear()?;
+        Ok(result)
+    })
+    .await
+    .map_err(|_| "OSL remove-everything worker failed".to_owned())?
 }
 
 fn burn_indexed_service_manifest(
@@ -9479,6 +9781,18 @@ fn build_integrity_status(state: tauri::State<'_, BuildIntegrity>) -> BuildInteg
     *state.inner()
 }
 
+#[tauri::command]
+fn installed_build_version_record(
+    state: tauri::State<'_, InstalledBuildVersionRecord>,
+) -> InstalledBuildVersionRecord {
+    state.inner().clone()
+}
+
+#[tauri::command]
+fn verify_peer_build_integrity(peer_exe_sha256: String) -> Result<PeerBuildCheck, String> {
+    verify_peer_build_from_hex(&peer_exe_sha256)
+}
+
 macro_rules! hub_tauri_generate_handler {
     ($($(#[$meta:meta])* $command:ident),* $(,)?) => {
         tauri::generate_handler![$($(#[$meta])* $command,)*]
@@ -9554,6 +9868,18 @@ fn main() {
 
 #[cfg(not(feature = "signal-qa-shell"))]
 fn main() {
+    if let Some(exit_code) =
+        osl_privacy_hub::front_window_grab::run_front_window_grab_cli_from_env()
+    {
+        std::process::exit(exit_code);
+    }
+
+    if let Some(exit_code) =
+        osl_privacy_hub::allowed_place_commands::run_allowed_place_cli_from_env()
+    {
+        std::process::exit(exit_code);
+    }
+
     #[cfg(feature = "discord-qa-shell")]
     {
         // This is deliberately before the guardian, breadcrumbs, plugins,
@@ -9773,9 +10099,12 @@ fn main() {
         };
         #[cfg(feature = "discord-qa-shell")]
         startup_breadcrumb("setup_step_02_qa_config_dir_remapped"); // STARTUP-TRACE
-                                                                    // The app owns a separate OSL identity namespace. Never inherit
-                                                                    // the original Discord client's `%APPDATA%/osl` login merely
-                                                                    // because both applications run on the same Windows account.
+        let installed_build_record = record_current_executable_at_start(&config_dir)?;
+        startup_breadcrumb("setup_step_02_installed_build_version_recorded"); // STARTUP-TRACE
+
+        // The app owns a separate OSL identity namespace. Never inherit
+        // the original Discord client's `%APPDATA%/osl` login merely
+        // because both applications run on the same Windows account.
         keystore::set_active_account_dir(None);
         startup_breadcrumb("setup_step_03_keystore_active_account_dir_cleared"); // STARTUP-TRACE
         let osl_core_dir = config_dir.join("osl-core");
@@ -9818,6 +10147,7 @@ fn main() {
             config_dir.join("service-registry.json"),
         ));
         startup_breadcrumb("setup_step_15_service_registry_state_managed"); // STARTUP-TRACE
+        app.manage(AppOwnNameState::load(config_dir.join("app-own-names.json")));
         app.manage(ServiceScopeIndexState::load(
             config_dir.join("service-scope-index.json"),
         ));
@@ -9929,6 +10259,7 @@ fn main() {
         // Evaluate the bundled signed manifest once per launch, before the UI
         // can present a local integrity verdict.
         app.manage(check_current());
+        app.manage(installed_build_record);
         app.manage(OverlaySessionState::default());
         startup_breadcrumb("setup_step_32_overlay_session_state_managed"); // STARTUP-TRACE
         app.manage(native_surface_capture::NativeSurfaceCaptureState::default());
@@ -9999,6 +10330,11 @@ fn main() {
         qa_selftest::spawn_trigger_watcher(app.handle().clone());
         #[cfg(feature = "discord-qa-shell")]
         startup_breadcrumb("setup_step_46_qa_selftest_watcher_spawned"); // STARTUP-TRACE
+        update_apply::mark_update_finished_after_successful_start(
+            &config_dir,
+            &app.package_info().version.to_string(),
+        )?;
+        startup_breadcrumb("setup_step_47_update_apply_marked"); // STARTUP-TRACE
         startup_breadcrumb("setup_done"); // STARTUP-TRACE
         Ok(())
     });
@@ -10515,7 +10851,10 @@ mod tauri_command_acl_tests {
 
     #[test]
     fn t10_t9_build_integrity_is_checked_at_startup_and_exposed_to_the_shipping_ui() {
-        assert_registered_and_acl_granted(&["build_integrity_status"]);
+        assert_registered_and_acl_granted(&[
+            "build_integrity_status",
+            "verify_peer_build_integrity",
+        ]);
         let source = include_str!("main.rs");
         assert!(source.contains("app.manage(check_current());"));
     }

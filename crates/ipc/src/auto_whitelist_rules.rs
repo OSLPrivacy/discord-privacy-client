@@ -6,6 +6,9 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 pub enum AutoWhitelistChoice {
     #[default]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoWhitelistChoice {
     Never,
     AskMe,
     Always,
@@ -174,6 +177,15 @@ impl MessengerWhitelistKind {
     }
 }
 
+impl Default for AutoWhitelistChoice {
+    fn default() -> Self {
+        Self::Never
+    }
+}
+
+pub const AUTO_WHITELIST_APP_KINDS: [&str; 5] =
+    ["discord", "telegram", "signal", "whatsapp", "outlook"];
+
 pub fn parse_auto_whitelist_choice(input: &str) -> Result<AutoWhitelistChoice, String> {
     let normalized = input.trim().to_ascii_lowercase().replace('-', "_");
     AutoWhitelistChoice::ALL
@@ -281,6 +293,8 @@ pub fn normalize_auto_whitelist_app_kind(input: &str) -> Result<String, String> 
             ));
         }
     }
+pub fn normalize_auto_whitelist_app_kind(input: &str) -> Result<String, String> {
+    let normalized = input.trim().to_ascii_lowercase().replace('-', "_");
     if AUTO_WHITELIST_APP_KINDS.contains(&normalized.as_str()) {
         Ok(normalized)
     } else {

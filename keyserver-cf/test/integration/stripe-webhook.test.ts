@@ -335,6 +335,103 @@ describe("POST /v1/stripe/webhook state machine", () => {
     expect(metric?.amount_cents).toBe(500);
   });
 
+  it("TASK1503 creates exactly one unused one-month Pro code only after confirmed fixture payment", async () => {
+    const confirmedSessionId = `cs_live_task1503_confirmed_${crypto.randomUUID().replace(/-/g, "")}`;
+    const confirmedPaymentIntentId = `pi_task1503_confirmed_${crypto.randomUUID().replace(/-/g, "")}`;
+    const confirmedLicenseHash = `license-task1503-confirmed-${confirmedSessionId}`;
+    const unconfirmedSessionId = `cs_live_task1503_unconfirmed_${crypto.randomUUID().replace(/-/g, "")}`;
+    const unconfirmedPaymentIntentId = `pi_task1503_unconfirmed_${crypto.randomUUID().replace(/-/g, "")}`;
+    const unconfirmedLicenseHash = `license-task1503-unconfirmed-${unconfirmedSessionId}`;
+    const now = Math.floor(Date.now() / 1000);
+    for (const [sessionId, licenseHash] of [
+      [confirmedSessionId, confirmedLicenseHash],
+      [unconfirmedSessionId, unconfirmedLicenseHash],
+    ] as const) {
+      await env.DB.prepare(
+        `INSERT INTO stripe_checkout_claims (
+           session_id, claim_hash, delivery_public_key_spki,
+           encrypted_license, license_hash, subscription_id, status,
+           created_at, expires_at, delivered_at
+         ) VALUES (?, ?, 'public-key', 'ciphertext', ?, NULL, 'pending', ?, ?, NULL)`,
+      ).bind(sessionId, `claim-${sessionId}`, licenseHash, now, now + 3600).run();
+    }
+
+    const confirmed = await postSignedWebhook(SELF, {
+      id: uniqueEventId(),
+      type: "checkout.session.completed",
+      data: {
+        object: {
+          id: confirmedSessionId,
+          mode: "payment",
+          metadata: { osl_plan: "pro", osl_purchase: "one-time", osl_fulfillment: "instant-v1" },
+          payment_status: "paid",
+          payment_intent: confirmedPaymentIntentId,
+          amount_total: 500,
+          currency: "usd",
+        },
+      },
+    });
+    expect(confirmed.status).toBe(200);
+    await expect(confirmed.json()).resolves.toMatchObject({ kind: "applied" });
+
+    const unconfirmed = await postSignedWebhook(SELF, {
+      id: uniqueEventId(),
+      type: "checkout.session.completed",
+      data: {
+        object: {
+          id: unconfirmedSessionId,
+          mode: "payment",
+          metadata: { osl_plan: "pro", osl_purchase: "one-time", osl_fulfillment: "instant-v1" },
+          payment_status: "unpaid",
+          payment_intent: unconfirmedPaymentIntentId,
+          amount_total: 500,
+          currency: "usd",
+        },
+      },
+    });
+    expect(unconfirmed.status).toBe(200);
+    await expect(unconfirmed.json()).resolves.toMatchObject({ kind: "noop" });
+
+    const counts = await env.DB.prepare(
+      `SELECT
+         (SELECT COUNT(*)
+            FROM licenses
+           WHERE license_hash = ?
+             AND grant_seconds = ?
+             AND redeemed_at IS NULL
+             AND expires_at IS NULL) AS confirmed_codes,
+         (SELECT COUNT(*)
+            FROM licenses
+           WHERE license_hash = ?) AS unconfirmed_codes`,
+    ).bind(
+      confirmedLicenseHash,
+      30 * 24 * 60 * 60,
+      unconfirmedLicenseHash,
+    ).first<{
+      confirmed_codes: number;
+      unconfirmed_codes: number;
+    }>();
+    expect(counts).toEqual({
+      confirmed_codes: 1,
+      unconfirmed_codes: 0,
+    });
+
+    const confirmedClaim = await env.DB.prepare(
+      "SELECT status FROM stripe_checkout_claims WHERE session_id = ?",
+    ).bind(confirmedSessionId).first<{ status: string }>();
+    const unconfirmedClaim = await env.DB.prepare(
+      "SELECT status FROM stripe_checkout_claims WHERE session_id = ?",
+    ).bind(unconfirmedSessionId).first<{ status: string }>();
+    expect(confirmedClaim?.status).toBe("delivery_ready");
+    expect(unconfirmedClaim?.status).toBe("pending");
+    console.info(
+      `TASK1503 confirmed_fixture_payment=paid confirmed_codes=${counts?.confirmed_codes} ` +
+        `confirmed_claim_status=${confirmedClaim?.status} ` +
+        `unconfirmed_fixture_payment=unpaid unconfirmed_codes=${counts?.unconfirmed_codes} ` +
+        `unconfirmed_claim_status=${unconfirmedClaim?.status}`,
+    );
+  });
+
   it.each([
     ["refund", "charge.refunded", "manual"],
     ["dispute", "charge.dispute.created", "chargeback"],

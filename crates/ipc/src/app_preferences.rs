@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::str::FromStr;
 
 /// Active stego envelope. Mode 0 is the production `DPC0::<b64>`
 /// path; Mode 1 is the multi-message `DPC1::<sentences>` cover
@@ -219,6 +220,80 @@ impl PrivacyLevelRuleSet {
                 vpn_required_actions: true,
                 protected_contacts_required: true,
             },
+/// Saved user request for the next-generation protected-message wire path.
+/// Default is off so a missing or legacy preferences file cannot silently
+/// enable the newer message format.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NextGenerationMessagePolicy {
+    On,
+    #[default]
+    Off,
+}
+
+impl NextGenerationMessagePolicy {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::On => "on",
+            Self::Off => "off",
+        }
+    }
+
+    pub fn rn_wire_in_enabled(self) -> bool {
+        matches!(self, Self::On)
+    }
+}
+
+pub fn parse_next_generation_message_policy(
+    input: &str,
+) -> Result<NextGenerationMessagePolicy, String> {
+    match input.trim().to_ascii_lowercase().as_str() {
+        "on" => Ok(NextGenerationMessagePolicy::On),
+        "off" => Ok(NextGenerationMessagePolicy::Off),
+        _ => Err(format!(
+            "OSL: unknown next-generation message policy '{input}'"
+        )),
+    }
+}
+
+/// How long OSL waits after the last owner activity before it locks itself.
+/// Missing legacy preferences keep the historical 15-minute behavior; `Never`
+/// is an explicit opt-out, not the default.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "choice", content = "seconds", rename_all = "snake_case")]
+pub enum IdleLockTimeChoice {
+    Never,
+    AfterSeconds(u64),
+}
+
+impl Default for IdleLockTimeChoice {
+    fn default() -> Self {
+        Self::AfterSeconds(keystore::DEFAULT_INACTIVITY_SECONDS)
+    }
+}
+
+impl IdleLockTimeChoice {
+    pub fn seconds(self) -> Option<u64> {
+        match self {
+            Self::Never => None,
+            Self::AfterSeconds(seconds) => Some(seconds),
+        }
+    }
+
+    pub fn label(self) -> String {
+        match self {
+            Self::Never => "never".to_string(),
+            Self::AfterSeconds(60) => "one minute".to_string(),
+            Self::AfterSeconds(1) => "1 second".to_string(),
+            Self::AfterSeconds(seconds) => format!("{seconds} seconds"),
+        }
+    }
+
+    pub fn choice(self) -> &'static str {
+        match self {
+            Self::Never => "never",
+            Self::AfterSeconds(60) => "one_minute",
+            Self::AfterSeconds(_) => "seconds",
         }
     }
 }
@@ -281,6 +356,39 @@ impl Default for MessageDefaults {
             timer_seconds: default_message_timer_seconds(),
             display_length_seconds: default_display_length_seconds(),
             writer: MessageWriterDefault::default(),
+pub fn parse_idle_lock_time_choice(input: &str) -> Result<IdleLockTimeChoice, String> {
+    let normalized = input.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "never" => return Ok(IdleLockTimeChoice::Never),
+        "one minute" | "1 minute" | "1m" | "60s" => {
+            return Ok(IdleLockTimeChoice::AfterSeconds(60));
+        }
+        _ => {}
+    }
+
+    let seconds = normalized.parse::<i64>().map_err(|_| {
+        format!("OSL: unknown idle lock time '{input}'; use positive seconds or never")
+    })?;
+    if seconds <= 0 {
+        return Err("OSL: idle lock time must be positive seconds or never".to_string());
+    }
+    Ok(IdleLockTimeChoice::AfterSeconds(seconds as u64))
+}
+
+/// Default account reach for a friend who is newly accepted.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NewFriendAccountReach {
+    #[default]
+    ApprovedChatsOnly,
+    AllSharedChats,
+}
+
+impl NewFriendAccountReach {
+    pub fn as_value(self) -> &'static str {
+        match self {
+            Self::ApprovedChatsOnly => "approved_chats_only",
+            Self::AllSharedChats => "all_shared_chats",
         }
     }
 }
@@ -291,6 +399,60 @@ fn default_message_timer_seconds() -> u32 {
 
 fn default_display_length_seconds() -> u32 {
     10
+impl FromStr for NewFriendAccountReach {
+    type Err = String;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw
+            .trim()
+            .to_ascii_lowercase()
+            .replace(['-', ' '], "_")
+            .as_str()
+        {
+            "approved_chats_only" => Ok(Self::ApprovedChatsOnly),
+            "all_shared_chats" => Ok(Self::AllSharedChats),
+            _ => Err(format!(
+                "OSL: unknown new-friend account reach {raw:?}; valid choices: approved_chats_only, all_shared_chats"
+            )),
+        }
+    }
+}
+
+/// Whether new-friend verification warnings are shown by default.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NewFriendVerificationWarnings {
+    #[default]
+    Enabled,
+    Disabled,
+}
+
+impl NewFriendVerificationWarnings {
+    pub fn as_value(self) -> &'static str {
+        match self {
+            Self::Enabled => "enabled",
+            Self::Disabled => "disabled",
+        }
+    }
+}
+
+impl FromStr for NewFriendVerificationWarnings {
+    type Err = String;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw
+            .trim()
+            .to_ascii_lowercase()
+            .replace(['-', ' '], "_")
+            .as_str()
+        {
+            "enabled" => Ok(Self::Enabled),
+            "disabled" => Ok(Self::Disabled),
+            _ => Err(format!(
+                "OSL: unknown new-friend verification warnings {raw:?}; valid choices: enabled, disabled"
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -314,9 +476,18 @@ pub struct AppPreferences {
     pub privacy_level_rule_sets: BTreeMap<String, PrivacyLevelRuleSet>,
     #[serde(default)]
     pub message_defaults: MessageDefaults,
+    pub next_generation_message_policy: NextGenerationMessagePolicy,
+    #[serde(default)]
+    pub idle_lock_time_choice: IdleLockTimeChoice,
+    #[serde(default)]
+    pub new_friend_account_reach: NewFriendAccountReach,
+    #[serde(default)]
+    pub new_friend_auto_whitelist: crate::auto_whitelist_rules::AutoWhitelistChoice,
+    #[serde(default)]
+    pub new_friend_verification_warnings: NewFriendVerificationWarnings,
 }
 
-pub const APP_PREFERENCES_VERSION: u32 = 2;
+pub const APP_PREFERENCES_VERSION: u32 = 3;
 
 pub fn load_app_preferences(path: &Path) -> AppPreferences {
     let Ok(blob) = std::fs::read(path) else {

@@ -37,6 +37,33 @@ pub enum PublishedHash {
     Unknown,
 }
 
+/// Result returned when a peer reports the build hash it is running.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PeerBuildCheck {
+    pub state: PeerBuildState,
+    pub warning: Option<String>,
+    pub send_permission: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PeerBuildState {
+    Normal,
+    ChangedBuildWarning,
+    UnknownBuildWarning,
+}
+
+impl PeerBuildState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::ChangedBuildWarning => "changed-build-warning",
+            Self::UnknownBuildWarning => "unknown-build-warning",
+        }
+    }
+}
+
 #[derive(Deserialize)]
 struct Manifest {
     format: u8,
@@ -72,6 +99,31 @@ pub fn published_hash_status(digest: &[u8; 32]) -> PublishedHash {
         BUNDLED_SIGNATURE,
         updater_public_key(),
     )
+}
+
+pub fn verify_peer_build_from_hex(peer_exe_sha256: &str) -> Result<PeerBuildCheck, String> {
+    let digest = parse_sha256_hex(peer_exe_sha256)?;
+    Ok(verify_peer_build_integrity(published_hash_status(&digest)))
+}
+
+pub fn verify_peer_build_integrity(status: PublishedHash) -> PeerBuildCheck {
+    match status {
+        PublishedHash::Published => PeerBuildCheck {
+            state: PeerBuildState::Normal,
+            warning: None,
+            send_permission: true,
+        },
+        PublishedHash::Unpublished => PeerBuildCheck {
+            state: PeerBuildState::ChangedBuildWarning,
+            warning: Some("changed-build-warning".to_owned()),
+            send_permission: true,
+        },
+        PublishedHash::Unknown => PeerBuildCheck {
+            state: PeerBuildState::UnknownBuildWarning,
+            warning: Some("unknown-build-warning".to_owned()),
+            send_permission: true,
+        },
+    }
 }
 
 fn published_hash_status_from_assets(
@@ -154,6 +206,19 @@ fn valid_sha256(value: &str) -> bool {
         })
 }
 
+fn parse_sha256_hex(value: &str) -> Result<[u8; 32], String> {
+    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("OSL peer build hash must be a 64-character SHA-256 hex digest".to_owned());
+    }
+    let mut digest = [0u8; 32];
+    for (index, slot) in digest.iter_mut().enumerate() {
+        let start = index * 2;
+        *slot = u8::from_str_radix(&value[start..start + 2], 16)
+            .map_err(|_| "OSL peer build hash must be a SHA-256 hex digest".to_owned())?;
+    }
+    Ok(digest)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -222,6 +287,29 @@ mod tests {
                 Some(TEST_PUBLIC_KEY.into()),
             ),
             PublishedHash::Unpublished,
+        );
+    }
+
+    #[test]
+    fn peer_build_warning_never_changes_send_permission() {
+        let normal = verify_peer_build_integrity(PublishedHash::Published);
+        let changed = verify_peer_build_integrity(PublishedHash::Unpublished);
+
+        assert_eq!(normal.state, PeerBuildState::Normal);
+        assert_eq!(normal.warning, None);
+        assert_eq!(changed.state, PeerBuildState::ChangedBuildWarning);
+        assert_eq!(changed.warning.as_deref(), Some("changed-build-warning"));
+        assert_eq!(normal.send_permission, changed.send_permission);
+        assert!(normal.send_permission);
+
+        println!(
+            "TASK1357 direct_command=verify_peer_build_integrity normal_state={} changed_state={} changed_warning={} normal_send_permission={} changed_send_permission={} identical_send_permission={}",
+            normal.state.as_str(),
+            changed.state.as_str(),
+            changed.warning.as_deref().unwrap_or("none"),
+            normal.send_permission,
+            changed.send_permission,
+            normal.send_permission == changed.send_permission
         );
     }
 }

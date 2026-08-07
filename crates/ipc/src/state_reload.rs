@@ -339,11 +339,13 @@ pub fn reload_encrypted_state_after_unlock(
     };
     if prefs_path.exists() {
         let prefs = crate::app_preferences::load_app_preferences(&prefs_path);
+        let next_generation_message_policy = prefs.next_generation_message_policy;
         report.app_prefs_loaded = true;
         *state
             .app_preferences
             .lock()
             .expect("app_preferences mutex poisoned") = prefs;
+        state.set_rn_wire_in_enabled(next_generation_message_policy.rn_wire_in_enabled());
     }
 
     // 9-PEER-MAP-ENC: retroactive re-encryption of plaintext peer_map.

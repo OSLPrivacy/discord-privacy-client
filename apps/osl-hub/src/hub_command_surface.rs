@@ -35,6 +35,8 @@ use crate::service_host::ActiveServiceHost;
 use crate::website_driver::{WebsiteDriver, WebsitePageRequest};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
+use serde::{Deserialize, Serialize};
+use std::sync::{Condvar, Mutex};
 
 pub fn build_review_ui_identity_binding_verifier(
     core: &HubCoreState,
@@ -231,6 +233,109 @@ pub struct CheckedHost {
     pub active: ActiveServiceHost,
     pub owner_osl_user_id: String,
     pub scope_binding: String,
+}
+
+pub const ACTIVE_ACCOUNT_SCAN_QUEUED_LOG: &str =
+    "active-account-scan queued: service connection action already in flight";
+pub const ACTIVE_ACCOUNT_SCAN_ACTION_STARTED_LOG: &str =
+    "active-account-scan service connection action started";
+pub const ACTIVE_ACCOUNT_SCAN_ACTION_FINISHED_LOG: &str =
+    "active-account-scan service connection action finished";
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ActiveAccountScanQueueLog {
+    pub events: Vec<String>,
+    pub queued_requests: usize,
+    pub max_service_connection_actions_in_flight: usize,
+}
+
+#[derive(Default)]
+struct ActiveAccountScanQueueState {
+    service_connection_action_in_flight: bool,
+    service_connection_actions_in_flight: usize,
+    max_service_connection_actions_in_flight: usize,
+    queued_requests: usize,
+    events: Vec<String>,
+}
+
+pub struct ActiveAccountScanQueue {
+    state: Mutex<ActiveAccountScanQueueState>,
+    available: Condvar,
+}
+
+impl Default for ActiveAccountScanQueue {
+    fn default() -> Self {
+        Self {
+            state: Mutex::new(ActiveAccountScanQueueState::default()),
+            available: Condvar::new(),
+        }
+    }
+}
+
+impl ActiveAccountScanQueue {
+    pub fn run_service_connection_action<R>(
+        &self,
+        action: impl FnOnce() -> Result<R, String>,
+    ) -> Result<R, String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "active account scan queue is unavailable".to_owned())?;
+        if state.service_connection_action_in_flight {
+            state.queued_requests = state.queued_requests.saturating_add(1);
+            state.events.push(ACTIVE_ACCOUNT_SCAN_QUEUED_LOG.to_owned());
+        }
+        while state.service_connection_action_in_flight {
+            state = self
+                .available
+                .wait(state)
+                .map_err(|_| "active account scan queue is unavailable".to_owned())?;
+        }
+        state.service_connection_action_in_flight = true;
+        state.service_connection_actions_in_flight =
+            state.service_connection_actions_in_flight.saturating_add(1);
+        state.max_service_connection_actions_in_flight = state
+            .max_service_connection_actions_in_flight
+            .max(state.service_connection_actions_in_flight);
+        state
+            .events
+            .push(ACTIVE_ACCOUNT_SCAN_ACTION_STARTED_LOG.to_owned());
+        drop(state);
+
+        let _guard = ActiveAccountScanQueueGuard { queue: self };
+        action()
+    }
+
+    pub fn log(&self) -> Result<ActiveAccountScanQueueLog, String> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| "active account scan queue is unavailable".to_owned())?;
+        Ok(ActiveAccountScanQueueLog {
+            events: state.events.clone(),
+            queued_requests: state.queued_requests,
+            max_service_connection_actions_in_flight: state
+                .max_service_connection_actions_in_flight,
+        })
+    }
+}
+
+struct ActiveAccountScanQueueGuard<'a> {
+    queue: &'a ActiveAccountScanQueue,
+}
+
+impl Drop for ActiveAccountScanQueueGuard<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.queue.state.lock() {
+            state.service_connection_actions_in_flight =
+                state.service_connection_actions_in_flight.saturating_sub(1);
+            state.service_connection_action_in_flight = false;
+            state
+                .events
+                .push(ACTIVE_ACCOUNT_SCAN_ACTION_FINISHED_LOG.to_owned());
+            self.queue.available.notify_one();
+        }
+    }
 }
 
 impl CheckedHost {
@@ -634,6 +739,48 @@ pub fn service_kind_id(kind: ServiceKind) -> &'static str {
     }
 }
 
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceTermsAddress {
+    pub service_id: &'static str,
+    pub terms_address: &'static str,
+}
+
+pub fn service_terms_address(service_id: &str) -> Result<ServiceTermsAddress, String> {
+    let service_kind = crate::services::service_kind_from_id(service_id)
+        .ok_or_else(|| "unknown service".to_owned())?;
+    Ok(ServiceTermsAddress {
+        service_id: service_kind_id(service_kind),
+        terms_address: terms_address_for_service(service_kind),
+    })
+}
+
+pub fn supported_service_terms_addresses() -> Vec<ServiceTermsAddress> {
+    [
+        ServiceKind::Discord,
+        ServiceKind::Telegram,
+        ServiceKind::WhatsApp,
+        ServiceKind::Email,
+        ServiceKind::Signal,
+    ]
+    .into_iter()
+    .map(|service_kind| ServiceTermsAddress {
+        service_id: service_kind_id(service_kind),
+        terms_address: terms_address_for_service(service_kind),
+    })
+    .collect()
+}
+
+fn terms_address_for_service(kind: ServiceKind) -> &'static str {
+    match kind {
+        ServiceKind::Discord => "https://discord.com/terms",
+        ServiceKind::Telegram => "https://telegram.org/tos",
+        ServiceKind::WhatsApp => "https://www.whatsapp.com/legal/terms-of-service",
+        ServiceKind::Email => "https://policies.google.com/terms",
+        ServiceKind::Signal => "https://signal.org/legal/",
+    }
+}
+
 /*
 tauri::generate_handler![
 */
@@ -645,6 +792,8 @@ macro_rules! hub_tauri_commands {
             ai_carrier_status,
             set_ai_carrier_preview_enabled,
             build_integrity_status,
+            installed_build_version_record,
+            verify_peer_build_integrity,
             list_hub_app_notifications,
             set_hub_notifications_enabled,
             set_hub_screenshot_protection,
@@ -666,6 +815,10 @@ macro_rules! hub_tauri_commands {
             get_discord_scrub_consent_facts,
             continue_discord_scrub_after_risk_agreement,
             list_linked_services,
+            list_scrub_accounts,
+            record_connected_app_own_names,
+            get_connected_app_own_names,
+            correct_connected_app_own_names,
             get_core_readiness,
             list_core_features,
             get_hub_license_state,
@@ -765,6 +918,7 @@ macro_rules! hub_tauri_commands {
             list_osl_chat_history,
             search_osl_chat_history,
             open_osl_chat_history_result,
+            query_osl_chat_visible_records,
             select_osl_chat_attachment,
             list_osl_chat_attachments,
             intake_osl_chat_clipboard_image,
@@ -780,6 +934,7 @@ macro_rules! hub_tauri_commands {
             focus_mullvad_window,
             restore_mullvad_window,
             create_service_account,
+            get_service_terms_address,
             open_service_host,
             request_hosted_session_scan_command,
             scan_discord_own_messages_for_deletion,
@@ -805,6 +960,7 @@ macro_rules! hub_tauri_commands {
             export_hub_friend_code,
             copy_hub_friend_invite,
             add_hub_friend,
+            create_one_use_invite_link,
             claim_hub_username,
             get_hub_username_status,
             add_hub_friend_by_username,
@@ -815,6 +971,16 @@ macro_rules! hub_tauri_commands {
             remove_hub_friend,
             list_hub_people,
             set_hub_friend_nickname,
+            add_group_member_permission,
+            remove_group_member_permission,
+            list_group_member_permissions,
+            add_allowed_place_record,
+            remove_allowed_place_record,
+            query_allowed_place_record,
+            list_allowed_place_records,
+            query_allowed_place_allowed,
+            compare_allowed_place_direction_state,
+            list_whatsapp_whitelist_kinds,
             set_active_hub_friend_permission,
             set_active_hub_friend_reach,
             revoke_active_hub_friend_scope,
@@ -828,6 +994,8 @@ macro_rules! hub_tauri_commands {
             execute_hub_full_cleanup,
             get_hub_service_burn_readiness,
             burn_hub_service_account,
+            get_hub_remove_everything_readiness,
+            remove_everything_for_current_account,
             burn_active_hub_context,
             get_hub_revocation_status
         }
@@ -1798,6 +1966,9 @@ mod tauri_registration_surface_tests {
     use crate::identity_binding_verifier::BindingEvidence;
     use std::cell::{Cell, RefCell};
     use std::collections::{BTreeMap, BTreeSet};
+    use std::sync::{mpsc, Arc};
+    use std::thread;
+    use std::time::{Duration, Instant};
 
     fn handler_commands() -> BTreeSet<String> {
         hub_tauri_commands!(hub_tauri_command_names)
@@ -2035,18 +2206,21 @@ mod tauri_registration_surface_tests {
 
     #[test]
     fn create_osl_chat_group_conversation_is_registered_and_granted() {
+    fn osl_chat_visible_record_query_is_registered_and_granted() {
         let (handlers, permissions, capability) = registration_inputs();
         assert_registered_and_granted(
             &handlers,
             &permissions,
             &capability,
             "create_osl_chat_group_conversation",
+            "query_osl_chat_visible_records",
         );
         assert_each_registration_surface_is_required(
             &handlers,
             &permissions,
             &capability,
             &["create_osl_chat_group_conversation"],
+            &["query_osl_chat_visible_records"],
         );
     }
 
@@ -2058,6 +2232,13 @@ mod tauri_registration_surface_tests {
             &permissions,
             &capability,
             &["search_osl_chat_history", "open_osl_chat_history_result"],
+    fn peer_build_integrity_command_is_registered_and_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_registered_and_granted(
+            &handlers,
+            &permissions,
+            &capability,
+            "verify_peer_build_integrity",
         );
     }
 
@@ -2349,6 +2530,50 @@ mod tauri_registration_surface_tests {
             .len(),
             1,
             "explicit consent must hydrate only the exact owner/browser/profile/import scope"
+        );
+    }
+
+    #[test]
+    fn list_scrub_accounts_is_registered_and_acl_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_registered_and_granted(&handlers, &permissions, &capability, "list_scrub_accounts");
+    }
+
+    #[test]
+    fn group_member_permission_commands_are_registered_and_acl_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        for command in [
+            "add_group_member_permission",
+            "remove_group_member_permission",
+            "list_group_member_permissions",
+            "add_allowed_place_record",
+            "remove_allowed_place_record",
+            "query_allowed_place_record",
+            "list_allowed_place_records",
+            "query_allowed_place_allowed",
+            "compare_allowed_place_direction_state",
+            "list_whatsapp_whitelist_kinds",
+            "create_one_use_invite_link",
+        ] {
+            assert_registered_and_granted(&handlers, &permissions, &capability, command);
+        }
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &[
+                "add_group_member_permission",
+                "remove_group_member_permission",
+                "list_group_member_permissions",
+                "add_allowed_place_record",
+                "remove_allowed_place_record",
+                "query_allowed_place_record",
+                "list_allowed_place_records",
+                "query_allowed_place_allowed",
+                "compare_allowed_place_direction_state",
+                "list_whatsapp_whitelist_kinds",
+                "create_one_use_invite_link",
+            ],
         );
     }
 
@@ -2820,6 +3045,70 @@ mod tauri_registration_surface_tests {
             missing_checked_host_events.into_inner(),
             ["checked-host"],
             "the hosted scan route must build CheckedHost before binding, scanning, or returning success"
+        );
+    }
+
+    #[test]
+    fn task_1429_concurrent_active_account_scans_queue_second_request_without_overlap() {
+        let queue = Arc::new(ActiveAccountScanQueue::default());
+        let first_queue = Arc::clone(&queue);
+        let second_queue = Arc::clone(&queue);
+        let (first_started_tx, first_started_rx) = mpsc::channel();
+        let (release_first_tx, release_first_rx) = mpsc::channel();
+
+        let first = thread::spawn(move || {
+            first_queue.run_service_connection_action(|| {
+                first_started_tx.send(()).unwrap();
+                release_first_rx.recv().unwrap();
+                Ok::<_, String>("first")
+            })
+        });
+        first_started_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("first active account scan action must start");
+
+        let second = thread::spawn(move || {
+            second_queue.run_service_connection_action(|| Ok::<_, String>("second"))
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let log = queue.log().expect("read active account scan queue log");
+            if log.queued_requests == 1 {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the second active account scan request was not queued; log={:?}",
+                log.events
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        release_first_tx.send(()).unwrap();
+        assert_eq!(first.join().unwrap().unwrap(), "first");
+        assert_eq!(second.join().unwrap().unwrap(), "second");
+
+        let log = queue
+            .log()
+            .expect("read final active account scan queue log");
+        println!(
+            "TASK1429 second_request_status=queued queued_requests={} max_service_connection_actions_in_flight={} logs={}",
+            log.queued_requests,
+            log.max_service_connection_actions_in_flight,
+            log.events.join(" | ")
+        );
+        assert_eq!(log.queued_requests, 1);
+        assert_eq!(log.max_service_connection_actions_in_flight, 1);
+        assert_eq!(
+            log.events,
+            [
+                ACTIVE_ACCOUNT_SCAN_ACTION_STARTED_LOG,
+                ACTIVE_ACCOUNT_SCAN_QUEUED_LOG,
+                ACTIVE_ACCOUNT_SCAN_ACTION_FINISHED_LOG,
+                ACTIVE_ACCOUNT_SCAN_ACTION_STARTED_LOG,
+                ACTIVE_ACCOUNT_SCAN_ACTION_FINISHED_LOG,
+            ]
         );
     }
 
