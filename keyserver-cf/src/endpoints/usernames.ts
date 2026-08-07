@@ -149,6 +149,13 @@ export async function handleUsernameClaim(request: Request, env: Env): Promise<R
   }
   let result: D1Result[];
   try {
+    const proofRecord = JSON.stringify({
+      username,
+      user_id: userId,
+      request_id: body.request_id,
+      signature_b64: body.signature_b64,
+      timestamp_ms: body.timestamp_ms,
+    });
     result = await env.DB.batch([
       env.DB.prepare("DELETE FROM username_claim_receipts WHERE expires_at < ?").bind(Math.floor(Date.now() / 1000)),
       env.DB.prepare(
@@ -192,6 +199,17 @@ export async function handleUsernameClaim(request: Request, env: Env): Promise<R
            friend_code = excluded.friend_code, updated_at = excluded.updated_at
          WHERE username_directory.user_id = excluded.user_id`,
       ).bind(username, userId, body.friend_code, now, digest, skeleton),
+      env.DB.prepare(
+        `INSERT INTO saved_names
+           (public_name, public_identity_key, proof_record, claimed_at)
+         SELECT ?1, ?2, ?3, ?4
+          WHERE EXISTS (SELECT 1 FROM username_claim_receipts WHERE user_id = ?5 AND request_digest = ?6)
+         ON CONFLICT(public_identity_key) DO UPDATE SET
+           public_name = excluded.public_name,
+           public_identity_key = excluded.public_identity_key,
+           proof_record = excluded.proof_record,
+           claimed_at = excluded.claimed_at`,
+      ).bind(username, current.ik_ed25519_pub, proofRecord, now, userId, digest),
     ]);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -202,5 +220,6 @@ export async function handleUsernameClaim(request: Request, env: Env): Promise<R
   }
   if ((result[1]?.meta?.changes ?? 0) !== 1) return conflict("username claim replayed or identity changed");
   if ((result[3]?.meta?.changes ?? 0) !== 1) return conflict("username is unavailable");
+  if ((result[4]?.meta?.changes ?? 0) !== 1) return conflict("saved name unavailable");
   return json({ username, user_id: userId }, { status: 200 });
 }

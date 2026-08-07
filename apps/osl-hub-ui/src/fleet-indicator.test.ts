@@ -66,6 +66,11 @@ const openFleet = {
   contract: "autoscrubRunFleet.v1",
   openRunCount: 2,
   globalStopRequested: false,
+  stopConfirmation: {
+    required: false,
+    keepScanningLabel: "Keep scanning",
+    stopNowLabel: "Stop now",
+  },
   unattendedExecutionAllowed: false,
   quitGuard: {
     state: "notRequested",

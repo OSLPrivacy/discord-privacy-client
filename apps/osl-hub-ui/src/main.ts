@@ -748,6 +748,7 @@ const hiddenHomeTilesStorageKey = "osl-home-tile-hidden-v1";
 const savedAccountModeStorageKey = "osl-saved-account-mode-v1";
 const savedNativeAppsStorageKey = "osl-saved-native-apps-v1";
 const detectedAccountChoicesStorageKey = "osl-detected-account-choices-v1";
+const HOME_TILE_ARRANGEMENT_REFUSAL = "Home must keep at least one tile visible.";
 const discordSessionModeStorageKey = "osl-discord-session-mode-v1";
 const telegramSessionModeStorageKey = "osl-telegram-session-mode-v1";
 const signalSessionModeStorageKey = "osl-signal-session-mode-v1";
@@ -2956,6 +2957,8 @@ function identityPasswordForm(title: string, action: string, mode: "setup" | "un
   // the app through. See `unlock-screen-single-credential.test.ts`.
   if (!setup) return `<section class="unlock-card" aria-labelledby="route-heading"><div class="unlock-logo-stage" aria-hidden="true"><img class="osl-logo logo-treatment" src="${oslVectorLogoUrl}" alt=""/></div><h1 id="route-heading" tabindex="-1">Sign in</h1><form class="password-form unlock-form" id="identity-password-form" data-password-mode="unlock" novalidate><label class="sr-only" for="identity-password">Password</label><div class="password-input-row"><input id="identity-password" type="password" minlength="6" maxlength="128" autocomplete="current-password" placeholder="Password" required aria-describedby="password-error" autofocus/><button class="password-eye" type="button" data-password-toggle="identity-password" aria-controls="identity-password" aria-label="Show password">${passwordEyeIcon()}</button></div><p class="unlock-error" id="password-error" role="alert"></p><button class="button primary" id="identity-password-submit" type="submit" disabled>Unlock</button></form><button class="signin-link" type="button" data-onboarding="account-recovery">Forgot password?</button><button class="text-back" data-onboarding="welcome">← Back</button></section>`;
   return `<h1 id="route-heading" class="password-screen-title" tabindex="-1">${title}</h1><form class="setup-surface password-form password-screen" id="identity-password-form" data-password-mode="setup" novalidate><label for="identity-password">Password</label><div class="password-input-row"><input id="identity-password" type="password" minlength="6" maxlength="128" autocomplete="new-password" required aria-describedby="password-help password-error"/><button class="password-eye" type="button" data-password-toggle="identity-password" aria-controls="identity-password" aria-label="Show password">${passwordEyeIcon()}</button></div><small id="password-help">6 minimum. 12+ suggested.</small><label for="identity-password-confirm">Confirm password</label><div class="password-input-row"><input id="identity-password-confirm" type="password" minlength="6" maxlength="128" autocomplete="new-password" required/><button class="password-eye" type="button" data-password-toggle="identity-password-confirm" aria-controls="identity-password-confirm" aria-label="Show password">${passwordEyeIcon()}</button></div><p class="unlock-error" id="password-error" role="alert"></p><button class="signin-unlock" id="identity-password-submit" type="submit" disabled><span class="signin-unlock-label">${action}</span>${signinArrowIcon()}</button></form><button class="text-back password-screen-back" data-onboarding="welcome">← Back</button>`;
+  if (!setup) return `<section class="unlock-card" aria-labelledby="route-heading"><div class="unlock-logo-stage" aria-hidden="true"><img class="osl-logo logo-treatment" src="${oslVectorLogoUrl}" alt=""/></div><h1 id="route-heading" tabindex="-1">Unlock</h1><form class="password-form unlock-form" id="identity-password-form" data-password-mode="unlock" novalidate><label class="sr-only" for="identity-password">Password</label><div class="password-input-row"><input id="identity-password" type="password" minlength="6" maxlength="128" autocomplete="current-password" placeholder="Password" required aria-describedby="password-error" autofocus/><button class="password-eye" type="button" data-password-toggle="identity-password" aria-controls="identity-password" aria-label="Show password">${passwordEyeIcon()}</button></div><p class="unlock-error" id="password-error" role="alert"></p><button class="button primary" id="identity-password-submit" type="submit" disabled>Unlock</button></form><button class="signin-link" type="button" data-onboarding="account-recovery">Forgot password</button><button class="text-back" data-onboarding="welcome">Back</button></section>`;
+  return `<h1 id="route-heading" class="password-screen-title" tabindex="-1">${title}</h1><form class="setup-surface password-form password-screen" id="identity-password-form" data-password-mode="setup" novalidate><label for="identity-password">Password</label><div class="password-input-row"><input id="identity-password" type="password" minlength="6" maxlength="128" autocomplete="new-password" required aria-describedby="password-help password-error"/><button class="password-eye" type="button" data-password-toggle="identity-password" aria-controls="identity-password" aria-label="Show password">${passwordEyeIcon()}</button></div><small id="password-help">6 minimum. 12+ suggested.</small><label for="identity-password-confirm">Confirm</label><div class="password-input-row"><input id="identity-password-confirm" type="password" minlength="6" maxlength="128" autocomplete="new-password" required/><button class="password-eye" type="button" data-password-toggle="identity-password-confirm" aria-controls="identity-password-confirm" aria-label="Show password">${passwordEyeIcon()}</button></div><p class="unlock-error" id="password-error" role="alert"></p><button class="signin-unlock" id="identity-password-submit" type="submit" disabled><span class="signin-unlock-label">${action}</span>${signinArrowIcon()}</button></form><button class="text-back password-screen-back" data-onboarding="welcome">← Back</button>`;
 }
 
 export function sendingSetupContent(): string {
@@ -3034,8 +3037,9 @@ function mullvadSetupContent(): string {
       : "Mullvad or Windows App Installer was not found";
   const action = found
     ? `<button class="mv-action" id="found-session-mullvad" type="button" ${mullvadBusy ? "disabled" : ""}>${mullvadBusy ? "Checking…" : "Found session"}</button>`
+    ? `<button class="mv-action" id="open-mullvad" type="button" ${mullvadBusy ? "disabled" : ""}>${mullvadBusy ? "Opening…" : "found session"}</button>`
     : availability === "installable"
-      ? `<button class="mv-action" id="install-mullvad" type="button" ${mullvadBusy ? "disabled" : ""}>${mullvadBusy ? "Starting…" : "Install"}</button>`
+      ? `<button class="mv-action" id="install-mullvad" type="button" ${mullvadBusy ? "disabled" : ""}>${mullvadBusy ? "Starting…" : "install"}</button>`
       : "";
   const notice = mullvadSetupNotice
     ? `<p class="mullvad-setup-notice" role="status">${escapeHtml(mullvadSetupNotice)}</p>`
@@ -8353,6 +8357,27 @@ function currentHomeTileIds(): string[] {
   ];
 }
 
+type HomeTileArrangementSaveResult = {
+  saved: boolean;
+  error: string | null;
+  hiddenIds: string[];
+};
+
+function checkHomeTileArrangement(hiddenIds: ReadonlySet<string>): string | null {
+  const current = currentHomeTileIds();
+  return current.some((id) => !hiddenIds.has(id)) ? null : HOME_TILE_ARRANGEMENT_REFUSAL;
+}
+
+function saveHomeTileArrangement(nextHiddenHomeTiles: ReadonlySet<string>): HomeTileArrangementSaveResult {
+  const current = currentHomeTileIds();
+  const hidden = new Set([...nextHiddenHomeTiles].filter((id) => current.includes(id)));
+  const error = checkHomeTileArrangement(hidden);
+  if (error) return { saved: false, error, hiddenIds: [...hidden] };
+  hiddenHomeTiles = hidden;
+  saveHomeTilePreferences();
+  return { saved: true, error: null, hiddenIds: [...hiddenHomeTiles] };
+}
+
 function moveHomeTile(raw: string): void {
   const separator = raw.lastIndexOf(":");
   const id = raw.slice(0, separator);
@@ -8384,8 +8409,13 @@ function reorderHomeTile(sourceId: string | null, targetId: string | null): void
 
 function toggleHomeTile(id: string): void {
   if (!currentHomeTileIds().includes(id)) return;
-  if (hiddenHomeTiles.has(id)) hiddenHomeTiles.delete(id); else hiddenHomeTiles.add(id);
-  saveHomeTilePreferences();
+  const nextHiddenHomeTiles = new Set(hiddenHomeTiles);
+  if (nextHiddenHomeTiles.has(id)) nextHiddenHomeTiles.delete(id); else nextHiddenHomeTiles.add(id);
+  const result = saveHomeTileArrangement(nextHiddenHomeTiles);
+  if (!result.saved) {
+    showToast(result.error ?? HOME_TILE_ARRANGEMENT_REFUSAL);
+    return;
+  }
   render();
 }
 
@@ -8674,7 +8704,8 @@ async function sendOslChat(event: SubmitEvent): Promise<void> {
   const context = activeOslChatContext;
   const personId = activeOslChatPersonId;
   const draft = oslChatDraft;
-  if (!context?.scopeApproved || !personId || oslChatBusy || !isHubPlaintext(draft) || refuseOfflineCapability("sendMessage")) return;
+  const handshakeConfirmed = personId ? oslChatHandshakeConfirmed(oslChatMessages.get(personId) ?? []) : false;
+  if (!context?.scopeApproved || !personId || !handshakeConfirmed || oslChatBusy || !isHubPlaintext(draft) || refuseOfflineCapability("sendMessage")) return;
   const epoch = oslChatOperationEpoch;
   oslChatBusy = true;
   render();
@@ -10271,6 +10302,9 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
     : null;
   serviceAccountPickerOpen = false;
   friendsDialogOpen = false;
+  homeEditMode = false;
+  homeTileOrder = [];
+  hiddenHomeTiles.clear();
   ownedConfirmation = null;
   ownedConfirmationBusy = false;
   ownedConfirmationError = "";
@@ -10329,6 +10363,12 @@ export const __oslHubUiTest = {
   renderWorkspaceContent(destination?: Route): string {
     if (destination) route = destination;
     return workspaceContent();
+  },
+  homeTileIdsForTest(): string[] {
+    return currentHomeTileIds();
+  },
+  saveHomeTileArrangementForTest(hiddenIds: string[]): HomeTileArrangementSaveResult {
+    return saveHomeTileArrangement(new Set(hiddenIds));
   },
   renderSettingsSection(section: SettingsSection): string {
     route = "settings";

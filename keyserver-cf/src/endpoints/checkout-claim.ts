@@ -3,6 +3,7 @@ import {
   acknowledgeStripeClaimDelivery,
   getStripeCheckoutClaim,
   markStripeClaimFetched,
+  repairPaidOneTimeCheckoutClaimWithoutCode,
   stripeClaimMatches,
   validClaimToken,
 } from "../lib/stripe-checkout-claims.js";
@@ -42,6 +43,7 @@ export async function handleCheckoutClaim(request: Request, env: Env): Promise<R
   if (claim.status !== "delivery_ready") {
     return json({ status: "pending", retry_after_seconds: 2 });
   }
+  await repairPaidOneTimeCheckoutClaimWithoutCode(env.DB, claim.session_id);
   if (body.acknowledge_delivery === true) {
     const result = await acknowledgeStripeClaimDelivery(env.DB, claim.session_id);
     if (result === "not_ready") return gone("checkout claim is not deliverable");

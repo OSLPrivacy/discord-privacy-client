@@ -72,6 +72,7 @@ export interface ManualPeerContext {
   personId: string;
   peerOslUserId: string;
   scopeApproved: boolean;
+  suggestion?: "offer_approval";
 }
 export interface PreparedPeerProseText {
   coverText: string;
@@ -1829,13 +1830,14 @@ export function parseLocalLoopbackContext(raw: unknown): LocalLoopbackContext | 
 }
 
 export function parseManualPeerContext(raw: unknown): ManualPeerContext | null {
-  if (!isRecord(raw) || !exact(raw, ["contextToken", "serviceId", "accountId", "personId", "peerOslUserId", "scopeApproved"])) return null;
+  if (!isRecord(raw) || !(exact(raw, ["contextToken", "serviceId", "accountId", "personId", "peerOslUserId", "scopeApproved"]) || exact(raw, ["contextToken", "serviceId", "accountId", "personId", "peerOslUserId", "scopeApproved", "suggestion"]))) return null;
   if (!safeContextToken(raw.contextToken)
     || !safeId(raw.serviceId, 32)
     || !isContextId(raw.accountId)
     || !safe(raw.personId, 180)
     || !isContextId(raw.peerOslUserId)
-    || typeof raw.scopeApproved !== "boolean") return null;
+    || typeof raw.scopeApproved !== "boolean"
+    || (raw.suggestion !== undefined && raw.suggestion !== "offer_approval")) return null;
   return raw as unknown as ManualPeerContext;
 }
 

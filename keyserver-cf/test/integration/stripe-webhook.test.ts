@@ -7,6 +7,13 @@ import {
   uniqueSubId,
 } from "./helpers-stripe.js";
 import { sha256Hex } from "../../src/lib/crypto-watcher-auth.js";
+import {
+  ONE_TIME_PRO_AMOUNT_CENTS,
+  ONE_TIME_PRO_AMOUNT_REFUSAL,
+  ONE_TIME_PRO_CURRENCY,
+  ONE_TIME_PRO_CURRENCY_REFUSAL,
+} from "../../src/lib/subscription-state.js";
+import { repairPaidOneTimeCheckoutClaimsWithoutCodes } from "../../src/lib/stripe-checkout-claims.js";
 
 function browserClaimToken(): string {
   const bytes = new Uint8Array(32);
@@ -14,6 +21,17 @@ function browserClaimToken(): string {
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+async function insertPendingCheckoutClaim(sessionId: string, licenseHash: string): Promise<void> {
+  const now = Math.floor(Date.now() / 1000);
+  await env.DB.prepare(
+    `INSERT INTO stripe_checkout_claims (
+       session_id, claim_hash, delivery_public_key_spki,
+       encrypted_license, license_hash, subscription_id, status,
+       created_at, expires_at, delivered_at
+     ) VALUES (?, ?, 'public-key', 'ciphertext', ?, NULL, 'pending', ?, ?, NULL)`,
+  ).bind(sessionId, `claim-${sessionId}`, licenseHash, now, now + 3600).run();
 }
 
 describe("POST /v1/stripe/webhook signature", () => {
@@ -347,6 +365,16 @@ describe("POST /v1/stripe/webhook state machine", () => {
       [confirmedSessionId, confirmedLicenseHash],
       [unconfirmedSessionId, unconfirmedLicenseHash],
     ] as const) {
+  it("TASK3198 repairs paid one-time checkout claims without codes exactly once", async () => {
+    const prefix = `task3198_${crypto.randomUUID().replace(/-/g, "")}`;
+    const now = Math.floor(Date.now() / 1000);
+    const sessionIds: string[] = [];
+    const licenseHashes: string[] = [];
+    for (let i = 0; i < 3; i += 1) {
+      const sessionId = `cs_live_${prefix}_${i}`;
+      const licenseHash = `${prefix}_license_${i}`;
+      sessionIds.push(sessionId);
+      licenseHashes.push(licenseHash);
       await env.DB.prepare(
         `INSERT INTO stripe_checkout_claims (
            session_id, claim_hash, delivery_public_key_spki,
@@ -430,6 +458,72 @@ describe("POST /v1/stripe/webhook state machine", () => {
         `unconfirmed_fixture_payment=unpaid unconfirmed_codes=${counts?.unconfirmed_codes} ` +
         `unconfirmed_claim_status=${unconfirmedClaim?.status}`,
     );
+         ) VALUES (?, ?, 'public-key', 'ciphertext', ?, ?, 'delivery_ready', ?, ?, NULL)`,
+      ).bind(
+        sessionId,
+        `claim-${prefix}-${i}`,
+        licenseHash,
+        `pi_${prefix}_${i}`,
+        now,
+        now + 3600,
+      ).run();
+    }
+
+    const codeCount = async () => {
+      const row = await env.DB.prepare(
+        `SELECT COUNT(*) AS count
+           FROM licenses
+          WHERE license_hash IN (?, ?, ?)`,
+      ).bind(...licenseHashes).first<{ count: number }>();
+      return row?.count ?? 0;
+    };
+    const joinedRows = async () => await env.DB.prepare(
+      `SELECT
+         stripe_checkout_claims.session_id,
+         stripe_checkout_claims.subscription_id AS payment_intent_id,
+         licenses.license_hash,
+         licenses.subscription_id AS entitlement_id
+       FROM licenses
+       JOIN stripe_checkout_claims
+         ON stripe_checkout_claims.license_hash = licenses.license_hash
+      WHERE stripe_checkout_claims.session_id IN (?, ?, ?)
+      ORDER BY stripe_checkout_claims.session_id`,
+    ).bind(...sessionIds).all<{
+      session_id: string;
+      payment_intent_id: string;
+      license_hash: string;
+      entitlement_id: string;
+    }>();
+
+    const before = await codeCount();
+    const firstRepair = await repairPaidOneTimeCheckoutClaimsWithoutCodes(env.DB);
+    const afterFirst = await codeCount();
+    const secondRepair = await repairPaidOneTimeCheckoutClaimsWithoutCodes(env.DB);
+    const afterSecond = await codeCount();
+    const joined = (await joinedRows()).results ?? [];
+    const distinctPaidRecords = new Set(joined.map((row) => row.session_id)).size;
+
+    expect(before).toBe(0);
+    expect(firstRepair).toBe(3);
+    expect(afterFirst).toBe(3);
+    expect(secondRepair).toBe(0);
+    expect(afterSecond).toBe(3);
+    expect(joined).toHaveLength(3);
+    expect(distinctPaidRecords).toBe(3);
+    expect(new Set(joined.map((row) => row.license_hash)).size).toBe(3);
+    for (const row of joined) {
+      expect(row.payment_intent_id).toMatch(/^pi_/);
+      expect(row.entitlement_id).toBe(`lic_${row.license_hash}`);
+      expect(row.entitlement_id).not.toBe(row.payment_intent_id);
+    }
+
+    console.log(`TASK3198 code_count_before=${before}`);
+    console.log(`TASK3198 repair_first=${firstRepair}`);
+    console.log(`TASK3198 code_count_after_first=${afterFirst}`);
+    console.log(`TASK3198 repair_second=${secondRepair}`);
+    console.log(`TASK3198 code_count_after_second=${afterSecond}`);
+    console.log(`TASK3198 distinct_paid_records_joined=${distinctPaidRecords}`);
+    console.log("TASK3198 every_code_joined_to_different_paid_record=true");
   });
 
   it.each([
@@ -579,48 +673,192 @@ describe("POST /v1/stripe/webhook state machine", () => {
     ).bind(sessionId).first()).toBeNull();
   });
 
-  it("does not activate a paid checkout for the wrong amount", async () => {
-    const sessionId = `cs_live_wrong_amount_${crypto.randomUUID().replace(/-/g, "")}`;
-    const paymentIntentId = `pi_${crypto.randomUUID().replace(/-/g, "")}`;
-    const now = Math.floor(Date.now() / 1000);
-    await env.DB.prepare(
-      `INSERT INTO stripe_checkout_claims (
-         session_id, claim_hash, delivery_public_key_spki,
-         encrypted_license, license_hash, subscription_id, status,
-         created_at, expires_at, delivered_at
-       ) VALUES (?, ?, 'public-key', 'ciphertext', ?, NULL, 'pending', ?, ?, NULL)`,
-    ).bind(
-      sessionId,
-      `claim-${sessionId}`,
-      `license-${sessionId}`,
-      now,
-      now + 3600,
-    ).run();
-
-    const response = await postSignedWebhook(SELF, {
-      id: uniqueEventId(),
-      type: "checkout.session.completed",
-      data: {
-        object: {
-          id: sessionId,
-          mode: "payment",
-          metadata: { osl_plan: "pro", osl_purchase: "one-time", osl_fulfillment: "instant-v1" },
-          payment_status: "paid",
-          payment_intent: paymentIntentId,
-          amount_total: 600,
-          currency: "usd",
-        },
+  it("TASK3190 refuses one-time Pro callbacks unless amount and currency match the bought price", async () => {
+    const cases = [
+      {
+        name: "exact",
+        amount: ONE_TIME_PRO_AMOUNT_CENTS,
+        currency: ONE_TIME_PRO_CURRENCY,
+        accepted: true,
+        reason: undefined,
       },
+      {
+        name: "one_cent_under",
+        amount: ONE_TIME_PRO_AMOUNT_CENTS - 1,
+        currency: ONE_TIME_PRO_CURRENCY,
+        accepted: false,
+        reason: ONE_TIME_PRO_AMOUNT_REFUSAL,
+      },
+      {
+        name: "right_number_wrong_currency",
+        amount: ONE_TIME_PRO_AMOUNT_CENTS,
+        currency: "eur",
+        accepted: false,
+        reason: ONE_TIME_PRO_CURRENCY_REFUSAL,
+      },
+    ] as const;
+
+    for (const testCase of cases) {
+      const sessionId = `cs_live_task3190_${testCase.name}_${crypto.randomUUID().replace(/-/g, "")}`;
+      const paymentIntentId = `pi_task3190_${testCase.name}_${crypto.randomUUID().replace(/-/g, "")}`;
+      const licenseHash = `license-${sessionId}`;
+      await insertPendingCheckoutClaim(sessionId, licenseHash);
+
+      const response = await postSignedWebhook(SELF, {
+        id: uniqueEventId(),
+        type: "checkout.session.completed",
+        data: {
+          object: {
+            id: sessionId,
+            mode: "payment",
+            metadata: {
+              osl_plan: "pro",
+              osl_purchase: "one-time",
+              osl_fulfillment: "instant-v1",
+            },
+            payment_status: "paid",
+            payment_intent: paymentIntentId,
+            amount_total: testCase.amount,
+            currency: testCase.currency,
+          },
+        },
+      });
+      expect(response.status).toBe(200);
+      const body = await response.json() as { kind: string; reason?: string };
+      expect(body.kind).toBe(testCase.accepted ? "applied" : "noop");
+      if (testCase.reason) expect(body.reason).toBe(testCase.reason);
+
+      const state = await env.DB.prepare(
+        `SELECT
+           (SELECT status FROM stripe_checkout_claims WHERE session_id = ?) AS claim_status,
+           (SELECT COUNT(*) FROM licenses WHERE license_hash = ?) AS license_count,
+           (SELECT COUNT(*) FROM commerce_events WHERE stripe_object_id = ?) AS commerce_count,
+           (SELECT amount_cents FROM commerce_events WHERE stripe_object_id = ?) AS commerce_amount,
+           (SELECT currency FROM commerce_events WHERE stripe_object_id = ?) AS commerce_currency`,
+      ).bind(
+        sessionId,
+        licenseHash,
+        sessionId,
+        sessionId,
+        sessionId,
+      ).first<{
+        claim_status: string;
+        license_count: number;
+        commerce_count: number;
+        commerce_amount: number | null;
+        commerce_currency: string | null;
+      }>();
+      expect(state?.claim_status).toBe(testCase.accepted ? "delivery_ready" : "pending");
+      expect(state?.license_count).toBe(testCase.accepted ? 1 : 0);
+      expect(state?.commerce_count).toBe(testCase.accepted ? 1 : 0);
+      if (testCase.accepted) {
+        expect(state?.commerce_amount).toBe(ONE_TIME_PRO_AMOUNT_CENTS);
+        expect(state?.commerce_currency).toBe(ONE_TIME_PRO_CURRENCY);
+      }
+
+      console.log(`TASK3190 ${testCase.name}.amount_cents=${testCase.amount}`);
+      console.log(`TASK3190 ${testCase.name}.currency=${testCase.currency}`);
+      console.log(`TASK3190 ${testCase.name}.accepted=${testCase.accepted}`);
+      if (!testCase.accepted) {
+        console.log(`TASK3190 ${testCase.name}.refused=true`);
+        console.log(`TASK3190 ${testCase.name}.reason=${body.reason}`);
+      }
+    }
+  });
+
+  it("TASK3738 counts one activation code only for exact amount and currency at the webhook edge", async () => {
+    const runId = `task3738_${crypto.randomUUID().replace(/-/g, "")}`;
+    const licenseHash = (name: string): string => `license-${runId}-${name}`;
+    const countCodes = async (): Promise<number> => {
+      const row = await env.DB.prepare(
+        `SELECT COUNT(*) AS count FROM licenses
+          WHERE license_hash IN (?, ?, ?)`,
+      ).bind(
+        licenseHash("valid"),
+        licenseHash("wrong_currency"),
+        licenseHash("one_cent_under"),
+      ).first<{ count: number }>();
+      return row?.count ?? 0;
+    };
+    const sendCheckout = async (
+      name: string,
+      amount: number,
+      currency: string,
+    ): Promise<{ kind: string; reason?: string }> => {
+      const sessionId = `cs_live_${runId}_${name}`;
+      const paymentIntentId = `pi_${runId}_${name}`;
+      await insertPendingCheckoutClaim(sessionId, licenseHash(name));
+
+      const response = await postSignedWebhook(SELF, {
+        id: uniqueEventId(),
+        type: "checkout.session.completed",
+        data: {
+          object: {
+            id: sessionId,
+            mode: "payment",
+            metadata: {
+              osl_plan: "pro",
+              osl_purchase: "one-time",
+              osl_fulfillment: "instant-v1",
+            },
+            payment_status: "paid",
+            payment_intent: paymentIntentId,
+            amount_total: amount,
+            currency,
+          },
+        },
+      });
+      expect(response.status).toBe(200);
+      return await response.json() as { kind: string; reason?: string };
+    };
+
+    const before = await countCodes();
+    expect(before).toBe(0);
+    console.log(`TASK3738 before.code_count=${before}`);
+
+    const valid = await sendCheckout(
+      "valid",
+      ONE_TIME_PRO_AMOUNT_CENTS,
+      ONE_TIME_PRO_CURRENCY,
+    );
+    expect(valid).toMatchObject({ kind: "applied" });
+    const afterValid = await countCodes();
+    expect(afterValid).toBe(1);
+    console.log(`TASK3738 valid.amount_cents=${ONE_TIME_PRO_AMOUNT_CENTS}`);
+    console.log(`TASK3738 valid.currency=${ONE_TIME_PRO_CURRENCY}`);
+    console.log(`TASK3738 after_valid.code_count=${afterValid}`);
+
+    const wrongCurrency = await sendCheckout(
+      "wrong_currency",
+      ONE_TIME_PRO_AMOUNT_CENTS,
+      "eur",
+    );
+    expect(wrongCurrency).toMatchObject({
+      kind: "noop",
+      reason: ONE_TIME_PRO_CURRENCY_REFUSAL,
     });
-    expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({ kind: "noop" });
-    const claim = await env.DB.prepare(
-      "SELECT status FROM stripe_checkout_claims WHERE session_id = ?",
-    ).bind(sessionId).first<{ status: string }>();
-    expect(claim?.status).toBe("pending");
-    expect(await env.DB.prepare(
-      "SELECT 1 AS present FROM subscriptions WHERE subscription_id = ?",
-    ).bind(paymentIntentId).first()).toBeNull();
+    const afterWrongCurrency = await countCodes();
+    expect(afterWrongCurrency).toBe(1);
+    console.log(`TASK3738 wrong_currency.amount_cents=${ONE_TIME_PRO_AMOUNT_CENTS}`);
+    console.log("TASK3738 wrong_currency.currency=eur");
+    console.log(`TASK3738 wrong_currency.refusal=${wrongCurrency.reason}`);
+    console.log(`TASK3738 after_wrong_currency.code_count=${afterWrongCurrency}`);
+
+    const underAmount = await sendCheckout(
+      "one_cent_under",
+      ONE_TIME_PRO_AMOUNT_CENTS - 1,
+      ONE_TIME_PRO_CURRENCY,
+    );
+    expect(underAmount).toMatchObject({
+      kind: "noop",
+      reason: ONE_TIME_PRO_AMOUNT_REFUSAL,
+    });
+    const afterUnderAmount = await countCodes();
+    expect(afterUnderAmount).toBe(1);
+    console.log(`TASK3738 one_cent_under.amount_cents=${ONE_TIME_PRO_AMOUNT_CENTS - 1}`);
+    console.log(`TASK3738 one_cent_under.currency=${ONE_TIME_PRO_CURRENCY}`);
+    console.log(`TASK3738 one_cent_under.refusal=${underAmount.reason}`);
+    console.log(`TASK3738 after_one_cent_under.code_count=${afterUnderAmount}`);
   });
 
   it("applies an invoice paid observation that arrived before checkout completion", async () => {

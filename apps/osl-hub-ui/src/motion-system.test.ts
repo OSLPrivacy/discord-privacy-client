@@ -34,11 +34,11 @@ describe("restrained motion system", () => {
 
   // Protects: the unlock screen reveals the SAME vector mark the loading screen
   // does, once, above its heading -- one shared reveal, not a second bespoke
-  // animation. The heading became "Sign in" on 2026-08-06; the mark, the stage
+  // animation. The heading became "Unlock" on 2026-08-06; the mark, the stage
   // it sits in and its one-shot reveal are unchanged and are what this checks.
   it("uses the same simple one-shot reveal for password unlock", () => {
     expect(source).toContain('class="unlock-logo-stage"');
-    expect(source).toMatch(/class="unlock-logo-stage"[\s\S]*?src="\$\{oslVectorLogoUrl\}"[\s\S]*?>Sign in<\/h1>/);
+    expect(source).toMatch(/class="unlock-logo-stage"[\s\S]*?src="\$\{oslVectorLogoUrl\}"[\s\S]*?>Unlock<\/h1>/);
     expect(styles).toMatch(/\.signin-logo\s*\{[^}]*animation:\s*signin-logo-reveal 440ms/s);
     expect(styles).toMatch(/\.unlock-logo-stage \.osl-logo\s*\{[^}]*animation:\s*logo-soft-enter 360ms/s);
     expect(styles).not.toMatch(/security-(?:center|key|shackle|body|lock)/);

@@ -30,6 +30,7 @@ use crate::preferences::{
     DiscordScrubConsentFactsInput, DiscordScrubConsentFactsRead, DiscordScrubRiskAgreementRead,
     PreviewState, ScrubAccountPermissionInput, ScrubAccountPermissionRead,
 };
+use crate::runtime_switches::{ResolvedTestOnlyRunTimeSwitches, SAFE_SENDING_DRY_RUN_FOR_TEST};
 use crate::scrub_erasure::{self, ComposedErasureRequest, ErasureRequestInput};
 use crate::service_host::ActiveServiceHost;
 use crate::website_driver::{WebsiteDriver, WebsitePageRequest};
@@ -719,6 +720,22 @@ fn hex_prefix(bytes: &[u8], count: usize) -> String {
         out.push_str(&format!("{byte:02x}"));
     }
     out
+pub fn with_native_discord_product_send_authority_for_switches<T, Place, DryRun>(
+    switches: &ResolvedTestOnlyRunTimeSwitches,
+    composer: &NativeDiscordComposerState,
+    scope_binding: &str,
+    layout: Option<DiscordCarrierLayout>,
+    place: Place,
+    dry_run: DryRun,
+) -> Result<T, String>
+where
+    Place: FnOnce(NativeDiscordProductSendAuthority) -> Result<T, String>,
+    DryRun: FnOnce() -> Result<T, String>,
+{
+    if switches.safe_sending == SAFE_SENDING_DRY_RUN_FOR_TEST {
+        return dry_run();
+    }
+    with_native_discord_product_send_authority(composer, scope_binding, layout, place)
 }
 
 #[cfg(any(test, feature = "discord-qa-shell"))]
@@ -959,6 +976,9 @@ macro_rules! hub_tauri_commands {
             verify_peer_build_integrity,
             list_hub_app_notifications,
             set_hub_notifications_enabled,
+            get_hub_chat_approval_suggestion_choice,
+            set_hub_chat_approval_suggestion_choice,
+            answer_hub_chat_approval_suggestion,
             set_hub_screenshot_protection,
             save_onboarding_preferences,
             set_tor_preference,
@@ -995,6 +1015,8 @@ macro_rules! hub_tauri_commands {
             get_autoscrub_run_fl,
             start_autoscrub_reviewed_run,
             request_autoscrub_global_stop,
+            keep_scanning_after_autoscrub_stop_request,
+            stop_autoscrub_now_after_stop_request,
             compose_scrub_erasure_request,
             validate_hub_activation_code,
             clear_hub_activation_code,
@@ -1003,6 +1025,7 @@ macro_rules! hub_tauri_commands {
             import_hub_osl_identity_phrase,
             setup_hub_main_password,
             view_hub_recovery_phrase,
+            reset_hub_main_password_after_recovery,
             get_hub_recovery_kit_unsaved,
             set_hub_recovery_kit_unsaved,
             lock_hub_session,
@@ -1129,6 +1152,9 @@ macro_rules! hub_tauri_commands {
             get_hub_username_status,
             add_hub_friend_by_username,
             get_osl_profile,
+            set_owner_profile_picture,
+            read_owner_profile_picture,
+            clear_owner_profile_picture,
             get_osl_chat_local_state_key,
             save_osl_profile,
             verify_hub_friend_safety_number,
@@ -1161,6 +1187,7 @@ macro_rules! hub_tauri_commands {
             get_hub_remove_everything_readiness,
             remove_everything_for_current_account,
             burn_active_hub_context,
+            list_active_hub_context_burn_choices,
             get_hub_revocation_status
         }
     };
@@ -2974,6 +3001,23 @@ mod tauri_registration_surface_tests {
         );
     }
 
+    #[test]
+    fn reset_hub_main_password_after_recovery_is_registered_and_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_registered_and_granted(
+            &handlers,
+            &permissions,
+            &capability,
+            "reset_hub_main_password_after_recovery",
+        );
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &["reset_hub_main_password_after_recovery"],
+        );
+    }
+
     /// D-108 — the missing construction site for the UI's `SecureLocalStore`.
     ///
     /// The store is implemented and unit-tested in `secure-local-store.ts` and
@@ -3011,6 +3055,16 @@ mod tauri_registration_surface_tests {
             "create_osl_chat_group_conversation",
             "query_osl_chat_visible_records",
         );
+    fn chat_approval_suggestion_commands_are_registered_and_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        let commands = [
+            "get_hub_chat_approval_suggestion_choice",
+            "set_hub_chat_approval_suggestion_choice",
+            "answer_hub_chat_approval_suggestion",
+        ];
+        for command in commands {
+            assert_registered_and_granted(&handlers, &permissions, &capability, command);
+        }
         assert_each_registration_surface_is_required(
             &handlers,
             &permissions,
@@ -3035,6 +3089,7 @@ mod tauri_registration_surface_tests {
             &permissions,
             &capability,
             "verify_peer_build_integrity",
+            &commands,
         );
     }
 
@@ -3200,6 +3255,17 @@ mod tauri_registration_surface_tests {
             &permissions,
             &capability,
             "get_hub_revocation_status",
+        );
+    }
+
+    #[test]
+    fn list_active_hub_context_burn_choices_is_registered_and_acl_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_registered_and_granted(
+            &handlers,
+            &permissions,
+            &capability,
+            "list_active_hub_context_burn_choices",
         );
     }
 
@@ -4100,10 +4166,12 @@ mod tauri_registration_surface_tests {
     #[test]
     fn autoscrub_run_lifecycle_commands_are_registered_and_acl_granted() {
         let (handlers, permissions, capability) = registration_inputs();
-        const AUTOSCRUB_RUN_LIFECYCLE_COMMANDS: [&str; 3] = [
+        const AUTOSCRUB_RUN_LIFECYCLE_COMMANDS: [&str; 5] = [
             "get_autoscrub_run_fl",
             "start_autoscrub_reviewed_run",
             "request_autoscrub_global_stop",
+            "keep_scanning_after_autoscrub_stop_request",
+            "stop_autoscrub_now_after_stop_request",
         ];
         let expected_permissions = AUTOSCRUB_RUN_LIFECYCLE_COMMANDS
             .iter()

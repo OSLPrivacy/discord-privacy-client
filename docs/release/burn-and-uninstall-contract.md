@@ -21,6 +21,8 @@ backups outside OSL's control.
     "deletes_osl_data": true,
     "offers_one_identity_backup": true,
     "backup_filename": "OSL identity backup.json",
+    "offers_one_local_data_backup": true,
+    "backup_directory": "OSL local data backup",
     "is_a_burn": false,
     "requires_separate_user_action": true
   },
@@ -28,6 +30,7 @@ backups outside OSL's control.
     "remote_data_unrecoverable_only_after": "server confirmation",
     "burn_status_before_server_confirmation": "pending",
     "uninstall_status": "application removed; local OSL data removed; identity backup kept only if selected"
+    "uninstall_status": "application removed; local OSL data removed; local data backup kept only if selected"
   }
 }
 ```
@@ -64,6 +67,10 @@ OSL data after offering to write exactly one identity backup file first. Keeping
 that single file outside OSL's application data roots and removes the rest of OSL's local data.
 Declining the backup removes the backup file too. This is still not a burn: it does not remove
 server relay blobs, peer copies, provider messages, browser cookies, native-app history,
+OSL data after offering to write exactly one local-data backup directory first. Keeping the backup
+leaves that single directory outside OSL's application data roots and removes the rest of OSL's
+local data. Declining the backup removes any prior backup too. This is still not a burn: it does not
+remove server relay blobs, peer copies, provider messages, browser cookies, native-app history,
 screenshots, exports, or any backups outside OSL's control.
 
 ## Required wording rules for T7 and T11
@@ -76,6 +83,8 @@ screenshots, exports, or any backups outside OSL's control.
 - Describe uninstall as “Remove the OSL app from Windows.” Pair it with “This removes local OSL
   data after offering one identity backup” unless a future uninstaller changes that behavior and
   this contract is revised with a test.
+  data after offering one local backup” unless a future uninstaller changes that behavior and this
+  contract is revised with a test.
 - Never equate uninstall with burn, remote deletion, provider-message deletion, or peer-copy
   deletion. Never equate an account-level burn with removal of the Windows app.
 

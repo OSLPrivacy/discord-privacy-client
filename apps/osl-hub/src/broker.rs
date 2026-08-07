@@ -20,9 +20,10 @@ use zeroize::Zeroizing;
 
 use crate::core_bridge::HubCoreState;
 use crate::models::ServiceKind;
+use crate::row_who_wrote_it::SharedRowWhoWroteIt;
 use crate::security::{self, HubSecurityState, ManualPeerBinding};
 use crate::service_host::{service_manifest, validate_opaque_id, ActiveServiceHost};
-use crate::service_scope_index::ServiceScopeRegistration;
+use crate::service_scope_index::{ServiceScopeIndexState, ServiceScopeRegistration};
 use crate::services::{service_kind_from_id, ServiceRegistryState};
 
 // Kept beside the broker rather than as an unreferenced helper: this public
@@ -866,6 +867,85 @@ impl HubBrokerState {
             }))
     }
 
+    pub fn server_channel_burn_choices(
+        &self,
+        context_token: &str,
+    ) -> Result<Vec<HubContextBurnChoice>, String> {
+        let scope = self.scope_for_context(context_token)?;
+        if scope.kind != ScopeKind::ServerChannel {
+            return Err("OSL active context is not an open server channel".to_owned());
+        }
+        let server_id = scope
+            .server_id
+            .clone()
+            .ok_or_else(|| "OSL active server-channel scope is missing its server id".to_owned())?;
+        let channel_id = scope.channel_id.clone().ok_or_else(|| {
+            "OSL active server-channel scope is missing its channel id".to_owned()
+        })?;
+        let whole_server_scope = ScopeInput {
+            kind: ScopeKind::ServerFull,
+            id: server_id.clone(),
+            server_id: Some(server_id),
+            channel_id: None,
+        };
+        debug_assert_eq!(scope.channel_id.as_deref(), Some(channel_id.as_str()));
+        Ok(vec![
+            HubContextBurnChoice {
+                choice: "this_channel".to_owned(),
+                scope,
+            },
+            HubContextBurnChoice {
+                choice: "whole_server".to_owned(),
+                scope: whole_server_scope,
+            },
+        ])
+    }
+
+    pub fn server_channel_burn_target(
+        &self,
+        context_token: &str,
+        choice: &str,
+        index: &ServiceScopeIndexState,
+    ) -> Result<HubContextBurnTarget, String> {
+        let context = self.context_for(context_token)?;
+        let choices = self.server_channel_burn_choices(context_token)?;
+        match choice {
+            "this_channel" => {
+                let selected = choices
+                    .into_iter()
+                    .find(|candidate| candidate.choice == "this_channel")
+                    .ok_or_else(|| "OSL burn choice is unavailable".to_owned())?;
+                let channel_id = selected.scope.channel_id.clone().ok_or_else(|| {
+                    "OSL active server-channel scope is missing its channel id".to_owned()
+                })?;
+                Ok(HubContextBurnTarget {
+                    scope: selected.scope,
+                    canonical_channel_ids: vec![channel_id],
+                })
+            }
+            "whole_server" => {
+                let selected = choices
+                    .into_iter()
+                    .find(|candidate| candidate.choice == "whole_server")
+                    .ok_or_else(|| "OSL burn choice is unavailable".to_owned())?;
+                let server_id = selected.scope.server_id.as_deref().ok_or_else(|| {
+                    "OSL active server-channel scope is missing its server id".to_owned()
+                })?;
+                let indexed = index.complete_server_scope(
+                    &context.self_osl_id,
+                    &context.service_id,
+                    &context.account_id,
+                    server_id,
+                )?;
+                Ok(HubContextBurnTarget {
+                    scope: indexed.scope,
+                    canonical_channel_ids: indexed.canonical_channel_ids,
+                })
+            }
+            _ => Err(format!("OSL unknown server burn choice: {choice}")),
+        }
+    }
+
     pub fn service_scope_registration(
         &self,
         context_token: &str,
@@ -1004,6 +1084,19 @@ pub struct ManualPeerBurnTarget {
     pub account_id: String,
     pub person_id: String,
     pub scope: ScopeInput,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HubContextBurnChoice {
+    pub choice: String,
+    pub scope: ScopeInput,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HubContextBurnTarget {
+    pub scope: ScopeInput,
+    pub canonical_channel_ids: Vec<String>,
 }
 
 impl core::fmt::Debug for ManualPeerBurnTarget {
@@ -2215,6 +2308,7 @@ fn prepare_peer_prose_text_inner_with_chunk(
     send_order: Option<AuthenticatedSenderOrder>,
 ) -> Result<PreparedPeerProseEnvelope, String> {
     let manual = broker.manual_peer_for(context_token)?;
+    security::require_person_not_blocked(&manual.person_id)?;
     let verified = security::require_manual_peer_scope_approved(
         core,
         &manual.service_id,
@@ -2701,6 +2795,7 @@ pub struct PreparedNativeDiscordOverlayText {
 #[serde(rename_all = "camelCase")]
 pub struct RehydratedNativeDiscordRow {
     pub flagtext: String,
+    pub who_wrote_it: SharedRowWhoWroteIt,
     pub plaintext: Option<String>,
     /// Direction accepted only when the native poster proof agrees with the
     /// authenticated protected wire. `Some` exactly when `plaintext` and
@@ -2721,14 +2816,6 @@ pub enum RehydratedRowOrientation {
     Outgoing,
 }
 
-/// Provider poster class carried by the native proof.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RehydratedRowPoster {
-    SelfAccount,
-    PeerAccount,
-}
-
 /// Exact agreement between native provider row identity and authenticated
 /// protected content. These are correlation identifiers only; no plaintext,
 /// poster label or renderer-authored ownership is represented.
@@ -2737,7 +2824,7 @@ pub enum RehydratedRowPoster {
 pub struct RehydratedRowAttribution {
     pub discord_message_id: String,
     pub poster_identity_sha256: String,
-    pub poster: RehydratedRowPoster,
+    pub who_wrote_it: SharedRowWhoWroteIt,
     pub native_locator_sha256: String,
     pub carrier_sha256: String,
     pub blob_id: String,
@@ -2753,7 +2840,7 @@ impl core::fmt::Debug for RehydratedRowAttribution {
         f.debug_struct("RehydratedRowAttribution")
             .field("discord_message_id", &"<redacted>")
             .field("poster_identity_sha256", &self.poster_identity_sha256)
-            .field("poster", &self.poster)
+            .field("whoWroteIt", &self.who_wrote_it)
             .field("native_locator_sha256", &self.native_locator_sha256)
             .field("carrier_sha256", &self.carrier_sha256)
             .field("blob_id", &"<redacted>")
@@ -2775,6 +2862,7 @@ impl core::fmt::Debug for RehydratedRowAttribution {
 #[serde(rename_all = "camelCase")]
 pub struct RehydratedNativeDiscordRowDto {
     flagtext: String,
+    who_wrote_it: SharedRowWhoWroteIt,
     plaintext: Option<String>,
     orientation: Option<RehydratedRowOrientation>,
     attribution: Option<RehydratedRowAttribution>,
@@ -2817,12 +2905,12 @@ pub fn rehydrated_native_discord_row_dto(
         (Some(_), Some(orientation), Some(attribution)) => {
             attribution.orientation == orientation
                 && matches!(
-                    (attribution.poster, orientation),
+                    (attribution.who_wrote_it, orientation),
                     (
-                        RehydratedRowPoster::SelfAccount,
+                        SharedRowWhoWroteIt::Yours,
                         RehydratedRowOrientation::Outgoing
                     ) | (
-                        RehydratedRowPoster::PeerAccount,
+                        SharedRowWhoWroteIt::Theirs,
                         RehydratedRowOrientation::Incoming
                     )
                 )
@@ -2830,6 +2918,7 @@ pub fn rehydrated_native_discord_row_dto(
         _ => false,
     };
     if !attribution_agrees {
+        row.who_wrote_it = SharedRowWhoWroteIt::NotPublishedByApp;
         row.plaintext = None;
         row.orientation = None;
         row.attribution = None;
@@ -2845,6 +2934,7 @@ pub fn rehydrated_native_discord_row_dto(
         );
     RehydratedNativeDiscordRowDto {
         flagtext: row.flagtext,
+        who_wrote_it: row.who_wrote_it,
         plaintext: row.plaintext,
         orientation: row.orientation,
         attribution: row.attribution,
@@ -3031,8 +3121,8 @@ fn native_row_evidence_batch_is_valid(
         let Some(evidence) = row.attribution.as_ref() else {
             return false;
         };
-        let poster_identity_agrees = match evidence.poster {
-            crate::native_discord_adapter::NativeDiscordRowPoster::SelfAccount => {
+        let poster_identity_agrees = match evidence.who_wrote_it {
+            SharedRowWhoWroteIt::Yours => {
                 if peer_poster_identity.as_deref() == Some(evidence.poster_identity_sha256.as_str())
                 {
                     false
@@ -3043,7 +3133,7 @@ fn native_row_evidence_batch_is_valid(
                         == evidence.poster_identity_sha256.as_str()
                 }
             }
-            crate::native_discord_adapter::NativeDiscordRowPoster::PeerAccount => {
+            SharedRowWhoWroteIt::Theirs => {
                 if self_poster_identity.as_deref() == Some(evidence.poster_identity_sha256.as_str())
                 {
                     false
@@ -3054,6 +3144,7 @@ fn native_row_evidence_batch_is_valid(
                         == evidence.poster_identity_sha256.as_str()
                 }
             }
+            SharedRowWhoWroteIt::NotPublishedByApp => false,
         };
         let matching_carriers = row
             .decode_candidates
@@ -3087,6 +3178,7 @@ fn unproven_rehydrated_rows(
     rows.into_iter()
         .map(|row| RehydratedNativeDiscordRow {
             flagtext: row.line,
+            who_wrote_it: SharedRowWhoWroteIt::NotPublishedByApp,
             plaintext: None,
             orientation: None,
             attribution: None,
@@ -3244,6 +3336,7 @@ pub fn rehydrate_native_discord_overlay_history(
     if !rehydrated_attribution_ids_are_unique(&rows) {
         let opened = counts.plaintext;
         for row in &mut rows {
+            row.who_wrote_it = SharedRowWhoWroteIt::NotPublishedByApp;
             row.plaintext = None;
             row.orientation = None;
             row.attribution = None;
@@ -3317,7 +3410,7 @@ fn evaluate_native_visible_row_runtime_probe(
     scope_binding: &str,
     probe: crate::native_discord_adapter::NativeVisibleRowQaProbe,
 ) -> Result<NativeVisibleRowRuntimeReceipt, String> {
-    use crate::native_discord_adapter::{NativeDiscordRowPoster, NativeVisibleRowQaTriState};
+    use crate::native_discord_adapter::{NativeVisibleRowQaTriState, SharedRowWhoWroteIt};
 
     if !matches!(probe.build_hash.len(), 40 | 64)
         || !probe
@@ -3346,7 +3439,7 @@ fn evaluate_native_visible_row_runtime_probe(
         .filter(|row| {
             row.attribution
                 .as_ref()
-                .is_some_and(|evidence| evidence.poster == NativeDiscordRowPoster::SelfAccount)
+                .is_some_and(|evidence| evidence.who_wrote_it == SharedRowWhoWroteIt::Yours)
         })
         .count();
     let source_peer = source_rows
@@ -3354,7 +3447,7 @@ fn evaluate_native_visible_row_runtime_probe(
         .filter(|row| {
             row.attribution
                 .as_ref()
-                .is_some_and(|evidence| evidence.poster == NativeDiscordRowPoster::PeerAccount)
+                .is_some_and(|evidence| evidence.who_wrote_it == SharedRowWhoWroteIt::Theirs)
         })
         .count();
 
@@ -3444,7 +3537,7 @@ fn evaluate_native_visible_row_runtime_probe(
         .iter()
         .filter(|row| {
             row.attribution.as_ref().is_some_and(|attribution| {
-                attribution.poster == RehydratedRowPoster::SelfAccount
+                attribution.who_wrote_it == SharedRowWhoWroteIt::Yours
                     && attribution.orientation == RehydratedRowOrientation::Outgoing
             })
         })
@@ -3454,7 +3547,7 @@ fn evaluate_native_visible_row_runtime_probe(
         .iter()
         .filter(|row| {
             row.attribution.as_ref().is_some_and(|attribution| {
-                attribution.poster == RehydratedRowPoster::PeerAccount
+                attribution.who_wrote_it == SharedRowWhoWroteIt::Theirs
                     && attribution.orientation == RehydratedRowOrientation::Incoming
             })
         })
@@ -3580,15 +3673,19 @@ fn rehydrated_rows(
     rows.into_iter()
         .map(|(flagtext, candidates, bounds, evidence)| {
             // Text, direction and the complete proof are one indivisible answer.
-            let (plaintext, orientation, attribution) =
+            let (who_wrote_it, plaintext, orientation, attribution) =
                 match decoded(&candidates, evidence.as_ref()) {
-                    Some((plaintext, orientation, attribution)) => {
-                        (Some(plaintext), Some(orientation), Some(attribution))
-                    }
-                    None => (None, None, None),
+                    Some((plaintext, orientation, attribution)) => (
+                        attribution.who_wrote_it,
+                        Some(plaintext),
+                        Some(orientation),
+                        Some(attribution),
+                    ),
+                    None => (SharedRowWhoWroteIt::NotPublishedByApp, None, None, None),
                 };
             RehydratedNativeDiscordRow {
                 flagtext,
+                who_wrote_it,
                 plaintext,
                 orientation,
                 attribution,
@@ -3821,19 +3918,13 @@ fn bind_authenticated_native_row(
     evidence: &crate::native_discord_adapter::NativeDiscordRowAttributionEvidence,
     authenticated: AuthenticatedProsePointer,
 ) -> Option<(String, RehydratedRowOrientation, RehydratedRowAttribution)> {
-    let (poster, orientation) = match (evidence.poster, authenticated.orientation) {
-        (
-            crate::native_discord_adapter::NativeDiscordRowPoster::SelfAccount,
-            PeerWireOrientation::SelfToPeer,
-        ) => (
-            RehydratedRowPoster::SelfAccount,
+    let (who_wrote_it, orientation) = match (evidence.who_wrote_it, authenticated.orientation) {
+        (SharedRowWhoWroteIt::Yours, PeerWireOrientation::SelfToPeer) => (
+            SharedRowWhoWroteIt::Yours,
             RehydratedRowOrientation::Outgoing,
         ),
-        (
-            crate::native_discord_adapter::NativeDiscordRowPoster::PeerAccount,
-            PeerWireOrientation::PeerToSelf,
-        ) => (
-            RehydratedRowPoster::PeerAccount,
+        (SharedRowWhoWroteIt::Theirs, PeerWireOrientation::PeerToSelf) => (
+            SharedRowWhoWroteIt::Theirs,
             RehydratedRowOrientation::Incoming,
         ),
         _ => return None,
@@ -3859,7 +3950,7 @@ fn bind_authenticated_native_row(
     let attribution = RehydratedRowAttribution {
         discord_message_id: evidence.discord_message_id.clone(),
         poster_identity_sha256: evidence.poster_identity_sha256.clone(),
-        poster,
+        who_wrote_it,
         native_locator_sha256: evidence.native_locator_sha256.clone(),
         carrier_sha256: evidence.carrier_sha256.clone(),
         blob_id: authenticated.blob_id,
@@ -3887,6 +3978,8 @@ fn authenticate_oriented_prose_pointer(
     if sender_person_id != manual.person_id {
         return Err(PeerProsePointerFailure::Rejected.into());
     }
+    security::require_person_not_blocked(&manual.person_id)
+        .map_err(|_| PeerProsePointerFailure::Rejected)?;
     let verified = security::require_manual_peer_scope_approved(
         core,
         &manual.service_id,
@@ -4269,6 +4362,7 @@ fn prepare_peer_inbox_text_with_route_clients(
     let _carrier_decision = ai_carrier.select_for_shipping_send();
     let manual = broker.manual_peer_for(context_token)?;
     let context = broker.context_for(context_token)?;
+    security::require_person_not_blocked(&manual.person_id)?;
     let now = ipc::main_password::now_unix_secs_pub();
     let ttl_seconds = security::scope_security(manual.scope.clone())?.ttl_seconds;
     let expires_at = now.checked_add(i64::from(ttl_seconds)).ok_or_else(|| {
@@ -4851,6 +4945,7 @@ fn drain_peer_inbox_text(
 ) -> Result<OpenedNativeOverlayTextBatch, String> {
     let manual = broker.manual_peer_for(context_token)?;
     let context = broker.context_for(context_token)?;
+    security::require_person_not_blocked(&manual.person_id)?;
     let display = security::scope_security(manual.scope.clone())?;
     let allow_messages = display.decrypt_display_enabled;
     // The conversation this drain is bound to, named the way the burn ledger
@@ -5717,6 +5812,7 @@ pub fn load_osl_chat_history_with_visibility(
     let context_token = broker.active_osl_chat_context_token()?;
     let manual = broker.manual_peer_for(&context_token)?;
     let context = broker.context_for(&context_token)?;
+    security::require_person_not_blocked(&manual.person_id)?;
     let display = security::scope_security(manual.scope.clone())?;
     if !display.decrypt_display_enabled {
         return Err("Turn on decrypted text for this conversation before opening it".to_owned());
@@ -5916,6 +6012,7 @@ fn begin_peer_attachment(
     };
     let manual = broker.manual_peer_for(&context_token)?;
     let context = broker.context_for(&context_token)?;
+    security::require_person_not_blocked(&manual.person_id)?;
     security::require_manual_peer_scope_approved(
         core,
         &manual.service_id,
@@ -6047,6 +6144,7 @@ fn deliver_peer_attachment(
     };
     let manual = broker.manual_peer_for(&context_token)?;
     let context = broker.context_for(&context_token)?;
+    security::require_person_not_blocked(&manual.person_id)?;
     let verified = security::require_manual_peer_scope_approved(
         core,
         &manual.service_id,
@@ -6217,6 +6315,7 @@ fn native_overlay_attachment_plans(
     };
     let manual = broker.manual_peer_for(&context_token)?;
     let context = broker.context_for(&context_token)?;
+    security::require_person_not_blocked(&manual.person_id).map_err(|_| ERROR.to_owned())?;
     let decrypt_display_enabled = security::scope_security(manual.scope.clone())
         .map_err(|_| ERROR.to_owned())?
         .decrypt_display_enabled;
@@ -6368,6 +6467,7 @@ fn commit_peer_attachment_open(
         broker.active_native_manual_context_token()?
     };
     let manual = broker.manual_peer_for(&context_token)?;
+    security::require_person_not_blocked(&manual.person_id).map_err(|_| ERROR.to_owned())?;
     security::require_manual_peer_scope_approved(
         core,
         &manual.service_id,
@@ -8303,6 +8403,7 @@ fn prepare_peer_attachment_at(
 ) -> Result<PreparedPeerAttachment, String> {
     const PREPARE_ERROR: &str = "OSL could not prepare a single manual peer attachment";
     let manual = broker.manual_peer_for(context_token)?;
+    security::require_person_not_blocked(&manual.person_id)?;
     let verified = security::require_manual_peer_scope_approved(
         core,
         &manual.service_id,
@@ -8413,6 +8514,7 @@ pub fn open_peer_attachment(
     if sender_person_id != manual.person_id {
         return Err(OPEN_ERROR.to_owned());
     }
+    security::require_person_not_blocked(&manual.person_id).map_err(|_| OPEN_ERROR.to_owned())?;
     let verified = security::require_manual_peer_scope_approved(
         core,
         &manual.service_id,
@@ -12872,7 +12974,7 @@ mod tests {
         let attribution = RehydratedRowAttribution {
             discord_message_id: "discord-message-debug-secret".to_owned(),
             poster_identity_sha256: "a".repeat(64),
-            poster: RehydratedRowPoster::PeerAccount,
+            who_wrote_it: SharedRowWhoWroteIt::Theirs,
             native_locator_sha256: "b".repeat(64),
             carrier_sha256: "c".repeat(64),
             blob_id: "blob-debug-secret".to_owned(),
@@ -14986,6 +15088,185 @@ mod tests {
             scope_input(&second).unwrap().id
         );
         assert!(!scope_input(&first).unwrap().id.contains("dm-1"));
+    }
+
+    #[test]
+    fn task_0528_open_server_channel_burn_choices_are_channel_and_whole_server() {
+        let broker = HubBrokerState::default();
+        let context = HubConversationContext {
+            service_id: "discord".to_owned(),
+            account_id: "discord-account-0528".to_owned(),
+            conversation_kind: HubConversationKind::Channel,
+            conversation_id: "discord-channel-0528".to_owned(),
+            space_id: Some("discord-server-0528".to_owned()),
+            participant_osl_ids: vec!["peer-0528".to_owned(), "self-0528".to_owned()],
+            self_osl_id: "self-0528".to_owned(),
+        };
+        let expected_channel = scope_input(&context).expect("server channel scope is valid");
+        let lease = broker
+            .activate(context, 52)
+            .expect("open server channel context activates");
+
+        let choices = broker
+            .server_channel_burn_choices(&lease.context_token)
+            .expect("server-channel burn choices resolve");
+
+        println!("TASK 0528 choice count: {}", choices.len());
+        for choice in &choices {
+            println!(
+                "TASK 0528 choice={} kind={:?} server_id={} channel_id={}",
+                choice.choice,
+                choice.scope.kind,
+                choice.scope.server_id.as_deref().unwrap_or("<none>"),
+                choice.scope.channel_id.as_deref().unwrap_or("<none>")
+            );
+        }
+
+        assert_eq!(choices.len(), 2);
+        assert_eq!(choices[0].choice, "this_channel");
+        assert_eq!(choices[0].scope.kind, ScopeKind::ServerChannel);
+        assert_eq!(choices[0].scope.server_id, expected_channel.server_id);
+        assert_eq!(choices[0].scope.channel_id, expected_channel.channel_id);
+        assert_eq!(choices[1].choice, "whole_server");
+        assert_eq!(choices[1].scope.kind, ScopeKind::ServerFull);
+        assert_eq!(choices[1].scope.server_id, choices[0].scope.server_id);
+        assert_eq!(choices[1].scope.channel_id, None);
+    }
+
+    #[test]
+    fn task_0529_server_burn_choice_feeds_selected_channels_into_burn_action() {
+        fn run_choice(choice: &str) -> (usize, usize, usize) {
+            let _serial = crate::global_keystore_test_lock();
+            let _globals = KeystoreGlobalsGuard;
+            let dir = tempfile::TempDir::new().expect("temp account dir");
+            let previous_account_dir = keystore::active_account_dir();
+            let previous_file_key = ipc::main_password::get_file_storage_key();
+            keystore::set_active_account_dir(Some(dir.path().to_path_buf()));
+            ipc::main_password::set_file_storage_key(Some([0x29; 32]));
+
+            let broker = HubBrokerState::default();
+            let core = HubCoreState::default();
+            let security = HubSecurityState::default();
+            let context = HubConversationContext {
+                service_id: "discord".to_owned(),
+                account_id: "discord-account-0529".to_owned(),
+                conversation_kind: HubConversationKind::Channel,
+                conversation_id: "discord-channel-0529-a".to_owned(),
+                space_id: Some("discord-server-0529".to_owned()),
+                participant_osl_ids: vec!["peer-0529".to_owned(), "self-0529".to_owned()],
+                self_osl_id: "self-0529".to_owned(),
+            };
+            let active_scope = scope_input(&context).expect("active server-channel scope");
+            let active_channel = active_scope.channel_id.clone().expect("active channel id");
+            let server_id = active_scope.server_id.clone().expect("active server id");
+            let sibling_context = HubConversationContext {
+                conversation_id: "discord-channel-0529-b".to_owned(),
+                ..context.clone()
+            };
+            let sibling_channel = scope_input(&sibling_context)
+                .expect("sibling server-channel scope")
+                .channel_id
+                .expect("sibling channel id");
+            let lease = broker
+                .activate(context.clone(), 52)
+                .expect("open server channel context activates");
+
+            let index = crate::service_scope_index::ServiceScopeIndexState::load(
+                dir.path().join("service-scope-index.json"),
+            );
+            index
+                .initialize_clean_account(
+                    &context.self_osl_id,
+                    &context.service_id,
+                    &context.account_id,
+                )
+                .expect("clean account coverage");
+            index
+                .with_registered_write(
+                    crate::service_scope_index::ServiceScopeRegistration {
+                        owner_osl_user_id: context.self_osl_id.clone(),
+                        service_id: context.service_id.clone(),
+                        account_id: context.account_id.clone(),
+                        scope: ScopeInput {
+                            kind: ScopeKind::ServerFull,
+                            id: server_id.clone(),
+                            server_id: Some(server_id),
+                            channel_id: None,
+                        },
+                        canonical_channel_ids: vec![
+                            active_channel.clone(),
+                            sibling_channel.clone(),
+                        ],
+                        local_context_binding_sha256: "c".repeat(64),
+                        manual_peer_person_id: None,
+                    },
+                    || Ok(()),
+                )
+                .expect("seed whole-server index record");
+            let target = broker
+                .server_channel_burn_target(&lease.context_token, choice, &index)
+                .expect("server burn choice resolves to burn target");
+
+            let store = store::MessageStore::open(&dir.path().join("messages"), &[0x52; 32])
+                .expect("open message store");
+            for (message_id, channel_id) in [
+                ("task0529-a", active_channel.as_str()),
+                ("task0529-b", sibling_channel.as_str()),
+            ] {
+                store
+                    .put(&store::StoredMessage {
+                        discord_message_id: message_id.to_owned(),
+                        channel_id: channel_id.to_owned(),
+                        sender_discord_id: "self-0529".to_owned(),
+                        sender_osl_user_id: "self-0529".to_owned(),
+                        plaintext: format!("seeded row {message_id}"),
+                        decrypted_at: 1_800_000_529,
+                        burned: false,
+                    })
+                    .expect("seed local row");
+            }
+            *core.osl.message_store.lock().unwrap() = Some(store);
+
+            let selected_channel_count = target.canonical_channel_ids.len();
+            let result = security::burn_scope(
+                &core,
+                &security,
+                target.scope,
+                target.canonical_channel_ids,
+                true,
+                Vec::new(),
+            )
+            .expect("selected target enters burn action");
+            let remaining_rows = {
+                let guard = core.osl.message_store.lock().unwrap();
+                let store = guard.as_ref().expect("message store remains installed");
+                store.list_by_channel(&active_channel, 10).unwrap().len()
+                    + store.list_by_channel(&sibling_channel, 10).unwrap().len()
+            };
+
+            keystore::set_active_account_dir(previous_account_dir);
+            ipc::main_password::set_file_storage_key(previous_file_key);
+            (
+                selected_channel_count,
+                result.channels_destroyed,
+                remaining_rows,
+            )
+        }
+
+        let channel = run_choice("this_channel");
+        let server = run_choice("whole_server");
+
+        println!(
+            "TASK0529 channel_choice.selected_channels={} burn_action.channels_destroyed={} remaining_rows={}",
+            channel.0, channel.1, channel.2
+        );
+        println!(
+            "TASK0529 server_choice.selected_channels={} burn_action.channels_destroyed={} remaining_rows={}",
+            server.0, server.1, server.2
+        );
+
+        assert_eq!(channel, (1, 1, 1));
+        assert_eq!(server, (2, 2, 0));
     }
 
     #[test]
@@ -17107,7 +17388,7 @@ ok i will weekend again with you"
                             RehydratedRowAttribution {
                                 discord_message_id: "123456789".to_owned(),
                                 poster_identity_sha256: "a".repeat(64),
-                                poster: RehydratedRowPoster::PeerAccount,
+                                who_wrote_it: SharedRowWhoWroteIt::Theirs,
                                 native_locator_sha256: "b".repeat(64),
                                 carrier_sha256: "c".repeat(64),
                                 blob_id: "d".repeat(32),
@@ -17188,11 +17469,19 @@ ok i will weekend again with you",
                 .collect::<HashSet<_>>();
             assert_eq!(
                 keys,
-                HashSet::from(["attribution", "flagtext", "orientation", "plaintext"])
+                HashSet::from([
+                    "attribution",
+                    "flagtext",
+                    "orientation",
+                    "plaintext",
+                    "whoWroteIt",
+                ])
             );
         }
+        assert_eq!(wire_rows[0]["whoWroteIt"], "not_published_by_app");
+        assert_eq!(wire_rows[1]["whoWroteIt"], "theirs");
         assert!(wire_rows[0]["attribution"].is_null());
-        assert_eq!(wire_rows[1]["attribution"]["poster"], "peer_account");
+        assert_eq!(wire_rows[1]["attribution"]["whoWroteIt"], "theirs");
         assert_eq!(wire_rows[1]["attribution"]["orientation"], "incoming");
         assert!(wire_rows[2]["attribution"].is_null());
     }
@@ -17271,8 +17560,7 @@ ok i will weekend again with you",
             ipc::prose_token::BRIDGE_ID_BYTES * 2,
             "the fixture must be the width the shipping send path actually returns"
         );
-        let evidence =
-            bridge_era_evidence(crate::native_discord_adapter::NativeDiscordRowPoster::PeerAccount);
+        let evidence = bridge_era_evidence(SharedRowWhoWroteIt::Theirs);
         let mut authenticated = matrix_authenticated(
             PeerWireOrientation::PeerToSelf,
             "payload-bridge-era",
@@ -17301,9 +17589,7 @@ ok i will weekend again with you",
             "c882e13e918656dz",  // not hex
             "zzzzzzzzzzzzzzzz",
         ] {
-            let evidence = bridge_era_evidence(
-                crate::native_discord_adapter::NativeDiscordRowPoster::PeerAccount,
-            );
+            let evidence = bridge_era_evidence(SharedRowWhoWroteIt::Theirs);
             let mut authenticated = matrix_authenticated(
                 PeerWireOrientation::PeerToSelf,
                 "payload-bridge-era",
@@ -17319,12 +17605,12 @@ ok i will weekend again with you",
     }
 
     fn bridge_era_evidence(
-        poster: crate::native_discord_adapter::NativeDiscordRowPoster,
+        who_wrote_it: SharedRowWhoWroteIt,
     ) -> crate::native_discord_adapter::NativeDiscordRowAttributionEvidence {
         crate::native_discord_adapter::NativeDiscordRowAttributionEvidence {
             discord_message_id: "111111111111111111".to_owned(),
             poster_identity_sha256: "a".repeat(64),
-            poster,
+            who_wrote_it,
             native_locator_sha256: "b".repeat(64),
             carrier_sha256: "c".repeat(64),
             scope_binding_sha256: "d".repeat(64),
@@ -17383,8 +17669,8 @@ ok i will weekend again with you",
     fn native_producer_broker_and_command_dto_matrix_is_behavioral_and_fail_closed() {
         use crate::native_discord_adapter::{
             native_row_attribution_from_provider, native_row_producer_batch_is_valid,
-            NativeDiscordRowPoster,
         };
+        use crate::row_who_wrote_it::SharedRowWhoWroteIt;
 
         const OWN_CARRIER: &str = "the quiet harbour keeps every lantern burning tonight";
         const PEER_CARRIER: &str = "the winter garden waits beside the silver morning";
@@ -17404,8 +17690,8 @@ ok i will weekend again with you",
             1,
         )
         .expect("native header participant produces peer evidence");
-        assert_eq!(own.poster, NativeDiscordRowPoster::SelfAccount);
-        assert_eq!(peer.poster, NativeDiscordRowPoster::PeerAccount);
+        assert_eq!(own.who_wrote_it, SharedRowWhoWroteIt::Yours);
+        assert_eq!(peer.who_wrote_it, SharedRowWhoWroteIt::Theirs);
         let rows = vec![
             matrix_visible_row(own.clone(), OWN_CARRIER, 10),
             matrix_visible_row(peer.clone(), PEER_CARRIER, 40),
@@ -17432,19 +17718,22 @@ ok i will weekend again with you",
             }),
             |_, evidence| {
                 let evidence = evidence.expect("validated native evidence");
-                let authenticated = match evidence.poster {
-                    NativeDiscordRowPoster::SelfAccount => matrix_authenticated(
+                let authenticated = match evidence.who_wrote_it {
+                    SharedRowWhoWroteIt::Yours => matrix_authenticated(
                         PeerWireOrientation::SelfToPeer,
                         "payload-own",
                         "own plaintext",
                         'a',
                     ),
-                    NativeDiscordRowPoster::PeerAccount => matrix_authenticated(
+                    SharedRowWhoWroteIt::Theirs => matrix_authenticated(
                         PeerWireOrientation::PeerToSelf,
                         "payload-peer",
                         "peer plaintext",
                         'b',
                     ),
+                    SharedRowWhoWroteIt::NotPublishedByApp => {
+                        panic!("not-published rows are refused before authentication")
+                    }
                 };
                 bind_authenticated_native_row(evidence, authenticated)
             },
@@ -17469,9 +17758,9 @@ ok i will weekend again with you",
             })
             .collect::<Vec<_>>();
         let wire = serde_json::to_value(&dto).expect("command DTO serializes");
-        assert_eq!(wire[0]["attribution"]["poster"], "self_account");
+        assert_eq!(wire[0]["attribution"]["whoWroteIt"], "yours");
         assert_eq!(wire[0]["orientation"], "outgoing");
-        assert_eq!(wire[1]["attribution"]["poster"], "peer_account");
+        assert_eq!(wire[1]["attribution"]["whoWroteIt"], "theirs");
         assert_eq!(wire[1]["orientation"], "incoming");
         assert_eq!(wire[0]["row"]["widthPx"], 300.0);
 
@@ -17551,14 +17840,23 @@ ok i will weekend again with you",
             matrix_native_observation("555555555555555555", "999999999999999999", PEER_CARRIER, 30);
         assert_ne!(foreign.poster_identity, foreign.self_identity);
         assert_ne!(foreign.poster_identity, foreign.expected_peer_identity);
-        assert!(native_row_attribution_from_provider(
+        let foreign_evidence = native_row_attribution_from_provider(
             foreign,
             &[PEER_CARRIER.to_owned()],
             "trusted-scope",
             7,
             0,
         )
-        .is_none());
+        .expect("foreign poster is an evidenced not-published answer");
+        assert_eq!(
+            foreign_evidence.who_wrote_it,
+            SharedRowWhoWroteIt::NotPublishedByApp
+        );
+        assert!(!native_row_evidence_batch_is_valid(
+            &[matrix_visible_row(foreign_evidence, PEER_CARRIER, 70)],
+            "trusted-scope",
+            7
+        ));
 
         let replayed_crypto_attribution = bind_authenticated_native_row(
             &peer,
@@ -17574,6 +17872,7 @@ ok i will weekend again with you",
         let crypto_replay = vec![
             RehydratedNativeDiscordRow {
                 flagtext: OWN_CARRIER.to_owned(),
+                who_wrote_it: SharedRowWhoWroteIt::Yours,
                 plaintext: Some("own plaintext".to_owned()),
                 orientation: Some(RehydratedRowOrientation::Outgoing),
                 attribution: Some(
@@ -17593,6 +17892,7 @@ ok i will weekend again with you",
             },
             RehydratedNativeDiscordRow {
                 flagtext: PEER_CARRIER.to_owned(),
+                who_wrote_it: SharedRowWhoWroteIt::Theirs,
                 plaintext: Some("replayed plaintext".to_owned()),
                 orientation: Some(RehydratedRowOrientation::Incoming),
                 attribution: Some(replayed_crypto_attribution),
@@ -17604,6 +17904,7 @@ ok i will weekend again with you",
         let inconsistent_dto = rehydrated_native_discord_row_dto(
             RehydratedNativeDiscordRow {
                 flagtext: OWN_CARRIER.to_owned(),
+                who_wrote_it: SharedRowWhoWroteIt::Yours,
                 plaintext: Some("must not cross the command boundary".to_owned()),
                 orientation: Some(RehydratedRowOrientation::Incoming),
                 attribution: Some(

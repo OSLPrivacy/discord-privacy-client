@@ -169,6 +169,53 @@ second, never the reverse, or a reader can grade a half-written object.
 identify builds by `sha256` (`osl-build-and-test-gotchas`). Copying a 40 MB exe you already sent is
 pure latency.
 
+### Fast local two-copy status command
+
+Run this from the repository root in a new shell when you need the fast two-copy
+smoke check. The startup command must keep the copy names, disposable identity
+names, ports and data folders separate, and the two direct status commands must
+name their copy with `--copy A` and `--copy B`.
+
+```bash
+# OSL-TWO-COPY-FAST-STATUS-BEGIN
+set -Eeuo pipefail
+root="$(mktemp -d)"
+token="osl0033-two-copy-guide-$$"
+cleanup() {
+  pkill -f "$token" 2>/dev/null || true
+  rm -rf "$root"
+}
+trap cleanup EXIT
+
+scripts/qa/osl-two-copy-startup.sh \
+  --root "$root" \
+  --identity-a osl-copy-a-disposable \
+  --identity-b osl-copy-b-disposable \
+  --port-a 47291 \
+  --port-b 47292 \
+  -- bash -c 'trap "exit 0" TERM INT; exec -a "'"$token"'-${OSL_COPY_PORT}" sleep 60' \
+  >"$root/plan.txt"
+cat "$root/plan.txt"
+
+field_value() {
+  sed -n "s/.*$1=\([^ ]*\).*/\1/p" "$root/plan.txt"
+}
+data_a="$(field_value data_folder | sed -n '1p')"
+data_b="$(field_value data_folder | sed -n '2p')"
+identity_a="$(field_value identity_name | sed -n '1p')"
+identity_b="$(field_value identity_name | sed -n '2p')"
+
+scripts/qa/osl-two-copy-process-status.sh \
+  --copy A \
+  --data "$data_a" \
+  --identity-name "$identity_a"
+scripts/qa/osl-two-copy-process-status.sh \
+  --copy B \
+  --data "$data_b" \
+  --identity-name "$identity_b"
+# OSL-TWO-COPY-FAST-STATUS-END
+```
+
 ## Why an in-VM agent and not `az vm run-command`
 
 `az vm run-command invoke` is the obvious answer and it is wrong here. It executes as SYSTEM in

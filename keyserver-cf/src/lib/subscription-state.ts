@@ -34,6 +34,24 @@ import {
   type SubscriptionStatus,
 } from "./subscriptions.js";
 
+export const ONE_TIME_PRO_AMOUNT_CENTS = 500;
+export const ONE_TIME_PRO_CURRENCY = "usd";
+export const ONE_TIME_PRO_AMOUNT_REFUSAL = "one_time_checkout_amount_mismatch";
+export const ONE_TIME_PRO_CURRENCY_REFUSAL = "one_time_checkout_currency_mismatch";
+
+export function validateOneTimeProPaymentMessage(obj: {
+  amount_total?: unknown;
+  currency?: unknown;
+}): typeof ONE_TIME_PRO_AMOUNT_REFUSAL | typeof ONE_TIME_PRO_CURRENCY_REFUSAL | null {
+  if (obj.currency !== ONE_TIME_PRO_CURRENCY) {
+    return ONE_TIME_PRO_CURRENCY_REFUSAL;
+  }
+  if (obj.amount_total !== ONE_TIME_PRO_AMOUNT_CENTS) {
+    return ONE_TIME_PRO_AMOUNT_REFUSAL;
+  }
+  return null;
+}
+
 /** Map a raw Stripe subscription status string + cancel flag to our
  *  6-state model. */
 export function deriveStatus(
@@ -222,8 +240,9 @@ async function onCheckoutCompleted(
     if (!obj.payment_intent) {
       return { kind: "noop", reason: "paid checkout without payment intent" };
     }
-    if (obj.amount_total !== 500 || obj.currency !== "usd") {
-      return { kind: "noop", reason: "one-time checkout amount does not match $5 USD" };
+    const priceRefusal = validateOneTimeProPaymentMessage(obj);
+    if (priceRefusal) {
+      return { kind: "noop", reason: priceRefusal };
     }
     const completion = await completeOneTimeStripeCheckoutClaim(env.DB, {
       sessionId: obj.id,

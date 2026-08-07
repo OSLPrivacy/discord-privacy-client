@@ -620,6 +620,15 @@ pub struct ActiveServiceHost {
     pub(crate) owner_namespace: String,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebsiteDriverReport {
+    pub kind: &'static str,
+    pub fake: bool,
+    pub page_url: String,
+    pub page_title: String,
+}
+
 #[cfg(any(feature = "desktop", test))]
 fn active_profile_matches(
     active: Option<&ActiveServiceHost>,
@@ -786,6 +795,7 @@ pub struct ServiceHostStatus {
     pub host: Option<String>,
     pub blocked_navigation_count: u64,
     pub last_error: Option<ServiceHostFailure>,
+    pub website_driver: Option<WebsiteDriverReport>,
 }
 
 #[derive(Debug, Default)]
@@ -798,6 +808,7 @@ struct HostGeneration {
     host: Option<String>,
     blocked_navigation_count: u64,
     last_error: Option<ServiceHostFailure>,
+    website_driver: Option<WebsiteDriverReport>,
 }
 
 /// Mutations are serialized for the entire close/create transition. The
@@ -861,6 +872,7 @@ impl ServiceHostState {
         state.resume_phase = ServiceHostPhase::Closed;
         state.host = None;
         state.last_error = None;
+        state.website_driver = None;
         Ok(state.generation)
     }
 
@@ -873,6 +885,7 @@ impl ServiceHostState {
                 host: state.host.clone(),
                 blocked_navigation_count: state.blocked_navigation_count,
                 last_error: state.last_error.clone(),
+                website_driver: state.website_driver.clone(),
             })
             .map_err(|_| ServiceHostError::Runtime("service host state is poisoned".to_owned()))
     }
@@ -901,6 +914,7 @@ impl ServiceHostState {
         state.resume_phase = ServiceHostPhase::Opening;
         state.host = Some(host.to_owned());
         state.last_error = None;
+        state.website_driver = None;
         Ok(active)
     }
 
@@ -935,6 +949,61 @@ impl ServiceHostState {
         Ok(())
     }
 
+    pub fn report_website_driver(
+        &self,
+        generation: u64,
+        report: WebsiteDriverReport,
+    ) -> Result<(), ServiceHostError> {
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| ServiceHostError::Runtime("service host state is poisoned".to_owned()))?;
+        if generation == state.generation {
+            state.website_driver = Some(report);
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn open_supported_local_test_page_with_real_driver(
+        &self,
+        owner_namespace: &str,
+        service_id: &str,
+        account_id: &str,
+        page_url: &Url,
+    ) -> Result<ActiveServiceHost, ServiceHostError> {
+        use crate::website_driver::{RealBrowserWebsiteDriver, WebsiteDriver};
+
+        if !local_test_page_supported(page_url) {
+            return Err(ServiceHostError::NavigationDenied);
+        }
+        let host = page_url
+            .host_str()
+            .ok_or(ServiceHostError::InvalidUrl)?
+            .to_owned();
+        let pending = self.begin_open(owner_namespace, service_id, account_id, &host)?;
+        let generation = pending.generation;
+        let mut driver = RealBrowserWebsiteDriver::launch()
+            .map_err(|error| ServiceHostError::Runtime(format!("{error:?}")))?;
+        let page = driver
+            .find_page(page_url)
+            .map_err(|error| ServiceHostError::Runtime(format!("{error:?}")))?;
+        let snapshot = driver
+            .read_page(&page)
+            .map_err(|error| ServiceHostError::Runtime(format!("{error:?}")))?;
+        self.report_website_driver(
+            generation,
+            WebsiteDriverReport {
+                kind: driver.kind().as_str(),
+                fake: false,
+                page_url: snapshot.url,
+                page_title: snapshot.title,
+            },
+        )?;
+        self.page_load(generation, page_url.host_str(), true)?;
+        self.activate(service_id, account_id, generation)
+    }
+
     pub fn navigation_blocked(&self, generation: u64) -> Result<(), ServiceHostError> {
         let mut state = self
             .inner
@@ -954,6 +1023,7 @@ impl ServiceHostState {
             message: "The service tried to leave its explicit HTTPS host allowlist.",
             retryable: false,
         });
+        state.website_driver = None;
         Ok(())
     }
 
@@ -980,6 +1050,7 @@ impl ServiceHostState {
             message,
             retryable,
         });
+        state.website_driver = None;
         Ok(())
     }
 
@@ -1069,6 +1140,18 @@ impl ServiceHostState {
         state.active = Some(retained.clone());
         Ok(Some(retained))
     }
+}
+
+#[cfg(test)]
+fn local_test_page_supported(url: &Url) -> bool {
+    url.scheme() == "http"
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.query().is_none()
+        && url.fragment().is_none()
+        && url
+            .host_str()
+            .is_some_and(|host| host == "127.0.0.1" || host == "localhost")
 }
 
 #[cfg(feature = "desktop")]
@@ -1607,7 +1690,10 @@ pub mod desktop {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
     use std::sync::{mpsc, Arc, TryLockError};
+    use std::thread;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -1624,6 +1710,68 @@ mod tests {
 
     fn discord() -> &'static ServiceManifest {
         service_manifest("discord").unwrap()
+    }
+
+    const TASK_1202_TITLE: &str = "OSL Task 1202 Real Driver Local Page";
+
+    fn serve_task_1202_page(mut stream: TcpStream) {
+        let mut request = [0_u8; 1024];
+        let _ = stream.read(&mut request);
+        let body = format!(
+            "<!doctype html><html><head><title>{TASK_1202_TITLE}</title></head><body>task 1202</body></html>"
+        );
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream
+            .write_all(response.as_bytes())
+            .expect("task 1202 response is writable");
+    }
+
+    fn task_1202_local_page() -> (Url, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind task 1202 local page");
+        let address = listener.local_addr().expect("task 1202 local address");
+        let server = thread::spawn(move || {
+            for stream in listener.incoming().take(1) {
+                serve_task_1202_page(stream.expect("task 1202 request is readable"));
+            }
+        });
+        (
+            Url::parse(&format!("http://{address}/task-1202.html"))
+                .expect("task 1202 local URL parses"),
+            server,
+        )
+    }
+
+    #[test]
+    fn task_1202_app_reports_real_driver_not_fake_for_local_test_page() {
+        let (url, server) = task_1202_local_page();
+        let state = ServiceHostState::default();
+        let active = state
+            .open_supported_local_test_page_with_real_driver(
+                "owner-task-1202",
+                "email",
+                "acct-task-1202",
+                &url,
+            )
+            .expect("app opens supported local test page with a real driver");
+        server.join().expect("task 1202 local page server exits");
+
+        let status = state.status().expect("task 1202 status is readable");
+        let report = status
+            .website_driver
+            .expect("task 1202 app reports a website driver");
+        println!("TASK1202 active_generation={}", active.generation);
+        println!("TASK1202 local_test_page_url={}", report.page_url);
+        println!("TASK1202 app_reported_driver={}", report.kind);
+        println!("TASK1202 app_reported_fake={}", report.fake);
+        println!("TASK1202 local_test_page_title={}", report.page_title);
+
+        assert_eq!(report.kind, "realBrowser");
+        assert!(!report.fake);
+        assert_eq!(report.page_url, url.to_string());
+        assert_eq!(report.page_title, TASK_1202_TITLE);
     }
 
     #[test]

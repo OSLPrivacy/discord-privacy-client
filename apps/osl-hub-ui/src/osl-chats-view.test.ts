@@ -16,6 +16,7 @@ function friend(overrides: Partial<OslChatFriend> = {}): OslChatFriend {
     nickname: "Rose",
     verified: true,
     ready: true,
+    handshakeConfirmed: true,
     preview: "See you soon",
     previewVisible: true,
     unreadCount: 0,
@@ -117,6 +118,7 @@ describe("OSL chats view", () => {
     expect(oslChatsViewMarkup(model({ draft: "Hello" }))).toMatch(/class="osl-chat-send" type="submit"(?![^>]* disabled)[^>]*>/u);
     expect(oslChatsViewMarkup(model({ draft: "Hello", friends: [friend({ verified: false })] }))).toMatch(/class="osl-chat-send" type="submit"[^>]* disabled/u);
     expect(oslChatsViewMarkup(model({ draft: "Hello", friends: [friend({ ready: false })] }))).toMatch(/class="osl-chat-send" type="submit"[^>]* disabled/u);
+    expect(oslChatsViewMarkup(model({ draft: "Hello", friends: [friend({ handshakeConfirmed: false })] }))).toMatch(/class="osl-chat-send" type="submit"[^>]* disabled/u);
     expect(oslChatsViewMarkup(model({ draft: "   " }))).toMatch(/class="osl-chat-send" type="submit"[^>]* disabled/u);
     expect(oslChatsViewMarkup(model({ draft: "Hello", busy: true }))).toMatch(/class="osl-chat-send" type="submit"[^>]* disabled/u);
   });
@@ -136,6 +138,31 @@ describe("OSL chats view", () => {
 
     expect(oslChatsViewMarkup(model({ draft: "Hello", buildIntegrity: "verified" })))
       .not.toContain("Build verification warning");
+  it("TASK0434 starts direct chats only when both peers have answered", () => {
+    const supported = [
+      friend({ personId: "supporting-peer-1", nickname: "Rose", handshakeConfirmed: true }),
+      friend({ personId: "supporting-peer-2", nickname: "Lane", handshakeConfirmed: true }),
+    ];
+    const unsupported = friend({
+      personId: "unsupported-peer-1",
+      nickname: "Noah",
+      handshakeConfirmed: false,
+    });
+    const renderActive = (activePersonId: string) => oslChatsViewMarkup(model({
+      friends: [...supported, unsupported],
+      activePersonId,
+      draft: "TASK0434 direct chat",
+    }));
+    const supportedMarkup = supported.map((peer) => renderActive(peer.personId));
+    const unsupportedMarkup = renderActive(unsupported.personId);
+    const supportedEnabled = supportedMarkup.filter((markup) => /class="osl-chat-send" type="submit"(?![^>]* disabled)[^>]*data-osl-chat-peer-state="mutual"/u.test(markup)).length;
+    const unsupportedWeaklyBlocked = /class="osl-chat-send" type="submit"[^>]*data-osl-chat-peer-state="one-way"[^>]*disabled/u.test(unsupportedMarkup)
+      && unsupportedMarkup.includes("Chat needs both people to answer before sending.");
+
+    console.log(`TASK0434 supported_peers_send_with_stronger_state=${supportedEnabled} state=mutual`);
+    console.log(`TASK0434 unsupported_peers_cannot_silently_send_weakly=${unsupportedWeaklyBlocked ? 1 : 0} state=one-way`);
+    expect(supportedEnabled).toBe(2);
+    expect(unsupportedWeaklyBlocked).toBe(true);
   });
 
   it("accepts the backend maximum and blocks the first draft the backend would reject", () => {
@@ -198,8 +225,11 @@ describe("send button re-enablement while typing", () => {
     const main = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
     const sendStart = main.indexOf("async function sendOslChat(event: SubmitEvent): Promise<void> {");
     const resetStart = main.indexOf("function resetOslChatUiState", sendStart);
+    const prepareStart = main.indexOf("prepareOslChatText(draft, oslChatViewOnce)", sendStart);
     expect(sendStart).toBeGreaterThan(-1);
     expect(resetStart).toBeGreaterThan(sendStart);
+    expect(prepareStart).toBeGreaterThan(sendStart);
+    expect(main.slice(sendStart, prepareStart)).toContain("oslChatHandshakeConfirmed(oslChatMessages.get(personId) ?? [])");
     expect(main.slice(sendStart, resetStart)).toContain('setOslChatDraft("");');
   });
 });

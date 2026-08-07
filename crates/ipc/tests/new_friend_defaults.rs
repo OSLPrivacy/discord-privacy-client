@@ -5,6 +5,9 @@ use ipc::AppState;
 use keystore::{set_active_account_dir, set_base_dir_override};
 use std::fs;
 use std::path::Path;
+use ipc::commands::{cmd_osl_get_new_friend_defaults, cmd_osl_save_new_friend_defaults};
+use ipc::AppState;
+use keystore::{set_active_account_dir, set_base_dir_override};
 use std::sync::Mutex;
 
 static OSL_PROCESS_GLOBALS_LOCK: Mutex<()> = Mutex::new(());
@@ -47,6 +50,7 @@ fn direct_defaults_query_returns_all_three_new_friend_values() {
     assert_eq!(defaults.account_reach, "approved_chats_only");
     assert_eq!(defaults.auto_whitelist, "never");
     assert_eq!(defaults.verification_warnings, "always");
+    assert_eq!(defaults.verification_warnings, "enabled");
 }
 
 #[test]
@@ -64,6 +68,10 @@ fn changed_direct_query_returns_exact_saved_new_friend_values() {
             account_reach: "all_shared_chats".to_string(),
             auto_whitelist: "always".to_string(),
             verification_warnings: "never".to_string(),
+        ipc::commands::NewFriendDefaultsDto {
+            account_reach: "all_shared_chats".to_string(),
+            auto_whitelist: "always".to_string(),
+            verification_warnings: "disabled".to_string(),
         },
         Some(dir.path().to_path_buf()),
     )
@@ -212,4 +220,5 @@ fn task_0251_invalid_warning_choice_refuses_and_preserves_default_record() {
     assert!(unchanged_after_bad);
     assert_eq!(warning_after_bad, "never");
     assert_eq!(marker_after_bad, "MINT-0251");
+    assert_eq!(changed.verification_warnings, "disabled");
 }

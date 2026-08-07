@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::runtime_switches::{
     read_startup_test_only_runtime_switches, ResolvedTestOnlyRunTimeSwitches,
+    ResolvedTestOnlyRunTimeSwitches, PASSWORD_SCREEN_ACCESS_SKIP_FOR_TEST,
 };
 
 pub struct HubCoreState {
@@ -51,6 +52,7 @@ impl HubCoreState {
         Self::bootstrap_from_disk_with_runtime_switches(
             read_startup_test_only_runtime_switches().unwrap_or_default(),
         )
+        Self::bootstrap_from_disk_with_runtime_switches(ResolvedTestOnlyRunTimeSwitches::default())
     }
 
     pub fn bootstrap_from_disk_with_runtime_switches(
@@ -74,6 +76,17 @@ impl HubCoreState {
 
     pub fn runtime_switches(&self) -> ResolvedTestOnlyRunTimeSwitches {
         self.runtime_switches
+    pub fn with_runtime_switches_for_test(
+        runtime_switches: ResolvedTestOnlyRunTimeSwitches,
+    ) -> Self {
+        Self {
+            runtime_switches,
+            ..Self::default()
+        }
+    }
+
+    pub fn runtime_switches(&self) -> ResolvedTestOnlyRunTimeSwitches {
+        self.runtime_switches.clone()
     }
 
     pub fn register_after_local_bootstrap(&self) {
@@ -249,6 +262,11 @@ fn hub_license_state(value: keystore::LicenseStateDto) -> HubLicenseState {
 pub fn readiness(state: &HubCoreState) -> CoreReadiness {
     let status = ipc::commands::cmd_status(&state.osl);
     let password_gate_required = if state.runtime_switches.password_screen_gate_required() {
+    let password_screen_skipped =
+        state.runtime_switches().password_screen_access == PASSWORD_SCREEN_ACCESS_SKIP_FOR_TEST;
+    let password_gate_required = if password_screen_skipped {
+        false
+    } else {
         ipc::commands::cmd_osl_password_status()
             .map(|value| value.is_set)
             .unwrap_or(true)
@@ -278,12 +296,14 @@ pub fn readiness(state: &HubCoreState) -> CoreReadiness {
     } else {
         None
     };
-    // The disposable QA shell must paint and claim Discord while its freshly
+    // A test-only startup switch may let disposable QA paint while its freshly
     // generated public identity registers in the background. Protected-send
     // commands still enforce registration themselves; only the setup UI gate
     // is bypassed in this compile-time-only build.
     let password_screen_skipped_for_test = !state.runtime_switches.password_screen_gate_required();
     let bootstrap_status = if password_screen_skipped_for_test
+    // is bypassed by this process-start switch set.
+    let bootstrap_status = if password_screen_skipped
         && state.bootstrap_attempted
         && status.identity_loaded
         && unlocked
@@ -295,13 +315,14 @@ pub fn readiness(state: &HubCoreState) -> CoreReadiness {
             state.bootstrap_attempted,
             status.identity_loaded,
             identity_blob_present(),
-            // The disposable QA shell forces `password_gate_required` to
+            // The startup switch can force `password_gate_required` to
             // false above regardless of on-disk state, so it no longer means
             // "a password is set" there — it means "we don't use one". Treat
             // that as satisfying the local password prerequisite rather than
             // letting the classifier read it as "not set yet" and route back
             // to setupRequired.
             password_gate_required || password_screen_skipped_for_test,
+            password_gate_required || password_screen_skipped,
             unlocked,
             status.keyserver_initialised,
             state.osl.cloud_registration_state() == ipc::state::CloudRegistrationState::Registered,

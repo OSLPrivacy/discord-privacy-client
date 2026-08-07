@@ -33,6 +33,8 @@ class BurnAndUninstallContractTest(unittest.TestCase):
         self.assertTrue(uninstall["deletes_osl_data"])
         self.assertTrue(uninstall["offers_one_identity_backup"])
         self.assertEqual(uninstall["backup_filename"], "OSL identity backup.json")
+        self.assertTrue(uninstall["offers_one_local_data_backup"])
+        self.assertEqual(uninstall["backup_directory"], "OSL local data backup")
         self.assertFalse(uninstall["is_a_burn"])
         self.assertTrue(uninstall["requires_separate_user_action"])
         self.assertEqual(claims["remote_data_unrecoverable_only_after"], "server confirmation")

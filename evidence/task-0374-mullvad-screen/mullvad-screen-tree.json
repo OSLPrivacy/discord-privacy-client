@@ -1,0 +1,39 @@
+{
+  "controls": [
+    {
+      "name": "found session",
+      "role": "button"
+    },
+    {
+      "name": "install",
+      "role": "button"
+    },
+    {
+      "name": "Continue",
+      "role": "button"
+    },
+    {
+      "name": "Not now",
+      "role": "button"
+    },
+    {
+      "name": "Back",
+      "role": "button"
+    }
+  ],
+  "fixture": "mullvad-fixed-fixture-v1",
+  "image": {
+    "bytes": 18544,
+    "colors": 972,
+    "height": 768,
+    "path": "/home/liamw/osl-exec-f/evidence/task-0374-mullvad-screen/mullvad.png",
+    "sha256": "cfbbd59615f18e4bba0dc1298ee5978b1b7d3a397e9ba69e4bdaee411d115b68",
+    "width": 1024
+  },
+  "schema": "osl-task-0374-mullvad-screen-tree-v1",
+  "screen": "1024x768x24",
+  "title": {
+    "name": "Mullvad",
+    "role": "heading"
+  }
+}

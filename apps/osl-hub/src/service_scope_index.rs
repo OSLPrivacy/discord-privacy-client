@@ -415,6 +415,39 @@ impl ServiceScopeIndexState {
             .collect())
     }
 
+    pub fn complete_server_scope(
+        &self,
+        owner: &str,
+        service: &str,
+        account: &str,
+        server_id: &str,
+    ) -> Result<IndexedServiceScope, String> {
+        validate_account_binding(owner, service, account)?;
+        if !valid_opaque(server_id, 160) {
+            return Err("OSL indexed server scope is invalid".to_owned());
+        }
+        let cache = self.lock_loaded()?;
+        let indexed = cache
+            .document
+            .accounts
+            .get(&account_key(owner, service, account))
+            .ok_or_else(|| "OSL service scope coverage is incomplete".to_owned())?;
+        if !indexed.coverage.complete() {
+            return Err(
+                "OSL cannot prove complete scope coverage for this legacy service account"
+                    .to_owned(),
+            );
+        }
+        let storage_key = ipc::scope::Scope::server_full(server_id).storage_key();
+        let scope = indexed
+            .scopes
+            .get(&storage_key)
+            .cloned()
+            .ok_or_else(|| "OSL whole-server burn scope is not indexed".to_owned())?;
+        validate_indexed_scope(&scope, service, account)?;
+        Ok(scope)
+    }
+
     pub fn mark_scope_burned(
         &self,
         manifest: &ImmutableServiceBurnManifest,

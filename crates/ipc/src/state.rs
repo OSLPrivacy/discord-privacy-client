@@ -188,6 +188,20 @@ pub struct KeyChangeAlert {
     pub pending_bundle: crate::tofu::KeyBundle,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChannelMessageRecord {
+    pub message_id: String,
+    pub channel_id: String,
+    pub thread_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChannelThreadRecord {
+    pub thread_id: String,
+    pub channel_id: String,
+    pub parent_message_id: String,
+}
+
 pub struct AppState {
     /// Serializes in-process Discord-account switches. The active account
     /// directory is process-global, so two concurrent switch commands must
@@ -327,6 +341,12 @@ pub struct AppState {
 
     /// Thread records keyed by thread id, each attached to one parent channel
     /// message and its channel id.
+    /// First-party OSL Chats channel messages that can own local reply
+    /// threads. The persisted message body path stays in `message_store`; this
+    /// table is only the direct command's structural target graph.
+    pub channel_messages: Mutex<HashMap<String, ChannelMessageRecord>>,
+
+    /// First-party OSL Chats local thread records, keyed by thread id.
     pub channel_threads: Mutex<HashMap<String, ChannelThreadRecord>>,
 
     /// Phase 9-B1: app-wide user preferences (stego mode selector,
@@ -364,6 +384,20 @@ pub struct AppState {
     /// contended) whitelist_state lock.
     pub server_defaults:
         Mutex<std::collections::HashMap<String, crate::whitelist_state::ServerDefaults>>,
+
+    /// Explicit user-facing server member lists, including owner and join time.
+    /// This is separate from `scope_membership`, which is a best-effort
+    /// recipient observation oracle rather than an authoritative roster.
+    pub server_member_lists: Mutex<crate::server_membership::ServerMembershipStore>,
+
+    /// Explicit server permission grants. The closed ServerPermission enum is
+    /// the only authority for read, send, invite, channel creation, message
+    /// removal, member removal, and server changes.
+    pub server_permissions: Mutex<crate::server_membership::ServerPermissionStore>,
+
+    /// Explicit channel access plus thread records. Threads do not own a
+    /// broader access list; reads are resolved through the parent channel.
+    pub server_thread_permissions: Mutex<crate::server_membership::ServerThreadPermissionStore>,
 
     /// 9-TD1.4: most-recent disk-persist failure message. Pre-TD1
     /// every `persist_*_now` swallowed errors silently with a
@@ -445,6 +479,15 @@ impl Default for AppState {
             friend_ids: Mutex::new(Vec::new()),
             guild_list: Mutex::new(Vec::new()),
             server_defaults: Mutex::new(HashMap::new()),
+            server_member_lists: Mutex::new(
+                crate::server_membership::ServerMembershipStore::default(),
+            ),
+            server_permissions: Mutex::new(
+                crate::server_membership::ServerPermissionStore::default(),
+            ),
+            server_thread_permissions: Mutex::new(
+                crate::server_membership::ServerThreadPermissionStore::default(),
+            ),
             last_persist_error: Mutex::new(None),
             license_state: Mutex::new(keystore::LicenseStateDto::default()),
             recovery_guard: Mutex::new(crate::recovery::RecoveryGuard::default()),

@@ -1,0 +1,12 @@
+{
+  "captureEnabled": true,
+  "display": ":67",
+  "imageBytes": 4044,
+  "imagePath": "/home/liamw/osl-exec-g/evidence/task-0063-fast-screen-test/out/osl-fixed-screen.png",
+  "imageSha256": "53f1206044b336643db83f3f4422d6d61f34d60ff3eeb87ec3cc9866f276a7bf",
+  "schema": "osl-fixed-screen-starter-v1",
+  "screen": "1440x900x24",
+  "windowHeight": 900,
+  "windowId": "4194307",
+  "windowWidth": 1440
+}

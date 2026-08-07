@@ -44,6 +44,7 @@ pub mod browser_companion;
 pub mod browser_footprint;
 #[cfg(feature = "core")]
 pub mod browser_profile_scan;
+pub mod bundled_model_pack;
 pub mod build_integrity;
 pub mod burn_authorize;
 pub mod burn_contract;
@@ -98,6 +99,7 @@ pub mod landing_oracle;
 /// `desktop`: the reveal rule is what decides whether the app is visible at all,
 /// so it is testable in every build that can compile this crate.
 pub mod main_window_reveal;
+pub mod messenger_whitelist_kinds;
 pub mod model_pack_install;
 pub mod models;
 pub mod mullvad_window_host;
@@ -158,6 +160,7 @@ pub(crate) mod seam_ledger;
 /// Every other implementation in the tree is `#[cfg(test)]`, which is why the
 /// offline send queue could not be wired at all before this module existed.
 pub mod secure_disk_backend;
+pub mod service_connections;
 pub mod service_host;
 #[cfg(feature = "core")]
 pub mod services;
@@ -230,6 +233,7 @@ pub mod realtime_resume;
 pub mod realtime_subscription;
 #[cfg(feature = "core")]
 pub mod receipt_emit;
+pub mod row_who_wrote_it;
 #[cfg(feature = "core")]
 pub mod runtime_switches;
 // Timed deletion and view-once expiry. Needs `ipc` (sealed-at-rest storage) and

@@ -106,9 +106,10 @@ rfd = { version = "=0.16.0", default-features = false, features = ["gtk3"] }
 # is compiled into the standard binary and keeps its historical feature name.
 # Nothing that provisions a disposable QA account may be listed here: see
 # `whatsapp-qa-identity` below for the half that was split back out.
-default = ["core", "whatsapp-qa-shell"]
+default = ["core", "whatsapp-qa-shell", "native-cover-writer"]
 core = ["dep:bip39", "dep:crypto", "dep:ipc", "dep:keystore", "dep:message-lifecycle", "dep:store", "dep:tracing", "dep:tracing-subscriber"]
 desktop = ["dep:runtime", "dep:tauri", "dep:tauri-plugin-dialog", "dep:tauri-plugin-single-instance", "dep:tauri-plugin-updater", "dep:tokio", "core"]
+native-cover-writer = ["cover-ai/local-model"]
 custom-protocol = ["tauri/custom-protocol"]
 # Disposable two-VM Discord testing only. This is deliberately a native build
 # feature rather than a renderer/runtime switch, so production binaries cannot

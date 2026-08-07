@@ -23,6 +23,14 @@ use std::collections::HashMap;
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::str::FromStr;
+use std::path::Path;
+use std::str::FromStr;
+
+pub const DEFAULT_LANGUAGE_CHOICE: &str = "en";
+
+pub fn default_language_choice() -> String {
+    DEFAULT_LANGUAGE_CHOICE.to_string()
+}
 
 /// Active stego envelope. Mode 0 is the production `DPC0::<b64>`
 /// path; Mode 1 is the multi-message `DPC1::<sentences>` cover
@@ -226,6 +234,12 @@ impl PrivacyLevelRuleSet {
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum NextGenerationMessagePolicy {
+/// User's choice for whether OSL should start when Windows starts.
+/// This stores only the user's on/off preference; platform-specific
+/// startup registration is handled outside `app_preferences.json`.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StartWithWindowsChoice {
     On,
     #[default]
     Off,
@@ -233,6 +247,8 @@ pub enum NextGenerationMessagePolicy {
 
 impl NextGenerationMessagePolicy {
     pub fn label(self) -> &'static str {
+impl StartWithWindowsChoice {
+    pub fn as_value(self) -> &'static str {
         match self {
             Self::On => "on",
             Self::Off => "off",
@@ -294,6 +310,18 @@ impl IdleLockTimeChoice {
             Self::Never => "never",
             Self::AfterSeconds(60) => "one_minute",
             Self::AfterSeconds(_) => "seconds",
+}
+
+impl FromStr for StartWithWindowsChoice {
+    type Err = String;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "on" => Ok(Self::On),
+            "off" => Ok(Self::Off),
+            _ => Err(format!(
+                "OSL: unknown start-with-Windows choice {raw:?}; valid choices: on, off"
+            )),
         }
     }
 }
@@ -459,6 +487,7 @@ impl FromStr for NewFriendVerificationWarnings {
             .replace(['-', ' '], "_")
             .as_str()
         {
+        match raw.trim().to_ascii_lowercase().replace(['-', ' '], "_").as_str() {
             "enabled" => Ok(Self::Enabled),
             "disabled" => Ok(Self::Disabled),
             _ => Err(format!(
@@ -477,6 +506,7 @@ impl FromStr for NewFriendVerificationWarnings {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppPreferences {
     #[serde(default)]
     pub version: u32,
@@ -510,6 +540,37 @@ pub struct AppPreferences {
 }
 
 pub const APP_PREFERENCES_VERSION: u32 = 3;
+    pub auto_whitelist_rules: HashMap<String, crate::auto_whitelist_rules::AutoWhitelistRule>,
+    #[serde(default)]
+    pub new_friend_account_reach: NewFriendAccountReach,
+    #[serde(default)]
+    pub new_friend_auto_whitelist: crate::auto_whitelist_rules::AutoWhitelistRule,
+    #[serde(default)]
+    pub new_friend_verification_warnings: NewFriendVerificationWarnings,
+    #[serde(default)]
+    pub start_with_windows: StartWithWindowsChoice,
+    #[serde(default = "default_language_choice")]
+    pub language: String,
+}
+
+impl Default for AppPreferences {
+    fn default() -> Self {
+        Self {
+            version: 0,
+            stego_mode: StegoMode::default(),
+            tour: TourState::default(),
+            update_channel: UpdateChannel::default(),
+            auto_whitelist_rules: HashMap::new(),
+            new_friend_account_reach: NewFriendAccountReach::default(),
+            new_friend_auto_whitelist: crate::auto_whitelist_rules::AutoWhitelistRule::default(),
+            new_friend_verification_warnings: NewFriendVerificationWarnings::default(),
+            start_with_windows: StartWithWindowsChoice::default(),
+            language: default_language_choice(),
+        }
+    }
+}
+
+pub const APP_PREFERENCES_VERSION: u32 = 4;
 
 pub fn load_app_preferences(path: &Path) -> AppPreferences {
     let Ok(blob) = std::fs::read(path) else {

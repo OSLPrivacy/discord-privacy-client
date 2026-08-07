@@ -543,14 +543,6 @@ pub fn prepare_delete(
         mailbox_name,
         message_id,
     )?;
-    let mut digest_input = Vec::new();
-    write_lp(&mut digest_input, owner_osl_user_id.as_bytes());
-    write_lp(&mut digest_input, account_id.as_bytes());
-    write_lp(&mut digest_input, mailbox_name.as_bytes());
-    write_lp(&mut digest_input, message_id.as_bytes());
-    digest_input.extend_from_slice(&message.uid.to_be_bytes());
-    digest_input.extend_from_slice(&message.fingerprint);
-    let batch_digest = Sha256::digest(digest_input).into();
     Ok(PreparedImapDelete {
         owner_osl_user_id: owner_osl_user_id.to_owned(),
         account_id: account_id.to_owned(),
@@ -558,7 +550,14 @@ pub fn prepare_delete(
         message_id: message_id.to_owned(),
         prepared_uid: message.uid,
         fingerprint: message.fingerprint,
-        batch_digest,
+        batch_digest: prepared_message_digest_parts(
+            owner_osl_user_id,
+            account_id,
+            mailbox_name,
+            message_id,
+            message.uid,
+            &message.fingerprint,
+        ),
     })
 }
 
@@ -616,6 +615,7 @@ pub struct ReviewedAttendedImapBatch {
     owner_osl_user_id: String,
     account_id: String,
     batch_digest: [u8; 32],
+    message_digests: BTreeSet<[u8; 32]>,
     message_count: usize,
 }
 
@@ -625,6 +625,7 @@ impl fmt::Debug for ReviewedAttendedImapBatch {
             .field("owner_osl_user_id", &"<redacted>")
             .field("account_id", &"<redacted>")
             .field("batch_digest", &"<redacted>")
+            .field("message_digest_count", &self.message_digests.len())
             .field("message_count", &self.message_count)
             .finish()
     }
@@ -637,6 +638,7 @@ pub struct ImapDeleteGrant {
     pub owner_osl_user_id: String,
     pub account_id: String,
     pub batch_digest: [u8; 32],
+    pub message_digests: BTreeSet<[u8; 32]>,
     pub message_fingerprints: BTreeSet<[u8; 32]>,
     pub phase: ImapDeletePhase,
     pub entitlement: ImapEntitlement,
@@ -653,6 +655,7 @@ impl fmt::Debug for ImapDeleteGrant {
             .field("owner_osl_user_id", &"<redacted>")
             .field("account_id", &"<redacted>")
             .field("batch_digest", &"<redacted>")
+            .field("message_digest_count", &self.message_digests.len())
             .field(
                 "message_fingerprint_count",
                 &self.message_fingerprints.len(),
@@ -725,6 +728,7 @@ impl AttendedImapDeleteAuthorizer {
             owner_osl_user_id: reviewed.owner_osl_user_id,
             account_id: reviewed.account_id,
             batch_digest: reviewed.batch_digest,
+            message_digests: reviewed.message_digests,
             message_fingerprints: BTreeSet::new(),
             phase: ImapDeletePhase::Reviewed,
             entitlement: ImapEntitlement::Pro,
@@ -787,17 +791,21 @@ pub fn authorize_attended_imap_batch_reviewed(
     validate_binding(owner_osl_user_id, MAX_OWNER_BYTES)?;
     validate_binding(account_id, MAX_ACCOUNT_ID_BYTES)?;
     let mut digest_input = Vec::new();
+    let mut message_digests = BTreeSet::new();
     for item in prepared {
         if item.owner_osl_user_id != owner_osl_user_id || item.account_id != account_id {
             return Err(ImapPolicyError::AccountBindingMismatch);
         }
-        digest_input.extend_from_slice(&item.batch_digest);
+        let message_digest = prepared_message_digest(item);
+        message_digests.insert(message_digest);
+        digest_input.extend_from_slice(&message_digest);
     }
     let batch_digest = Sha256::digest(digest_input).into();
     Ok(ReviewedAttendedImapBatch {
         owner_osl_user_id: owner_osl_user_id.to_owned(),
         account_id: account_id.to_owned(),
         batch_digest,
+        message_digests,
         message_count: prepared.len(),
     })
 }
@@ -866,6 +874,12 @@ pub fn still_authorizes_imap_delete(
         || grant.account_id != candidate.account_id
     {
         return Err(ImapPolicyError::AccountBindingMismatch);
+    }
+    if !grant
+        .message_digests
+        .contains(&prepared_message_digest(candidate))
+    {
+        return Err(ImapPolicyError::FingerprintMismatch);
     }
     if !grant.message_fingerprints.contains(&candidate.fingerprint) {
         return Err(ImapPolicyError::FingerprintMismatch);
@@ -1039,6 +1053,35 @@ fn validate_binding(value: &str, max: usize) -> Result<(), ImapPolicyError> {
 fn write_lp(target: &mut Vec<u8>, value: &[u8]) {
     target.extend_from_slice(&(value.len() as u32).to_be_bytes());
     target.extend_from_slice(value);
+}
+
+fn prepared_message_digest(prepared: &PreparedImapDelete) -> [u8; 32] {
+    prepared_message_digest_parts(
+        &prepared.owner_osl_user_id,
+        &prepared.account_id,
+        &prepared.mailbox,
+        &prepared.message_id,
+        prepared.prepared_uid,
+        &prepared.fingerprint,
+    )
+}
+
+fn prepared_message_digest_parts(
+    owner_osl_user_id: &str,
+    account_id: &str,
+    mailbox: &str,
+    message_id: &str,
+    uid: u32,
+    fingerprint: &[u8; 32],
+) -> [u8; 32] {
+    let mut digest_input = Vec::new();
+    write_lp(&mut digest_input, owner_osl_user_id.as_bytes());
+    write_lp(&mut digest_input, account_id.as_bytes());
+    write_lp(&mut digest_input, mailbox.as_bytes());
+    write_lp(&mut digest_input, message_id.as_bytes());
+    digest_input.extend_from_slice(&uid.to_be_bytes());
+    digest_input.extend_from_slice(fingerprint);
+    Sha256::digest(digest_input).into()
 }
 
 #[cfg(test)]
@@ -1261,12 +1304,15 @@ mod tests {
         let (_mailbox, prepared) = fixture_and_prepared();
         let mut fingerprints = BTreeSet::new();
         fingerprints.insert(prepared.fingerprint);
+        let mut message_digests = BTreeSet::new();
+        message_digests.insert(prepared_message_digest(&prepared));
         let mut grant = ImapDeleteGrant {
             grant_id: "grant-1".to_owned(),
             authority: ImapGrantAuthority::Attended,
             owner_osl_user_id: prepared.owner_osl_user_id.clone(),
             account_id: prepared.account_id.clone(),
             batch_digest: prepared.batch_digest,
+            message_digests,
             message_fingerprints: fingerprints,
             phase: ImapDeletePhase::Executing,
             entitlement: ImapEntitlement::Pro,
@@ -1329,6 +1375,7 @@ mod tests {
                     owner_osl_user_id: prepared.owner_osl_user_id.clone(),
                     account_id: prepared.account_id.clone(),
                     batch_digest: prepared.batch_digest,
+                    message_digests: BTreeSet::new(),
                     message_count: 0,
                 },
                 1_000,
@@ -1363,6 +1410,7 @@ mod tests {
             owner_osl_user_id: prepared.owner_osl_user_id.clone(),
             account_id: prepared.account_id.clone(),
             batch_digest: prepared.batch_digest,
+            message_digests: BTreeSet::new(),
             message_fingerprints: BTreeSet::new(),
             phase: ImapDeletePhase::Executing,
             entitlement: ImapEntitlement::Pro,

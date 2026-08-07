@@ -1,5 +1,7 @@
 use osl_privacy_hub::attended_imap::{
-    delete_prepared, prepare_delete, ImapMailbox, ImapMessageSnapshot, ImapPolicyError,
+    authorize_attended_imap_batch, authorize_attended_imap_batch_reviewed, delete_prepared,
+    prepare_delete, still_authorizes_imap_delete, AttendedImapDeleteAuthorizer, ImapDeleteContext,
+    ImapDeletePhase, ImapEntitlement, ImapMailbox, ImapMessageSnapshot, ImapPolicyError,
     SeededLocalImapFixture,
 };
 use sha2::{Digest, Sha256};
@@ -157,4 +159,71 @@ fn attended_imap_manual_snapshots_reject_wrong_sender_duplicate_and_uid_change()
         Err(ImapPolicyError::FingerprintMismatch)
     );
     assert_eq!(changed.deleted_count(), 0);
+}
+
+#[test]
+fn task_0417_valid_delete_grant_reused_against_different_message_fails_and_both_records_remain() {
+    let owner = "owner-task-0417";
+    let account = "account-task-0417";
+    let mailbox_name = "INBOX";
+    let first_id = "<task-0417-first@local.test>";
+    let second_id = "<task-0417-second@local.test>";
+    let first = message(owner, account, mailbox_name, first_id, 41, true);
+    let second = message(owner, account, mailbox_name, second_id, 42, true);
+    let mut mailbox = ImapMailbox::from_messages(vec![first.clone(), second.clone()]);
+
+    let prepared_first = prepare_delete(&mailbox, owner, account, mailbox_name, first_id)
+        .expect("first same-conversation message prepares a valid delete grant source");
+    let reviewed = authorize_attended_imap_batch_reviewed(
+        std::slice::from_ref(&prepared_first),
+        owner,
+        account,
+    )
+    .expect("reviewed first message can mint a valid attended grant");
+    let mut authorizer = AttendedImapDeleteAuthorizer::default();
+    let mut grant = authorize_attended_imap_batch(&mut authorizer, reviewed, 1_000, 5_000).unwrap();
+    grant.phase = ImapDeletePhase::Executing;
+    grant
+        .message_fingerprints
+        .insert(prepared_first.fingerprint);
+
+    let mut changed_message_request = prepared_first.clone();
+    changed_message_request.message_id = second.message_id.clone();
+
+    let context = ImapDeleteContext {
+        entitlement: ImapEntitlement::Pro,
+        phase: ImapDeletePhase::Executing,
+        now_unix_ms: 1_100,
+    };
+    let authorization = still_authorizes_imap_delete(context, &grant, &changed_message_request);
+    let mut attempted_deletes = 0usize;
+    if authorization.is_ok() {
+        attempted_deletes += 1;
+        let _ = delete_prepared(&mut mailbox, &changed_message_request);
+    }
+
+    assert_eq!(authorization, Err(ImapPolicyError::FingerprintMismatch));
+    assert_eq!(
+        attempted_deletes, 0,
+        "a changed-message request must fail before native delete is attempted"
+    );
+    let first_present = mailbox
+        .search_message(account, mailbox_name, first_id)
+        .is_some();
+    let second_present = mailbox
+        .search_message(account, mailbox_name, second_id)
+        .is_some();
+    let record_count = usize::from(first_present) + usize::from(second_present);
+    assert_eq!(record_count, 2);
+    assert_eq!(mailbox.deleted_count(), 0);
+    println!(
+        "TASK0417 authorization_error={:?} attempted_deletes={} same_conversation={} record_count={} first_present={} second_present={} deleted_count={}",
+        authorization.unwrap_err(),
+        attempted_deletes,
+        first.mailbox == second.mailbox && first.account_id == second.account_id,
+        record_count,
+        first_present,
+        second_present,
+        mailbox.deleted_count()
+    );
 }

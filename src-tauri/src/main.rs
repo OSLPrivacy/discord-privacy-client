@@ -62,6 +62,29 @@ use ipc::commands::{
     RegisterResponse, SavedFriendRequestDto, SavedFriendRequestListDto, ScopeEncryptionState,
     ScopeWhitelistSummary, StatusResponse, StegoDecodeResponse, StegoEncodeRequest,
     StegoEncodeResponse, StoredMessageDto, TierGateStatusDto, WhitelistRowDto,
+    cmd_load_identity, cmd_osl_apply_burn, cmd_osl_bulk_set_whitelist,
+    cmd_osl_bulk_unwhitelist_scope, cmd_osl_burn_engage, cmd_osl_burn_message,
+    cmd_osl_burn_password_status, cmd_osl_burn_scope_data, cmd_osl_burn_their_side_message,
+    cmd_osl_change_main_password, cmd_osl_clear_license, cmd_osl_decrypt_message_v2,
+    cmd_osl_encrypt_message, cmd_osl_encrypt_message_v2, cmd_osl_get_identity_info,
+    cmd_osl_get_license_state, cmd_osl_get_scope_encryption_state,
+    cmd_osl_get_scope_whitelist_summary, cmd_osl_get_self_user_id, cmd_osl_get_tier_gate_status,
+    cmd_osl_list_all_whitelists, cmd_osl_list_burned_scopes, cmd_osl_load_channel_history,
+    cmd_osl_lockout_status, cmd_osl_mark_scope_burned, cmd_osl_password_status,
+    cmd_osl_persist_edit, cmd_osl_register_self_snowflake, cmd_osl_remove_burn_password,
+    cmd_osl_remove_main_password, cmd_osl_remove_stealth_password, cmd_osl_send_burn_marker,
+    cmd_osl_set_burn_password, cmd_osl_set_main_password, cmd_osl_set_main_password_after_recovery,
+    cmd_osl_set_stealth_password, cmd_osl_set_whitelist, cmd_osl_stealth_mode_engage,
+    cmd_osl_stealth_password_status, cmd_osl_toggle_scope_encryption, cmd_osl_unburn_scope,
+    cmd_osl_unwhitelist_scope, cmd_osl_validate_license, cmd_osl_verify_gate_password,
+    cmd_osl_verify_main_password, cmd_osl_verify_recovery_phrase, cmd_osl_view_recovery_phrase,
+    cmd_register, cmd_save_identity, cmd_status, cmd_stego_decode, cmd_stego_encode,
+    cmd_x25519_diffie_hellman, AeadOpenRequest, AeadSealRequest, AeadSealResponse,
+    BurnScopeDataDto, BurnedScopeDto, FetchPubkeysResponse, GateVerifyDto,
+    GenerateIdentityResponse, IdentityInfoDto, LockoutStatusDto, PasswordStatusDto,
+    RegisterResponse, ScopeEncryptionState, ScopeWhitelistSummary, StatusResponse,
+    StegoDecodeResponse, StegoEncodeRequest, StegoEncodeResponse, StoredMessageDto,
+    TheirSideBurnDto, TierGateStatusDto, WhitelistRowDto,
 };
 use ipc::scope::ScopeInput;
 use ipc::{AppState, IpcError, IpcResult};
@@ -815,6 +838,22 @@ async fn osl_apply_burn(app: tauri::AppHandle, scope_input: ScopeInput) -> Resul
     tauri::async_runtime::spawn_blocking(move || {
         let state = app_handle.state::<AppState>();
         cmd_osl_apply_burn(state.inner(), scope_input)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// Burn the peer-readable server-side wrapped key for one message while
+/// keeping this device's local stored message untouched.
+#[tauri::command]
+async fn osl_burn_their_side_message(
+    app: tauri::AppHandle,
+    content_id: String,
+) -> Result<TheirSideBurnDto, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        cmd_osl_burn_their_side_message(state.inner(), content_id)
     })
     .await
     .map_err(|e| format!("OSL: join error: {e}"))?
@@ -2603,6 +2642,34 @@ async fn osl_set_update_channel(
     .map_err(|e| format!("OSL: join error: {e}"))?
 }
 
+/// Read the saved on/off choice for starting OSL when Windows starts.
+#[tauri::command]
+async fn osl_get_start_with_windows_choice(app: tauri::AppHandle) -> Result<String, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        ipc::commands::cmd_osl_get_start_with_windows_choice(state.inner())
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// Save the on/off choice for starting OSL when Windows starts.
+#[tauri::command]
+async fn osl_save_start_with_windows_choice(
+    app: tauri::AppHandle,
+    choice: String,
+) -> Result<String, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        let dir = keystore::osl_config_dir().ok();
+        ipc::commands::cmd_osl_save_start_with_windows_choice(state.inner(), choice, dir)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
 /// Phase 2 prose-token send. Takes a `DPC0::<base64>` wire string
 /// produced by the existing encrypt pipeline, uploads the underlying
 /// cipher bytes to the cipher-store with the chosen TTL, and encodes
@@ -3273,6 +3340,7 @@ fn main() {
             osl_send_burn_marker,
             // 9-C1: invitation/response/accept/decline/list_pending all retired.
             osl_apply_burn,
+            osl_burn_their_side_message,
             osl_unwhitelist_scope,
             osl_local_unwhitelist_scope,
             osl_set_whitelist,
@@ -3370,6 +3438,8 @@ fn main() {
             osl_install_update,
             osl_get_update_channel,
             osl_set_update_channel,
+            osl_get_start_with_windows_choice,
+            osl_save_start_with_windows_choice,
             osl_prose_token_send,
             osl_prose_token_recv,
             osl_prose_token_burn,

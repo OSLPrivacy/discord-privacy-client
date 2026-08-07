@@ -204,6 +204,21 @@ description = "Enable or disable local OSL security-notification reads for this 
 commands.allow = ["set_hub_notifications_enabled"]
 
 [[permission]]
+identifier = "allow-get-hub-chat-approval-suggestion-choice"
+description = "Read the saved local choice for suggesting approval of unapproved OSL Chats."
+commands.allow = ["get_hub_chat_approval_suggestion_choice"]
+
+[[permission]]
+identifier = "allow-set-hub-chat-approval-suggestion-choice"
+description = "Persist the trusted local UI's on/off choice for suggesting approval of unapproved OSL Chats."
+commands.allow = ["set_hub_chat_approval_suggestion_choice"]
+
+[[permission]]
+identifier = "allow-answer-hub-chat-approval-suggestion"
+description = "Answer whether the active first-party OSL Chat should offer an approval suggestion without enabling decryption."
+commands.allow = ["answer_hub_chat_approval_suggestion"]
+
+[[permission]]
 identifier = "allow-save-onboarding-preferences"
 description = "Save the local, non-sensitive OSL Privacy preview preferences."
 commands.allow = ["save_onboarding_preferences"]
@@ -280,8 +295,18 @@ commands.allow = ["start_autoscrub_reviewed_run"]
 
 [[permission]]
 identifier = "allow-request-autoscrub-global-stop"
-description = "Request a global stop for local AutoScrub runs; the native run state remains responsible for bounded halt progress."
+description = "Request a global stop confirmation for local AutoScrub runs; this does not end a run without an explicit follow-up choice."
 commands.allow = ["request_autoscrub_global_stop"]
+
+[[permission]]
+identifier = "allow-keep-scanning-after-autoscrub-stop-request"
+description = "Choose Keep scanning after an AutoScrub stop request so the active local run continues."
+commands.allow = ["keep_scanning_after_autoscrub_stop_request"]
+
+[[permission]]
+identifier = "allow-stop-autoscrub-now-after-stop-request"
+description = "Choose Stop now after an AutoScrub stop request so the active local run ends."
+commands.allow = ["stop_autoscrub_now_after_stop_request"]
 
 [[permission]]
 identifier = "allow-list-linked-services"
@@ -362,6 +387,11 @@ commands.allow = ["setup_hub_main_password"]
 identifier = "allow-view-hub-recovery-phrase"
 description = "Allow only the trusted main OSL window to decrypt and re-read this device's password-recovery phrase in memory, and only when the owner's current main password is supplied and verified."
 commands.allow = ["view_hub_recovery_phrase"]
+
+[[permission]]
+identifier = "allow-reset-hub-main-password-after-recovery"
+description = "Allow only the trusted main OSL window to replace the local unlock password after the owner's password-recovery phrase is verified."
+commands.allow = ["reset_hub_main_password_after_recovery"]
 
 [[permission]]
 identifier = "allow-get-recovery-kit-unsaved"
@@ -879,9 +909,29 @@ description = "Burn only the exact active trusted service/account context and re
 commands.allow = ["burn_active_hub_context"]
 
 [[permission]]
+identifier = "allow-list-active-hub-context-burn-choices"
+description = "List the exact burn scopes available for the active trusted server channel: this channel or the whole server; reads no message content and changes nothing."
+commands.allow = ["list_active_hub_context_burn_choices"]
+
+[[permission]]
 identifier = "allow-get-hub-revocation-status"
 description = "Read whether the burn notices already queued for one canonical OSL scope key have been acknowledged by the peers who had access; reads no message content and changes nothing."
 commands.allow = ["get_hub_revocation_status"]
+
+[[permission]]
+identifier = "allow-set-owner-profile-picture"
+description = "Set the unlocked owner's bounded profile picture into encrypted owner-scoped local storage."
+commands.allow = ["set_owner_profile_picture"]
+
+[[permission]]
+identifier = "allow-read-owner-profile-picture"
+description = "Read only the unlocked owner's encrypted profile-picture record and report whether an image is present."
+commands.allow = ["read_owner_profile_picture"]
+
+[[permission]]
+identifier = "allow-clear-owner-profile-picture"
+description = "Clear only the unlocked owner's encrypted profile-picture record."
+commands.allow = ["clear_owner_profile_picture"]
 
 [[permission]]
 identifier = "allow-get-osl-chat-local-state-key"

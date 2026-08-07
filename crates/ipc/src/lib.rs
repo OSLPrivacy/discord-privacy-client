@@ -68,6 +68,7 @@ pub mod recovery;
 pub mod rn_plaintext_cache;
 // RN send retry boundary: seals once at enqueue and reuses the durable wire.
 pub mod rn_outbox;
+pub mod row_ownership_ladder;
 // Bilateral burn (wire 0x0A / 0x0B): sender sequencing, opaque commitments,
 // the receiver replay ledger and the durable revocation outbox. Strictly
 // additive; the legacy `MSG_TYPE_BURN` (0x01) path above is untouched except
@@ -80,6 +81,8 @@ pub mod revocation;
 pub mod scope;
 pub mod scope_blobs_file;
 pub mod scope_ttl_file;
+pub mod screen_words;
+pub mod server_membership;
 pub mod space_roster;
 // Unit a45: encrypted UI-side storage contract (checklist A6). Defines the
 // `SecureLocalStore` trait + `SealedStore` reference impl; does not migrate
@@ -102,6 +105,7 @@ pub mod transport;
 // Padmé applies to the stored transport object, outside the AEAD plaintext
 // padding boundary.  Expose it from the shipping IPC crate so the upload path
 // can consume the one canonical implementation as the object envelope lands.
+pub mod auto_whitelist_rules;
 pub mod transport_padding;
 pub mod whitelist;
 pub mod whitelist_state;
@@ -178,9 +182,10 @@ pub(crate) mod test_process_globals {
 
 pub use at_rest_boundary::AtRestBoundary;
 pub use commands::{
-    AeadOpenRequest, AeadSealRequest, AeadSealResponse, FetchPubkeysResponse,
-    GenerateIdentityResponse, RegisterResponse, StatusResponse, StegoDecodeResponse,
-    StegoEncodeRequest, StegoEncodeResponse, UiSessionEncryptionKeyDto,
+    AeadOpenRequest, AeadSealRequest, AeadSealResponse, DirectChatSecurityState,
+    DirectChatSecurityStatus, FetchPubkeysResponse, GenerateIdentityResponse, RegisterResponse,
+    StatusResponse, StegoDecodeResponse, StegoEncodeRequest, StegoEncodeResponse,
+    UiSessionEncryptionKeyDto,
 };
 pub use state::AppState;
 

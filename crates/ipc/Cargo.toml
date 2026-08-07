@@ -20,6 +20,7 @@ sha2 = { workspace = true }
 base64 = "0.22"
 rand = { workspace = true }
 rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "=0.32.1", features = ["bundled"] }
 
 # CBOR for Phase 7b control-message bodies (BurnMarker /
 # WhitelistInvitation / WhitelistResponse). Chosen for

@@ -4,10 +4,14 @@
 //! bundled UI can only learn whether local AI selection is currently ready.
 
 use crate::ai_consent::AiCloudConsent;
+use crate::bundled_model_pack::{
+    ensure_bundled_model_pack, BundledModelPackError, BundledModelPackStatus,
+};
 use crate::credits::{unavailable_balance, BalanceDisplay};
 use cover_ai::fallback::{select_carrier, CarrierCapabilities, CarrierDecision};
 use serde::Serialize;
 use std::collections::HashSet;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
@@ -24,6 +28,22 @@ pub struct AiCarrierState {
 impl AiCarrierState {
     pub fn set_local_model_ready(&self, ready: bool) {
         self.local_model_ready.store(ready, Ordering::Release);
+    }
+
+    pub fn ensure_bundled_local_model(
+        &self,
+        install_root: &Path,
+    ) -> Result<BundledModelPackStatus, BundledModelPackError> {
+        match ensure_bundled_model_pack(install_root) {
+            Ok(status) => {
+                self.set_local_model_ready(true);
+                Ok(status)
+            }
+            Err(error) => {
+                self.set_local_model_ready(false);
+                Err(error)
+            }
+        }
     }
 
     /// This record remains separate from entitlement and is read whenever the

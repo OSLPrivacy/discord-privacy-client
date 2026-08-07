@@ -340,6 +340,8 @@ describe("D80 unlock screen renders one credential input", () => {
     const markup = __oslHubUiTest.renderOnboardingRoute("unlock");
     const nodes = parseRendered(markup);
 
+    expect(nodes.find((node) => node.tag === "h1")?.text).toBe("Unlock");
+
     const inputs = nodes.filter((node) => node.tag === "input");
     expect(inputs).toHaveLength(1);
     expect(inputs[0].attributes.id).toBe("identity-password");
