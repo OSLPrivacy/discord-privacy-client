@@ -14,7 +14,7 @@
 
 .rules-screen {
   display: grid;
-  gap: 12px;
+  gap: 10px;
   padding: 16px 16px 14px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -24,7 +24,67 @@
 
 .rules-screen-header {
   display: grid;
+  grid-template-columns: minmax(340px, auto) 1fr;
+  align-items: center;
+  gap: 16px;
+}
+
+.rules-screen-titles {
+  display: grid;
   gap: 4px;
+}
+
+/* The seven family controls, beside the title so they cost no height. */
+.rule-families {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* The name sits beside its control rather than over it: the platform select
+   keeps the app's 44px touch floor (src/styles.css), so a stacked family
+   would push the 38 rows below it off a 1080px screen. */
+.rule-family {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 7px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+}
+
+.rule-family-head {
+  display: grid;
+  gap: 1px;
+}
+
+.rule-family-name {
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.rule-family-select {
+  width: 106px;
+  padding: 0 24px 0 8px;
+  background-color: var(--panel);
+  font-size: 11px;
+}
+
+/* A family whose rows disagree wears the brand edge, so "mixed" is visible in
+   the picture and not only in the word. */
+.rule-family[data-family-choice="mixed"] .rule-family-select {
+  border-color: var(--brand);
+  color: var(--brand);
+  font-weight: 600;
+}
+
+.rule-family-count {
+  color: var(--muted);
+  font-size: 10px;
+  white-space: nowrap;
 }
 
 .rules-screen-heading {
@@ -45,7 +105,7 @@
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 10px;
-  padding: 10px 12px;
+  padding: 8px 12px;
   border: 1px solid var(--line-soft);
   border-radius: var(--radius);
   background: var(--panel-2);
@@ -78,13 +138,13 @@
 .rule-column {
   display: grid;
   align-content: start;
-  gap: 10px;
+  gap: 8px;
 }
 
 .rule-group {
   display: grid;
   gap: 4px;
-  padding: 8px 9px 9px;
+  padding: 7px 9px 8px;
   border: 1px solid var(--line-soft);
   border-radius: var(--radius);
   background: var(--panel-2);

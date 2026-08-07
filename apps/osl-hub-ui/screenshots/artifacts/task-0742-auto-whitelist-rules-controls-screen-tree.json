@@ -1,3016 +1,479 @@
 {
-  "url": "http://127.0.0.1:5173/screenshots/task-0740-auto-whitelist-rules-fixture.html",
+  "url": "http://127.0.0.1:5173/screenshots/task-0742-auto-whitelist-rules-controls-fixture.html",
   "window": {
     "width": 1920,
     "height": 1080
   },
-  "required": [
-    "Auto-whitelist rules",
-    "38 place kinds, one rule each.",
+  "title": "Auto-whitelist rules",
+  "namedControls": [
+    "direct messages",
+    "groups",
+    "servers",
+    "channels",
+    "threads",
+    "email",
+    "posts",
     "Save rules",
-    "Reset",
-    "Keeps these rules for every new place from now on.",
-    "Puts every place kind back to never. Nothing is kept until you save.",
-    "The place stays out. Nothing is added without you.",
-    "OSL asks you first and waits for your answer.",
-    "The place is added the moment it turns up.",
-    "Added only when the other side is already a friend.",
-    "Discord",
-    "WhatsApp",
-    "Telegram",
-    "Signal",
-    "Instagram",
-    "Messenger",
-    "X",
-    "Email",
-    "direct message",
-    "group chat",
-    "group DM",
-    "server",
-    "server channel",
-    "channel",
-    "thread",
-    "community",
-    "community group",
-    "broadcast list",
-    "public post",
-    "supergroup",
-    "saved messages",
-    "group",
-    "note to self",
-    "story",
-    "comment",
-    "group direct message",
-    "reply",
-    "email address",
-    "email domain"
+    "Reset"
   ],
   "screen": {
-    "rows": [
+    "title": "Auto-whitelist rules",
+    "titleBox": {
+      "x": 31,
+      "y": 31,
+      "width": 509.09375,
+      "height": 21.59375
+    },
+    "families": [
       {
-        "ruleKey": "discord:direct_message",
-        "app": "discord",
-        "kind": "direct_message",
-        "selected": "only_if_a_friend",
-        "name": "direct message",
-        "chip": "only if a friend",
-        "choices": [
-          {
-            "choice": "never",
-            "state": "off",
-            "checked": false,
-            "label": "never",
-            "marker": {
-              "x": 232,
-              "y": 208.40625,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "ask_me",
-            "state": "off",
-            "checked": false,
-            "label": "ask me",
-            "marker": {
-              "x": 384.515625,
-              "y": 208.40625,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "always",
-            "state": "off",
-            "checked": false,
-            "label": "always",
-            "marker": {
-              "x": 545.296875,
-              "y": 208.40625,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "only_if_a_friend",
-            "state": "on",
-            "checked": true,
-            "label": "only if a friend",
-            "marker": {
-              "x": 704.046875,
-              "y": 208.40625,
-              "width": 13,
-              "height": 13
-            }
-          }
+        "id": "direct_messages",
+        "label": "direct messages",
+        "places": 9,
+        "reading": "mixed",
+        "value": "mixed",
+        "selectLabel": "Set every direct messages rule",
+        "options": [
+          "mixed",
+          "never",
+          "ask_me",
+          "always",
+          "only_if_a_friend"
         ],
+        "count": "9 places",
         "box": {
-          "x": 41,
-          "y": 200.65625,
-          "width": 902,
-          "height": 28.5
+          "x": 556.09375,
+          "y": 36.9375,
+          "width": 230.46875,
+          "height": 54
         },
         "nameBox": {
-          "x": 50,
-          "y": 205.90625,
-          "width": 150,
-          "height": 18
+          "x": 564.09375,
+          "y": 47.6875,
+          "width": 101.46875,
+          "height": 16.5
         },
-        "chipBox": {
-          "x": 822,
-          "y": 204.65625,
-          "width": 112,
-          "height": 20.5
+        "selectBox": {
+          "x": 672.5625,
+          "y": 41.9375,
+          "width": 106,
+          "height": 44
         }
       },
       {
-        "ruleKey": "discord:group_chat",
-        "app": "discord",
-        "kind": "group_chat",
-        "selected": "ask_me",
-        "name": "group chat",
-        "chip": "ask me",
-        "choices": [
-          {
-            "choice": "never",
-            "state": "off",
-            "checked": false,
-            "label": "never",
-            "marker": {
-              "x": 232,
-              "y": 239.90625,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "ask_me",
-            "state": "on",
-            "checked": true,
-            "label": "ask me",
-            "marker": {
-              "x": 386.890625,
-              "y": 239.90625,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "always",
-            "state": "off",
-            "checked": false,
-            "label": "always",
-            "marker": {
-              "x": 554.265625,
-              "y": 239.90625,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "only_if_a_friend",
-            "state": "off",
-            "checked": false,
-            "label": "only if a friend",
-            "marker": {
-              "x": 715.390625,
-              "y": 239.90625,
-              "width": 13,
-              "height": 13
-            }
-          }
+        "id": "groups",
+        "label": "groups",
+        "places": 14,
+        "reading": "mixed",
+        "value": "mixed",
+        "selectLabel": "Set every groups rule",
+        "options": [
+          "mixed",
+          "never",
+          "ask_me",
+          "always",
+          "only_if_a_friend"
         ],
+        "count": "14 places",
         "box": {
-          "x": 41,
-          "y": 232.15625,
-          "width": 902,
-          "height": 28.5
+          "x": 794.5625,
+          "y": 36.9375,
+          "width": 177.03125,
+          "height": 54
         },
         "nameBox": {
-          "x": 50,
-          "y": 237.40625,
-          "width": 150,
-          "height": 18
+          "x": 802.5625,
+          "y": 47.6875,
+          "width": 48.03125,
+          "height": 16.5
         },
-        "chipBox": {
-          "x": 822,
-          "y": 236.15625,
-          "width": 112,
-          "height": 20.5
+        "selectBox": {
+          "x": 857.59375,
+          "y": 41.9375,
+          "width": 106,
+          "height": 44
         }
       },
       {
-        "ruleKey": "discord:group_dm",
-        "app": "discord",
-        "kind": "group_dm",
-        "selected": "ask_me",
-        "name": "group DM",
-        "chip": "ask me",
-        "choices": [
-          {
-            "choice": "never",
-            "state": "off",
-            "checked": false,
-            "label": "never",
-            "marker": {
-              "x": 232,
-              "y": 271.40625,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "ask_me",
-            "state": "on",
-            "checked": true,
-            "label": "ask me",
-            "marker": {
-              "x": 386.890625,
-              "y": 271.40625,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "always",
-            "state": "off",
-            "checked": false,
-            "label": "always",
-            "marker": {
-              "x": 554.265625,
-              "y": 271.40625,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "only_if_a_friend",
-            "state": "off",
-            "checked": false,
-            "label": "only if a friend",
-            "marker": {
-              "x": 715.390625,
-              "y": 271.40625,
-              "width": 13,
-              "height": 13
-            }
-          }
+        "id": "servers",
+        "label": "servers",
+        "places": 1,
+        "reading": "ask_me",
+        "value": "ask_me",
+        "selectLabel": "Set every servers rule",
+        "options": [
+          "never",
+          "ask_me",
+          "always",
+          "only_if_a_friend"
         ],
+        "count": "1 place",
         "box": {
-          "x": 41,
-          "y": 263.65625,
-          "width": 902,
-          "height": 28.5
+          "x": 979.59375,
+          "y": 36.9375,
+          "width": 175.046875,
+          "height": 54
         },
         "nameBox": {
-          "x": 50,
-          "y": 268.90625,
-          "width": 150,
-          "height": 18
+          "x": 987.59375,
+          "y": 47.6875,
+          "width": 46.046875,
+          "height": 16.5
         },
-        "chipBox": {
-          "x": 822,
-          "y": 267.65625,
-          "width": 112,
-          "height": 20.5
+        "selectBox": {
+          "x": 1040.640625,
+          "y": 41.9375,
+          "width": 106,
+          "height": 44
         }
       },
       {
-        "ruleKey": "discord:server",
-        "app": "discord",
-        "kind": "server",
-        "selected": "ask_me",
-        "name": "server",
-        "chip": "ask me",
-        "choices": [
-          {
-            "choice": "never",
-            "state": "off",
-            "checked": false,
-            "label": "never",
-            "marker": {
-              "x": 232,
-              "y": 302.90625,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "ask_me",
-            "state": "on",
-            "checked": true,
-            "label": "ask me",
-            "marker": {
-              "x": 386.890625,
-              "y": 302.90625,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "always",
-            "state": "off",
-            "checked": false,
-            "label": "always",
-            "marker": {
-              "x": 554.265625,
-              "y": 302.90625,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "only_if_a_friend",
-            "state": "off",
-            "checked": false,
-            "label": "only if a friend",
-            "marker": {
-              "x": 715.390625,
-              "y": 302.90625,
-              "width": 13,
-              "height": 13
-            }
-          }
+        "id": "channels",
+        "label": "channels",
+        "places": 4,
+        "reading": "mixed",
+        "value": "mixed",
+        "selectLabel": "Set every channels rule",
+        "options": [
+          "mixed",
+          "never",
+          "ask_me",
+          "always",
+          "only_if_a_friend"
         ],
+        "count": "4 places",
         "box": {
-          "x": 41,
-          "y": 295.15625,
-          "width": 902,
-          "height": 28.5
+          "x": 1162.640625,
+          "y": 36.9375,
+          "width": 184.21875,
+          "height": 54
         },
         "nameBox": {
-          "x": 50,
-          "y": 300.40625,
-          "width": 150,
-          "height": 18
+          "x": 1170.640625,
+          "y": 47.6875,
+          "width": 55.21875,
+          "height": 16.5
         },
-        "chipBox": {
-          "x": 822,
-          "y": 299.15625,
-          "width": 112,
-          "height": 20.5
+        "selectBox": {
+          "x": 1232.859375,
+          "y": 41.9375,
+          "width": 106,
+          "height": 44
         }
       },
       {
-        "ruleKey": "discord:server_channel",
-        "app": "discord",
-        "kind": "server_channel",
-        "selected": "ask_me",
-        "name": "server channel",
-        "chip": "ask me",
-        "choices": [
-          {
-            "choice": "never",
-            "state": "off",
-            "checked": false,
-            "label": "never",
-            "marker": {
-              "x": 232,
-              "y": 334.40625,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "ask_me",
-            "state": "on",
-            "checked": true,
-            "label": "ask me",
-            "marker": {
-              "x": 386.890625,
-              "y": 334.40625,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "always",
-            "state": "off",
-            "checked": false,
-            "label": "always",
-            "marker": {
-              "x": 554.265625,
-              "y": 334.40625,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "only_if_a_friend",
-            "state": "off",
-            "checked": false,
-            "label": "only if a friend",
-            "marker": {
-              "x": 715.390625,
-              "y": 334.40625,
-              "width": 13,
-              "height": 13
-            }
-          }
+        "id": "threads",
+        "label": "threads",
+        "places": 3,
+        "reading": "mixed",
+        "value": "mixed",
+        "selectLabel": "Set every threads rule",
+        "options": [
+          "mixed",
+          "never",
+          "ask_me",
+          "always",
+          "only_if_a_friend"
         ],
+        "count": "3 places",
         "box": {
-          "x": 41,
-          "y": 326.65625,
-          "width": 902,
-          "height": 28.5
+          "x": 1354.859375,
+          "y": 36.9375,
+          "width": 176.828125,
+          "height": 54
         },
         "nameBox": {
-          "x": 50,
-          "y": 331.90625,
-          "width": 150,
-          "height": 18
+          "x": 1362.859375,
+          "y": 47.6875,
+          "width": 47.828125,
+          "height": 16.5
         },
-        "chipBox": {
-          "x": 822,
-          "y": 330.65625,
-          "width": 112,
-          "height": 20.5
+        "selectBox": {
+          "x": 1417.6875,
+          "y": 41.9375,
+          "width": 106,
+          "height": 44
         }
       },
       {
-        "ruleKey": "discord:channel",
-        "app": "discord",
-        "kind": "channel",
-        "selected": "never",
-        "name": "channel",
-        "chip": "never",
-        "choices": [
-          {
-            "choice": "never",
-            "state": "on",
-            "checked": true,
-            "label": "never",
-            "marker": {
-              "x": 232,
-              "y": 365.90625,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "ask_me",
-            "state": "off",
-            "checked": false,
-            "label": "ask me",
-            "marker": {
-              "x": 390.828125,
-              "y": 365.90625,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "always",
-            "state": "off",
-            "checked": false,
-            "label": "always",
-            "marker": {
-              "x": 554.140625,
-              "y": 365.90625,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "only_if_a_friend",
-            "state": "off",
-            "checked": false,
-            "label": "only if a friend",
-            "marker": {
-              "x": 715.390625,
-              "y": 365.90625,
-              "width": 13,
-              "height": 13
-            }
-          }
+        "id": "email",
+        "label": "email",
+        "places": 2,
+        "reading": "mixed",
+        "value": "mixed",
+        "selectLabel": "Set every email rule",
+        "options": [
+          "mixed",
+          "never",
+          "ask_me",
+          "always",
+          "only_if_a_friend"
         ],
+        "count": "2 places",
         "box": {
-          "x": 41,
-          "y": 358.15625,
-          "width": 902,
-          "height": 28.5
+          "x": 1539.6875,
+          "y": 36.9375,
+          "width": 170.65625,
+          "height": 54
         },
         "nameBox": {
-          "x": 50,
-          "y": 363.40625,
-          "width": 150,
-          "height": 18
+          "x": 1547.6875,
+          "y": 47.6875,
+          "width": 41.65625,
+          "height": 16.5
         },
-        "chipBox": {
-          "x": 822,
-          "y": 362.15625,
-          "width": 112,
-          "height": 20.5
+        "selectBox": {
+          "x": 1596.34375,
+          "y": 41.9375,
+          "width": 106,
+          "height": 44
         }
       },
       {
-        "ruleKey": "discord:thread",
-        "app": "discord",
-        "kind": "thread",
-        "selected": "ask_me",
-        "name": "thread",
-        "chip": "ask me",
-        "choices": [
-          {
-            "choice": "never",
-            "state": "off",
-            "checked": false,
-            "label": "never",
-            "marker": {
-              "x": 232,
-              "y": 397.40625,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "ask_me",
-            "state": "on",
-            "checked": true,
-            "label": "ask me",
-            "marker": {
-              "x": 386.890625,
-              "y": 397.40625,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "always",
-            "state": "off",
-            "checked": false,
-            "label": "always",
-            "marker": {
-              "x": 554.265625,
-              "y": 397.40625,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "only_if_a_friend",
-            "state": "off",
-            "checked": false,
-            "label": "only if a friend",
-            "marker": {
-              "x": 715.390625,
-              "y": 397.40625,
-              "width": 13,
-              "height": 13
-            }
-          }
+        "id": "posts",
+        "label": "posts",
+        "places": 5,
+        "reading": "never",
+        "value": "never",
+        "selectLabel": "Set every posts rule",
+        "options": [
+          "never",
+          "ask_me",
+          "always",
+          "only_if_a_friend"
         ],
+        "count": "5 places",
         "box": {
-          "x": 41,
-          "y": 389.65625,
-          "width": 902,
-          "height": 28.5
+          "x": 1718.34375,
+          "y": 36.9375,
+          "width": 170.65625,
+          "height": 54
         },
         "nameBox": {
-          "x": 50,
-          "y": 394.90625,
-          "width": 150,
-          "height": 18
+          "x": 1726.34375,
+          "y": 47.6875,
+          "width": 41.65625,
+          "height": 16.5
         },
-        "chipBox": {
-          "x": 822,
-          "y": 393.65625,
-          "width": 112,
-          "height": 20.5
+        "selectBox": {
+          "x": 1775,
+          "y": 41.9375,
+          "width": 106,
+          "height": 44
         }
-      },
-      {
-        "ruleKey": "whatsapp:direct_message",
-        "app": "whatsapp",
-        "kind": "direct_message",
-        "selected": "only_if_a_friend",
-        "name": "direct message",
-        "chip": "only if a friend",
-        "choices": [
-          {
-            "choice": "never",
-            "state": "off",
-            "checked": false,
-            "label": "never",
-            "marker": {
-              "x": 232,
-              "y": 472.5,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "ask_me",
-            "state": "off",
-            "checked": false,
-            "label": "ask me",
-            "marker": {
-              "x": 384.515625,
-              "y": 472.5,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "always",
-            "state": "off",
-            "checked": false,
-            "label": "always",
-            "marker": {
-              "x": 545.296875,
-              "y": 472.5,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "only_if_a_friend",
-            "state": "on",
-            "checked": true,
-            "label": "only if a friend",
-            "marker": {
-              "x": 704.046875,
-              "y": 472.5,
-              "width": 13,
-              "height": 13
-            }
-          }
-        ],
-        "box": {
-          "x": 41,
-          "y": 464.75,
-          "width": 902,
-          "height": 28.5
-        },
-        "nameBox": {
-          "x": 50,
-          "y": 470,
-          "width": 150,
-          "height": 18
-        },
-        "chipBox": {
-          "x": 822,
-          "y": 468.75,
-          "width": 112,
-          "height": 20.5
-        }
-      },
-      {
-        "ruleKey": "whatsapp:group_chat",
-        "app": "whatsapp",
-        "kind": "group_chat",
-        "selected": "ask_me",
-        "name": "group chat",
-        "chip": "ask me",
-        "choices": [
-          {
-            "choice": "never",
-            "state": "off",
-            "checked": false,
-            "label": "never",
-            "marker": {
-              "x": 232,
-              "y": 504,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "ask_me",
-            "state": "on",
-            "checked": true,
-            "label": "ask me",
-            "marker": {
-              "x": 386.890625,
-              "y": 504,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "always",
-            "state": "off",
-            "checked": false,
-            "label": "always",
-            "marker": {
-              "x": 554.265625,
-              "y": 504,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "only_if_a_friend",
-            "state": "off",
-            "checked": false,
-            "label": "only if a friend",
-            "marker": {
-              "x": 715.390625,
-              "y": 504,
-              "width": 13,
-              "height": 13
-            }
-          }
-        ],
-        "box": {
-          "x": 41,
-          "y": 496.25,
-          "width": 902,
-          "height": 28.5
-        },
-        "nameBox": {
-          "x": 50,
-          "y": 501.5,
-          "width": 150,
-          "height": 18
-        },
-        "chipBox": {
-          "x": 822,
-          "y": 500.25,
-          "width": 112,
-          "height": 20.5
-        }
-      },
-      {
-        "ruleKey": "whatsapp:channel",
-        "app": "whatsapp",
-        "kind": "channel",
-        "selected": "never",
-        "name": "channel",
-        "chip": "never",
-        "choices": [
-          {
-            "choice": "never",
-            "state": "on",
-            "checked": true,
-            "label": "never",
-            "marker": {
-              "x": 232,
-              "y": 535.5,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "ask_me",
-            "state": "off",
-            "checked": false,
-            "label": "ask me",
-            "marker": {
-              "x": 390.828125,
-              "y": 535.5,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "always",
-            "state": "off",
-            "checked": false,
-            "label": "always",
-            "marker": {
-              "x": 554.140625,
-              "y": 535.5,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "only_if_a_friend",
-            "state": "off",
-            "checked": false,
-            "label": "only if a friend",
-            "marker": {
-              "x": 715.390625,
-              "y": 535.5,
-              "width": 13,
-              "height": 13
-            }
-          }
-        ],
-        "box": {
-          "x": 41,
-          "y": 527.75,
-          "width": 902,
-          "height": 28.5
-        },
-        "nameBox": {
-          "x": 50,
-          "y": 533,
-          "width": 150,
-          "height": 18
-        },
-        "chipBox": {
-          "x": 822,
-          "y": 531.75,
-          "width": 112,
-          "height": 20.5
-        }
-      },
-      {
-        "ruleKey": "whatsapp:community",
-        "app": "whatsapp",
-        "kind": "community",
-        "selected": "ask_me",
-        "name": "community",
-        "chip": "ask me",
-        "choices": [
-          {
-            "choice": "never",
-            "state": "off",
-            "checked": false,
-            "label": "never",
-            "marker": {
-              "x": 232,
-              "y": 567,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "ask_me",
-            "state": "on",
-            "checked": true,
-            "label": "ask me",
-            "marker": {
-              "x": 386.890625,
-              "y": 567,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "always",
-            "state": "off",
-            "checked": false,
-            "label": "always",
-            "marker": {
-              "x": 554.265625,
-              "y": 567,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "only_if_a_friend",
-            "state": "off",
-            "checked": false,
-            "label": "only if a friend",
-            "marker": {
-              "x": 715.390625,
-              "y": 567,
-              "width": 13,
-              "height": 13
-            }
-          }
-        ],
-        "box": {
-          "x": 41,
-          "y": 559.25,
-          "width": 902,
-          "height": 28.5
-        },
-        "nameBox": {
-          "x": 50,
-          "y": 564.5,
-          "width": 150,
-          "height": 18
-        },
-        "chipBox": {
-          "x": 822,
-          "y": 563.25,
-          "width": 112,
-          "height": 20.5
-        }
-      },
-      {
-        "ruleKey": "whatsapp:community_group",
-        "app": "whatsapp",
-        "kind": "community_group",
-        "selected": "ask_me",
-        "name": "community group",
-        "chip": "ask me",
-        "choices": [
-          {
-            "choice": "never",
-            "state": "off",
-            "checked": false,
-            "label": "never",
-            "marker": {
-              "x": 232,
-              "y": 598.5,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "ask_me",
-            "state": "on",
-            "checked": true,
-            "label": "ask me",
-            "marker": {
-              "x": 386.890625,
-              "y": 598.5,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "always",
-            "state": "off",
-            "checked": false,
-            "label": "always",
-            "marker": {
-              "x": 554.265625,
-              "y": 598.5,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "only_if_a_friend",
-            "state": "off",
-            "checked": false,
-            "label": "only if a friend",
-            "marker": {
-              "x": 715.390625,
-              "y": 598.5,
-              "width": 13,
-              "height": 13
-            }
-          }
-        ],
-        "box": {
-          "x": 41,
-          "y": 590.75,
-          "width": 902,
-          "height": 28.5
-        },
-        "nameBox": {
-          "x": 50,
-          "y": 596,
-          "width": 150,
-          "height": 18
-        },
-        "chipBox": {
-          "x": 822,
-          "y": 594.75,
-          "width": 112,
-          "height": 20.5
-        }
-      },
-      {
-        "ruleKey": "whatsapp:broadcast_list",
-        "app": "whatsapp",
-        "kind": "broadcast_list",
-        "selected": "never",
-        "name": "broadcast list",
-        "chip": "never",
-        "choices": [
-          {
-            "choice": "never",
-            "state": "on",
-            "checked": true,
-            "label": "never",
-            "marker": {
-              "x": 232,
-              "y": 630,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "ask_me",
-            "state": "off",
-            "checked": false,
-            "label": "ask me",
-            "marker": {
-              "x": 390.828125,
-              "y": 630,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "always",
-            "state": "off",
-            "checked": false,
-            "label": "always",
-            "marker": {
-              "x": 554.140625,
-              "y": 630,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "only_if_a_friend",
-            "state": "off",
-            "checked": false,
-            "label": "only if a friend",
-            "marker": {
-              "x": 715.390625,
-              "y": 630,
-              "width": 13,
-              "height": 13
-            }
-          }
-        ],
-        "box": {
-          "x": 41,
-          "y": 622.25,
-          "width": 902,
-          "height": 28.5
-        },
-        "nameBox": {
-          "x": 50,
-          "y": 627.5,
-          "width": 150,
-          "height": 18
-        },
-        "chipBox": {
-          "x": 822,
-          "y": 626.25,
-          "width": 112,
-          "height": 20.5
-        }
-      },
-      {
-        "ruleKey": "telegram:direct_message",
-        "app": "telegram",
-        "kind": "direct_message",
-        "selected": "only_if_a_friend",
-        "name": "direct message",
-        "chip": "only if a friend",
-        "choices": [
-          {
-            "choice": "never",
-            "state": "off",
-            "checked": false,
-            "label": "never",
-            "marker": {
-              "x": 232,
-              "y": 705.09375,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "ask_me",
-            "state": "off",
-            "checked": false,
-            "label": "ask me",
-            "marker": {
-              "x": 384.515625,
-              "y": 705.09375,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "always",
-            "state": "off",
-            "checked": false,
-            "label": "always",
-            "marker": {
-              "x": 545.296875,
-              "y": 705.09375,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "only_if_a_friend",
-            "state": "on",
-            "checked": true,
-            "label": "only if a friend",
-            "marker": {
-              "x": 704.046875,
-              "y": 705.09375,
-              "width": 13,
-              "height": 13
-            }
-          }
-        ],
-        "box": {
-          "x": 41,
-          "y": 697.34375,
-          "width": 902,
-          "height": 28.5
-        },
-        "nameBox": {
-          "x": 50,
-          "y": 702.59375,
-          "width": 150,
-          "height": 18
-        },
-        "chipBox": {
-          "x": 822,
-          "y": 701.34375,
-          "width": 112,
-          "height": 20.5
-        }
-      },
-      {
-        "ruleKey": "telegram:group_chat",
-        "app": "telegram",
-        "kind": "group_chat",
-        "selected": "ask_me",
-        "name": "group chat",
-        "chip": "ask me",
-        "choices": [
-          {
-            "choice": "never",
-            "state": "off",
-            "checked": false,
-            "label": "never",
-            "marker": {
-              "x": 232,
-              "y": 736.59375,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "ask_me",
-            "state": "on",
-            "checked": true,
-            "label": "ask me",
-            "marker": {
-              "x": 386.890625,
-              "y": 736.59375,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "always",
-            "state": "off",
-            "checked": false,
-            "label": "always",
-            "marker": {
-              "x": 554.265625,
-              "y": 736.59375,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "only_if_a_friend",
-            "state": "off",
-            "checked": false,
-            "label": "only if a friend",
-            "marker": {
-              "x": 715.390625,
-              "y": 736.59375,
-              "width": 13,
-              "height": 13
-            }
-          }
-        ],
-        "box": {
-          "x": 41,
-          "y": 728.84375,
-          "width": 902,
-          "height": 28.5
-        },
-        "nameBox": {
-          "x": 50,
-          "y": 734.09375,
-          "width": 150,
-          "height": 18
-        },
-        "chipBox": {
-          "x": 822,
-          "y": 732.84375,
-          "width": 112,
-          "height": 20.5
-        }
-      },
-      {
-        "ruleKey": "telegram:channel",
-        "app": "telegram",
-        "kind": "channel",
-        "selected": "never",
-        "name": "channel",
-        "chip": "never",
-        "choices": [
-          {
-            "choice": "never",
-            "state": "on",
-            "checked": true,
-            "label": "never",
-            "marker": {
-              "x": 232,
-              "y": 768.09375,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "ask_me",
-            "state": "off",
-            "checked": false,
-            "label": "ask me",
-            "marker": {
-              "x": 390.828125,
-              "y": 768.09375,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "always",
-            "state": "off",
-            "checked": false,
-            "label": "always",
-            "marker": {
-              "x": 554.140625,
-              "y": 768.09375,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "only_if_a_friend",
-            "state": "off",
-            "checked": false,
-            "label": "only if a friend",
-            "marker": {
-              "x": 715.390625,
-              "y": 768.09375,
-              "width": 13,
-              "height": 13
-            }
-          }
-        ],
-        "box": {
-          "x": 41,
-          "y": 760.34375,
-          "width": 902,
-          "height": 28.5
-        },
-        "nameBox": {
-          "x": 50,
-          "y": 765.59375,
-          "width": 150,
-          "height": 18
-        },
-        "chipBox": {
-          "x": 822,
-          "y": 764.34375,
-          "width": 112,
-          "height": 20.5
-        }
-      },
-      {
-        "ruleKey": "telegram:public_post",
-        "app": "telegram",
-        "kind": "public_post",
-        "selected": "never",
-        "name": "public post",
-        "chip": "never",
-        "choices": [
-          {
-            "choice": "never",
-            "state": "on",
-            "checked": true,
-            "label": "never",
-            "marker": {
-              "x": 232,
-              "y": 799.59375,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "ask_me",
-            "state": "off",
-            "checked": false,
-            "label": "ask me",
-            "marker": {
-              "x": 390.828125,
-              "y": 799.59375,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "always",
-            "state": "off",
-            "checked": false,
-            "label": "always",
-            "marker": {
-              "x": 554.140625,
-              "y": 799.59375,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "only_if_a_friend",
-            "state": "off",
-            "checked": false,
-            "label": "only if a friend",
-            "marker": {
-              "x": 715.390625,
-              "y": 799.59375,
-              "width": 13,
-              "height": 13
-            }
-          }
-        ],
-        "box": {
-          "x": 41,
-          "y": 791.84375,
-          "width": 902,
-          "height": 28.5
-        },
-        "nameBox": {
-          "x": 50,
-          "y": 797.09375,
-          "width": 150,
-          "height": 18
-        },
-        "chipBox": {
-          "x": 822,
-          "y": 795.84375,
-          "width": 112,
-          "height": 20.5
-        }
-      },
-      {
-        "ruleKey": "telegram:supergroup",
-        "app": "telegram",
-        "kind": "supergroup",
-        "selected": "ask_me",
-        "name": "supergroup",
-        "chip": "ask me",
-        "choices": [
-          {
-            "choice": "never",
-            "state": "off",
-            "checked": false,
-            "label": "never",
-            "marker": {
-              "x": 232,
-              "y": 831.09375,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "ask_me",
-            "state": "on",
-            "checked": true,
-            "label": "ask me",
-            "marker": {
-              "x": 386.890625,
-              "y": 831.09375,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "always",
-            "state": "off",
-            "checked": false,
-            "label": "always",
-            "marker": {
-              "x": 554.265625,
-              "y": 831.09375,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "only_if_a_friend",
-            "state": "off",
-            "checked": false,
-            "label": "only if a friend",
-            "marker": {
-              "x": 715.390625,
-              "y": 831.09375,
-              "width": 13,
-              "height": 13
-            }
-          }
-        ],
-        "box": {
-          "x": 41,
-          "y": 823.34375,
-          "width": 902,
-          "height": 28.5
-        },
-        "nameBox": {
-          "x": 50,
-          "y": 828.59375,
-          "width": 150,
-          "height": 18
-        },
-        "chipBox": {
-          "x": 822,
-          "y": 827.34375,
-          "width": 112,
-          "height": 20.5
-        }
-      },
-      {
-        "ruleKey": "telegram:saved_messages",
-        "app": "telegram",
-        "kind": "saved_messages",
-        "selected": "always",
-        "name": "saved messages",
-        "chip": "always",
-        "choices": [
-          {
-            "choice": "never",
-            "state": "off",
-            "checked": false,
-            "label": "never",
-            "marker": {
-              "x": 232,
-              "y": 862.59375,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "ask_me",
-            "state": "off",
-            "checked": false,
-            "label": "ask me",
-            "marker": {
-              "x": 386.828125,
-              "y": 862.59375,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "always",
-            "state": "on",
-            "checked": true,
-            "label": "always",
-            "marker": {
-              "x": 549.9375,
-              "y": 862.59375,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "only_if_a_friend",
-            "state": "off",
-            "checked": false,
-            "label": "only if a friend",
-            "marker": {
-              "x": 715.390625,
-              "y": 862.59375,
-              "width": 13,
-              "height": 13
-            }
-          }
-        ],
-        "box": {
-          "x": 41,
-          "y": 854.84375,
-          "width": 902,
-          "height": 28.5
-        },
-        "nameBox": {
-          "x": 50,
-          "y": 860.09375,
-          "width": 150,
-          "height": 18
-        },
-        "chipBox": {
-          "x": 822,
-          "y": 858.84375,
-          "width": 112,
-          "height": 20.5
-        }
-      },
-      {
-        "ruleKey": "signal:direct_message",
-        "app": "signal",
-        "kind": "direct_message",
-        "selected": "only_if_a_friend",
-        "name": "direct message",
-        "chip": "only if a friend",
-        "choices": [
-          {
-            "choice": "never",
-            "state": "off",
-            "checked": false,
-            "label": "never",
-            "marker": {
-              "x": 1168,
-              "y": 208.40625,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "ask_me",
-            "state": "off",
-            "checked": false,
-            "label": "ask me",
-            "marker": {
-              "x": 1320.515625,
-              "y": 208.40625,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "always",
-            "state": "off",
-            "checked": false,
-            "label": "always",
-            "marker": {
-              "x": 1481.296875,
-              "y": 208.40625,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "only_if_a_friend",
-            "state": "on",
-            "checked": true,
-            "label": "only if a friend",
-            "marker": {
-              "x": 1640.046875,
-              "y": 208.40625,
-              "width": 13,
-              "height": 13
-            }
-          }
-        ],
-        "box": {
-          "x": 977,
-          "y": 200.65625,
-          "width": 902,
-          "height": 28.5
-        },
-        "nameBox": {
-          "x": 986,
-          "y": 205.90625,
-          "width": 150,
-          "height": 18
-        },
-        "chipBox": {
-          "x": 1758,
-          "y": 204.65625,
-          "width": 112,
-          "height": 20.5
-        }
-      },
-      {
-        "ruleKey": "signal:group_chat",
-        "app": "signal",
-        "kind": "group_chat",
-        "selected": "ask_me",
-        "name": "group chat",
-        "chip": "ask me",
-        "choices": [
-          {
-            "choice": "never",
-            "state": "off",
-            "checked": false,
-            "label": "never",
-            "marker": {
-              "x": 1168,
-              "y": 239.90625,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "ask_me",
-            "state": "on",
-            "checked": true,
-            "label": "ask me",
-            "marker": {
-              "x": 1322.890625,
-              "y": 239.90625,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "always",
-            "state": "off",
-            "checked": false,
-            "label": "always",
-            "marker": {
-              "x": 1490.265625,
-              "y": 239.90625,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "only_if_a_friend",
-            "state": "off",
-            "checked": false,
-            "label": "only if a friend",
-            "marker": {
-              "x": 1651.390625,
-              "y": 239.90625,
-              "width": 13,
-              "height": 13
-            }
-          }
-        ],
-        "box": {
-          "x": 977,
-          "y": 232.15625,
-          "width": 902,
-          "height": 28.5
-        },
-        "nameBox": {
-          "x": 986,
-          "y": 237.40625,
-          "width": 150,
-          "height": 18
-        },
-        "chipBox": {
-          "x": 1758,
-          "y": 236.15625,
-          "width": 112,
-          "height": 20.5
-        }
-      },
-      {
-        "ruleKey": "signal:group",
-        "app": "signal",
-        "kind": "group",
-        "selected": "ask_me",
-        "name": "group",
-        "chip": "ask me",
-        "choices": [
-          {
-            "choice": "never",
-            "state": "off",
-            "checked": false,
-            "label": "never",
-            "marker": {
-              "x": 1168,
-              "y": 271.40625,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "ask_me",
-            "state": "on",
-            "checked": true,
-            "label": "ask me",
-            "marker": {
-              "x": 1322.890625,
-              "y": 271.40625,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "always",
-            "state": "off",
-            "checked": false,
-            "label": "always",
-            "marker": {
-              "x": 1490.265625,
-              "y": 271.40625,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "only_if_a_friend",
-            "state": "off",
-            "checked": false,
-            "label": "only if a friend",
-            "marker": {
-              "x": 1651.390625,
-              "y": 271.40625,
-              "width": 13,
-              "height": 13
-            }
-          }
-        ],
-        "box": {
-          "x": 977,
-          "y": 263.65625,
-          "width": 902,
-          "height": 28.5
-        },
-        "nameBox": {
-          "x": 986,
-          "y": 268.90625,
-          "width": 150,
-          "height": 18
-        },
-        "chipBox": {
-          "x": 1758,
-          "y": 267.65625,
-          "width": 112,
-          "height": 20.5
-        }
-      },
-      {
-        "ruleKey": "signal:note_to_self",
-        "app": "signal",
-        "kind": "note_to_self",
-        "selected": "always",
-        "name": "note to self",
-        "chip": "always",
-        "choices": [
-          {
-            "choice": "never",
-            "state": "off",
-            "checked": false,
-            "label": "never",
-            "marker": {
-              "x": 1168,
-              "y": 302.90625,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "ask_me",
-            "state": "off",
-            "checked": false,
-            "label": "ask me",
-            "marker": {
-              "x": 1322.828125,
-              "y": 302.90625,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "always",
-            "state": "on",
-            "checked": true,
-            "label": "always",
-            "marker": {
-              "x": 1485.9375,
-              "y": 302.90625,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "only_if_a_friend",
-            "state": "off",
-            "checked": false,
-            "label": "only if a friend",
-            "marker": {
-              "x": 1651.390625,
-              "y": 302.90625,
-              "width": 13,
-              "height": 13
-            }
-          }
-        ],
-        "box": {
-          "x": 977,
-          "y": 295.15625,
-          "width": 902,
-          "height": 28.5
-        },
-        "nameBox": {
-          "x": 986,
-          "y": 300.40625,
-          "width": 150,
-          "height": 18
-        },
-        "chipBox": {
-          "x": 1758,
-          "y": 299.15625,
-          "width": 112,
-          "height": 20.5
-        }
-      },
-      {
-        "ruleKey": "signal:story",
-        "app": "signal",
-        "kind": "story",
-        "selected": "never",
-        "name": "story",
-        "chip": "never",
-        "choices": [
-          {
-            "choice": "never",
-            "state": "on",
-            "checked": true,
-            "label": "never",
-            "marker": {
-              "x": 1168,
-              "y": 334.40625,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "ask_me",
-            "state": "off",
-            "checked": false,
-            "label": "ask me",
-            "marker": {
-              "x": 1326.828125,
-              "y": 334.40625,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "always",
-            "state": "off",
-            "checked": false,
-            "label": "always",
-            "marker": {
-              "x": 1490.140625,
-              "y": 334.40625,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "only_if_a_friend",
-            "state": "off",
-            "checked": false,
-            "label": "only if a friend",
-            "marker": {
-              "x": 1651.390625,
-              "y": 334.40625,
-              "width": 13,
-              "height": 13
-            }
-          }
-        ],
-        "box": {
-          "x": 977,
-          "y": 326.65625,
-          "width": 902,
-          "height": 28.5
-        },
-        "nameBox": {
-          "x": 986,
-          "y": 331.90625,
-          "width": 150,
-          "height": 18
-        },
-        "chipBox": {
-          "x": 1758,
-          "y": 330.65625,
-          "width": 112,
-          "height": 20.5
-        }
-      },
-      {
-        "ruleKey": "instagram:direct_message",
-        "app": "instagram",
-        "kind": "direct_message",
-        "selected": "only_if_a_friend",
-        "name": "direct message",
-        "chip": "only if a friend",
-        "choices": [
-          {
-            "choice": "never",
-            "state": "off",
-            "checked": false,
-            "label": "never",
-            "marker": {
-              "x": 1168,
-              "y": 409.5,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "ask_me",
-            "state": "off",
-            "checked": false,
-            "label": "ask me",
-            "marker": {
-              "x": 1320.515625,
-              "y": 409.5,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "always",
-            "state": "off",
-            "checked": false,
-            "label": "always",
-            "marker": {
-              "x": 1481.296875,
-              "y": 409.5,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "only_if_a_friend",
-            "state": "on",
-            "checked": true,
-            "label": "only if a friend",
-            "marker": {
-              "x": 1640.046875,
-              "y": 409.5,
-              "width": 13,
-              "height": 13
-            }
-          }
-        ],
-        "box": {
-          "x": 977,
-          "y": 401.75,
-          "width": 902,
-          "height": 28.5
-        },
-        "nameBox": {
-          "x": 986,
-          "y": 407,
-          "width": 150,
-          "height": 18
-        },
-        "chipBox": {
-          "x": 1758,
-          "y": 405.75,
-          "width": 112,
-          "height": 20.5
-        }
-      },
-      {
-        "ruleKey": "instagram:group_chat",
-        "app": "instagram",
-        "kind": "group_chat",
-        "selected": "ask_me",
-        "name": "group chat",
-        "chip": "ask me",
-        "choices": [
-          {
-            "choice": "never",
-            "state": "off",
-            "checked": false,
-            "label": "never",
-            "marker": {
-              "x": 1168,
-              "y": 441,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "ask_me",
-            "state": "on",
-            "checked": true,
-            "label": "ask me",
-            "marker": {
-              "x": 1322.890625,
-              "y": 441,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "always",
-            "state": "off",
-            "checked": false,
-            "label": "always",
-            "marker": {
-              "x": 1490.265625,
-              "y": 441,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "only_if_a_friend",
-            "state": "off",
-            "checked": false,
-            "label": "only if a friend",
-            "marker": {
-              "x": 1651.390625,
-              "y": 441,
-              "width": 13,
-              "height": 13
-            }
-          }
-        ],
-        "box": {
-          "x": 977,
-          "y": 433.25,
-          "width": 902,
-          "height": 28.5
-        },
-        "nameBox": {
-          "x": 986,
-          "y": 438.5,
-          "width": 150,
-          "height": 18
-        },
-        "chipBox": {
-          "x": 1758,
-          "y": 437.25,
-          "width": 112,
-          "height": 20.5
-        }
-      },
-      {
-        "ruleKey": "instagram:public_post",
-        "app": "instagram",
-        "kind": "public_post",
-        "selected": "never",
-        "name": "public post",
-        "chip": "never",
-        "choices": [
-          {
-            "choice": "never",
-            "state": "on",
-            "checked": true,
-            "label": "never",
-            "marker": {
-              "x": 1168,
-              "y": 472.5,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "ask_me",
-            "state": "off",
-            "checked": false,
-            "label": "ask me",
-            "marker": {
-              "x": 1326.828125,
-              "y": 472.5,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "always",
-            "state": "off",
-            "checked": false,
-            "label": "always",
-            "marker": {
-              "x": 1490.140625,
-              "y": 472.5,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "only_if_a_friend",
-            "state": "off",
-            "checked": false,
-            "label": "only if a friend",
-            "marker": {
-              "x": 1651.390625,
-              "y": 472.5,
-              "width": 13,
-              "height": 13
-            }
-          }
-        ],
-        "box": {
-          "x": 977,
-          "y": 464.75,
-          "width": 902,
-          "height": 28.5
-        },
-        "nameBox": {
-          "x": 986,
-          "y": 470,
-          "width": 150,
-          "height": 18
-        },
-        "chipBox": {
-          "x": 1758,
-          "y": 468.75,
-          "width": 112,
-          "height": 20.5
-        }
-      },
-      {
-        "ruleKey": "instagram:comment",
-        "app": "instagram",
-        "kind": "comment",
-        "selected": "never",
-        "name": "comment",
-        "chip": "never",
-        "choices": [
-          {
-            "choice": "never",
-            "state": "on",
-            "checked": true,
-            "label": "never",
-            "marker": {
-              "x": 1168,
-              "y": 504,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "ask_me",
-            "state": "off",
-            "checked": false,
-            "label": "ask me",
-            "marker": {
-              "x": 1326.828125,
-              "y": 504,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "always",
-            "state": "off",
-            "checked": false,
-            "label": "always",
-            "marker": {
-              "x": 1490.140625,
-              "y": 504,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "only_if_a_friend",
-            "state": "off",
-            "checked": false,
-            "label": "only if a friend",
-            "marker": {
-              "x": 1651.390625,
-              "y": 504,
-              "width": 13,
-              "height": 13
-            }
-          }
-        ],
-        "box": {
-          "x": 977,
-          "y": 496.25,
-          "width": 902,
-          "height": 28.5
-        },
-        "nameBox": {
-          "x": 986,
-          "y": 501.5,
-          "width": 150,
-          "height": 18
-        },
-        "chipBox": {
-          "x": 1758,
-          "y": 500.25,
-          "width": 112,
-          "height": 20.5
-        }
-      },
-      {
-        "ruleKey": "instagram:story",
-        "app": "instagram",
-        "kind": "story",
-        "selected": "never",
-        "name": "story",
-        "chip": "never",
-        "choices": [
-          {
-            "choice": "never",
-            "state": "on",
-            "checked": true,
-            "label": "never",
-            "marker": {
-              "x": 1168,
-              "y": 535.5,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "ask_me",
-            "state": "off",
-            "checked": false,
-            "label": "ask me",
-            "marker": {
-              "x": 1326.828125,
-              "y": 535.5,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "always",
-            "state": "off",
-            "checked": false,
-            "label": "always",
-            "marker": {
-              "x": 1490.140625,
-              "y": 535.5,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "only_if_a_friend",
-            "state": "off",
-            "checked": false,
-            "label": "only if a friend",
-            "marker": {
-              "x": 1651.390625,
-              "y": 535.5,
-              "width": 13,
-              "height": 13
-            }
-          }
-        ],
-        "box": {
-          "x": 977,
-          "y": 527.75,
-          "width": 902,
-          "height": 28.5
-        },
-        "nameBox": {
-          "x": 986,
-          "y": 533,
-          "width": 150,
-          "height": 18
-        },
-        "chipBox": {
-          "x": 1758,
-          "y": 531.75,
-          "width": 112,
-          "height": 20.5
-        }
-      },
-      {
-        "ruleKey": "messenger:direct_message",
-        "app": "messenger",
-        "kind": "direct_message",
-        "selected": "only_if_a_friend",
-        "name": "direct message",
-        "chip": "only if a friend",
-        "choices": [
-          {
-            "choice": "never",
-            "state": "off",
-            "checked": false,
-            "label": "never",
-            "marker": {
-              "x": 1168,
-              "y": 610.59375,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "ask_me",
-            "state": "off",
-            "checked": false,
-            "label": "ask me",
-            "marker": {
-              "x": 1320.515625,
-              "y": 610.59375,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "always",
-            "state": "off",
-            "checked": false,
-            "label": "always",
-            "marker": {
-              "x": 1481.296875,
-              "y": 610.59375,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "only_if_a_friend",
-            "state": "on",
-            "checked": true,
-            "label": "only if a friend",
-            "marker": {
-              "x": 1640.046875,
-              "y": 610.59375,
-              "width": 13,
-              "height": 13
-            }
-          }
-        ],
-        "box": {
-          "x": 977,
-          "y": 602.84375,
-          "width": 902,
-          "height": 28.5
-        },
-        "nameBox": {
-          "x": 986,
-          "y": 608.09375,
-          "width": 150,
-          "height": 18
-        },
-        "chipBox": {
-          "x": 1758,
-          "y": 606.84375,
-          "width": 112,
-          "height": 20.5
-        }
-      },
-      {
-        "ruleKey": "messenger:group_chat",
-        "app": "messenger",
-        "kind": "group_chat",
-        "selected": "ask_me",
-        "name": "group chat",
-        "chip": "ask me",
-        "choices": [
-          {
-            "choice": "never",
-            "state": "off",
-            "checked": false,
-            "label": "never",
-            "marker": {
-              "x": 1168,
-              "y": 642.09375,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "ask_me",
-            "state": "on",
-            "checked": true,
-            "label": "ask me",
-            "marker": {
-              "x": 1322.890625,
-              "y": 642.09375,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "always",
-            "state": "off",
-            "checked": false,
-            "label": "always",
-            "marker": {
-              "x": 1490.265625,
-              "y": 642.09375,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "only_if_a_friend",
-            "state": "off",
-            "checked": false,
-            "label": "only if a friend",
-            "marker": {
-              "x": 1651.390625,
-              "y": 642.09375,
-              "width": 13,
-              "height": 13
-            }
-          }
-        ],
-        "box": {
-          "x": 977,
-          "y": 634.34375,
-          "width": 902,
-          "height": 28.5
-        },
-        "nameBox": {
-          "x": 986,
-          "y": 639.59375,
-          "width": 150,
-          "height": 18
-        },
-        "chipBox": {
-          "x": 1758,
-          "y": 638.34375,
-          "width": 112,
-          "height": 20.5
-        }
-      },
-      {
-        "ruleKey": "messenger:community",
-        "app": "messenger",
-        "kind": "community",
-        "selected": "ask_me",
-        "name": "community",
-        "chip": "ask me",
-        "choices": [
-          {
-            "choice": "never",
-            "state": "off",
-            "checked": false,
-            "label": "never",
-            "marker": {
-              "x": 1168,
-              "y": 673.59375,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "ask_me",
-            "state": "on",
-            "checked": true,
-            "label": "ask me",
-            "marker": {
-              "x": 1322.890625,
-              "y": 673.59375,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "always",
-            "state": "off",
-            "checked": false,
-            "label": "always",
-            "marker": {
-              "x": 1490.265625,
-              "y": 673.59375,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "only_if_a_friend",
-            "state": "off",
-            "checked": false,
-            "label": "only if a friend",
-            "marker": {
-              "x": 1651.390625,
-              "y": 673.59375,
-              "width": 13,
-              "height": 13
-            }
-          }
-        ],
-        "box": {
-          "x": 977,
-          "y": 665.84375,
-          "width": 902,
-          "height": 28.5
-        },
-        "nameBox": {
-          "x": 986,
-          "y": 671.09375,
-          "width": 150,
-          "height": 18
-        },
-        "chipBox": {
-          "x": 1758,
-          "y": 669.84375,
-          "width": 112,
-          "height": 20.5
-        }
-      },
-      {
-        "ruleKey": "x/direct_message",
-        "app": "x",
-        "kind": "direct_message",
-        "selected": "only_if_a_friend",
-        "name": "direct message",
-        "chip": "only if a friend",
-        "choices": [
-          {
-            "choice": "never",
-            "state": "off",
-            "checked": false,
-            "label": "never",
-            "marker": {
-              "x": 1168,
-              "y": 748.6875,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "ask_me",
-            "state": "off",
-            "checked": false,
-            "label": "ask me",
-            "marker": {
-              "x": 1320.515625,
-              "y": 748.6875,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "always",
-            "state": "off",
-            "checked": false,
-            "label": "always",
-            "marker": {
-              "x": 1481.296875,
-              "y": 748.6875,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "only_if_a_friend",
-            "state": "on",
-            "checked": true,
-            "label": "only if a friend",
-            "marker": {
-              "x": 1640.046875,
-              "y": 748.6875,
-              "width": 13,
-              "height": 13
-            }
-          }
-        ],
-        "box": {
-          "x": 977,
-          "y": 740.9375,
-          "width": 902,
-          "height": 28.5
-        },
-        "nameBox": {
-          "x": 986,
-          "y": 746.1875,
-          "width": 150,
-          "height": 18
-        },
-        "chipBox": {
-          "x": 1758,
-          "y": 744.9375,
-          "width": 112,
-          "height": 20.5
-        }
-      },
-      {
-        "ruleKey": "x/group_direct_message",
-        "app": "x",
-        "kind": "group_direct_message",
-        "selected": "only_if_a_friend",
-        "name": "group direct message",
-        "chip": "only if a friend",
-        "choices": [
-          {
-            "choice": "never",
-            "state": "off",
-            "checked": false,
-            "label": "never",
-            "marker": {
-              "x": 1168,
-              "y": 780.1875,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "ask_me",
-            "state": "off",
-            "checked": false,
-            "label": "ask me",
-            "marker": {
-              "x": 1320.515625,
-              "y": 780.1875,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "always",
-            "state": "off",
-            "checked": false,
-            "label": "always",
-            "marker": {
-              "x": 1481.296875,
-              "y": 780.1875,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "only_if_a_friend",
-            "state": "on",
-            "checked": true,
-            "label": "only if a friend",
-            "marker": {
-              "x": 1640.046875,
-              "y": 780.1875,
-              "width": 13,
-              "height": 13
-            }
-          }
-        ],
-        "box": {
-          "x": 977,
-          "y": 772.4375,
-          "width": 902,
-          "height": 28.5
-        },
-        "nameBox": {
-          "x": 986,
-          "y": 777.6875,
-          "width": 150,
-          "height": 18
-        },
-        "chipBox": {
-          "x": 1758,
-          "y": 776.4375,
-          "width": 112,
-          "height": 20.5
-        }
-      },
-      {
-        "ruleKey": "x/public_post",
-        "app": "x",
-        "kind": "public_post",
-        "selected": "never",
-        "name": "public post",
-        "chip": "never",
-        "choices": [
-          {
-            "choice": "never",
-            "state": "on",
-            "checked": true,
-            "label": "never",
-            "marker": {
-              "x": 1168,
-              "y": 811.6875,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "ask_me",
-            "state": "off",
-            "checked": false,
-            "label": "ask me",
-            "marker": {
-              "x": 1326.828125,
-              "y": 811.6875,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "always",
-            "state": "off",
-            "checked": false,
-            "label": "always",
-            "marker": {
-              "x": 1490.140625,
-              "y": 811.6875,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "only_if_a_friend",
-            "state": "off",
-            "checked": false,
-            "label": "only if a friend",
-            "marker": {
-              "x": 1651.390625,
-              "y": 811.6875,
-              "width": 13,
-              "height": 13
-            }
-          }
-        ],
-        "box": {
-          "x": 977,
-          "y": 803.9375,
-          "width": 902,
-          "height": 28.5
-        },
-        "nameBox": {
-          "x": 986,
-          "y": 809.1875,
-          "width": 150,
-          "height": 18
-        },
-        "chipBox": {
-          "x": 1758,
-          "y": 807.9375,
-          "width": 112,
-          "height": 20.5
-        }
-      },
-      {
-        "ruleKey": "x/reply",
-        "app": "x",
-        "kind": "reply",
-        "selected": "never",
-        "name": "reply",
-        "chip": "never",
-        "choices": [
-          {
-            "choice": "never",
-            "state": "on",
-            "checked": true,
-            "label": "never",
-            "marker": {
-              "x": 1168,
-              "y": 843.1875,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "ask_me",
-            "state": "off",
-            "checked": false,
-            "label": "ask me",
-            "marker": {
-              "x": 1326.828125,
-              "y": 843.1875,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "always",
-            "state": "off",
-            "checked": false,
-            "label": "always",
-            "marker": {
-              "x": 1490.140625,
-              "y": 843.1875,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "only_if_a_friend",
-            "state": "off",
-            "checked": false,
-            "label": "only if a friend",
-            "marker": {
-              "x": 1651.390625,
-              "y": 843.1875,
-              "width": 13,
-              "height": 13
-            }
-          }
-        ],
-        "box": {
-          "x": 977,
-          "y": 835.4375,
-          "width": 902,
-          "height": 28.5
-        },
-        "nameBox": {
-          "x": 986,
-          "y": 840.6875,
-          "width": 150,
-          "height": 18
-        },
-        "chipBox": {
-          "x": 1758,
-          "y": 839.4375,
-          "width": 112,
-          "height": 20.5
-        }
-      },
-      {
-        "ruleKey": "email_address",
-        "app": "email",
-        "kind": "email_address",
-        "selected": "ask_me",
-        "name": "email address",
-        "chip": "ask me",
-        "choices": [
-          {
-            "choice": "never",
-            "state": "off",
-            "checked": false,
-            "label": "never",
-            "marker": {
-              "x": 1168,
-              "y": 918.28125,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "ask_me",
-            "state": "on",
-            "checked": true,
-            "label": "ask me",
-            "marker": {
-              "x": 1322.890625,
-              "y": 918.28125,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "always",
-            "state": "off",
-            "checked": false,
-            "label": "always",
-            "marker": {
-              "x": 1490.265625,
-              "y": 918.28125,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "only_if_a_friend",
-            "state": "off",
-            "checked": false,
-            "label": "only if a friend",
-            "marker": {
-              "x": 1651.390625,
-              "y": 918.28125,
-              "width": 13,
-              "height": 13
-            }
-          }
-        ],
-        "box": {
-          "x": 977,
-          "y": 910.53125,
-          "width": 902,
-          "height": 28.5
-        },
-        "nameBox": {
-          "x": 986,
-          "y": 915.78125,
-          "width": 150,
-          "height": 18
-        },
-        "chipBox": {
-          "x": 1758,
-          "y": 914.53125,
-          "width": 112,
-          "height": 20.5
-        }
-      },
-      {
-        "ruleKey": "email_domain",
-        "app": "email",
-        "kind": "email_domain",
-        "selected": "never",
-        "name": "email domain",
-        "chip": "never",
-        "choices": [
-          {
-            "choice": "never",
-            "state": "on",
-            "checked": true,
-            "label": "never",
-            "marker": {
-              "x": 1168,
-              "y": 949.78125,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "ask_me",
-            "state": "off",
-            "checked": false,
-            "label": "ask me",
-            "marker": {
-              "x": 1326.828125,
-              "y": 949.78125,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "always",
-            "state": "off",
-            "checked": false,
-            "label": "always",
-            "marker": {
-              "x": 1490.140625,
-              "y": 949.78125,
-              "width": 13,
-              "height": 13
-            }
-          },
-          {
-            "choice": "only_if_a_friend",
-            "state": "off",
-            "checked": false,
-            "label": "only if a friend",
-            "marker": {
-              "x": 1651.390625,
-              "y": 949.78125,
-              "width": 13,
-              "height": 13
-            }
-          }
-        ],
-        "box": {
-          "x": 977,
-          "y": 942.03125,
-          "width": 902,
-          "height": 28.5
-        },
-        "nameBox": {
-          "x": 986,
-          "y": 947.28125,
-          "width": 150,
-          "height": 18
-        },
-        "chipBox": {
-          "x": 1758,
-          "y": 946.03125,
-          "width": 112,
-          "height": 20.5
-        }
-      }
-    ],
-    "rowCount": 38,
-    "groups": [
-      {
-        "app": "discord",
-        "heading": "Discord7 place kinds",
-        "rows": 7
-      },
-      {
-        "app": "whatsapp",
-        "heading": "WhatsApp6 place kinds",
-        "rows": 6
-      },
-      {
-        "app": "telegram",
-        "heading": "Telegram6 place kinds",
-        "rows": 6
-      },
-      {
-        "app": "signal",
-        "heading": "Signal5 place kinds",
-        "rows": 5
-      },
-      {
-        "app": "instagram",
-        "heading": "Instagram5 place kinds",
-        "rows": 5
-      },
-      {
-        "app": "messenger",
-        "heading": "Messenger3 place kinds",
-        "rows": 3
-      },
-      {
-        "app": "x",
-        "heading": "X4 place kinds",
-        "rows": 4
-      },
-      {
-        "app": "email",
-        "heading": "Email2 place kinds",
-        "rows": 2
-      }
-    ],
-    "legend": [
-      {
-        "choice": "never",
-        "name": "never",
-        "text": "The place stays out. Nothing is added without you."
-      },
-      {
-        "choice": "ask_me",
-        "name": "ask me",
-        "text": "OSL asks you first and waits for your answer."
-      },
-      {
-        "choice": "always",
-        "name": "always",
-        "text": "The place is added the moment it turns up."
-      },
-      {
-        "choice": "only_if_a_friend",
-        "name": "only if a friend",
-        "text": "Added only when the other side is already a friend."
       }
     ],
     "buttons": [
       {
         "action": "save",
-        "text": "Save rules",
-        "explanation": "Keeps these rules for every new place from now on."
+        "label": "Save rules",
+        "box": {
+          "x": 31,
+          "y": 994.53125,
+          "width": 106.640625,
+          "height": 44
+        }
       },
       {
         "action": "reset",
-        "text": "Reset",
-        "explanation": "Puts every place kind back to never. Nothing is kept until you save."
+        "label": "Reset",
+        "box": {
+          "x": 477.65625,
+          "y": 994.53125,
+          "width": 71.609375,
+          "height": 44
+        }
+      }
+    ],
+    "rows": [
+      {
+        "ruleKey": "discord:direct_message",
+        "kind": "direct_message",
+        "selected": "only_if_a_friend"
+      },
+      {
+        "ruleKey": "discord:group_chat",
+        "kind": "group_chat",
+        "selected": "ask_me"
+      },
+      {
+        "ruleKey": "discord:group_dm",
+        "kind": "group_dm",
+        "selected": "ask_me"
+      },
+      {
+        "ruleKey": "discord:server",
+        "kind": "server",
+        "selected": "ask_me"
+      },
+      {
+        "ruleKey": "discord:server_channel",
+        "kind": "server_channel",
+        "selected": "ask_me"
+      },
+      {
+        "ruleKey": "discord:channel",
+        "kind": "channel",
+        "selected": "never"
+      },
+      {
+        "ruleKey": "discord:thread",
+        "kind": "thread",
+        "selected": "ask_me"
+      },
+      {
+        "ruleKey": "whatsapp:direct_message",
+        "kind": "direct_message",
+        "selected": "only_if_a_friend"
+      },
+      {
+        "ruleKey": "whatsapp:group_chat",
+        "kind": "group_chat",
+        "selected": "ask_me"
+      },
+      {
+        "ruleKey": "whatsapp:channel",
+        "kind": "channel",
+        "selected": "never"
+      },
+      {
+        "ruleKey": "whatsapp:community",
+        "kind": "community",
+        "selected": "ask_me"
+      },
+      {
+        "ruleKey": "whatsapp:community_group",
+        "kind": "community_group",
+        "selected": "ask_me"
+      },
+      {
+        "ruleKey": "whatsapp:broadcast_list",
+        "kind": "broadcast_list",
+        "selected": "never"
+      },
+      {
+        "ruleKey": "telegram:direct_message",
+        "kind": "direct_message",
+        "selected": "only_if_a_friend"
+      },
+      {
+        "ruleKey": "telegram:group_chat",
+        "kind": "group_chat",
+        "selected": "ask_me"
+      },
+      {
+        "ruleKey": "telegram:channel",
+        "kind": "channel",
+        "selected": "never"
+      },
+      {
+        "ruleKey": "telegram:public_post",
+        "kind": "public_post",
+        "selected": "never"
+      },
+      {
+        "ruleKey": "telegram:supergroup",
+        "kind": "supergroup",
+        "selected": "ask_me"
+      },
+      {
+        "ruleKey": "telegram:saved_messages",
+        "kind": "saved_messages",
+        "selected": "always"
+      },
+      {
+        "ruleKey": "signal:direct_message",
+        "kind": "direct_message",
+        "selected": "only_if_a_friend"
+      },
+      {
+        "ruleKey": "signal:group_chat",
+        "kind": "group_chat",
+        "selected": "ask_me"
+      },
+      {
+        "ruleKey": "signal:group",
+        "kind": "group",
+        "selected": "ask_me"
+      },
+      {
+        "ruleKey": "signal:note_to_self",
+        "kind": "note_to_self",
+        "selected": "always"
+      },
+      {
+        "ruleKey": "signal:story",
+        "kind": "story",
+        "selected": "never"
+      },
+      {
+        "ruleKey": "instagram:direct_message",
+        "kind": "direct_message",
+        "selected": "only_if_a_friend"
+      },
+      {
+        "ruleKey": "instagram:group_chat",
+        "kind": "group_chat",
+        "selected": "ask_me"
+      },
+      {
+        "ruleKey": "instagram:public_post",
+        "kind": "public_post",
+        "selected": "never"
+      },
+      {
+        "ruleKey": "instagram:comment",
+        "kind": "comment",
+        "selected": "never"
+      },
+      {
+        "ruleKey": "instagram:story",
+        "kind": "story",
+        "selected": "never"
+      },
+      {
+        "ruleKey": "messenger:direct_message",
+        "kind": "direct_message",
+        "selected": "only_if_a_friend"
+      },
+      {
+        "ruleKey": "messenger:group_chat",
+        "kind": "group_chat",
+        "selected": "ask_me"
+      },
+      {
+        "ruleKey": "messenger:community",
+        "kind": "community",
+        "selected": "ask_me"
+      },
+      {
+        "ruleKey": "x/direct_message",
+        "kind": "direct_message",
+        "selected": "only_if_a_friend"
+      },
+      {
+        "ruleKey": "x/group_direct_message",
+        "kind": "group_direct_message",
+        "selected": "only_if_a_friend"
+      },
+      {
+        "ruleKey": "x/public_post",
+        "kind": "public_post",
+        "selected": "never"
+      },
+      {
+        "ruleKey": "x/reply",
+        "kind": "reply",
+        "selected": "never"
+      },
+      {
+        "ruleKey": "email_address",
+        "kind": "email_address",
+        "selected": "ask_me"
+      },
+      {
+        "ruleKey": "email_domain",
+        "kind": "email_domain",
+        "selected": "never"
       }
     ],
     "status": "All 38 place rules saved.",
@@ -3023,1223 +486,376 @@
     "height": 1080,
     "distinctColors": 6487,
     "crops": {
-      "discord:direct_message|on": {
-        "width": 14,
-        "height": 14,
-        "pixels": 196,
-        "distinctColors": 2,
-        "saturatedPixels": 169,
-        "meanColor": "10,161,187"
-      },
-      "discord:direct_message|off": {
-        "width": 13,
-        "height": 14,
-        "pixels": 182,
-        "distinctColors": 3,
-        "saturatedPixels": 0,
-        "meanColor": "27,27,27"
-      },
-      "discord:direct_message|name": {
-        "width": 150,
-        "height": 19,
-        "pixels": 2850,
-        "distinctColors": 276,
-        "saturatedPixels": 421,
-        "meanColor": "51,51,51"
-      },
-      "discord:direct_message|chip": {
-        "width": 112,
+      "title": {
+        "width": 510,
         "height": 22,
-        "pixels": 2464,
-        "distinctColors": 223,
-        "saturatedPixels": 346,
-        "meanColor": "50,50,50"
-      },
-      "discord:group_chat|on": {
-        "width": 14,
-        "height": 14,
-        "pixels": 196,
-        "distinctColors": 2,
-        "saturatedPixels": 169,
-        "meanColor": "10,161,187"
-      },
-      "discord:group_chat|off": {
-        "width": 13,
-        "height": 14,
-        "pixels": 182,
-        "distinctColors": 3,
-        "saturatedPixels": 0,
-        "meanColor": "27,27,27"
-      },
-      "discord:group_chat|name": {
-        "width": 150,
-        "height": 19,
-        "pixels": 2850,
-        "distinctColors": 203,
-        "saturatedPixels": 324,
-        "meanColor": "45,45,45"
-      },
-      "discord:group_chat|chip": {
-        "width": 112,
-        "height": 21,
-        "pixels": 2352,
-        "distinctColors": 149,
-        "saturatedPixels": 164,
-        "meanColor": "36,36,36"
-      },
-      "discord:group_dm|on": {
-        "width": 14,
-        "height": 14,
-        "pixels": 196,
-        "distinctColors": 2,
-        "saturatedPixels": 169,
-        "meanColor": "10,161,187"
-      },
-      "discord:group_dm|off": {
-        "width": 13,
-        "height": 14,
-        "pixels": 182,
-        "distinctColors": 3,
-        "saturatedPixels": 0,
-        "meanColor": "27,27,27"
-      },
-      "discord:group_dm|name": {
-        "width": 150,
-        "height": 19,
-        "pixels": 2850,
-        "distinctColors": 203,
-        "saturatedPixels": 307,
-        "meanColor": "45,45,45"
-      },
-      "discord:group_dm|chip": {
-        "width": 112,
-        "height": 22,
-        "pixels": 2464,
-        "distinctColors": 150,
-        "saturatedPixels": 164,
-        "meanColor": "37,37,37"
-      },
-      "discord:server|on": {
-        "width": 14,
-        "height": 14,
-        "pixels": 196,
-        "distinctColors": 2,
-        "saturatedPixels": 169,
-        "meanColor": "10,161,187"
-      },
-      "discord:server|off": {
-        "width": 13,
-        "height": 14,
-        "pixels": 182,
-        "distinctColors": 3,
-        "saturatedPixels": 0,
-        "meanColor": "27,27,27"
-      },
-      "discord:server|name": {
-        "width": 150,
-        "height": 19,
-        "pixels": 2850,
-        "distinctColors": 156,
-        "saturatedPixels": 155,
-        "meanColor": "39,39,39"
-      },
-      "discord:server|chip": {
-        "width": 112,
-        "height": 21,
-        "pixels": 2352,
-        "distinctColors": 149,
-        "saturatedPixels": 164,
-        "meanColor": "36,36,36"
-      },
-      "discord:server_channel|on": {
-        "width": 14,
-        "height": 14,
-        "pixels": 196,
-        "distinctColors": 2,
-        "saturatedPixels": 169,
-        "meanColor": "10,161,187"
-      },
-      "discord:server_channel|off": {
-        "width": 13,
-        "height": 14,
-        "pixels": 182,
-        "distinctColors": 3,
-        "saturatedPixels": 0,
-        "meanColor": "27,27,27"
-      },
-      "discord:server_channel|name": {
-        "width": 150,
-        "height": 19,
-        "pixels": 2850,
-        "distinctColors": 264,
-        "saturatedPixels": 385,
-        "meanColor": "49,49,49"
-      },
-      "discord:server_channel|chip": {
-        "width": 112,
-        "height": 22,
-        "pixels": 2464,
-        "distinctColors": 150,
-        "saturatedPixels": 164,
-        "meanColor": "37,37,37"
-      },
-      "discord:channel|on": {
-        "width": 13,
-        "height": 14,
-        "pixels": 182,
-        "distinctColors": 2,
-        "saturatedPixels": 169,
-        "meanColor": "8,171,199"
-      },
-      "discord:channel|off": {
-        "width": 14,
-        "height": 14,
-        "pixels": 196,
-        "distinctColors": 3,
-        "saturatedPixels": 0,
-        "meanColor": "27,27,27"
-      },
-      "discord:channel|name": {
-        "width": 150,
-        "height": 19,
-        "pixels": 2850,
-        "distinctColors": 142,
-        "saturatedPixels": 225,
+        "pixels": 11220,
+        "distinctColors": 367,
+        "saturatedPixels": 864,
         "meanColor": "42,42,42"
       },
-      "discord:channel|chip": {
-        "width": 112,
-        "height": 21,
-        "pixels": 2352,
-        "distinctColors": 122,
-        "saturatedPixels": 134,
-        "meanColor": "33,34,34"
+      "direct messages|control": {
+        "width": 231,
+        "height": 55,
+        "pixels": 12705,
+        "distinctColors": 606,
+        "saturatedPixels": 1022,
+        "meanColor": "30,36,37"
       },
-      "discord:thread|on": {
-        "width": 14,
-        "height": 14,
-        "pixels": 196,
-        "distinctColors": 2,
-        "saturatedPixels": 169,
-        "meanColor": "10,161,187"
-      },
-      "discord:thread|off": {
-        "width": 13,
-        "height": 14,
-        "pixels": 182,
-        "distinctColors": 3,
-        "saturatedPixels": 0,
-        "meanColor": "27,27,27"
-      },
-      "discord:thread|name": {
-        "width": 150,
-        "height": 19,
-        "pixels": 2850,
-        "distinctColors": 149,
-        "saturatedPixels": 190,
-        "meanColor": "41,41,41"
-      },
-      "discord:thread|chip": {
-        "width": 112,
-        "height": 22,
-        "pixels": 2464,
-        "distinctColors": 150,
-        "saturatedPixels": 164,
-        "meanColor": "37,37,37"
-      },
-      "whatsapp:direct_message|on": {
-        "width": 14,
-        "height": 14,
-        "pixels": 196,
-        "distinctColors": 2,
-        "saturatedPixels": 169,
-        "meanColor": "10,161,187"
-      },
-      "whatsapp:direct_message|off": {
-        "width": 13,
-        "height": 14,
-        "pixels": 182,
-        "distinctColors": 3,
-        "saturatedPixels": 0,
-        "meanColor": "27,27,27"
-      },
-      "whatsapp:direct_message|name": {
-        "width": 150,
+      "direct messages|name": {
+        "width": 102,
         "height": 18,
-        "pixels": 2700,
-        "distinctColors": 276,
-        "saturatedPixels": 421,
-        "meanColor": "52,52,52"
+        "pixels": 1836,
+        "distinctColors": 308,
+        "saturatedPixels": 391,
+        "meanColor": "67,67,67"
       },
-      "whatsapp:direct_message|chip": {
-        "width": 112,
-        "height": 22,
-        "pixels": 2464,
-        "distinctColors": 223,
-        "saturatedPixels": 346,
-        "meanColor": "50,50,50"
+      "direct messages|value": {
+        "width": 107,
+        "height": 45,
+        "pixels": 4815,
+        "distinctColors": 136,
+        "saturatedPixels": 505,
+        "meanColor": "19,35,38"
       },
-      "whatsapp:group_chat|on": {
-        "width": 14,
-        "height": 13,
-        "pixels": 182,
-        "distinctColors": 2,
-        "saturatedPixels": 169,
-        "meanColor": "8,171,199"
+      "groups|control": {
+        "width": 178,
+        "height": 55,
+        "pixels": 9790,
+        "distinctColors": 445,
+        "saturatedPixels": 816,
+        "meanColor": "27,35,37"
       },
-      "whatsapp:group_chat|off": {
-        "width": 13,
-        "height": 13,
-        "pixels": 169,
-        "distinctColors": 2,
-        "saturatedPixels": 0,
+      "groups|name": {
+        "width": 49,
+        "height": 18,
+        "pixels": 882,
+        "distinctColors": 147,
+        "saturatedPixels": 170,
+        "meanColor": "64,65,65"
+      },
+      "groups|value": {
+        "width": 107,
+        "height": 45,
+        "pixels": 4815,
+        "distinctColors": 134,
+        "saturatedPixels": 505,
+        "meanColor": "19,35,38"
+      },
+      "servers|control": {
+        "width": 176,
+        "height": 55,
+        "pixels": 9680,
+        "distinctColors": 443,
+        "saturatedPixels": 397,
+        "meanColor": "30,30,30"
+      },
+      "servers|name": {
+        "width": 47,
+        "height": 18,
+        "pixels": 846,
+        "distinctColors": 149,
+        "saturatedPixels": 152,
+        "meanColor": "64,64,64"
+      },
+      "servers|value": {
+        "width": 107,
+        "height": 45,
+        "pixels": 4815,
+        "distinctColors": 167,
+        "saturatedPixels": 136,
         "meanColor": "26,26,26"
       },
-      "whatsapp:group_chat|name": {
-        "width": 150,
-        "height": 19,
-        "pixels": 2850,
-        "distinctColors": 203,
-        "saturatedPixels": 324,
-        "meanColor": "45,45,45"
+      "channels|control": {
+        "width": 185,
+        "height": 55,
+        "pixels": 10175,
+        "distinctColors": 447,
+        "saturatedPixels": 843,
+        "meanColor": "28,36,37"
       },
-      "whatsapp:group_chat|chip": {
-        "width": 112,
-        "height": 21,
-        "pixels": 2352,
-        "distinctColors": 149,
-        "saturatedPixels": 164,
-        "meanColor": "36,36,36"
-      },
-      "whatsapp:channel|on": {
-        "width": 13,
-        "height": 14,
-        "pixels": 182,
-        "distinctColors": 2,
-        "saturatedPixels": 169,
-        "meanColor": "8,171,199"
-      },
-      "whatsapp:channel|off": {
-        "width": 14,
-        "height": 14,
-        "pixels": 196,
-        "distinctColors": 3,
-        "saturatedPixels": 0,
-        "meanColor": "27,27,27"
-      },
-      "whatsapp:channel|name": {
-        "width": 150,
+      "channels|name": {
+        "width": 56,
         "height": 18,
-        "pixels": 2700,
-        "distinctColors": 142,
-        "saturatedPixels": 225,
-        "meanColor": "42,42,42"
+        "pixels": 1008,
+        "distinctColors": 153,
+        "saturatedPixels": 215,
+        "meanColor": "67,67,67"
       },
-      "whatsapp:channel|chip": {
-        "width": 112,
-        "height": 22,
-        "pixels": 2464,
-        "distinctColors": 123,
-        "saturatedPixels": 134,
-        "meanColor": "34,34,34"
+      "channels|value": {
+        "width": 107,
+        "height": 45,
+        "pixels": 4815,
+        "distinctColors": 136,
+        "saturatedPixels": 502,
+        "meanColor": "19,35,38"
       },
-      "whatsapp:community|on": {
-        "width": 14,
-        "height": 13,
-        "pixels": 182,
-        "distinctColors": 2,
-        "saturatedPixels": 169,
-        "meanColor": "8,171,199"
+      "threads|control": {
+        "width": 178,
+        "height": 55,
+        "pixels": 9790,
+        "distinctColors": 453,
+        "saturatedPixels": 836,
+        "meanColor": "28,36,37"
       },
-      "whatsapp:community|off": {
-        "width": 13,
-        "height": 13,
-        "pixels": 169,
-        "distinctColors": 2,
-        "saturatedPixels": 0,
-        "meanColor": "26,26,26"
-      },
-      "whatsapp:community|name": {
-        "width": 150,
-        "height": 19,
-        "pixels": 2850,
-        "distinctColors": 191,
-        "saturatedPixels": 352,
-        "meanColor": "45,45,45"
-      },
-      "whatsapp:community|chip": {
-        "width": 112,
-        "height": 21,
-        "pixels": 2352,
-        "distinctColors": 149,
-        "saturatedPixels": 164,
-        "meanColor": "36,36,36"
-      },
-      "whatsapp:community_group|on": {
-        "width": 14,
-        "height": 14,
-        "pixels": 196,
-        "distinctColors": 2,
-        "saturatedPixels": 169,
-        "meanColor": "10,161,187"
-      },
-      "whatsapp:community_group|off": {
-        "width": 13,
-        "height": 14,
-        "pixels": 182,
-        "distinctColors": 3,
-        "saturatedPixels": 0,
-        "meanColor": "27,27,27"
-      },
-      "whatsapp:community_group|name": {
-        "width": 150,
+      "threads|name": {
+        "width": 49,
         "height": 18,
-        "pixels": 2700,
-        "distinctColors": 279,
-        "saturatedPixels": 535,
-        "meanColor": "54,54,54"
+        "pixels": 882,
+        "distinctColors": 166,
+        "saturatedPixels": 212,
+        "meanColor": "68,69,69"
       },
-      "whatsapp:community_group|chip": {
-        "width": 112,
-        "height": 22,
-        "pixels": 2464,
-        "distinctColors": 150,
-        "saturatedPixels": 164,
-        "meanColor": "37,37,37"
+      "threads|value": {
+        "width": 107,
+        "height": 45,
+        "pixels": 4815,
+        "distinctColors": 132,
+        "saturatedPixels": 505,
+        "meanColor": "19,35,38"
       },
-      "whatsapp:broadcast_list|on": {
-        "width": 13,
-        "height": 13,
-        "pixels": 169,
-        "distinctColors": 1,
-        "saturatedPixels": 169,
-        "meanColor": "6,182,212"
+      "email|control": {
+        "width": 172,
+        "height": 55,
+        "pixels": 9460,
+        "distinctColors": 402,
+        "saturatedPixels": 782,
+        "meanColor": "27,35,36"
       },
-      "whatsapp:broadcast_list|off": {
-        "width": 14,
-        "height": 13,
-        "pixels": 182,
-        "distinctColors": 3,
-        "saturatedPixels": 0,
-        "meanColor": "27,27,27"
+      "email|name": {
+        "width": 43,
+        "height": 18,
+        "pixels": 774,
+        "distinctColors": 100,
+        "saturatedPixels": 156,
+        "meanColor": "60,61,60"
       },
-      "whatsapp:broadcast_list|name": {
-        "width": 150,
-        "height": 19,
-        "pixels": 2850,
-        "distinctColors": 257,
-        "saturatedPixels": 384,
-        "meanColor": "49,49,49"
+      "email|value": {
+        "width": 107,
+        "height": 45,
+        "pixels": 4815,
+        "distinctColors": 135,
+        "saturatedPixels": 506,
+        "meanColor": "19,35,38"
       },
-      "whatsapp:broadcast_list|chip": {
-        "width": 112,
-        "height": 21,
-        "pixels": 2352,
-        "distinctColors": 122,
-        "saturatedPixels": 134,
-        "meanColor": "33,34,34"
+      "posts|control": {
+        "width": 171,
+        "height": 55,
+        "pixels": 9405,
+        "distinctColors": 431,
+        "saturatedPixels": 363,
+        "meanColor": "30,30,30"
       },
-      "telegram:direct_message|on": {
-        "width": 14,
-        "height": 14,
-        "pixels": 196,
-        "distinctColors": 2,
-        "saturatedPixels": 169,
-        "meanColor": "10,161,187"
+      "posts|name": {
+        "width": 42,
+        "height": 18,
+        "pixels": 756,
+        "distinctColors": 132,
+        "saturatedPixels": 133,
+        "meanColor": "61,61,61"
       },
-      "telegram:direct_message|off": {
-        "width": 13,
-        "height": 14,
-        "pixels": 182,
-        "distinctColors": 3,
-        "saturatedPixels": 0,
-        "meanColor": "27,27,27"
+      "posts|value": {
+        "width": 106,
+        "height": 45,
+        "pixels": 4770,
+        "distinctColors": 147,
+        "saturatedPixels": 112,
+        "meanColor": "25,25,25"
       },
-      "telegram:direct_message|name": {
-        "width": 150,
-        "height": 19,
-        "pixels": 2850,
-        "distinctColors": 276,
-        "saturatedPixels": 421,
-        "meanColor": "51,51,51"
+      "Save rules|control": {
+        "width": 107,
+        "height": 45,
+        "pixels": 4815,
+        "distinctColors": 189,
+        "saturatedPixels": 4547,
+        "meanColor": "7,168,196"
       },
-      "telegram:direct_message|chip": {
-        "width": 112,
-        "height": 21,
-        "pixels": 2352,
-        "distinctColors": 222,
-        "saturatedPixels": 346,
-        "meanColor": "51,50,51"
-      },
-      "telegram:group_chat|on": {
-        "width": 14,
-        "height": 14,
-        "pixels": 196,
-        "distinctColors": 2,
-        "saturatedPixels": 169,
-        "meanColor": "10,161,187"
-      },
-      "telegram:group_chat|off": {
-        "width": 13,
-        "height": 14,
-        "pixels": 182,
-        "distinctColors": 3,
-        "saturatedPixels": 0,
-        "meanColor": "27,27,27"
-      },
-      "telegram:group_chat|name": {
-        "width": 150,
-        "height": 19,
-        "pixels": 2850,
-        "distinctColors": 203,
-        "saturatedPixels": 324,
-        "meanColor": "45,45,45"
-      },
-      "telegram:group_chat|chip": {
-        "width": 112,
-        "height": 22,
-        "pixels": 2464,
-        "distinctColors": 150,
-        "saturatedPixels": 164,
-        "meanColor": "37,37,37"
-      },
-      "telegram:channel|on": {
-        "width": 13,
-        "height": 14,
-        "pixels": 182,
-        "distinctColors": 2,
-        "saturatedPixels": 169,
-        "meanColor": "8,171,199"
-      },
-      "telegram:channel|off": {
-        "width": 14,
-        "height": 14,
-        "pixels": 196,
-        "distinctColors": 3,
-        "saturatedPixels": 0,
-        "meanColor": "27,27,27"
-      },
-      "telegram:channel|name": {
-        "width": 150,
-        "height": 19,
-        "pixels": 2850,
-        "distinctColors": 142,
-        "saturatedPixels": 225,
-        "meanColor": "42,42,42"
-      },
-      "telegram:channel|chip": {
-        "width": 112,
-        "height": 21,
-        "pixels": 2352,
-        "distinctColors": 122,
-        "saturatedPixels": 134,
-        "meanColor": "33,34,34"
-      },
-      "telegram:public_post|on": {
-        "width": 13,
-        "height": 14,
-        "pixels": 182,
-        "distinctColors": 2,
-        "saturatedPixels": 169,
-        "meanColor": "8,171,199"
-      },
-      "telegram:public_post|off": {
-        "width": 14,
-        "height": 14,
-        "pixels": 196,
-        "distinctColors": 3,
-        "saturatedPixels": 0,
-        "meanColor": "27,27,27"
-      },
-      "telegram:public_post|name": {
-        "width": 150,
-        "height": 19,
-        "pixels": 2850,
-        "distinctColors": 179,
-        "saturatedPixels": 344,
-        "meanColor": "46,46,46"
-      },
-      "telegram:public_post|chip": {
-        "width": 112,
-        "height": 22,
-        "pixels": 2464,
-        "distinctColors": 123,
-        "saturatedPixels": 134,
-        "meanColor": "34,34,34"
-      },
-      "telegram:supergroup|on": {
-        "width": 14,
-        "height": 14,
-        "pixels": 196,
-        "distinctColors": 2,
-        "saturatedPixels": 169,
-        "meanColor": "10,161,187"
-      },
-      "telegram:supergroup|off": {
-        "width": 13,
-        "height": 14,
-        "pixels": 182,
-        "distinctColors": 3,
-        "saturatedPixels": 0,
-        "meanColor": "27,27,27"
-      },
-      "telegram:supergroup|name": {
-        "width": 150,
-        "height": 19,
-        "pixels": 2850,
-        "distinctColors": 202,
-        "saturatedPixels": 337,
-        "meanColor": "47,47,47"
-      },
-      "telegram:supergroup|chip": {
-        "width": 112,
-        "height": 21,
-        "pixels": 2352,
-        "distinctColors": 149,
-        "saturatedPixels": 164,
-        "meanColor": "36,36,36"
-      },
-      "telegram:saved_messages|on": {
-        "width": 14,
-        "height": 14,
-        "pixels": 196,
-        "distinctColors": 2,
-        "saturatedPixels": 169,
-        "meanColor": "10,161,187"
-      },
-      "telegram:saved_messages|off": {
-        "width": 13,
-        "height": 14,
-        "pixels": 182,
-        "distinctColors": 3,
-        "saturatedPixels": 0,
-        "meanColor": "27,27,27"
-      },
-      "telegram:saved_messages|name": {
-        "width": 150,
-        "height": 19,
-        "pixels": 2850,
-        "distinctColors": 333,
-        "saturatedPixels": 424,
-        "meanColor": "53,53,53"
-      },
-      "telegram:saved_messages|chip": {
-        "width": 112,
-        "height": 22,
-        "pixels": 2464,
-        "distinctColors": 169,
-        "saturatedPixels": 179,
-        "meanColor": "37,37,37"
-      },
-      "signal:direct_message|on": {
-        "width": 14,
-        "height": 14,
-        "pixels": 196,
-        "distinctColors": 2,
-        "saturatedPixels": 169,
-        "meanColor": "10,161,187"
-      },
-      "signal:direct_message|off": {
-        "width": 13,
-        "height": 14,
-        "pixels": 182,
-        "distinctColors": 3,
-        "saturatedPixels": 0,
-        "meanColor": "27,27,27"
-      },
-      "signal:direct_message|name": {
-        "width": 150,
-        "height": 19,
-        "pixels": 2850,
-        "distinctColors": 276,
-        "saturatedPixels": 421,
-        "meanColor": "51,51,51"
-      },
-      "signal:direct_message|chip": {
-        "width": 112,
-        "height": 22,
-        "pixels": 2464,
-        "distinctColors": 223,
-        "saturatedPixels": 346,
-        "meanColor": "50,50,50"
-      },
-      "signal:group_chat|on": {
-        "width": 14,
-        "height": 14,
-        "pixels": 196,
-        "distinctColors": 2,
-        "saturatedPixels": 169,
-        "meanColor": "10,161,187"
-      },
-      "signal:group_chat|off": {
-        "width": 13,
-        "height": 14,
-        "pixels": 182,
-        "distinctColors": 3,
-        "saturatedPixels": 0,
-        "meanColor": "27,27,27"
-      },
-      "signal:group_chat|name": {
-        "width": 150,
-        "height": 19,
-        "pixels": 2850,
-        "distinctColors": 203,
-        "saturatedPixels": 324,
-        "meanColor": "45,45,45"
-      },
-      "signal:group_chat|chip": {
-        "width": 112,
-        "height": 21,
-        "pixels": 2352,
-        "distinctColors": 149,
-        "saturatedPixels": 164,
-        "meanColor": "36,36,36"
-      },
-      "signal:group|on": {
-        "width": 14,
-        "height": 14,
-        "pixels": 196,
-        "distinctColors": 2,
-        "saturatedPixels": 169,
-        "meanColor": "10,161,187"
-      },
-      "signal:group|off": {
-        "width": 13,
-        "height": 14,
-        "pixels": 182,
-        "distinctColors": 3,
-        "saturatedPixels": 0,
-        "meanColor": "27,27,27"
-      },
-      "signal:group|name": {
-        "width": 150,
-        "height": 19,
-        "pixels": 2850,
-        "distinctColors": 141,
-        "saturatedPixels": 195,
-        "meanColor": "40,40,40"
-      },
-      "signal:group|chip": {
-        "width": 112,
-        "height": 22,
-        "pixels": 2464,
-        "distinctColors": 150,
-        "saturatedPixels": 164,
-        "meanColor": "37,37,37"
-      },
-      "signal:note_to_self|on": {
-        "width": 14,
-        "height": 14,
-        "pixels": 196,
-        "distinctColors": 2,
-        "saturatedPixels": 169,
-        "meanColor": "10,161,187"
-      },
-      "signal:note_to_self|off": {
-        "width": 13,
-        "height": 14,
-        "pixels": 182,
-        "distinctColors": 3,
-        "saturatedPixels": 0,
-        "meanColor": "27,27,27"
-      },
-      "signal:note_to_self|name": {
-        "width": 150,
-        "height": 19,
-        "pixels": 2850,
-        "distinctColors": 183,
-        "saturatedPixels": 293,
-        "meanColor": "45,45,45"
-      },
-      "signal:note_to_self|chip": {
-        "width": 112,
-        "height": 21,
-        "pixels": 2352,
-        "distinctColors": 168,
-        "saturatedPixels": 179,
-        "meanColor": "37,37,37"
-      },
-      "signal:story|on": {
-        "width": 13,
-        "height": 14,
-        "pixels": 182,
-        "distinctColors": 2,
-        "saturatedPixels": 169,
-        "meanColor": "8,171,199"
-      },
-      "signal:story|off": {
-        "width": 14,
-        "height": 14,
-        "pixels": 196,
-        "distinctColors": 3,
-        "saturatedPixels": 0,
-        "meanColor": "27,27,27"
-      },
-      "signal:story|name": {
-        "width": 150,
-        "height": 19,
-        "pixels": 2850,
-        "distinctColors": 123,
-        "saturatedPixels": 150,
+      "Reset|control": {
+        "width": 73,
+        "height": 45,
+        "pixels": 3285,
+        "distinctColors": 171,
+        "saturatedPixels": 154,
         "meanColor": "38,38,38"
-      },
-      "signal:story|chip": {
-        "width": 112,
-        "height": 22,
-        "pixels": 2464,
-        "distinctColors": 123,
-        "saturatedPixels": 134,
-        "meanColor": "34,34,34"
-      },
-      "instagram:direct_message|on": {
-        "width": 14,
-        "height": 14,
-        "pixels": 196,
-        "distinctColors": 2,
-        "saturatedPixels": 169,
-        "meanColor": "10,161,187"
-      },
-      "instagram:direct_message|off": {
-        "width": 13,
-        "height": 14,
-        "pixels": 182,
-        "distinctColors": 3,
-        "saturatedPixels": 0,
-        "meanColor": "27,27,27"
-      },
-      "instagram:direct_message|name": {
-        "width": 150,
-        "height": 18,
-        "pixels": 2700,
-        "distinctColors": 276,
-        "saturatedPixels": 421,
-        "meanColor": "52,52,52"
-      },
-      "instagram:direct_message|chip": {
-        "width": 112,
-        "height": 22,
-        "pixels": 2464,
-        "distinctColors": 223,
-        "saturatedPixels": 346,
-        "meanColor": "50,50,50"
-      },
-      "instagram:group_chat|on": {
-        "width": 14,
-        "height": 13,
-        "pixels": 182,
-        "distinctColors": 2,
-        "saturatedPixels": 169,
-        "meanColor": "8,171,199"
-      },
-      "instagram:group_chat|off": {
-        "width": 13,
-        "height": 13,
-        "pixels": 169,
-        "distinctColors": 2,
-        "saturatedPixels": 0,
-        "meanColor": "26,26,26"
-      },
-      "instagram:group_chat|name": {
-        "width": 150,
-        "height": 19,
-        "pixels": 2850,
-        "distinctColors": 203,
-        "saturatedPixels": 324,
-        "meanColor": "45,45,45"
-      },
-      "instagram:group_chat|chip": {
-        "width": 112,
-        "height": 21,
-        "pixels": 2352,
-        "distinctColors": 149,
-        "saturatedPixels": 164,
-        "meanColor": "36,36,36"
-      },
-      "instagram:public_post|on": {
-        "width": 13,
-        "height": 14,
-        "pixels": 182,
-        "distinctColors": 2,
-        "saturatedPixels": 169,
-        "meanColor": "8,171,199"
-      },
-      "instagram:public_post|off": {
-        "width": 14,
-        "height": 14,
-        "pixels": 196,
-        "distinctColors": 3,
-        "saturatedPixels": 0,
-        "meanColor": "27,27,27"
-      },
-      "instagram:public_post|name": {
-        "width": 150,
-        "height": 18,
-        "pixels": 2700,
-        "distinctColors": 179,
-        "saturatedPixels": 344,
-        "meanColor": "47,47,47"
-      },
-      "instagram:public_post|chip": {
-        "width": 112,
-        "height": 22,
-        "pixels": 2464,
-        "distinctColors": 123,
-        "saturatedPixels": 134,
-        "meanColor": "34,34,34"
-      },
-      "instagram:comment|on": {
-        "width": 13,
-        "height": 13,
-        "pixels": 169,
-        "distinctColors": 1,
-        "saturatedPixels": 169,
-        "meanColor": "6,182,212"
-      },
-      "instagram:comment|off": {
-        "width": 14,
-        "height": 13,
-        "pixels": 182,
-        "distinctColors": 3,
-        "saturatedPixels": 0,
-        "meanColor": "27,27,27"
-      },
-      "instagram:comment|name": {
-        "width": 150,
-        "height": 19,
-        "pixels": 2850,
-        "distinctColors": 164,
-        "saturatedPixels": 277,
-        "meanColor": "43,43,43"
-      },
-      "instagram:comment|chip": {
-        "width": 112,
-        "height": 21,
-        "pixels": 2352,
-        "distinctColors": 122,
-        "saturatedPixels": 134,
-        "meanColor": "33,34,34"
-      },
-      "instagram:story|on": {
-        "width": 13,
-        "height": 14,
-        "pixels": 182,
-        "distinctColors": 2,
-        "saturatedPixels": 169,
-        "meanColor": "8,171,199"
-      },
-      "instagram:story|off": {
-        "width": 14,
-        "height": 14,
-        "pixels": 196,
-        "distinctColors": 3,
-        "saturatedPixels": 0,
-        "meanColor": "27,27,27"
-      },
-      "instagram:story|name": {
-        "width": 150,
-        "height": 18,
-        "pixels": 2700,
-        "distinctColors": 123,
-        "saturatedPixels": 150,
-        "meanColor": "39,39,39"
-      },
-      "instagram:story|chip": {
-        "width": 112,
-        "height": 22,
-        "pixels": 2464,
-        "distinctColors": 123,
-        "saturatedPixels": 134,
-        "meanColor": "34,34,34"
-      },
-      "messenger:direct_message|on": {
-        "width": 14,
-        "height": 14,
-        "pixels": 196,
-        "distinctColors": 2,
-        "saturatedPixels": 169,
-        "meanColor": "10,161,187"
-      },
-      "messenger:direct_message|off": {
-        "width": 13,
-        "height": 14,
-        "pixels": 182,
-        "distinctColors": 3,
-        "saturatedPixels": 0,
-        "meanColor": "27,27,27"
-      },
-      "messenger:direct_message|name": {
-        "width": 150,
-        "height": 19,
-        "pixels": 2850,
-        "distinctColors": 276,
-        "saturatedPixels": 421,
-        "meanColor": "51,51,51"
-      },
-      "messenger:direct_message|chip": {
-        "width": 112,
-        "height": 22,
-        "pixels": 2464,
-        "distinctColors": 223,
-        "saturatedPixels": 346,
-        "meanColor": "50,50,50"
-      },
-      "messenger:group_chat|on": {
-        "width": 14,
-        "height": 14,
-        "pixels": 196,
-        "distinctColors": 2,
-        "saturatedPixels": 169,
-        "meanColor": "10,161,187"
-      },
-      "messenger:group_chat|off": {
-        "width": 13,
-        "height": 14,
-        "pixels": 182,
-        "distinctColors": 3,
-        "saturatedPixels": 0,
-        "meanColor": "27,27,27"
-      },
-      "messenger:group_chat|name": {
-        "width": 150,
-        "height": 19,
-        "pixels": 2850,
-        "distinctColors": 203,
-        "saturatedPixels": 324,
-        "meanColor": "45,45,45"
-      },
-      "messenger:group_chat|chip": {
-        "width": 112,
-        "height": 21,
-        "pixels": 2352,
-        "distinctColors": 149,
-        "saturatedPixels": 164,
-        "meanColor": "36,36,36"
-      },
-      "messenger:community|on": {
-        "width": 14,
-        "height": 14,
-        "pixels": 196,
-        "distinctColors": 2,
-        "saturatedPixels": 169,
-        "meanColor": "10,161,187"
-      },
-      "messenger:community|off": {
-        "width": 13,
-        "height": 14,
-        "pixels": 182,
-        "distinctColors": 3,
-        "saturatedPixels": 0,
-        "meanColor": "27,27,27"
-      },
-      "messenger:community|name": {
-        "width": 150,
-        "height": 19,
-        "pixels": 2850,
-        "distinctColors": 191,
-        "saturatedPixels": 352,
-        "meanColor": "45,45,45"
-      },
-      "messenger:community|chip": {
-        "width": 112,
-        "height": 22,
-        "pixels": 2464,
-        "distinctColors": 150,
-        "saturatedPixels": 164,
-        "meanColor": "37,37,37"
-      },
-      "x/direct_message|on": {
-        "width": 14,
-        "height": 14,
-        "pixels": 196,
-        "distinctColors": 2,
-        "saturatedPixels": 169,
-        "meanColor": "10,161,187"
-      },
-      "x/direct_message|off": {
-        "width": 13,
-        "height": 14,
-        "pixels": 182,
-        "distinctColors": 3,
-        "saturatedPixels": 0,
-        "meanColor": "27,27,27"
-      },
-      "x/direct_message|name": {
-        "width": 150,
-        "height": 19,
-        "pixels": 2850,
-        "distinctColors": 276,
-        "saturatedPixels": 421,
-        "meanColor": "51,51,51"
-      },
-      "x/direct_message|chip": {
-        "width": 112,
-        "height": 22,
-        "pixels": 2464,
-        "distinctColors": 223,
-        "saturatedPixels": 346,
-        "meanColor": "50,50,50"
-      },
-      "x/group_direct_message|on": {
-        "width": 14,
-        "height": 14,
-        "pixels": 196,
-        "distinctColors": 2,
-        "saturatedPixels": 169,
-        "meanColor": "10,161,187"
-      },
-      "x/group_direct_message|off": {
-        "width": 13,
-        "height": 14,
-        "pixels": 182,
-        "distinctColors": 3,
-        "saturatedPixels": 0,
-        "meanColor": "27,27,27"
-      },
-      "x/group_direct_message|name": {
-        "width": 150,
-        "height": 19,
-        "pixels": 2850,
-        "distinctColors": 358,
-        "saturatedPixels": 592,
-        "meanColor": "59,59,59"
-      },
-      "x/group_direct_message|chip": {
-        "width": 112,
-        "height": 21,
-        "pixels": 2352,
-        "distinctColors": 222,
-        "saturatedPixels": 346,
-        "meanColor": "51,50,51"
-      },
-      "x/public_post|on": {
-        "width": 13,
-        "height": 14,
-        "pixels": 182,
-        "distinctColors": 2,
-        "saturatedPixels": 169,
-        "meanColor": "8,171,199"
-      },
-      "x/public_post|off": {
-        "width": 14,
-        "height": 14,
-        "pixels": 196,
-        "distinctColors": 3,
-        "saturatedPixels": 0,
-        "meanColor": "27,27,27"
-      },
-      "x/public_post|name": {
-        "width": 150,
-        "height": 19,
-        "pixels": 2850,
-        "distinctColors": 179,
-        "saturatedPixels": 344,
-        "meanColor": "46,46,46"
-      },
-      "x/public_post|chip": {
-        "width": 112,
-        "height": 22,
-        "pixels": 2464,
-        "distinctColors": 123,
-        "saturatedPixels": 134,
-        "meanColor": "34,34,34"
-      },
-      "x/reply|on": {
-        "width": 13,
-        "height": 14,
-        "pixels": 182,
-        "distinctColors": 2,
-        "saturatedPixels": 169,
-        "meanColor": "8,171,199"
-      },
-      "x/reply|off": {
-        "width": 14,
-        "height": 14,
-        "pixels": 196,
-        "distinctColors": 3,
-        "saturatedPixels": 0,
-        "meanColor": "27,27,27"
-      },
-      "x/reply|name": {
-        "width": 150,
-        "height": 19,
-        "pixels": 2850,
-        "distinctColors": 120,
-        "saturatedPixels": 169,
-        "meanColor": "39,39,39"
-      },
-      "x/reply|chip": {
-        "width": 112,
-        "height": 21,
-        "pixels": 2352,
-        "distinctColors": 122,
-        "saturatedPixels": 134,
-        "meanColor": "33,34,34"
-      },
-      "email_address|on": {
-        "width": 14,
-        "height": 14,
-        "pixels": 196,
-        "distinctColors": 2,
-        "saturatedPixels": 169,
-        "meanColor": "10,161,187"
-      },
-      "email_address|off": {
-        "width": 13,
-        "height": 14,
-        "pixels": 182,
-        "distinctColors": 3,
-        "saturatedPixels": 0,
-        "meanColor": "27,27,27"
-      },
-      "email_address|name": {
-        "width": 150,
-        "height": 19,
-        "pixels": 2850,
-        "distinctColors": 256,
-        "saturatedPixels": 392,
-        "meanColor": "49,49,49"
-      },
-      "email_address|chip": {
-        "width": 112,
-        "height": 22,
-        "pixels": 2464,
-        "distinctColors": 150,
-        "saturatedPixels": 164,
-        "meanColor": "37,37,37"
-      },
-      "email_domain|on": {
-        "width": 13,
-        "height": 14,
-        "pixels": 182,
-        "distinctColors": 2,
-        "saturatedPixels": 169,
-        "meanColor": "8,171,199"
-      },
-      "email_domain|off": {
-        "width": 14,
-        "height": 14,
-        "pixels": 196,
-        "distinctColors": 3,
-        "saturatedPixels": 0,
-        "meanColor": "27,27,27"
-      },
-      "email_domain|name": {
-        "width": 150,
-        "height": 19,
-        "pixels": 2850,
-        "distinctColors": 237,
-        "saturatedPixels": 414,
-        "meanColor": "48,48,48"
-      },
-      "email_domain|chip": {
-        "width": 112,
-        "height": 21,
-        "pixels": 2352,
-        "distinctColors": 122,
-        "saturatedPixels": 134,
-        "meanColor": "33,34,34"
       }
     }
+  },
+  "ink": {
+    "title": {
+      "pixels": 11220,
+      "background": "20,20,20",
+      "inkPixels": 1681,
+      "inkShare": 0.1498217468805704,
+      "distinctColors": 367
+    },
+    "direct messages|control": {
+      "pixels": 12705,
+      "background": "25,25,25",
+      "inkPixels": 1334,
+      "inkShare": 0.10499803227075954,
+      "distinctColors": 606
+    },
+    "direct messages|name": {
+      "pixels": 1836,
+      "background": "25,25,25",
+      "inkPixels": 599,
+      "inkShare": 0.32625272331154687,
+      "distinctColors": 308
+    },
+    "direct messages|value": {
+      "pixels": 4815,
+      "background": "20,20,20",
+      "inkPixels": 541,
+      "inkShare": 0.11235721703011423,
+      "distinctColors": 136
+    },
+    "groups|control": {
+      "pixels": 9790,
+      "background": "20,20,20",
+      "inkPixels": 1032,
+      "inkShare": 0.10541368743615935,
+      "distinctColors": 445
+    },
+    "groups|name": {
+      "pixels": 882,
+      "background": "25,25,25",
+      "inkPixels": 261,
+      "inkShare": 0.29591836734693877,
+      "distinctColors": 147
+    },
+    "groups|value": {
+      "pixels": 4815,
+      "background": "20,20,20",
+      "inkPixels": 539,
+      "inkShare": 0.11194184839044652,
+      "distinctColors": 134
+    },
+    "servers|control": {
+      "pixels": 9680,
+      "background": "20,20,20",
+      "inkPixels": 942,
+      "inkShare": 0.09731404958677686,
+      "distinctColors": 443
+    },
+    "servers|name": {
+      "pixels": 846,
+      "background": "25,25,25",
+      "inkPixels": 252,
+      "inkShare": 0.2978723404255319,
+      "distinctColors": 149
+    },
+    "servers|value": {
+      "pixels": 4815,
+      "background": "20,20,20",
+      "inkPixels": 514,
+      "inkShare": 0.10674974039460021,
+      "distinctColors": 167
+    },
+    "channels|control": {
+      "pixels": 10175,
+      "background": "20,20,20",
+      "inkPixels": 1067,
+      "inkShare": 0.10486486486486486,
+      "distinctColors": 447
+    },
+    "channels|name": {
+      "pixels": 1008,
+      "background": "25,25,25",
+      "inkPixels": 332,
+      "inkShare": 0.32936507936507936,
+      "distinctColors": 153
+    },
+    "channels|value": {
+      "pixels": 4815,
+      "background": "20,20,20",
+      "inkPixels": 537,
+      "inkShare": 0.11152647975077881,
+      "distinctColors": 136
+    },
+    "threads|control": {
+      "pixels": 9790,
+      "background": "20,20,20",
+      "inkPixels": 1029,
+      "inkShare": 0.10510725229826354,
+      "distinctColors": 453
+    },
+    "threads|name": {
+      "pixels": 882,
+      "background": "25,25,25",
+      "inkPixels": 300,
+      "inkShare": 0.3401360544217687,
+      "distinctColors": 166
+    },
+    "threads|value": {
+      "pixels": 4815,
+      "background": "20,20,20",
+      "inkPixels": 538,
+      "inkShare": 0.11173416407061267,
+      "distinctColors": 132
+    },
+    "email|control": {
+      "pixels": 9460,
+      "background": "20,20,20",
+      "inkPixels": 964,
+      "inkShare": 0.10190274841437633,
+      "distinctColors": 402
+    },
+    "email|name": {
+      "pixels": 774,
+      "background": "25,25,25",
+      "inkPixels": 220,
+      "inkShare": 0.2842377260981912,
+      "distinctColors": 100
+    },
+    "email|value": {
+      "pixels": 4815,
+      "background": "20,20,20",
+      "inkPixels": 544,
+      "inkShare": 0.11298026998961579,
+      "distinctColors": 135
+    },
+    "posts|control": {
+      "pixels": 9405,
+      "background": "20,20,20",
+      "inkPixels": 892,
+      "inkShare": 0.09484316852737905,
+      "distinctColors": 431
+    },
+    "posts|name": {
+      "pixels": 756,
+      "background": "25,25,25",
+      "inkPixels": 207,
+      "inkShare": 0.27380952380952384,
+      "distinctColors": 132
+    },
+    "posts|value": {
+      "pixels": 4770,
+      "background": "20,20,20",
+      "inkPixels": 479,
+      "inkShare": 0.10041928721174004,
+      "distinctColors": 147
+    },
+    "Save rules|control": {
+      "pixels": 4815,
+      "background": "6,182,212",
+      "inkPixels": 529,
+      "inkShare": 0.109865005192108,
+      "distinctColors": 189
+    },
+    "Reset|control": {
+      "pixels": 3285,
+      "background": "25,25,25",
+      "inkPixels": 290,
+      "inkShare": 0.0882800608828006,
+      "distinctColors": 171
+    }
+  },
+  "wholeImage": {
+    "pixels": 2073600,
+    "background": "32,32,32",
+    "inkPixels": 206023,
+    "inkShare": 0.09935522762345679,
+    "distinctColors": 6487
   },
   "axNodes": [
     {
@@ -4255,7 +871,7 @@
       },
       "name": {
         "type": "computedString",
-        "value": "OSL Privacy - TASK 0740",
+        "value": "OSL Privacy - TASK 0742",
         "sources": [
           {
             "type": "relatedElement",
@@ -4274,7 +890,7 @@
             "type": "relatedElement",
             "value": {
               "type": "computedString",
-              "value": "OSL Privacy - TASK 0740"
+              "value": "OSL Privacy - TASK 0742"
             },
             "nativeSource": "title"
           }
@@ -4299,7 +915,7 @@
           "name": "url",
           "value": {
             "type": "string",
-            "value": "http://127.0.0.1:5173/screenshots/task-0740-auto-whitelist-rules-fixture.html"
+            "value": "http://127.0.0.1:5173/screenshots/task-0742-auto-whitelist-rules-controls-fixture.html"
           }
         }
       ],
@@ -4307,7 +923,7 @@
         "11"
       ],
       "backendDOMNodeId": 2,
-      "frameId": "CEBAA3E07DA1C16CA856F9FB3FB0C5CA"
+      "frameId": "679448D0A048E081BE7E0E0877FF278A"
     },
     {
       "nodeId": "11",
