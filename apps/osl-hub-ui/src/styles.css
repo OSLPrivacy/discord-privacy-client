@@ -3304,6 +3304,26 @@ code {
 .notification-app-row small { display: block; }
 .notification-app-row small { margin-top: 2px; color: var(--subtle); font-size: 11px; }
 
+/* Every Notifications choice states where it stands in words, not just a tick. */
+.notification-choice-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  justify-self: end;
+}
+
+.choice-state-word {
+  min-width: 30px;
+  text-align: right;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--subtle);
+}
+
+.notification-choice[data-choice-state="on"] .choice-state-word { color: var(--text); }
+
 .content-viewport {
   min-width: 0;
   min-height: 0;

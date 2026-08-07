@@ -600,6 +600,12 @@ let notificationPreviewContent = false;
 let notificationScopeSuggestions = true;
 let notificationChatActivity = true;
 let notificationSecurityActivity = true;
+/**
+ * Quiet switch. OSL still records local activity, it just stops lighting up the
+ * Home bell. Kept separate from `notificationsEnabled`, which stops the
+ * recording itself.
+ */
+let notificationsMuted = false;
 let activeContextToken: string | null = null;
 let localProtectedSheet: LocalProtectedSheetModel = blankLocalProtectedModel();
 let peerProtectedSheet: PeerProtectedSheetModel = blankPeerProtectedModel();
@@ -754,6 +760,7 @@ const notificationPreviewStorageKey = "osl-hub-notification-previews";
 const notificationScopeStorageKey = "osl-hub-notification-scope-suggestions";
 const notificationChatStorageKey = "osl-hub-notification-chats-v1";
 const notificationSecurityStorageKey = "osl-hub-notification-security-v1";
+const notificationMuteStorageKey = "osl-hub-notification-mute-v1";
 const mullvadAutoStartStorageKey = "osl-mullvad-autostart-v1";
 const scrubSignalsStorageKey = "osl-hub-scrub-signals-v1";
 const serviceGuideStorageKey = "osl-hub-service-guide-v1";
@@ -1447,6 +1454,7 @@ export async function loadUiPreferences(): Promise<void> {
   notificationScopeSuggestions = localStorage.getItem(notificationScopeStorageKey) !== "false";
   notificationChatActivity = localStorage.getItem(notificationChatStorageKey) !== "false";
   notificationSecurityActivity = localStorage.getItem(notificationSecurityStorageKey) !== "false";
+  notificationsMuted = localStorage.getItem(notificationMuteStorageKey) === "true";
   protectionPreset = loadProtectionPreset();
   oslMailNotifications = localStorage.getItem(oslMailNotificationsStorageKey) !== "false";
   rnWirePolicyRequested = readRnWirePolicyRequested();
@@ -4621,7 +4629,7 @@ function trustedHeader(): string {
 
 function homeHeader(): string {
   const friendRequests = hubPeople.filter((person) => !person.safetyNumberVerified || person.pendingKeyChange).length;
-  const notificationCount = notificationsEnabled ? visibleAppNotifications().length : 0;
+  const notificationCount = notificationsEnabled && !notificationsMuted ? visibleAppNotifications().length : 0;
   return `<div class="trusted-stack home-trusted-stack"><header class="home-header home-command-bar"><button class="home-logo-button in-dom-tooltip-anchor" data-route="home" aria-label="OSL Privacy home"><img src="${oslVectorLogoUrl}" alt=""/>${inDomTooltipMarkup("OSL Privacy")}</button><nav class="home-command-actions" aria-label="Home controls"><button class="home-command-icon in-dom-tooltip-anchor" data-open-friends type="button" aria-label="Friends${friendRequests ? `, ${friendRequests} pending` : ""}">${homeCommandIcon("friends")}${friendRequests ? `<span class="home-command-badge">${Math.min(friendRequests, 99)}</span>` : ""}${inDomTooltipMarkup("Friends")}</button><button class="home-command-icon in-dom-tooltip-anchor" data-notification-settings type="button" aria-label="Notifications${notificationCount ? `, ${notificationCount} new` : ""}">${homeCommandIcon("notifications")}${notificationCount ? `<span class="home-command-dot" aria-hidden="true"></span>` : ""}${inDomTooltipMarkup("Notifications")}</button><button class="home-command-icon in-dom-tooltip-anchor" data-route="settings" type="button" aria-label="Settings">${homeCommandIcon("settings")}${inDomTooltipMarkup("Settings")}</button></nav></header>${updateBannerMarkup()}</div>`;
 }
 
@@ -6501,13 +6509,29 @@ function bindScrubControls(): void {
   document.querySelector<HTMLButtonElement>("#autoscrub-stop")?.addEventListener("click", () => void stopAutoScrubFleet());
 }
 
+/**
+ * One Notifications choice: its name, the sentence behind it, and its current
+ * state written out in words next to the tick. The word matters -- a bare
+ * checkbox does not survive a screenshot review, and TASK 0725 asks that people
+ * can tell what will interrupt them.
+ */
+function notificationChoiceRow(choice: string, inputAttributes: string, title: string, explanation: string, on: boolean): string {
+  const state = on ? "On" : "Off";
+  return `<label class="setting-line interactive notification-choice" data-notification-choice="${choice}" data-choice-state="${on ? "on" : "off"}"><span><strong>${title}</strong><small>${explanation}</small></span><span class="notification-choice-state"><span class="choice-state-word" aria-label="${title}: ${state}">${state}</span><input ${inputAttributes} type="checkbox" ${on ? "checked" : ""}/></span></label>`;
+}
+
 function notificationSettingsContent(): string {
-  const apps = orderedServices().filter((service) => service.category === "consumer").map((service) => `<label class="notification-app-row">${serviceLogo(service.id)}<span><strong>${escapeHtml(service.displayName)}</strong><small>Unread access is not supported yet</small></span><input type="checkbox" data-notification-app="${service.id}" ${notificationAppPreferences[service.id] !== false ? "checked" : ""}/></label>`).join("");
+  const consumerApps = orderedServices().filter((service) => service.category === "consumer");
+  const apps = consumerApps.map((service) => {
+    const on = notificationAppPreferences[service.id] !== false;
+    return `<label class="notification-app-row notification-choice" data-notification-choice="app:${service.id}" data-choice-state="${on ? "on" : "off"}">${serviceLogo(service.id)}<span><strong>${escapeHtml(service.displayName)}</strong><small>Unread access is not supported yet</small></span><span class="notification-choice-state"><span class="choice-state-word" aria-label="${escapeHtml(service.displayName)}: ${on ? "On" : "Off"}">${on ? "On" : "Off"}</span><input type="checkbox" data-notification-app="${service.id}" ${on ? "checked" : ""}/></span></label>`;
+  }).join("");
+  const appsOn = consumerApps.filter((service) => notificationAppPreferences[service.id] !== false).length;
   const visibleNotifications = visibleAppNotifications();
   const activity = notificationsEnabled && visibleNotifications.length
     ? visibleNotifications.map((item) => `<article class="notification-event"><span><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(notificationPreviewContent ? item.detail : "Private OSL activity")}</small></span><time>${escapeHtml(item.createdAt)}</time></article>`).join("")
     : `<div class="empty-state"><strong>${notificationsEnabled ? "Nothing new" : "Activity is off"}</strong><p>${notificationsEnabled ? "New OSL security and chat events appear here." : "Turn on local activity to see OSL events on this device."}</p></div>`;
-  return `<h2>Activity</h2><p>Private events created by OSL on this device.</p><section class="notification-events" aria-label="Recent OSL activity">${activity}</section><div class="settings-list"><label class="setting-line interactive"><span><strong>Local OSL activity</strong><small>Master control for activity on this device.</small></span><input id="notifications-opt-in" type="checkbox" ${notificationsEnabled ? "checked" : ""}/></label><label class="setting-line interactive"><span><strong>Security changes</strong><small>Friend encryption-key changes that need verification.</small></span><input id="notification-security-activity" type="checkbox" ${notificationSecurityActivity ? "checked" : ""}/></label><label class="setting-line interactive"><span><strong>Show details</strong><small>Off by default. When off, Activity hides event content.</small></span><input id="notification-previews" type="checkbox" ${notificationPreviewContent ? "checked" : ""}/></label><label class="setting-line interactive"><span><strong>Suggest chat approval</strong><small>Suggestions never enable decryption.</small></span><input id="notification-scope-suggestions" type="checkbox" ${notificationScopeSuggestions ? "checked" : ""}/></label></div>${oslChatNotificationSettings()}<details class="settings-disclosure notification-apps"><summary><span><strong>Connected apps</strong><small>Provider unread counts are not read</small></span></summary><div class="notification-app-list">${apps}</div></details>`;
+  return `<h2>Activity</h2><p>Private events created by OSL on this device.</p><section class="notification-events" aria-label="Recent OSL activity">${activity}</section><div class="settings-list notification-choices" aria-label="Activity choices">${notificationChoiceRow("local", `id="notifications-opt-in"`, "Local OSL activity", "Master control for activity on this device.", notificationsEnabled)}${notificationChoiceRow("security", `id="notification-security-activity"`, "Security changes", "Friend encryption-key changes that need verification.", notificationSecurityActivity)}${notificationChoiceRow("details", `id="notification-previews"`, "Show details", "Off by default. When off, Activity hides event content.", notificationPreviewContent)}${notificationChoiceRow("approval", `id="notification-scope-suggestions"`, "Suggest chat approval", "Suggestions never enable decryption.", notificationScopeSuggestions)}${notificationChoiceRow("mute", `id="notification-mute"`, "Mute alerts", "OSL keeps recording activity, but nothing lights up the bell.", notificationsMuted)}</div>${oslChatNotificationSettings()}<details class="settings-disclosure notification-apps" open><summary><span><strong>Connected apps</strong><small>${appsOn.toLocaleString("en-US")} of ${consumerApps.length.toLocaleString("en-US")} on · provider unread counts are not read</small></span></summary><div class="notification-app-list">${apps}</div></details>`;
 }
 
 function oslChatNotificationSettings(): string {
@@ -6517,8 +6541,19 @@ function oslChatNotificationSettings(): string {
   }).join("");
   const previewsChecked = chatPreviewHidingVisible(oslChatPreviewsVisible);
   const previewText = "Hide message previews on this device.";
-  const mutedDetails = muted ? `<details class="settings-disclosure" open><summary><span><strong>Muted OSL Chats</strong><small>${oslChatMutedPeople.size.toLocaleString("en-US")} muted</small></span></summary><div class="settings-list">${muted}</div></details>` : "";
-  return `<section class="settings-list osl-chat-notification-settings" aria-label="OSL Chat controls"><label class="setting-line interactive"><span><strong>Encrypted chat alerts</strong><small>New-message activity from unmuted OSL friends.</small></span><input id="notification-chat-activity" type="checkbox" ${notificationChatActivity ? "checked" : ""}/></label><label class="setting-line interactive"><span><strong>OSL Chat previews</strong><small>${previewText}</small></span><input id="osl-chat-preview-toggle" type="checkbox" ${previewsChecked ? "checked" : ""}/></label></section>${mutedDetails}`;
+  // The tick carries preview *visibility* (see the #osl-chat-preview-toggle
+  // binding), so the sentence has to follow the tick or the On/Off word beside
+  // it would contradict the words under it.
+  const previewExplanation = previewsChecked ? "Message previews are visible in OSL Chat on this device." : previewText;
+  const mutedBody = muted || `<div class="setting-line"><span><strong>No muted chats</strong><small>Mute one friend from that chat to stop its alerts.</small></span></div>`;
+  const mutedDetails = `<details class="settings-disclosure muted-chats" data-notification-choice="mute-chats" data-muted-count="${oslChatMutedPeople.size}" open><summary><span><strong>Muted OSL Chats</strong><small>${oslChatMutedPeople.size.toLocaleString("en-US")} muted</small></span></summary><div class="settings-list">${mutedBody}</div></details>`;
+  return `<section class="settings-list osl-chat-notification-settings" aria-label="OSL Chat controls">${notificationChoiceRow("chat", `id="notification-chat-activity"`, "Encrypted chat alerts", "New-message activity from unmuted OSL friends.", notificationChatActivity)}${notificationChoiceRow("preview", `id="osl-chat-preview-toggle"`, "OSL Chat previews", previewExplanation, previewsChecked)}</section>${mutedDetails}`;
+}
+
+/** Save the quiet switch. Recording is untouched; only the bell goes quiet. */
+function setNotificationsMuted(muted: boolean): void {
+  notificationsMuted = muted;
+  localStorage.setItem(notificationMuteStorageKey, String(muted));
 }
 
 function setNotificationAppPreference(id: ServiceId, enabled: boolean): void {
@@ -8230,6 +8265,10 @@ function bindWorkspace(): void {
   document.querySelectorAll<HTMLFormElement>("[data-nickname-person]").forEach((form) => form.addEventListener("submit", (event) => void saveFriendNickname(event)));
   document.querySelector<HTMLButtonElement>("#copy-friend-code")?.addEventListener("click", () => void copyFriendInvite());
   document.querySelector<HTMLInputElement>("#notifications-opt-in")?.addEventListener("change", (event) => void changeNotifications(event.currentTarget as HTMLInputElement));
+  document.querySelector<HTMLInputElement>("#notification-mute")?.addEventListener("change", (event) => {
+    setNotificationsMuted((event.currentTarget as HTMLInputElement).checked);
+    render();
+  });
   document.querySelector<HTMLInputElement>("#notification-chat-activity")?.addEventListener("change", (event) => {
     notificationChatActivity = (event.currentTarget as HTMLInputElement).checked;
     localStorage.setItem(notificationChatStorageKey, String(notificationChatActivity));
@@ -10632,6 +10671,13 @@ type OslHubUiTestStatePatch = {
   hubPeople?: Array<Partial<HubPerson> & { personId: string }>;
   notificationsEnabled?: boolean;
   notificationPreviewContent?: boolean;
+  notificationSecurityActivity?: boolean;
+  notificationChatActivity?: boolean;
+  notificationScopeSuggestions?: boolean;
+  notificationsMuted?: boolean;
+  notificationAppPreferences?: Partial<Record<ServiceId, boolean>>;
+  oslChatMutedPeople?: string[];
+  oslChatPreviewsVisible?: boolean;
   appNotifications?: AppNotification[];
   mullvadAvailability?: MullvadStatus["availability"];
   protectionPreset?: ProtectionPreset;
@@ -10753,9 +10799,13 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   identityListRefreshInFlight = false;
   privateEnclaveAudiences = parsedEnclaveAudiences(patch.enclaveAudienceRecords ?? []);
   notificationsEnabled = patch.notificationsEnabled ?? false;
-  notificationAppPreferences = {};
-  notificationChatActivity = true;
-  notificationSecurityActivity = true;
+  notificationAppPreferences = { ...patch.notificationAppPreferences };
+  notificationChatActivity = patch.notificationChatActivity ?? true;
+  notificationSecurityActivity = patch.notificationSecurityActivity ?? true;
+  notificationScopeSuggestions = patch.notificationScopeSuggestions ?? true;
+  notificationsMuted = patch.notificationsMuted ?? false;
+  if (patch.oslChatMutedPeople) oslChatMutedPeople = new Set(patch.oslChatMutedPeople);
+  if (patch.oslChatPreviewsVisible !== undefined) oslChatPreviewsVisible = patch.oslChatPreviewsVisible;
   notificationPreviewContent = patch.notificationPreviewContent ?? true;
   appNotifications = patch.appNotifications ?? [];
   licenseState = { ...unconfiguredLicenseState, access: patch.licenseAccess ?? "free" };
