@@ -17,6 +17,7 @@ const unique = (values: readonly string[]) => sorted([...new Set(values)]);
 const serviceIds = unique([...ruling.chat_carriers, "email"]);
 const homeAppIds = unique([...ruling.chat_carriers, ...ruling.email_carriers]);
 const nativeAppIds = unique([...ruling.chat_carriers, ...ruling.native_email_carriers]);
+const instagramCutSurfaceRecordedBefore = 3;
 
 function assertSameSet(name: string, actual: readonly string[], expected: readonly string[]): void {
   const actualSet = unique(actual);
@@ -96,6 +97,32 @@ function rustNativeAppRefs(text: string): string[] {
 }
 
 describe("surface ruling synchronization", () => {
+  it("task 4250 keeps Instagram in the recorded three cut-surface lists", () => {
+    const lists = [
+      {
+        name: "data/surface-ruling-2026-08-05.json",
+        cutSurfaces: ruling.cut_surfaces,
+      },
+      {
+        name: "docs/status/support-matrix.json",
+        cutSurfaces: (JSON.parse(source("docs/status/support-matrix.json")) as { surface_ruling: Ruling }).surface_ruling.cut_surfaces,
+      },
+      {
+        name: "data/pricing.json",
+        cutSurfaces: (JSON.parse(source("data/pricing.json")) as { surface_policy: { surface_ruling: Ruling } }).surface_policy.surface_ruling.cut_surfaces,
+      },
+    ];
+    const holders = lists.filter((entry) => entry.cutSurfaces.includes("instagram")).map((entry) => entry.name);
+
+    console.info(
+      `TASK4250 instagram_cut_surface_list_count=${holders.length} recorded_before=${instagramCutSurfaceRecordedBefore} holders=${holders.join(", ")}`,
+    );
+    expect(
+      holders.length,
+      `Instagram cut-surface list count ${holders.length} no longer matches recorded before figure ${instagramCutSurfaceRecordedBefore}; holders=${holders.join(", ") || "(none)"}`,
+    ).toBe(instagramCutSurfaceRecordedBefore);
+  });
+
   it("keeps every executable enumeration reconciled to the 2026-08-05 ruling", () => {
     const servicesTs = source("apps/osl-hub-ui/src/services.ts");
     const modelsRs = source("apps/osl-hub/src/models.rs");
