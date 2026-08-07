@@ -80,6 +80,54 @@ Task 3903 inventory, checked against the receive-path source.
 - Sentence: "OSL Chat reaction storage is unavailable"
   Cause: OSL Chat history loading cannot resolve or read the local encrypted reaction ledger used to decorate received chat history.
 
+- Sentence: "Only the trusted OSL window may react to OSL Chats"
+  Cause: The OSL Chat reaction command is called by any webview other than the trusted main OSL window.
+
+- Sentence: "OSL Chat reaction state is unavailable"
+  Cause: The reaction command cannot lock or access the local reaction state for the active OSL Chat row.
+
+- Sentence: "OSL Chat reaction worker failed: {error}"
+  Cause: The blocking OSL Chat reaction worker is interrupted or returns a fixed receive-path error; the fixed prefix is shown with the worker error.
+
+- Sentence: "Only the trusted OSL window may remove OSL Chat reactions"
+  Cause: The OSL Chat reaction-removal command is called by any webview other than the trusted main OSL window.
+
+- Sentence: "Only the trusted OSL window may search OSL Chat history"
+  Cause: The OSL Chat history search command is called by any webview other than the trusted main OSL window.
+
+- Sentence: "Windows capture resistance is required to search OSL Chat history"
+  Cause: The OSL Chat history search command cannot apply the required capture-resistance setting before showing matching received text.
+
+- Sentence: "OSL Chat history search query is invalid"
+  Cause: The OSL Chat history search command received an empty, malformed, or otherwise invalid query before reading stored rows.
+
+- Sentence: "OSL Chat history search worker failed: {error}"
+  Cause: The blocking OSL Chat history search worker is interrupted or returns a fixed receive-path error; the fixed prefix is shown with the worker error.
+
+- Sentence: "Only the trusted OSL window may open OSL Chat history results"
+  Cause: The OSL Chat history-result open command is called by any webview other than the trusted main OSL window.
+
+- Sentence: "Windows capture resistance is required to open OSL Chat history results"
+  Cause: The OSL Chat history-result open command cannot apply the required capture-resistance setting before showing stored received text.
+
+- Sentence: "OSL Chat history result is no longer in this conversation"
+  Cause: The selected OSL Chat history result no longer belongs to the active conversation when the open command resolves it.
+
+- Sentence: "OSL Chat history result worker failed: {error}"
+  Cause: The blocking OSL Chat history-result worker is interrupted or returns a fixed receive-path error; the fixed prefix is shown with the worker error.
+
+- Sentence: "Only the trusted OSL window may burn OSL Chat history"
+  Cause: The OSL Chat history burn command is called by any webview other than the trusted main OSL window.
+
+- Sentence: "OSL Chat burn worker failed: {error}"
+  Cause: The blocking OSL Chat history burn worker is interrupted or returns a fixed receive-path error; the fixed prefix is shown with the worker error.
+
+- Sentence: "OSL Chat visible-record query failed: {error}"
+  Cause: The OSL Chat history burn path cannot query the visible stored records for the active conversation.
+
+- Sentence: "OSL Chat refused unprotected mode"
+  Cause: The OSL Chat receive path is asked to open or process protected chat text while the required protected mode is unavailable.
+
 ## Shared Refusal Rule
 
 The sentence "This encrypted message could not be opened" is deliberately shared by these three `PeerProsePointerFailure` causes:
