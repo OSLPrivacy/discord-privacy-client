@@ -273,13 +273,36 @@ pub struct PermissionCatalogueReport {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PermissionCatalogueError {
-    MissingTag { row: String },
-    UnknownTag { row: String, tag: String },
-    WrongSectionCount { actual: usize },
-    WrongRowCount { actual: usize },
-    WrongTagCount { actual: usize },
-    MissingRequiredRow { row: &'static str },
-    RowOutsideSection { row: String },
+    MissingTag {
+        row: String,
+    },
+    UnknownTag {
+        row: String,
+        tag: String,
+    },
+    WrongTag {
+        row: String,
+        expected: &'static str,
+        actual: &'static str,
+    },
+    WrongSectionCount {
+        actual: usize,
+    },
+    WrongRowCount {
+        actual: usize,
+    },
+    WrongTagCount {
+        actual: usize,
+    },
+    MissingRequiredRow {
+        row: &'static str,
+    },
+    RowOutsideSection {
+        row: String,
+    },
+    Problems {
+        messages: Vec<String>,
+    },
 }
 
 impl fmt::Display for PermissionCatalogueError {
@@ -289,6 +312,14 @@ impl fmt::Display for PermissionCatalogueError {
             Self::UnknownTag { row, tag } => {
                 write!(f, "row has unknown enforcement tag `{tag}`: {row}")
             }
+            Self::WrongTag {
+                row,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "row is wrongly tagged: {row} expected `{expected}`, found `{actual}`"
+            ),
             Self::WrongSectionCount { actual } => {
                 write!(f, "expected 7 section names, found {actual}")
             }
@@ -302,6 +333,7 @@ impl fmt::Display for PermissionCatalogueError {
             Self::RowOutsideSection { row } => {
                 write!(f, "row appears before a section name: {row}")
             }
+            Self::Problems { messages } => write!(f, "{}", messages.join("; ")),
         }
     }
 }
@@ -336,6 +368,7 @@ pub fn check_permission_catalogue_text(
     let mut tags = Vec::new();
     let mut rows = Vec::new();
     let mut in_section = false;
+    let mut problems = Vec::new();
 
     for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
         if SECTION_NAMES.contains(&line) {
@@ -346,37 +379,70 @@ pub fn check_permission_catalogue_text(
 
         if let Some(row) = line.strip_prefix("- ") {
             if !in_section {
-                return Err(PermissionCatalogueError::RowOutsideSection {
-                    row: row.to_owned(),
-                });
+                problems.push(
+                    PermissionCatalogueError::RowOutsideSection {
+                        row: row.to_owned(),
+                    }
+                    .to_string(),
+                );
+                continue;
             }
             permission_rows += 1;
-            let (words, tag) = parse_tagged_row(row)?;
+            let words = row_words(row);
             rows.push(words);
-            tags.push(tag.as_str());
-            enforcement_tags += 1;
+            match parse_tagged_row(row) {
+                Ok((words, tag)) => {
+                    tags.push(tag.as_str());
+                    enforcement_tags += 1;
+                    if let Some(expected) = expected_tag_for_row(words) {
+                        if tag != expected {
+                            problems.push(
+                                PermissionCatalogueError::WrongTag {
+                                    row: words.to_owned(),
+                                    expected: expected.as_str(),
+                                    actual: tag.as_str(),
+                                }
+                                .to_string(),
+                            );
+                        }
+                    }
+                }
+                Err(error) => problems.push(error.to_string()),
+            }
         }
     }
 
     if section_names != SECTION_NAMES.len() {
-        return Err(PermissionCatalogueError::WrongSectionCount {
-            actual: section_names,
-        });
+        problems.push(
+            PermissionCatalogueError::WrongSectionCount {
+                actual: section_names,
+            }
+            .to_string(),
+        );
     }
     if permission_rows != PERMISSION_CATALOGUE.len() {
-        return Err(PermissionCatalogueError::WrongRowCount {
-            actual: permission_rows,
-        });
+        problems.push(
+            PermissionCatalogueError::WrongRowCount {
+                actual: permission_rows,
+            }
+            .to_string(),
+        );
     }
     if enforcement_tags != PERMISSION_CATALOGUE.len() {
-        return Err(PermissionCatalogueError::WrongTagCount {
-            actual: enforcement_tags,
-        });
+        problems.push(
+            PermissionCatalogueError::WrongTagCount {
+                actual: enforcement_tags,
+            }
+            .to_string(),
+        );
     }
     for row in REQUIRED_PERMISSION_ROWS {
         if !rows.contains(&row) {
-            return Err(PermissionCatalogueError::MissingRequiredRow { row });
+            problems.push(PermissionCatalogueError::MissingRequiredRow { row }.to_string());
         }
+    }
+    if !problems.is_empty() {
+        return Err(PermissionCatalogueError::Problems { messages: problems });
     }
 
     Ok(PermissionCatalogueReport {
@@ -386,6 +452,19 @@ pub fn check_permission_catalogue_text(
         tags,
         required_rows: REQUIRED_PERMISSION_ROWS.to_vec(),
     })
+}
+
+fn row_words(row: &str) -> &str {
+    row.rsplit_once(" `")
+        .map(|(words, _)| words.trim())
+        .unwrap_or_else(|| row.trim())
+}
+
+fn expected_tag_for_row(row: &str) -> Option<EnforcementTag> {
+    PERMISSION_CATALOGUE
+        .iter()
+        .find(|permission| permission.words == row)
+        .map(|permission| permission.tag)
 }
 
 fn parse_tagged_row(row: &str) -> Result<(&str, EnforcementTag), PermissionCatalogueError> {
