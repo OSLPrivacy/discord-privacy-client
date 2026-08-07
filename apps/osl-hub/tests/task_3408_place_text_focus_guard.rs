@@ -99,9 +99,15 @@ fn task_3408_direct_command_places_once_then_refuses_search_by_name() {
     assert_eq!(harness.text_of("Message #ops"), "MAPLE-3408");
 
     harness.focus("Search");
-    let refusal = harness
-        .place("PRIVATE-3408")
-        .expect_err("search focus refuses");
+    println!("TASK3408 focused_box={:?}", "Search");
+    let refusal = match harness.place("PRIVATE-3408") {
+        Ok(()) => panic!(
+            "TASK3408 wrong-box text landed in field={:?} text={:?}",
+            "Search",
+            harness.text_of("Search")
+        ),
+        Err(refusal) => refusal,
+    };
     assert_eq!(refusal, "Search");
     assert_eq!(harness.placed_count, 1);
     assert_eq!(harness.text_of("Search"), "");
