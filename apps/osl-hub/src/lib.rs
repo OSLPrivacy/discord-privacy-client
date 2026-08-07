@@ -195,6 +195,7 @@ pub mod service_connections;
 pub mod service_host;
 #[cfg(feature = "core")]
 pub mod services;
+pub mod sync_policy;
 #[cfg(feature = "core")]
 pub mod update_apply;
 #[cfg(feature = "core")]
