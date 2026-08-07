@@ -558,7 +558,6 @@ impl CustomRoleStore {
         });
         roles
     }
-
     pub fn add_template(
         &mut self,
         name: impl Into<String>,
@@ -623,7 +622,6 @@ impl CustomRoleStore {
             .get_mut(member_id)
             .is_some_and(|roles| roles.remove(role_id))
     }
-
     pub fn role_ids_for_member(&self, member_id: &str) -> Vec<String> {
         self.document
             .member_roles
