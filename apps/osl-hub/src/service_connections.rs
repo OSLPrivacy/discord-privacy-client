@@ -1,7 +1,7 @@
 use crate::row_who_wrote_it::SharedRowWhoWroteIt;
 use crate::website_driver::{
     WebsiteControlKind, WebsiteDriver, WebsiteDriverError, WebsiteNamedControl,
-    WebsiteNamedControlRequest, WebsitePage,
+    WebsiteNamedControlRequest, WebsitePage, WebsitePlacementProof, WebsiteTextPlacement,
 };
 
 use std::collections::BTreeSet;
@@ -969,6 +969,7 @@ pub enum ServiceConnectionError {
     Driver(WebsiteDriverError),
     MissingComposeBox,
     MissingSendButton,
+    PlacementReadbackMismatch,
 }
 
 impl From<WebsiteDriverError> for ServiceConnectionError {
@@ -1020,6 +1021,26 @@ impl EmailServiceConnection {
         })
     }
 
+    pub fn place_cover_text(
+        &self,
+        driver: &mut impl WebsiteDriver,
+        controls: &EmailComposeControls,
+        cover_text: &str,
+    ) -> Result<WebsitePlacementProof, ServiceConnectionError> {
+        if self.service_id != "email" {
+            return Err(ServiceConnectionError::UnsupportedService);
+        }
+        let proof = driver.place_text(WebsiteTextPlacement {
+            page: controls.compose_box.page.clone(),
+            editable_box_name: controls.compose_box.name.clone(),
+            text: cover_text.to_owned(),
+        })?;
+        if proof.readback_text != cover_text {
+            return Err(ServiceConnectionError::PlacementReadbackMismatch);
+        }
+        Ok(proof)
+    }
+
     pub fn account_id(&self) -> &str {
         &self.account_id
     }
@@ -1034,6 +1055,7 @@ mod tests {
     #[derive(Default)]
     struct FixtureDriver {
         requested: Mutex<Vec<WebsiteNamedControlRequest>>,
+        readback_text: Option<String>,
     }
 
     impl FixtureDriver {
@@ -1119,13 +1141,18 @@ mod tests {
 
         fn place_text(
             &mut self,
-            placement: crate::website_driver::WebsiteTextPlacement,
-        ) -> Result<crate::website_driver::WebsitePlacementProof, WebsiteDriverError> {
-            Ok(crate::website_driver::WebsitePlacementProof {
+            placement: WebsiteTextPlacement,
+        ) -> Result<WebsitePlacementProof, WebsiteDriverError> {
+            let readback_text = self
+                .readback_text
+                .clone()
+                .unwrap_or_else(|| placement.text.clone());
+            Ok(WebsitePlacementProof {
                 page: placement.page,
                 editable_box_name: placement.editable_box_name,
                 utf16_units: placement.text.encode_utf16().count(),
                 placed_sha256: String::new(),
+                readback_text,
             })
         }
 
@@ -1175,6 +1202,65 @@ mod tests {
         assert_eq!(controls.compose_box.kind, WebsiteControlKind::EditableBox);
         assert_eq!(controls.send_button.name, "Send button");
         assert_eq!(controls.send_button.kind, WebsiteControlKind::Button);
+    }
+
+    #[test]
+    fn task_1211_service_connection_compares_placed_cover_text_with_driver_readback() {
+        const FIXTURE_BODY: &str = "TASK1211 exact fixture body: MAPLE-1211.";
+        const ONE_BYTE_CHANGED_READBACK: &str = "TASK1211 exact fixture body: MAPLE-1211!";
+
+        let connection = EmailServiceConnection::new("email", "sample-email-account");
+        let mut driver = FixtureDriver::default();
+        let page = driver
+            .find_page(WebsitePageRequest {
+                url: "https://mail.google.com/task-1211-fixture".to_owned(),
+            })
+            .expect("task 1211 fixture page opens");
+        let controls = connection
+            .request_compose_controls(&mut driver, &page)
+            .expect("task 1211 fixture controls are available");
+
+        let proof = connection
+            .place_cover_text(&mut driver, &controls, FIXTURE_BODY)
+            .expect("matching driver readback proves the placement");
+
+        assert_eq!(proof.readback_text, FIXTURE_BODY);
+        assert_eq!(proof.utf16_units, FIXTURE_BODY.encode_utf16().count());
+
+        let changed_bytes = FIXTURE_BODY
+            .bytes()
+            .zip(ONE_BYTE_CHANGED_READBACK.bytes())
+            .filter(|(left, right)| left != right)
+            .count()
+            + FIXTURE_BODY.len().abs_diff(ONE_BYTE_CHANGED_READBACK.len());
+        assert_eq!(changed_bytes, 1);
+
+        let mut mutated_driver = FixtureDriver {
+            readback_text: Some(ONE_BYTE_CHANGED_READBACK.to_owned()),
+            ..FixtureDriver::default()
+        };
+        let mutated_page = mutated_driver
+            .find_page(WebsitePageRequest {
+                url: "https://mail.google.com/task-1211-mutated-fixture".to_owned(),
+            })
+            .expect("task 1211 mutated fixture page opens");
+        let mutated_controls = connection
+            .request_compose_controls(&mut mutated_driver, &mutated_page)
+            .expect("task 1211 mutated fixture controls are available");
+
+        let mismatch = connection
+            .place_cover_text(&mut mutated_driver, &mutated_controls, FIXTURE_BODY)
+            .expect_err("one-byte changed fixture readback must fail the placement proof");
+
+        assert_eq!(mismatch, ServiceConnectionError::PlacementReadbackMismatch);
+
+        println!("TASK1211 service_connection=email");
+        println!("TASK1211 fixture_body={FIXTURE_BODY}");
+        println!("TASK1211 placement_readback={}", proof.readback_text);
+        println!("TASK1211 exact_readback_matches_fixture=true");
+        println!("TASK1211 one_byte_changed_readback={ONE_BYTE_CHANGED_READBACK}");
+        println!("TASK1211 one_byte_changed_count={changed_bytes}");
+        println!("TASK1211 one_byte_changed_fixture_fails=true");
     }
 
     #[test]

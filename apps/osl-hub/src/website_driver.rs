@@ -138,6 +138,7 @@ pub struct WebsitePlacementProof {
     pub editable_box_name: String,
     pub utf16_units: usize,
     pub placed_sha256: String,
+    pub readback_text: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -618,6 +619,7 @@ impl WebsiteDriver for RealBrowserWebsiteDriver {
             editable_box_name: placement.editable_box_name,
             utf16_units: placement.text.encode_utf16().count(),
             placed_sha256: sha256_hex(placement.text.as_bytes()),
+            readback_text: result.readback,
         })
     }
 
@@ -1479,6 +1481,7 @@ mod tests {
                 editable_box_name: placement.editable_box_name,
                 utf16_units: placement.text.encode_utf16().count(),
                 placed_sha256: sha256_hex(placement.text.as_bytes()),
+                readback_text: placement.text,
             })
         }
 
@@ -1586,6 +1589,7 @@ mod tests {
                 editable_box_name: placement.editable_box_name,
                 utf16_units: placement.text.encode_utf16().count(),
                 placed_sha256: sha256_hex(placement.text.as_bytes()),
+                readback_text: placement.text,
             })
         }
 
