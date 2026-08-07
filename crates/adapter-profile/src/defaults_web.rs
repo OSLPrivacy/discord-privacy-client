@@ -369,6 +369,130 @@ mod tests {
             );
         }
     }
+
+
+    #[test]
+    fn task_1248_yahoo_mapping_contains_all_six_named_targets() {
+        let targets = yahoo_web_mail_targets();
+        let names = targets.iter().map(|target| target.name).collect::<Vec<_>>();
+
+        assert_eq!(
+            names,
+            vec![
+                "compose",
+                "body",
+                "Send",
+                "folders",
+                "thread view",
+                "reading pane"
+            ]
+        );
+        assert!(targets.iter().all(|target| target.selector.required));
+
+        println!(
+            "TASK1248 yahoo_targets={} names={}",
+            targets.len(),
+            names.join("|")
+        );
+    }
+
+    #[test]
+    fn task_1278_tuta_mapping_contains_all_six_named_targets() {
+        let targets = tuta_web_mail_targets();
+        let names = targets.iter().map(|target| target.name).collect::<Vec<_>>();
+
+        assert_eq!(
+            names,
+            vec![
+                "compose",
+                "body",
+                "Send",
+                "folders",
+                "thread view",
+                "reading pane"
+            ]
+        );
+        assert!(targets.iter().all(|target| target.selector.required));
+
+        println!(
+            "TASK1278 tuta_targets={} names={}",
+            targets.len(),
+            names.join("|")
+        );
+    }
+
+    #[test]
+    fn task_1267_mail_com_mapping_contains_all_six_named_targets_and_refuses_missing_by_name() {
+        let targets = mail_com_web_mail_targets();
+        let names = targets.iter().map(|target| target.name).collect::<Vec<_>>();
+
+        assert_eq!(names, MAIL_COM_WEB_TARGET_NAMES);
+        assert!(targets.iter().all(|target| target.selector.required));
+        validate_mail_com_web_mail_targets(&targets).expect("complete Mail.com mapping is valid");
+
+        let mut refused = Vec::new();
+        for missing in MAIL_COM_WEB_TARGET_NAMES {
+            let incomplete = targets
+                .iter()
+                .filter(|target| target.name != missing)
+                .cloned()
+                .collect::<Vec<_>>();
+            let err = validate_mail_com_web_mail_targets(&incomplete)
+                .expect_err("mapping missing a required target must be refused");
+            assert_eq!(err.name, missing);
+            refused.push(err.name);
+        }
+
+        println!(
+            "TASK1267 mail_com_targets={} names={}",
+            targets.len(),
+            names.join("|")
+        );
+        for name in &names {
+            println!("TASK1267 named_target={name}");
+        }
+        println!("TASK1267 refused_missing={}", refused.join("|"));
+    }
+
+    #[test]
+    fn task_4073_three_web_app_tables_can_point_at_row_author() {
+        let profiles = [
+            (
+                "x",
+                x_web_default_profile(),
+                x_web_default_trusted_signing_key_b64(),
+            ),
+            (
+                "instagram",
+                instagram_web_default_profile(),
+                instagram_web_default_trusted_signing_key_b64(),
+            ),
+            (
+                "messenger",
+                messenger_web_default_profile(),
+                messenger_web_default_trusted_signing_key_b64(),
+            ),
+        ];
+        let apps_with_row_author = profiles
+            .into_iter()
+            .filter_map(|(app, signed, trusted)| {
+                let payload = verify_profile_doc(&signed, trusted, NOW).unwrap();
+                let has_row_author = payload
+                    .selectors
+                    .iter()
+                    .any(|selector| selector.kind == SelectorKind::MessageRowAuthor);
+                has_row_author.then_some(app)
+            })
+            .collect::<Vec<_>>();
+
+        println!("TASK4073_WEB_APPS_WITH_ROW_AUTHOR_BEFORE=0");
+        println!(
+            "TASK4073_WEB_APPS_WITH_ROW_AUTHOR_AFTER={} apps={}",
+            apps_with_row_author.len(),
+            apps_with_row_author.join(",")
+        );
+        assert_eq!(apps_with_row_author, ["x", "instagram", "messenger"]);
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
