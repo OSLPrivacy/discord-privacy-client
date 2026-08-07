@@ -58,6 +58,19 @@ function openedBatch(messageId: string, plaintext: string): NativeDiscordOverlay
   };
 }
 
+function emptyOpenedBatch(overrides: Partial<NativeDiscordOverlayOpenedBatch> = {}): NativeDiscordOverlayOpenedBatch {
+  return {
+    messages: [],
+    pendingViewOnce: [],
+    acknowledgments: [],
+    fetched: 0,
+    decryptDisplayEnabled: true,
+    deferredRows: 0,
+    unrecognizedWireRows: 0,
+    ...overrides,
+  };
+}
+
 describe("OSL Chat delivery runtime receive failures", () => {
   it("TASK4012 says the fixed refusal on screen when a private message was burned before opening", async () => {
     const controlWords = "control private words open exactly";
@@ -119,6 +132,87 @@ describe("OSL Chat delivery runtime receive failures", () => {
     console.log(`TASK4012_BURNED_REFUSAL_SENTENCE="${OSL_CHAT_OPEN_REFUSAL_SENTENCE}"`);
     console.log(`TASK4012_BURNED_REFUSAL_ON_SCREEN=${refusalOnScreen}`);
     console.log(`TASK4012_BURNED_PRIVATE_WORDS_FOUND_ON_RECEIVER=${burnedPrivateWordsFound}`);
+  });
+
+  it("TASK4021 keeps a good open visible when every gated receive failure kind is mixed into the same delivery batch", async () => {
+    const goodWords = "TASK-4021 good message exact plaintext";
+    const failingKinds = [
+      "store-unreachable",
+      "content-gone",
+      "burned-message",
+      "expired-timer",
+    ] as const;
+    type FailingKind = typeof failingKinds[number];
+
+    async function runMixedBatch(label: string, kinds: readonly FailingKind[]): Promise<number> {
+      const people = [...kinds.map((kind, index) => `${kind}-${index}`), "good"];
+      const committedBodies: string[] = [];
+      let activePerson: string | null = null;
+
+      const host: OslChatDeliveryHost = {
+        identityLoaded: () => true,
+        foreignContextActive: () => false,
+        openConversationId: () => null,
+        conversationBusy: () => false,
+        friends: () => people.map((personId) => ({
+          personId,
+          safetyNumberVerified: true,
+          pendingKeyChange: false,
+        })),
+        requestCaptureProtection: async () => true,
+        activateContext: async (personId) => {
+          activePerson = personId;
+          return { personId, peerOslUserId: `OSLUSER-${personId}`, scopeApproved: true };
+        },
+        closeContext: async () => {
+          activePerson = null;
+          return true;
+        },
+        drainInbox: async () => {
+          if (activePerson === "good") return openedBatch("task-4021-good-message", goodWords);
+          const kind = kinds.find((candidate) => activePerson?.startsWith(candidate)) ?? null;
+          switch (kind) {
+            case "store-unreachable":
+              return emptyOpenedBatch({ deferredRows: 1 });
+            case "content-gone":
+            case "burned-message":
+            case "expired-timer":
+              return emptyOpenedBatch();
+            default:
+              throw new Error(`unexpected task 4021 active person: ${activePerson}`);
+          }
+        },
+        loadHistory: async () => null,
+        commitBatch: (_personId, batch) => {
+          committedBodies.push(...batch.messages.map((message) => message.plaintext));
+        },
+        commitHistory: () => {},
+      };
+
+      await createOslChatDeliveryRuntime(host, { batchLimit: people.length }).sync();
+      const goodExactMatches = committedBodies.filter((body) => body === goodWords).length;
+
+      console.log(`TASK4021_MIXED_BATCH label=${label} failing_kinds=${kinds.length} good_exact_matches=${goodExactMatches} committed_bodies=${committedBodies.length}`);
+      expect(goodExactMatches).toBe(1);
+      expect(committedBodies.filter((body) => body.includes("TASK-4021")).length).toBe(1);
+      return goodExactMatches;
+    }
+
+    let minimumGoodCount = Number.POSITIVE_INFINITY;
+    for (const kind of failingKinds) {
+      const goodCount = await runMixedBatch(kind, [kind]);
+      minimumGoodCount = Math.min(minimumGoodCount, goodCount);
+      console.log(`TASK4021_FAILING_KIND label=${kind} good_exact_matches=${goodCount}`);
+    }
+    const allKindsGoodCount = await runMixedBatch("all_failing_kinds", failingKinds);
+    minimumGoodCount = Math.min(minimumGoodCount, allKindsGoodCount);
+
+    console.log(`TASK4021_GOOD_EXACT_STRING="${goodWords}"`);
+    console.log(`TASK4021_FAILING_KINDS_TRIED=${failingKinds.length}`);
+    console.log(`TASK4021_MIN_GOOD_EXACT_MATCHES=${minimumGoodCount}`);
+    console.log(`TASK4021_ALL_KINDS_BATCH_GOOD_EXACT_MATCHES=${allKindsGoodCount}`);
+    expect(failingKinds.length).toBeGreaterThanOrEqual(4);
+    expect(minimumGoodCount).toBeGreaterThanOrEqual(1);
   });
 
   it("commits good backfilled rows and then surfaces unrecognized wire rows after history refresh", async () => {
