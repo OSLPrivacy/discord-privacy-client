@@ -6,9 +6,11 @@
 //! roster role, not because their account holds different cryptographic state.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 
 use ipc::space_roster::SpaceChannelId;
 use rand::{rngs::OsRng, RngCore};
+use serde::{Deserialize, Serialize};
 
 use crate::burn_authorize::{
     authorize_remote_friend_burn, BurnAuthorizationError, BurnScopeBindings,
@@ -399,6 +401,257 @@ fn ensure_unique_local_group_members(members: &[LocalGroupMember]) -> Result<(),
     Ok(())
 }
 
+const CUSTOM_ROLE_STORE_LABEL: &str = "Space custom role store";
+const MAX_CUSTOM_ROLE_STORE_BYTES: u64 = 256 * 1024;
+
+/// The complete set of stored fields in a role record.
+pub const CUSTOM_ROLE_RECORD_FIELDS: [&str; 15] = [
+    "id",
+    "name",
+    "colour",
+    "icon",
+    "order",
+    "hoist",
+    "mention_policy",
+    "slow_mode_seconds",
+    "longest_mute_seconds",
+    "actions_per_hour_budget",
+    "self_assignable",
+    "auto_grant_on_join",
+    "expires_at_unix_seconds",
+    "duplicate_source_role_id",
+    "template_name",
+];
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum RoleMentionPolicy {
+    OwnerOnly,
+    OwnerAndModerators,
+    Everyone,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CustomRoleProperties {
+    pub name: String,
+    pub colour: String,
+    pub icon: String,
+    pub order: i64,
+    pub hoist: bool,
+    pub mention_policy: RoleMentionPolicy,
+    pub slow_mode_seconds: u64,
+    pub longest_mute_seconds: u64,
+    pub actions_per_hour_budget: u64,
+    pub self_assignable: bool,
+    pub auto_grant_on_join: bool,
+    pub expires_at_unix_seconds: u64,
+    pub duplicate_source_role_id: String,
+    pub template_name: String,
+}
+
+impl CustomRoleProperties {
+    pub const fn filled_property_count() -> usize {
+        CUSTOM_ROLE_RECORD_FIELDS.len() - 1
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CustomRoleRecord {
+    pub id: String,
+    #[serde(flatten)]
+    pub properties: CustomRoleProperties,
+}
+
+impl CustomRoleRecord {
+    pub const fn stored_field_count() -> usize {
+        CUSTOM_ROLE_RECORD_FIELDS.len()
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+struct CustomRoleDocument {
+    next_role_number: u64,
+    roles: BTreeMap<String, CustomRoleRecord>,
+    member_roles: BTreeMap<String, BTreeSet<String>>,
+    templates: BTreeMap<String, CustomRoleProperties>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CustomRoleStore {
+    path: PathBuf,
+    document: CustomRoleDocument,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExpiredRolePruneReport {
+    pub expired_role_count: usize,
+    pub member_role_removal_count: usize,
+    pub template_count: usize,
+}
+
+impl CustomRoleStore {
+    pub fn load(path: impl AsRef<Path>) -> Result<Self, String> {
+        let path = path.as_ref().to_path_buf();
+        let Some(bytes) = crate::atomic_file::read_recoverable_bounded(
+            &path,
+            MAX_CUSTOM_ROLE_STORE_BYTES,
+            CUSTOM_ROLE_STORE_LABEL,
+        )?
+        else {
+            return Ok(Self {
+                path,
+                document: CustomRoleDocument::default(),
+            });
+        };
+        let document = decode_custom_role_document(&bytes)?;
+        Ok(Self { path, document })
+    }
+
+    pub fn save(&self) -> Result<(), String> {
+        let bytes = serde_json::to_vec_pretty(&self.document)
+            .map_err(|_| format!("{CUSTOM_ROLE_STORE_LABEL} could not be encoded"))?;
+        crate::atomic_file::write_recoverable(&self.path, &bytes, CUSTOM_ROLE_STORE_LABEL)
+    }
+
+    pub fn create_role(
+        &mut self,
+        properties: CustomRoleProperties,
+    ) -> Result<CustomRoleRecord, String> {
+        validate_custom_role_properties(&properties)?;
+        self.document.next_role_number = self.document.next_role_number.saturating_add(1);
+        let id = format!("role-{}", self.document.next_role_number);
+        let role = CustomRoleRecord {
+            id: id.clone(),
+            properties,
+        };
+        self.document.roles.insert(id, role.clone());
+        Ok(role)
+    }
+
+    pub fn duplicate_role(&mut self, source_role_id: &str) -> Result<CustomRoleRecord, String> {
+        let source = self
+            .document
+            .roles
+            .get(source_role_id)
+            .ok_or_else(|| "Space custom role source role is unknown".to_owned())?;
+        self.create_role(source.properties.clone())
+    }
+
+    pub fn role(&self, id: &str) -> Option<&CustomRoleRecord> {
+        self.document.roles.get(id)
+    }
+
+    pub fn add_template(
+        &mut self,
+        name: impl Into<String>,
+        properties: CustomRoleProperties,
+    ) -> Result<(), String> {
+        let name = name.into();
+        if name.trim().is_empty() {
+            return Err("Space custom role template_name is missing".to_owned());
+        }
+        validate_custom_role_properties(&properties)?;
+        self.document.templates.insert(name, properties);
+        Ok(())
+    }
+
+    pub fn template(&self, name: &str) -> Option<&CustomRoleProperties> {
+        self.document.templates.get(name)
+    }
+
+    pub fn grant_role_to_member(&mut self, member_id: impl Into<String>, role_id: &str) -> bool {
+        if !self.document.roles.contains_key(role_id) {
+            return false;
+        }
+        self.document
+            .member_roles
+            .entry(member_id.into())
+            .or_default()
+            .insert(role_id.to_owned())
+    }
+
+    pub fn role_ids_for_member(&self, member_id: &str) -> Vec<String> {
+        self.document
+            .member_roles
+            .get(member_id)
+            .map(|roles| roles.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    pub fn prune_expired_roles(&mut self, now_unix_seconds: u64) -> ExpiredRolePruneReport {
+        let expired: BTreeSet<_> = self
+            .document
+            .roles
+            .iter()
+            .filter_map(|(id, role)| {
+                (role.properties.expires_at_unix_seconds <= now_unix_seconds).then_some(id.clone())
+            })
+            .collect();
+        for id in &expired {
+            self.document.roles.remove(id);
+        }
+
+        let mut member_role_removal_count = 0;
+        for roles in self.document.member_roles.values_mut() {
+            let before = roles.len();
+            roles.retain(|id| !expired.contains(id));
+            member_role_removal_count += before.saturating_sub(roles.len());
+        }
+
+        ExpiredRolePruneReport {
+            expired_role_count: expired.len(),
+            member_role_removal_count,
+            template_count: self.document.templates.len(),
+        }
+    }
+}
+
+fn decode_custom_role_document(bytes: &[u8]) -> Result<CustomRoleDocument, String> {
+    let document: CustomRoleDocument = serde_json::from_slice(bytes).map_err(|error| {
+        missing_custom_role_field_name(&error.to_string())
+            .map(|field| format!("Space custom role property {field} is missing"))
+            .unwrap_or_else(|| format!("{CUSTOM_ROLE_STORE_LABEL} is malformed"))
+    })?;
+    for role in document.roles.values() {
+        validate_custom_role_record(role)?;
+    }
+    for template in document.templates.values() {
+        validate_custom_role_properties(template)?;
+    }
+    Ok(document)
+}
+
+fn missing_custom_role_field_name(error: &str) -> Option<&'static str> {
+    CUSTOM_ROLE_RECORD_FIELDS
+        .iter()
+        .copied()
+        .find(|field| error.contains(&format!("missing field `{field}`")))
+}
+
+fn validate_custom_role_record(role: &CustomRoleRecord) -> Result<(), String> {
+    if role.id.trim().is_empty() {
+        return Err("Space custom role property id is missing".to_owned());
+    }
+    validate_custom_role_properties(&role.properties)
+}
+
+fn validate_custom_role_properties(properties: &CustomRoleProperties) -> Result<(), String> {
+    for (field, value) in [
+        ("name", properties.name.as_str()),
+        ("colour", properties.colour.as_str()),
+        ("icon", properties.icon.as_str()),
+        (
+            "duplicate_source_role_id",
+            properties.duplicate_source_role_id.as_str(),
+        ),
+        ("template_name", properties.template_name.as_str()),
+    ] {
+        if value.trim().is_empty() {
+            return Err(format!("Space custom role property {field} is missing"));
+        }
+    }
+    Ok(())
+}
+
 /// The locally held key-domain boundary for one channel.
 ///
 /// A domain is minted once per channel, never once per Space.  The key bytes
@@ -743,6 +996,57 @@ mod tests {
             .join(", ")
     }
 
+    fn filled_role_properties() -> CustomRoleProperties {
+        CustomRoleProperties {
+            name: "Signal Watch Captain".to_owned(),
+            colour: "#14b8a6".to_owned(),
+            icon: "shield-check".to_owned(),
+            order: 42,
+            hoist: true,
+            mention_policy: RoleMentionPolicy::OwnerAndModerators,
+            slow_mode_seconds: 17,
+            longest_mute_seconds: 3_600,
+            actions_per_hour_budget: 24,
+            self_assignable: true,
+            auto_grant_on_join: true,
+            expires_at_unix_seconds: 4_000_000_000,
+            duplicate_source_role_id: "seed-role-template".to_owned(),
+            template_name: "watch-captain-template".to_owned(),
+        }
+    }
+
+    fn role_store_path(label: &str) -> std::path::PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "osl-space-role-{label}-{}-{nonce}.json",
+            std::process::id()
+        ))
+    }
+
+    fn missing_field_store_json(field: &str) -> Vec<u8> {
+        let role = CustomRoleRecord {
+            id: "role-missing-check".to_owned(),
+            properties: filled_role_properties(),
+        };
+        let mut role_value = serde_json::to_value(role).expect("role serializes");
+        role_value
+            .as_object_mut()
+            .expect("role is an object")
+            .remove(field);
+        let document = serde_json::json!({
+            "next_role_number": 1,
+            "roles": {
+                "role-missing-check": role_value
+            },
+            "member_roles": {},
+            "templates": {}
+        });
+        serde_json::to_vec_pretty(&document).expect("document serializes")
+    }
+
     #[test]
     fn task_1314_duplicate_group_members_fail() {
         let mut groups = LocalGroupDirectory::default();
@@ -1038,5 +1342,131 @@ mod tests {
             saved_list.self_change_routes()
         );
         assert_eq!(saved_list.self_change_routes(), 0);
+    }
+
+    #[test]
+    fn task_4857_saves_all_role_properties_duplicates_and_prunes_expiry() {
+        let path = role_store_path("task-4857-roundtrip");
+        let mut store = CustomRoleStore::load(&path).expect("empty store loads");
+        let properties = filled_role_properties();
+        let original = store
+            .create_role(properties.clone())
+            .expect("15-field role is accepted");
+        store.save().expect("custom role store saves");
+
+        let restarted = CustomRoleStore::load(&path).expect("role store reloads after restart");
+        let reloaded = restarted
+            .role(&original.id)
+            .expect("created role survives restart");
+        let restart_matches = reloaded == &original;
+        println!(
+            "TASK4857_RESTART role_id={} stored_property_count={} restart_matches={} name={} colour={} icon={} order={} hoist={} mention_policy={:?} slow_mode_seconds={} longest_mute_seconds={} actions_per_hour_budget={} self_assignable={} auto_grant_on_join={} expires_at_unix_seconds={} duplicate_source_role_id={} template_name={}",
+            reloaded.id,
+            CustomRoleRecord::stored_field_count(),
+            restart_matches,
+            reloaded.properties.name,
+            reloaded.properties.colour,
+            reloaded.properties.icon,
+            reloaded.properties.order,
+            reloaded.properties.hoist,
+            reloaded.properties.mention_policy,
+            reloaded.properties.slow_mode_seconds,
+            reloaded.properties.longest_mute_seconds,
+            reloaded.properties.actions_per_hour_budget,
+            reloaded.properties.self_assignable,
+            reloaded.properties.auto_grant_on_join,
+            reloaded.properties.expires_at_unix_seconds,
+            reloaded.properties.duplicate_source_role_id,
+            reloaded.properties.template_name
+        );
+        assert!(restart_matches);
+        assert_eq!(CustomRoleRecord::stored_field_count(), 15);
+
+        let duplicate_path = role_store_path("task-4857-duplicate");
+        let mut duplicate_store = CustomRoleStore::load(&duplicate_path).expect("duplicate store");
+        let duplicate_source = duplicate_store
+            .create_role(properties.clone())
+            .expect("source role");
+        let duplicate = duplicate_store
+            .duplicate_role(&duplicate_source.id)
+            .expect("duplicate role");
+        let copied_value_count = usize::from(duplicate.properties == duplicate_source.properties)
+            * CustomRoleProperties::filled_property_count();
+        println!(
+            "TASK4857_DUPLICATE source_id={} duplicate_id={} ids_differ={} copied_value_count={}",
+            duplicate_source.id,
+            duplicate.id,
+            duplicate_source.id != duplicate.id,
+            copied_value_count
+        );
+        assert_ne!(duplicate_source.id, duplicate.id);
+        assert_eq!(copied_value_count, 14);
+
+        let expiry_path = role_store_path("task-4857-expiry");
+        let mut expiry_store = CustomRoleStore::load(&expiry_path).expect("expiry store");
+        let mut expiring_properties = properties.clone();
+        expiring_properties.name = "Temporary watch".to_owned();
+        expiring_properties.template_name = "temporary-watch-template".to_owned();
+        expiring_properties.expires_at_unix_seconds = 99;
+        expiry_store
+            .add_template(
+                expiring_properties.template_name.clone(),
+                expiring_properties.clone(),
+            )
+            .expect("template saves");
+        let template_before = expiry_store
+            .template(&expiring_properties.template_name)
+            .expect("template exists before prune")
+            .clone();
+        let expiring = expiry_store
+            .create_role(expiring_properties.clone())
+            .expect("expiring role");
+        for member_id in ["member-a", "member-b", "member-c"] {
+            assert!(expiry_store.grant_role_to_member(member_id, &expiring.id));
+        }
+        let report = expiry_store.prune_expired_roles(100);
+        let template_after = expiry_store
+            .template(&expiring_properties.template_name)
+            .expect("template remains after prune")
+            .clone();
+        let remaining_member_grants: usize = ["member-a", "member-b", "member-c"]
+            .into_iter()
+            .map(|member_id| expiry_store.role_ids_for_member(member_id).len())
+            .sum();
+        println!(
+            "TASK4857_EXPIRY expired_role_count={} member_role_removal_count={} remaining_member_grants={} template_untouched={}",
+            report.expired_role_count,
+            report.member_role_removal_count,
+            remaining_member_grants,
+            template_before == template_after
+        );
+        assert_eq!(report.expired_role_count, 1);
+        assert_eq!(report.member_role_removal_count, 3);
+        assert_eq!(remaining_member_grants, 0);
+        assert_eq!(template_before, template_after);
+
+        let missing_refusals: Vec<_> = CUSTOM_ROLE_RECORD_FIELDS
+            .iter()
+            .map(|field| {
+                let error = decode_custom_role_document(&missing_field_store_json(field))
+                    .expect_err("missing role property is refused");
+                println!("TASK4857_MISSING_REFUSAL field={field} error=\"{error}\"");
+                assert!(
+                    error.contains(field),
+                    "refusal must name missing field {field}, got {error}"
+                );
+                (*field).to_owned()
+            })
+            .collect();
+        println!(
+            "TASK4857_MISSING_REFUSAL_COUNT={} fields={}",
+            missing_refusals.len(),
+            missing_refusals.join(",")
+        );
+        assert_eq!(missing_refusals.len(), 15);
+
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(duplicate_path);
+        let _ = std::fs::remove_file(expiry_path);
     }
 }
