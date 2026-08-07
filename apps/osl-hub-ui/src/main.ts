@@ -114,6 +114,7 @@ import {
   type ServiceId,
   AndroidSurface,
 } from "./services";
+import { tileStatusRouteFor } from "./tile-status-route";
 import {
   coreReadinessLabel,
   clearHubActivationCode,
@@ -271,6 +272,27 @@ function statusTag(label: string, extra = ""): string {
 /** The claim row for one connected app: the label, and the sentence behind it. */
 function nativeClaimMarkup(app: NativeApp): string {
   return `<p class="native-claim-note" data-claim-status="${app.supportStatus}" data-carrier-evidence="${app.carrierEvidence}" data-delivery-evidence="${app.deliveryEvidence}" data-status-page-capability="${escapeHtml(app.statusPage.capability)}">${statusTag(app.statusPage.generatedLabel)} ${escapeHtml(app.statusPage.explanation)}</p>`;
+}
+
+/**
+ * TASK 0853 — one tile's status route, rendered from its route data.
+ *
+ * Every word here is either generated (the label, the capability, the sentence)
+ * or one of the four strings `tile-status-route.ts` is allowed to write. The
+ * route this page used to show said "Open a separate OSL profile" over an app
+ * OSL cannot open and nothing at all about what OSL had proven, so the only
+ * honest thing on the tile — the claim — stopped at the Home screen.
+ *
+ * Both actions are reached by handlers that already bind: `[data-home-app]`
+ * opens the app in its own profile, `[data-route]` navigates. Nothing here
+ * offers a control that does not work yet.
+ */
+function tileStatusRouteMarkup(app: NativeApp): string {
+  const data = tileStatusRouteFor(app);
+  const next = data.nextAction.handler === "data-home-app"
+    ? `data-home-app="${escapeHtml(data.nextAction.handlerValue)}"`
+    : `data-route="${escapeHtml(data.nextAction.handlerValue)}"`;
+  return `<p class="native-claim-note" data-tile-status-route="${escapeHtml(data.route)}" data-tile-status-label="${escapeHtml(data.generatedLabel)}">${statusTag(data.generatedLabel)} ${escapeHtml(data.capability)}</p><p class="native-claim-note" data-tile-status-explanation="${escapeHtml(data.tileId)}">${escapeHtml(data.explanation)}</p><div class="native-app-secondary"><button class="button compact" type="button" data-tile-status-action="${escapeHtml(data.nextAction.target)}" ${next}>${escapeHtml(data.nextAction.label)}</button><button class="text-button" type="button" data-tile-status-action="${escapeHtml(data.evidenceAction.target)}" data-route="${escapeHtml(data.evidenceAction.handlerValue)}">${escapeHtml(data.evidenceAction.label)}</button></div>`;
 }
 
 /**
@@ -5769,7 +5791,11 @@ function serviceContent(): string {
   if (activeDefaultBrowserCompanion) return `<main class="content-viewport host-viewport native-host-open" id="route-heading" tabindex="-1" aria-label="${name} is open in your default-browser companion"><span class="sr-only">${name} is open in an app-style normal-profile browser window. It is not capture-protected or shortcut-locked by OSL.</span></main>`;
   if (activeEmbeddedHost) return `<main class="content-viewport host-viewport host-open" id="route-heading" tabindex="-1" aria-label="${name} is open inside OSL"><div class="loading-host" aria-hidden="true"><span class="host-skeleton logo"></span><span class="host-skeleton title"></span></div></main>`;
   if (serviceAccountPickerOpen) return serviceAccountPickerContent();
-  return `<main class="content-viewport native-app-page" id="route-heading" tabindex="-1"><section class="native-app-card"><span class="service-icon large">${activeService ? serviceLogo(activeService.id) : ""}</span><h1>${name}</h1><p>Open a separate OSL profile. Your normal app stays open.</p>${mailScope}<button class="button primary native-app-action" id="embedded-service-setup" ${nativeActionBusy ? "disabled" : ""}>${nativeActionBusy ? "Opening…" : `Open ${name}`}</button><div class="native-app-secondary"><button class="text-back" id="native-app-back">← Apps</button><button class="text-button" id="burn-button" data-open-burn="app">Burn…</button></div></section></main>`;
+  // TASK 0853: where this tile has a generated claim, the route shows it —
+  // capability, sentence, and the one action worth taking about that status.
+  const claimedApp = activeNativeApp();
+  const tileStatus = claimedApp ? tileStatusRouteMarkup(claimedApp) : "";
+  return `<main class="content-viewport native-app-page" id="route-heading" tabindex="-1"><section class="native-app-card"><span class="service-icon large">${activeService ? serviceLogo(activeService.id) : ""}</span><h1>${name}</h1><p>Open a separate OSL profile. Your normal app stays open.</p>${mailScope}${tileStatus}<button class="button primary native-app-action" id="embedded-service-setup" ${nativeActionBusy ? "disabled" : ""}>${nativeActionBusy ? "Opening…" : `Open ${name}`}</button><div class="native-app-secondary"><button class="text-back" id="native-app-back">← Apps</button><button class="text-button" id="burn-button" data-open-burn="app">Burn…</button></div></section></main>`;
 }
 
 function activeNativeApp(): NativeApp | null {
