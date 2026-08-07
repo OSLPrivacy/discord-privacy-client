@@ -120,7 +120,6 @@ pub mod native_apps;
 pub mod native_attachment_jobs;
 pub mod native_attachment_jobs_bridge;
 pub mod native_discord_adapter;
-#[cfg(feature = "core")]
 pub mod native_outlook_adapter;
 pub mod native_signal_adapter;
 pub mod native_telegram_adapter;
