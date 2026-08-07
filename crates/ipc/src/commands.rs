@@ -18917,6 +18917,12 @@ pub struct TelegramWhitelistKindDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MessengerWhitelistKindDto {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TelegramAutoWhitelistRuleDto {
     pub rule_lookup: String,
     pub choice: String,
@@ -18966,6 +18972,17 @@ pub fn cmd_osl_get_telegram_whitelist_kinds() -> Result<Vec<TelegramWhitelistKin
     Ok(crate::auto_whitelist_rules::TelegramWhitelistKind::ALL
         .into_iter()
         .map(|kind| TelegramWhitelistKindDto {
+            id: kind.id().to_string(),
+            name: kind.name().to_string(),
+        })
+        .collect())
+}
+
+pub fn cmd_osl_get_messenger_whitelist_kinds() -> Result<Vec<MessengerWhitelistKindDto>, String> {
+    record_activity_on_command_entry();
+    Ok(crate::auto_whitelist_rules::MessengerWhitelistKind::ALL
+        .into_iter()
+        .map(|kind| MessengerWhitelistKindDto {
             id: kind.id().to_string(),
             name: kind.name().to_string(),
         })

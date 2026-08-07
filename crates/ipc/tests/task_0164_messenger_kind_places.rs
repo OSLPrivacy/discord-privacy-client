@@ -3,52 +3,72 @@ use std::process::Command;
 const MESSENGER_PLACE_KIND: &str = env!("CARGO_BIN_EXE_messenger-place-kind");
 
 #[test]
-fn task_0164_messenger_fixture_places_resolve_and_public_post_exits_1() {
-    let direct_message = Command::new(MESSENGER_PLACE_KIND)
-        .arg("direct_message")
-        .output()
-        .expect("run Messenger direct-message fixture place");
-    let direct_stdout = String::from_utf8(direct_message.stdout).expect("stdout is UTF-8");
-    let direct_stderr = String::from_utf8(direct_message.stderr).expect("stderr is UTF-8");
-    assert!(
-        direct_message.status.success(),
-        "direct_message should resolve, stdout={direct_stdout}, stderr={direct_stderr}"
-    );
-    assert!(
-        direct_stdout.contains("kind=direct_message status=allowed"),
-        "{direct_stdout}"
-    );
+fn task_3745_messenger_kind_list_has_exactly_three_and_all_resolve() {
+    let kinds = ipc::commands::cmd_osl_get_messenger_whitelist_kinds().unwrap();
+    let ids: Vec<String> = kinds.iter().map(|kind| kind.id.clone()).collect();
+    let names: Vec<String> = kinds.iter().map(|kind| kind.name.clone()).collect();
 
-    let group_chat = Command::new(MESSENGER_PLACE_KIND)
-        .arg("group_chat")
-        .output()
-        .expect("run Messenger group-chat fixture place");
-    let group_stdout = String::from_utf8(group_chat.stdout).expect("stdout is UTF-8");
-    let group_stderr = String::from_utf8(group_chat.stderr).expect("stderr is UTF-8");
-    assert!(
-        group_chat.status.success(),
-        "group_chat should resolve, stdout={group_stdout}, stderr={group_stderr}"
-    );
-    assert!(
-        group_stdout.contains("kind=group_chat status=allowed"),
-        "{group_stdout}"
-    );
+    println!("TASK3745_MESSENGER_KIND_COUNT={}", kinds.len());
+    println!("TASK3745_MESSENGER_KINDS={}", ids.join(","));
+    println!("TASK3745_MESSENGER_KIND_NAMES={}", names.join(","));
 
-    let public_post = Command::new(MESSENGER_PLACE_KIND)
-        .arg("public_post")
-        .output()
-        .expect("run Messenger public-post fixture place");
-    let public_stderr = String::from_utf8(public_post.stderr).expect("stderr is UTF-8");
-    assert_eq!(public_post.status.code(), Some(1), "{public_stderr}");
-    assert!(
-        public_stderr.contains("OSL: unknown Messenger whitelist kind 'public_post'"),
-        "{public_stderr}"
-    );
+    assert_eq!(kinds.len(), 3);
+    assert_eq!(ids, vec!["direct_message", "group_chat", "community"]);
 
+    for id in &ids {
+        let output = Command::new(MESSENGER_PLACE_KIND)
+            .arg(id)
+            .output()
+            .expect("run Messenger fixture place");
+        let stdout = String::from_utf8(output.stdout).expect("stdout is UTF-8");
+        let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
+        assert!(
+            output.status.success(),
+            "{id} should resolve, stdout={stdout}, stderr={stderr}"
+        );
+        assert!(
+            stdout.contains(&format!("kind={id} status=allowed")),
+            "{stdout}"
+        );
+        println!(
+            "TASK3745_RESOLVE kind={id} exit={} status=allowed",
+            output.status.code().unwrap_or(0)
+        );
+    }
+
+    let invented_name = "invented_messenger_place_kind_3745";
+    let invented = Command::new(MESSENGER_PLACE_KIND)
+        .arg(invented_name)
+        .output()
+        .expect("run Messenger invented fixture place");
+    let invented_stderr = String::from_utf8(invented.stderr).expect("stderr is UTF-8");
+    assert_eq!(invented.status.code(), Some(1), "{invented_stderr}");
+    assert!(
+        invented_stderr
+            .contains("OSL: unknown Messenger whitelist kind 'invented_messenger_place_kind_3745'"),
+        "{invented_stderr}"
+    );
     println!(
-        "TASK0164 direct_message_exit={} direct_message_status=allowed group_chat_exit={} group_chat_status=allowed public_post_exit=1 public_post_error=\"{}\"",
-        direct_message.status.code().unwrap_or(0),
-        group_chat.status.code().unwrap_or(0),
-        public_stderr.trim()
+        "TASK3745_INVENTED_KIND_EXIT_BY_NAME name={invented_name} exit=1 refusal=\"{}\"",
+        invented_stderr.trim()
+    );
+
+    let task1190 = Command::new(MESSENGER_PLACE_KIND)
+        .arg("community")
+        .output()
+        .expect("run task 1190 Messenger community fixture place");
+    let task1190_stdout = String::from_utf8(task1190.stdout).expect("stdout is UTF-8");
+    let task1190_stderr = String::from_utf8(task1190.stderr).expect("stderr is UTF-8");
+    assert!(
+        task1190.status.success(),
+        "TASK1190 should resolve, stdout={task1190_stdout}, stderr={task1190_stderr}"
+    );
+    assert!(
+        task1190_stdout.contains("kind=community status=allowed"),
+        "{task1190_stdout}"
+    );
+    println!(
+        "TASK3745_TASK1190_AGAINST_LIST kind=community exit={} status=allowed",
+        task1190.status.code().unwrap_or(0)
     );
 }
