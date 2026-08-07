@@ -38,7 +38,9 @@ import { handleAiGenerate } from "./endpoints/ai-generate.js";
 import { handleCreditSpend } from "./endpoints/credits.js";
 import {
   handleDiscoveryCardsPost,
+  handleDiscoveryCardsPublishPost,
   handleDiscoveryCardsRead,
+  handleDiscoveryCardsTakeBackPost,
 } from "./endpoints/discovery-cards.js";
 import { handleCheckout } from "./endpoints/checkout.js";
 import { handleStripeDonationSession } from "./endpoints/donation-stripe.js";
@@ -478,7 +480,9 @@ async function dispatch(
     if (path === "/v1/ai/generate") return await handleAiGenerate(request, env);
     if (path === "/v1/credits/spend") return await handleCreditSpend(request, env);
     if (path === "/v1/discovery-cards") return await handleDiscoveryCardsPost(request, env);
+    if (path === "/v1/discovery-cards/publish") return await handleDiscoveryCardsPublishPost(request, env);
     if (path === "/v1/discovery-cards/read") return await handleDiscoveryCardsRead(request, env);
+    if (path === "/v1/discovery-cards/take-back") return await handleDiscoveryCardsTakeBackPost(request, env);
     if (path === "/v1/update-attempts") {
       return withCors(await handleUpdateAttemptRecord(request, env), request);
     }
