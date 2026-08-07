@@ -1,0 +1,78 @@
+/* New friend defaults (TASK 0732). */
+
+.new-friend-defaults .nfd-title {
+  margin: 0 0 6px;
+  font-size: 22px;
+}
+
+.new-friend-defaults .nfd-lead {
+  max-width: 560px;
+  margin: 0 0 22px;
+  color: var(--muted);
+}
+
+.new-friend-defaults .nfd-groups {
+  display: grid;
+  gap: 22px;
+}
+
+.new-friend-defaults .nfd-group {
+  margin: 0;
+  padding: 14px 16px 6px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+}
+
+.new-friend-defaults .nfd-legend {
+  padding: 0 6px;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.new-friend-defaults .nfd-options {
+  display: grid;
+  gap: 2px;
+}
+
+.new-friend-defaults .nfd-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  min-height: 44px;
+  padding: 9px 4px;
+  border-bottom: 1px solid var(--line-soft);
+  cursor: pointer;
+}
+
+.new-friend-defaults .nfd-option:last-child { border-bottom: 0; }
+
+.new-friend-defaults .nfd-option input {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  accent-color: var(--brand);
+}
+
+.new-friend-defaults .nfd-option-text strong,
+.new-friend-defaults .nfd-option-text small { display: block; }
+
+.new-friend-defaults .nfd-option-text small {
+  max-width: 520px;
+  margin-top: 2px;
+  color: var(--muted);
+}
+
+.new-friend-defaults .nfd-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 24px;
+}
+
+.new-friend-defaults .nfd-status {
+  color: var(--muted);
+  font-size: 13px;
+}
