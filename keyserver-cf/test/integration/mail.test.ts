@@ -265,6 +265,64 @@ describe("OSL Mail Worker", () => {
     expect(stillOnlyConsentDelivery.messages.map((message) => message.message_id)).toEqual([delivery.message_id]);
   });
 
+  it("task 4504 lets a recipient agree to hear from a named OSL Mail sender", async () => {
+    const alice = await createIdentity("alice-4504-id", "alice_4504");
+    const bob = await createIdentity("bob-4504-id", "bob_4504");
+    expect((await signedPost("/v1/mail/address", "PROVISION", alice, { username: "alice_4504", rotate: false })).status).toBe(201);
+    expect((await signedPost("/v1/mail/address", "PROVISION", bob, { username: "bob_4504", rotate: false })).status).toBe(201);
+
+    const refusedBefore = await signedPost("/v1/mail/send/osl", "SEND-OSL", alice, oslPayload("bob_4504@oslprivacy.com", "task4504 before agreement"));
+    const listBefore = await signedPost("/v1/mail/list", "LIST", bob, { limit: 10 }).then((response) => response.json()) as {
+      messages: Array<{ message_id: string }>;
+    };
+    println4504("NO_AGREEMENT_SEND_STATUS", refusedBefore.status);
+    println4504("MESSAGES_AFTER_NO_AGREEMENT", listBefore.messages.length);
+    expect(refusedBefore.status).toBe(403);
+    expect(listBefore.messages).toHaveLength(0);
+
+    const agreement = await signedPost("/v1/mail/consent", "CONSENT", bob, { sender_username: "alice_4504", allowed: true });
+    const agreementBody = await agreement.json() as {
+      sender_user_id: string;
+      sender_username: string;
+      sender_address: string;
+      allowed: boolean;
+    };
+    println4504("AGREEMENT_COMMAND_STATUS", `${agreement.status} sender_username=${agreementBody.sender_username} allowed=${agreementBody.allowed}`);
+    expect(agreement.status).toBe(200);
+    expect(agreementBody).toMatchObject({
+      sender_user_id: alice.userId,
+      sender_username: "alice_4504",
+      sender_address: "alice_4504@oslprivacy.com",
+      allowed: true,
+    });
+
+    const accepted = await signedPost("/v1/mail/send/osl", "SEND-OSL", alice, oslPayload("bob_4504@oslprivacy.com", "task4504 after agreement"));
+    const acceptedBody = await accepted.json() as { accepted: boolean };
+    const listAfterAgreement = await signedPost("/v1/mail/list", "LIST", bob, { limit: 10 }).then((response) => response.json()) as {
+      messages: Array<{ message_id: string }>;
+    };
+    println4504("AFTER_AGREEMENT_SEND_STATUS", `${accepted.status} accepted=${acceptedBody.accepted}`);
+    println4504("MESSAGES_AFTER_AGREEMENT", listAfterAgreement.messages.length);
+    expect(accepted.status).toBe(200);
+    expect(acceptedBody.accepted).toBe(true);
+    expect(listAfterAgreement.messages).toHaveLength(1);
+
+    const removal = await signedPost("/v1/mail/consent", "CONSENT", bob, { sender_username: "alice_4504", allowed: false });
+    const removalBody = await removal.json() as { allowed: boolean };
+    println4504("REMOVE_AGREEMENT_STATUS", `${removal.status} allowed=${removalBody.allowed}`);
+    expect(removal.status).toBe(200);
+    expect(removalBody.allowed).toBe(false);
+
+    const refusedAfterRemoval = await signedPost("/v1/mail/send/osl", "SEND-OSL", alice, oslPayload("bob_4504@oslprivacy.com", "task4504 after removal"));
+    const listAfterRemoval = await signedPost("/v1/mail/list", "LIST", bob, { limit: 10 }).then((response) => response.json()) as {
+      messages: Array<{ message_id: string }>;
+    };
+    println4504("AFTER_REMOVE_SEND_STATUS", refusedAfterRemoval.status);
+    println4504("MESSAGES_AFTER_REMOVE", listAfterRemoval.messages.length);
+    expect(refusedAfterRemoval.status).toBe(403);
+    expect(listAfterRemoval.messages).toHaveLength(1);
+  });
+
   it("m9 qualifies OSL Mail end-to-end lifecycle", async () => {
     const alice = await createIdentity("alice-life-id", "alice_life");
     const bob = await createIdentity("bob-life-id", "bob_life");
@@ -567,6 +625,10 @@ function oslPayload(recipientAddress: string, plaintextMarker: string): OslPaylo
     envelope: { version: 1, nonce_b64: "bm9uY2U=" },
     recipient_key_fingerprint: `fingerprint-${plaintextMarker.replaceAll(/[^a-z0-9]/gi, "-").toLowerCase()}`,
   };
+}
+
+function println4504(key: string, value: string | number): void {
+  console.log(`TASK4504_${key}=${value}`);
 }
 
 async function signedPost(
