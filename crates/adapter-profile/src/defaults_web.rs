@@ -282,8 +282,85 @@ fn validate_required_email_web_control_targets(
 mod tests {
     use super::*;
     use crate::schema::verify_profile_doc;
+    use std::collections::BTreeSet;
 
     const NOW: u64 = 1_800_000_000;
+    const MAIL_COM_FAKE_PAGE_CONTROLS: [&str; 3] = ["Place", "Read", "Send"];
+    const MAIL_COM_1268_COVER_MESSAGE: &str = "OSL-MAILCOM-1268 cover message";
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    enum MailComFakePageError {
+        MissingMappedTarget(&'static str),
+        ProtectedControlRemovalRefused(&'static str),
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct MailComFakePage {
+        controls: BTreeSet<&'static str>,
+        placed_messages: Vec<String>,
+        sent_emails: usize,
+    }
+
+    impl MailComFakePage {
+        fn from_mapped_targets(targets: &[MailComWebTarget]) -> Result<Self, MailComFakePageError> {
+            validate_mail_com_web_mail_targets(targets)
+                .map_err(|missing| MailComFakePageError::MissingMappedTarget(missing.name))?;
+            Ok(Self {
+                controls: MAIL_COM_FAKE_PAGE_CONTROLS.into_iter().collect(),
+                placed_messages: Vec::new(),
+                sent_emails: 0,
+            })
+        }
+
+        fn control_names(&self) -> Vec<&'static str> {
+            self.controls.iter().copied().collect()
+        }
+
+        fn placed_message_count(&self) -> usize {
+            self.placed_messages.len()
+        }
+
+        fn sent_email_count(&self) -> usize {
+            self.sent_emails
+        }
+
+        fn place(&mut self, cover_message: &str) -> Result<(), MailComFakePageError> {
+            self.require_control("Place")?;
+            self.placed_messages.push(cover_message.to_owned());
+            Ok(())
+        }
+
+        fn read(&self) -> Result<&str, MailComFakePageError> {
+            self.require_control("Read")?;
+            Ok(self
+                .placed_messages
+                .last()
+                .map(String::as_str)
+                .unwrap_or_default())
+        }
+
+        fn send(&mut self) -> Result<(), MailComFakePageError> {
+            self.require_control("Send")?;
+            self.sent_emails += 1;
+            Ok(())
+        }
+
+        fn remove_control(&mut self, name: &'static str) -> Result<(), MailComFakePageError> {
+            if name == "Send" {
+                return Err(MailComFakePageError::ProtectedControlRemovalRefused(name));
+            }
+            self.controls.remove(name);
+            Ok(())
+        }
+
+        fn require_control(&self, name: &'static str) -> Result<(), MailComFakePageError> {
+            if self.controls.contains(name) {
+                Ok(())
+            } else {
+                Err(MailComFakePageError::MissingMappedTarget(name))
+            }
+        }
+    }
 
     #[test]
     fn web_w2_default_profile_verifies_and_derives_l2_from_grants() {
@@ -370,7 +447,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn task_1248_yahoo_mapping_contains_all_six_named_targets() {
         let targets = yahoo_web_mail_targets();
@@ -452,6 +528,78 @@ mod tests {
             println!("TASK1267 named_target={name}");
         }
         println!("TASK1267 refused_missing={}", refused.join("|"));
+    }
+
+    #[test]
+    fn task_1268_mail_com_fake_page_connects_place_read_send_and_refuses_send_removal() {
+        let targets = mail_com_web_mail_targets();
+        let missing_send_targets = targets
+            .iter()
+            .filter(|target| target.name != "Send")
+            .cloned()
+            .collect::<Vec<_>>();
+        let missing_send_error = MailComFakePage::from_mapped_targets(&missing_send_targets)
+            .expect_err("Mail.com fake page refuses to start without mapped Send target");
+        assert_eq!(
+            missing_send_error,
+            MailComFakePageError::MissingMappedTarget("Send")
+        );
+
+        let mut page = MailComFakePage::from_mapped_targets(&targets)
+            .expect("Mail.com fake page starts only from complete mapped controls");
+        let controls = page.control_names();
+        let sent_before_place = page.sent_email_count();
+
+        assert_eq!(sent_before_place, 0);
+        assert_eq!(controls, MAIL_COM_FAKE_PAGE_CONTROLS);
+
+        page.place(MAIL_COM_1268_COVER_MESSAGE)
+            .expect("Place control accepts the marked cover message");
+        let placed_after_place = page.placed_message_count();
+        let read_words = page
+            .read()
+            .expect("Read control returns the placed words")
+            .to_owned();
+        let sent_before_send = page.sent_email_count();
+
+        assert_eq!(placed_after_place, 1);
+        assert_eq!(read_words, MAIL_COM_1268_COVER_MESSAGE);
+        assert_eq!(sent_before_send, 0);
+
+        page.send().expect("Send control sends one placed message");
+        let sent_after_send = page.sent_email_count();
+        assert_eq!(sent_after_send, 1);
+
+        let placed_before_remove = page.placed_message_count();
+        let sent_before_remove = page.sent_email_count();
+        let removal_error = page
+            .remove_control("Send")
+            .expect_err("removing Send is refused");
+        assert_eq!(
+            removal_error,
+            MailComFakePageError::ProtectedControlRemovalRefused("Send")
+        );
+        assert_eq!(page.placed_message_count(), placed_before_remove);
+        assert_eq!(page.sent_email_count(), sent_before_remove);
+
+        println!("TASK1268 service_connection=Mail.com");
+        println!("TASK1268 missing_mapped_send_refused=true");
+        println!("TASK1268 initial_sent_emails={sent_before_place}");
+        println!("TASK1268 controls={}", controls.join("|"));
+        println!(
+            "TASK1268 place_marked_words={}",
+            MAIL_COM_1268_COVER_MESSAGE
+        );
+        println!("TASK1268 placed_message_count_after_place={placed_after_place}");
+        println!("TASK1268 read_marked_words={read_words}");
+        println!("TASK1268 sent_count_before_send={sent_before_send}");
+        println!("TASK1268 sent_count_after_send={sent_after_send}");
+        println!("TASK1268 remove_send_refused=true");
+        println!(
+            "TASK1268 counts_after_refused_remove placed={} sent={}",
+            page.placed_message_count(),
+            page.sent_email_count()
+        );
     }
 
     #[test]
