@@ -7,6 +7,7 @@ const DRAWER_RE = /^[0-9a-f]{3}$/;
 const LABEL_RE = /^[A-Za-z0-9_-]{22,64}$/;
 const EPOCH_RE = /^(\d{4})-W(\d{2})$/;
 const SEALED_NOTE_MAX_CHARS = 8192;
+const DISCOVERY_SETTINGS = new Set(["allowed", "shared-room"]);
 
 export interface DiscoveryCard {
   drawer_name: string;
@@ -21,6 +22,12 @@ export interface DiscoveryCardDerivationInput {
   setting_material: string;
   sealed_note: string;
   discovery_epoch?: string;
+}
+
+export interface DiscoveryCardPublishOutcome {
+  removed: number;
+  wrote: number;
+  card: DiscoveryCard;
 }
 
 interface DiscoveryCardRow {
@@ -176,6 +183,28 @@ function validateDiscoveryEpoch(stamp: string, now = new Date()): Response | nul
   return null;
 }
 
+function nonEmptyStringField(
+  record: Record<string, unknown>,
+  field: string,
+): string | Response {
+  const value = record[field];
+  if (typeof value !== "string" || value.length === 0) {
+    return badRequest(`${field} required`);
+  }
+  return value;
+}
+
+async function deleteDiscoveryCardsForAccount(
+  db: D1Database,
+  accountId: string,
+): Promise<number> {
+  const result = await db
+    .prepare("DELETE FROM discovery_cards WHERE writer_account_id = ?")
+    .bind(accountId)
+    .run();
+  return result.meta.changes ?? 0;
+}
+
 export async function sweepStaleDiscoveryCards(
   db: D1Database,
   now = new Date(),
@@ -223,6 +252,90 @@ export async function handleDiscoveryCardPost(
     )
     .run();
   return json(parsed, { status: 201 });
+}
+
+export async function handleDiscoveryCardsPublish(
+  request: Request,
+  db: D1Database,
+  now = new Date(),
+): Promise<Response> {
+  const body = await request.json().catch(() => null);
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return badRequest("account_id required");
+  }
+  const record = body as Record<string, unknown>;
+  const accountId = nonEmptyStringField(record, "account_id");
+  if (accountId instanceof Response) return accountId;
+  const appId = nonEmptyStringField(record, "app_id");
+  if (appId instanceof Response) return appId;
+  const accountHandle = nonEmptyStringField(record, "account_handle");
+  if (accountHandle instanceof Response) return accountHandle;
+  const setting = nonEmptyStringField(record, "setting");
+  if (setting instanceof Response) return setting;
+  if (!DISCOVERY_SETTINGS.has(setting)) {
+    return badRequest("setting must be allowed or shared-room");
+  }
+  const sealedNote = nonEmptyStringField(record, "sealed_note");
+  if (sealedNote instanceof Response) return sealedNote;
+  if (sealedNote.length > SEALED_NOTE_MAX_CHARS) {
+    return badRequest("sealed_note invalid");
+  }
+
+  const discoveryEpoch = currentDiscoveryEpochStamp(now);
+  const epochIndex = discoveryEpochIndex(discoveryEpoch);
+  if (epochIndex === null) return badRequest("discovery_epoch invalid");
+  const card = await buildDiscoveryCard({
+    app_id: appId,
+    account_handle: accountHandle,
+    setting_material: `${appId}:${accountId}:${setting}`,
+    sealed_note: sealedNote,
+    discovery_epoch: discoveryEpoch,
+  });
+
+  await sweepStaleDiscoveryCards(db, now);
+  const removed = await deleteDiscoveryCardsForAccount(db, accountId);
+  const written = await db
+    .prepare(
+      `INSERT INTO discovery_cards
+         (drawer_name, label, sealed_note, discovery_epoch, discovery_epoch_index,
+          updated_at, writer_account_id, writer_app_id, writer_setting)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)`,
+    )
+    .bind(
+      card.drawer_name,
+      card.label,
+      card.sealed_note,
+      card.discovery_epoch,
+      epochIndex,
+      Math.floor(now.getTime() / 1000),
+      accountId,
+      appId,
+      setting,
+    )
+    .run();
+
+  return json({
+    removed,
+    wrote: written.meta.changes ?? 1,
+    card,
+  } satisfies DiscoveryCardPublishOutcome, { status: 201 });
+}
+
+export async function handleDiscoveryCardsTakeBack(
+  request: Request,
+  db: D1Database,
+  now = new Date(),
+): Promise<Response> {
+  const body = await request.json().catch(() => null);
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return badRequest("account_id required");
+  }
+  const accountId = nonEmptyStringField(body as Record<string, unknown>, "account_id");
+  if (accountId instanceof Response) return accountId;
+
+  await sweepStaleDiscoveryCards(db, now);
+  const removed = await deleteDiscoveryCardsForAccount(db, accountId);
+  return json({ removed });
 }
 
 export async function handleDiscoveryCardRead(
