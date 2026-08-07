@@ -181,6 +181,32 @@ pub fn proton_web_control_targets() -> &'static [EmailWebControlTarget] {
     PROTON_WEB_CONTROL_TARGETS
 }
 
+/// Validate that the Proton mapping has every required semantic target.
+pub fn validate_proton_web_control_targets(
+    targets: &[EmailWebControlTarget],
+) -> Result<(), String> {
+    validate_required_email_web_control_targets(
+        "Proton",
+        &[
+            "floating compose",
+            "body",
+            "Send",
+            "folders",
+            "labels",
+            "threads",
+            "reading pane",
+        ],
+        targets,
+    )
+    .map_err(|error| {
+        if error == "missing required Proton web control target: floating compose" {
+            "Proton compose missing".to_owned()
+        } else {
+            error
+        }
+    })
+}
+
 const ICLOUD_REQUIRED_WEB_CONTROL_TARGET_NAMES: &[&str] = &[
     "compose",
     "body",
@@ -326,6 +352,79 @@ mod tests {
     }
 
     #[test]
+    fn task_1245_proton_refuses_missing_floating_compose_without_losing_existing_draft() {
+        #[derive(Default)]
+        struct ProtonDrafts {
+            drafts: Vec<(&'static str, &'static str)>,
+        }
+
+        impl ProtonDrafts {
+            fn count(&self) -> usize {
+                self.drafts.len()
+            }
+
+            fn create(
+                &mut self,
+                targets: &[EmailWebControlTarget],
+                id: &'static str,
+                body: &'static str,
+            ) -> Result<(), String> {
+                validate_proton_web_control_targets(targets)?;
+                self.drafts.push((id, body));
+                Ok(())
+            }
+
+            fn read(&self, id: &str) -> Option<&'static str> {
+                self.drafts
+                    .iter()
+                    .find_map(|(draft_id, body)| (*draft_id == id).then_some(*body))
+            }
+        }
+
+        let mut drafts = ProtonDrafts::default();
+        let good_targets = proton_web_control_targets();
+        println!("TASK1245_DRAFT_COUNT_BEFORE={}", drafts.count());
+        assert_eq!(drafts.count(), 0);
+
+        drafts
+            .create(good_targets, "proton-maple", "MAPLE-4172")
+            .expect("complete Proton selectors create the MAPLE draft");
+        let after_body = drafts.read("proton-maple").unwrap_or("");
+        println!("TASK1245_DRAFT_COUNT_AFTER_CREATE={}", drafts.count());
+        println!("TASK1245_PROTON_MAPLE_AFTER_CREATE={after_body}");
+        assert_eq!(drafts.count(), 1);
+        assert_eq!(after_body, "MAPLE-4172");
+
+        let mut broken_targets = good_targets.to_vec();
+        let broken = broken_targets
+            .iter_mut()
+            .find(|target| target.name == "floating compose")
+            .expect("shipping Proton mapping names the compose control");
+        let original_strategy = broken.strategy;
+        let original_required = broken.required;
+        broken.name = "Missing Compose";
+        assert_eq!(broken.strategy, original_strategy);
+        assert_eq!(broken.required, original_required);
+
+        let refusal = drafts
+            .create(
+                &broken_targets,
+                "proton-maple-duplicate",
+                "SHOULD-NOT-PLACE",
+            )
+            .expect_err("renamed Proton compose target must refuse before adding a draft");
+        println!("TASK1245_MUTATED_CONTROL_NAME=Missing Compose");
+        println!("TASK1245_REFUSAL={refusal}");
+        assert_eq!(refusal, "Proton compose missing");
+
+        let final_body = drafts.read("proton-maple").unwrap_or("");
+        println!("TASK1245_PROTON_MAPLE_AFTER_REFUSAL={final_body}");
+        println!("TASK1245_DRAFT_COUNT_AFTER_REFUSAL={}", drafts.count());
+        assert_eq!(final_body, "MAPLE-4172");
+        assert_eq!(drafts.count(), 1);
+    }
+
+    #[test]
     fn task_1273_icloud_mapping_contains_all_six_named_targets() {
         let names = icloud_web_control_targets()
             .iter()
@@ -369,7 +468,6 @@ mod tests {
             );
         }
     }
-
 
     #[test]
     fn task_1248_yahoo_mapping_contains_all_six_named_targets() {
