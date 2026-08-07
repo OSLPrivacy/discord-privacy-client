@@ -1710,6 +1710,43 @@ code {
 }
 .browser-detected-item small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .browser-detected-item small { margin-top: 2px; color: var(--muted); font-size: 11px; }
+/* TASK 0244 - "What they can see": one tick box per owned account. Reuses the
+   fieldset/legend/row shape .browser-detected-sources already proved out. */
+.account-reach-sources {
+  margin-top: 18px;
+  padding: 0;
+  border-top: 1px solid var(--line);
+  border-right: 0;
+  border-bottom: 1px solid var(--line);
+  border-left: 0;
+}
+.account-reach-sources > legend {
+  float: left;
+  width: 100%;
+  min-height: 38px;
+  padding: 0 12px;
+  display: flex;
+  align-items: center;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.account-reach-list { clear: both; border-top: 1px solid var(--line-soft); }
+.account-reach-item {
+  min-width: 0;
+  min-height: 44px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line-soft);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+}
+.account-reach-item > span { min-width: 0; overflow-wrap: anywhere; }
+.account-reach-item input { flex: 0 0 auto; margin-left: auto; }
+.account-reach-empty { margin: 0; padding: 10px 12px; color: var(--muted); font-size: 11px; }
 /* Identical to .text-button, which is what every other onboarding step's
    secondary action ("Not now" on Stealth / Burn / Mullvad) already renders as.
    This one was grey while those were cyan, so the same affordance read as two
@@ -7684,3 +7721,106 @@ code {
 
 /* Fixed width so "Fix now" and "Open OSL Chat" occupy the same box. */
 .home-summary-action { box-sizing: border-box; width: 180px; text-align: center; }
+
+/* TASK 0824 - Home protection panel: five items under one Protection heading.
+   The grid is fixed so all five items sit inside one 1280x800 Linux window;
+   the capture measures each item's box and fails if any runs off screen. */
+
+.home-protection-panel {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  width: min(1080px, 100%);
+  margin: 0 auto;
+  padding: 20px 24px 24px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+  color: var(--text);
+  font-family: var(--font-ui);
+}
+
+.home-panel-head { display: flex; flex-direction: column; gap: 6px; }
+
+.home-panel-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -.01em;
+}
+
+.home-panel-status { margin: 0; font-size: 13px; color: var(--muted); }
+
+.home-panel-items {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-areas:
+    "state action action"
+    "apps people activity";
+  gap: 12px;
+}
+
+.home-panel-item {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: var(--panel-2);
+}
+
+.home-panel-item[data-panel-item="protection-state"] { grid-area: state; }
+.home-panel-item[data-panel-item="main-action"] { grid-area: action; }
+.home-panel-item[data-panel-item="connected-apps"] { grid-area: apps; }
+.home-panel-item[data-panel-item="trusted-people"] { grid-area: people; }
+.home-panel-item[data-panel-item="local-activity"] { grid-area: activity; }
+
+.home-panel-item-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.home-panel-item-value { font-size: 17px; font-weight: 600; }
+
+.home-panel-item-detail { margin: 0; font-size: 13px; line-height: 1.5; color: var(--muted); }
+
+.home-panel-subfacts {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+}
+
+.home-panel-subfact { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; }
+.home-panel-subfact dt { margin: 0; color: var(--muted); }
+.home-panel-subfact dd { margin: 0; font-weight: 500; }
+
+.home-panel-item-controls { display: flex; flex-wrap: wrap; gap: 8px; margin-top: auto; }
+
+.home-panel-main-action { box-sizing: border-box; min-width: 160px; text-align: center; }
+
+.home-panel-activity-events {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.home-panel-activity-event {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+}
+
+.home-panel-activity-title { color: var(--text); }
+.home-panel-activity-time { color: var(--muted); white-space: nowrap; }
