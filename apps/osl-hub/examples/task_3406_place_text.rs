@@ -18,7 +18,7 @@ mod windows_place_text {
         UIA_DocumentControlTypeId, UIA_EditControlTypeId, UIA_TextControlTypeId,
         UIA_ValuePatternId,
     };
-    use windows_sys::Win32::Foundation::{CloseHandle, BOOL, HWND, LPARAM, POINT, TRUE};
+    use windows_sys::Win32::Foundation::{CloseHandle, BOOL, HWND, LPARAM, POINT, RECT, TRUE};
     use windows_sys::Win32::System::DataExchange::{
         CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardData, OpenClipboard,
         SetClipboardData,
@@ -38,8 +38,8 @@ mod windows_place_text {
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         EnumWindows, GetAncestor, GetCursorPos, GetForegroundWindow, GetSystemMetrics,
-        GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible,
-        SetCursorPos, SetForegroundWindow, ShowWindow, WindowFromPoint, GA_ROOT,
+        GetWindowRect, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
+        IsWindowVisible, SetCursorPos, SetForegroundWindow, ShowWindow, WindowFromPoint, GA_ROOT,
         SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_RESTORE,
     };
 
@@ -154,13 +154,14 @@ mod windows_place_text {
                 return Err(CommandError::exit1(format!("{} not found", args.app)));
             }
         };
+        verify_target_onscreen(discord.hwnd, &args.app)?;
         let initially_behind = !same_root(initial.hwnd, discord.hwnd);
         println!(
             "behind_window={} behind_initial={}",
             describe_window(&discord).replace('\n', " "),
             initially_behind
         );
-        if !initially_behind {
+        if !initially_behind && !args.allow_already_front {
             return Err(CommandError::exit1(format!(
                 "{} was already the foreground window",
                 args.app
@@ -176,7 +177,7 @@ mod windows_place_text {
                 Duration::from_secs(args.wait_timeout_seconds),
                 &args.app,
             )?;
-        } else {
+        } else if initially_behind {
             request_front_window(discord.hwnd);
             thread::sleep(Duration::from_millis(SETTLE_MS));
             let grabbed = foreground_window().ok_or_else(|| {
@@ -192,7 +193,13 @@ mod windows_place_text {
                     args.app
                 )));
             }
+        } else {
+            println!(
+                "after_grab_front={}",
+                describe_window(&initial).replace('\n', " ")
+            );
         }
+        verify_target_onscreen(discord.hwnd, &args.app)?;
 
         let _com = initialize_com()?;
         let automation = automation()?;
@@ -209,6 +216,14 @@ mod windows_place_text {
         );
 
         verify_focused_typing_point(&automation, &composer, discord.hwnd, &args.app)?;
+        let before_readback = value_of(&composer).unwrap_or_default();
+        println!("before_readback={before_readback:?}");
+        if !before_readback.is_empty() {
+            return Err(CommandError::exit1(format!(
+                "{} composer was not empty before placement",
+                args.app
+            )));
+        }
 
         let snapshot = snapshot_clipboard()
             .map_err(|error| CommandError::exit1(format!("clipboard snapshot failed: {error}")))?;
@@ -246,6 +261,34 @@ mod windows_place_text {
             return Err(CommandError::exit1(
                 "clipboard content changed across placement",
             ));
+        }
+        Ok(())
+    }
+
+    fn verify_target_onscreen(hwnd: HWND, app: &str) -> Result<(), CommandError> {
+        let rect = window_rect(hwnd).ok_or_else(|| {
+            CommandError::exit1(format!("{app} window bounds could not be read"))
+        })?;
+        let origin_x = unsafe { GetSystemMetrics(SM_XVIRTUALSCREEN) };
+        let origin_y = unsafe { GetSystemMetrics(SM_YVIRTUALSCREEN) };
+        let width = unsafe { GetSystemMetrics(SM_CXVIRTUALSCREEN) };
+        let height = unsafe { GetSystemMetrics(SM_CYVIRTUALSCREEN) };
+        if width <= 1 || height <= 1 {
+            return Err(CommandError::exit1("virtual desktop metrics are invalid"));
+        }
+        let desktop = RECT {
+            left: origin_x,
+            top: origin_y,
+            right: origin_x + width,
+            bottom: origin_y + height,
+        };
+        let intersects = rect.right > desktop.left
+            && rect.left < desktop.right
+            && rect.bottom > desktop.top
+            && rect.top < desktop.bottom;
+        println!("target_onscreen={intersects}");
+        if !intersects {
+            return Err(CommandError::exit1(format!("{app} window is off screen")));
         }
         Ok(())
     }
@@ -294,6 +337,7 @@ mod windows_place_text {
         text: String,
         wait_for_person: bool,
         wait_timeout_seconds: u64,
+        allow_already_front: bool,
     }
 
     impl Args {
@@ -303,6 +347,7 @@ mod windows_place_text {
             let mut text = DEFAULT_TEXT.to_owned();
             let mut wait_for_person = false;
             let mut wait_timeout_seconds = DEFAULT_WAIT_TIMEOUT_SECONDS;
+            let mut allow_already_front = false;
             let mut args = std::env::args().skip(1);
             while let Some(arg) = args.next() {
                 match arg.as_str() {
@@ -324,6 +369,9 @@ mod windows_place_text {
                     "--wait-for-person" => {
                         wait_for_person = true;
                     }
+                    "--allow-already-front" => {
+                        allow_already_front = true;
+                    }
                     "--wait-timeout-seconds" => {
                         let value = args.next().ok_or_else(|| {
                             CommandError::usage("--wait-timeout-seconds needs a value")
@@ -334,7 +382,7 @@ mod windows_place_text {
                     }
                     "--help" | "-h" => {
                         return Err(CommandError::usage(
-                            "usage: task_3406_place_text [--initial-front Photos] [--app Discord] [--text MAPLE-3406] [--wait-for-person] [--wait-timeout-seconds 120]",
+                            "usage: task_3406_place_text [--initial-front Photos] [--app Discord] [--text MAPLE-3406] [--wait-for-person] [--wait-timeout-seconds 120] [--allow-already-front]",
                         ));
                     }
                     other => {
@@ -356,6 +404,7 @@ mod windows_place_text {
                 text,
                 wait_for_person,
                 wait_timeout_seconds,
+                allow_already_front,
             })
         }
     }
@@ -509,9 +558,19 @@ mod windows_place_text {
 
     fn value_of(element: &IUIAutomationElement) -> Option<String> {
         let pattern = value_pattern(element)?;
-        unsafe { pattern.CurrentValue() }
+        let raw = unsafe { pattern.CurrentValue() }
             .ok()
-            .map(|value| value.to_string())
+            .map(|value| value.to_string())?;
+        Some(normalize_discord_composer_value(&raw))
+    }
+
+    fn normalize_discord_composer_value(raw: &str) -> String {
+        let value = raw.strip_prefix('\u{feff}').unwrap_or(raw);
+        value
+            .strip_prefix("\r\n")
+            .or_else(|| value.strip_prefix('\n'))
+            .unwrap_or(value)
+            .to_owned()
     }
 
     fn element_name(element: &IUIAutomationElement) -> String {
@@ -606,6 +665,19 @@ mod windows_place_text {
             title: window_title(hwnd),
             process_name: window_process_name(hwnd).unwrap_or_default(),
         }
+    }
+
+    fn window_rect(hwnd: HWND) -> Option<RECT> {
+        let mut rect = RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
+        (unsafe { GetWindowRect(hwnd, &mut rect) } != 0
+            && rect.right > rect.left
+            && rect.bottom > rect.top)
+            .then_some(rect)
     }
 
     fn window_matches(window: &WindowInfo, wanted: &str) -> bool {
