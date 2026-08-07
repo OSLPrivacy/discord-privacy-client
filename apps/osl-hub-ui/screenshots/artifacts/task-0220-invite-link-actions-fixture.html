@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>TASK 0220 Invite Link Actions Fixture</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 20px; background: #f5f5f5; }
+    .invite-link-actions { max-width: 480px; margin: 0 auto; background: white; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); padding: 20px; display: flex; flex-direction: column; gap: 16px; }
+    .invite-link-create-row { display: flex; }
+    .invite-link-display { display: flex; flex-direction: column; gap: 8px; padding: 12px; background: #fafafa; border-radius: 6px; }
+    .invite-link-value { word-break: break-all; font-size: 13px; }
+    .invite-link-empty { color: #666; font-size: 13px; margin: 0; }
+    .invite-link-share-row { display: flex; gap: 8px; }
+    .invite-link-paste-form { display: flex; flex-direction: column; gap: 8px; }
+    .invite-link-paste-form label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+    .invite-link-paste-form input { padding: 8px; border: 1px solid #d0d0d0; border-radius: 4px; font-size: 13px; }
+    .button { padding: 8px 16px; border: none; border-radius: 4px; font-weight: 600; font-size: 13px; cursor: pointer; background: #e0e0e0; }
+    .button.primary { background: #0066cc; color: white; }
+    .button:disabled { background: #eee; color: #999; cursor: not-allowed; }
+  </style>
+</head>
+<body>
+  <section class="invite-link-actions" aria-label="Invite link actions">
+    <div class="invite-link-create-row">
+      <button class="button" id="invite-link-create" type="button" data-invite-link-create >Create invite link</button>
+    </div>
+    <div class="invite-link-display">
+      <code class="invite-link-value" data-invite-link-value tabindex="0">https://invite.osl.local/one-use/-br_jnRTPs91_Kq8Xtfi0A.v5TOIcfM3uj8u2V_EA5-6r-52wJQASHli6oLU4ccbG4</code>
+      <div class="invite-link-share-row">
+        <button class="button" id="invite-link-copy" type="button" data-invite-link-copy >Copy</button>
+        <button class="button" id="invite-link-share" type="button" data-invite-link-share >Share</button>
+      </div>
+    </div>
+    <form class="invite-link-paste-form" id="invite-link-paste-form" data-invite-link-paste-form>
+      <label for="invite-link-paste-input"><span>Paste invite link</span>
+        <input id="invite-link-paste-input" data-invite-link-paste-input placeholder="https://invite.osl.local/one-use/…" autocomplete="off" autocapitalize="none" spellcheck="false" value=""/>
+      </label>
+      <button class="button primary" id="invite-link-paste-submit" type="submit" data-invite-link-paste-submit disabled>Use invite link</button>
+    </form>
+  </section>
+</body>
+</html>
