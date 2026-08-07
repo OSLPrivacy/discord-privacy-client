@@ -165,6 +165,11 @@ path = "src/main.rs"
 # also copied into the bundle. See scripts/ci/hub-bin-check.mjs.
 required-features = ["desktop"]
 
+[[bin]]
+name = "osl-allowed-place"
+path = "src/bin/osl-allowed-place.rs"
+required-features = ["core"]
+
 # ThinLTO preserves cross-crate release optimisation without the 20–30 GB
 # single-LLVM-process peak of fat LTO, which is not viable for local release
 # builds on the development machines. Keep one codegen unit for the shipping

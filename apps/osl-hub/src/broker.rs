@@ -6625,17 +6625,16 @@ fn begin_peer_attachment(
     if view_once {
         crate::view_once_eligibility::require_view_once_attachment_eligibility(&mime_type)?;
     }
-    let tier = active_attachment_account_tier(core)?;
-    if crate::attachment_limits::check_attachment_size(plaintext_size, tier).is_err() {
-    if crate::attachment_limits::check_attachment_request(plaintext_size, 1, tier).is_err() {
+    let tier = active_attachment_account_tier(core);
+    if crate::attachment_limits::check_attachment_limits(tier, plaintext_size, 1).is_err() {
+        return Err(ERROR.to_owned());
+    }
     let plaintext_limit = if osl_chat {
         crate::osl_chat_file_limits::current_osl_chat_file_size_limit(core).max_bytes
     } else {
         ipc::attachment_wire::MAX_STREAMED_ATTACHMENT_BYTES
     };
     if plaintext_size == 0 || plaintext_size > plaintext_limit {
-    let tier = active_attachment_account_tier(core);
-    if crate::attachment_limits::check_attachment_limits(tier, plaintext_size, 1).is_err() {
         return Err(ERROR.to_owned());
     }
     let ttl_seconds = security::scope_security(manual.scope.clone())
@@ -6673,21 +6672,7 @@ fn begin_peer_attachment(
     })
 }
 
-fn active_attachment_account_tier(
-    core: &HubCoreState,
-) -> Result<crate::attachment_limits::AttachmentAccountTier, String> {
-    let license = core
-        .osl
-        .license_state
-        .lock()
-        .map_err(|_| "OSL activation state is unavailable".to_owned())?;
-    Ok(match license.state {
-        keystore::LicenseState::Paid | keystore::LicenseState::PaidOfflineGrace => {
-            crate::attachment_limits::AttachmentAccountTier::Pro
-        }
-        keystore::LicenseState::Free => crate::attachment_limits::AttachmentAccountTier::Free,
-    })
-) -> crate::attachment_limits::AttachmentAccountTier {
+fn active_attachment_account_tier(core: &HubCoreState) -> crate::attachment_limits::AttachmentAccountTier {
     if ipc::tier_gate::is_paid_equivalent(&core.osl) {
         crate::attachment_limits::AttachmentAccountTier::Pro
     } else {

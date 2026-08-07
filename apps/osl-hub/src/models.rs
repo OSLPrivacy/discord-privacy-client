@@ -63,8 +63,6 @@ pub enum HomeTileArrangementAction {
         tile_id: String,
     },
     Done,
-    pub visible_tile_data: Vec<HomeTileData>,
-    pub hidden_tile_data: Vec<HomeTileData>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
