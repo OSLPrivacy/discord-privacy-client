@@ -81,6 +81,10 @@ pub mod control_contract;
 // resolve the moment ai_carrier started using it - the file shipped as an
 // orphan and only broke the build once something imported it.
 pub mod credits;
+#[cfg(feature = "core")]
+pub mod device_pairing;
+#[cfg(feature = "core")]
+pub mod device_transfer;
 // D-191: the process-wide `tracing` subscriber. In the lib, not in `main.rs`,
 // so an integration test can install it against a hermetic path and read back
 // the bytes it produced.

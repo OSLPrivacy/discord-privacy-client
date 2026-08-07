@@ -21,7 +21,7 @@ const TRANSFER_SEALER_METHOD: &str = "device-transfer-code-v1";
 /// The destination public-key envelope and source authorization are added by
 /// the subsequent protocol stages.  This type deliberately contains no code
 /// or source-device sealer material.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TransferBundle {
     pub version: u32,
     pub transfer_identifier: String,
