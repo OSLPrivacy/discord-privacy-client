@@ -1670,6 +1670,23 @@ async fn osl_mail_get_status(
 }
 
 #[tauri::command]
+async fn osl_mail_list_threads(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<Vec<osl_mail::OslMailThreadSummary>, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may list OSL Mail threads".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        osl_mail::list_my_threads(&app.state::<HubCoreState>(), &app.state::<OslMailState>())
+    })
+    .await
+    .map_err(|_| "OSL Mail thread list worker failed".to_owned())?
+}
+
+#[tauri::command]
 async fn osl_mail_provision(
     app: tauri::AppHandle,
     caller: tauri::WebviewWindow,

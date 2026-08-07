@@ -21,6 +21,7 @@ const MAIL_DOMAIN: &str = "oslprivacy.com";
 const RETENTION_SECONDS: u32 = 7 * 24 * 60 * 60;
 const BORING_PROTECTED_SUBJECT: &str = "OSL protected message";
 const MIN_COPIED_SUBJECT_BYTES: usize = 16;
+pub const OSL_MAIL_THREAD_LIST_CAP: usize = 100;
 /// Whether the user-facing OSL Mail client may present as usable.
 ///
 /// **Derived, not written.** This was the literal `false` that D-221 called out
@@ -92,6 +93,17 @@ pub struct OslMailForwardResult {
     pub no_osl_warnings: Vec<String>,
     pub warning: Option<String>,
     pub required_confirmation: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OslMailThreadSummary {
+    pub thread_id: String,
+    pub subject: String,
+    pub correspondent: String,
+    pub latest_at: i64,
+    pub unread: bool,
+    pub transit: &'static str,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -172,6 +184,28 @@ struct BurnResponse {
     address_tombstoned: bool,
 }
 
+#[derive(Deserialize)]
+struct ListResponse {
+    messages: Vec<ListResponseMessage>,
+}
+
+#[derive(Deserialize)]
+struct ListResponseMessage {
+    message_id: String,
+    kind: String,
+    #[serde(default)]
+    sender_user_id: Option<String>,
+    #[serde(default)]
+    sender: Option<String>,
+    #[serde(default)]
+    sender_address: Option<String>,
+    #[serde(default)]
+    subject: Option<String>,
+    #[serde(default)]
+    opaque_thread_token: Option<String>,
+    received_at: i64,
+}
+
 pub fn get_status(core: &HubCoreState, state: &OslMailState) -> Result<OslMailStatus, String> {
     let identity = active_identity(core)?;
     ensure_capabilities(&mail_base_url()?)?;
@@ -238,6 +272,53 @@ pub fn provision(
         .map_err(|_| "OSL Mail state is unavailable".to_owned())?
         .insert(identity.user_id.clone(), provisioned.address.clone());
     Ok(status_from_address(Some(provisioned.address)))
+}
+
+pub fn list_my_threads(
+    core: &HubCoreState,
+    state: &OslMailState,
+) -> Result<Vec<OslMailThreadSummary>, String> {
+    let identity = active_identity(core)?;
+    state
+        .addresses
+        .lock()
+        .map_err(|_| "OSL Mail state is unavailable".to_owned())?
+        .get(&identity.user_id)
+        .ok_or_else(|| "Provision OSL Mail before reading threads".to_owned())?;
+    let base_url = mail_base_url()?;
+    ensure_capabilities(&base_url)?;
+
+    let mut unsigned = Map::new();
+    unsigned.insert(
+        "limit".to_owned(),
+        Value::from(OSL_MAIL_THREAD_LIST_CAP as u64),
+    );
+    unsigned.insert("timestamp_ms".to_owned(), Value::from(now_millis()?));
+    unsigned.insert("request_id".to_owned(), Value::String(request_id()));
+    unsigned.insert(
+        "user_id".to_owned(),
+        Value::String(identity.user_id.clone()),
+    );
+    let message = signed_message("LIST", &unsigned)?;
+    unsigned.insert(
+        "signature_b64".to_owned(),
+        Value::String(
+            STANDARD.encode(crypto::ed25519::sign(&identity.ed25519_secret, &message).as_bytes()),
+        ),
+    );
+
+    let response = http_client()?
+        .post(format!("{base_url}/v1/mail/list"))
+        .json(&unsigned)
+        .send()
+        .map_err(|_| "OSL Mail thread list is unavailable".to_owned())?;
+    if !response.status().is_success() {
+        return Err("OSL Mail thread list was refused".to_owned());
+    }
+    let listed: ListResponse = response
+        .json()
+        .map_err(|_| "OSL Mail thread list response was malformed".to_owned())?;
+    Ok(thread_summaries_from_list(listed.messages))
 }
 
 /// Send a sealed message body to the relay. The relay still receives the three
@@ -627,6 +708,67 @@ fn valid_osl_address(address: &str) -> bool {
         && local.bytes().all(|byte| {
             byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_' | b'-')
         })
+}
+
+fn thread_summaries_from_list(messages: Vec<ListResponseMessage>) -> Vec<OslMailThreadSummary> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut threads = Vec::new();
+    for message in messages {
+        if threads.len() >= OSL_MAIL_THREAD_LIST_CAP {
+            break;
+        }
+        let thread_id = message
+            .opaque_thread_token
+            .as_deref()
+            .filter(|token| !token.is_empty())
+            .unwrap_or(&message.message_id)
+            .to_owned();
+        if !seen.insert(thread_id.clone()) {
+            continue;
+        }
+        let transit = match message.kind.as_str() {
+            "external_envelope" => "externalSmtp",
+            _ => "oslE2ee",
+        };
+        threads.push(OslMailThreadSummary {
+            thread_id,
+            subject: visible_list_subject(&message),
+            correspondent: visible_list_sender(&message),
+            latest_at: message.received_at,
+            unread: true,
+            transit,
+        });
+    }
+    threads
+}
+
+fn visible_list_sender(message: &ListResponseMessage) -> String {
+    message
+        .sender_address
+        .as_deref()
+        .or(message.sender.as_deref())
+        .filter(|sender| valid_forward_email_address(sender))
+        .map(str::to_owned)
+        .or_else(|| {
+            message
+                .sender_user_id
+                .as_deref()
+                .map(|sender| format!("{}@{MAIL_DOMAIN}", sender.to_ascii_lowercase()))
+                .filter(|sender| valid_forward_email_address(sender))
+        })
+        .unwrap_or_else(|| format!("unknown@{MAIL_DOMAIN}"))
+}
+
+fn visible_list_subject(message: &ListResponseMessage) -> String {
+    message
+        .subject
+        .as_deref()
+        .map(str::trim)
+        .filter(|subject| subject.as_bytes().len() <= 512)
+        .filter(|subject| !subject.chars().any(char::is_control))
+        .filter(|_subject| message.kind == "external_envelope")
+        .unwrap_or(BORING_PROTECTED_SUBJECT)
+        .to_owned()
 }
 
 fn protected_forward_confirmation(no_osl_recipients: &[String]) -> String {
