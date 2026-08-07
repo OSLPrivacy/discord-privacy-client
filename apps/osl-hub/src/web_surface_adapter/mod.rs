@@ -208,10 +208,7 @@ impl<B: WebSurfaceBackend> SurfaceAdapter for WebSurfaceAdapter<B> {
         carrier: &Carrier,
     ) -> PlacementReceipt {
         if !self.validates_binding(binding)
-            || !same_scope(
-                &binding.scope_binding_hash,
-                authorization.scope_binding_hash(),
-            )
+            || !same_scope_and_message_box(binding, authorization)
             || !self.supports(adapter_profile::Capability::PlaceProtectedPayload)
         {
             return Self::placement_refused();
@@ -459,7 +456,7 @@ mod tests {
             adapter
                 .place(
                     &stale,
-                    &PlacementAuthorization::for_scope("scope"),
+                    &PlacementAuthorization::for_scope_and_provider("scope", "gmail").unwrap(),
                     &Carrier("carrier".into()),
                 )
                 .status,
