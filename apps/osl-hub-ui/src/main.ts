@@ -232,6 +232,7 @@ import {
 } from "./discord-headless-qa-adapter";
 import type { SecureLocalStore } from "./secure-local-store";
 import { createOslChatSecureLocalStore } from "./osl-chat-secure-store";
+import { NEW_FRIEND_DEFAULT_GROUPS, initialNewFriendDefaults, newFriendDefaultsMarkup, type NewFriendDefaultChoices } from "./new-friend-defaults";
 
 export type Route = "onboarding" | "home" | "inbox" | "people" | "privacy" | "activity" | "connections" | "service" | "settings" | "mullvad" | "osl-chat" | "osl-mail" | "osl-servers" | "signal-qa";
 
@@ -324,7 +325,7 @@ const NATIVE_DISCORD_COMPOSER_UNREACHABLE_REASONS = ["zorder-band", "keyboard-fo
 type NativeDiscordComposerUnreachableReason = (typeof NATIVE_DISCORD_COMPOSER_UNREACHABLE_REASONS)[number];
 type OnboardingRoute = "pro" | "welcome" | "create" | "import" | "unlock" | "keylost" | "account-recovery" | "recovery" | "mullvad" | "sending" | "defaults" | "tor" | "forward-secrecy" | "cover" | "silent-visible" | "passwords" | "burnpass" | "privacy" | "tutorial" | "detected" | "install" | "apps" | "browser" | "decoy";
 type OnboardingRoute = "pro" | "welcome" | "create" | "import" | "unlock" | "keylost" | "account-recovery" | "recovery" | "mullvad" | "sending" | "defaults" | "tor" | "forward-secrecy" | "cover" | "visibility" | "passwords" | "burnpass" | "privacy" | "tutorial" | "detected" | "install" | "apps" | "browser" | "decoy";
-type SettingsSection = "account" | "apps" | "scrub" | "cleanup" | "notifications" | "appearance" | "about";
+type SettingsSection = "account" | "apps" | "friends" | "scrub" | "cleanup" | "notifications" | "appearance" | "about";
 type SavedAccountMode = "ask" | "use" | "clean";
 type BurnScope = "chat" | "app" | "account";
 type BurnResult = {
@@ -470,6 +471,11 @@ const recoveryKitUnsavedFlag = createRecoveryKitUnsavedFlag({
   write: (unsaved) => setHubRecoveryKitUnsaved(unsaved),
 });
 let settingsSection: SettingsSection = "account";
+// What the New friend defaults screen is showing, and what Save default last
+// wrote. Two values, because Reset has to have something to go back to and the
+// status line has to be able to say the screen is ahead of the saved copy.
+let newFriendDefaultChoices: NewFriendDefaultChoices = initialNewFriendDefaults();
+let savedNewFriendDefaults: NewFriendDefaultChoices = initialNewFriendDefaults();
 let activeService: LinkedService | null = null;
 let activeHomeAppId: HomeAppId | null = null;
 let appLaunchPendingId: HomeAppId | null = null;
@@ -747,6 +753,7 @@ const sidebarStorageKey = "osl-hub-sidebar";
 const hiddenStorageKey = "osl-hub-sidebar-hidden";
 const notificationsStorageKey = "osl-hub-notifications";
 const notificationAppsStorageKey = "osl-hub-notification-apps";
+const newFriendDefaultsStorageKey = "osl-hub-new-friend-defaults-v1";
 const notificationPreviewStorageKey = "osl-hub-notification-previews";
 const notificationScopeStorageKey = "osl-hub-notification-scope-suggestions";
 const notificationChatStorageKey = "osl-hub-notification-chats-v1";
@@ -1393,6 +1400,8 @@ export async function loadUiPreferences(): Promise<void> {
     if (typeof notificationApps === "object" && notificationApps !== null && !Array.isArray(notificationApps)) {
       notificationAppPreferences = Object.fromEntries(Object.entries(notificationApps).filter(([, enabled]) => typeof enabled === "boolean").slice(0, 20)) as Partial<Record<ServiceId, boolean>>;
     }
+    savedNewFriendDefaults = readNewFriendDefaults();
+    newFriendDefaultChoices = { ...savedNewFriendDefaults };
     const savedApps = JSON.parse(localStorage.getItem(savedNativeAppsStorageKey) ?? "[]") as unknown;
     if (Array.isArray(savedApps)) savedNativeApps = new Set(savedApps.filter((id): id is NativeAppId => typeof id === "string" && supportedNativeAppIds.has(id as NativeAppId)));
     const accountChoices = JSON.parse(localStorage.getItem(detectedAccountChoicesStorageKey) ?? "[]") as unknown;
@@ -5846,7 +5855,7 @@ function serviceGuideContent(service: LinkedService, step: ServiceGuideStep): st
 }
 
 function settingsContent(): string {
-  const items: Array<[SettingsSection, string]> = [["account", "Account"], ["apps", "Apps"], ["scrub", "Scrub"], ["cleanup", "Cleanup"], ["notifications", "Notifications"], ["appearance", "Appearance"], ["about", "About"]];
+  const items: Array<[SettingsSection, string]> = [["account", "Account"], ["apps", "Apps"], ["friends", "Friends"], ["scrub", "Scrub"], ["cleanup", "Cleanup"], ["notifications", "Notifications"], ["appearance", "Appearance"], ["about", "About"]];
   // These buttons pick a section WITHIN Settings, so they are not `page`.
   // Settings itself is the page, and the primary sidebar already marks it
   // `aria-current="page"`; marking a section button the same way put two
@@ -5859,11 +5868,65 @@ function settingsContent(): string {
 function settingsSectionContent(): string {
   if (settingsSection === "account") return `${identitySettingsContent()}${settingsDivider()}${passwordSecuritySettingsContent()}${accountAdvancedSettingsContent()}${renderRecoveryStatesSettings()}`;
   if (settingsSection === "apps") return `${serviceAccountsSettingsContent()}${optionalComponentsSettingsContent()}${sendingSettingsContent()}`;
+  if (settingsSection === "friends") return newFriendDefaultsMarkup(newFriendDefaultChoices, savedNewFriendDefaults);
   if (settingsSection === "scrub") return privacySettingsContent();
   if (settingsSection === "cleanup") return massCleanupSettingsContent();
   if (settingsSection === "notifications") return notificationSettingsContent();
   if (settingsSection === "appearance") return appearanceSettingsContent();
   return updateSettingsContent();
+}
+
+/**
+ * Read the saved New friend defaults back, one field at a time, and keep only
+ * values the screen actually offers. A stored string OSL no longer recognizes
+ * falls back to the built-in default rather than being handed to a radio group
+ * that has no such option -- which would render every choice unselected and
+ * leave the screen unable to say what the default is.
+ */
+function readNewFriendDefaults(): NewFriendDefaultChoices {
+  const fallback = initialNewFriendDefaults();
+  let stored: unknown;
+  try {
+    stored = JSON.parse(localStorage.getItem(newFriendDefaultsStorageKey) ?? "{}");
+  } catch {
+    return fallback;
+  }
+  if (typeof stored !== "object" || stored === null || Array.isArray(stored)) return fallback;
+  const record = stored as Record<string, unknown>;
+  const choices = { ...fallback };
+  for (const group of NEW_FRIEND_DEFAULT_GROUPS) {
+    const value = record[group.field];
+    if (typeof value === "string" && group.options.some((option) => option.value === value)) {
+      (choices as Record<string, string>)[group.field] = value;
+    }
+  }
+  return choices;
+}
+
+function bindNewFriendDefaultControls(): void {
+  document.querySelectorAll<HTMLInputElement>("[data-new-friend-default]").forEach((input) => input.addEventListener("change", () => {
+    if (!input.checked) return;
+    const group = NEW_FRIEND_DEFAULT_GROUPS.find((candidate) => candidate.name === input.dataset.newFriendDefault);
+    if (!group || !group.options.some((option) => option.value === input.value)) return;
+    newFriendDefaultChoices = { ...newFriendDefaultChoices, [group.field]: input.value };
+    render();
+  }));
+  document.querySelector<HTMLButtonElement>("#save-new-friend-default")?.addEventListener("click", () => {
+    savedNewFriendDefaults = { ...newFriendDefaultChoices };
+    localStorage.setItem(newFriendDefaultsStorageKey, JSON.stringify(savedNewFriendDefaults));
+    showToast("New friend defaults saved. Friends you already added did not change");
+    render();
+  });
+  // Reset goes back to the OSL defaults -- the same starting point
+  // NewFriendDefaults::default() uses -- and saves them, so Reset is not a
+  // half-move that leaves a different set of choices on disk than on screen.
+  document.querySelector<HTMLButtonElement>("#reset-new-friend-default")?.addEventListener("click", () => {
+    newFriendDefaultChoices = initialNewFriendDefaults();
+    savedNewFriendDefaults = initialNewFriendDefaults();
+    localStorage.setItem(newFriendDefaultsStorageKey, JSON.stringify(savedNewFriendDefaults));
+    showToast("New friend defaults reset");
+    render();
+  });
 }
 
 function optionalComponentsSettingsContent(): string {
@@ -8002,6 +8065,7 @@ function bindWorkspace(): void {
     });
   });
   document.querySelectorAll<HTMLButtonElement>("[data-notification-settings]").forEach((button) => button.addEventListener("click", () => { route = "settings"; settingsSection = "notifications"; render(); }));
+  bindNewFriendDefaultControls();
   document.querySelector<HTMLButtonElement>("[data-privacy-primary-action]")?.addEventListener("click", privacyPrimaryAction);
   document.querySelector<HTMLButtonElement>("[data-activity-primary-action]")?.addEventListener("click", activityPrimaryAction);
   document.querySelector<HTMLButtonElement>("[data-connections-primary-action]")?.addEventListener("click", connectionsPrimaryAction);
