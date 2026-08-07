@@ -214,7 +214,6 @@ pub mod osl_chat_file_limits;
 #[cfg(feature = "core")]
 pub mod osl_chat_local_state_key;
 #[cfg(feature = "core")]
-#[cfg(feature = "core")]
 pub mod osl_mail;
 #[cfg(feature = "core")]
 #[cfg(feature = "core")]
