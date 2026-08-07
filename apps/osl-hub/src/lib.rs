@@ -9,6 +9,7 @@ pub mod account_identity_authority;
 pub mod account_recovery;
 #[cfg(feature = "core")]
 #[cfg(not(task3982_focused))]
+pub mod aol_fake_page;
 pub mod allowed_place_commands;
 #[cfg(all(feature = "core", task3982_focused))]
 pub mod allowed_place_commands {
