@@ -7,7 +7,8 @@
 
 use osl_privacy_hub::adapters::*;
 use osl_privacy_hub::web_surface_adapter::{
-    WebPageControlRefusal, WebPageControls, WebSurfaceAdapter, WebSurfaceBackend,
+    WebPageControlRefusal, WebPageControls, WebPlacementCommandAction, WebPlacementCommandRefusal,
+    WebSurfaceAdapter, WebSurfaceBackend,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
@@ -206,6 +207,7 @@ struct Task1206Page {
 struct Task1206Fixture {
     page: Mutex<Task1206Page>,
     placements: AtomicUsize,
+    sends: AtomicUsize,
     last_control_refusal: Mutex<Option<WebPageControlRefusal>>,
 }
 
@@ -218,6 +220,7 @@ impl Task1206Fixture {
                 body_text: String::new(),
             }),
             placements: AtomicUsize::new(0),
+            sends: AtomicUsize::new(0),
             last_control_refusal: Mutex::new(None),
         }
     }
@@ -228,6 +231,10 @@ impl Task1206Fixture {
 
     fn body_text(&self) -> String {
         self.page.lock().unwrap().body_text.clone()
+    }
+
+    fn send_count(&self) -> usize {
+        self.sends.load(Ordering::SeqCst)
     }
 
     fn set_send_present(&self, present: bool) {
@@ -314,6 +321,7 @@ impl WebSurfaceBackend for Task1206Fixture {
     }
 
     fn commit(&self, _: &SurfaceBinding, _: &PlacementReceipt) -> SendReceipt {
+        self.sends.fetch_add(1, Ordering::SeqCst);
         SendReceipt {
             outcome: SendOutcome::Sent,
             elapsed_ms: 1,
@@ -536,5 +544,78 @@ fn task_1206_missing_send_control_refuses_without_replacing_body() {
     println!(
         "TASK1206_PLACEMENT_COUNT_AFTER_MISSING_SEND={}",
         adapter.backend().placement_count()
+    );
+}
+
+#[test]
+fn task_1209_check_placement_does_not_submit() {
+    let adapter = adapter(Task1206Fixture::new());
+    let binding = adapter.locate(&current_target()).unwrap();
+    let authorization = PlacementAuthorization::for_scope("opaque-scope");
+    let carrier = Carrier("MAPLE-4172".into());
+
+    println!(
+        "TASK1209_PLACEMENT_COUNT_BEFORE={}",
+        adapter.backend().placement_count()
+    );
+    println!(
+        "TASK1209_SEND_COUNT_BEFORE={}",
+        adapter.backend().send_count()
+    );
+    assert_eq!(adapter.backend().placement_count(), 0);
+    assert_eq!(adapter.backend().send_count(), 0);
+
+    let placed = adapter
+        .run_placement_command(
+            &binding,
+            &authorization,
+            &carrier,
+            WebPlacementCommandAction::Place,
+        )
+        .expect("place action should run through the placement command");
+    assert_eq!(placed.status, PlacementStatus::Placed);
+    assert_eq!(adapter.backend().placement_count(), 1);
+    assert_eq!(adapter.backend().body_text(), "MAPLE-4172");
+    assert_eq!(adapter.backend().send_count(), 0);
+    println!("TASK1209_REQUESTED_ACTION_BEFORE=place");
+    println!(
+        "TASK1209_BODY_READS_AFTER_PLACE={}",
+        adapter.backend().body_text()
+    );
+    println!(
+        "TASK1209_PLACEMENT_COUNT_AFTER_PLACE={}",
+        adapter.backend().placement_count()
+    );
+    println!(
+        "TASK1209_SEND_COUNT_AFTER_PLACE={}",
+        adapter.backend().send_count()
+    );
+
+    let refused = adapter
+        .run_placement_command(
+            &binding,
+            &authorization,
+            &carrier,
+            WebPlacementCommandAction::Submit,
+        )
+        .expect_err("submit action must be refused by the placement command");
+    assert_eq!(refused, WebPlacementCommandRefusal::PlacementCannotSubmit);
+    assert_eq!(refused.to_string(), "placement cannot submit");
+    assert_eq!(adapter.backend().body_text(), "MAPLE-4172");
+    assert_eq!(adapter.backend().placement_count(), 1);
+    assert_eq!(adapter.backend().send_count(), 0);
+    println!("TASK1209_REQUESTED_ACTION_AFTER=submit");
+    println!("TASK1209_SUBMIT_REFUSAL={refused}");
+    println!(
+        "TASK1209_BODY_READS_AFTER_SUBMIT_REFUSAL={}",
+        adapter.backend().body_text()
+    );
+    println!(
+        "TASK1209_PLACEMENT_COUNT_AFTER_SUBMIT_REFUSAL={}",
+        adapter.backend().placement_count()
+    );
+    println!(
+        "TASK1209_SEND_COUNT_AFTER_SUBMIT_REFUSAL={}",
+        adapter.backend().send_count()
     );
 }
