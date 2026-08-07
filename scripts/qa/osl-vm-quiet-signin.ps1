@@ -541,4 +541,22 @@ if ($Action -ceq 'Stage') {
 }
 
 $result | ConvertTo-Json -Depth 12 -Compress
-if ($result.verdict -ceq 'fail') { exit 1 }
+if ($result.verdict -ceq 'fail') {
+  $noisy = [Collections.Generic.List[string]]::new()
+  if ($null -ne $result.settings) {
+    if (-not $result.settings.everyDisplayAndSleepTimeoutZero) { $noisy.Add('power-timeouts') }
+    if ($result.settings.hibernateAvailable) { $noisy.Add('hibernate') }
+    if (-not $result.settings.screensaverOff) { $noisy.Add('screensaver') }
+    if (-not $result.settings.lockScreenOff) { $noisy.Add('lock-screen') }
+    if (-not $result.settings.workstationLockDisabled) { $noisy.Add('workstation-lock') }
+    if (-not $result.settings.notificationBannersOff) { $noisy.Add('notifications') }
+    if (-not $result.settings.focusAssistDoNotDisturbOn) { $noisy.Add('focus-assist') }
+    if ($result.settings.windowsUpdateRestartWithoutAsking -cne 'off') { $noisy.Add('windows-update-restart') }
+  }
+  $browserFailures = @($result.browsers | Where-Object { -not $_.pass } | ForEach-Object { 'browser-' + $_.name })
+  foreach ($browserFailure in $browserFailures) { $noisy.Add($browserFailure) }
+  if (-not $result.sameUnlockedPaintedSession) { $noisy.Add('desktop-session') }
+  $reason = if ($noisy.Count -gt 0) { ($noisy | Select-Object -Unique) -join ',' } else { 'unknown' }
+  Write-Output ("VM-4955-NOISY machine={0} reason={1}" -f ([string]$result.machine).ToLowerInvariant(), $reason)
+  exit 1
+}

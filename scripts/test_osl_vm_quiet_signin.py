@@ -85,6 +85,12 @@ class QuietSigninStaticTests(unittest.TestCase):
         self.assertIn("C:\\OSL\\desktop-runner\\payloads", self.quiet)
         self.assertIn("Stop-NamedBrowserProcessesInSession", self.quiet)
 
+    def test_failed_audit_prints_non_vacuous_noisy_marker(self) -> None:
+        self.assertIn("VM-4955-NOISY", self.quiet)
+        self.assertIn("screensaver", self.quiet)
+        self.assertIn("ToLowerInvariant", self.quiet)
+        self.assertRegex(self.quiet, r"exit\s+1")
+
 
 if __name__ == "__main__":
     unittest.main()
