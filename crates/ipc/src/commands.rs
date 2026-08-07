@@ -16667,8 +16667,9 @@ pub fn cmd_osl_mark_scope_burned(
         }
         g.version = 1;
     }
-    persist_burned_scopes_now(state);
-    record_burn_ledger_enrollment(state);
+    if persist_burned_scopes_now(state).is_ok() {
+        record_burn_ledger_enrollment(state);
+    }
     Ok(())
 }
 
@@ -16756,26 +16757,32 @@ pub fn cmd_osl_unburn_scope(
     scope_id: String,
 ) -> Result<bool, String> {
     record_activity_on_command_entry();
-    let removed = {
-        let mut g = state
-            .burned_scopes
-            .lock()
-            .expect("burned_scopes mutex poisoned");
-        let before = g.scopes.len();
-        g.scopes
-            .retain(|e| !(e.scope_kind == scope_kind && e.scope_id == scope_id));
-        let after = g.scopes.len();
-        if after < before {
-            g.version = 1;
-            true
-        } else {
-            false
+    let mut g = state
+        .burned_scopes
+        .lock()
+        .expect("burned_scopes mutex poisoned");
+    let before = g.scopes.len();
+    let mut next = g.clone();
+    next.scopes
+        .retain(|e| !(e.scope_kind == scope_kind && e.scope_id == scope_id));
+    if next.scopes.len() == before {
+        return Ok(false);
+    }
+    let dir = match keystore::osl_config_dir() {
+        Ok(d) => d,
+        Err(e) => {
+            record_persist_error(state, "burned_scopes dir resolve", &e);
+            return Err(format!("burned_scopes dir resolve: {e}"));
         }
     };
-    if removed {
-        persist_burned_scopes_now(state);
+    let path = dir.join("burned_scopes.json");
+    next.version = 1;
+    if let Err(e) = crate::burned_scopes_file::write_burned_scopes(&path, &next) {
+        record_persist_error(state, "burned_scopes.json", &e);
+        return Err(format!("burned_scopes.json: {e}"));
     }
-    Ok(removed)
+    *g = next;
+    Ok(true)
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -20609,12 +20616,12 @@ pub fn cmd_osl_list_burned_scopes(state: &AppState) -> Result<Vec<BurnedScopeDto
         .collect())
 }
 
-fn persist_burned_scopes_now(state: &AppState) {
+fn persist_burned_scopes_now(state: &AppState) -> Result<(), String> {
     let dir = match keystore::osl_config_dir() {
         Ok(d) => d,
         Err(e) => {
-            record_persist_error(state, "burned_scopes dir resolve", e);
-            return;
+            record_persist_error(state, "burned_scopes dir resolve", &e);
+            return Err(format!("burned_scopes dir resolve: {e}"));
         }
     };
     let path = dir.join("burned_scopes.json");
@@ -20624,8 +20631,10 @@ fn persist_burned_scopes_now(state: &AppState) {
         .expect("burned_scopes mutex poisoned");
     if let Err(e) = crate::burned_scopes_file::write_burned_scopes(&path, &g) {
         drop(g);
-        record_persist_error(state, "burned_scopes.json", e);
+        record_persist_error(state, "burned_scopes.json", &e);
+        return Err(format!("burned_scopes.json: {e}"));
     }
+    Ok(())
 }
 
 /// 7d-B3: wipe every OSL file. Also clears in-memory AppState so the
