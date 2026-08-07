@@ -6247,6 +6247,7 @@ code {
 
 /* Whitelist roster: every whitelisted person, where they are trusted, and how
    far their reach was deliberately widened. */
+.discord-qa-whitelist { position: relative; }
 .discord-qa-whitelist #discord-qa-whitelist-roster {
   min-width: auto;
   padding: 0 9px;
@@ -6258,6 +6259,40 @@ code {
   text-transform: uppercase;
 }
 .whitelist-roster-list { display: grid; gap: 12px; }
+.whitelist-roster-dropdown {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 30;
+  width: min(280px, calc(100vw - 24px));
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 16px 34px rgba(0, 0, 0, .18);
+}
+.whitelist-dropdown-list { display: grid; gap: 4px; }
+.whitelist-dropdown-row {
+  min-height: 42px;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  padding: 7px 8px;
+  border-radius: 6px;
+}
+.whitelist-dropdown-row:hover { background: var(--osl-bg-hover); }
+.whitelist-dropdown-row input { margin: 0; }
+.whitelist-dropdown-row span,
+.whitelist-dropdown-row small { min-width: 0; }
+.whitelist-dropdown-row strong,
+.whitelist-dropdown-row small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.whitelist-dropdown-row small { color: var(--muted); }
 .whitelist-roster-row { display: grid; gap: 8px; }
 .whitelist-roster-row > header {
   display: flex;
