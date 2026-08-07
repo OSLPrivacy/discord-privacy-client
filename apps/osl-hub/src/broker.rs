@@ -19310,6 +19310,144 @@ ok i will weekend again with you",
         }
     }
 
+    fn task_3955_rows(
+        include_cover_copies: bool,
+    ) -> (
+        Vec<crate::native_discord_adapter::VisibleMessageRow>,
+        Vec<usize>,
+    ) {
+        use crate::native_discord_adapter::native_row_attribution_from_provider;
+
+        const COVER: &str = "task 3955 cover words repeat exactly for four rows";
+        const SCOPE: &str = "trusted-scope";
+        const GENERATION: u64 = 7;
+        const COPY_POSITIONS: [usize; 3] = [17, 88, 149];
+
+        let mut carriers = (0..200usize)
+            .filter_map(|ordinary_index| {
+                let is_copy = COPY_POSITIONS.contains(&ordinary_index);
+                if is_copy && !include_cover_copies {
+                    None
+                } else if is_copy {
+                    Some(COVER.to_owned())
+                } else {
+                    Some(format!("task 3955 ordinary visible row {ordinary_index:03}"))
+                }
+            })
+            .collect::<Vec<_>>();
+        carriers.push(COVER.to_owned());
+
+        let mut matching_positions = Vec::new();
+        let rows = carriers
+            .iter()
+            .enumerate()
+            .map(|(row_index, carrier)| {
+                if carrier == COVER {
+                    matching_positions.push(row_index);
+                }
+                let message_id = format!("{:018}", 395_500_000_000_000_000u64 + row_index as u64);
+                let seed = 1_000 + i32::try_from(row_index).expect("row index fits i32") * 10;
+                let evidence = native_row_attribution_from_provider(
+                    matrix_native_observation(&message_id, "222222222222222222", carrier, seed),
+                    &[carrier.clone()],
+                    SCOPE,
+                    GENERATION,
+                    row_index,
+                )
+                .expect("task 3955 provider evidence is well formed");
+                matrix_visible_row(evidence, carrier, seed)
+            })
+            .collect::<Vec<_>>();
+        (rows, matching_positions)
+    }
+
+    #[test]
+    fn task_3955_many_similar_rows_refuse_the_whole_screen() {
+        use crate::native_discord_adapter::native_row_attribution_carrier_sha256;
+
+        const COVER: &str = "task 3955 cover words repeat exactly for four rows";
+        const PRIVATE_WORDS: &str = "task 3955 exact private words opened";
+        const SCOPE: &str = "trusted-scope";
+        const GENERATION: u64 = 7;
+
+        let (crowded_rows, crowded_matches) = task_3955_rows(true);
+        let crowded_row_count = crowded_rows.len();
+        assert_eq!(crowded_row_count, 201);
+        assert_eq!(crowded_matches, vec![17, 88, 149, 200]);
+        assert!(
+            !native_row_evidence_batch_is_valid(&crowded_rows, SCOPE, GENERATION),
+            "four rows with the same cover must refuse the whole native batch"
+        );
+        let refused_rows = unproven_rehydrated_rows(crowded_rows);
+        let opened_private_messages = refused_rows
+            .iter()
+            .filter(|row| row.plaintext.is_some())
+            .count();
+        assert_eq!(opened_private_messages, 0);
+        assert_eq!(refused_rows.len(), crowded_row_count);
+        assert!(refused_rows.iter().all(|row| row.attribution.is_none()));
+        println!(
+            "TASK3955 duplicate_run row_count={} opened_private_messages={} refusal_scope=whole_screen refused_rows={} matching_row_positions_zero_based={}",
+            crowded_row_count,
+            opened_private_messages,
+            refused_rows.len(),
+            crowded_matches
+                .iter()
+                .map(usize::to_string)
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+
+        let (control_rows, control_matches) = task_3955_rows(false);
+        assert_eq!(control_rows.len(), 198);
+        assert_eq!(control_matches, vec![197]);
+        assert!(native_row_evidence_batch_is_valid(
+            &control_rows,
+            SCOPE,
+            GENERATION
+        ));
+        let cover_sha256 = native_row_attribution_carrier_sha256(COVER);
+        let opened = rehydrated_rows(
+            control_rows.into_iter().map(|row| {
+                (
+                    row.line,
+                    row.decode_candidates,
+                    row.bounds,
+                    row.attribution,
+                )
+            }),
+            |_, evidence| {
+                let evidence = evidence?;
+                (evidence.carrier_sha256 == cover_sha256).then(|| {
+                    let authenticated = matrix_authenticated(
+                        PeerWireOrientation::PeerToSelf,
+                        "task-3955-payload",
+                        PRIVATE_WORDS,
+                        'e',
+                    );
+                    bind_authenticated_native_row(evidence, authenticated)
+                        .expect("the one real cover opens against its native row proof")
+                })
+            },
+        );
+        let opened_private = opened
+            .iter()
+            .filter_map(|row| row.plaintext.as_deref())
+            .collect::<Vec<_>>();
+        assert_eq!(opened_private, vec![PRIVATE_WORDS]);
+        println!(
+            "TASK3955 control_run copies_removed=3 row_count={} opened_private_messages={} matching_row_positions_zero_based={} exact_private_words=\"{}\"",
+            opened.len(),
+            opened_private.len(),
+            control_matches
+                .iter()
+                .map(usize::to_string)
+                .collect::<Vec<_>>()
+                .join(","),
+            opened_private[0]
+        );
+    }
+
     #[test]
     fn native_producer_broker_and_command_dto_matrix_is_behavioral_and_fail_closed() {
         use crate::native_discord_adapter::{
