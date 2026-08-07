@@ -1164,6 +1164,9 @@ pub fn service_kind_from_id(service_id: &str) -> Option<ServiceKind> {
         "discord" => ServiceKind::Discord,
         "telegram" => ServiceKind::Telegram,
         "whatsapp" => ServiceKind::WhatsApp,
+        "instagram" => ServiceKind::Instagram,
+        "x" => ServiceKind::X,
+        "messenger" => ServiceKind::Messenger,
         "email" => ServiceKind::Email,
         "signal" => ServiceKind::Signal,
         _ => return None,
@@ -2530,9 +2533,9 @@ pub fn service_descriptor(id: ServiceKind) -> ServiceDescriptor {
         .expect("every ServiceKind has a descriptor")
 }
 
-fn service_descriptors() -> [ServiceDescriptor; 5] {
+fn service_descriptors() -> [ServiceDescriptor; 8] {
     use ServiceCategory::Consumer;
-    use ServiceLaunchState::Available;
+    use ServiceLaunchState::{Available, ComingSoon};
     [
         descriptor(
             ServiceKind::Discord,
@@ -2557,6 +2560,23 @@ fn service_descriptors() -> [ServiceDescriptor; 5] {
             25,
             Consumer,
             Available,
+        ),
+        descriptor(
+            ServiceKind::Instagram,
+            "Instagram",
+            "IG",
+            50,
+            Consumer,
+            ComingSoon,
+        ),
+        descriptor(ServiceKind::X, "X", "X", 60, Consumer, ComingSoon),
+        descriptor(
+            ServiceKind::Messenger,
+            "Facebook Messenger",
+            "MS",
+            65,
+            Consumer,
+            ComingSoon,
         ),
         descriptor(ServiceKind::Email, "Email", "EM", 70, Consumer, Available),
         // Signal has no first-party web messenger. The service is available
