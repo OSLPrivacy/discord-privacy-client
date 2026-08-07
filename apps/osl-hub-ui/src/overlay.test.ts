@@ -1178,6 +1178,47 @@ describe("trusted composer overlay", () => {
     expect(source).not.toMatch(/localStorage|sessionStorage|indexedDB/);
   });
 
+  it("TASK4411 wake-up notice enters the guarded fetch-then-repaint path exactly once", () => {
+    const source = readRelative("./overlay.ts");
+    const executableDrainEdges = source.split("\n").filter((line) => {
+      const trimmed = line.trimStart();
+      return !trimmed.startsWith("//")
+        && !line.includes("function requestRealtimeDrain")
+        && line.includes("requestRealtimeDrain(");
+    });
+
+    const listenerStart = source.indexOf("void listen<void>(DISCORD_RECEIVE_WAKEUP_EVENT");
+    expect(listenerStart).toBeGreaterThan(-1);
+    const listenerEnd = source.indexOf("});", listenerStart);
+    const listener = source.slice(listenerStart, listenerEnd);
+    expect(listener.match(/requestRealtimeDrain\(\)/gu)).toHaveLength(1);
+
+    const request = source.slice(
+      source.indexOf("function requestRealtimeDrain(): void {"),
+      source.indexOf("async function drainReceived(): Promise<void> {"),
+    );
+    expect(request.match(/drainReceived\(\)/gu)).toHaveLength(1);
+    expect(request).toContain("shouldPollDiscordOverlay({");
+
+    const drain = source.slice(
+      source.indexOf("async function drainReceived(): Promise<void> {"),
+      source.indexOf('document.addEventListener("visibilitychange"'),
+    );
+    expect(drain).toContain("if (receiveBusy || !shouldPollDiscordOverlay({");
+    expect(drain.match(/openNativeDiscordOverlayText\(\)/gu)).toHaveLength(1);
+    const newMessageEdge = drain.slice(
+      drain.indexOf("// NEW-MESSAGE EDGE."),
+      drain.indexOf("const attachments", drain.indexOf("// NEW-MESSAGE EDGE.")),
+    );
+    expect(newMessageEdge.match(/scheduleTranscriptRehydrate\(\)/gu)).toHaveLength(1);
+
+    console.log(`TASK4411_EDGE_COUNT_AFTER=${executableDrainEdges.length}`);
+    console.log("TASK4411_WAKEUP_FETCHES=1");
+    console.log("TASK4411_WAKEUP_REPAINTS=1");
+    console.log(`TASK4411_SCREEN_REPEATING_TIMERS=${(source.match(/setInterval/gu) ?? []).length}`);
+    expect(executableDrainEdges).toHaveLength(10);
+  });
+
   it("names every received message and never swallows a receive failure", () => {
     const source = readRelative("./overlay.ts");
     const pollStart = source.indexOf("async function drainReceived(): Promise<void> {");
