@@ -36,6 +36,10 @@ import { handleAccountOwnershipChallenge } from "./endpoints/account-ownership-c
 import { handleAccountOwnershipProof } from "./endpoints/account-ownership-proof.js";
 import { handleAiGenerate } from "./endpoints/ai-generate.js";
 import { handleCreditSpend } from "./endpoints/credits.js";
+import {
+  handleDiscoveryCardsPost,
+  handleDiscoveryCardsRead,
+} from "./endpoints/discovery-cards.js";
 import { handleCheckout } from "./endpoints/checkout.js";
 import { handleStripeDonationSession } from "./endpoints/donation-stripe.js";
 import { handleCheckoutClaim } from "./endpoints/checkout-claim.js";
@@ -118,6 +122,7 @@ import {
 import type { PrepaidRedemptionReadiness } from "./lib/prepaid-redemption-readiness.js";
 import { sweepExpiredControlInboxRows } from "./lib/control-inbox-sweep.js";
 import { sweepExpiredSpaceEvents } from "./lib/space-event-sweep.js";
+import { sweepStaleDiscoveryCards } from "./lib/discovery-card.js";
 
 const MAX_MUTATION_BODY_BYTES = 1024 * 1024;
 const PUBLIC_GET_INGRESS_MAX_PER_MINUTE = 1200;
@@ -252,6 +257,14 @@ export default {
       }
     } catch {
       console.error("[cron] privacy retention sweep failed");
+    }
+    try {
+      const deleted = await sweepStaleDiscoveryCards(env.DB);
+      if (deleted > 0) {
+        console.log(`[cron] discovery card sweep deleted ${deleted} stale row(s)`);
+      }
+    } catch {
+      console.error("[cron] discovery card sweep failed");
     }
     // Phase 6.4: TTL-sweep expired control_inbox rows. Hourly is
     // fine -- rows expire at 7d so a 1h slack is well within
@@ -464,6 +477,8 @@ async function dispatch(
   if (method === "POST") {
     if (path === "/v1/ai/generate") return await handleAiGenerate(request, env);
     if (path === "/v1/credits/spend") return await handleCreditSpend(request, env);
+    if (path === "/v1/discovery-cards") return await handleDiscoveryCardsPost(request, env);
+    if (path === "/v1/discovery-cards/read") return await handleDiscoveryCardsRead(request, env);
     if (path === "/v1/update-attempts") {
       return withCors(await handleUpdateAttemptRecord(request, env), request);
     }
