@@ -134,6 +134,7 @@ pub mod osl_chat_file_limits;
 pub mod osl_chat_local_state_key;
 #[cfg(feature = "core")]
 pub mod osl_mail;
+pub mod osl_enclave_roles;
 #[cfg(feature = "core")]
 pub mod osl_profile;
 pub mod owner_presence;
