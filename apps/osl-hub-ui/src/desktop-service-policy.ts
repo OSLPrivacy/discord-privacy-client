@@ -13,6 +13,7 @@ export type DesktopServiceId =
   | "telegram"
   | "signal"
   | "whatsapp"
+  | "messenger"
   | "outlook"
   | "proton"
   | "tuta"
@@ -160,6 +161,7 @@ export const desktopServicePolicies: readonly DesktopServicePolicy[] = [
   policy("telegram", "verified"),
   policy("signal", "verified"),
   policy("whatsapp", "verified"),
+  policy("messenger", "browserOnly"),
   policy("outlook", "verified"),
   policy("proton", "candidate"),
   policy("tuta", "candidate"),

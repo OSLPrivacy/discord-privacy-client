@@ -1629,11 +1629,11 @@
     "surface_ruling": {
       "schema": "osl-surface-ruling-v1",
       "ruled_on": "2026-08-05",
-      "chat_carriers": ["discord", "signal", "whatsapp", "telegram"],
+      "chat_carriers": ["discord", "signal", "whatsapp", "telegram", "messenger"],
       "email_carriers": ["gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud", "tuta"],
       "native_email_carriers": ["outlook"],
       "first_party_surfaces": ["osl-chats", "osl-mail"],
-      "cut_surfaces": ["instagram", "snapchat", "x", "messenger", "slack", "linkedin", "teams"]
+      "cut_surfaces": ["instagram", "snapchat", "x", "slack", "linkedin", "teams"]
     },
     "matrix_files": [
       "docs/status.html"

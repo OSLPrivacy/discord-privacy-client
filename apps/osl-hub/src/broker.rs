@@ -12781,7 +12781,7 @@ mod tests {
             ("telegram", "Telegram"),
             ("osl-chat", "OSL Chats"),
         ];
-        const CUT_SURFACES: &[&str] = &["instagram", "snapchat", "x", "messenger"];
+        const CUT_SURFACES: &[&str] = &["instagram", "snapchat", "x"];
         let mut named_results = 0usize;
 
         for (service_id, display_name) in SURFACES {

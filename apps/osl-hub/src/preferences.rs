@@ -1215,6 +1215,7 @@ mod tests {
             "signal",
             "gmail",
             "whatsapp",
+            "messenger",
             "outlook",
             "proton",
             "yahoo",

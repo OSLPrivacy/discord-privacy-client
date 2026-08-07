@@ -832,10 +832,11 @@ const autoScrubServiceLabels: Record<ServiceId, string> = {
   email: "Email",
   signal: "Signal",
   whatsapp: "WhatsApp",
+  messenger: "Messenger",
 };
 const supportedNativeAppIds = new Set<NativeAppId>(["discord"]);
 const importedFirefoxHomeAppIds = new Set<HomeAppId>([
-  "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud", "tuta",
+  "messenger", "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud", "tuta",
 ]);
 const friendsDialogPageSize = 24;
 const friendScopeRenderLimit = 16;
@@ -2371,7 +2372,7 @@ function discordQaHostStatusMarkup(): string {
 }
 
 function defaultBrowserCompanionEligible(appId: HomeAppId | null): appId is HomeAppId {
-  return appId !== null && ["gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud", "tuta"].includes(appId);
+  return appId !== null && ["messenger", "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud", "tuta"].includes(appId);
 }
 
 function browserSessionModeChoices(): string {

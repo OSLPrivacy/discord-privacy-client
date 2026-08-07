@@ -143,6 +143,7 @@ fn compiled_manifest() -> MassCleanupCapabilityManifest {
             Service::WhatsApp,
             &[Action::LeaveAndRemoveChat, Action::ClearHistoryForSelf],
         ),
+        (Service::Messenger, &[]),
         (
             Service::Email,
             &[

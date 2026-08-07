@@ -14,9 +14,13 @@ const ruling = JSON.parse(readFileSync(new URL("data/surface-ruling-2026-08-05.j
 
 const sorted = (values: readonly string[]) => [...values].sort();
 const unique = (values: readonly string[]) => sorted([...new Set(values)]);
+const browserOnlyChatCarriers = ["messenger"] as const;
 const serviceIds = unique([...ruling.chat_carriers, "email"]);
 const homeAppIds = unique([...ruling.chat_carriers, ...ruling.email_carriers]);
-const nativeAppIds = unique([...ruling.chat_carriers, ...ruling.native_email_carriers]);
+const nativeAppIds = unique([
+  ...ruling.chat_carriers.filter((id) => !browserOnlyChatCarriers.includes(id as typeof browserOnlyChatCarriers[number])),
+  ...ruling.native_email_carriers,
+]);
 const instagramCutSurfaceRecordedBefore = 3;
 
 function assertSameSet(name: string, actual: readonly string[], expected: readonly string[]): void {
@@ -123,6 +127,67 @@ describe("surface ruling synchronization", () => {
     ).toBe(instagramCutSurfaceRecordedBefore);
   });
 
+  it("task 4257 keeps Messenger in every service list with restored catalogue metadata", () => {
+    const servicesTs = source("apps/osl-hub-ui/src/services.ts");
+    const servicesTestTs = source("apps/osl-hub-ui/src/services.test.ts");
+    const modelsRs = source("apps/osl-hub/src/models.rs");
+    const servicesRs = source("apps/osl-hub/src/services.rs");
+    const serviceHostRs = source("apps/osl-hub/src/service_host.rs");
+    const nativeAppsRs = source("apps/osl-hub/src/native_apps.rs");
+    const massCleanupRs = source("apps/osl-hub/src/mass_cleanup.rs");
+    const autoscrubTs = source("apps/osl-hub-ui/src/autoscrub-contract.ts");
+    const serviceGuideTs = source("apps/osl-hub-ui/src/service-guide.ts");
+    const mainTs = source("apps/osl-hub-ui/src/main.ts");
+    const desktopPolicyTs = source("apps/osl-hub-ui/src/desktop-service-policy.ts");
+    const massCleanupTestTs = source("apps/osl-hub-ui/src/mass-cleanup.test.ts");
+    const logosTs = source("apps/osl-hub-ui/src/logos.ts");
+    const supportMatrix = JSON.parse(source("docs/status/support-matrix.json")) as { surface_ruling: Ruling };
+    const pricing = JSON.parse(source("data/pricing.json")) as { surface_policy: { surface_ruling: Ruling } };
+
+    const audited = [
+      ["data/surface-ruling chat_carriers", ruling.chat_carriers],
+      ["docs/status/support-matrix chat_carriers", supportMatrix.surface_ruling.chat_carriers],
+      ["data/pricing surface_policy chat_carriers", pricing.surface_policy.surface_ruling.chat_carriers],
+      ["Rust ServiceKind enum", rustEnum(modelsRs, "ServiceKind")],
+      ["Rust service_kind_from_id", quotedValues(rustFunctionBody(servicesRs, "service_kind_from_id"))],
+      ["Rust service_descriptors", rustServiceKindRefs(rustFunctionBody(servicesRs, "service_descriptors"))],
+      ["Rust service_host SERVICES", quotedValues(serviceHostRs.slice(serviceHostRs.indexOf("const SERVICES"), serviceHostRs.indexOf("const EMAIL_GMAIL")))],
+      ["Rust FirefoxServiceId enum", rustEnum(nativeAppsRs, "FirefoxServiceId")],
+      ["Rust FIREFOX_SERVICES allowlist", [...nativeAppsRs.slice(nativeAppsRs.indexOf("const FIREFOX_SERVICES"), nativeAppsRs.indexOf("fn manifest")).matchAll(/FirefoxServiceId::([A-Z][A-Za-z0-9]*)/g)].map((match) => rustVariantId(match[1]))],
+      ["Rust mass_cleanup manifest", rustServiceAliasRefs(rustFunctionBody(massCleanupRs, "compiled_manifest"))],
+      ["TS ServiceId union", tsUnion(servicesTs, "ServiceId")],
+      ["TS services.ts serviceIds", tsConstArray(servicesTs, "serviceIds")],
+      ["TS services.ts firefoxServiceIds", tsConstArray(servicesTs, "firefoxServiceIds")],
+      ["TS homeAppDefinitions", [...servicesTs.matchAll(/homeApp\("([a-z][a-z0-9]*)"/g)].map((match) => match[1])],
+      ["TS autoscrub serviceIds", tsConstArray(autoscrubTs, "serviceIds")],
+      ["TS service-guide serviceIds", tsConstSet(serviceGuideTs, "serviceIds")],
+      ["TS main autoScrubServiceLabels", [...mainTs.slice(mainTs.indexOf("const autoScrubServiceLabels"), mainTs.indexOf("const supportedNativeAppIds")).matchAll(/^\s*([a-z][a-z0-9]*):/gm)].map((match) => match[1])],
+      ["TS main importedFirefoxHomeAppIds", quotedValues(mainTs.slice(mainTs.indexOf("const importedFirefoxHomeAppIds"), mainTs.indexOf("const friendsDialogPageSize")))],
+      ["TS desktopServicePolicies", [...desktopPolicyTs.matchAll(/policy\("([a-z][a-z0-9]*)"/g)].map((match) => match[1])],
+      ["services.test validRegistry fixture", quotedValues(servicesTestTs.slice(servicesTestTs.indexOf("function validRegistry"), servicesTestTs.indexOf("return ids.map")))],
+      ["mass-cleanup.test fixture", tsConstArray(massCleanupTestTs, "serviceIds")],
+    ] as const;
+    const missing = audited.filter(([, values]) => !values.includes("messenger")).map(([name]) => name);
+    const serviceHostMessenger = /id: "messenger",\s*display_name: "([^"]+)",\s*initial_url: "([^"]+)"/u.exec(serviceHostRs);
+    const descriptorMessenger = /ServiceKind::Messenger,\s*"([^"]+)",\s*"MS"/u.exec(servicesRs);
+    const homeTileMessenger = /homeApp\("messenger", "([^"]+)", "messenger", null, "launch", "comingSoon"\)/u.exec(servicesTs);
+
+    console.info(`TASK4257_LISTS_AUDITED=${audited.length}`);
+    console.info(`TASK4257_LISTS_MISSING_MESSENGER=${missing.length} missing=${missing.join(",") || "(none)"}`);
+    console.info(`TASK4257_SERVICE_ROW_NAME=${descriptorMessenger?.[1] ?? "(missing)"}`);
+    console.info(`TASK4257_HOME_TILE_NAME=${homeTileMessenger?.[1] ?? "(missing)"}`);
+    console.info(`TASK4257_WEB_ADDRESS=${serviceHostMessenger?.[2] ?? "(missing)"}`);
+    console.info(`TASK4257_PICTURE_SOURCE=${logosTs.includes("messenger: siMessenger") ? "siMessenger" : "(missing)"}`);
+
+    expect(missing).toEqual([]);
+    expect(descriptorMessenger?.[1]).toBe("Facebook Messenger");
+    expect(serviceHostMessenger?.[1]).toBe("Facebook Messenger");
+    expect(serviceHostMessenger?.[2]).toBe("https://www.facebook.com/messages/");
+    expect(homeTileMessenger?.[1]).toBe("Messenger");
+    expect(logosTs).toContain("siMessenger");
+    expect(logosTs).toContain("messenger: siMessenger");
+  });
+
   it("keeps every executable enumeration reconciled to the 2026-08-05 ruling", () => {
     const servicesTs = source("apps/osl-hub-ui/src/services.ts");
     const modelsRs = source("apps/osl-hub/src/models.rs");
@@ -139,7 +204,7 @@ describe("surface ruling synchronization", () => {
     const supportMatrix = JSON.parse(source("docs/status/support-matrix.json")) as { surface_ruling: Ruling };
     const pricing = JSON.parse(source("data/pricing.json")) as { surface_policy: { surface_ruling: Ruling } };
 
-    assertSameSet("ruling chat carriers", ruling.chat_carriers, ["discord", "signal", "whatsapp", "telegram"]);
+    assertSameSet("ruling chat carriers", ruling.chat_carriers, ["discord", "signal", "whatsapp", "telegram", "messenger"]);
     assertSameSet("ruling email carriers", ruling.email_carriers, ["gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud", "tuta"]);
     assertSameSet("ruling first-party non-carriers", ruling.first_party_surfaces, ["osl-chats", "osl-mail"]);
 
@@ -149,8 +214,8 @@ describe("surface ruling synchronization", () => {
     assertSameSet("Rust EmailProvider enum", rustEnum(modelsRs, "EmailProvider"), ruling.email_carriers);
     assertSameSet("Rust NativeAppId enum", rustEnum(nativeAppsRs, "NativeAppId"), nativeAppIds);
     assertSameSet("Rust NATIVE_APPS manifest", rustNativeAppRefs(nativeAppsRs.slice(nativeAppsRs.indexOf("const NATIVE_APPS"), nativeAppsRs.indexOf("#[cfg(any(target_os = \"windows\", test))]", nativeAppsRs.indexOf("const NATIVE_APPS")))), nativeAppIds);
-    assertSameSet("Rust FirefoxServiceId enum", rustEnum(nativeAppsRs, "FirefoxServiceId"), ruling.email_carriers);
-    assertSameSet("Rust FIREFOX_SERVICES allowlist", [...nativeAppsRs.slice(nativeAppsRs.indexOf("const FIREFOX_SERVICES"), nativeAppsRs.indexOf("fn manifest")).matchAll(/FirefoxServiceId::([A-Z][A-Za-z0-9]*)/g)].map((match) => rustVariantId(match[1])), ruling.email_carriers);
+    assertSameSet("Rust FirefoxServiceId enum", rustEnum(nativeAppsRs, "FirefoxServiceId"), ["messenger", ...ruling.email_carriers]);
+    assertSameSet("Rust FIREFOX_SERVICES allowlist", [...nativeAppsRs.slice(nativeAppsRs.indexOf("const FIREFOX_SERVICES"), nativeAppsRs.indexOf("fn manifest")).matchAll(/FirefoxServiceId::([A-Z][A-Za-z0-9]*)/g)].map((match) => rustVariantId(match[1])), ["messenger", ...ruling.email_carriers]);
     assertSameSet("Rust service_host SERVICES", quotedValues(serviceHostRs.slice(serviceHostRs.indexOf("const SERVICES"), serviceHostRs.indexOf("const EMAIL_GMAIL"))), serviceIds);
     assertSameSet("Rust mass_cleanup manifest", rustServiceAliasRefs(rustFunctionBody(massCleanupRs, "compiled_manifest")), serviceIds);
 
@@ -160,7 +225,7 @@ describe("surface ruling synchronization", () => {
     assertSameSet("TS NativeAppId union", tsUnion(servicesTs, "NativeAppId"), nativeAppIds);
     assertSameSet("TS services.ts serviceIds", tsConstArray(servicesTs, "serviceIds"), serviceIds);
     assertSameSet("TS services.ts emailProviders", tsConstArray(servicesTs, "emailProviders"), ruling.email_carriers);
-    assertSameSet("TS services.ts firefoxServiceIds", tsConstArray(servicesTs, "firefoxServiceIds"), ruling.email_carriers);
+    assertSameSet("TS services.ts firefoxServiceIds", tsConstArray(servicesTs, "firefoxServiceIds"), ["messenger", ...ruling.email_carriers]);
     assertSameSet("TS homeAppDefinitions", [...servicesTs.matchAll(/homeApp\("([a-z][a-z0-9]*)"/g)].map((match) => match[1]), homeAppIds);
     assertSameSet("TS autoscrub serviceIds", tsConstArray(autoscrubTs, "serviceIds"), serviceIds);
     assertSameSet("TS service-guide serviceIds", tsConstSet(serviceGuideTs, "serviceIds"), serviceIds);

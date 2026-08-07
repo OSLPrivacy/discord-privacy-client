@@ -1888,6 +1888,7 @@ pub fn service_kind_from_id(service_id: &str) -> Option<ServiceKind> {
         "discord" => ServiceKind::Discord,
         "telegram" => ServiceKind::Telegram,
         "whatsapp" => ServiceKind::WhatsApp,
+        "messenger" => ServiceKind::Messenger,
         "email" => ServiceKind::Email,
         "signal" => ServiceKind::Signal,
         _ => return None,
@@ -2432,7 +2433,7 @@ const fn messaging_risk_facts_row(
     }
 }
 
-const SERVICE_CAPABILITY_FACTS: [ServiceCapabilityFacts; 5] = [
+const SERVICE_CAPABILITY_FACTS: [ServiceCapabilityFacts; 6] = [
     ServiceCapabilityFacts {
         service_id: ServiceKind::Discord,
         placing: true,
@@ -2451,6 +2452,13 @@ const SERVICE_CAPABILITY_FACTS: [ServiceCapabilityFacts; 5] = [
         service_id: ServiceKind::WhatsApp,
         placing: false,
         reading: true,
+        opening: true,
+        real_two_person_protected_messaging: false,
+    },
+    ServiceCapabilityFacts {
+        service_id: ServiceKind::Messenger,
+        placing: false,
+        reading: false,
         opening: true,
         real_two_person_protected_messaging: false,
     },
@@ -3146,7 +3154,7 @@ pub fn service_descriptor(id: ServiceKind) -> ServiceDescriptor {
         .expect("every ServiceKind has a descriptor")
 }
 
-fn service_descriptors() -> [ServiceDescriptor; 5] {
+fn service_descriptors() -> [ServiceDescriptor; 6] {
     use ServiceCategory::Consumer;
     use ServiceLaunchState::Available;
     [
@@ -3171,6 +3179,14 @@ fn service_descriptors() -> [ServiceDescriptor; 5] {
             "WhatsApp",
             "WA",
             25,
+            Consumer,
+            Available,
+        ),
+        descriptor(
+            ServiceKind::Messenger,
+            "Facebook Messenger",
+            "MS",
+            40,
             Consumer,
             Available,
         ),
@@ -3491,13 +3507,17 @@ mod tests {
             Some(ServiceKind::WhatsApp)
         );
         assert_eq!(service_kind_from_id("signal"), Some(ServiceKind::Signal));
+        assert_eq!(
+            service_kind_from_id("messenger"),
+            Some(ServiceKind::Messenger)
+        );
         // Superseded by the owner ruling on 2026-08-05: social and enterprise
-        // IDs are cut surfaces, not service aliases.
+        // IDs other than the restored Messenger catalogue row are cut surfaces,
+        // not service aliases.
         for cut in [
             "instagram",
             "snapchat",
             "x",
-            "messenger",
             "slack",
             "linkedin",
             "teams",
@@ -3507,6 +3527,43 @@ mod tests {
         assert_eq!(service_kind_from_id("Discord"), None);
         assert_eq!(service_kind_from_id("discord.com"), None);
         assert_eq!(service_kind_from_id("../discord"), None);
+    }
+
+    #[test]
+    fn task_4257_app_service_list_returns_messenger_catalogue_only() {
+        let path = temporary_registry();
+        let state = ServiceRegistryState::load(path.clone());
+        let services = state.list_for_owner(OWNER_A).unwrap();
+        let messenger = services
+            .iter()
+            .find(|service| service.id == ServiceKind::Messenger)
+            .expect("Messenger must be in the service registry");
+        let facts = service_capability_facts("messenger").expect("Messenger has capability facts");
+        let ready = direct_service_ready_label("messenger", None);
+
+        println!("TASK4257_APP_SERVICE_COUNT={}", services.len());
+        println!(
+            "TASK4257_APP_SERVICE_MESSENGER_ROW_NAME={}",
+            messenger.display_name
+        );
+        println!("TASK4257_APP_SERVICE_MESSENGER_SHORT_ID=messenger");
+        println!(
+            "TASK4257_APP_SERVICE_MESSENGER_ACCOUNTS={}",
+            messenger.accounts.len()
+        );
+        println!(
+            "TASK4257_MESSENGER_CAPABILITY placing={} reading={} opening={} real_two_person_protected_messaging={}",
+            facts.placing, facts.reading, facts.opening, facts.real_two_person_protected_messaging
+        );
+        println!("TASK4257_MESSENGER_READY={ready:?}");
+
+        assert_eq!(messenger.display_name, "Facebook Messenger");
+        assert_eq!(messenger.sidebar_glyph, "MS");
+        assert!(messenger.accounts.is_empty());
+        assert!(!facts.placing);
+        assert!(!facts.real_two_person_protected_messaging);
+        assert_eq!(ready, Err(READY_REQUIRES_REAL_TWO_PERSON_CAPABILITY));
+        let _ = fs::remove_file(path);
     }
 
     #[test]

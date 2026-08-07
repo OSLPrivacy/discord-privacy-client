@@ -179,6 +179,13 @@ const SERVICES: &[ServiceManifest] = &[
         launch_active: false,
     },
     ServiceManifest {
+        id: "messenger",
+        display_name: "Facebook Messenger",
+        initial_url: "https://www.facebook.com/messages/",
+        allowed_hosts: &["www.facebook.com"],
+        launch_active: true,
+    },
+    ServiceManifest {
         id: "email",
         display_name: "Email",
         initial_url: "https://mail.google.com/",
@@ -1801,11 +1808,10 @@ mod tests {
     }
 
     #[test]
-    fn superseded_messenger_surface_is_cut_by_owner_ruling_2026_08_05() {
-        assert_eq!(
-            service_manifest("messenger"),
-            Err(ServiceHostError::UnknownService)
-        );
+    fn task_4257_messenger_surface_is_restored_to_the_service_host_catalogue() {
+        let manifest = service_manifest("messenger").unwrap();
+        assert_eq!(manifest.display_name, "Facebook Messenger");
+        assert_eq!(manifest.initial_url, "https://www.facebook.com/messages/");
     }
 
     #[test]
@@ -1999,13 +2005,36 @@ mod tests {
                 );
             }
         }
-        for cut in ["instagram", "snapchat", "x", "messenger", "slack", "teams"] {
+        for cut in ["instagram", "snapchat", "x", "slack", "teams"] {
             assert_eq!(
                 service_manifest(cut),
                 Err(ServiceHostError::UnknownService),
                 "{cut}"
             );
         }
+    }
+
+    #[test]
+    fn task_4257_messenger_uses_metas_current_first_party_messages_surface() {
+        let manifest = service_manifest("messenger").unwrap();
+        assert_eq!(manifest.display_name, "Facebook Messenger");
+        assert_eq!(
+            validated_initial_url(manifest).unwrap().as_str(),
+            "https://www.facebook.com/messages/"
+        );
+        assert!(navigation_allowed(
+            manifest,
+            &Url::parse("https://www.facebook.com/login/").unwrap()
+        ));
+        assert!(!navigation_allowed(
+            manifest,
+            &Url::parse("https://messenger-plus.example/").unwrap()
+        ));
+        println!("TASK4257_MESSENGER_WEB_ADDRESS={}", manifest.initial_url);
+        println!(
+            "TASK4257_MESSENGER_SERVICE_HOST_ROW_NAME={}",
+            manifest.display_name
+        );
     }
 
     #[test]

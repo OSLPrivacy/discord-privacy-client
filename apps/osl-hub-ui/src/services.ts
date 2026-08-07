@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { isTauriRuntime } from "./preferences";
 
-export type ServiceId = "discord" | "telegram" | "email" | "signal" | "whatsapp";
+export type ServiceId = "discord" | "telegram" | "email" | "signal" | "whatsapp" | "messenger";
 export type ConnectionState = "demoLinked" | "notLinked";
 export type EmailProvider = "gmail" | "outlook" | "proton" | "tuta" | "yahoo" | "aol" | "gmx" | "maildotcom" | "icloud";
 export type ServiceCategory = "consumer" | "enterprise";
@@ -340,14 +340,14 @@ export const AndroidSurface = {
   },
 };
 
-const serviceIds: readonly ServiceId[] = ["discord", "telegram", "email", "signal", "whatsapp"];
+const serviceIds: readonly ServiceId[] = ["discord", "telegram", "email", "signal", "whatsapp", "messenger"];
 const connectionStates: readonly ConnectionState[] = ["demoLinked", "notLinked"];
 const emailProviders: readonly EmailProvider[] = ["gmail", "outlook", "proton", "tuta", "yahoo", "aol", "gmx", "maildotcom", "icloud"];
 const maxAccountsPerService = 10;
 const nativeAppIds: readonly NativeAppId[] = ["discord", "telegram", "signal", "whatsapp", "outlook"];
 const browserImportIds: readonly BrowserImportId[] = ["chrome", "edge", "firefox", "brave", "opera", "duckduckgo"];
 const firefoxServiceIds: readonly HomeAppId[] = [
-  "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud", "tuta",
+  "messenger", "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud", "tuta",
 ];
 const nativeAppSupportStatuses: readonly NativeAppSupportStatus[] = [
   "available", "beta", "experimental", "comingSoon", "externallyBlocked", "noClaim",
@@ -416,6 +416,7 @@ const homeAppDefinitions: readonly HomeAppDefinition[] = [
   homeApp("telegram", "Telegram", "telegram", null, "launch", "comingSoon"),
   homeApp("signal", "Signal", "signal", null, "launch", "comingSoon"),
   homeApp("whatsapp", "WhatsApp", "whatsapp", null, "launch", "comingSoon"),
+  homeApp("messenger", "Messenger", "messenger", null, "launch", "comingSoon"),
   homeApp("gmail", "Gmail", "email", "gmail", "launch", "comingSoon"),
   homeApp("outlook", "Outlook", "email", "outlook", "launch", "comingSoon"),
   homeApp("proton", "Proton Mail", "email", "proton", "launch", "comingSoon"),
@@ -433,6 +434,7 @@ const previewRegistry: unknown = [
   service("email", "Email", "EM", 2, "consumer", "available"),
   service("signal", "Signal", "SG", 3, "consumer", "available"),
   service("whatsapp", "WhatsApp", "WA", 4, "consumer", "available"),
+  service("messenger", "Facebook Messenger", "MS", 5, "consumer", "available"),
 ];
 
 export async function loadLinkedServices(): Promise<LinkedService[]> {

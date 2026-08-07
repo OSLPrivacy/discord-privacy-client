@@ -8,7 +8,7 @@ export interface ServiceGuideState {
 }
 
 const serviceIds = new Set<ServiceId>([
-  "discord", "telegram", "email", "signal", "whatsapp",
+  "discord", "telegram", "email", "signal", "whatsapp", "messenger",
 ]);
 
 export function parseServiceGuideState(raw: string | null): ServiceGuideState | null {
