@@ -39,6 +39,16 @@ description = "List capped OSL Mail thread summaries for the unlocked identity's
 commands.allow = ["osl_mail_list_threads"]
 
 [[permission]]
+identifier = "allow-osl-mail-retrieve-thread"
+description = "Retrieve one selected OSL Mail thread body for the unlocked identity by opaque thread id."
+commands.allow = ["osl_mail_retrieve_thread"]
+
+[[permission]]
+identifier = "allow-osl-mail-acknowledge-retrieval"
+description = "Acknowledge deletion of one retrieved OSL Mail batch by opaque retrieval and message ids after the trusted UI has displayed it."
+commands.allow = ["osl_mail_acknowledge_retrieval"]
+
+[[permission]]
 identifier = "allow-osl-mail-send"
 description = "Send a pointer-only OSL Mail envelope from the trusted main OSL window."
 commands.allow = ["osl_mail_send"]

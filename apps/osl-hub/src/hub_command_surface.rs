@@ -1825,6 +1825,8 @@ macro_rules! hub_tauri_commands {
             get_hub_license_state,
             osl_mail_get_status,
             osl_mail_list_threads,
+            osl_mail_retrieve_thread,
+            osl_mail_acknowledge_retrieval,
             osl_mail_provision,
             osl_mail_send,
             osl_mail_plan_protected_forward,
@@ -4187,6 +4189,8 @@ mod tauri_registration_surface_tests {
         "get_scrub_index_status",
         "cancel_scrub_index",
         "osl_mail_list_threads",
+        "osl_mail_retrieve_thread",
+        "osl_mail_acknowledge_retrieval",
         "osl_mail_provision",
         "osl_mail_send",
         "osl_mail_burn",
@@ -5724,6 +5728,21 @@ mod tauri_registration_surface_tests {
             &[
                 "osl_mail_plan_protected_forward",
                 "osl_mail_forward_protected",
+            ],
+        );
+    }
+
+    #[test]
+    fn osl_mail_retrieval_commands_are_registered_and_granted() {
+        let (handlers, permissions, capability) = network_registration_inputs();
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &[
+                "osl_mail_list_threads",
+                "osl_mail_retrieve_thread",
+                "osl_mail_acknowledge_retrieval",
             ],
         );
     }
