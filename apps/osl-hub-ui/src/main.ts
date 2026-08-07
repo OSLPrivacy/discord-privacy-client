@@ -148,6 +148,7 @@ import { activateLocalLoopbackContext, activateManualPeerContext, activateNative
 import { blankLocalProtectedModel, isLocalTtlSeconds, loadOrCreateLocalConversationId, localProtectedSheetMarkup, validLocalChatLabel, type LocalProtectedPane, type LocalProtectedSheetModel } from "./local-protected-sheet";
 import { blankPeerProtectedModel, boundedPeerProtectedDraft, peerProtectedDraftByteFeedback, peerProtectedSheetMarkup, type PeerProtectedPane, type PeerProtectedSheetModel } from "./peer-protected-sheet";
 import { peerIntegrityMarkup } from "./peer-integrity";
+import { futureAccountSwitchMarkup } from "./future-account-switch";
 import oslLogoUrl from "../../osl-hub/icons/icon-cyan.png";
 import oslVectorLogoUrl from "./assets/logo-mark.svg";
 import oslGhostMarkUrl from "./assets/Ghost-white.svg";
@@ -729,6 +730,9 @@ let serviceGuideStep: ServiceGuideStep | null = null;
 let nativeHostFailureNotice = "";
 let friendsDialogOpen = false;
 let friendsDialogPage = 0;
+// Per-friend "Auto-whitelist new accounts" state. TASK 0267 draws the switch;
+// TASK 0268 fills this from the Hub command and writes changes back.
+const friendFutureAccountAutoWhitelist = new Map<string, boolean>();
 let burnDialogOpen = false;
 let burnScope: BurnScope = "chat";
 let burnBusy = false;
@@ -5503,7 +5507,13 @@ function peopleListMarkup(mode: PeopleListMode, limit?: number, offset = 0): str
       : "";
     const nicknameForm = mode === "manage" ? `<form class="friend-nickname-form" data-nickname-person="${escapeHtml(person.personId)}"><label><span>Nickname on this device</span><input name="nickname" maxlength="48" value="${escapeHtml(person.alias ?? "")}" placeholder="Add a nickname" autocomplete="off" spellcheck="false"/></label><button class="button compact" type="submit">Save</button></form>` : "";
     const removeControl = mode === "manage" ? friendRemovalButtonMarkup(person.personId, escapeHtml) : "";
-    const management = `<details class="friend-management"><summary>Manage</summary><div>${nicknameForm}<div class="friend-approvals"><span>Approved chats</span><div>${scopes}</div>${truncated}</div><details class="friend-security"><summary>Security details</summary><div><span>OSL ID</span><code>${escapeHtml(identity)}</code><span>Verification code</span><code>${escapeHtml(person.safetyNumber)}</code></div></details>${removeControl}</div></details>`;
+    const futureAccountSwitch = mode === "manage"
+      ? futureAccountSwitchMarkup({
+        personId: person.personId,
+        enabled: friendFutureAccountAutoWhitelist.get(person.personId) ?? false,
+      })
+      : "";
+    const management = `<details class="friend-management"><summary>Manage</summary><div>${nicknameForm}<div class="friend-approvals"><span>Approved chats</span><div>${scopes}</div>${truncated}</div>${futureAccountSwitch}<details class="friend-security"><summary>Security details</summary><div><span>OSL ID</span><code>${escapeHtml(identity)}</code><span>Verification code</span><code>${escapeHtml(person.safetyNumber)}</code></div></details>${removeControl}</div></details>`;
     return `<article class="person-row person-profile"><header><div><strong>${escapeHtml(nickname)}</strong><small>${escapeHtml(friendHandshakeSummary(person.safetyNumberVerified, person.pendingKeyChange))}</small></div>${action}</header>${management}</article>`;
   }).join("");
 }
