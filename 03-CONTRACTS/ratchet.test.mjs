@@ -47,3 +47,10 @@ test("ratchet contract forbids downgrade and nonce-burning retries", async () =>
   assert.ok(Object.values(surface.error_mapping).every((state) => state.length > 0));
 });
 
+test("ratchet contract records the A12 refusal of future-device key escrow", async () => {
+  const document = await readFile(contractPath, "utf8");
+
+  assert.match(document, /Ruling A12 refuses/u);
+  assert.match(document, /forward secrecy with an off switch/u);
+  assert.match(document, /must not keep message keys, chain keys, root keys/u);
+});
