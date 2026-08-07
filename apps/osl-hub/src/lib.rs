@@ -185,6 +185,8 @@ pub mod rn_recovery;
 pub mod run_choices;
 #[cfg(feature = "desktop")]
 pub mod scrub_hosted_port;
+pub mod quiet_hours;
+pub mod quiet_hours_notices;
 pub mod scrub_setup_store;
 /// **Binding Ledger 9, the seam ledger.** Adapters declared vs adapters with a
 /// live carry receipt, ratcheted in both directions against
