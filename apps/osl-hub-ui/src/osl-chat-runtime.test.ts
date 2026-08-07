@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { NativeDiscordOverlayOpenedBatch } from "./overlay-state";
 import {
   createOslChatDeliveryRuntime,
+  OSL_CHAT_OPEN_REFUSAL_SENTENCE,
+  oslChatOpenRefusalMessage,
   oslChatHistoryMessages,
   oslChatUnrecognizedWireRowsNotice,
   receivedOslChatBatchMessage,
@@ -36,7 +38,89 @@ function batchWithUnrecognized(): NativeDiscordOverlayOpenedBatch {
   };
 }
 
+function openedBatch(messageId: string, plaintext: string): NativeDiscordOverlayOpenedBatch {
+  return {
+    messages: [{
+      messageId,
+      plaintext,
+      contextVerified: true,
+      personToPersonE2ee: true,
+      viewOnceConsumed: false,
+      createdAt: 1_700_000_003,
+      expiresAt: 4_000_000_000,
+    }],
+    pendingViewOnce: [],
+    acknowledgments: [],
+    fetched: 1,
+    decryptDisplayEnabled: true,
+    deferredRows: 0,
+    unrecognizedWireRows: 0,
+  };
+}
+
 describe("OSL Chat delivery runtime receive failures", () => {
+  it("TASK4012 says the fixed refusal on screen when a private message was burned before opening", async () => {
+    const controlWords = "control private words open exactly";
+    const burnedWords = "embervault siltglass hushfield";
+    const committedMessages: string[] = [];
+    const openedCounts: number[] = [];
+    let drainNumber = 0;
+
+    const host: OslChatDeliveryHost = {
+      identityLoaded: () => true,
+      foreignContextActive: () => false,
+      openConversationId: () => "p1",
+      conversationBusy: () => false,
+      friends: () => [{ personId: "p1", safetyNumberVerified: true, pendingKeyChange: false }],
+      requestCaptureProtection: async () => true,
+      activateContext: async (personId) => ({ personId, peerOslUserId: "OSLUSER-p1", scopeApproved: true }),
+      closeContext: async () => true,
+      drainInbox: async () => {
+        drainNumber += 1;
+        if (drainNumber === 1) return openedBatch("control-message", controlWords);
+        return null;
+      },
+      drainRefusal: () => drainNumber === 2 ? OSL_CHAT_OPEN_REFUSAL_SENTENCE : null,
+      loadHistory: async () => null,
+      commitBatch: (_personId, batch) => {
+        openedCounts.push(batch.messages.length);
+        committedMessages.push(...batch.messages.map((message) => message.plaintext));
+      },
+      commitNotice: (_personId, message) => {
+        committedMessages.push(message.body);
+      },
+      commitHistory: () => {},
+    };
+
+    const runtime = createOslChatDeliveryRuntime(host);
+    await runtime.sync();
+    await runtime.sync();
+
+    const receivingScreenText = committedMessages.join("\n");
+    const burnedPrivateWordsFound = burnedWords
+      .split(" ")
+      .filter((word) => receivingScreenText.includes(word))
+      .length;
+    const burnedOpenedPrivateMessages = openedCounts[1] ?? 0;
+    const refusalOnScreen = receivingScreenText.includes(OSL_CHAT_OPEN_REFUSAL_SENTENCE) ? 1 : 0;
+
+    expect(committedMessages[0]).toBe(controlWords);
+    expect(openedCounts[0]).toBe(1);
+    expect(burnedOpenedPrivateMessages).toBe(0);
+    expect(refusalOnScreen).toBe(1);
+    expect(burnedPrivateWordsFound).toBe(0);
+    expect(receivingScreenText).not.toContain(burnedWords);
+    expect(oslChatOpenRefusalMessage("manual-check", OSL_CHAT_OPEN_REFUSAL_SENTENCE, "Now")?.body)
+      .toBe(OSL_CHAT_OPEN_REFUSAL_SENTENCE);
+
+    console.log(`TASK4012_CONTROL_OPENED_WORDS="${controlWords}"`);
+    console.log(`TASK4012_CONTROL_OPENED_PRIVATE_MESSAGES=${openedCounts[0]}`);
+    console.log(`TASK4012_BURNED_OPENED_PRIVATE_MESSAGES=${burnedOpenedPrivateMessages}`);
+    console.log(`TASK4012_BURNED_REFUSAL_SENTENCE="${OSL_CHAT_OPEN_REFUSAL_SENTENCE}"`);
+    console.log(`TASK4012_BURNED_REFUSAL_ON_SCREEN=${refusalOnScreen}`);
+    console.log(`TASK4012_BURNED_PRIVATE_WORDS_FOUND_ON_RECEIVER=${burnedPrivateWordsFound}`);
+  });
+
   it("commits good backfilled rows and then surfaces unrecognized wire rows after history refresh", async () => {
     const events: string[] = [];
     const host: OslChatDeliveryHost = {
