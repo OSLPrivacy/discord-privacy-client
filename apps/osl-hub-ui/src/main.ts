@@ -45,6 +45,7 @@ import { autoScrubTierStatus } from "./autoscrub-tier";
 import { deviceTransferManifestScreen } from "./device-transfer";
 import { initialOldDeviceCopyDecision, oldDeviceCopyDecisionView } from "./device-transfer-source";
 import { renderDeadmanScreen, selectDeadmanAction } from "./deadman";
+import { renderPrivacyLevelScreen } from "./privacy-level-screen";
 import { groupOnboardingApps } from "./onboarding-app-groups";
 import {
   dragHomeTileArrangement,
@@ -446,9 +447,6 @@ let onboardingRoute: OnboardingRoute = "welcome";
 let onboardingTourStep = 0;
 let replayingOnboardingTour = false;
 let torOnboarding: TorOnboardingState = initialTorOnboardingState();
-// Which of the two insertion styles is highlighted. Nothing is persisted yet:
-// only "insert on send" is built, so this is the screen's own state.
-let coverInsertion: CoverInsertionChoice = initialCoverInsertionChoice();
 let silentVisibleMode: SilentVisibleMode | null = null;
 // Which of the two insertion styles is highlighted. It starts unset so setup
 // cannot silently accept a default the owner never chose.
@@ -502,6 +500,9 @@ let mullvadReturnRoute: "onboarding" | "home" | "connections" = "home";
 let protectionPreset: ProtectionPreset = loadProtectionPreset();
 let inboxFilter: InboxFilter = "all";
 let privacyProtectionReviewOpen = false;
+// TASK 0720: whether the privacy level setting screen replaces the Privacy
+// destination. Opened from its "Change preset" button, closed from Back.
+let privacyLevelScreenOpen = false;
 let activityAttentionReviewOpen = false;
 type PeoplePrimaryActionFocus = "add" | "verify";
 let peoplePrimaryActionFocus: PeoplePrimaryActionFocus | null = null;
@@ -1953,13 +1954,7 @@ function onboardingSetupNavigationMarkup(): string {
 function renderOnboarding(): void {
   onboardingRoute = onboardingRouteForBuild(onboardingRoute);
   persistCurrentOnboardingRoute();
-  const setupScreen = ["pro", "forward-secrecy", "privacy", "defaults", "tor", "sending", "cover", "silent-visible", "passwords", "burnpass", "browser", "detected", "install", "apps", "mullvad"].includes(onboardingRoute);
-  const setupScreen = ["pro", "forward-secrecy", "privacy", "defaults", "tor", "sending", "cover", "visibility", "passwords", "burnpass", "browser", "detected", "install", "apps", "mullvad"].includes(onboardingRoute);
-  const setupNavigation = setupScreen
-    ? `<div class="setup-footer onboarding-actions onboarding-nav"><button class="button ghost onboarding-back" id="onboarding-back" type="button">Back</button></div>`
-    : "";
   const setupNavigation = isSetupOnboardingRoute(onboardingRoute) ? setupOnboardingNavigationMarkup() : "";
-  const setupNavigation = onboardingSetupNavigationMarkup();
   const markup = onboardingShellMarkup(setupNavigation);
   lastWorkspaceMarkup = null;
   lastWorkspaceViewKey = "";
@@ -3084,7 +3079,6 @@ function mullvadSetupContent(): string {
       ? "Mullvad is not installed. Windows can install it for you"
       : "Mullvad or Windows App Installer was not found";
   const action = found
-    ? `<button class="mv-action" id="found-session-mullvad" type="button" ${mullvadBusy ? "disabled" : ""}>${mullvadBusy ? "Checking…" : "Found session"}</button>`
     ? `<button class="mv-action" id="open-mullvad" type="button" ${mullvadBusy ? "disabled" : ""}>${mullvadBusy ? "Opening…" : "found session"}</button>`
     : availability === "installable"
       ? `<button class="mv-action" id="install-mullvad" type="button" ${mullvadBusy ? "disabled" : ""}>${mullvadBusy ? "Starting…" : "install"}</button>`
@@ -3180,6 +3174,8 @@ async function saveSendingSetupDraft(): Promise<void> {
     windowCaptureEnabled,
     forwardSecrecyMode,
   });
+}
+
 type QuickTourScreen = "setup" | "tour-card" | "app-selection" | "home";
 type QuickTourControl = "Back" | "Next" | "Choose apps" | "Set card";
 type QuickTourControlResult = {
@@ -3473,7 +3469,6 @@ function bindOnboarding(): void {
       render();
       return;
     }
-    onboardingRoute = previousSetupRoute(onboardingRoute);
     render();
     if (onboardingRoute === "browser") void refreshBrowserImportReadiness();
     if (onboardingRoute === "mullvad") void refreshMullvadSetup();
@@ -3540,7 +3535,6 @@ function bindOnboarding(): void {
   document.querySelector<HTMLButtonElement>("[data-forward-secrecy-continue]")?.addEventListener("click", () => {
     if (forwardSecrecyOnboarding.choice === null) return;
     const selectedForwardSecrecyMode = forwardSecrecyOnboarding.choice === "protect-past" ? "protectPast" : "keepGroupDelivery";
-    void saveOnboardingPreferences({ onboardingComplete: false, setup, coverInsertion, showPlaintextPreview: true, windowCaptureEnabled, forwardSecrecyMode: selectedForwardSecrecyMode }).then((saved) => {
     void saveOnboardingPreferences({ onboardingComplete: false, setup, showPlaintextPreview: true, windowCaptureEnabled, rnWirePolicyRequested, forwardSecrecyMode: selectedForwardSecrecyMode }).then((saved) => {
       forwardSecrecyMode = saved.forwardSecrecyMode;
       rnWirePolicyRequested = saved.rnWirePolicyRequested;
@@ -3594,6 +3588,7 @@ function bindOnboarding(): void {
     if (silentVisibleMode === null) return;
     onboardingRoute = "passwords";
     render();
+  });
   document.querySelector("#continue-cover-draft")?.addEventListener("click", () => {
     if (!coverInsertion) return;
     onboardingRoute = "mullvad";
@@ -3778,7 +3773,6 @@ async function completeSixStepOnboarding(): Promise<void> {
   const completedSetup = balancedFirstRunSetup(setup);
   if (!canCompleteSetup(completedSetup)) throw new Error("setup missing required sending consent");
   setup = completedSetup;
-  const saved = await saveOnboardingPreferences({ onboardingComplete: true, setup, coverInsertion, showPlaintextPreview: true, windowCaptureEnabled, forwardSecrecyMode });
   const saved = await saveOnboardingPreferences({ onboardingComplete: true, setup, showPlaintextPreview: true, windowCaptureEnabled, rnWirePolicyRequested, forwardSecrecyMode });
   setup = saved.setup;
   coverInsertion = saved.coverInsertion;
@@ -4840,7 +4834,7 @@ function workspaceContent(): string {
   if (route === "mullvad") return `<main class="content-viewport host-viewport native-host-open" id="route-heading" tabindex="-1" aria-label="Your existing Mullvad window is open inside OSL"><span class="sr-only">Mullvad remains a separate foreign application. OSL does not read its account or VPN state.</span></main>`;
   if (route === "inbox") return inboxDestinationContent();
   if (route === "people") return peopleDestinationContent();
-  if (route === "privacy") return privacyDestinationContent();
+  if (route === "privacy") return privacyLevelScreenOpen ? renderPrivacyLevelScreen(protectionPreset) : privacyDestinationContent();
   if (route === "activity") return activityDestinationContent();
   if (route === "connections") return connectionsDestinationContent();
   if (route === "osl-chat") return oslChatContent();
@@ -5444,20 +5438,16 @@ async function provisionOslMailFromProfile(): Promise<void> {
 }
 
 async function sendOslMailForm(form: HTMLFormElement, choice: OslMailSendChoice): Promise<void> {
-  const recipient = form.querySelector<HTMLInputElement>("#osl-mail-to")?.value ?? "";
-  const subject = form.querySelector<HTMLInputElement>("#osl-mail-subject")?.value ?? "";
-  const body = form.querySelector<HTMLTextAreaElement>("#osl-mail-body")?.value ?? "";
-  if (choice !== "Send") {
-    oslMailError = OSL_MAIL_NAMED_SEND_REQUIRED;
-    render();
-    return;
-  }
-async function sendOslMailForm(form: HTMLFormElement): Promise<void> {
   escapeAuditSendAttempts += 1;
   const recipient = form.querySelector<HTMLInputElement>("#osl-mail-to")?.value ?? "";
   const subject = form.querySelector<HTMLInputElement>("#osl-mail-subject")?.value ?? "";
   const body = form.querySelector<HTMLTextAreaElement>("#osl-mail-body")?.value ?? "";
   oslMailComposeDraft = { to: recipient, subject, body };
+  if (choice !== "Send") {
+    oslMailError = OSL_MAIL_NAMED_SEND_REQUIRED;
+    render();
+    return;
+  }
   if (!recipient.endsWith("@oslprivacy.com")) {
     oslMailError = "External outbound mail is unavailable in v1";
     render();
@@ -5466,8 +5456,6 @@ async function sendOslMailForm(form: HTMLFormElement): Promise<void> {
   const result = await sendOslMailWithChoice(choice, recipient, subject, body);
   oslMailSendReceipt = result.outcome === "sent" ? result.receipt : null;
   oslMailError = result.outcome === "sent" ? null : result.reason;
-  oslMailSendReceipt = await sendOslMail(recipient, subject, body);
-  oslMailError = oslMailSendReceipt ? null : "Send was refused";
   if (oslMailSendReceipt) oslMailComposeDraft = { to: "", subject: "", body: "" };
   if (route === "osl-mail") render();
 }
@@ -6259,7 +6247,6 @@ async function changeSendingMode(mode: SendMode): Promise<void> {
   };
   render();
   try {
-    const saved = await saveOnboardingPreferences({ onboardingComplete: true, setup, coverInsertion, showPlaintextPreview: true, windowCaptureEnabled, forwardSecrecyMode });
     const saved = await saveOnboardingPreferences({ onboardingComplete: true, setup, showPlaintextPreview: true, windowCaptureEnabled, rnWirePolicyRequested, forwardSecrecyMode });
     setup = saved.setup;
     windowCaptureEnabled = saved.windowCaptureEnabled;
@@ -7986,10 +7973,22 @@ function bindWorkspace(): void {
     render();
   });
   document.querySelector<HTMLButtonElement>("[data-change-protection-preset]")?.addEventListener("click", () => {
-    route = "onboarding";
-    onboardingRoute = "privacy";
+    // TASK 0720: the preset now has its own setting screen; the retired
+    // onboarding detour is gone.
+    privacyLevelScreenOpen = true;
     render();
   });
+  document.querySelector<HTMLButtonElement>("#privacy-level-back")?.addEventListener("click", () => {
+    privacyLevelScreenOpen = false;
+    render();
+  });
+  document.querySelectorAll<HTMLInputElement>("input[data-privacy-level-choice]").forEach((input) => input.addEventListener("change", () => {
+    if (!input.checked) return;
+    if (!protectionPresetValues.includes(input.value as ProtectionPreset)) return;
+    protectionPreset = input.value as ProtectionPreset;
+    persistProtectionPreset();
+    render();
+  }));
   document.querySelector<HTMLInputElement>("#rn-wire-policy-toggle")?.addEventListener("change", (event) => {
     const previous = rnWirePolicyRequested;
     rnWirePolicyRequested = (event.currentTarget as HTMLInputElement).checked;
@@ -10622,6 +10621,7 @@ type OslHubUiTestStatePatch = {
   appNotifications?: AppNotification[];
   mullvadAvailability?: MullvadStatus["availability"];
   protectionPreset?: ProtectionPreset;
+  privacyLevelScreenOpen?: boolean;
   inboxFilter?: InboxFilter;
   oslMailNotifications?: boolean;
   licenseAccess?: HubLicenseState["access"];
@@ -10711,6 +10711,7 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   ownedConfirmationBusy = false;
   ownedConfirmationError = "";
   privacyProtectionReviewOpen = false;
+  privacyLevelScreenOpen = patch.privacyLevelScreenOpen ?? false;
   activityAttentionReviewOpen = false;
   peoplePrimaryActionFocus = null;
   nativeCatalogRefusal = null;
@@ -11170,11 +11171,13 @@ export const __oslHubUiTest = {
   },
   flushRenderForTest(): void {
     renderNow();
+  },
   renderOnboardingSetupShell(destination: OnboardingRoute): string {
     route = "onboarding";
     onboardingRoute = onboardingRouteForBuild(destination);
     renderOnboarding();
     return root.innerHTML;
+  },
   renderOnboardingCaptureShell(destination: OnboardingRoute): string {
     route = "onboarding";
     onboardingRoute = onboardingRouteForBuild(destination);
@@ -11348,6 +11351,7 @@ export const __oslHubUiTest = {
     onboardingRoute = "tutorial";
     onboardingTourStep = step;
     return onboardingContent();
+  },
   renderOnboardingShellForTest(destination: OnboardingRoute): string {
     route = "onboarding";
     onboardingRoute = onboardingRouteForBuild(destination);
@@ -11388,6 +11392,7 @@ export const __oslHubUiTest = {
   setBrowserFootprintForTest(hydration: BrowserFootprintHydration): void {
     browserFootprintOwner = core.readiness.activeOslUserId;
     applyNativeBrowserFootprint(hydration);
+  },
   setDeleteChoicesForTest(choices: DeleteChoices | null): void {
     deleteChoices = choices;
   },
@@ -11416,6 +11421,7 @@ export const __oslHubUiTest = {
     route = "onboarding";
     onboardingRoute = "silent-visible";
     return silentVisibleSetupContent();
+  },
   confirmMullvadFoundSession(): boolean {
     return confirmMullvadFoundSession();
   },
@@ -11450,6 +11456,7 @@ export const __oslHubUiTest = {
   },
   longRunningButtonAudit(): BusyButtonAuditRow[] {
     return longRunningButtonAuditForTest();
+  },
   escapeAuditComposerScreens(): readonly string[] {
     return ["osl-chat", "osl-mail-compose"];
   },
@@ -11631,6 +11638,7 @@ export const __oslHubUiTest = {
     settingsSection: SettingsSection;
     homePrimaryIssue: HomePrimaryIssue;
     privacyProtectionReviewOpen: boolean;
+    privacyLevelScreenOpen: boolean;
     activityAttentionReviewOpen: boolean;
     peoplePrimaryActionFocus: PeoplePrimaryActionFocus | null;
     protectionPreset: ProtectionPreset;
@@ -11658,6 +11666,7 @@ export const __oslHubUiTest = {
       settingsSection,
       homePrimaryIssue: homePrimaryRecommendation().issue,
       privacyProtectionReviewOpen,
+      privacyLevelScreenOpen,
       activityAttentionReviewOpen,
       peoplePrimaryActionFocus,
       protectionPreset,
@@ -11686,17 +11695,6 @@ const skipAutoBootstrap = Boolean(
 );
 
 if (!runningUnderVitest && !skipAutoBootstrap) {
-  const desktopWindow = getCurrentWindow();
-  bindWindowLifecycleRealignment(
-    window,
-    desktopWindow,
-    document,
-    scheduleNativeHostRealignment,
-  );
-  void bindMainWindowFocusChanges(
-    (handler) => desktopWindow.onFocusChanged(handler),
-    {
-if (!runningUnderVitest) {
   if (fixedNoRecoverySecretFixture) {
     applyOslHubUiTestState({
       route: "onboarding",

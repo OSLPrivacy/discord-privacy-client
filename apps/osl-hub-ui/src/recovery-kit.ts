@@ -282,7 +282,6 @@ export function recoveryKitReducer(
     case "set-saved-acknowledged":
       return { state: { ...state, savedAcknowledged: action.acknowledged }, outcome: "none" };
     case "continue":
-      if (recoveryKitView(state).mode === "unavailable") {
       if (!state.secrets && !state.kitUnsaved) {
         return {
           state: { ...state, noRecoverySecretAcknowledged: true },
@@ -300,7 +299,6 @@ export function recoveryKitReducer(
           savedAcknowledged: false,
           noRecoverySecretAcknowledged: false,
           kitUnsaved: false,
-          noRecoverySecretAcknowledged: false,
         },
         outcome: "leave-recovery",
       };
