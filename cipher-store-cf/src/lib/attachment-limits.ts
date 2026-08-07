@@ -35,33 +35,6 @@ export const ATTACHMENT_TIER_LIMITS: Record<AttachmentTier, AttachmentTierLimit>
 };
 
 export function attachmentTierLimit(tier: string): AttachmentTierLimit | null {
-export const ATTACHMENT_TIER_LIMITS = {
-  free: {
-    tier: "Free",
-    max_file_bytes: 25 * 1024 * 1024,
-    max_files_per_message: 16,
-  },
-  pro: {
-    tier: "Pro",
-    max_file_bytes: 1024 * 1024 * 1024,
-    max_files_per_message: 16,
-  },
-} as const;
-
-export type AttachmentTier = keyof typeof ATTACHMENT_TIER_LIMITS;
-export type AttachmentLimit = typeof ATTACHMENT_TIER_LIMITS[AttachmentTier];
-
-export type AttachmentLimitDecision =
-  | { accepted: true; tier: AttachmentLimit["tier"]; file_size_bytes: number; file_number: number }
-  | {
-      accepted: false;
-      tier: AttachmentLimit["tier"] | null;
-      file_size_bytes: number;
-      file_number: number;
-      reason: "unknown_tier" | "invalid_size" | "too_large" | "invalid_file_number" | "too_many_files";
-    };
-
-export function attachmentLimitForTier(tier: string): AttachmentLimit | null {
   return Object.hasOwn(ATTACHMENT_TIER_LIMITS, tier)
     ? ATTACHMENT_TIER_LIMITS[tier as AttachmentTier]
     : null;
@@ -99,55 +72,6 @@ export function checkAttachmentTierLimit(
       firstRejectedFile: Number.isSafeInteger(fileCount) && fileCount > limit.maxFilesPerMessage
         ? limit.maxFilesPerMessage + 1
         : null,
-export function checkAttachmentFileForTier(
-  tier: string,
-  fileSizeBytes: number,
-  fileNumber: number,
-): AttachmentLimitDecision {
-  const limit = attachmentLimitForTier(tier);
-  if (!limit) {
-    return {
-      accepted: false,
-      tier: null,
-      file_size_bytes: fileSizeBytes,
-      file_number: fileNumber,
-      reason: "unknown_tier",
-    };
-  }
-  if (!Number.isSafeInteger(fileSizeBytes) || fileSizeBytes <= 0) {
-    return {
-      accepted: false,
-      tier: limit.tier,
-      file_size_bytes: fileSizeBytes,
-      file_number: fileNumber,
-      reason: "invalid_size",
-    };
-  }
-  if (fileSizeBytes > limit.max_file_bytes) {
-    return {
-      accepted: false,
-      tier: limit.tier,
-      file_size_bytes: fileSizeBytes,
-      file_number: fileNumber,
-      reason: "too_large",
-    };
-  }
-  if (!Number.isSafeInteger(fileNumber) || fileNumber <= 0) {
-    return {
-      accepted: false,
-      tier: limit.tier,
-      file_size_bytes: fileSizeBytes,
-      file_number: fileNumber,
-      reason: "invalid_file_number",
-    };
-  }
-  if (fileNumber > limit.max_files_per_message) {
-    return {
-      accepted: false,
-      tier: limit.tier,
-      file_size_bytes: fileSizeBytes,
-      file_number: fileNumber,
-      reason: "too_many_files",
     };
   }
   return {
@@ -164,17 +88,6 @@ export function checkAttachmentFileForTier(
 }
 
 export const MAX_DIRECT_ATTACHMENT_BYTES = ATTACHMENT_TIER_LIMITS.free.maxBytesPerFile;
-export const MAX_SEALED_ATTACHMENT_BYTES = ATTACHMENT_TIER_LIMITS.pro.maxBytesPerFile;
-    tier: limit.tier,
-    file_size_bytes: fileSizeBytes,
-    file_number: fileNumber,
-  };
-}
-
-export const MAX_DIRECT_ATTACHMENT_BYTES = ATTACHMENT_TIER_LIMITS.free.max_file_bytes;
-export const MAX_SEALED_ATTACHMENT_BYTES = ATTACHMENT_TIER_LIMITS.pro.max_file_bytes;
-// Leaves a bounded allowance for chunk framing and AEAD tags without asking
-// the store to infer plaintext size from opaque ciphertext.
 export const MAX_SEALED_ATTACHMENT_BYTES = ATTACHMENT_TIER_LIMITS.pro.maxBytesPerFile;
 export const MAX_ATTACHMENT_PART_BYTES = 8 * 1024 * 1024;
 export const MAX_ATTACHMENT_PARTS = Math.ceil(

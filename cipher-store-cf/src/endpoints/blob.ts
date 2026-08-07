@@ -4,7 +4,6 @@ import type { Env } from "../env.js";
 import { isPadmeLength, MAX_LIVE_BLOB_BYTES, MAX_LIVE_BLOB_ROWS } from "../lib/blob-limits.js";
 import { applyBurn } from "../lib/burn-policy.js";
 import { parseDeleteGrant } from "../lib/delete-grant.js";
-import { DELETE_GRANT_RECORD, validateDeleteGrant } from "../lib/delete-grant.js";
 import { constantTimeEqualHex, sha256Hex } from "../lib/digest.js";
 import { error, json, notFound } from "../lib/http.js";
 import { R2PayloadStore } from "../lib/payload-store.js";
@@ -31,11 +30,6 @@ function uploadHeaders(request: Request) {
   const ackDigest = hexHeader(request, "x-osl-ack-digest", DIGEST_RE);
   const manageDigest = hexHeader(request, "x-osl-manage-digest", DIGEST_RE);
   const deliveryTag = hexHeader(request, "x-osl-delivery-tag", ID_RE);
-  const deleteGrantMessage = request.headers.get("x-osl-delete-message")?.trim() ?? null;
-  const deleteGrantOwner = request.headers.get("x-osl-delete-owner")?.trim() ?? null;
-  const deleteMessage = request.headers.get("x-osl-delete-message")?.trim() ?? null;
-  const deleteOwner = request.headers.get("x-osl-delete-owner")?.trim() ?? null;
-  const burnScope = request.headers.get("x-osl-burn-scope")?.trim() ?? null;
   const objectClass = request.headers.get("x-osl-object-class");
   const deleteMessage = optionalDeleteBinding(request, "x-osl-delete-message");
   const deleteOwner = optionalDeleteBinding(request, "x-osl-delete-owner");
@@ -54,44 +48,6 @@ function uploadHeaders(request: Request) {
     || burnScope === undefined
     || (deleteFieldCount !== 0 && deleteFieldCount !== 3)
   ) return null;
-  if (!blobId || !fetchDigest || !ackDigest || !manageDigest || !deliveryTag
-      || (objectClass !== "single-ack" && objectClass !== "multi-fetch")) return null;
-  const deleteGrantFields = [deleteGrantMessage, deleteGrantOwner, burnScope];
-  if (deleteGrantFields.some((field) => field !== null) && deleteGrantFields.some((field) => field === null)) {
-    return null;
-  }
-  if (deleteGrantMessage !== null) {
-    const owner = deleteGrantOwner!;
-    const scope = burnScope!;
-    const validation = validateDeleteGrant({
-      grant: {
-        record: DELETE_GRANT_RECORD,
-        message: deleteGrantMessage,
-        owner,
-        scope,
-      },
-      message: deleteGrantMessage,
-      owner,
-      burnScope: scope,
-      allowedBurnScope: scope,
-  if ((deleteMessage === null) !== (deleteOwner === null) || (deleteMessage === null) !== (burnScope === null)) {
-    return null;
-  }
-  if (deleteMessage !== null && deleteOwner !== null && burnScope !== null) {
-    const validation = validateDeleteGrant({
-      grant: {
-        record: DELETE_GRANT_RECORD,
-        message: deleteMessage,
-        owner: deleteOwner,
-        scope: burnScope,
-      },
-      message: deleteMessage,
-      owner: deleteOwner,
-      burnScope,
-      allowedBurnScope: burnScope,
-    });
-    if (!validation.ok) return null;
-  }
   return {
     blobId,
     fetchDigest,
@@ -110,10 +66,6 @@ function optionalDeleteBinding(request: Request, name: string): string | null | 
   if (raw === null) return null;
   const value = raw.trim();
   return DELETE_BINDING_RE.test(value) ? value : undefined;
-    deleteGrantMessage,
-    deleteGrantOwner,
-    burnScope,
-  };
 }
 
 export async function handleUpload(request: Request, env: Env): Promise<Response> {
@@ -123,7 +75,7 @@ export async function handleUpload(request: Request, env: Env): Promise<Response
   }
   if (length !== null && Number(length) > MAX_BLOB_BYTES) return error(413, "too_large", `blob exceeds ${MAX_BLOB_BYTES} bytes`);
   const ttl = parseUploadTtl(request.headers.get("x-osl-ttl-seconds"), request.headers.get("x-osl-expiry-mode"));
-  if (ttl === null) return error(400, "bad_ttl", "X-OSL-TTL-Seconds must be 3600 (1h), 86400 (24h), 259200 (72h), 604800 (7d), or 2592000 (30d); default mode requires at least 604800");
+  if (ttl === null) return error(400, "bad_ttl", "X-OSL-TTL-Seconds must be 3600 (1h), 86400 (24h), 259200 (72h), or 604800 (7d); default mode requires 604800");
   const headers = uploadHeaders(request);
   if (!headers) return error(400, "bad_blob_metadata", "blob id, capability digests, class, and delivery tag are required");
   const body = await readBoundedBody(request, MAX_BLOB_BYTES);
@@ -202,8 +154,6 @@ async function insertBlobRow(
         manage_digest_sha256_hex, object_class, pool, delivery_tag,
         size_bytes, expires_at, created_at, delete_message, delete_owner,
         burn_scope
-        size_bytes, expires_at, created_at,
-        delete_grant_message, delete_grant_owner, burn_scope
       )
       SELECT ?, ?, ?, ?, ?, 'undelivered', ?, ?, ?, ?, ?, ?, ?
        WHERE NOT EXISTS (SELECT 1 FROM blob_capability_index WHERE blob_id = ?)
@@ -227,11 +177,6 @@ async function insertBlobRow(
       MAX_LIVE_BLOB_BYTES,
       bytes.byteLength,
     ).run();
-    ).bind(headers.blobId, headers.fetchDigest, headers.ackDigest, headers.manageDigest,
-      headers.objectClass, headers.deliveryTag, bytes.byteLength, expiresAt, now,
-      headers.deleteGrantMessage, headers.deleteGrantOwner, headers.burnScope,
-      headers.deleteMessage, headers.deleteOwner, headers.burnScope,
-      headers.blobId, MAX_LIVE_BLOB_ROWS, MAX_LIVE_BLOB_BYTES, bytes.byteLength).run();
     return (inserted.meta?.changes ?? 0) === 1;
   } catch (cause) {
     // The primary key is the backstop behind `NOT EXISTS`: a row that landed
@@ -262,17 +207,7 @@ export async function readBoundedBody(request: Request, maxBytes: number): Promi
   return { status: "ok", bytes };
 }
 
-type BlobRow = {
-  fetch_digest_sha256_hex: string;
-  manage_digest_sha256_hex: string;
-  expires_at: number;
-};
-
-type DeleteGrantRow = {
-  delete_message: string | null;
-  delete_owner: string | null;
-  burn_scope: string | null;
-};
+type BlobRow = { fetch_digest_sha256_hex: string; manage_digest_sha256_hex: string; expires_at: number };
 
 async function liveRow(env: Env, blobId: string): Promise<BlobRow | null> {
   if (!ID_RE.test(blobId)) return null;
@@ -302,43 +237,6 @@ export async function handleDelete(request: Request, env: Env, blobId: string): 
         "SELECT fetch_digest_sha256_hex AS manage_digest_sha256_hex FROM blob_capability_index WHERE blob_id = ? LIMIT 1",
       ).bind(id).first<{ manage_digest_sha256_hex: string }>();
       return row?.manage_digest_sha256_hex ?? null;
-  const grant = deleteGrantHeader(request);
-  if (grant === null) {
-    return error(403, "delete_grant_required", "delete grant required");
-  const deleteGrant = request.headers.get("x-osl-delete-grant")?.trim();
-  if (!deleteGrant) return error(403, "delete_grant_required", "delete grant required");
-  if (!ID_RE.test(blobId)) return new Response(null, { status: 204 });
-  const grantRow = await env.DB.prepare(
-    "SELECT delete_message, delete_owner, burn_scope FROM blob_capability_index WHERE blob_id = ? LIMIT 1",
-  ).bind(blobId).first<DeleteGrantRow>();
-  if (grantRow) {
-    if (!grantRow.delete_message || !grantRow.delete_owner || !grantRow.burn_scope) {
-      return error(403, "delete_grant_required", "delete grant required");
-    }
-    const validation = validateDeleteGrant({
-      grant: deleteGrant,
-      message: grantRow.delete_message,
-      owner: grantRow.delete_owner,
-      burnScope: grantRow.burn_scope,
-      allowedBurnScope: grantRow.burn_scope,
-    });
-    if (!validation.ok) {
-      return error(403, validation.code, "delete grant refused");
-    }
-  }
-  const grantCheck = await validateDeleteGrant(request, env, blobId);
-  if (grantCheck !== null) return grantCheck;
-  return applyBurn({
-    async manageCapabilityDigestFor(id) {
-      if (!ID_RE.test(id)) return null;
-      const row = await env.DB.prepare(
-        `SELECT manage_digest_sha256_hex, delete_grant_message, delete_grant_owner, burn_scope
-           FROM blob_capability_index
-          WHERE blob_id = ?
-          LIMIT 1`,
-      ).bind(id).first<DeleteGrantBlobRow>();
-      if (!row || !deleteGrantAllowsStoredCopyDelete(grant, row)) return null;
-      return row.manage_digest_sha256_hex;
     },
     async destroy(id) {
       // Read the digest as part of deletion, rather than trusting the caller's
@@ -356,79 +254,6 @@ export async function handleDelete(request: Request, env: Env, blobId: string): 
     return error(403, "delete_grant_required", "delete grant required");
   }
   return burn;
-}
-
-type DeleteGrantRow = {
-  delete_message: string | null;
-  delete_owner: string | null;
-  burn_scope: string | null;
-};
-
-async function validateDeleteGrant(
-  request: Request,
-  env: Env,
-  blobId: string,
-): Promise<Response | null> {
-  if (!ID_RE.test(blobId)) return null;
-  const row = await env.DB.prepare(
-    `SELECT delete_message, delete_owner, burn_scope
-       FROM blob_capability_index
-      WHERE blob_id = ? LIMIT 1`,
-  ).bind(blobId).first<DeleteGrantRow>();
-  if (!row) return null;
-  const expected = [row.delete_message, row.delete_owner, row.burn_scope];
-  const protectedRow = expected.some((value) => value !== null);
-  if (!protectedRow) return null;
-  if (!row.delete_message || !row.delete_owner || !row.burn_scope) {
-    return error(403, "delete_grant_required", "delete grant required");
-  }
-  const header = request.headers.get("x-osl-delete-grant");
-  if (header === null) {
-    return error(403, "delete_grant_required", "delete grant required");
-  }
-  const grant = parseDeleteGrant(header);
-  if (typeof grant === "string") {
-    return error(403, grant, "delete grant refused");
-  }
-  if (
-    grant.message !== row.delete_message
-    || grant.owner !== row.delete_owner
-    || grant.scope !== row.burn_scope
-  ) {
-    return error(403, "delete_grant_scope", "delete grant refused");
-  }
-  const manageCap = request.headers.get("x-osl-manage-cap")?.trim().toLowerCase();
-  if (manageCap !== grant.grant) {
-    return error(403, "delete_grant_capability", "delete grant refused");
-  }
-  return null;
-}
-
-type DeleteGrantBlobRow = {
-  manage_digest_sha256_hex: string;
-  delete_grant_message: string | null;
-  delete_grant_owner: string | null;
-  burn_scope: string | null;
-};
-
-function deleteGrantHeader(request: Request): unknown | null {
-  const value = request.headers.get("x-osl-delete-grant");
-  if (value === null || value.trim() === "") return null;
-  return value;
-}
-
-function deleteGrantAllowsStoredCopyDelete(grant: unknown, row: DeleteGrantBlobRow): boolean {
-  if (row.delete_grant_message === null || row.delete_grant_owner === null || row.burn_scope === null) {
-    return false;
-  }
-  const validation = validateDeleteGrant({
-    grant,
-    message: row.delete_grant_message,
-    owner: row.delete_grant_owner,
-    burnScope: row.burn_scope,
-    allowedBurnScope: row.burn_scope,
-  });
-  return validation.ok;
 }
 
 type DeleteGrantRow = {
