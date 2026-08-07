@@ -174,6 +174,8 @@ impl CopyUnderTest {
                 plaintext: plaintext.to_owned(),
                 decrypted_at: i64::try_from(at).expect("test timestamp fits i64"),
                 burned: false,
+                reply_parent_id: None,
+                edit_revision: 1,
             })
             .expect("persist marked row");
     }

@@ -100,12 +100,14 @@ fn only_if_friend_allows_accepted_friend_and_skips_non_friend() {
     let accepted = cmd_osl_new_place(
         &state,
         AllowedPlaceRecord::discord_direct_message(SELF_ID, ACCEPTED_FRIEND_ID),
+        None,
     )
     .expect("accepted-friend fixture is evaluated");
     let after_friend = allowed_place_count(dir.path());
     let non_friend = cmd_osl_new_place(
         &state,
         AllowedPlaceRecord::discord_direct_message(SELF_ID, NON_FRIEND_ID),
+        None,
     )
     .expect("non-friend fixture is evaluated");
     let after_non_friend = allowed_place_count(dir.path());

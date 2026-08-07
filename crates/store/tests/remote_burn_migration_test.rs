@@ -15,6 +15,8 @@ fn message(id: &str, seq: i64) -> StoredMessage {
         sender_osl_user_id: format!("sender-{seq}"),
         plaintext: format!("old stored message {seq}"),
         decrypted_at: 1_786_000_000 + seq,
+        reply_parent_id: None,
+        edit_revision: 1,
         burned: false,
     }
 }

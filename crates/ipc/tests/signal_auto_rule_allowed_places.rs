@@ -144,6 +144,8 @@ fn task_0151_two_signal_kind_lookups_return_independently_saved_choices() {
         story.allowed_place.stable_id,
         story.choice
     );
+}
+
 use ipc::commands::cmd_osl_list_signal_whitelist_kinds;
 use std::process::{Command, Output};
 
@@ -157,7 +159,7 @@ fn run_fixture_place(kind: &str) -> Output {
 #[test]
 fn task_0152_signal_fixture_places_resolve_and_channel_exits_1() {
     let kinds = cmd_osl_list_signal_whitelist_kinds().expect("Signal kinds command");
-    assert_eq!(kinds.len(), 2);
+    assert_eq!(kinds.len(), 3);
 
     let mut resolved_count = 0usize;
     for kind in kinds {

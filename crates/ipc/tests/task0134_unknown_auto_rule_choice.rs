@@ -28,7 +28,7 @@ struct SaveRuleAttempt {
 }
 
 impl SaveRuleAttempt {
-    fn run(&self, state: &AppState) -> Result<String, String> {
+    fn run(&self, state: &AppState) -> Result<ipc::commands::AutoWhitelistRuleDto, String> {
         cmd_osl_save_auto_whitelist_rule(
             state,
             self.app_kind.clone(),
@@ -61,7 +61,11 @@ fn seed_auto_rule_choice(
             .lock()
             .expect("app_preferences mutex poisoned");
         prefs.version = APP_PREFERENCES_VERSION;
-        prefs.auto_whitelist_rules.insert(app_kind, rule);
+        prefs.auto_whitelist_rules.insert(
+            app_kind,
+            ipc::auto_whitelist_rules::parse_auto_whitelist_choice(rule.as_label())
+                .expect("seed auto-whitelist choice"),
+        );
         prefs.clone()
     };
     write_app_preferences(&config_dir.join("app_preferences.json"), &snapshot)

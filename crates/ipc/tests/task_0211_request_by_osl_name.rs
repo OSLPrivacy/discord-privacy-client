@@ -2,7 +2,10 @@
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
-use ipc::commands::{cmd_osl_create_friend_request_by_osl_name, cmd_osl_list_friend_requests};
+use ipc::commands::{
+    cmd_osl_create_friend_request_by_osl_name, cmd_osl_list_friend_requests,
+    CreateFriendRequestByOslNameInput,
+};
 use ipc::scope::Scope;
 use ipc::state::AppState;
 use sha2::{Digest, Sha256};
@@ -158,8 +161,14 @@ fn direct_command_creates_one_pending_request_for_exact_known_public_name() {
     *state.keyserver_slot() =
         Some(keystore::KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap());
 
-    let created = cmd_osl_create_friend_request_by_osl_name(&state, PUBLIC_OSL_NAME.to_string())
-        .expect("known exact public OSL name should create a pending request");
+    let created = cmd_osl_create_friend_request_by_osl_name(
+        &state,
+        CreateFriendRequestByOslNameInput {
+            recipient_name: PUBLIC_OSL_NAME.to_string(),
+            request_id: "task-0211-direct-request".to_string(),
+        },
+    )
+    .expect("known exact public OSL name should create a pending request");
     let listed = cmd_osl_list_friend_requests(&state).unwrap();
     let scope = Scope::dm(PEER_OSL_USER_ID);
 
@@ -178,12 +187,14 @@ fn direct_command_creates_one_pending_request_for_exact_known_public_name() {
         "TASK_0211_DIRECT_OSL_NAME_REQUEST name={} pending_count={} peer={} scope={}",
         PUBLIC_OSL_NAME,
         listed.len(),
-        listed[0].peer_discord_id,
-        listed[0].scope_storage_key
+        listed.pending[0].target_id,
+        listed.pending[0].scope_key
     );
 
     assert_eq!(listed.len(), 1);
-    assert_eq!(listed[0], created.pending);
-    assert_eq!(listed[0].peer_discord_id, PEER_OSL_USER_ID);
-    assert_eq!(listed[0].scope_storage_key, scope.storage_key());
+    assert_eq!(listed.pending[0].request_id, created.request_id);
+    assert_eq!(created.pending.peer_discord_id, PEER_OSL_USER_ID);
+    assert_eq!(created.pending.scope_storage_key, scope.storage_key());
+    assert_eq!(listed.pending[0].target_id, PEER_OSL_USER_ID);
+    assert_eq!(listed.pending[0].scope_key, scope.storage_key());
 }

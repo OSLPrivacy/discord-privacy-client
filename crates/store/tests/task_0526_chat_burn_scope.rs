@@ -22,6 +22,8 @@ fn message(id: &str, channel_id: &str, sender: &str, at: i64) -> StoredMessage {
         sender_osl_user_id: format!("osl-{sender}"),
         plaintext: format!("task 0526 {channel_id} {sender} {id}"),
         decrypted_at: at,
+        reply_parent_id: None,
+        edit_revision: 1,
         burned: false,
     }
 }

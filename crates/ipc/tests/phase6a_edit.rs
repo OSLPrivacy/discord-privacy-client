@@ -129,6 +129,8 @@ fn persist_edit_refuses_editor_who_is_not_sender() {
         sender_osl_user_id: "Ava".to_string(),
         plaintext: "MAPLE-4172".to_string(),
         decrypted_at: 1_000_000_000,
+        reply_parent_id: None,
+        edit_revision: 1,
         burned: false,
     };
     put_row(&state, &original);
@@ -180,6 +182,9 @@ fn persist_edit_refuses_editor_who_is_not_sender() {
         after_ben_edit_count, 1,
         "PINE-4172 count stays 1 after Ben refusal"
     );
+}
+
+#[test]
 fn task_1359_direct_commands_return_reply_parent_id_and_sender_edit_revision() {
     let tmp = TempDir::new().unwrap();
     let state = fresh_state(tmp.path());
@@ -208,6 +213,7 @@ fn task_1359_direct_commands_return_reply_parent_id_and_sender_edit_revision() {
         "message-1359".to_string(),
         "sender edit plaintext".to_string(),
         None,
+        "sender-1359".to_string(),
     )
     .expect("sender edit command succeeds")
     .expect("sender edit command returns stored row");
@@ -264,9 +270,15 @@ fn task_1360_direct_actions_create_one_reply_and_one_edit_in_each_available_conv
         assert_eq!(written.edit_revision, 1);
         reply_count += 1;
 
-        let edited = cmd_osl_persist_edit(&state, message_id.clone(), edit_plaintext.clone(), None)
-            .expect("edit action succeeds")
-            .expect("edit action returns stored row");
+        let edited = cmd_osl_persist_edit(
+            &state,
+            message_id.clone(),
+            edit_plaintext.clone(),
+            None,
+            "sender-1360".to_string(),
+        )
+        .expect("edit action succeeds")
+        .expect("edit action returns stored row");
         assert_eq!(edited.channel_id, channel_id);
         assert_eq!(edited.sender_discord_id, "sender-1360");
         assert_eq!(edited.plaintext, edit_plaintext);

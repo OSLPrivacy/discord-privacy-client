@@ -33,8 +33,8 @@
 
 use crypto::pqxdh::SessionKey;
 use crypto::ratchet::{
-    canonical_ad, ChainKey, DoubleRatchet, SessionContext, MAX_SKIPPED_PER_CHAIN,
-    RatchetStateOnDisk, SESSION_VERSION_V1, SKIPPED_KEY_TTL,
+    canonical_ad, ChainKey, DoubleRatchet, RatchetStateOnDisk, SessionContext,
+    MAX_SKIPPED_PER_CHAIN, SESSION_VERSION_V1, SKIPPED_KEY_TTL,
 };
 use crypto::{ml_kem_768, pqxdh, x25519};
 use std::time::{Duration, SystemTime};

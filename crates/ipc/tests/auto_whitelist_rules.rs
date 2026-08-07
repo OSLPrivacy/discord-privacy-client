@@ -1,57 +1,38 @@
+use ipc::auto_whitelist_rules::{AutoWhitelistAppKind, AutoWhitelistChoice};
 use ipc::commands::{
-    cmd_osl_get_auto_whitelist_rule_choices,
-    cmd_osl_read_auto_whitelist_rule,
-    cmd_osl_new_place,
-    cmd_osl_get_discord_whitelist_kinds,
-    cmd_osl_get_telegram_whitelist_kinds,
-    cmd_osl_save_auto_whitelist_rule,
-};
-use ipc::state::AppState;
     cmd_osl_get_auto_whitelist_rule_choices, cmd_osl_get_discord_whitelist_kinds,
-    cmd_osl_get_whatsapp_whitelist_kinds, cmd_osl_read_auto_whitelist_rule,
+    cmd_osl_get_telegram_whitelist_kinds, cmd_osl_get_whatsapp_whitelist_kinds, cmd_osl_new_place,
+    cmd_osl_query_auto_whitelist_rule, cmd_osl_read_auto_whitelist_rule,
     cmd_osl_save_auto_whitelist_rule,
 };
 use ipc::state::AppState;
 use std::process::Command;
-    cmd_osl_get_auto_whitelist_rule_choices, cmd_osl_new_place, cmd_osl_read_auto_whitelist_rule,
-    cmd_osl_save_auto_whitelist_rule,
-};
-use ipc::state::AppState;
-
-#[test]
-fn direct_rule_query_prints_each_valid_choice() {
-    let choices = cmd_osl_get_auto_whitelist_rule_choices().unwrap();
-    let labels: Vec<String> = choices.into_iter().map(|choice| choice.label).collect();
-    println!("direct rule query valid choices: {}", labels.join(", "));
-    assert_eq!(
-        labels,
-use ipc::auto_whitelist_rules::{AutoWhitelistAppKind, AutoWhitelistChoice};
-use ipc::commands::{
-    cmd_osl_list_discord_whitelist_kinds, cmd_osl_query_auto_whitelist_rule,
-    cmd_osl_save_auto_whitelist_rule,
-};
-use ipc::state::AppState;
 
 #[test]
 fn direct_rule_query_prints_each_valid_choice() {
     let state = AppState::new();
     let saved = cmd_osl_save_auto_whitelist_rule(
         &state,
-        AutoWhitelistAppKind::Chat,
-        AutoWhitelistChoice::OnlyIfAFriend,
+        "chat".to_string(),
+        AutoWhitelistChoice::OnlyIfAFriend.label().to_string(),
+        None,
     )
     .expect("saving an app-kind rule must succeed");
-    assert_eq!(saved.app_kind, AutoWhitelistAppKind::Chat);
-    assert_eq!(saved.choice, AutoWhitelistChoice::OnlyIfAFriend);
+    assert_eq!(saved.app_kind, "chat");
+    assert_eq!(saved.choice, AutoWhitelistChoice::OnlyIfAFriend.label());
 
     let query = cmd_osl_query_auto_whitelist_rule(&state, AutoWhitelistAppKind::Chat)
         .expect("direct rule query must succeed");
     assert_eq!(query.saved_choice, Some(AutoWhitelistChoice::OnlyIfAFriend));
 
-    let choices = query.valid_choice_labels();
-    println!("direct rule query valid choices: {}", choices.join(", "));
+    let labels: Vec<String> = cmd_osl_get_auto_whitelist_rule_choices()
+        .unwrap()
+        .into_iter()
+        .map(|choice| choice.label)
+        .collect();
+    println!("direct rule query valid choices: {}", labels.join(", "));
     assert_eq!(
-        choices,
+        labels,
         vec!["never", "ask me", "always", "only if a friend"]
     );
 }
@@ -85,22 +66,13 @@ fn save_and_read_returns_different_choices_per_app_kind() {
 #[test]
 fn direct_new_place_command_returns_unlisted_with_no_prompt_when_rule_is_never() {
     let state = AppState::new();
-    cmd_osl_save_auto_whitelist_rule(&state, "discord".to_string(), "always".to_string(), None)
-        .unwrap();
-    let non_never_place = ipc::allowed_places::AllowedPlaceRecord::discord_direct_message(
-        "900000000000000135",
-        "900000000000000136",
-    );
-    let non_never = cmd_osl_new_place(&state, non_never_place).unwrap_err();
-    assert!(non_never.contains("always"));
-
     cmd_osl_save_auto_whitelist_rule(&state, "discord".to_string(), "never".to_string(), None)
         .unwrap();
     let never_place = ipc::allowed_places::AllowedPlaceRecord::discord_direct_message(
         "900000000000000135",
         "900000000000000136",
     );
-    let result = cmd_osl_new_place(&state, never_place).unwrap();
+    let result = cmd_osl_new_place(&state, never_place, None).unwrap();
 
     println!(
         "TASK0135 direct_new_place rule={} result={} prompt={}",
@@ -114,6 +86,27 @@ fn direct_new_place_command_returns_unlisted_with_no_prompt_when_rule_is_never()
     );
     assert_eq!(result.result, "unlisted");
     assert!(!result.prompt);
+}
+
+#[test]
+fn direct_new_place_command_allows_when_rule_is_always() {
+    let state = AppState::new();
+    let dir = tempfile::tempdir().unwrap();
+    cmd_osl_save_auto_whitelist_rule(&state, "discord".to_string(), "always".to_string(), None)
+        .unwrap();
+    let place = ipc::allowed_places::AllowedPlaceRecord::discord_direct_message(
+        "900000000000000135",
+        "900000000000000136",
+    );
+    let result = cmd_osl_new_place(&state, place, Some(dir.path().to_path_buf())).unwrap();
+
+    assert_eq!(result.app_kind, "discord");
+    assert_eq!(result.rule_choice, "always");
+    assert_eq!(result.result, "allowed");
+    assert!(!result.prompt);
+}
+
+#[test]
 fn whatsapp_kinds_command_returns_exactly_three_named_kinds() {
     let kinds = cmd_osl_get_whatsapp_whitelist_kinds().unwrap();
     let ids: Vec<String> = kinds.iter().map(|kind| kind.id.clone()).collect();
@@ -125,6 +118,57 @@ fn whatsapp_kinds_command_returns_exactly_three_named_kinds() {
     assert_eq!(kinds.len(), 3);
     assert_eq!(ids, vec!["direct_message", "group_chat", "channel"]);
     assert_eq!(names, vec!["direct message", "group chat", "channel"]);
+}
+
+#[test]
+fn three_whatsapp_kind_rule_lookups_return_independently_saved_choices() {
+    let state = AppState::new();
+    let saved = [
+        ("whatsapp:direct_message", "always"),
+        ("whatsapp:group_chat", "ask me"),
+        ("whatsapp:channel", "only if a friend"),
+    ];
+
+    for (rule_key, choice) in saved {
+        cmd_osl_save_auto_whitelist_rule(&state, rule_key.to_string(), choice.to_string(), None)
+            .unwrap();
+    }
+
+    let lookups: Vec<_> = saved
+        .iter()
+        .map(|(rule_key, _)| {
+            cmd_osl_read_auto_whitelist_rule(&state, (*rule_key).to_string()).unwrap()
+        })
+        .collect();
+
+    assert_eq!(lookups.len(), 3);
+    assert_eq!(lookups[0].app_kind, "whatsapp:direct_message");
+    assert_eq!(lookups[0].choice, "always");
+    assert_eq!(
+        lookups[0]
+            .allowed_place
+            .as_ref()
+            .map(|place| place.kind.as_str()),
+        Some("direct_message")
+    );
+    assert_eq!(lookups[1].app_kind, "whatsapp:group_chat");
+    assert_eq!(lookups[1].choice, "ask me");
+    assert_eq!(
+        lookups[1]
+            .allowed_place
+            .as_ref()
+            .map(|place| place.kind.as_str()),
+        Some("group_chat")
+    );
+    assert_eq!(lookups[2].app_kind, "whatsapp:channel");
+    assert_eq!(lookups[2].choice, "only if a friend");
+    assert_eq!(
+        lookups[2]
+            .allowed_place
+            .as_ref()
+            .map(|place| place.kind.as_str()),
+        Some("channel")
+    );
 }
 
 #[test]
@@ -149,17 +193,6 @@ fn discord_kinds_command_returns_exactly_five_named_kinds() {
     );
     assert_eq!(
         names,
-fn discord_kinds_command_returns_exactly_five_named_kinds() {
-    let state = AppState::new();
-    let kinds =
-        cmd_osl_list_discord_whitelist_kinds(&state).expect("Discord kinds command must succeed");
-
-    println!("discord whitelist kinds count: {}", kinds.len());
-    println!("discord whitelist kinds: {}", kinds.join(", "));
-
-    assert_eq!(kinds.len(), 5);
-    assert_eq!(
-        kinds,
         vec![
             "direct message",
             "group chat",
@@ -178,13 +211,6 @@ fn five_discord_kind_rule_lookups_return_independently_saved_choices() {
         ("discord:group_chat", "ask me"),
         ("discord:server", "only if a friend"),
         ("discord:server_channel", "never"),
-fn task_0146_discord_fixture_places_resolve_and_saved_messages_exits_1() {
-    let state = AppState::new();
-    let saved = [
-        ("discord:direct_message", "never"),
-        ("discord:group_chat", "ask me"),
-        ("discord:server", "always"),
-        ("discord:server_channel", "only if a friend"),
         ("discord:thread", "always"),
     ];
 
@@ -199,48 +225,6 @@ fn task_0146_discord_fixture_places_resolve_and_saved_messages_exits_1() {
             cmd_osl_read_auto_whitelist_rule(&state, (*rule_key).to_string()).unwrap()
         })
         .collect();
-    let proof: Vec<String> = lookups
-        .iter()
-        .map(|rule| {
-            let place = rule
-                .allowed_place
-                .as_ref()
-                .expect("Discord kind rule carries allowed-place record");
-            format!(
-                "{}={} allowed_place={}:{}",
-                rule.app_kind, rule.choice, place.app, place.kind
-            )
-        })
-        .collect();
-
-    println!(
-        "discord kind direct lookup count={} {}",
-        lookups.len(),
-    let resolved = lookups
-        .iter()
-        .filter(|rule| {
-            rule.allowed_place
-                .as_ref()
-                .is_some_and(|place| place.app == "discord")
-        })
-        .count();
-
-    println!(
-        "TASK0146_DISCORD_FIXTURE_PLACES created={} resolved={} kinds={} {}",
-        saved.len(),
-        resolved,
-        lookups
-            .iter()
-            .map(|rule| rule
-                .allowed_place
-                .as_ref()
-                .expect("Discord kind rule carries allowed-place record")
-                .kind
-                .as_str())
-            .collect::<Vec<_>>()
-            .join(","),
-        proof.join(" | ")
-    );
 
     assert_eq!(lookups.len(), 5);
     assert_eq!(lookups[0].app_kind, "discord:direct_message");
@@ -291,11 +275,37 @@ fn task_0146_discord_fixture_places_resolve_and_saved_messages_exits_1() {
 }
 
 #[test]
-fn two_messenger_kind_rule_lookups_return_independently_saved_choices() {
+fn task_0146_discord_fixture_places_resolve_and_saved_messages_exits_1() {
     let state = AppState::new();
     let saved = [
-        ("messenger:direct_message", "always"),
-        ("messenger:group_chat", "ask me"),
+        ("discord:direct_message", "never"),
+        ("discord:group_chat", "ask me"),
+        ("discord:server", "always"),
+        ("discord:server_channel", "only if a friend"),
+        ("discord:thread", "always"),
+    ];
+
+    for (rule_key, choice) in saved {
+        cmd_osl_save_auto_whitelist_rule(&state, rule_key.to_string(), choice.to_string(), None)
+            .unwrap();
+    }
+
+    let lookups: Vec<_> = saved
+        .iter()
+        .map(|(rule_key, _)| {
+            cmd_osl_read_auto_whitelist_rule(&state, (*rule_key).to_string()).unwrap()
+        })
+        .collect();
+    let resolved = lookups
+        .iter()
+        .filter(|rule| {
+            rule.allowed_place
+                .as_ref()
+                .is_some_and(|place| place.app == "discord")
+        })
+        .count();
+
+    assert_eq!(lookups.len(), 5);
     assert_eq!(resolved, 5);
 
     let output = Command::new(std::env::current_exe().expect("current test executable"))
@@ -339,12 +349,11 @@ fn task_0146_saved_messages_probe() {
 }
 
 #[test]
-fn three_whatsapp_kind_rule_lookups_return_independently_saved_choices() {
+fn two_messenger_kind_rule_lookups_return_independently_saved_choices() {
     let state = AppState::new();
     let saved = [
-        ("whatsapp:direct_message", "always"),
-        ("whatsapp:group_chat", "ask me"),
-        ("whatsapp:channel", "only if a friend"),
+        ("messenger:direct_message", "always"),
+        ("messenger:group_chat", "ask me"),
     ];
 
     for (rule_key, choice) in saved {
@@ -358,32 +367,9 @@ fn three_whatsapp_kind_rule_lookups_return_independently_saved_choices() {
             cmd_osl_read_auto_whitelist_rule(&state, (*rule_key).to_string()).unwrap()
         })
         .collect();
-    let proof: Vec<String> = lookups
-        .iter()
-        .map(|rule| {
-            let place = rule
-                .allowed_place
-                .as_ref()
-                .expect("Messenger kind rule carries allowed-place record");
-                .expect("WhatsApp kind rule carries allowed-place record");
-            format!(
-                "{}={} allowed_place={}:{}",
-                rule.app_kind, rule.choice, place.app, place.kind
-            )
-        })
-        .collect();
-
-    println!(
-        "messenger kind direct lookup count={} {}",
-        "whatsapp kind direct lookup count={} {}",
-        lookups.len(),
-        proof.join(" | ")
-    );
 
     assert_eq!(lookups.len(), 2);
     assert_eq!(lookups[0].app_kind, "messenger:direct_message");
-    assert_eq!(lookups.len(), 3);
-    assert_eq!(lookups[0].app_kind, "whatsapp:direct_message");
     assert_eq!(lookups[0].choice, "always");
     assert_eq!(
         lookups[0]
@@ -393,10 +379,6 @@ fn three_whatsapp_kind_rule_lookups_return_independently_saved_choices() {
         Some(("messenger", "direct_message"))
     );
     assert_eq!(lookups[1].app_kind, "messenger:group_chat");
-            .map(|place| place.kind.as_str()),
-        Some("direct_message")
-    );
-    assert_eq!(lookups[1].app_kind, "whatsapp:group_chat");
     assert_eq!(lookups[1].choice, "ask me");
     assert_eq!(
         lookups[1]
@@ -450,9 +432,6 @@ fn task3740_telegram_kind_list_has_exactly_six_and_all_resolve_allowed_place() {
         })
         .collect();
 
-    println!("telegram allowed-place count={}", allowed.len());
-    println!("telegram allowed-place answers={}", allowed.join(","));
-
     assert_eq!(allowed.len(), 6);
     assert_eq!(
         allowed,
@@ -476,24 +455,6 @@ fn task3740_1027_and_1028_are_allowed_and_story_is_refused_by_name() {
         .expect("task 1028 saved messages should be allowed");
     let story = cmd_osl_read_auto_whitelist_rule(&state, "telegram:story".to_string()).unwrap_err();
 
-    println!(
-        "task1027 against telegram kind list={}",
-        task1027
-            .allowed_place
-            .as_ref()
-            .map(|place| format!("allowed:{}:{}", place.app, place.kind))
-            .unwrap_or_else(|| "refusal".to_string())
-    );
-    println!(
-        "task1028 against telegram kind list={}",
-        task1028
-            .allowed_place
-            .as_ref()
-            .map(|place| format!("allowed:{}:{}", place.app, place.kind))
-            .unwrap_or_else(|| "refusal".to_string())
-    );
-    println!("story against telegram kind list=refusal error={story}");
-
     assert_eq!(
         task1027
             .allowed_place
@@ -509,17 +470,4 @@ fn task3740_1027_and_1028_are_allowed_and_story_is_refused_by_name() {
         Some(("telegram", "saved_messages"))
     );
     assert!(story.contains("story"), "{story}");
-}
-            .map(|place| place.kind.as_str()),
-        Some("group_chat")
-    );
-    assert_eq!(lookups[2].app_kind, "whatsapp:channel");
-    assert_eq!(lookups[2].choice, "only if a friend");
-    assert_eq!(
-        lookups[2]
-            .allowed_place
-            .as_ref()
-            .map(|place| place.kind.as_str()),
-        Some("channel")
-    );
 }

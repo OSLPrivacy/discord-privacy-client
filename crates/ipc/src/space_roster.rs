@@ -148,7 +148,6 @@ impl SpaceMemberId {
         }
         Ok(Self(digest))
     }
-
 }
 
 /// Local display identity for a Space member in channel membership UI.
@@ -442,6 +441,9 @@ impl MembershipEventLog {
         }
     }
 
+    pub fn epoch(&self) -> SpaceEpoch {
+        self.epoch
+    }
 }
 
 /// Authoritative membership state for every locally known Space.

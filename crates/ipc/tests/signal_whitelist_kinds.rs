@@ -1,12 +1,3 @@
-use ipc::commands::cmd_osl_list_signal_whitelist_kinds;
-
-#[test]
-fn signal_kinds_command_returns_the_full_named_kind_list() {
-fn signal_kinds_command_returns_exactly_two_named_kinds() {
-    let kinds = cmd_osl_list_signal_whitelist_kinds().expect("signal whitelist kinds");
-    let names: Vec<&str> = kinds.iter().map(|kind| kind.name).collect();
-    println!(
-        "signal whitelist kinds count={} names={}",
 use ipc::commands::{cmd_osl_list_signal_whitelist_kinds, cmd_osl_read_signal_auto_whitelist_rule};
 use ipc::state::AppState;
 
@@ -20,18 +11,12 @@ fn signal_kinds_command_returns_exactly_three_named_kinds() {
         names.join(", ")
     );
     assert_eq!(names, vec!["direct message", "group chat", "story"]);
-    assert_eq!(kinds.len(), names.len());
-        names.len(),
-        names.join(", ")
-    );
-    assert_eq!(names, vec!["direct message", "group chat"]);
     assert_eq!(
         kinds
             .iter()
             .map(|kind| kind.auto_rule_app_kind)
             .collect::<Vec<_>>(),
         vec!["signal_direct_message", "signal_group_chat", "signal_story"]
-        vec!["signal_direct_message", "signal_group_chat"]
     );
     assert_eq!(
         kinds
@@ -107,7 +92,4 @@ fn task_1055_signal_story_against_kind_list_returns_allowed() {
 
     println!("TASK1055_SIGNAL_STORY_KIND_LIST result={result}");
     assert_eq!(result, "allowed");
-}
-        vec!["direct_message", "group_chat"]
-    );
 }

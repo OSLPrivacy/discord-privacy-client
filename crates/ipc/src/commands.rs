@@ -7,164 +7,50 @@
 //! Tauri-attribute wrappers live in [`crate::tauri_glue`].
 
 use crate::auto_whitelist_rules::{
-    AutoWhitelistAppKind,
-    AutoWhitelistChoice,
-    AutoWhitelistRule,
-    AutoWhitelistRuleQuery,
-    discord_whitelist_kind_labels,
+    discord_whitelist_kind_labels, AutoWhitelistAppKind, AutoWhitelistRuleQuery,
 };
-use crate::{
-    IpcError,
-    IpcResult,
-};
-use base64::engine::general_purpose::{
-    STANDARD,
-    URL_SAFE_NO_PAD,
-};
-use crypto::{
-    aead,
-    ed25519,
-    hkdf,
-    random,
-    x25519,
-};
-use keystore::{
-    BurnScope,
-    KeyServerClient,
-    generate_identity,
-    select_best_sealer,
-};
-use serde::{
-    Deserialize,
-    Serialize,
-};
-use sha2::{
-    Digest,
-    Sha256,
-};
-use std::path::{
-    Path,
-    PathBuf,
-};
-use std::time::{
-    SystemTime,
-    UNIX_EPOCH,
-};
-use store::{
-    MessageStore,
-    StoreError,
-    StoredMessage,
-};
-use crate::state::AppState;
-use crate::{IpcError, IpcResult};
-use base64::engine::general_purpose::STANDARD;
-use base64::Engine;
-use crypto::{aead, ed25519, hkdf, random, x25519};
-use keystore::{generate_identity, select_best_sealer, BurnScope, KeyServerClient};
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
-use store::{MessageStore, StoreError, StoredMessage};
-
-use crate::group_send::{
-    OSL_RESULT_RECOVERY_IGNORED,
-    apply_skdm_recv,
-    apply_skdm_request_recv,
-    decrypt_v5_recv,
-    encrypt_v5_send,
-};
-use base64::{
-    Engine,
-    engine::general_purpose::STANDARD,
-};
-use super::{
-    PrekeyReplenishmentDecision,
-    PrekeyReplenishmentOutcome,
-    decide_prekey_replenishment,
-    run_prekey_replenishment_tick_at,
-};
-use std::io::{
-    Read,
-    Write,
-};
-use keystore::client::{
-    PeerCapabilities,
-    PrekeyBundleOpk,
-    PrekeyBundleResponse,
-    RN_CAP_WIRE_RN,
-    RN_CAP_WIRE_RN_LIVE,
-};
-use osl_ratchet_next::test_support::{
-    fresh_bundle,
-    seeded_rng,
-};
-use crypto::ratchet::{
-    DoubleRatchet,
-    RatchetStateOnDisk,
-    SESSION_VERSION_V1,
-    SessionContext,
+use crate::both_sides_burn_progress::{
+    BothSidesBurnProgressDto, BothSidesBurnProgressStore, BothSidesBurnRemovalStep,
 };
 use crate::control_inbox_dead_letter::{
-    ControlInboxDeadLetterFile,
-    MAX_CONTROL_INBOX_ATTEMPTS,
-    REASON_DISCORD_SNOWFLAKE_SENDER,
-    REASON_MAX_ATTEMPTS,
-    load_control_inbox_dead_letter,
+    load_control_inbox_dead_letter, ControlInboxDeadLetterFile, MAX_CONTROL_INBOX_ATTEMPTS,
+    REASON_DISCORD_SNOWFLAKE_SENDER, REASON_MAX_ATTEMPTS,
 };
-use crypto::sender_keys::{
-    SenderContext,
-    SenderKeyState,
+use crate::friend_request::{FriendPeer, FriendRequest, FriendScopeGrant, VerifiedFriendAuthority};
+use crate::group_send::{
+    apply_skdm_recv, apply_skdm_request_recv, decrypt_v5_recv, encrypt_v5_send,
+    OSL_RESULT_RECOVERY_IGNORED,
 };
-use keystore::identity_bundle::{
-    BundleField,
-    BundleMergeError,
-    IdentityBundle,
-};
-use crate::tofu::{
-    TofuOutcome,
-    classify,
-    safety_number,
-};
-use crate::friend_request::{
-    FriendPeer,
-    FriendRequest,
-    FriendScopeGrant,
-    VerifiedFriendAuthority,
-};
-use crate::scope::{
-    Scope,
-    ScopeInput,
-};
-use crate::main_password::{
-    LockoutStatusDto,
-    PasswordStatusDto,
-};
-use crate::peer_map::{
-    PeerEntry,
-    WhitelistEntry,
-};
-use crate::wire_rn::{
-    RnPeerPin,
-    RnPolicy,
-};
-use crate::state::AppState;
-use base64::Engine;
-use std::sync::Arc;
+use crate::main_password::{LockoutStatusDto, PasswordStatusDto};
+use crate::peer_map::{PeerEntry, WhitelistEntry};
 use crate::row_ownership_ladder::{
-    RowOwnershipEvidenceKindDto,
-    RowOwnershipLadderDto,
-    RowOwnershipMarkingAdmissionDto,
+    RowOwnershipEvidenceKindDto, RowOwnershipLadderDto, RowOwnershipMarkingAdmissionDto,
 };
-use base64::engine::general_purpose::STANDARD;
+use crate::scope::{Scope, ScopeInput};
+use crate::state::AppState;
+use crate::tofu::{classify, safety_number, TofuOutcome};
+use crate::wire_rn::{RnPeerPin, RnPolicy};
+use crate::{IpcError, IpcResult};
+use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
+use base64::Engine;
+use crypto::ratchet::{DoubleRatchet, RatchetStateOnDisk, SessionContext, SESSION_VERSION_V1};
+use crypto::sender_keys::{SenderContext, SenderKeyState};
+use crypto::{aead, ed25519, hkdf, random, x25519};
+use keystore::client::{
+    PeerCapabilities, PrekeyBundleOpk, PrekeyBundleResponse, RN_CAP_WIRE_RN, RN_CAP_WIRE_RN_LIVE,
+};
+use keystore::identity_bundle::{BundleField, BundleMergeError, IdentityBundle};
+use keystore::{generate_identity, select_best_sealer, BurnScope, KeyServerClient};
+use osl_ratchet_next::test_support::{fresh_bundle, seeded_rng};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
-use crate::both_sides_burn_progress::{
-    BothSidesBurnProgressDto,
-    BothSidesBurnProgressStore,
-    BothSidesBurnRemovalStep,
-};
+use std::time::{SystemTime, UNIX_EPOCH};
+use store::{MessageStore, StoreError, StoredMessage};
 
 // 9-TD2.3: F0-FIX3 trace logs.
 //
@@ -291,9 +177,6 @@ mod command_activity_tests {
         });
         assert_command_marks_activity("cmd_osl_get_server_defaults", || {
             let _ = cmd_osl_get_server_defaults(&state);
-        });
-        assert_command_marks_activity("cmd_osl_get_new_friend_defaults", || {
-            let _ = cmd_osl_get_new_friend_defaults(&state);
         });
         assert_command_marks_activity("cmd_osl_get_app_preferences", || {
             let _ = cmd_osl_get_app_preferences(&state);
@@ -1409,12 +1292,19 @@ pub(crate) fn persist_sender_key_state_now(state: &AppState) {
 }
 
 fn persist_auto_whitelist_rules_now(state: &AppState) {
-    let dir = match keystore::osl_config_dir() {
-        Ok(d) => d,
-        Err(e) => {
-            record_persist_error(state, "auto_whitelist_rules dir resolve", e);
-            return;
-        }
+    persist_auto_whitelist_rules_now_to_dir(state, None);
+}
+
+fn persist_auto_whitelist_rules_now_to_dir(state: &AppState, config_dir: Option<PathBuf>) {
+    let dir = match config_dir {
+        Some(dir) => dir,
+        None => match keystore::osl_config_dir() {
+            Ok(d) => d,
+            Err(e) => {
+                record_persist_error(state, "auto_whitelist_rules dir resolve", e);
+                return;
+            }
+        },
     };
     let path = dir.join("auto_whitelist_rules.json");
     let rules = state
@@ -1512,40 +1402,6 @@ pub fn persist_scope_membership_now(state: &AppState) {
     if let Err(e) = crate::membership::write_scope_membership(&path, &snapshot) {
         record_persist_error(state, "membership.json", e);
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ScopeMembershipLocalCopyRestoreDto {
-    pub restored_items: usize,
-    pub live_copy: String,
-    pub previous_copy: String,
-}
-
-/// Rebuild the durable membership local copies from the in-memory oracle.
-///
-/// This is deliberately distinct from the normal writer: if both on-disk
-/// copies are corrupt, ordinary writes refuse so they do not clobber the last
-/// evidence. This named restore command is the explicit operator recovery path.
-pub fn cmd_osl_restore_scope_membership_local_copies(
-    state: &AppState,
-) -> Result<ScopeMembershipLocalCopyRestoreDto, String> {
-    record_activity_on_command_entry();
-    let dir = keystore::osl_config_dir().map_err(|e| format!("membership dir resolve: {e}"))?;
-    let live = dir.join("membership.json");
-    let previous = crate::membership::previous_scope_membership_path(&live);
-    let snapshot = state
-        .scope_membership
-        .lock()
-        .expect("scope_membership mutex poisoned")
-        .clone();
-    crate::membership::restore_scope_membership_local_copies(&live, &snapshot)
-        .map_err(|e| format!("membership local-copy restore: {e}"))?;
-    Ok(ScopeMembershipLocalCopyRestoreDto {
-        restored_items: snapshot.observed_member_count(),
-        live_copy: live.display().to_string(),
-        previous_copy: previous.display().to_string(),
-    })
 }
 
 /// Refuse to resolve dynamic group recipients from an in-memory snapshot whose
@@ -3501,6 +3357,8 @@ fn persist_decrypted(
         plaintext: plaintext.to_string(),
         decrypted_at: now,
         burned: false,
+        reply_parent_id: None,
+        edit_revision: 1,
     };
     if let Err(e) = store.put(&msg) {
         tracing::warn!(
@@ -3585,7 +3443,8 @@ pub fn cmd_osl_persist_outbound(
     channel_id: String,
     discord_message_id: String,
     plaintext: String,
-) -> Result<(), String> {
+    reply_parent_id: Option<String>,
+) -> Result<Option<StoredMessageDto>, String> {
     record_activity_on_command_entry();
     let self_id = {
         let guard = state.identity_slot();
@@ -3596,7 +3455,7 @@ pub fn cmd_osl_persist_outbound(
                     discord_message_id = %crate::log_id::log_id(&discord_message_id),
                     "OSL: persist_outbound: identity not loaded; skipping"
                 );
-                return Ok(());
+                return Ok(None);
             }
         }
     };
@@ -3609,7 +3468,7 @@ pub fn cmd_osl_persist_outbound(
             discord_message_id = %crate::log_id::log_id(&discord_message_id),
             "OSL: persist_outbound: message_store disabled; skipping"
         );
-        return Ok(());
+        return Ok(None);
     };
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -3623,15 +3482,13 @@ pub fn cmd_osl_persist_outbound(
         plaintext,
         decrypted_at: now,
         burned: false,
+        reply_parent_id,
+        edit_revision: 1,
     };
-    if let Err(e) = store.put(&msg) {
-        tracing::warn!(
-            discord_message_id = %crate::log_id::log_id(&discord_message_id),
-            error = %e,
-            "OSL: persist_outbound: store.put failed (non-fatal)"
-        );
-    }
-    Ok(())
+    store
+        .put(&msg)
+        .map_err(|e| format!("OSL: persist_outbound put: {e}"))?;
+    Ok(Some(StoredMessageDto::from(msg)))
 }
 
 /// Persist plaintext already authenticated by a trusted first-party OSL Chat
@@ -3675,6 +3532,8 @@ pub fn cmd_osl_persist_inbound(
             plaintext,
             decrypted_at: now,
             burned: false,
+            reply_parent_id: None,
+            edit_revision: 1,
         })
         .map_err(|error| format!("OSL: first-party chat history: {error}"))
 }
@@ -3692,6 +3551,8 @@ pub struct StoredMessageDto {
     pub plaintext: String,
     pub decrypted_at: i64,
     pub burned: bool,
+    pub reply_parent_id: Option<String>,
+    pub edit_revision: i64,
 }
 
 impl From<StoredMessage> for StoredMessageDto {
@@ -3704,6 +3565,8 @@ impl From<StoredMessage> for StoredMessageDto {
             plaintext: m.plaintext,
             decrypted_at: m.decrypted_at,
             burned: m.burned,
+            reply_parent_id: m.reply_parent_id,
+            edit_revision: m.edit_revision,
         }
     }
 }
@@ -3889,14 +3752,15 @@ pub fn cmd_osl_persist_edit(
     discord_message_id: String,
     new_plaintext: String,
     channel_id: Option<String>,
-) -> Result<(), String> {
+    editor_discord_id: String,
+) -> Result<Option<StoredMessageDto>, String> {
     record_activity_on_command_entry();
     let guard = state
         .message_store
         .lock()
         .expect("message_store mutex poisoned");
     let Some(store) = guard.as_ref() else {
-        return Ok(());
+        return Ok(None);
     };
     let existing = store
         .get(&discord_message_id)
@@ -3906,15 +3770,24 @@ pub fn cmd_osl_persist_edit(
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
     let updated = match existing {
-        Some(prior) => StoredMessage {
-            discord_message_id: prior.discord_message_id,
-            channel_id: prior.channel_id,
-            sender_discord_id: prior.sender_discord_id,
-            sender_osl_user_id: prior.sender_osl_user_id,
-            plaintext: new_plaintext,
-            decrypted_at: now,
-            burned: false,
-        },
+        Some(prior) => {
+            if editor_discord_id != prior.sender_discord_id
+                && editor_discord_id != prior.sender_osl_user_id
+            {
+                return Err("OSL: persist_edit refused: only the sender can edit".to_string());
+            }
+            StoredMessage {
+                discord_message_id: prior.discord_message_id,
+                channel_id: prior.channel_id,
+                sender_discord_id: prior.sender_discord_id,
+                sender_osl_user_id: prior.sender_osl_user_id,
+                plaintext: new_plaintext,
+                decrypted_at: now,
+                burned: false,
+                reply_parent_id: prior.reply_parent_id,
+                edit_revision: prior.edit_revision.saturating_add(1),
+            }
+        }
         None => {
             // Probe-2 fix: was a silent no-op when row missing, which
             // bricked editing of any outbound message whose row had
@@ -3925,30 +3798,25 @@ pub fn cmd_osl_persist_edit(
             // Without `channel_id` we lack a complete row — preserve
             // the historical idempotent no-op.
             let Some(channel_id) = channel_id else {
-                return Ok(());
-            };
-            let self_id = {
-                let id_guard = state.identity_slot();
-                let Some(id) = id_guard.as_ref() else {
-                    return Ok(());
-                };
-                id.user_id.clone()
+                return Ok(None);
             };
             StoredMessage {
                 discord_message_id: discord_message_id.clone(),
                 channel_id,
-                sender_discord_id: self_id.clone(),
-                sender_osl_user_id: self_id,
+                sender_discord_id: editor_discord_id.clone(),
+                sender_osl_user_id: editor_discord_id,
                 plaintext: new_plaintext,
                 decrypted_at: now,
                 burned: false,
+                reply_parent_id: None,
+                edit_revision: 1,
             }
         }
     };
     store
         .put(&updated)
         .map_err(|e| format!("OSL: persist_edit put: {e}"))?;
-    Ok(())
+    Ok(Some(StoredMessageDto::from(updated)))
 }
 
 /// Layer 10 / Phase 5b2 IPC entry point: mark a message burned
@@ -4104,39 +3972,6 @@ pub fn cmd_osl_burn_sender_message_records_both_sides(
         remote_removal_count,
         remaining_local_count,
         equal_removal_counts: local_removal_count == remote_removal_count,
-        .clone()
-        .ok_or_else(|| "OSL: both-sides burn requires an installed identity".to_string())?;
-    let keyserver = state
-        .keyserver_slot()
-        .clone()
-        .ok_or_else(|| "OSL: both-sides burn requires keyserver authority".to_string())?;
-    let local = remove_sender_message_records(state, &discord_message_ids)?;
-    let mut remote_removal_count = 0usize;
-    for message_id in &discord_message_ids {
-        let response = keyserver
-            .burn(
-                &identity,
-                &BurnScope::Single {
-                    content_id: message_id.clone(),
-                },
-            )
-            .map_err(|error| format!("OSL: wrapped-key burn: {error}"))?;
-        if response.scope != "single" {
-            return Err(format!(
-                "OSL: wrapped-key burn returned unexpected scope: {}",
-                response.scope
-            ));
-        }
-        remote_removal_count = remote_removal_count
-            .saturating_add(usize::try_from(response.deleted_count).unwrap_or(usize::MAX));
-    }
-
-    Ok(BurnSenderMessageRecordsBothSidesDto {
-        requested_count: local.requested_count,
-        local_removal_count: local.removed_count,
-        remote_removal_count,
-        remaining_local_count: local.remaining_local_count,
-        equal_removal_counts: local.removed_count == remote_removal_count,
     })
 }
 
@@ -4428,6 +4263,10 @@ pub(crate) fn now_unix_secs() -> i64 {
 pub struct EncryptOutput {
     pub messages: Vec<String>,
     pub session_id: Option<u32>,
+    #[serde(default = "default_send_key_sequence")]
+    pub key_sequence: String,
+    #[serde(default)]
+    pub basic_path_used: bool,
     /// Phase 9-A3 SKDM-delivery fix: v=5 group sends produce one
     /// SKDM (Sender Key Distribution Message) v=4 wire per non-self
     /// peer that boot.js must post as its OWN Discord message(s) —
@@ -4468,6 +4307,8 @@ pub struct EncryptWire {
     pub content: String,
     pub control_messages: Vec<String>,
     pub skdm_peer_status: Vec<SkdmPeerStatus>,
+    pub key_sequence: String,
+    pub basic_path_used: bool,
 }
 
 impl EncryptWire {
@@ -4477,6 +4318,18 @@ impl EncryptWire {
             content,
             control_messages: Vec::new(),
             skdm_peer_status: Vec::new(),
+            key_sequence: default_send_key_sequence(),
+            basic_path_used: true,
+        }
+    }
+
+    fn rn_content(content: String) -> Self {
+        EncryptWire {
+            content,
+            control_messages: Vec::new(),
+            skdm_peer_status: Vec::new(),
+            key_sequence: "stronger-osl-rn".to_string(),
+            basic_path_used: false,
         }
     }
 }
@@ -4879,6 +4732,8 @@ pub fn cmd_osl_encrypt_message_v2(
         content: wire,
         control_messages,
         skdm_peer_status,
+        key_sequence,
+        basic_path_used,
     } = cmd_osl_encrypt_message_v2_wire(
         state,
         plaintext,
@@ -4909,6 +4764,8 @@ pub fn cmd_osl_encrypt_message_v2(
     Ok(EncryptOutput {
         messages: vec![wire],
         session_id: None,
+        key_sequence,
+        basic_path_used,
         control_messages,
         skdm_peer_status,
     })
@@ -7028,6 +6885,7 @@ mod wrapped_key_open_tests {
             single_use: true,
             display_duration_seconds: Some(30),
             expires_at: "2026-07-30T20:00:00Z".to_string(),
+            expiry_seconds: None,
         };
 
         let link = post_wrapped_key_before_producing_link(&state, upload, || {
@@ -10514,6 +10372,8 @@ mod burn_wrapped_key_command_tests {
                 plaintext: "this must be shredded".to_string(),
                 decrypted_at: 1,
                 burned: false,
+                reply_parent_id: None,
+                edit_revision: 1,
             })
             .expect("store message");
 
@@ -10624,7 +10484,6 @@ pub fn cmd_osl_accept_friend_request(
 
     let scope = request.scope_grant.scope().clone();
     adopt_friend_request_scope(state, &requester_discord_id, &scope)?;
-    record_accepted_friend_relationship(state, &requester_discord_id);
 
     let scope_kind_str = match scope.kind {
         crate::scope::ScopeKind::Dm => "dm",
@@ -10635,40 +10494,6 @@ pub fn cmd_osl_accept_friend_request(
     let _ = cmd_osl_unburn_scope(state, scope_kind_str.to_string(), scope.id);
 
     Ok(())
-}
-
-fn record_accepted_friend_relationship(state: &AppState, requester_discord_id: &str) {
-    let self_discord_id = {
-        let identity = state.identity_slot();
-        identity
-            .as_ref()
-            .and_then(|identity| identity.discord_snowflake.as_deref())
-            .filter(|id| !id.trim().is_empty())
-            .map(str::to_owned)
-    };
-
-    let mut friend_ids = state.friend_ids.lock().expect("friend_ids mutex poisoned");
-    for id in self_discord_id
-        .into_iter()
-        .chain(std::iter::once(requester_discord_id.to_owned()))
-    {
-        if !friend_ids.iter().any(|existing| existing == &id) {
-            friend_ids.push(id);
-        }
-    }
-}
-
-const PENDING_FRIEND_REQUESTS_FILE: &str = "pending_friend_requests.json";
-
-    let mut friend_ids = state.friend_ids.lock().expect("friend_ids mutex poisoned");
-    for id in self_discord_id
-        .into_iter()
-        .chain(std::iter::once(requester_discord_id.to_owned()))
-    {
-        if !friend_ids.iter().any(|existing| existing == &id) {
-            friend_ids.push(id);
-        }
-    }
 }
 
 const PENDING_FRIEND_REQUESTS_FILE: &str = "pending_friend_requests.json";
@@ -10973,6 +10798,14 @@ pub fn cmd_osl_create_friend_request_by_osl_name(
         resolved.user_id.clone(),
         (&scope).into(),
         &dir,
+    )?;
+    cmd_osl_create_friend_request(
+        state,
+        input.request_id.clone(),
+        identity.user_id.clone(),
+        resolved.user_id.clone(),
+        name.to_string(),
+        (&scope).into(),
     )?;
     Ok(CreateFriendRequestByOslNameResult {
         request_id: input.request_id,
@@ -13102,6 +12935,7 @@ pub fn cmd_osl_validate_license_with_dir_and_url(
                 status: resp.status,
                 current_period_end: resp.expires_at,
                 checksum_ok: resp.checksum_ok,
+                error: None,
             })
         }
         Err(keystore::Error::Transport(msg)) => {
@@ -14045,6 +13879,40 @@ pub struct WhitelistRowDto {
     pub broadened: bool,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct EmailWhitelistKindDto {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct EmailSendModeDto {
+    pub id: String,
+    pub name: String,
+}
+
+/// Static email auto-whitelist kind query for settings/rule wiring.
+pub fn cmd_osl_list_email_whitelist_kinds() -> Vec<EmailWhitelistKindDto> {
+    record_activity_on_command_entry();
+    crate::email_whitelist_kinds::EmailWhitelistKind::ALL
+        .iter()
+        .map(|kind| EmailWhitelistKindDto {
+            name: kind.name().to_string(),
+        })
+        .collect()
+}
+
+/// Static email send-mode choices for settings/review wiring.
+pub fn cmd_osl_list_email_send_modes() -> Vec<EmailSendModeDto> {
+    record_activity_on_command_entry();
+    crate::email_send_modes::EmailSendMode::ALL
+        .iter()
+        .map(|mode| EmailSendModeDto {
+            id: mode.id().to_string(),
+            name: mode.name().to_string(),
+        })
+        .collect()
+}
+
 /// 7d-A: flatten every peer's outgoing_whitelists into a single
 /// list of DTOs for the settings-menu Whitelist Manager. Order
 /// is stable: peers sorted by Discord snowflake (string), then
@@ -14266,8 +14134,6 @@ pub fn cmd_osl_list_all_whitelists(state: &AppState) -> Result<Vec<WhitelistRowD
 // phrase generation. Tauri wrappers in `src-tauri/src/main.rs`.
 // =====================================================================
 
-pub use crate::main_password::{LockoutStatusDto, PasswordStatusDto};
-
 /// Command-boundary activity hook for the password gate's inactivity timer.
 /// Returns false when the command arrived after the idle window and caused the
 /// session to auto-lock; otherwise records this command as fresh activity.
@@ -14292,6 +14158,34 @@ pub(crate) fn record_activity_on_every_command_at(now: std::time::Instant) -> bo
 // find the password".
 fn password_dir() -> Result<std::path::PathBuf, String> {
     keystore::osl_base_dir().map_err(|e| format!("OSL: cannot resolve config dir: {e}"))
+}
+
+pub fn cmd_osl_create_private_contact_link(
+    _state: &AppState,
+    person_id: String,
+) -> Result<crate::private_contact_link::PrivateContactLinkDto, String> {
+    let dir =
+        keystore::osl_base_dir().map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
+    let created_at_ms = now_unix_secs().max(0) as u64 * 1000;
+    crate::private_contact_link::create_private_contact_link(&dir, &person_id, created_at_ms)
+}
+
+pub fn cmd_osl_private_contact_link_status(
+    _state: &AppState,
+    link_value: String,
+) -> Result<crate::private_contact_link::PrivateContactLinkStatusDto, String> {
+    let dir =
+        keystore::osl_base_dir().map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
+    crate::private_contact_link::private_contact_link_status(&dir, &link_value)
+}
+
+pub fn cmd_osl_use_private_contact_link(
+    _state: &AppState,
+    link_value: String,
+) -> Result<crate::private_contact_link::PrivateContactLinkUseDto, String> {
+    let dir =
+        keystore::osl_base_dir().map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
+    crate::private_contact_link::use_private_contact_link(&dir, &link_value)
 }
 
 #[cfg(test)]
@@ -14419,6 +14313,54 @@ pub fn cmd_osl_view_recovery_phrase(current: String) -> Result<String, String> {
     record_activity_on_command_entry();
     let dir = password_dir()?;
     crate::main_password::view_recovery_phrase(&dir, &current)
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryWordRetypeEntryDto {
+    pub position: u8,
+    pub word: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryWordRetypeMatchDto {
+    pub position: u8,
+    pub matched: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryWordRetypeCheckDto {
+    pub ok: bool,
+    pub checked: Vec<RecoveryWordRetypeMatchDto>,
+}
+
+pub fn cmd_osl_check_recovery_words(
+    current: String,
+    entries: Vec<RecoveryWordRetypeEntryDto>,
+) -> Result<RecoveryWordRetypeCheckDto, String> {
+    record_activity_on_command_entry();
+    let dir = password_dir()?;
+    let entries = entries
+        .into_iter()
+        .map(|entry| crate::main_password::RecoveryWordEntry {
+            position: entry.position as usize,
+            word: entry.word,
+        })
+        .collect::<Vec<_>>();
+    let checked = crate::main_password::check_recovery_words(&dir, &current, &entries)?;
+    Ok(RecoveryWordRetypeCheckDto {
+        ok: checked.ok,
+        checked: checked
+            .checked
+            .into_iter()
+            .map(|entry| RecoveryWordRetypeMatchDto {
+                position: entry.position as u8,
+                matched: entry.matched,
+            })
+            .collect(),
+    })
 }
 
 /// Device transfer: reveal the 12-word phrase that recovers THIS OSL
@@ -15314,14 +15256,6 @@ mod account_transfer_tests {
         state
     }
 
-    fn state_with_transfer_identity(entropy: [u8; 16], snowflake: &str) -> AppState {
-        let state = AppState::new();
-        let mut identity = keystore::identity_from_entropy(entropy, format!("user-{snowflake}"));
-        identity.discord_snowflake = Some(snowflake.to_string());
-        state.install_identity(identity);
-        state
-    }
-
     fn open_export(encoded: &str, entropy: [u8; 16]) -> serde_json::Value {
         let raw = STANDARD.decode(encoded).unwrap();
         let offset = OSL_EXPORT_MAGIC.len() + crypto::aead::NONCE_SIZE;
@@ -15393,78 +15327,9 @@ mod account_transfer_tests {
                     sender_osl_user_id: ACCOUNT.to_owned(),
                     plaintext: MESSAGE_TEXT.to_owned(),
                     decrypted_at: 459,
-    fn transfer_phrase(entropy: [u8; 16]) -> String {
-        bip39::Mnemonic::from_entropy_in(bip39::Language::English, &entropy)
-            .unwrap()
-            .to_string()
-    }
-
-    fn mutate_one_backup_byte(blob_b64: &str) -> String {
-        let mut raw = STANDARD.decode(blob_b64).unwrap();
-        let last = raw.last_mut().expect("export blob is non-empty");
-        *last ^= 0x01;
-        STANDARD.encode(raw)
-    }
-
-    fn count_records(
-        dir: &Path,
-        identity_secret: &[u8; 32],
-    ) -> (usize, Option<String>, Option<String>) {
-        if !dir.join("store/messages.sqlite").exists() {
-            return (0, None, None);
-        }
-        let store = MessageStore::open(&dir.join("store"), identity_secret).unwrap();
-        let rows = store.list_by_channel("CHANNEL-0461", 10).unwrap();
-        let name = rows.first().map(|row| row.discord_message_id.clone());
-        let fingerprint = rows.first().map(|row| row.plaintext.clone());
-        (rows.len(), name, fingerprint)
-    }
-
-    fn recover_account_from_export_with_password_confirmation(
-        state: &AppState,
-        blob_b64: String,
-        phrase: String,
-        new_password: &str,
-        confirm_password: &str,
-        dir: &Path,
-    ) -> Result<(), String> {
-        if new_password != confirm_password {
-            return Err("OSL: passwords differ; backup restore was not started".to_string());
-        }
-        cmd_osl_recover_account_from_export_with_dir(state, blob_b64, phrase, dir)
-    }
-
-    #[test]
-    fn task_0461_malformed_second_device_restore_is_refused_without_records() {
-        let _guard = crate::test_process_globals::serialize();
-        let _reset = FileKeyReset;
-        crate::main_password::set_file_storage_key(None);
-
-        const SNOWFLAKE: &str = "0461";
-        const RECORD_NAME: &str = "RECORD-0461";
-        const FINGERPRINT: &str = "JADE-0461";
-        const PASSWORD: &str = "restore-password-0461";
-        let entropy = [0x46; 16];
-        let phrase = transfer_phrase(entropy);
-
-        let source_dir = TempDir::new().unwrap();
-        let source = state_with_transfer_identity(entropy, SNOWFLAKE);
-        let source_identity = source.identity_slot().as_ref().unwrap().clone();
-        {
-            let store = MessageStore::open(
-                &source_dir.path().join("store"),
-                source_identity.x25519_secret.as_bytes(),
-            )
-            .unwrap();
-            store
-                .put(&StoredMessage {
-                    discord_message_id: RECORD_NAME.to_string(),
-                    channel_id: "CHANNEL-0461".to_string(),
-                    sender_discord_id: "sender-0461".to_string(),
-                    sender_osl_user_id: "sender-osl-0461".to_string(),
-                    plaintext: FINGERPRINT.to_string(),
-                    decrypted_at: 46,
                     burned: false,
+                    reply_parent_id: None,
+                    edit_revision: 1,
                 })
                 .unwrap();
         }
@@ -15598,6 +15463,8 @@ mod account_transfer_tests {
                     plaintext: OLD_MESSAGE_TEXT.to_owned(),
                     decrypted_at: 460,
                     burned: false,
+                    reply_parent_id: None,
+                    edit_revision: 1,
                 })
                 .unwrap();
         }
@@ -15783,6 +15650,8 @@ mod account_transfer_tests {
                     plaintext: OLDER_MESSAGE.to_owned(),
                     decrypted_at: 1_371_001,
                     burned: false,
+                    reply_parent_id: None,
+                    edit_revision: 1,
                 })
                 .unwrap();
             source_store
@@ -15794,6 +15663,8 @@ mod account_transfer_tests {
                     plaintext: NEWER_MESSAGE.to_owned(),
                     decrypted_at: 1_371_002,
                     burned: false,
+                    reply_parent_id: None,
+                    edit_revision: 1,
                 })
                 .unwrap();
         }
@@ -15899,145 +15770,6 @@ mod account_transfer_tests {
             "TASK1371_EXACT_MESSAGES_MATCH={}",
             restored_messages == EXPECTED_MESSAGES_NEWEST_FIRST
         );
-        let (source_count, source_name, source_fingerprint) =
-            count_records(source_dir.path(), source_identity.x25519_secret.as_bytes());
-        assert_eq!(source_count, 1);
-        assert_eq!(source_name.as_deref(), Some(RECORD_NAME));
-        assert_eq!(source_fingerprint.as_deref(), Some(FINGERPRINT));
-        println!("TASK0461_SEEDED_BACKUP_FINGERPRINT={FINGERPRINT}");
-        println!("TASK0461_SEEDED_RECORD_NAME={RECORD_NAME}");
-        println!("TASK0461_SEEDED_RECORD_COUNT={source_count}");
-
-        let backup = cmd_osl_export_data_with_dir(&source, source_dir.path()).unwrap();
-        let backup_digest = {
-            let mut hasher = Sha256::new();
-            hasher.update(backup.as_bytes());
-            format!("{:x}", hasher.finalize())
-        };
-        println!("TASK0461_BACKUP_SHA256={backup_digest}");
-
-        let imported_identity = decode_export_identity(
-            open_export(&backup, entropy).get("identity").unwrap(),
-            entropy,
-        )
-        .unwrap();
-        let imported_secret = *imported_identity.x25519_secret.as_bytes();
-
-        let clean_dir = TempDir::new().unwrap();
-        let clean = state_with_transfer_identity([0x51; 16], SNOWFLAKE);
-        let (clean_before, _, _) = count_records(clean_dir.path(), &imported_secret);
-        assert_eq!(clean_before, 0);
-        println!("TASK0461_CLEAN_PROFILE_COUNT_BEFORE={clean_before}");
-        recover_account_from_export_with_password_confirmation(
-            &clean,
-            backup.clone(),
-            phrase.clone(),
-            PASSWORD,
-            PASSWORD,
-            clean_dir.path(),
-        )
-        .unwrap();
-        let clean_identity_secret = *clean
-            .identity_slot()
-            .as_ref()
-            .unwrap()
-            .x25519_secret
-            .as_bytes();
-        let (clean_count, clean_name, clean_fingerprint) =
-            count_records(clean_dir.path(), &clean_identity_secret);
-        assert_eq!(clean_count, 1);
-        assert_eq!(clean_name.as_deref(), Some(RECORD_NAME));
-        assert_eq!(clean_fingerprint.as_deref(), Some(FINGERPRINT));
-        println!("TASK0461_CLEAN_RESTORE_NAME={}", clean_name.unwrap());
-        println!("TASK0461_CLEAN_RESTORE_COUNT={clean_count}");
-        println!(
-            "TASK0461_CLEAN_RESTORE_FINGERPRINT={}",
-            clean_fingerprint.unwrap()
-        );
-        println!("TASK0461_JADE_READABLE={FINGERPRINT}");
-
-        let bad_byte_dir = TempDir::new().unwrap();
-        let bad_byte = state_with_transfer_identity([0x52; 16], SNOWFLAKE);
-        let (bad_byte_before, _, _) = count_records(bad_byte_dir.path(), &imported_secret);
-        assert_eq!(bad_byte_before, 0);
-        println!("TASK0461_BAD_BYTES_COUNT_BEFORE={bad_byte_before}");
-        let bad_byte_err = recover_account_from_export_with_password_confirmation(
-            &bad_byte,
-            mutate_one_backup_byte(&backup),
-            phrase.clone(),
-            PASSWORD,
-            PASSWORD,
-            bad_byte_dir.path(),
-        )
-        .unwrap_err();
-        assert!(bad_byte_err.contains("file is corrupt"), "{bad_byte_err}");
-        let (bad_byte_after, _, _) = count_records(bad_byte_dir.path(), &imported_secret);
-        assert_eq!(bad_byte_after, 0);
-        println!("TASK0461_BAD_BYTES_REFUSED=backup bytes changed");
-        println!("TASK0461_BAD_BYTES_ERROR={bad_byte_err}");
-        println!("TASK0461_BAD_BYTES_COUNT_AFTER={bad_byte_after}");
-
-        let bad_phrase_dir = TempDir::new().unwrap();
-        let bad_phrase = state_with_transfer_identity([0x53; 16], SNOWFLAKE);
-        let (bad_phrase_before, _, _) = count_records(bad_phrase_dir.path(), &imported_secret);
-        assert_eq!(bad_phrase_before, 0);
-        println!("TASK0461_BAD_PHRASE_COUNT_BEFORE={bad_phrase_before}");
-        let bad_phrase_err = recover_account_from_export_with_password_confirmation(
-            &bad_phrase,
-            backup.clone(),
-            transfer_phrase([0x47; 16]),
-            PASSWORD,
-            PASSWORD,
-            bad_phrase_dir.path(),
-        )
-        .unwrap_err();
-        assert!(
-            bad_phrase_err.contains("phrase doesn't match"),
-            "{bad_phrase_err}"
-        );
-        let (bad_phrase_after, _, _) = count_records(bad_phrase_dir.path(), &imported_secret);
-        assert_eq!(bad_phrase_after, 0);
-        println!("TASK0461_BAD_PHRASE_REFUSED=phrase wrong");
-        println!("TASK0461_BAD_PHRASE_ERROR={bad_phrase_err}");
-        println!("TASK0461_BAD_PHRASE_COUNT_AFTER={bad_phrase_after}");
-
-        let bad_password_dir = TempDir::new().unwrap();
-        let bad_password = state_with_transfer_identity([0x54; 16], SNOWFLAKE);
-        let (bad_password_before, _, _) = count_records(bad_password_dir.path(), &imported_secret);
-        assert_eq!(bad_password_before, 0);
-        println!("TASK0461_BAD_PASSWORD_COUNT_BEFORE={bad_password_before}");
-        let bad_password_err = recover_account_from_export_with_password_confirmation(
-            &bad_password,
-            backup,
-            phrase,
-            PASSWORD,
-            "changed-restore-password-0461",
-            bad_password_dir.path(),
-        )
-        .unwrap_err();
-        assert!(
-            bad_password_err.contains("passwords differ"),
-            "{bad_password_err}"
-        );
-        let (bad_password_after, _, _) = count_records(bad_password_dir.path(), &imported_secret);
-        assert_eq!(bad_password_after, 0);
-        println!("TASK0461_BAD_PASSWORD_REFUSED=passwords differ");
-        println!("TASK0461_BAD_PASSWORD_ERROR={bad_password_err}");
-        println!("TASK0461_BAD_PASSWORD_COUNT_AFTER={bad_password_after}");
-
-        let (final_count, final_name, final_fingerprint) =
-            count_records(clean_dir.path(), &clean_identity_secret);
-        assert_eq!(final_count, 1);
-        assert_eq!(final_name.as_deref(), Some(RECORD_NAME));
-        assert_eq!(final_fingerprint.as_deref(), Some(FINGERPRINT));
-        println!("TASK0461_FINAL_RECORD_NAME={}", final_name.unwrap());
-        println!("TASK0461_FINAL_RECORD_COUNT={final_count}");
-        println!(
-            "TASK0461_FINAL_RECORD_FINGERPRINT={}",
-            final_fingerprint.unwrap()
-        );
-
-        crate::main_password::set_file_storage_key(None);
     }
 
     #[test]
@@ -16290,6 +16022,17 @@ pub fn cmd_osl_set_main_password_after_recovery(
 ) -> Result<(), String> {
     record_activity_on_command_entry();
     let dir = password_dir()?;
+    crate::main_password::set_main_password_after_recovery(state, &dir, &new_password, &token)
+}
+
+pub fn cmd_osl_reset_main_password_after_recovery(
+    state: &AppState,
+    phrase: String,
+    new_password: String,
+) -> Result<(), String> {
+    record_activity_on_command_entry();
+    let dir = password_dir()?;
+    let token = crate::main_password::verify_recovery_phrase(state, &dir, &phrase)?;
     crate::main_password::set_main_password_after_recovery(state, &dir, &new_password, &token)
 }
 
@@ -17793,405 +17536,6 @@ pub fn cmd_osl_get_friend_ids(state: &AppState) -> Result<Vec<String>, String> {
     Ok(g.clone())
 }
 
-const SAVED_FRIEND_REQUEST_TTL_MS: u64 = 30 * 24 * 60 * 60 * 1000;
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct SavedFriendRequestDto {
-    pub request_id: String,
-    pub requester_id: String,
-    pub target_id: String,
-    pub scope_key: String,
-    pub state: crate::friend_request::StoredFriendState,
-    pub display_name: String,
-    pub block_state: crate::friend_request::StoredFriendBlockState,
-    pub request_fingerprint: String,
-    pub received_at_ms: u64,
-    pub expires_at_ms: u64,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct SavedFriendRequestListDto {
-    pub pending: Vec<SavedFriendRequestDto>,
-    pub accepted: Vec<SavedFriendRequestDto>,
-    pub declined: Vec<SavedFriendRequestDto>,
-    pub blocked: Vec<SavedFriendRequestDto>,
-}
-
-fn saved_friend_request_dir() -> Result<PathBuf, String> {
-    keystore::osl_config_dir().map_err(|e| format!("OSL: friend request dir: {e}"))
-}
-
-fn load_saved_friend_request_file_with_dir(
-    dir: &Path,
-) -> Result<crate::friend_request::FriendRequestFileState, String> {
-    crate::friend_request::load_friend_request_file_state(dir).map_err(|e| format!("OSL: {e}"))
-}
-
-fn save_saved_friend_request_file_with_dir(
-    dir: &Path,
-    file: &crate::friend_request::FriendRequestFileState,
-) -> Result<(), String> {
-    crate::friend_request::save_friend_request_file_state(dir, file)
-        .map_err(|e| format!("OSL: {e}"))
-}
-
-fn friend_request_fingerprint(
-    entry: &crate::friend_request::StoredFriendRequestFileEntry,
-) -> String {
-    let mut hash = Sha256::new();
-    for part in [
-        entry.request_id.as_str(),
-        entry.requester_id.as_str(),
-        entry.target_id.as_str(),
-        entry.scope_key.as_str(),
-    ] {
-        hash.update((part.len() as u64).to_le_bytes());
-        hash.update(part.as_bytes());
-    }
-    hex_lower(&hash.finalize())
-}
-
-fn hex_lower(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        out.push(HEX[(byte >> 4) as usize] as char);
-        out.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    out
-}
-
-fn saved_friend_record_id(local_identity_id: &str, remote_identity_id: &str) -> String {
-    let mut hash = Sha256::new();
-    for part in [local_identity_id, remote_identity_id] {
-        hash.update((part.len() as u64).to_le_bytes());
-        hash.update(part.as_bytes());
-    }
-    format!("friend:{}", hex_lower(&hash.finalize()))
-}
-
-fn saved_friend_record_for_entry<'a>(
-    file: &'a crate::friend_request::FriendRequestFileState,
-    entry: &crate::friend_request::StoredFriendRequestFileEntry,
-) -> Option<&'a crate::friend_request::StoredFriendRecord> {
-    file.friends.iter().find(|friend| {
-        friend.local_identity_id == entry.requester_id
-            && friend.remote_identity_id == entry.target_id
-    })
-}
-
-fn saved_friend_request_dto(
-    file: &crate::friend_request::FriendRequestFileState,
-    entry: &crate::friend_request::StoredFriendRequestFileEntry,
-    state: crate::friend_request::StoredFriendState,
-    block_state: crate::friend_request::StoredFriendBlockState,
-) -> SavedFriendRequestDto {
-    let friend = saved_friend_record_for_entry(file, entry);
-    SavedFriendRequestDto {
-        request_id: entry.request_id.clone(),
-        requester_id: entry.requester_id.clone(),
-        target_id: entry.target_id.clone(),
-        scope_key: entry.scope_key.clone(),
-        state,
-        display_name: friend
-            .map(|record| record.display_name.clone())
-            .unwrap_or_default(),
-        block_state,
-        request_fingerprint: friend_request_fingerprint(entry),
-        received_at_ms: entry.received_at_ms,
-        expires_at_ms: entry.expires_at_ms,
-    }
-}
-
-fn update_saved_friend_record(
-    file: &mut crate::friend_request::FriendRequestFileState,
-    local_identity_id: &str,
-    remote_identity_id: &str,
-    display_name: Option<&str>,
-    state: crate::friend_request::StoredFriendState,
-    block_state: crate::friend_request::StoredFriendBlockState,
-) -> Result<(), String> {
-    let display_name = display_name.map(str::trim).filter(|name| !name.is_empty());
-    if let Some(record) = file.friends.iter_mut().find(|friend| {
-        friend.local_identity_id == local_identity_id
-            && friend.remote_identity_id == remote_identity_id
-    }) {
-        record.state = state;
-        record.block_state = block_state;
-        if let Some(display_name) = display_name {
-            record.display_name = display_name.to_string();
-        }
-        return Ok(());
-    }
-
-    file.friends
-        .push(crate::friend_request::StoredFriendRecord {
-            record_id: saved_friend_record_id(local_identity_id, remote_identity_id),
-            local_identity_id: local_identity_id.to_string(),
-            remote_identity_id: remote_identity_id.to_string(),
-            state,
-            display_name: display_name
-                .ok_or_else(|| "OSL: friend display name is missing".to_string())?
-                .to_string(),
-            block_state,
-        });
-    Ok(())
-}
-
-fn any_saved_request_has_id(
-    file: &crate::friend_request::FriendRequestFileState,
-    request_id: &str,
-) -> bool {
-    file.pending
-        .iter()
-        .chain(file.accepted.iter())
-        .chain(file.declined_or_revoked.iter())
-        .chain(file.blocked.iter())
-        .any(|request| request.request_id == request_id)
-}
-
-fn remove_saved_request_by_id(
-    requests: &mut Vec<crate::friend_request::StoredFriendRequestFileEntry>,
-    request_id: &str,
-) -> Option<crate::friend_request::StoredFriendRequestFileEntry> {
-    let index = requests
-        .iter()
-        .position(|request| request.request_id == request_id)?;
-    Some(requests.remove(index))
-}
-
-fn take_saved_friend_request(
-    file: &mut crate::friend_request::FriendRequestFileState,
-    request_id: &str,
-) -> Option<crate::friend_request::StoredFriendRequestFileEntry> {
-    remove_saved_request_by_id(&mut file.pending, request_id)
-        .or_else(|| remove_saved_request_by_id(&mut file.accepted, request_id))
-        .or_else(|| remove_saved_request_by_id(&mut file.declined_or_revoked, request_id))
-}
-
-pub fn cmd_osl_create_friend_request(
-    state: &AppState,
-    request_id: String,
-    requester_id: String,
-    target_id: String,
-    display_name: String,
-    scope_input: crate::scope::ScopeInput,
-) -> Result<SavedFriendRequestDto, String> {
-    record_activity_on_command_entry();
-    let _ = state;
-    let dir = saved_friend_request_dir()?;
-    let mut file = load_saved_friend_request_file_with_dir(&dir)?;
-
-    let request_id = request_id.trim();
-    let requester_id = requester_id.trim();
-    let target_id = target_id.trim();
-    let display_name = display_name.trim();
-    if request_id.is_empty()
-        || requester_id.is_empty()
-        || target_id.is_empty()
-        || display_name.is_empty()
-    {
-        return Err("OSL: friend request fields are missing".to_string());
-    }
-    if requester_id == target_id {
-        return Err("OSL: cannot request yourself".to_string());
-    }
-    if any_saved_request_has_id(&file, request_id) {
-        return Err("OSL: friend request already exists".to_string());
-    }
-
-    let scope: crate::scope::Scope = scope_input
-        .try_into()
-        .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
-    let scope_key = scope.storage_key();
-    if file.pending.iter().any(|request| {
-        request.requester_id == requester_id
-            && request.target_id == target_id
-            && request.scope_key == scope_key
-    }) {
-        return Err("OSL: friend request already exists".to_string());
-    }
-    if file.friends.iter().any(|friend| {
-        friend.local_identity_id == requester_id
-            && friend.remote_identity_id == target_id
-            && friend.block_state == crate::friend_request::StoredFriendBlockState::BlockedByLocal
-    }) {
-        return Err("OSL: friend is blocked".to_string());
-    }
-
-    let now_ms = now_unix_secs().max(0) as u64 * 1000;
-    let entry = crate::friend_request::StoredFriendRequestFileEntry {
-        request_id: request_id.to_string(),
-        requester_id: requester_id.to_string(),
-        target_id: target_id.to_string(),
-        scope_key,
-        received_at_ms: now_ms,
-        expires_at_ms: now_ms + SAVED_FRIEND_REQUEST_TTL_MS,
-    };
-    update_saved_friend_record(
-        &mut file,
-        requester_id,
-        target_id,
-        Some(display_name),
-        crate::friend_request::StoredFriendState::Pending,
-        crate::friend_request::StoredFriendBlockState::NotBlocked,
-    )?;
-    file.pending.push(entry.clone());
-    save_saved_friend_request_file_with_dir(&dir, &file)?;
-    Ok(saved_friend_request_dto(
-        &file,
-        &entry,
-        crate::friend_request::StoredFriendState::Pending,
-        crate::friend_request::StoredFriendBlockState::NotBlocked,
-    ))
-}
-
-pub fn cmd_osl_list_friend_requests(state: &AppState) -> Result<SavedFriendRequestListDto, String> {
-    record_activity_on_command_entry();
-    let _ = state;
-    let dir = saved_friend_request_dir()?;
-    let file = load_saved_friend_request_file_with_dir(&dir)?;
-    Ok(SavedFriendRequestListDto {
-        pending: file
-            .pending
-            .iter()
-            .map(|entry| {
-                saved_friend_request_dto(
-                    &file,
-                    entry,
-                    crate::friend_request::StoredFriendState::Pending,
-                    crate::friend_request::StoredFriendBlockState::NotBlocked,
-                )
-            })
-            .collect(),
-        accepted: file
-            .accepted
-            .iter()
-            .map(|entry| {
-                saved_friend_request_dto(
-                    &file,
-                    entry,
-                    crate::friend_request::StoredFriendState::Accepted,
-                    crate::friend_request::StoredFriendBlockState::NotBlocked,
-                )
-            })
-            .collect(),
-        declined: file
-            .declined_or_revoked
-            .iter()
-            .map(|entry| {
-                saved_friend_request_dto(
-                    &file,
-                    entry,
-                    crate::friend_request::StoredFriendState::Declined,
-                    crate::friend_request::StoredFriendBlockState::NotBlocked,
-                )
-            })
-            .collect(),
-        blocked: file
-            .blocked
-            .iter()
-            .map(|entry| {
-                saved_friend_request_dto(
-                    &file,
-                    entry,
-                    crate::friend_request::StoredFriendState::Declined,
-                    crate::friend_request::StoredFriendBlockState::BlockedByLocal,
-                )
-            })
-            .collect(),
-    })
-}
-
-pub fn cmd_osl_accept_saved_friend_request(
-    state: &AppState,
-    request_id: String,
-) -> Result<SavedFriendRequestDto, String> {
-    record_activity_on_command_entry();
-    let _ = state;
-    let dir = saved_friend_request_dir()?;
-    let mut file = load_saved_friend_request_file_with_dir(&dir)?;
-    let request_id = request_id.trim();
-    let entry = remove_saved_request_by_id(&mut file.pending, request_id)
-        .ok_or_else(|| "OSL: friend request is not pending".to_string())?;
-    update_saved_friend_record(
-        &mut file,
-        &entry.requester_id,
-        &entry.target_id,
-        None,
-        crate::friend_request::StoredFriendState::Accepted,
-        crate::friend_request::StoredFriendBlockState::NotBlocked,
-    )?;
-    file.accepted.push(entry.clone());
-    save_saved_friend_request_file_with_dir(&dir, &file)?;
-    Ok(saved_friend_request_dto(
-        &file,
-        &entry,
-        crate::friend_request::StoredFriendState::Accepted,
-        crate::friend_request::StoredFriendBlockState::NotBlocked,
-    ))
-}
-
-pub fn cmd_osl_decline_saved_friend_request(
-    state: &AppState,
-    request_id: String,
-) -> Result<SavedFriendRequestDto, String> {
-    record_activity_on_command_entry();
-    let _ = state;
-    let dir = saved_friend_request_dir()?;
-    let mut file = load_saved_friend_request_file_with_dir(&dir)?;
-    let request_id = request_id.trim();
-    let entry = remove_saved_request_by_id(&mut file.pending, request_id)
-        .ok_or_else(|| "OSL: friend request is not pending".to_string())?;
-    update_saved_friend_record(
-        &mut file,
-        &entry.requester_id,
-        &entry.target_id,
-        None,
-        crate::friend_request::StoredFriendState::Declined,
-        crate::friend_request::StoredFriendBlockState::NotBlocked,
-    )?;
-    file.declined_or_revoked.push(entry.clone());
-    save_saved_friend_request_file_with_dir(&dir, &file)?;
-    Ok(saved_friend_request_dto(
-        &file,
-        &entry,
-        crate::friend_request::StoredFriendState::Declined,
-        crate::friend_request::StoredFriendBlockState::NotBlocked,
-    ))
-}
-
-pub fn cmd_osl_block_saved_friend_request(
-    state: &AppState,
-    request_id: String,
-) -> Result<SavedFriendRequestDto, String> {
-    record_activity_on_command_entry();
-    let _ = state;
-    let dir = saved_friend_request_dir()?;
-    let mut file = load_saved_friend_request_file_with_dir(&dir)?;
-    let request_id = request_id.trim();
-    let entry = take_saved_friend_request(&mut file, request_id)
-        .ok_or_else(|| "OSL: friend request is not pending".to_string())?;
-    update_saved_friend_record(
-        &mut file,
-        &entry.requester_id,
-        &entry.target_id,
-        None,
-        crate::friend_request::StoredFriendState::Declined,
-        crate::friend_request::StoredFriendBlockState::BlockedByLocal,
-    )?;
-    file.blocked.push(entry.clone());
-    save_saved_friend_request_file_with_dir(&dir, &file)?;
-    Ok(saved_friend_request_dto(
-        &file,
-        &entry,
-        crate::friend_request::StoredFriendState::Declined,
-        crate::friend_request::StoredFriendBlockState::BlockedByLocal,
-    ))
-}
-
 /// Outcome for [`cmd_osl_decline_or_revoke_friend_request`].
 ///
 /// Deliberately carries no peer id, account id, storage key, handle or
@@ -18368,6 +17712,265 @@ pub fn cmd_osl_get_guild_list(state: &AppState) -> Result<Vec<GuildDto>, String>
     record_activity_on_command_entry();
     let g = state.guild_list.lock().expect("guild_list mutex poisoned");
     Ok(g.clone())
+}
+
+pub fn cmd_osl_write_server_member_list(
+    state: &AppState,
+    server_id: String,
+    owner_name: String,
+    owner_joined_at: String,
+) -> Result<crate::server_membership::ServerMemberList, String> {
+    record_activity_on_command_entry();
+    let mut lists = state
+        .server_member_lists
+        .lock()
+        .expect("server_member_lists mutex poisoned");
+    lists
+        .upsert_server(server_id, owner_name, owner_joined_at)
+        .map_err(|error| error.to_string())
+}
+
+pub fn cmd_osl_add_server_member(
+    state: &AppState,
+    server_id: String,
+    member_name: String,
+    joined_at: String,
+) -> Result<usize, String> {
+    record_activity_on_command_entry();
+    let mut lists = state
+        .server_member_lists
+        .lock()
+        .expect("server_member_lists mutex poisoned");
+    lists
+        .add_member(&server_id, member_name, joined_at)
+        .map_err(|error| error.to_string())
+}
+
+pub fn cmd_osl_list_server_members(
+    state: &AppState,
+    server_id: String,
+) -> Result<crate::server_membership::ServerMemberList, String> {
+    record_activity_on_command_entry();
+    let lists = state
+        .server_member_lists
+        .lock()
+        .expect("server_member_lists mutex poisoned");
+    lists.list(&server_id).map_err(|error| error.to_string())
+}
+
+pub fn cmd_osl_remove_server_member_by_name(
+    state: &AppState,
+    server_id: String,
+    member_name: String,
+) -> Result<usize, String> {
+    record_activity_on_command_entry();
+    let mut lists = state
+        .server_member_lists
+        .lock()
+        .expect("server_member_lists mutex poisoned");
+    lists
+        .remove_member_by_name(&server_id, member_name)
+        .map_err(|error| error.to_string())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerPermissionCheckDto {
+    pub server_id: String,
+    pub person_name: String,
+    pub permission: crate::server_membership::ServerPermission,
+    pub permission_name: String,
+    pub allowed: bool,
+}
+
+pub fn cmd_osl_set_server_person_permissions(
+    state: &AppState,
+    server_id: String,
+    person_name: String,
+    permissions: Vec<crate::server_membership::ServerPermission>,
+) -> Result<crate::server_membership::ServerPermissionGrant, String> {
+    record_activity_on_command_entry();
+    let mut grants = state
+        .server_permissions
+        .lock()
+        .expect("server_permissions mutex poisoned");
+    grants
+        .set_person_permissions(server_id, person_name, permissions)
+        .map_err(|error| error.to_string())
+}
+
+pub fn cmd_osl_check_server_person_allowed(
+    state: &AppState,
+    server_id: String,
+    person_name: String,
+    permission: crate::server_membership::ServerPermission,
+) -> Result<ServerPermissionCheckDto, String> {
+    record_activity_on_command_entry();
+    let grants = state
+        .server_permissions
+        .lock()
+        .expect("server_permissions mutex poisoned");
+    grants
+        .require_person_permission(&server_id, &person_name, permission)
+        .map_err(|error| error.to_string())?;
+    Ok(ServerPermissionCheckDto {
+        server_id,
+        person_name,
+        permission,
+        permission_name: permission.name().to_string(),
+        allowed: true,
+    })
+}
+
+pub fn cmd_osl_set_limited_channel_members(
+    state: &AppState,
+    server_id: String,
+    channel_id: String,
+    person_names: Vec<String>,
+) -> Result<crate::server_membership::ServerChannelAccessRecord, String> {
+    record_activity_on_command_entry();
+    let members = {
+        let lists = state
+            .server_member_lists
+            .lock()
+            .expect("server_member_lists mutex poisoned");
+        lists.list(&server_id).map_err(|error| error.to_string())?
+    };
+    let mut threads = state
+        .server_thread_permissions
+        .lock()
+        .expect("server_thread_permissions mutex poisoned");
+    threads
+        .set_limited_channel(&members, channel_id, person_names)
+        .map_err(|error| error.to_string())
+}
+
+pub fn cmd_osl_set_open_channel_members(
+    state: &AppState,
+    server_id: String,
+    channel_id: String,
+) -> Result<crate::server_membership::ServerChannelAccessRecord, String> {
+    record_activity_on_command_entry();
+    let members = {
+        let lists = state
+            .server_member_lists
+            .lock()
+            .expect("server_member_lists mutex poisoned");
+        lists.list(&server_id).map_err(|error| error.to_string())?
+    };
+    let mut threads = state
+        .server_thread_permissions
+        .lock()
+        .expect("server_thread_permissions mutex poisoned");
+    threads
+        .set_open_channel(&members, channel_id)
+        .map_err(|error| error.to_string())
+}
+
+pub fn cmd_osl_create_thread(
+    state: &AppState,
+    server_id: String,
+    channel_id: String,
+    thread_id: String,
+) -> Result<crate::server_membership::ServerThreadRecord, String> {
+    record_activity_on_command_entry();
+    let mut threads = state
+        .server_thread_permissions
+        .lock()
+        .expect("server_thread_permissions mutex poisoned");
+    threads
+        .create_thread(server_id, channel_id, thread_id)
+        .map_err(|error| error.to_string())
+}
+
+pub fn cmd_osl_add_thread_message(
+    state: &AppState,
+    server_id: String,
+    channel_id: String,
+    thread_id: String,
+    message_id: String,
+    body: String,
+    marked: bool,
+) -> Result<usize, String> {
+    record_activity_on_command_entry();
+    let mut threads = state
+        .server_thread_permissions
+        .lock()
+        .expect("server_thread_permissions mutex poisoned");
+    threads
+        .add_thread_message(server_id, channel_id, thread_id, message_id, body, marked)
+        .map_err(|error| error.to_string())
+}
+
+pub fn cmd_osl_read_thread(
+    state: &AppState,
+    server_id: String,
+    channel_id: String,
+    thread_id: String,
+    person_name: String,
+) -> Result<crate::server_membership::ServerThreadRead, String> {
+    record_activity_on_command_entry();
+    let members = {
+        let lists = state
+            .server_member_lists
+            .lock()
+            .expect("server_member_lists mutex poisoned");
+        lists.list(&server_id).map_err(|error| error.to_string())?
+    };
+    let threads = state
+        .server_thread_permissions
+        .lock()
+        .expect("server_thread_permissions mutex poisoned");
+    threads
+        .read_thread(&members, &channel_id, &thread_id, &person_name)
+        .map_err(|error| error.to_string())
+}
+
+pub fn cmd_osl_list_thread_effective_readers(
+    state: &AppState,
+    server_id: String,
+    channel_id: String,
+    thread_id: String,
+) -> Result<Vec<String>, String> {
+    record_activity_on_command_entry();
+    let members = {
+        let lists = state
+            .server_member_lists
+            .lock()
+            .expect("server_member_lists mutex poisoned");
+        lists.list(&server_id).map_err(|error| error.to_string())?
+    };
+    let threads = state
+        .server_thread_permissions
+        .lock()
+        .expect("server_thread_permissions mutex poisoned");
+    threads
+        .effective_thread_readers(&members, &channel_id, &thread_id)
+        .map_err(|error| error.to_string())
+}
+
+pub fn cmd_osl_set_thread_permissions(
+    state: &AppState,
+    server_id: String,
+    channel_id: String,
+    thread_id: String,
+    person_names: Vec<String>,
+) -> Result<usize, String> {
+    record_activity_on_command_entry();
+    let members = {
+        let lists = state
+            .server_member_lists
+            .lock()
+            .expect("server_member_lists mutex poisoned");
+        lists.list(&server_id).map_err(|error| error.to_string())?
+    };
+    let mut threads = state
+        .server_thread_permissions
+        .lock()
+        .expect("server_thread_permissions mutex poisoned");
+    threads
+        .set_thread_permissions(&members, &channel_id, &thread_id, person_names)
+        .map_err(|error| error.to_string())
 }
 
 pub fn cmd_osl_save_allowed_place(
@@ -18613,21 +18216,71 @@ pub fn cmd_osl_apply_server_default_to_existing_channels(
 
 // ---- Saved auto-whitelist rules ----
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AutoWhitelistRuleChoiceDto {
+    pub id: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AutoWhitelistAllowedPlaceDto {
+    pub app: String,
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AutoWhitelistRuleDto {
+    pub app_kind: String,
+    pub choice: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_place: Option<AutoWhitelistAllowedPlaceDto>,
+}
+
+impl PartialEq<&str> for AutoWhitelistRuleDto {
+    fn eq(&self, other: &&str) -> bool {
+        self.choice == *other
+    }
+}
+
+impl PartialEq<AutoWhitelistRuleDto> for &str {
+    fn eq(&self, other: &AutoWhitelistRuleDto) -> bool {
+        other == self
+    }
+}
+
+impl std::fmt::Display for AutoWhitelistRuleDto {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.choice)
+    }
+}
+
 pub fn cmd_osl_save_auto_whitelist_rule(
     state: &AppState,
-    app_kind: AutoWhitelistAppKind,
-    choice: AutoWhitelistChoice,
-) -> Result<AutoWhitelistRule, String> {
+    app_kind: String,
+    choice: String,
+    config_dir: Option<PathBuf>,
+) -> Result<AutoWhitelistRuleDto, String> {
     record_activity_on_command_entry();
-    let saved = {
+    let app_kind = normalize_auto_rule_key(&app_kind)?;
+    let choice = crate::auto_whitelist_rules::parse_auto_whitelist_choice(&choice)?;
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs.auto_whitelist_rules.insert(app_kind.clone(), choice);
+    }
+    if let Some(typed_kind) = auto_rule_key_to_typed_kind(&app_kind) {
         let mut rules = state
             .auto_whitelist_rules
             .lock()
             .expect("auto_whitelist_rules mutex poisoned");
-        rules.save(app_kind, choice)
-    };
+        rules.save(typed_kind, choice);
+    }
+    persist_app_preferences_now(state, config_dir);
     persist_auto_whitelist_rules_now(state);
-    Ok(saved)
+    Ok(auto_whitelist_rule_dto(app_kind, choice))
 }
 
 pub fn cmd_osl_query_auto_whitelist_rule(
@@ -18642,11 +18295,840 @@ pub fn cmd_osl_query_auto_whitelist_rule(
     Ok(rules.query(app_kind))
 }
 
+pub fn cmd_osl_get_auto_whitelist_rule_choices() -> Result<Vec<AutoWhitelistRuleChoiceDto>, String>
+{
+    record_activity_on_command_entry();
+    Ok(crate::auto_whitelist_rules::AutoWhitelistChoice::ALL
+        .into_iter()
+        .map(|choice| AutoWhitelistRuleChoiceDto {
+            id: choice.id().to_string(),
+            label: choice.label().to_string(),
+        })
+        .collect())
+}
+
+pub fn cmd_osl_list_auto_whitelist_rule_choices() -> Result<Vec<String>, String> {
+    record_activity_on_command_entry();
+    Ok(crate::auto_whitelist_rules::AutoWhitelistChoice::ALL
+        .into_iter()
+        .map(|choice| choice.label().to_string())
+        .collect())
+}
+
+pub fn cmd_osl_save_auto_whitelist_rule_for_place(
+    state: &AppState,
+    app_kind: String,
+    place_kind: String,
+    choice: String,
+    config_dir: Option<PathBuf>,
+) -> Result<AutoWhitelistRuleDto, String> {
+    record_activity_on_command_entry();
+    let app_kind = normalize_auto_rule_key(&app_kind)?;
+    let place_kind = normalize_place_rule_part(&place_kind)?;
+    let rule_key = format!("{app_kind}:{place_kind}");
+    let choice = crate::auto_whitelist_rules::parse_auto_whitelist_choice(&choice)?;
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs.auto_whitelist_rules.insert(rule_key.clone(), choice);
+    }
+    persist_app_preferences_now(state, config_dir);
+    Ok(auto_whitelist_rule_dto(rule_key, choice))
+}
+
+pub fn cmd_osl_get_auto_whitelist_rule(
+    state: &AppState,
+    app_kind: String,
+) -> Result<String, String> {
+    record_activity_on_command_entry();
+    let app_kind = normalize_auto_rule_key(&app_kind)?;
+    let prefs = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned");
+    Ok(prefs
+        .auto_whitelist_rules
+        .get(&app_kind)
+        .copied()
+        .unwrap_or_default()
+        .label()
+        .to_string())
+}
+
+pub fn cmd_osl_read_auto_whitelist_rule(
+    state: &AppState,
+    app_kind: String,
+) -> Result<AutoWhitelistRuleDto, String> {
+    record_activity_on_command_entry();
+    let app_kind = normalize_auto_rule_key(&app_kind)?;
+    let choice = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .auto_whitelist_rules
+        .get(&app_kind)
+        .copied()
+        .unwrap_or_default();
+    Ok(auto_whitelist_rule_dto(app_kind, choice))
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct BadMessageRuleDto {
+    pub rule_name: String,
+    pub private_word: String,
+}
+
+pub fn cmd_osl_list_bad_message_rules(state: &AppState) -> Result<Vec<BadMessageRuleDto>, String> {
+    record_activity_on_command_entry();
+    let mut rules: Vec<_> = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .bad_message_rules
+        .values()
+        .map(|rule| BadMessageRuleDto {
+            rule_name: rule.rule_name.clone(),
+            private_word: rule.private_word.clone(),
+        })
+        .collect();
+    rules.sort_by(|a, b| a.rule_name.cmp(&b.rule_name));
+    Ok(rules)
+}
+
+pub fn cmd_osl_save_bad_message_rule(
+    state: &AppState,
+    rule_name: String,
+    private_word: String,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<BadMessageRuleDto, String> {
+    record_activity_on_command_entry();
+    let rule_name = crate::bad_message_rules::parse_bad_message_rule_name(&rule_name)?
+        .name()
+        .to_string();
+    let private_word = crate::bad_message_rules::parse_private_word(&private_word)?;
+    let rule = crate::bad_message_rules::BadMessageRule {
+        rule_name: rule_name.clone(),
+        private_word: private_word.clone(),
+    };
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs.bad_message_rules.insert(rule_name, rule.clone());
+    }
+    persist_app_preferences_now(state, config_dir);
+    Ok(BadMessageRuleDto {
+        rule_name: rule.rule_name,
+        private_word: rule.private_word,
+    })
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct NewFriendDefaultsDto {
+    pub account_reach: String,
+    pub auto_whitelist: String,
+    pub verification_warnings: String,
+}
+
+fn new_friend_warning_label(
+    warning: crate::app_preferences::NewFriendVerificationWarnings,
+) -> &'static str {
+    match warning {
+        crate::app_preferences::NewFriendVerificationWarnings::Enabled => "always",
+        crate::app_preferences::NewFriendVerificationWarnings::Disabled => "never",
+    }
+}
+
+fn parse_new_friend_warning(
+    raw: &str,
+) -> Result<crate::app_preferences::NewFriendVerificationWarnings, String> {
+    match raw
+        .trim()
+        .to_ascii_lowercase()
+        .replace(['-', ' '], "_")
+        .as_str()
+    {
+        "always" | "enabled" => Ok(crate::app_preferences::NewFriendVerificationWarnings::Enabled),
+        "never" | "disabled" => Ok(crate::app_preferences::NewFriendVerificationWarnings::Disabled),
+        _ => Err(format!("OSL: unknown warning choice '{raw}'")),
+    }
+}
+
+fn new_friend_defaults_dto(
+    defaults: crate::app_preferences::NewFriendDefaults,
+) -> NewFriendDefaultsDto {
+    NewFriendDefaultsDto {
+        account_reach: defaults.account_reach.as_value().to_string(),
+        auto_whitelist: defaults.auto_whitelist.label().to_string(),
+        verification_warnings: new_friend_warning_label(defaults.verification_warnings).to_string(),
+    }
+}
+
+pub fn cmd_osl_get_new_friend_defaults(state: &AppState) -> Result<NewFriendDefaultsDto, String> {
+    record_activity_on_command_entry();
+    let defaults = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .new_friend_defaults;
+    Ok(new_friend_defaults_dto(defaults))
+}
+
+pub fn cmd_osl_save_new_friend_defaults(
+    state: &AppState,
+    defaults: NewFriendDefaultsDto,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<NewFriendDefaultsDto, String> {
+    record_activity_on_command_entry();
+    let account_reach = defaults
+        .account_reach
+        .parse::<crate::app_preferences::NewFriendAccountReach>()?;
+    let auto_whitelist =
+        crate::auto_whitelist_rules::parse_auto_whitelist_choice(&defaults.auto_whitelist)?;
+    let verification_warnings = parse_new_friend_warning(&defaults.verification_warnings)?;
+    let saved = crate::app_preferences::NewFriendDefaults {
+        account_reach,
+        auto_whitelist,
+        verification_warnings,
+    };
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs.new_friend_defaults = saved;
+    }
+    persist_app_preferences_now(state, config_dir);
+    Ok(new_friend_defaults_dto(saved))
+}
+
+pub fn cmd_osl_get_auto_whitelist_rule_for_place(
+    state: &AppState,
+    app_kind: String,
+    place_kind: String,
+) -> Result<String, String> {
+    record_activity_on_command_entry();
+    let app_kind = normalize_auto_rule_key(&app_kind)?;
+    let place_kind = normalize_place_rule_part(&place_kind)?;
+    let prefs = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned");
+    Ok(
+        auto_rule_choice_for_key(&prefs.auto_whitelist_rules, &app_kind, Some(&place_kind))
+            .label()
+            .to_string(),
+    )
+}
+
+fn normalize_auto_rule_key(input: &str) -> Result<String, String> {
+    let normalized = input
+        .trim()
+        .to_ascii_lowercase()
+        .replace('-', "_")
+        .replace(' ', "_");
+    if normalized.is_empty() {
+        return Err("OSL: auto-whitelist app kind is empty".to_string());
+    }
+    if !normalized
+        .chars()
+        .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_' || ch == ':')
+    {
+        return Err(format!(
+            "OSL: unsupported auto-whitelist app kind '{input}'"
+        ));
+    }
+    Ok(normalized)
+}
+
+fn normalize_place_rule_part(input: &str) -> Result<String, String> {
+    let normalized = input
+        .trim()
+        .to_ascii_lowercase()
+        .replace('-', "_")
+        .replace(' ', "_");
+    if normalized.is_empty() {
+        return Err("OSL: auto-whitelist place kind is empty".to_string());
+    }
+    if !normalized
+        .chars()
+        .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')
+    {
+        return Err(format!(
+            "OSL: unsupported auto-whitelist place kind '{input}'"
+        ));
+    }
+    Ok(normalized)
+}
+
+fn auto_rule_choice_for_key(
+    rules: &std::collections::HashMap<String, crate::auto_whitelist_rules::AutoWhitelistChoice>,
+    app_kind: &str,
+    place_kind: Option<&str>,
+) -> crate::auto_whitelist_rules::AutoWhitelistChoice {
+    place_kind
+        .and_then(|kind| rules.get(&format!("{app_kind}:{kind}")))
+        .or_else(|| rules.get(app_kind))
+        .copied()
+        .unwrap_or_default()
+}
+
+fn auto_rule_key_to_typed_kind(app_kind: &str) -> Option<AutoWhitelistAppKind> {
+    match app_kind {
+        "chat" => Some(AutoWhitelistAppKind::Chat),
+        "email" | "email_address" | "email_domain" => Some(AutoWhitelistAppKind::Email),
+        "browser" => Some(AutoWhitelistAppKind::Browser),
+        "native" => Some(AutoWhitelistAppKind::Native),
+        "signal:direct_message" => Some(AutoWhitelistAppKind::SignalDirectMessage),
+        "signal:group_chat" | "signal:story" => Some(AutoWhitelistAppKind::SignalGroupChat),
+        _ => None,
+    }
+}
+
+fn auto_whitelist_rule_dto(
+    app_kind: String,
+    choice: crate::auto_whitelist_rules::AutoWhitelistChoice,
+) -> AutoWhitelistRuleDto {
+    AutoWhitelistRuleDto {
+        allowed_place: auto_whitelist_allowed_place(&app_kind),
+        app_kind,
+        choice: choice.label().to_string(),
+    }
+}
+
+fn auto_whitelist_allowed_place(app_kind: &str) -> Option<AutoWhitelistAllowedPlaceDto> {
+    if let Some(kind) =
+        crate::auto_whitelist_rules::discord_allowed_place_kind_for_rule_key(app_kind)
+    {
+        return Some(AutoWhitelistAllowedPlaceDto {
+            app: "discord".to_string(),
+            kind: kind.to_string(),
+        });
+    }
+    if let Some(kind) =
+        crate::auto_whitelist_rules::instagram_allowed_place_kind_for_rule_key(app_kind)
+    {
+        return Some(AutoWhitelistAllowedPlaceDto {
+            app: "instagram".to_string(),
+            kind: kind.to_string(),
+        });
+    }
+    if let Some(kind) =
+        crate::auto_whitelist_rules::telegram_allowed_place_kind_for_rule_key(app_kind)
+    {
+        return Some(AutoWhitelistAllowedPlaceDto {
+            app: "telegram".to_string(),
+            kind: kind.to_string(),
+        });
+    }
+    if let Some(kind) =
+        crate::auto_whitelist_rules::messenger_allowed_place_kind_for_rule_key(app_kind)
+    {
+        return Some(AutoWhitelistAllowedPlaceDto {
+            app: "messenger".to_string(),
+            kind: kind.to_string(),
+        });
+    }
+    if let Some(kind) =
+        crate::auto_whitelist_rules::whatsapp_allowed_place_kind_for_rule_key(app_kind)
+    {
+        return Some(AutoWhitelistAllowedPlaceDto {
+            app: "whatsapp".to_string(),
+            kind: kind.to_string(),
+        });
+    }
+    match app_kind {
+        "email_address" => Some(AutoWhitelistAllowedPlaceDto {
+            app: "email".to_string(),
+            kind: "email_address".to_string(),
+        }),
+        "email_domain" => Some(AutoWhitelistAllowedPlaceDto {
+            app: "email".to_string(),
+            kind: "email_domain".to_string(),
+        }),
+        _ => None,
+    }
+}
+
 pub fn cmd_osl_list_discord_whitelist_kinds(
     _state: &AppState,
 ) -> Result<Vec<&'static str>, String> {
     record_activity_on_command_entry();
     Ok(discord_whitelist_kind_labels())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DiscordWhitelistKindDto {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InstagramWhitelistKindDto {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TelegramWhitelistKindDto {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TelegramAutoWhitelistRuleDto {
+    pub rule_lookup: String,
+    pub choice: String,
+    pub allowed_place: crate::allowed_places::AllowedPlaceRecord,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WhatsAppWhitelistKindDto {
+    pub id: String,
+    pub name: String,
+    pub auto_rule_app_kind: String,
+    pub allowed_place_kind: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WhatsAppAutoWhitelistRuleDto {
+    pub whatsapp_kind: String,
+    pub auto_rule_app_kind: String,
+    pub allowed_place: crate::allowed_places::AllowedPlaceRecord,
+    pub choice: String,
+}
+
+pub fn cmd_osl_get_discord_whitelist_kinds() -> Result<Vec<DiscordWhitelistKindDto>, String> {
+    record_activity_on_command_entry();
+    Ok(crate::auto_whitelist_rules::DiscordWhitelistKind::ALL
+        .into_iter()
+        .map(|kind| DiscordWhitelistKindDto {
+            id: kind.id().to_string(),
+            name: kind.name().to_string(),
+        })
+        .collect())
+}
+
+pub fn cmd_osl_get_instagram_whitelist_kinds() -> Result<Vec<InstagramWhitelistKindDto>, String> {
+    record_activity_on_command_entry();
+    Ok(crate::auto_whitelist_rules::InstagramWhitelistKind::ALL
+        .into_iter()
+        .map(|kind| InstagramWhitelistKindDto {
+            id: kind.id().to_string(),
+            name: kind.name().to_string(),
+        })
+        .collect())
+}
+
+pub fn cmd_osl_get_telegram_whitelist_kinds() -> Result<Vec<TelegramWhitelistKindDto>, String> {
+    record_activity_on_command_entry();
+    Ok(crate::auto_whitelist_rules::TelegramWhitelistKind::ALL
+        .into_iter()
+        .map(|kind| TelegramWhitelistKindDto {
+            id: kind.id().to_string(),
+            name: kind.name().to_string(),
+        })
+        .collect())
+}
+
+pub fn cmd_osl_save_telegram_auto_whitelist_rule(
+    state: &AppState,
+    account: String,
+    kind: String,
+    place_id: String,
+    choice: String,
+    config_dir: Option<PathBuf>,
+) -> Result<TelegramAutoWhitelistRuleDto, String> {
+    record_activity_on_command_entry();
+    let allowed_place =
+        crate::allowed_places::AllowedPlaceRecord::telegram(account, &kind, place_id)?;
+    let rule_lookup = crate::auto_whitelist_rules::telegram_kind_rule_lookup(&allowed_place.kind)?;
+    let choice = crate::auto_whitelist_rules::parse_auto_whitelist_choice(&choice)?;
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs
+            .auto_whitelist_rules
+            .insert(rule_lookup.clone(), choice);
+    }
+    persist_app_preferences_now(state, config_dir);
+    Ok(TelegramAutoWhitelistRuleDto {
+        rule_lookup,
+        choice: choice.label().to_string(),
+        allowed_place,
+    })
+}
+
+pub fn cmd_osl_read_telegram_auto_whitelist_rule(
+    state: &AppState,
+    account: String,
+    kind: String,
+    place_id: String,
+) -> Result<TelegramAutoWhitelistRuleDto, String> {
+    record_activity_on_command_entry();
+    let allowed_place =
+        crate::allowed_places::AllowedPlaceRecord::telegram(account, &kind, place_id)?;
+    let rule_lookup = crate::auto_whitelist_rules::telegram_kind_rule_lookup(&allowed_place.kind)?;
+    let choice = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .auto_whitelist_rules
+        .get(&rule_lookup)
+        .copied()
+        .unwrap_or_default();
+    Ok(TelegramAutoWhitelistRuleDto {
+        rule_lookup,
+        choice: choice.label().to_string(),
+        allowed_place,
+    })
+}
+
+pub fn cmd_osl_list_whatsapp_whitelist_kinds() -> Result<Vec<WhatsAppWhitelistKindDto>, String> {
+    record_activity_on_command_entry();
+    Ok(crate::auto_whitelist_rules::WhatsAppWhitelistKind::ALL
+        .into_iter()
+        .map(|kind| WhatsAppWhitelistKindDto {
+            id: kind.id().to_string(),
+            name: kind.name().to_string(),
+            auto_rule_app_kind: kind.auto_rule_app_kind().to_string(),
+            allowed_place_kind: kind.allowed_place_kind().to_string(),
+        })
+        .collect())
+}
+
+pub fn cmd_osl_get_whatsapp_whitelist_kinds() -> Result<Vec<WhatsAppWhitelistKindDto>, String> {
+    cmd_osl_list_whatsapp_whitelist_kinds()
+}
+
+pub fn cmd_osl_save_whatsapp_auto_whitelist_rule(
+    state: &AppState,
+    whatsapp_kind: String,
+    account: String,
+    place: String,
+    choice: String,
+    config_dir: Option<PathBuf>,
+) -> Result<WhatsAppAutoWhitelistRuleDto, String> {
+    record_activity_on_command_entry();
+    let kind = crate::auto_whitelist_rules::parse_whatsapp_whitelist_kind(&whatsapp_kind)?;
+    let choice = crate::auto_whitelist_rules::parse_auto_whitelist_choice(&choice)?;
+    let app_kind = kind.auto_rule_app_kind().to_string();
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs.auto_whitelist_rules.insert(app_kind.clone(), choice);
+    }
+    persist_app_preferences_now(state, config_dir);
+    Ok(whatsapp_rule_lookup(kind, account, place, choice))
+}
+
+pub fn cmd_osl_read_whatsapp_auto_whitelist_rule(
+    state: &AppState,
+    whatsapp_kind: String,
+    account: String,
+    place: String,
+) -> Result<WhatsAppAutoWhitelistRuleDto, String> {
+    record_activity_on_command_entry();
+    let kind = crate::auto_whitelist_rules::parse_whatsapp_whitelist_kind(&whatsapp_kind)?;
+    let app_kind = kind.auto_rule_app_kind().to_string();
+    let choice = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .auto_whitelist_rules
+        .get(&app_kind)
+        .copied()
+        .unwrap_or_default();
+    Ok(whatsapp_rule_lookup(kind, account, place, choice))
+}
+
+fn whatsapp_rule_lookup(
+    kind: crate::auto_whitelist_rules::WhatsAppWhitelistKind,
+    account: String,
+    place: String,
+    choice: crate::auto_whitelist_rules::AutoWhitelistChoice,
+) -> WhatsAppAutoWhitelistRuleDto {
+    WhatsAppAutoWhitelistRuleDto {
+        whatsapp_kind: kind.id().to_string(),
+        auto_rule_app_kind: kind.auto_rule_app_kind().to_string(),
+        allowed_place: crate::allowed_places::AllowedPlaceRecord::whatsapp(account, kind, place),
+        choice: choice.label().to_string(),
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NewPlaceAllowRequestDto {
+    pub request_id: String,
+    pub choice_required: bool,
+    pub allowed_choices: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NewPlaceDecisionDto {
+    pub status: String,
+    pub rule: String,
+    pub prompt: bool,
+    pub allow_request: Option<NewPlaceAllowRequestDto>,
+    pub place: crate::allowed_places::AllowedPlaceRecord,
+    pub result: String,
+    pub rule_choice: String,
+    pub app_kind: String,
+    pub stable_id: String,
+}
+
+impl PartialEq<&str> for NewPlaceDecisionDto {
+    fn eq(&self, other: &&str) -> bool {
+        self.result == *other
+    }
+}
+
+impl PartialEq<NewPlaceDecisionDto> for &str {
+    fn eq(&self, other: &NewPlaceDecisionDto) -> bool {
+        other == self
+    }
+}
+
+fn new_place_decision(
+    record: crate::allowed_places::AllowedPlaceRecord,
+    app_kind: String,
+    rule: crate::auto_whitelist_rules::AutoWhitelistChoice,
+    status: &str,
+    prompt: bool,
+    allow_request: Option<NewPlaceAllowRequestDto>,
+) -> NewPlaceDecisionDto {
+    NewPlaceDecisionDto {
+        result: status.to_string(),
+        status: status.to_string(),
+        rule: rule.label().to_string(),
+        rule_choice: rule.label().to_string(),
+        app_kind,
+        stable_id: record.stable_id.clone(),
+        place: record,
+        prompt,
+        allow_request,
+    }
+}
+
+fn pending_allow_request_id(record: &crate::allowed_places::AllowedPlaceRecord) -> String {
+    format!("allow:{}", record.stable_id)
+}
+
+fn friend_marker_for_allowed_place(record: &crate::allowed_places::AllowedPlaceRecord) -> &str {
+    record.person_name.trim()
+}
+
+fn auto_rule_lookup_for_record(
+    rules: &std::collections::HashMap<String, crate::auto_whitelist_rules::AutoWhitelistChoice>,
+    record: &crate::allowed_places::AllowedPlaceRecord,
+) -> Result<(String, crate::auto_whitelist_rules::AutoWhitelistChoice), String> {
+    let app = normalize_auto_rule_key(&record.app)?;
+    let kind = normalize_place_rule_part(&record.kind)?;
+    let base = match app.as_str() {
+        "email" => match kind.as_str() {
+            "address" | "email_address" => "email_address".to_string(),
+            "domain" | "email_domain" => "email_domain".to_string(),
+            _ => return Err(format!("OSL: unknown email place kind '{}'", record.kind)),
+        },
+        _ => app,
+    };
+    let scoped = format!("{base}:{kind}");
+    if let Some(choice) = rules.get(&scoped).copied() {
+        Ok((scoped, choice))
+    } else {
+        Ok((base.clone(), rules.get(&base).copied().unwrap_or_default()))
+    }
+}
+
+pub fn cmd_osl_new_place(
+    state: &AppState,
+    record: crate::allowed_places::AllowedPlaceRecord,
+    app_data_dir: Option<PathBuf>,
+) -> Result<NewPlaceDecisionDto, String> {
+    record_activity_on_command_entry();
+    record.validate().map_err(|error| format!("OSL: {error}"))?;
+    let (app_kind, rule) = {
+        let prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        auto_rule_lookup_for_record(&prefs.auto_whitelist_rules, &record)?
+    };
+
+    match rule {
+        crate::auto_whitelist_rules::AutoWhitelistChoice::Never => Ok(new_place_decision(
+            record, app_kind, rule, "unlisted", false, None,
+        )),
+        crate::auto_whitelist_rules::AutoWhitelistChoice::AskMe => {
+            let allow_request = NewPlaceAllowRequestDto {
+                request_id: pending_allow_request_id(&record),
+                choice_required: true,
+                allowed_choices: vec!["allow".to_string(), "deny".to_string()],
+            };
+            Ok(new_place_decision(
+                record,
+                app_kind,
+                rule,
+                "pending_allow_request",
+                true,
+                Some(allow_request),
+            ))
+        }
+        crate::auto_whitelist_rules::AutoWhitelistChoice::Always => {
+            let dir = app_data_dir
+                .ok_or_else(|| "OSL: allowed-place data dir is missing for always".to_string())?;
+            crate::allowed_places::add_allowed_place_record(&dir, &record)
+                .map_err(|error| format!("OSL: {error}"))?;
+            Ok(new_place_decision(
+                record, app_kind, rule, "allowed", false, None,
+            ))
+        }
+        crate::auto_whitelist_rules::AutoWhitelistChoice::OnlyIfAFriend => {
+            let friend_marker = friend_marker_for_allowed_place(&record);
+            let is_friend = state
+                .friend_ids
+                .lock()
+                .expect("friend_ids mutex poisoned")
+                .iter()
+                .any(|id| id == friend_marker);
+            if !is_friend {
+                if app_data_dir.is_some() {
+                    return Err("OSL: auto-whitelist refused: not a friend".to_string());
+                }
+                return Ok(new_place_decision(
+                    record, app_kind, rule, "skipped", false, None,
+                ));
+            }
+            let dir = match app_data_dir {
+                Some(dir) => dir,
+                None => keystore::osl_base_dir().map_err(|error| error.to_string())?,
+            };
+            crate::allowed_places::add_allowed_place_record(&dir, &record)
+                .map_err(|error| format!("OSL: {error}"))?;
+            Ok(new_place_decision(
+                record, app_kind, rule, "allowed", false, None,
+            ))
+        }
+    }
+}
+
+pub fn cmd_osl_direct_new_place(
+    state: &AppState,
+    app_data_dir: PathBuf,
+    app_kind: String,
+    place_kind: String,
+    place_id: String,
+    display_name: Option<String>,
+) -> Result<NewPlaceDecisionDto, String> {
+    record_activity_on_command_entry();
+    let app_kind = normalize_auto_rule_key(&app_kind)?;
+    let place_kind = normalize_place_rule_part(&place_kind)?;
+    if place_id.trim().is_empty() {
+        return Err("OSL: place_id is empty".to_string());
+    }
+    let rule = {
+        let prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        auto_rule_choice_for_key(&prefs.auto_whitelist_rules, &app_kind, Some(&place_kind))
+    };
+    let record = crate::allowed_places::AllowedPlaceRecord::from_parts(
+        app_kind.clone(),
+        "default",
+        place_kind.clone(),
+        format!("{app_kind}:default:{place_kind}:{place_id}"),
+    );
+    if rule == crate::auto_whitelist_rules::AutoWhitelistChoice::Always {
+        insert_legacy_allowed_place_record(
+            &app_data_dir,
+            &app_kind,
+            &place_kind,
+            &place_id,
+            display_name.as_deref(),
+        )?;
+        Ok(new_place_decision(
+            record, app_kind, rule, "allowed", false, None,
+        ))
+    } else {
+        let status = rule.label();
+        Ok(new_place_decision(
+            record, app_kind, rule, status, false, None,
+        ))
+    }
+}
+
+fn insert_legacy_allowed_place_record(
+    app_data_dir: &Path,
+    app_kind: &str,
+    place_kind: &str,
+    place_id: &str,
+    display_name: Option<&str>,
+) -> Result<(), String> {
+    std::fs::create_dir_all(app_data_dir)
+        .map_err(|error| format!("OSL: create allowed places dir: {error}"))?;
+    let conn =
+        rusqlite::Connection::open(crate::allowed_places::allowed_places_db_path(app_data_dir))
+            .map_err(|error| format!("OSL: open allowed places: {error}"))?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS allowed_places (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            app_kind TEXT NOT NULL,
+            place_kind TEXT NOT NULL,
+            place_id TEXT NOT NULL,
+            display_name TEXT,
+            found_at_unix_secs INTEGER NOT NULL
+        );",
+    )
+    .map_err(|error| format!("OSL: initialize allowed places: {error}"))?;
+    conn.execute(
+        "INSERT INTO allowed_places (app_kind, place_kind, place_id, display_name, found_at_unix_secs)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![app_kind, place_kind, place_id, display_name, now_unix_secs()],
+    )
+    .map_err(|error| format!("OSL: insert allowed place: {error}"))?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AllowedPlaceSearchResultDto {
+    pub app: String,
+    pub account: String,
+    pub kind: String,
+    pub stable_id: String,
+    pub place_name: String,
+    pub person_name: String,
+}
+
+pub fn cmd_osl_search_allowed_places(
+    app_data_dir: PathBuf,
+    query: String,
+) -> Result<Vec<AllowedPlaceSearchResultDto>, String> {
+    record_activity_on_command_entry();
+    let results = crate::allowed_places::search_allowed_place_records(&app_data_dir, &query)
+        .map_err(|error| format!("OSL: {error}"))?
+        .into_iter()
+        .map(|place| AllowedPlaceSearchResultDto {
+            app: place.app,
+            account: place.account,
+            kind: place.kind,
+            stable_id: place.stable_id,
+            place_name: place.place_name,
+            person_name: place.person_name,
+        })
+        .collect();
+    Ok(results)
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -18684,6 +19166,7 @@ pub fn cmd_osl_save_signal_auto_whitelist_rule(
     account: String,
     place: String,
     choice: String,
+    config_dir: Option<PathBuf>,
 ) -> Result<SignalAutoWhitelistRuleDto, String> {
     record_activity_on_command_entry();
     let kind = crate::auto_whitelist_rules::parse_signal_whitelist_kind(&signal_kind)?;
@@ -18695,7 +19178,7 @@ pub fn cmd_osl_save_signal_auto_whitelist_rule(
             .expect("auto_whitelist_rules mutex poisoned");
         rules.save(kind.auto_rule_app_kind(), choice);
     }
-    persist_auto_whitelist_rules_now(state);
+    persist_auto_whitelist_rules_now_to_dir(state, config_dir);
     Ok(signal_rule_lookup(kind, account, place, choice))
 }
 
@@ -18729,58 +19212,6 @@ fn signal_rule_lookup(
         allowed_place: crate::allowed_places::AllowedPlaceRecord::signal(account, kind, place),
         choice: choice.label().to_owned(),
     }
-// ---- New-friend defaults ----
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-pub struct NewFriendDefaultsDto {
-    pub account_reach: String,
-    pub auto_whitelist: String,
-    pub verification_warnings: String,
-}
-
-pub fn cmd_osl_get_new_friend_defaults(state: &AppState) -> Result<NewFriendDefaultsDto, String> {
-    record_activity_on_command_entry();
-    let prefs = state
-        .app_preferences
-        .lock()
-        .expect("app_preferences mutex poisoned");
-    Ok(NewFriendDefaultsDto {
-        account_reach: prefs.new_friend_account_reach.as_value().to_string(),
-        auto_whitelist: prefs.new_friend_auto_whitelist.as_label().to_string(),
-        verification_warnings: prefs
-            .new_friend_verification_warnings
-            .as_value()
-            .to_string(),
-    })
-}
-
-pub fn cmd_osl_save_new_friend_defaults(
-    state: &AppState,
-    defaults: NewFriendDefaultsDto,
-    config_dir: Option<std::path::PathBuf>,
-) -> Result<NewFriendDefaultsDto, String> {
-    record_activity_on_command_entry();
-    let account_reach = defaults
-        .account_reach
-        .parse::<crate::app_preferences::NewFriendAccountReach>()?;
-    let auto_whitelist = defaults
-        .auto_whitelist
-        .parse::<crate::auto_whitelist_rules::AutoWhitelistRule>()?;
-    let verification_warnings = defaults
-        .verification_warnings
-        .parse::<crate::app_preferences::NewFriendVerificationWarnings>()?;
-    {
-        let mut prefs = state
-            .app_preferences
-            .lock()
-            .expect("app_preferences mutex poisoned");
-        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
-        prefs.new_friend_account_reach = account_reach;
-        prefs.new_friend_auto_whitelist = auto_whitelist;
-        prefs.new_friend_verification_warnings = verification_warnings;
-    }
-    persist_app_preferences_now(state, config_dir);
-    cmd_osl_get_new_friend_defaults(state)
 }
 
 // ---- Phase 9-B1: app preferences ----
@@ -18789,6 +19220,10 @@ pub fn cmd_osl_save_new_friend_defaults(
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AppPreferencesDto {
     pub stego_mode: crate::app_preferences::StegoMode,
+    #[serde(default)]
+    pub message_defaults: crate::app_preferences::MessageDefaults,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rn_wire_policy_requested: Option<bool>,
 }
 
 pub fn cmd_osl_get_app_preferences(state: &AppState) -> Result<AppPreferencesDto, String> {
@@ -18799,6 +19234,8 @@ pub fn cmd_osl_get_app_preferences(state: &AppState) -> Result<AppPreferencesDto
         .expect("app_preferences mutex poisoned");
     Ok(AppPreferencesDto {
         stego_mode: g.stego_mode,
+        message_defaults: g.message_defaults.clone(),
+        rn_wire_policy_requested: Some(g.rn_wire_policy_requested),
     })
 }
 
@@ -18815,6 +19252,10 @@ pub fn cmd_osl_set_app_preferences(
             .expect("app_preferences mutex poisoned");
         g.version = crate::app_preferences::APP_PREFERENCES_VERSION;
         g.stego_mode = dto.stego_mode;
+        g.message_defaults = dto.message_defaults;
+        if let Some(requested) = dto.rn_wire_policy_requested {
+            g.rn_wire_policy_requested = requested;
+        }
     }
     if let Some(dir) = config_dir {
         let g = state
@@ -18827,331 +19268,1021 @@ pub fn cmd_osl_set_app_preferences(
     Ok(())
 }
 
-// ---- Auto-whitelist rules and newly discovered places ----
-
-pub fn cmd_osl_list_auto_whitelist_rule_choices() -> Result<Vec<String>, String> {
-    record_activity_on_command_entry();
-    Ok(
-        crate::auto_whitelist_rules::AutoWhitelistRule::VALID_CHOICES
-            .iter()
-            .map(|rule| rule.as_label().to_string())
-            .collect(),
-    )
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-pub struct AutoWhitelistRuleChoiceDto {
-    pub id: String,
-    pub label: String,
+pub struct MessageDefaultsDto {
+    pub burn_scope: String,
+    pub timer_seconds: u32,
+    pub view_once_length_seconds: u32,
+    pub cover_writing: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-pub struct AutoWhitelistRuleDto {
-    pub app_kind: String,
-    pub choice: String,
+pub struct DirectNewMessagePlanDto {
+    pub kind: String,
+    pub conversation_kind: String,
+    pub scope: crate::app_preferences::MessageScopeDefault,
+    pub burn_scope: String,
+    pub timer_seconds: u32,
+    pub display_length_seconds: u32,
+    pub view_once_length_seconds: u32,
+    pub writer: crate::app_preferences::MessageWriterDefault,
+    pub cover_writing: String,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-pub struct NewPlaceAutoWhitelistDto {
-    pub app_kind: String,
-    pub stable_id: String,
-    pub rule_choice: String,
-    pub result: String,
-    pub prompt: bool,
-}
-
-pub fn cmd_osl_get_auto_whitelist_rule_choices() -> Result<Vec<AutoWhitelistRuleChoiceDto>, String>
-{
-    record_activity_on_command_entry();
-    Ok(crate::auto_whitelist_rules::AutoWhitelistChoice::ALL
-        .into_iter()
-        .map(|choice| AutoWhitelistRuleChoiceDto {
-            id: choice.id().to_string(),
-            label: choice.label().to_string(),
-        })
-        .collect())
-}
-
-pub fn cmd_osl_save_auto_whitelist_rule(
-    state: &AppState,
-    app_kind: String,
-    rule: String,
-    config_dir: Option<std::path::PathBuf>,
-) -> Result<String, String> {
-    record_activity_on_command_entry();
-    let app_kind = crate::auto_whitelist_rules::normalize_app_kind(&app_kind)?;
-    let rule = rule.parse::<crate::auto_whitelist_rules::AutoWhitelistRule>()?;
-    choice: String,
-    config_dir: Option<std::path::PathBuf>,
-) -> Result<AutoWhitelistRuleDto, String> {
-    record_activity_on_command_entry();
-    let app_kind = crate::auto_whitelist_rules::normalize_auto_whitelist_app_kind(&app_kind)?;
-    let choice = crate::auto_whitelist_rules::parse_auto_whitelist_choice(&choice)?;
-    {
-        let mut prefs = state
-            .app_preferences
-            .lock()
-            .expect("app_preferences mutex poisoned");
-        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
-        prefs.auto_whitelist_rules.insert(app_kind, rule);
-    }
-    persist_app_preferences_now(state, config_dir);
-    Ok(rule.as_label().to_string())
-}
-
-pub fn cmd_osl_save_auto_whitelist_rule_for_place(
-    state: &AppState,
-    app_kind: String,
-    place_kind: String,
-    rule: String,
-    config_dir: Option<std::path::PathBuf>,
-) -> Result<String, String> {
-    record_activity_on_command_entry();
-    let app_kind = crate::auto_whitelist_rules::normalize_app_kind(&app_kind)?;
-    let place_kind =
-        crate::auto_whitelist_rules::normalize_place_kind_for_app(&app_kind, &place_kind)?;
-    let rule = rule.parse::<crate::auto_whitelist_rules::AutoWhitelistRule>()?;
-    {
-        let mut prefs = state
-            .app_preferences
-            .lock()
-            .expect("app_preferences mutex poisoned");
-        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
-        prefs.auto_whitelist_rules.insert(
-            crate::auto_whitelist_rules::scoped_rule_key(&app_kind, &place_kind),
-            rule,
-        );
-    }
-    persist_app_preferences_now(state, config_dir);
-    Ok(rule.as_label().to_string())
-}
-
-pub fn cmd_osl_get_auto_whitelist_rule(
-    state: &AppState,
-    app_kind: String,
-) -> Result<String, String> {
-    record_activity_on_command_entry();
-    let app_kind = crate::auto_whitelist_rules::normalize_app_kind(&app_kind)?;
-    let prefs = state
-        .app_preferences
-        .lock()
-        .expect("app_preferences mutex poisoned");
-    Ok(prefs
-        .auto_whitelist_rules
-        .get(&app_kind)
-        .copied()
-        .unwrap_or_default()
-        .as_label()
-        .to_string())
-}
-
-pub fn cmd_osl_get_auto_whitelist_rule_for_place(
-    state: &AppState,
-    app_kind: String,
-    place_kind: String,
-) -> Result<String, String> {
-    record_activity_on_command_entry();
-    let app_kind = crate::auto_whitelist_rules::normalize_app_kind(&app_kind)?;
-    let place_kind =
-        crate::auto_whitelist_rules::normalize_place_kind_for_app(&app_kind, &place_kind)?;
-    let prefs = state
-        .app_preferences
-        .lock()
-        .expect("app_preferences mutex poisoned");
-    Ok(crate::auto_whitelist_rules::lookup_rule(
-        &prefs.auto_whitelist_rules,
-        &app_kind,
-        Some(&place_kind),
-    )
-    .as_label()
-    .to_string())
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-pub struct NewPlaceDecisionDto {
-    pub result: String,
-}
-
-pub fn cmd_osl_direct_new_place(
-    state: &AppState,
-    app_data_dir: std::path::PathBuf,
-    app_kind: String,
-    place_kind: String,
-    place_id: String,
-    display_name: Option<String>,
-) -> Result<NewPlaceDecisionDto, String> {
-    record_activity_on_command_entry();
-    let app_kind = crate::auto_whitelist_rules::normalize_app_kind(&app_kind)?;
-    let place_kind =
-        crate::auto_whitelist_rules::normalize_place_kind_for_app(&app_kind, &place_kind)?;
-    if place_id.trim().is_empty() {
-        return Err("OSL: place_id is empty".to_string());
-    }
-    let rule = {
-        let prefs = state
-            .app_preferences
-            .lock()
-            .expect("app_preferences mutex poisoned");
-        crate::auto_whitelist_rules::lookup_rule(
-            &prefs.auto_whitelist_rules,
-            &app_kind,
-            Some(&place_kind),
-        )
-    };
-
-    if rule == crate::auto_whitelist_rules::AutoWhitelistRule::Always {
-        crate::allowed_places::add_allowed_place_record(
-            &app_data_dir,
-            &crate::allowed_places::StoredAllowedPlace {
-                app_kind,
-                place_kind,
-                place_id,
-                display_name,
-                found_at_unix_secs: now_unix_secs(),
-            },
-        )?;
-        Ok(NewPlaceDecisionDto {
-            result: "allowed".to_string(),
-        })
-    } else {
-        Ok(NewPlaceDecisionDto {
-            result: rule.as_label().to_string(),
-        })
-    }
-}
-
-        prefs.auto_whitelist_rules.insert(app_kind.clone(), choice);
-        if let Some(dir) = config_dir {
-            let path = dir.join("app_preferences.json");
-            crate::app_preferences::write_app_preferences(&path, &prefs)?;
+impl From<&crate::app_preferences::MessageDefaults> for MessageDefaultsDto {
+    fn from(defaults: &crate::app_preferences::MessageDefaults) -> Self {
+        Self {
+            burn_scope: message_scope_label(defaults.scope).to_string(),
+            timer_seconds: defaults.timer_seconds,
+            view_once_length_seconds: defaults.display_length_seconds,
+            cover_writing: message_writer_label(defaults.writer).to_string(),
         }
     }
-    Ok(AutoWhitelistRuleDto {
-        app_kind,
-        choice: choice.label().to_string(),
-    })
 }
 
-pub fn cmd_osl_read_auto_whitelist_rule(
-    state: &AppState,
-    app_kind: String,
-) -> Result<AutoWhitelistRuleDto, String> {
-    record_activity_on_command_entry();
-    let app_kind = crate::auto_whitelist_rules::normalize_auto_whitelist_app_kind(&app_kind)?;
-    let choice = state
-        .app_preferences
-        .lock()
-        .expect("app_preferences mutex poisoned")
-        .auto_whitelist_rules
-        .get(&app_kind)
-        .copied()
-        .unwrap_or_default();
-    Ok(AutoWhitelistRuleDto {
-        app_kind,
-        choice: choice.label().to_string(),
-    })
+fn message_scope_label(scope: crate::app_preferences::MessageScopeDefault) -> &'static str {
+    match scope {
+        crate::app_preferences::MessageScopeDefault::Message => "message",
+        crate::app_preferences::MessageScopeDefault::Conversation => "conversation",
+        crate::app_preferences::MessageScopeDefault::App => "app",
+    }
 }
 
-pub fn cmd_osl_new_place(
-    state: &AppState,
-    place: crate::allowed_places::AllowedPlaceRecord,
-) -> Result<NewPlaceAutoWhitelistDto, String> {
-    record_activity_on_command_entry();
-    let app_kind = crate::auto_whitelist_rules::normalize_auto_whitelist_app_kind(&place.app)?;
-    validate_new_place_record(&place)?;
-    let choice = state
-        .app_preferences
-        .lock()
-        .expect("app_preferences mutex poisoned")
-        .auto_whitelist_rules
-        .get(&app_kind)
-        .copied()
-        .unwrap_or_default();
-    match choice {
-        crate::auto_whitelist_rules::AutoWhitelistChoice::Never => Ok(NewPlaceAutoWhitelistDto {
-            app_kind,
-            stable_id: place.stable_id,
-            rule_choice: choice.label().to_string(),
-            result: "unlisted".to_string(),
-            prompt: false,
-        }),
-        crate::auto_whitelist_rules::AutoWhitelistChoice::OnlyIfAFriend => {
-            let Some(person_id) = new_place_person_id(&place) else {
-                return Ok(NewPlaceAutoWhitelistDto {
-                    app_kind,
-                    stable_id: place.stable_id,
-                    rule_choice: choice.label().to_string(),
-                    result: "skipped".to_string(),
-                    prompt: false,
-                });
-            };
-            let is_accepted_friend = state
-                .friend_ids
-                .lock()
-                .expect("friend_ids mutex poisoned")
-                .iter()
-                .any(|accepted| accepted == &person_id);
-            if !is_accepted_friend {
-                return Ok(NewPlaceAutoWhitelistDto {
-                    app_kind,
-                    stable_id: place.stable_id,
-                    rule_choice: choice.label().to_string(),
-                    result: "skipped".to_string(),
-                    prompt: false,
-                });
-            }
-            let dir =
-                keystore::osl_config_dir().map_err(|e| format!("OSL: allowed places dir: {e}"))?;
-            let stable_id = place.stable_id.clone();
-            crate::allowed_places::add_allowed_place_record(&dir, place)
-                .map_err(|e| format!("OSL: allowed place: {e}"))?;
-            Ok(NewPlaceAutoWhitelistDto {
-                app_kind,
-                stable_id,
-                rule_choice: choice.label().to_string(),
-                result: "allowed".to_string(),
-                prompt: false,
-            })
-        }
-        other => Err(format!(
-            "OSL: auto-whitelist rule '{}' is not implemented for new places",
-            other.label()
+fn message_writer_label(writer: crate::app_preferences::MessageWriterDefault) -> &'static str {
+    match writer {
+        crate::app_preferences::MessageWriterDefault::Plaintext => "plaintext",
+        crate::app_preferences::MessageWriterDefault::AiCovertext => "ai_covertext",
+    }
+}
+
+fn parse_message_scope(input: &str) -> Result<crate::app_preferences::MessageScopeDefault, String> {
+    match input
+        .trim()
+        .to_ascii_lowercase()
+        .replace(['-', ' '], "_")
+        .as_str()
+    {
+        "message" => Ok(crate::app_preferences::MessageScopeDefault::Message),
+        "conversation" => Ok(crate::app_preferences::MessageScopeDefault::Conversation),
+        "app" => Ok(crate::app_preferences::MessageScopeDefault::App),
+        _ => Err(format!("OSL: unknown message default burn_scope '{input}'")),
+    }
+}
+
+fn parse_message_writer(
+    input: &str,
+) -> Result<crate::app_preferences::MessageWriterDefault, String> {
+    match input
+        .trim()
+        .to_ascii_lowercase()
+        .replace(['-', ' '], "_")
+        .as_str()
+    {
+        "plaintext" => Ok(crate::app_preferences::MessageWriterDefault::Plaintext),
+        "ai_covertext" => Ok(crate::app_preferences::MessageWriterDefault::AiCovertext),
+        _ => Err(format!(
+            "OSL: unknown message default cover_writing '{input}'"
         )),
     }
 }
 
-fn new_place_person_id(place: &crate::allowed_places::AllowedPlaceRecord) -> Option<String> {
-    if place.kind != "direct_message" {
-        return None;
+fn validate_message_defaults(defaults: &MessageDefaultsDto) -> Result<(), String> {
+    parse_message_scope(&defaults.burn_scope)?;
+    parse_message_writer(&defaults.cover_writing)?;
+    if defaults.timer_seconds == 0 || defaults.timer_seconds > 31_536_000 {
+        return Err("OSL: message default timer_seconds is invalid".to_string());
     }
-    let expected_prefix = format!("{}:{}:{}:", place.app, place.account, place.kind);
-    place
-        .stable_id
-        .strip_prefix(&expected_prefix)
-        .filter(|person_id| !person_id.is_empty())
-        .map(str::to_owned)
-}
-
-fn validate_new_place_record(
-    place: &crate::allowed_places::AllowedPlaceRecord,
-) -> Result<(), String> {
-    fn valid_part(value: &str) -> bool {
-        !value.is_empty()
-            && value.len() <= 512
-            && !value.contains('\0')
-            && !value.chars().any(char::is_whitespace)
-    }
-
-    if !valid_part(&place.app)
-        || !valid_part(&place.account)
-        || !valid_part(&place.kind)
-        || !valid_part(&place.stable_id)
-    {
-        return Err("OSL: new place is invalid".to_string());
-    }
-    let expected_prefix = format!("{}:{}:{}:", place.app, place.account, place.kind);
-    if !place.stable_id.starts_with(&expected_prefix) {
-        return Err("OSL: new place stable id is invalid".to_string());
+    if defaults.view_once_length_seconds == 0 || defaults.view_once_length_seconds > 3_600 {
+        return Err("OSL: message default view_once_length_seconds is invalid".to_string());
     }
     Ok(())
+}
+
+pub fn cmd_osl_save_message_defaults(
+    state: &AppState,
+    defaults: MessageDefaultsDto,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<MessageDefaultsDto, String> {
+    record_activity_on_command_entry();
+    validate_message_defaults(&defaults)?;
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs.message_defaults = crate::app_preferences::MessageDefaults {
+            scope: parse_message_scope(&defaults.burn_scope)?,
+            timer_seconds: defaults.timer_seconds,
+            display_length_seconds: defaults.view_once_length_seconds,
+            writer: parse_message_writer(&defaults.cover_writing)?,
+        };
+    }
+    persist_app_preferences_now(state, config_dir);
+    Ok(defaults)
+}
+
+pub fn cmd_osl_read_message_defaults(state: &AppState) -> Result<MessageDefaultsDto, String> {
+    record_activity_on_command_entry();
+    let prefs = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned");
+    Ok(MessageDefaultsDto::from(&prefs.message_defaults))
+}
+
+pub fn cmd_osl_read_message_default_burn_scope(state: &AppState) -> Result<String, String> {
+    record_activity_on_command_entry();
+    Ok(cmd_osl_read_message_defaults(state)?.burn_scope)
+}
+
+pub fn cmd_osl_read_message_default_timer_seconds(state: &AppState) -> Result<u32, String> {
+    record_activity_on_command_entry();
+    Ok(cmd_osl_read_message_defaults(state)?.timer_seconds)
+}
+
+pub fn cmd_osl_read_message_default_view_once_length_seconds(
+    state: &AppState,
+) -> Result<u32, String> {
+    record_activity_on_command_entry();
+    Ok(cmd_osl_read_message_defaults(state)?.view_once_length_seconds)
+}
+
+pub fn cmd_osl_read_message_default_cover_writing(state: &AppState) -> Result<String, String> {
+    record_activity_on_command_entry();
+    Ok(cmd_osl_read_message_defaults(state)?.cover_writing)
+}
+
+pub fn cmd_osl_start_direct_new_message_plan(
+    state: &AppState,
+) -> Result<DirectNewMessagePlanDto, String> {
+    record_activity_on_command_entry();
+    let defaults = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .message_defaults
+        .clone();
+    Ok(DirectNewMessagePlanDto {
+        kind: "direct".to_string(),
+        conversation_kind: "direct".to_string(),
+        scope: defaults.scope,
+        burn_scope: message_scope_label(defaults.scope).to_string(),
+        timer_seconds: defaults.timer_seconds,
+        display_length_seconds: defaults.display_length_seconds,
+        view_once_length_seconds: defaults.display_length_seconds,
+        writer: defaults.writer,
+        cover_writing: message_writer_label(defaults.writer).to_string(),
+    })
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct NextGenerationMessagePolicyDto {
+    pub choice: String,
+}
+
+pub fn cmd_osl_save_next_generation_message_policy(
+    state: &AppState,
+    choice: String,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<NextGenerationMessagePolicyDto, String> {
+    record_activity_on_command_entry();
+    let choice = crate::app_preferences::parse_next_generation_message_policy(&choice)?;
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs.next_generation_message_policy = choice;
+    }
+    state.set_rn_wire_in_enabled(choice.rn_wire_in_enabled());
+    persist_app_preferences_now(state, config_dir);
+    Ok(NextGenerationMessagePolicyDto {
+        choice: choice.label().to_string(),
+    })
+}
+
+pub fn cmd_osl_read_next_generation_message_policy(
+    state: &AppState,
+) -> Result<NextGenerationMessagePolicyDto, String> {
+    record_activity_on_command_entry();
+    let choice = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .next_generation_message_policy;
+    Ok(NextGenerationMessagePolicyDto {
+        choice: choice.label().to_string(),
+    })
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VerificationWarningChoiceDto {
+    pub choice: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VerificationWarningCheckDto {
+    pub conversation_id: String,
+    pub choice: String,
+    pub check: String,
+    pub warning_point: String,
+    pub should_warn: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VerificationWarningCheck {
+    Opening,
+    Sending,
+}
+
+impl VerificationWarningCheck {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Opening => "opening",
+            Self::Sending => "sending",
+        }
+    }
+}
+
+pub fn cmd_osl_save_verification_warning_choice(
+    state: &AppState,
+    choice: String,
+    config_dir: Option<PathBuf>,
+) -> Result<VerificationWarningChoiceDto, String> {
+    record_activity_on_command_entry();
+    let choice = crate::app_preferences::parse_verification_warning_choice(&choice)?;
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs.verification_warning = choice;
+    }
+    persist_app_preferences_now(state, config_dir);
+    Ok(VerificationWarningChoiceDto {
+        choice: choice.label().to_string(),
+    })
+}
+
+pub fn cmd_osl_read_verification_warning_choice(
+    state: &AppState,
+) -> Result<VerificationWarningChoiceDto, String> {
+    record_activity_on_command_entry();
+    let choice = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .verification_warning;
+    Ok(VerificationWarningChoiceDto {
+        choice: choice.label().to_string(),
+    })
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BehaviourChoiceDto {
+    pub name: String,
+    pub choice: String,
+}
+
+pub fn cmd_osl_save_behaviour_choice(
+    state: &AppState,
+    name: String,
+    choice: String,
+    config_dir: Option<PathBuf>,
+) -> Result<BehaviourChoiceDto, String> {
+    record_activity_on_command_entry();
+    let name = crate::app_preferences::parse_behaviour_choice_name(&name)?;
+    let choice = crate::app_preferences::normalize_behaviour_choice_value(&choice)?;
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs
+            .behaviour_choices
+            .insert(name.label().to_string(), choice.clone());
+    }
+    persist_app_preferences_now(state, config_dir);
+    Ok(BehaviourChoiceDto {
+        name: name.label().to_string(),
+        choice,
+    })
+}
+
+pub fn cmd_osl_read_behaviour_choice(
+    state: &AppState,
+    name: String,
+) -> Result<BehaviourChoiceDto, String> {
+    record_activity_on_command_entry();
+    let name = crate::app_preferences::parse_behaviour_choice_name(&name)?;
+    let choice = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .behaviour_choices
+        .get(name.label())
+        .cloned()
+        .unwrap_or_else(|| "default".to_string());
+    Ok(BehaviourChoiceDto {
+        name: name.label().to_string(),
+        choice,
+    })
+}
+
+pub fn cmd_osl_check_verification_warning_on_opening(
+    state: &AppState,
+    conversation_id: String,
+    verified: bool,
+) -> Result<VerificationWarningCheckDto, String> {
+    record_activity_on_command_entry();
+    verification_warning_check(
+        state,
+        conversation_id,
+        verified,
+        VerificationWarningCheck::Opening,
+    )
+}
+
+pub fn cmd_osl_check_verification_warning_before_sending(
+    state: &AppState,
+    conversation_id: String,
+    verified: bool,
+) -> Result<VerificationWarningCheckDto, String> {
+    record_activity_on_command_entry();
+    verification_warning_check(
+        state,
+        conversation_id,
+        verified,
+        VerificationWarningCheck::Sending,
+    )
+}
+
+fn verification_warning_check(
+    state: &AppState,
+    conversation_id: String,
+    verified: bool,
+    check: VerificationWarningCheck,
+) -> Result<VerificationWarningCheckDto, String> {
+    let conversation_id = normalize_verification_warning_conversation_id(conversation_id)?;
+    let choice = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .verification_warning;
+    let should_warn = if verified {
+        false
+    } else {
+        match choice {
+            crate::app_preferences::VerificationWarningChoice::EveryTime => true,
+            crate::app_preferences::VerificationWarningChoice::Once => {
+                let mut seen = state
+                    .verification_warning_seen
+                    .lock()
+                    .expect("verification_warning_seen mutex poisoned");
+                seen.insert(conversation_id.clone())
+            }
+            crate::app_preferences::VerificationWarningChoice::BeforeSending => {
+                check == VerificationWarningCheck::Sending
+            }
+            crate::app_preferences::VerificationWarningChoice::Never => false,
+        }
+    };
+    let warning_point = if should_warn { check.label() } else { "none" };
+    Ok(VerificationWarningCheckDto {
+        conversation_id,
+        choice: choice.label().to_string(),
+        check: check.label().to_string(),
+        warning_point: warning_point.to_string(),
+        should_warn,
+    })
+}
+
+fn normalize_verification_warning_conversation_id(
+    conversation_id: String,
+) -> Result<String, String> {
+    let trimmed = conversation_id.trim();
+    if trimmed.is_empty() || trimmed.len() > 256 {
+        return Err("OSL: verification warning conversation id is invalid".to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HomeProtectionSummaryDto {
+    pub protection_state: String,
+    pub privacy_level: String,
+    pub protection_choices: PrivacyProtectionChoicesDto,
+    pub verification_warning: String,
+    pub trusted_people_count: usize,
+    pub trusted_people: String,
+    pub connected_app_count: usize,
+    pub allowed_place_count: usize,
+    pub apps: String,
+    pub next_safe_step: String,
+}
+
+pub fn cmd_osl_home_protection_summary(
+    state: &AppState,
+    app_data_dir: Option<PathBuf>,
+) -> Result<HomeProtectionSummaryDto, String> {
+    record_activity_on_command_entry();
+    let cloud_state = state.cloud_registration_state();
+    let protection_state = if state.has_identity()
+        && state.has_keyserver()
+        && cloud_state == crate::state::CloudRegistrationState::Registered
+    {
+        "protected"
+    } else {
+        "needs-attention"
+    }
+    .to_string();
+    let choices = cmd_osl_read_privacy_protection_choices(state)?;
+    let verification_warning = cmd_osl_read_verification_warning_choice(state)?.choice;
+    let trusted_people_count = {
+        let pending = state
+            .key_change_alerts
+            .lock()
+            .expect("key_change_alerts mutex poisoned");
+        state
+            .peer_map
+            .lock()
+            .expect("peer_map mutex poisoned")
+            .iter()
+            .filter(|(discord_id, entry)| {
+                entry.is_self != Some(true)
+                    && entry.tofu_key_bundle.is_some()
+                    && !pending.contains_key(*discord_id)
+            })
+            .count()
+    };
+    let place_summary = match app_data_dir {
+        Some(dir) => crate::allowed_places::allowed_place_summary(&dir)
+            .map_err(|error| format!("OSL: allowed place summary: {error}"))?,
+        None => crate::allowed_places::AllowedPlaceSummary {
+            distinct_apps: 0,
+            places: 0,
+        },
+    };
+    let trusted_people = match trusted_people_count {
+        1 => "1 trusted person".to_string(),
+        count => format!("{count} trusted people"),
+    };
+    let apps = match place_summary.distinct_apps {
+        1 => "1 connected app".to_string(),
+        count => format!("{count} connected apps"),
+    };
+    let next_safe_step = if protection_state != "protected" {
+        "Finish account protection"
+    } else if place_summary.distinct_apps == 0 {
+        "Connect an app"
+    } else if trusted_people_count == 0 {
+        "Add a trusted person"
+    } else {
+        "Open a protected conversation"
+    }
+    .to_string();
+
+    Ok(HomeProtectionSummaryDto {
+        protection_state,
+        privacy_level: choices.level.clone(),
+        protection_choices: choices,
+        verification_warning,
+        trusted_people_count,
+        trusted_people,
+        connected_app_count: place_summary.distinct_apps,
+        allowed_place_count: place_summary.places,
+        apps,
+        next_safe_step,
+    })
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct IdleLockTimeChoiceDto {
+    pub choice: String,
+    pub label: String,
+    pub seconds: Option<u64>,
+}
+
+impl From<crate::app_preferences::IdleLockTimeChoice> for IdleLockTimeChoiceDto {
+    fn from(choice: crate::app_preferences::IdleLockTimeChoice) -> Self {
+        Self {
+            choice: choice.choice().to_string(),
+            label: choice.label(),
+            seconds: choice.seconds(),
+        }
+    }
+}
+
+pub fn cmd_osl_read_idle_lock_time_choice(
+    state: &AppState,
+) -> Result<IdleLockTimeChoiceDto, String> {
+    record_activity_on_command_entry();
+    let prefs = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned");
+    Ok(IdleLockTimeChoiceDto::from(prefs.idle_lock_time_choice))
+}
+
+pub fn cmd_osl_save_idle_lock_time_choice(
+    state: &AppState,
+    choice: String,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<IdleLockTimeChoiceDto, String> {
+    record_activity_on_command_entry();
+    let parsed = crate::app_preferences::parse_idle_lock_time_choice(&choice)?;
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs.idle_lock_time_choice = parsed;
+    }
+    if let Some(dir) = config_dir {
+        let prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned")
+            .clone();
+        crate::app_preferences::write_app_preferences(&dir.join("app_preferences.json"), &prefs)?;
+    }
+    Ok(IdleLockTimeChoiceDto::from(parsed))
+}
+
+pub fn cmd_osl_reset_idle_lock_time_choice(
+    state: &AppState,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<IdleLockTimeChoiceDto, String> {
+    record_activity_on_command_entry();
+    let choice = crate::app_preferences::IdleLockTimeChoice::default();
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs.idle_lock_time_choice = choice;
+    }
+    persist_app_preferences_now(state, config_dir);
+    Ok(IdleLockTimeChoiceDto::from(choice))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PrivacyLevelRuleSetDto {
+    pub level: String,
+    pub label: String,
+    pub before_send_warnings: bool,
+    pub attachment_cleaning: bool,
+    pub cleanup_review_days: u16,
+    pub public_post_checks: bool,
+    pub vpn_required_actions: bool,
+    pub protected_contacts_required: bool,
+}
+
+impl PrivacyLevelRuleSetDto {
+    fn from_parts(
+        level: crate::app_preferences::PrivacyLevel,
+        rules: crate::app_preferences::PrivacyLevelRuleSet,
+    ) -> Self {
+        Self {
+            level: level.id().to_string(),
+            label: level.label().to_string(),
+            before_send_warnings: rules.before_send_warnings,
+            attachment_cleaning: rules.attachment_cleaning,
+            cleanup_review_days: rules.cleanup_review_days,
+            public_post_checks: rules.public_post_checks,
+            vpn_required_actions: rules.vpn_required_actions,
+            protected_contacts_required: rules.protected_contacts_required,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PrivacyProtectionChoicesDto {
+    pub level: String,
+    pub label: String,
+    pub warnings: String,
+    pub cleanup: String,
+    pub app_exceptions: String,
+    pub contact_rules: String,
+}
+
+impl PrivacyProtectionChoicesDto {
+    fn from_parts(
+        level: crate::app_preferences::PrivacyLevel,
+        rules: crate::app_preferences::PrivacyLevelRuleSet,
+    ) -> Self {
+        let warnings = match (rules.before_send_warnings, rules.public_post_checks) {
+            (false, false) => "warnings_off",
+            (true, false) => "before_send_warnings",
+            (false, true) => "public_post_warnings",
+            (true, true) => "before_send_and_public_post_warnings",
+        };
+        let cleanup = match (rules.attachment_cleaning, rules.cleanup_review_days) {
+            (false, 0) => "cleanup_off".to_string(),
+            (false, days) => format!("cleanup_review_{days}_days"),
+            (true, days) => format!("attachment_cleaning_plus_{days}_day_review"),
+        };
+        let app_exceptions = if rules.public_post_checks || rules.vpn_required_actions {
+            "app_exceptions_restricted"
+        } else if rules.before_send_warnings
+            || rules.attachment_cleaning
+            || rules.cleanup_review_days > 0
+        {
+            "app_exceptions_reviewed"
+        } else {
+            "app_exceptions_allowed"
+        };
+        let contact_rules = if rules.protected_contacts_required {
+            "protected_contacts_required"
+        } else if rules.before_send_warnings
+            || rules.attachment_cleaning
+            || rules.cleanup_review_days > 0
+        {
+            "verified_contacts_suggested"
+        } else {
+            "contacts_optional"
+        };
+
+        Self {
+            level: level.id().to_string(),
+            label: level.label().to_string(),
+            warnings: warnings.to_string(),
+            cleanup,
+            app_exceptions: app_exceptions.to_string(),
+            contact_rules: contact_rules.to_string(),
+        }
+    }
+}
+
+fn saved_privacy_level_and_rules(
+    state: &AppState,
+) -> (
+    crate::app_preferences::PrivacyLevel,
+    crate::app_preferences::PrivacyLevelRuleSet,
+) {
+    let prefs = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned");
+    let level = prefs.privacy_level;
+    let rules = prefs
+        .privacy_level_rule_sets
+        .get(level.id())
+        .copied()
+        .unwrap_or_else(|| crate::app_preferences::PrivacyLevelRuleSet::for_level(level));
+    (level, rules)
+}
+
+pub fn cmd_osl_save_privacy_level_rule_set(
+    state: &AppState,
+    level: String,
+    config_dir: Option<PathBuf>,
+) -> Result<PrivacyLevelRuleSetDto, String> {
+    record_activity_on_command_entry();
+    let level = crate::app_preferences::parse_privacy_level(&level)?;
+    let rules = crate::app_preferences::PrivacyLevelRuleSet::for_level(level);
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs.privacy_level = level;
+        prefs
+            .privacy_level_rule_sets
+            .insert(level.id().to_string(), rules);
+        if let Some(dir) = config_dir {
+            crate::app_preferences::write_app_preferences(
+                &dir.join("app_preferences.json"),
+                &prefs,
+            )?;
+        }
+    }
+    Ok(PrivacyLevelRuleSetDto::from_parts(level, rules))
+}
+
+pub fn cmd_osl_read_privacy_level_rule_set(
+    state: &AppState,
+    level: String,
+) -> Result<PrivacyLevelRuleSetDto, String> {
+    record_activity_on_command_entry();
+    let level = crate::app_preferences::parse_privacy_level(&level)?;
+    let rules = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .privacy_level_rule_sets
+        .get(level.id())
+        .copied()
+        .unwrap_or_else(|| crate::app_preferences::PrivacyLevelRuleSet::for_level(level));
+    Ok(PrivacyLevelRuleSetDto::from_parts(level, rules))
+}
+
+pub fn cmd_osl_read_privacy_protection_choices(
+    state: &AppState,
+) -> Result<PrivacyProtectionChoicesDto, String> {
+    record_activity_on_command_entry();
+    let (level, rules) = saved_privacy_level_and_rules(state);
+    Ok(PrivacyProtectionChoicesDto::from_parts(level, rules))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageTimerAdmissionDto {
+    pub app_name: String,
+    pub requested_seconds: u64,
+    pub max_seconds: u64,
+    pub accepted: bool,
+}
+
+#[derive(Clone, Copy)]
+struct MessageTimerLimit {
+    canonical_name: &'static str,
+    max_seconds: u64,
+    max_label: &'static str,
+}
+
+const TIMER_LIMITS: &[(&str, MessageTimerLimit)] = &[
+    (
+        "messenger",
+        MessageTimerLimit {
+            canonical_name: "Messenger",
+            max_seconds: 10 * 60,
+            max_label: "10 minutes",
+        },
+    ),
+    (
+        "signal",
+        MessageTimerLimit {
+            canonical_name: "Signal",
+            max_seconds: 24 * 60 * 60,
+            max_label: "24 hours",
+        },
+    ),
+    (
+        "whatsapp",
+        MessageTimerLimit {
+            canonical_name: "WhatsApp",
+            max_seconds: 60 * 60 * 60,
+            max_label: "60 hours",
+        },
+    ),
+    (
+        "discord",
+        MessageTimerLimit {
+            canonical_name: "Discord",
+            max_seconds: crate::message_expiry_dial::MAX_VIEW_LIFETIME_SECONDS as u64,
+            max_label: "30 days",
+        },
+    ),
+];
+
+fn timer_limit_for_app(app_name: &str) -> Result<MessageTimerLimit, String> {
+    let normalized = app_name.trim().to_ascii_lowercase();
+    TIMER_LIMITS
+        .iter()
+        .find_map(|(name, limit)| (*name == normalized).then_some(*limit))
+        .ok_or_else(|| {
+            "OSL: app timer support is unknown; choose Messenger, Signal, WhatsApp, or Discord"
+                .to_string()
+        })
+}
+
+pub fn cmd_osl_check_message_timer_before_send(
+    state: &AppState,
+    app_name: String,
+    requested_seconds: u64,
+) -> Result<MessageTimerAdmissionDto, String> {
+    record_activity_on_command_entry();
+    let _ = state;
+    let limit = timer_limit_for_app(&app_name)?;
+    if requested_seconds == 0 {
+        return Err(format!(
+            "OSL: {} timer must be at least 1 second",
+            limit.canonical_name
+        ));
+    }
+    if requested_seconds > limit.max_seconds {
+        return Err(format!(
+            "OSL: {} cannot keep a timer for {}; longest supported timer is {}",
+            limit.canonical_name,
+            human_timer_label(requested_seconds),
+            limit.max_label
+        ));
+    }
+    Ok(MessageTimerAdmissionDto {
+        app_name: limit.canonical_name.to_string(),
+        requested_seconds,
+        max_seconds: limit.max_seconds,
+        accepted: true,
+    })
+}
+
+fn human_timer_label(seconds: u64) -> String {
+    const MINUTE: u64 = 60;
+    const HOUR: u64 = 60 * MINUTE;
+    const DAY: u64 = 24 * HOUR;
+    for (unit_seconds, singular, plural) in [
+        (DAY, "day", "days"),
+        (HOUR, "hour", "hours"),
+        (MINUTE, "minute", "minutes"),
+    ] {
+        if seconds % unit_seconds == 0 {
+            let units = seconds / unit_seconds;
+            let unit_name = if units == 1 { singular } else { plural };
+            return format!("{units} {unit_name}");
+        }
+    }
+    let unit_name = if seconds == 1 { "second" } else { "seconds" };
+    format!("{seconds} {unit_name}")
+}
+
+pub fn cmd_osl_read_row_ownership_ladder(
+    _state: &AppState,
+) -> Result<RowOwnershipLadderDto, String> {
+    record_activity_on_command_entry();
+    Ok(crate::row_ownership_ladder::row_ownership_ladder())
+}
+
+pub fn cmd_osl_check_row_ownership_marking_admission(
+    _state: &AppState,
+    app_name: String,
+    evidence_kind: String,
+) -> Result<RowOwnershipMarkingAdmissionDto, String> {
+    record_activity_on_command_entry();
+    crate::row_ownership_ladder::check_row_ownership_marking_admission(app_name, evidence_kind)
+}
+
+pub fn cmd_osl_get_start_with_windows_choice(state: &AppState) -> Result<String, String> {
+    record_activity_on_command_entry();
+    let prefs = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned");
+    Ok(prefs.start_with_windows.as_value().to_string())
+}
+
+pub fn cmd_osl_save_start_with_windows_choice(
+    state: &AppState,
+    choice: String,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<String, String> {
+    record_activity_on_command_entry();
+    let choice: crate::app_preferences::StartWithWindowsChoice = choice.parse()?;
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs.start_with_windows = choice;
+    }
+    persist_app_preferences_now(state, config_dir);
+    Ok(choice.as_value().to_string())
+}
+
+pub fn cmd_osl_reset_start_with_windows_choice(
+    state: &AppState,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<String, String> {
+    record_activity_on_command_entry();
+    let choice = crate::app_preferences::StartWithWindowsChoice::default();
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs.start_with_windows = choice;
+    }
+    persist_app_preferences_now(state, config_dir);
+    Ok(choice.as_value().to_string())
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct AlertModeChoiceDto {
+    pub mode: String,
+}
+
+impl From<crate::app_preferences::AlertModeChoice> for AlertModeChoiceDto {
+    fn from(mode: crate::app_preferences::AlertModeChoice) -> Self {
+        Self {
+            mode: mode.words().to_string(),
+        }
+    }
+}
+
+pub fn cmd_osl_save_alert_mode_choice(
+    state: &AppState,
+    mode: String,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<AlertModeChoiceDto, String> {
+    record_activity_on_command_entry();
+    let mode = crate::app_preferences::parse_alert_mode_choice(&mode)?;
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs.alert_mode_choice = mode;
+    }
+    persist_app_preferences_now(state, config_dir);
+    Ok(mode.into())
+}
+
+pub fn cmd_osl_read_alert_mode_choice(state: &AppState) -> Result<AlertModeChoiceDto, String> {
+    record_activity_on_command_entry();
+    let mode = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .alert_mode_choice;
+    Ok(mode.into())
+}
+
+pub fn cmd_osl_reset_alert_mode_choice(
+    state: &AppState,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<AlertModeChoiceDto, String> {
+    record_activity_on_command_entry();
+    let mode = crate::app_preferences::AlertModeChoice::default();
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs.alert_mode_choice = mode;
+    }
+    persist_app_preferences_now(state, config_dir);
+    Ok(mode.into())
+}
+
+pub fn cmd_osl_get_language_choice(state: &AppState) -> Result<String, String> {
+    record_activity_on_command_entry();
+    let prefs = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned");
+    crate::screen_words::normalize_language(&prefs.language).map(|language| language.to_string())
+}
+
+pub fn cmd_osl_save_language_choice(
+    state: &AppState,
+    language: String,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<String, String> {
+    record_activity_on_command_entry();
+    let language = crate::screen_words::normalize_language(&language)?.to_string();
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs.language = language.clone();
+    }
+    persist_app_preferences_now(state, config_dir);
+    Ok(language)
+}
+
+pub fn cmd_osl_reset_language_choice(
+    state: &AppState,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<String, String> {
+    record_activity_on_command_entry();
+    let language = crate::app_preferences::default_language_choice();
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs.language = language.clone();
+    }
+    persist_app_preferences_now(state, config_dir);
+    Ok(language)
+}
+
+pub fn cmd_osl_read_screen_words(
+    state: &AppState,
+    screen: String,
+) -> Result<crate::screen_words::ScreenWords, String> {
+    record_activity_on_command_entry();
+    let language = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .language
+        .clone();
+    crate::screen_words::load_screen_words(&language, &screen)
 }
 
 // ---- G3.3: auto-updater channel ----
@@ -19242,6 +20373,70 @@ pub fn cmd_osl_set_ask_before_irreversible_actions_choice(
         crate::app_preferences::write_app_preferences(&path, &g)?;
     }
     Ok(choice)
+}
+
+pub fn cmd_osl_reset_ask_before_irreversible_actions_choice(
+    state: &AppState,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<crate::app_preferences::AskBeforeIrreversibleActionsChoice, String> {
+    record_activity_on_command_entry();
+    let choice = crate::app_preferences::AskBeforeIrreversibleActionsChoice::default();
+    {
+        let mut g = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        g.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        g.ask_before_irreversible_actions = choice;
+    }
+    persist_app_preferences_now(state, config_dir);
+    Ok(choice)
+}
+
+pub fn cmd_osl_get_follow_active_app_choice(state: &AppState) -> Result<String, String> {
+    record_activity_on_command_entry();
+    let prefs = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned");
+    Ok(prefs.follow_active_app_choice.as_str().to_owned())
+}
+
+pub fn cmd_osl_set_follow_active_app_choice(
+    state: &AppState,
+    value: &str,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<String, String> {
+    record_activity_on_command_entry();
+    let choice = crate::app_preferences::FollowActiveAppChoice::parse(value)?;
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs.follow_active_app_choice = choice;
+    }
+    persist_app_preferences_now(state, config_dir);
+    Ok(choice.as_str().to_owned())
+}
+
+pub fn cmd_osl_reset_follow_active_app_choice(
+    state: &AppState,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<String, String> {
+    record_activity_on_command_entry();
+    let choice = crate::app_preferences::FollowActiveAppChoice::default();
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs.follow_active_app_choice = choice;
+    }
+    persist_app_preferences_now(state, config_dir);
+    Ok(choice.as_str().to_owned())
 }
 
 // ---- Phase 9-D: onboarding tour + VPN warning ----
@@ -19894,6 +21089,579 @@ mod test_deep_link_parser {
 // G3.1 is check-only: no download, no install, no signature check
 // (G3.2), no UI / channel selection (G3.3).
 // =====================================================================
+
+pub const DEFAULT_OSL_SITE_UPDATE_MANIFEST_URL: &str =
+    "https://github.com/OSLPrivacy/discord-privacy-client/releases/download/hub-latest/latest.json";
+
+const UPDATE_SITE_HTTP_TIMEOUT: Duration = Duration::from_secs(10);
+const UPDATE_SITE_MAX_BODY_BYTES: usize = 128 * 1024;
+const UPDATE_SITE_MAX_ARTIFACT_BYTES: u64 = 512 * 1024 * 1024;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum SiteUpdateCheckResult {
+    UpdateAvailable {
+        version: String,
+        download_address: String,
+        expected_fingerprint: String,
+    },
+    UpToDate {
+        message: String,
+    },
+    Error {
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct SiteUpdateInstallRequest {
+    pub version: String,
+    pub download_address: String,
+    pub expected_fingerprint: String,
+    pub install_path: PathBuf,
+    pub installed_version_path: PathBuf,
+    pub staging_dir: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum SiteUpdateInstallResult {
+    Installed {
+        version: String,
+        fingerprint: String,
+        downloaded_file_count_during: usize,
+        downloaded_file_count_after: usize,
+    },
+    Refused {
+        message: String,
+        version: String,
+        fingerprint: String,
+        downloaded_file_count_during: usize,
+        downloaded_file_count_after: usize,
+    },
+    Error {
+        message: String,
+        version: String,
+        fingerprint: String,
+        downloaded_file_count_during: usize,
+        downloaded_file_count_after: usize,
+    },
+}
+
+impl SiteUpdateCheckResult {
+    pub fn direct_command_output(&self) -> String {
+        match self {
+            SiteUpdateCheckResult::UpdateAvailable {
+                version,
+                download_address,
+                expected_fingerprint,
+            } => format!(
+                "version={version}\ndownload_address={download_address}\nexpected_fingerprint={expected_fingerprint}"
+            ),
+            SiteUpdateCheckResult::UpToDate { message } => message.clone(),
+            SiteUpdateCheckResult::Error { message } => format!("error: {message}"),
+        }
+    }
+}
+
+impl SiteUpdateInstallResult {
+    pub fn direct_command_output(&self) -> String {
+        match self {
+            SiteUpdateInstallResult::Installed {
+                version,
+                fingerprint,
+                downloaded_file_count_during,
+                downloaded_file_count_after,
+            } => format!(
+                "installed\nversion={version}\nfingerprint={fingerprint}\ndownloaded_file_count_during={downloaded_file_count_during}\ndownloaded_file_count_after={downloaded_file_count_after}"
+            ),
+            SiteUpdateInstallResult::Refused {
+                message,
+                version,
+                fingerprint,
+                downloaded_file_count_during,
+                downloaded_file_count_after,
+            } => format!(
+                "refused: {message}\nversion={version}\nfingerprint={fingerprint}\ndownloaded_file_count_during={downloaded_file_count_during}\ndownloaded_file_count_after={downloaded_file_count_after}"
+            ),
+            SiteUpdateInstallResult::Error {
+                message,
+                version,
+                fingerprint,
+                downloaded_file_count_during,
+                downloaded_file_count_after,
+            } => format!(
+                "error: {message}\nversion={version}\nfingerprint={fingerprint}\ndownloaded_file_count_during={downloaded_file_count_during}\ndownloaded_file_count_after={downloaded_file_count_after}"
+            ),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ParsedSemver {
+    major: u64,
+    minor: u64,
+    patch: u64,
+}
+
+fn parse_update_semver(input: &str) -> Result<ParsedSemver, String> {
+    let cleaned = input.strip_prefix('v').unwrap_or(input);
+    let core = cleaned
+        .split(['-', '+'])
+        .next()
+        .ok_or_else(|| "version is invalid".to_owned())?;
+    let mut parts = core.split('.');
+    let major = parts
+        .next()
+        .and_then(|part| part.parse::<u64>().ok())
+        .ok_or_else(|| "version must be semantic MAJOR.MINOR.PATCH".to_owned())?;
+    let minor = parts
+        .next()
+        .and_then(|part| part.parse::<u64>().ok())
+        .ok_or_else(|| "version must be semantic MAJOR.MINOR.PATCH".to_owned())?;
+    let patch = parts
+        .next()
+        .and_then(|part| part.parse::<u64>().ok())
+        .ok_or_else(|| "version must be semantic MAJOR.MINOR.PATCH".to_owned())?;
+    if parts.next().is_some() {
+        return Err("version must be semantic MAJOR.MINOR.PATCH".to_owned());
+    }
+    Ok(ParsedSemver {
+        major,
+        minor,
+        patch,
+    })
+}
+
+fn compare_update_versions(a: ParsedSemver, b: ParsedSemver) -> std::cmp::Ordering {
+    (a.major, a.minor, a.patch).cmp(&(b.major, b.minor, b.patch))
+}
+
+fn json_string<'a>(value: &'a serde_json::Value, names: &[&str]) -> Option<&'a str> {
+    names.iter().find_map(|name| value.get(*name)?.as_str())
+}
+
+fn normalize_update_fingerprint(input: &str) -> Option<String> {
+    let trimmed = input.trim();
+    let candidate = trimmed
+        .strip_prefix("sha256:")
+        .or_else(|| trimmed.strip_prefix("sha-256:"))
+        .or_else(|| trimmed.strip_prefix("SHA256:"))
+        .or_else(|| trimmed.strip_prefix("SHA-256:"))
+        .unwrap_or(trimmed)
+        .trim();
+    if candidate.len() == 64 && candidate.bytes().all(|b| b.is_ascii_hexdigit()) {
+        Some(format!("sha256:{}", candidate.to_ascii_lowercase()))
+    } else {
+        None
+    }
+}
+
+fn bytes_sha256_fingerprint(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    let mut hex = String::with_capacity(64);
+    for byte in digest {
+        use std::fmt::Write as _;
+        let _ = write!(&mut hex, "{byte:02x}");
+    }
+    format!("sha256:{hex}")
+}
+
+fn file_sha256_fingerprint(path: &Path) -> Result<String, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("installed file cannot be read: {e}"))?;
+    Ok(bytes_sha256_fingerprint(&bytes))
+}
+
+fn installed_site_update_identity(
+    install_path: &Path,
+    installed_version_path: &Path,
+) -> (String, String) {
+    let version = std::fs::read_to_string(installed_version_path)
+        .map(|value| value.trim().to_string())
+        .unwrap_or_else(|_| "unknown".to_string());
+    let fingerprint =
+        file_sha256_fingerprint(install_path).unwrap_or_else(|_| "sha256:unavailable".to_string());
+    (version, fingerprint)
+}
+
+fn downloaded_file_count(staging_dir: &Path) -> usize {
+    std::fs::read_dir(staging_dir)
+        .ok()
+        .into_iter()
+        .flat_map(|entries| entries.filter_map(Result::ok))
+        .filter(|entry| {
+            entry
+                .file_type()
+                .map(|kind| kind.is_file())
+                .unwrap_or(false)
+        })
+        .count()
+}
+
+fn cleanup_downloaded_stage(stage_path: &Path) {
+    if stage_path.exists() {
+        let _ = std::fs::remove_file(stage_path);
+    }
+}
+
+fn platform_entry<'a>(
+    manifest: &'a serde_json::Value,
+    target: &str,
+    arch: &str,
+) -> Option<&'a serde_json::Value> {
+    let platforms = manifest.get("platforms")?.as_object()?;
+    let requested = format!("{target}-{arch}");
+    platforms
+        .get(&requested)
+        .or_else(|| platforms.get("windows-x86_64"))
+        .or_else(|| platforms.values().next())
+}
+
+fn update_download_address(
+    manifest: &serde_json::Value,
+    platform: Option<&serde_json::Value>,
+) -> Result<String, String> {
+    platform
+        .and_then(|entry| json_string(entry, &["url", "download_url", "downloadAddress"]))
+        .or_else(|| json_string(manifest, &["url", "download_url", "downloadAddress"]))
+        .map(str::to_owned)
+        .ok_or_else(|| "update manifest carries no download address".to_owned())
+}
+
+fn update_fingerprint_from_manifest(
+    manifest: &serde_json::Value,
+    platform: Option<&serde_json::Value>,
+) -> Option<String> {
+    platform
+        .and_then(|entry| {
+            json_string(
+                entry,
+                &[
+                    "expected_fingerprint",
+                    "expectedFingerprint",
+                    "fingerprint",
+                    "sha256",
+                    "sha256_hex",
+                ],
+            )
+        })
+        .or_else(|| {
+            json_string(
+                manifest,
+                &[
+                    "expected_fingerprint",
+                    "expectedFingerprint",
+                    "fingerprint",
+                    "sha256",
+                    "sha256_hex",
+                ],
+            )
+        })
+        .and_then(normalize_update_fingerprint)
+}
+
+fn fetch_bounded_text(
+    client: &reqwest::blocking::Client,
+    url: &str,
+) -> Result<Option<String>, String> {
+    let response = client
+        .get(url)
+        .send()
+        .map_err(|e| format!("site cannot be reached: {e}"))?;
+    if response.status() == reqwest::StatusCode::NO_CONTENT {
+        return Ok(None);
+    }
+    if !response.status().is_success() {
+        return Err(format!("site returned HTTP {}", response.status()));
+    }
+    if response
+        .content_length()
+        .is_some_and(|len| len > u64::try_from(UPDATE_SITE_MAX_BODY_BYTES).unwrap_or(u64::MAX))
+    {
+        return Err("site response is too large".to_owned());
+    }
+    let bytes = response
+        .bytes()
+        .map_err(|e| format!("site response could not be read: {e}"))?;
+    if bytes.len() > UPDATE_SITE_MAX_BODY_BYTES {
+        return Err("site response is too large".to_owned());
+    }
+    String::from_utf8(bytes.to_vec())
+        .map(Some)
+        .map_err(|_| "site response is not UTF-8".to_owned())
+}
+
+fn checksum_url_for_manifest(manifest_url: &str) -> Result<String, String> {
+    let base = reqwest::Url::parse(manifest_url)
+        .map_err(|e| format!("update manifest URL is invalid: {e}"))?;
+    base.join("SHA256SUMS.txt")
+        .map(|url| url.to_string())
+        .map_err(|e| format!("checksum URL is invalid: {e}"))
+}
+
+fn asset_name_from_download_address(download_address: &str) -> Result<String, String> {
+    let parsed = reqwest::Url::parse(download_address)
+        .map_err(|e| format!("download address is invalid: {e}"))?;
+    parsed
+        .path_segments()
+        .and_then(|mut segments| segments.next_back())
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| "download address has no asset name".to_owned())
+}
+
+fn checksum_for_asset(checksums: &str, asset: &str) -> Option<String> {
+    checksums.lines().find_map(|line| {
+        let mut parts = line.split_whitespace();
+        let digest = parts.next()?;
+        let name = parts.next()?.trim_start_matches('*');
+        if parts.next().is_some() || name != asset {
+            return None;
+        }
+        normalize_update_fingerprint(digest)
+    })
+}
+
+fn update_fingerprint_from_checksums(
+    client: &reqwest::blocking::Client,
+    manifest_url: &str,
+    download_address: &str,
+) -> Result<String, String> {
+    let checksums_url = checksum_url_for_manifest(manifest_url)?;
+    let asset = asset_name_from_download_address(download_address)?;
+    let Some(checksums) = fetch_bounded_text(client, &checksums_url)? else {
+        return Err("checksum list returned no content".to_owned());
+    };
+    checksum_for_asset(&checksums, &asset)
+        .ok_or_else(|| format!("SHA256SUMS.txt has no valid entry for {asset}"))
+}
+
+pub fn cmd_osl_check_site_for_update(
+    current_version: String,
+    manifest_url: String,
+    target: String,
+    arch: String,
+) -> SiteUpdateCheckResult {
+    record_activity_on_command_entry();
+    match check_site_for_update(current_version, manifest_url, target, arch) {
+        Ok(result) => result,
+        Err(message) => {
+            tracing::warn!(
+                target: "osl::updater",
+                %message,
+                "[OSL updater] direct site check failed"
+            );
+            SiteUpdateCheckResult::Error { message }
+        }
+    }
+}
+
+fn check_site_for_update(
+    current_version: String,
+    manifest_url: String,
+    target: String,
+    arch: String,
+) -> Result<SiteUpdateCheckResult, String> {
+    let current = parse_update_semver(&current_version)?;
+    let client = reqwest::blocking::Client::builder()
+        .timeout(UPDATE_SITE_HTTP_TIMEOUT)
+        .build()
+        .map_err(|e| format!("update HTTP client could not start: {e}"))?;
+
+    let Some(body) = fetch_bounded_text(&client, &manifest_url)? else {
+        return Ok(SiteUpdateCheckResult::UpToDate {
+            message: "you are up to date".to_owned(),
+        });
+    };
+    let manifest: serde_json::Value =
+        serde_json::from_str(&body).map_err(|e| format!("site returned invalid JSON: {e}"))?;
+    let version = json_string(&manifest, &["version"])
+        .ok_or_else(|| "update manifest carries no version".to_owned())?
+        .to_owned();
+    let offered = parse_update_semver(&version)?;
+    if compare_update_versions(current, offered) != std::cmp::Ordering::Less {
+        return Ok(SiteUpdateCheckResult::UpToDate {
+            message: "you are up to date".to_owned(),
+        });
+    }
+
+    let platform = platform_entry(&manifest, &target, &arch);
+    let download_address = update_download_address(&manifest, platform)?;
+    let expected_fingerprint = update_fingerprint_from_manifest(&manifest, platform).map_or_else(
+        || update_fingerprint_from_checksums(&client, &manifest_url, &download_address),
+        Ok,
+    )?;
+
+    Ok(SiteUpdateCheckResult::UpdateAvailable {
+        version,
+        download_address,
+        expected_fingerprint,
+    })
+}
+
+pub fn cmd_osl_install_site_update(request: SiteUpdateInstallRequest) -> SiteUpdateInstallResult {
+    record_activity_on_command_entry();
+    let (current_version, current_fingerprint) =
+        installed_site_update_identity(&request.install_path, &request.installed_version_path);
+    let mut downloaded_file_count_during = downloaded_file_count(&request.staging_dir);
+
+    let expected = match normalize_update_fingerprint(&request.expected_fingerprint) {
+        Some(expected) => expected,
+        None => {
+            return SiteUpdateInstallResult::Error {
+                message: "expected fingerprint is invalid".to_string(),
+                version: current_version,
+                fingerprint: current_fingerprint,
+                downloaded_file_count_during,
+                downloaded_file_count_after: downloaded_file_count(&request.staging_dir),
+            };
+        }
+    };
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(UPDATE_SITE_HTTP_TIMEOUT)
+        .build()
+    {
+        Ok(client) => client,
+        Err(e) => {
+            return SiteUpdateInstallResult::Error {
+                message: format!("update HTTP client could not start: {e}"),
+                version: current_version,
+                fingerprint: current_fingerprint,
+                downloaded_file_count_during,
+                downloaded_file_count_after: downloaded_file_count(&request.staging_dir),
+            };
+        }
+    };
+    if let Err(e) = std::fs::create_dir_all(&request.staging_dir) {
+        return SiteUpdateInstallResult::Error {
+            message: format!("update staging directory cannot be created: {e}"),
+            version: current_version,
+            fingerprint: current_fingerprint,
+            downloaded_file_count_during,
+            downloaded_file_count_after: downloaded_file_count(&request.staging_dir),
+        };
+    }
+
+    let stage_path = request.staging_dir.join("site-update.download");
+    cleanup_downloaded_stage(&stage_path);
+    let body = match client
+        .get(&request.download_address)
+        .send()
+        .map_err(|e| format!("update file cannot be reached: {e}"))
+        .and_then(|response| {
+            if !response.status().is_success() {
+                return Err(format!("update file returned HTTP {}", response.status()));
+            }
+            if response
+                .content_length()
+                .is_some_and(|len| len > UPDATE_SITE_MAX_ARTIFACT_BYTES)
+            {
+                return Err("update file is too large".to_string());
+            }
+            response
+                .bytes()
+                .map_err(|e| format!("update file could not be read: {e}"))
+        }) {
+        Ok(body) => body,
+        Err(message) => {
+            return SiteUpdateInstallResult::Error {
+                message,
+                version: current_version,
+                fingerprint: current_fingerprint,
+                downloaded_file_count_during,
+                downloaded_file_count_after: downloaded_file_count(&request.staging_dir),
+            };
+        }
+    };
+    if u64::try_from(body.len()).unwrap_or(u64::MAX) > UPDATE_SITE_MAX_ARTIFACT_BYTES {
+        return SiteUpdateInstallResult::Error {
+            message: "update file is too large".to_string(),
+            version: current_version,
+            fingerprint: current_fingerprint,
+            downloaded_file_count_during,
+            downloaded_file_count_after: downloaded_file_count(&request.staging_dir),
+        };
+    }
+    if let Err(e) = std::fs::write(&stage_path, &body) {
+        return SiteUpdateInstallResult::Error {
+            message: format!("update file cannot be staged: {e}"),
+            version: current_version,
+            fingerprint: current_fingerprint,
+            downloaded_file_count_during,
+            downloaded_file_count_after: downloaded_file_count(&request.staging_dir),
+        };
+    }
+    downloaded_file_count_during = downloaded_file_count(&request.staging_dir);
+
+    let actual = bytes_sha256_fingerprint(&body);
+    if actual != expected {
+        cleanup_downloaded_stage(&stage_path);
+        let downloaded_file_count_after = downloaded_file_count(&request.staging_dir);
+        let (version, fingerprint) =
+            installed_site_update_identity(&request.install_path, &request.installed_version_path);
+        return SiteUpdateInstallResult::Refused {
+            message: format!("fingerprint mismatch: expected {expected} actual {actual}"),
+            version,
+            fingerprint,
+            downloaded_file_count_during,
+            downloaded_file_count_after,
+        };
+    }
+
+    if let Some(parent) = request.install_path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            cleanup_downloaded_stage(&stage_path);
+            return SiteUpdateInstallResult::Error {
+                message: format!("install directory cannot be created: {e}"),
+                version: current_version,
+                fingerprint: current_fingerprint,
+                downloaded_file_count_during,
+                downloaded_file_count_after: downloaded_file_count(&request.staging_dir),
+            };
+        }
+    }
+    if let Some(parent) = request.installed_version_path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            cleanup_downloaded_stage(&stage_path);
+            return SiteUpdateInstallResult::Error {
+                message: format!("installed version directory cannot be created: {e}"),
+                version: current_version,
+                fingerprint: current_fingerprint,
+                downloaded_file_count_during,
+                downloaded_file_count_after: downloaded_file_count(&request.staging_dir),
+            };
+        }
+    }
+    if let Err(e) = std::fs::copy(&stage_path, &request.install_path) {
+        cleanup_downloaded_stage(&stage_path);
+        return SiteUpdateInstallResult::Error {
+            message: format!("update file cannot be installed: {e}"),
+            version: current_version,
+            fingerprint: current_fingerprint,
+            downloaded_file_count_during,
+            downloaded_file_count_after: downloaded_file_count(&request.staging_dir),
+        };
+    }
+    cleanup_downloaded_stage(&stage_path);
+    if let Err(e) = std::fs::write(&request.installed_version_path, request.version.as_bytes()) {
+        return SiteUpdateInstallResult::Error {
+            message: format!("installed version cannot be recorded: {e}"),
+            version: current_version,
+            fingerprint: current_fingerprint,
+            downloaded_file_count_during,
+            downloaded_file_count_after: downloaded_file_count(&request.staging_dir),
+        };
+    }
+    let downloaded_file_count_after = downloaded_file_count(&request.staging_dir);
+    let (version, fingerprint) =
+        installed_site_update_identity(&request.install_path, &request.installed_version_path);
+    SiteUpdateInstallResult::Installed {
+        version,
+        fingerprint,
+        downloaded_file_count_during,
+        downloaded_file_count_after,
+    }
+}
 
 /// Primitive view of a `tauri-plugin-updater` `Update`, extracted by
 /// the Tauri wrapper so this crate stays Tauri-free.
@@ -20578,27 +22346,519 @@ fn remove_pending_friend_requests_for_peer(
     Ok(removed)
 }
 
+const SAVED_FRIEND_REQUEST_TTL_MS: u64 = 30 * 24 * 60 * 60 * 1000;
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedFriendRequestDto {
+    pub request_id: String,
+    pub relationship_id: String,
+    pub requester_id: String,
+    pub target_id: String,
+    pub scope_key: String,
+    pub invite_redemption_count: u32,
+    pub state: crate::friend_request::StoredFriendState,
+    pub display_name: String,
+    pub block_state: crate::friend_request::StoredFriendBlockState,
+    pub choices: BTreeMap<String, String>,
+    pub request_fingerprint: String,
+    pub received_at_ms: u64,
+    pub expires_at_ms: u64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedFriendRequestListDto {
+    pub pending: Vec<SavedFriendRequestDto>,
+    pub accepted: Vec<SavedFriendRequestDto>,
+    pub declined: Vec<SavedFriendRequestDto>,
+    pub blocked: Vec<SavedFriendRequestDto>,
+}
+
+impl SavedFriendRequestListDto {
+    pub fn len(&self) -> usize {
+        self.pending.len() + self.accepted.len() + self.declined.len() + self.blocked.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedFriendsTabsQueryDto {
+    pub online: Vec<SavedFriendRequestDto>,
+    pub all: Vec<SavedFriendRequestDto>,
+    pub pending: Vec<SavedFriendRequestDto>,
+    pub blocked: Vec<SavedFriendRequestDto>,
+}
+
+fn saved_friend_request_dir() -> Result<PathBuf, String> {
+    keystore::osl_config_dir().map_err(|e| format!("OSL: friend request dir: {e}"))
+}
+
+fn load_saved_friend_request_file_with_dir(
+    dir: &Path,
+) -> Result<crate::friend_request::FriendRequestFileState, String> {
+    crate::friend_request::load_friend_request_file_state(dir).map_err(|e| format!("OSL: {e}"))
+}
+
+fn save_saved_friend_request_file_with_dir(
+    dir: &Path,
+    file: &crate::friend_request::FriendRequestFileState,
+) -> Result<(), String> {
+    crate::friend_request::save_friend_request_file_state(dir, file)
+        .map_err(|e| format!("OSL: {e}"))
+}
+
+fn friend_request_fingerprint(
+    entry: &crate::friend_request::StoredFriendRequestFileEntry,
+) -> String {
+    let mut hash = Sha256::new();
+    for part in [
+        entry.request_id.as_str(),
+        entry.requester_id.as_str(),
+        entry.target_id.as_str(),
+        entry.scope_key.as_str(),
+    ] {
+        hash.update((part.len() as u64).to_le_bytes());
+        hash.update(part.as_bytes());
+    }
+    hex_lower(&hash.finalize())
+}
+
+fn saved_friend_record_id(local_identity_id: &str, remote_identity_id: &str) -> String {
+    let mut hash = Sha256::new();
+    for part in [local_identity_id, remote_identity_id] {
+        hash.update((part.len() as u64).to_le_bytes());
+        hash.update(part.as_bytes());
+    }
+    format!("friend:{}", hex_lower(&hash.finalize()))
+}
+
+fn saved_friend_record_for_entry<'a>(
+    file: &'a crate::friend_request::FriendRequestFileState,
+    entry: &crate::friend_request::StoredFriendRequestFileEntry,
+) -> Option<&'a crate::friend_request::StoredFriendRecord> {
+    file.friends.iter().find(|friend| {
+        friend.local_identity_id == entry.requester_id
+            && friend.remote_identity_id == entry.target_id
+    })
+}
+
+fn saved_friend_request_dto(
+    file: &crate::friend_request::FriendRequestFileState,
+    entry: &crate::friend_request::StoredFriendRequestFileEntry,
+    state: crate::friend_request::StoredFriendState,
+    block_state: crate::friend_request::StoredFriendBlockState,
+) -> SavedFriendRequestDto {
+    let friend = saved_friend_record_for_entry(file, entry);
+    SavedFriendRequestDto {
+        request_id: entry.request_id.clone(),
+        relationship_id: entry.relationship_id.clone(),
+        requester_id: entry.requester_id.clone(),
+        target_id: entry.target_id.clone(),
+        scope_key: entry.scope_key.clone(),
+        invite_redemption_count: entry.invite_redemption_count,
+        state,
+        display_name: friend
+            .map(|record| record.display_name.clone())
+            .unwrap_or_default(),
+        block_state,
+        choices: friend
+            .map(|record| record.choices.clone())
+            .unwrap_or_default(),
+        request_fingerprint: friend_request_fingerprint(entry),
+        received_at_ms: entry.received_at_ms,
+        expires_at_ms: entry.expires_at_ms,
+    }
+}
+
+fn new_friend_default_choices(state: &AppState) -> BTreeMap<String, String> {
+    state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .behaviour_choices
+        .iter()
+        .map(|(name, choice)| (name.clone(), choice.clone()))
+        .collect()
+}
+
+fn update_saved_friend_record(
+    file: &mut crate::friend_request::FriendRequestFileState,
+    local_identity_id: &str,
+    remote_identity_id: &str,
+    display_name: Option<&str>,
+    state: crate::friend_request::StoredFriendState,
+    block_state: crate::friend_request::StoredFriendBlockState,
+    accepted_choices: Option<BTreeMap<String, String>>,
+) -> Result<(), String> {
+    let display_name = display_name.map(str::trim).filter(|name| !name.is_empty());
+    if let Some(record) = file.friends.iter_mut().find(|friend| {
+        friend.local_identity_id == local_identity_id
+            && friend.remote_identity_id == remote_identity_id
+    }) {
+        let first_accept = record.state != crate::friend_request::StoredFriendState::Accepted
+            && state == crate::friend_request::StoredFriendState::Accepted;
+        record.state = state;
+        record.block_state = block_state;
+        if let Some(display_name) = display_name {
+            record.display_name = display_name.to_string();
+        }
+        if first_accept {
+            if let Some(choices) = accepted_choices {
+                record.choices = choices;
+            }
+        }
+        return Ok(());
+    }
+
+    file.friends
+        .push(crate::friend_request::StoredFriendRecord {
+            record_id: saved_friend_record_id(local_identity_id, remote_identity_id),
+            local_identity_id: local_identity_id.to_string(),
+            remote_identity_id: remote_identity_id.to_string(),
+            state,
+            display_name: display_name
+                .ok_or_else(|| "OSL: friend display name is missing".to_string())?
+                .to_string(),
+            block_state,
+            choices: accepted_choices.unwrap_or_default(),
+        });
+    Ok(())
+}
+
+fn any_saved_request_has_id(
+    file: &crate::friend_request::FriendRequestFileState,
+    request_id: &str,
+) -> bool {
+    file.pending
+        .iter()
+        .chain(file.accepted.iter())
+        .chain(file.declined_or_revoked.iter())
+        .chain(file.blocked.iter())
+        .any(|request| request.request_id == request_id)
+}
+
+fn remove_saved_request_by_id(
+    requests: &mut Vec<crate::friend_request::StoredFriendRequestFileEntry>,
+    request_id: &str,
+) -> Option<crate::friend_request::StoredFriendRequestFileEntry> {
+    let index = requests
+        .iter()
+        .position(|request| request.request_id == request_id)?;
+    Some(requests.remove(index))
+}
+
+fn take_saved_friend_request(
+    file: &mut crate::friend_request::FriendRequestFileState,
+    request_id: &str,
+) -> Option<crate::friend_request::StoredFriendRequestFileEntry> {
+    remove_saved_request_by_id(&mut file.pending, request_id)
+        .or_else(|| remove_saved_request_by_id(&mut file.accepted, request_id))
+        .or_else(|| remove_saved_request_by_id(&mut file.declined_or_revoked, request_id))
+}
+
 pub fn cmd_osl_create_friend_request(
     state: &AppState,
-    peer_discord_id: String,
+    request_id: String,
+    requester_id: String,
+    target_id: String,
+    display_name: String,
     scope_input: crate::scope::ScopeInput,
-) -> Result<SendFriendRequestResult, String> {
-    cmd_osl_send_friend_request(state, peer_discord_id, scope_input)
-}
-
-pub fn cmd_osl_list_friend_requests(
-    _state: &AppState,
-) -> Result<Vec<PendingFriendRequestRecord>, String> {
+) -> Result<SavedFriendRequestDto, String> {
     record_activity_on_command_entry();
-    let dir =
-        keystore::osl_config_dir().map_err(|e| format!("OSL: pending friend request dir: {e}"))?;
-    cmd_osl_list_friend_requests_with_dir(&dir)
+    let _ = state;
+    let dir = saved_friend_request_dir()?;
+    let mut file = load_saved_friend_request_file_with_dir(&dir)?;
+
+    let request_id = request_id.trim();
+    let requester_id = requester_id.trim();
+    let target_id = target_id.trim();
+    let display_name = display_name.trim();
+    if request_id.is_empty()
+        || requester_id.is_empty()
+        || target_id.is_empty()
+        || display_name.is_empty()
+    {
+        return Err("OSL: friend request fields are missing".to_string());
+    }
+    if requester_id == target_id {
+        return Err("OSL: cannot request yourself".to_string());
+    }
+    if any_saved_request_has_id(&file, request_id) {
+        return Err("OSL: friend request already exists".to_string());
+    }
+
+    let scope: crate::scope::Scope = scope_input
+        .try_into()
+        .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
+    let scope_key = scope.storage_key();
+    if file.pending.iter().any(|request| {
+        request.requester_id == requester_id
+            && request.target_id == target_id
+            && request.scope_key == scope_key
+    }) {
+        return Err("OSL: friend request already exists".to_string());
+    }
+    if file.friends.iter().any(|friend| {
+        friend.local_identity_id == requester_id
+            && friend.remote_identity_id == target_id
+            && friend.block_state == crate::friend_request::StoredFriendBlockState::BlockedByLocal
+    }) {
+        return Err("OSL: friend is blocked".to_string());
+    }
+
+    let now_ms = now_unix_secs().max(0) as u64 * 1000;
+    let entry = crate::friend_request::StoredFriendRequestFileEntry {
+        request_id: request_id.to_string(),
+        relationship_id: saved_friend_record_id(requester_id, target_id),
+        requester_id: requester_id.to_string(),
+        target_id: target_id.to_string(),
+        scope_key,
+        invite_redemption_count: 1,
+        received_at_ms: now_ms,
+        expires_at_ms: now_ms + SAVED_FRIEND_REQUEST_TTL_MS,
+    };
+    update_saved_friend_record(
+        &mut file,
+        requester_id,
+        target_id,
+        Some(display_name),
+        crate::friend_request::StoredFriendState::Pending,
+        crate::friend_request::StoredFriendBlockState::NotBlocked,
+        None,
+    )?;
+    file.pending.push(entry.clone());
+    save_saved_friend_request_file_with_dir(&dir, &file)?;
+    Ok(saved_friend_request_dto(
+        &file,
+        &entry,
+        crate::friend_request::StoredFriendState::Pending,
+        crate::friend_request::StoredFriendBlockState::NotBlocked,
+    ))
 }
 
-fn cmd_osl_list_friend_requests_with_dir(
-    dir: &Path,
-) -> Result<Vec<PendingFriendRequestRecord>, String> {
-    load_pending_friend_requests(&pending_friend_requests_path(dir))
+pub fn cmd_osl_list_friend_requests(state: &AppState) -> Result<SavedFriendRequestListDto, String> {
+    record_activity_on_command_entry();
+    let _ = state;
+    let dir = saved_friend_request_dir()?;
+    let file = load_saved_friend_request_file_with_dir(&dir)?;
+    Ok(SavedFriendRequestListDto {
+        pending: file
+            .pending
+            .iter()
+            .map(|entry| {
+                saved_friend_request_dto(
+                    &file,
+                    entry,
+                    crate::friend_request::StoredFriendState::Pending,
+                    crate::friend_request::StoredFriendBlockState::NotBlocked,
+                )
+            })
+            .collect(),
+        accepted: file
+            .accepted
+            .iter()
+            .map(|entry| {
+                saved_friend_request_dto(
+                    &file,
+                    entry,
+                    crate::friend_request::StoredFriendState::Accepted,
+                    crate::friend_request::StoredFriendBlockState::NotBlocked,
+                )
+            })
+            .collect(),
+        declined: file
+            .declined_or_revoked
+            .iter()
+            .map(|entry| {
+                saved_friend_request_dto(
+                    &file,
+                    entry,
+                    crate::friend_request::StoredFriendState::Declined,
+                    crate::friend_request::StoredFriendBlockState::NotBlocked,
+                )
+            })
+            .collect(),
+        blocked: file
+            .blocked
+            .iter()
+            .map(|entry| {
+                saved_friend_request_dto(
+                    &file,
+                    entry,
+                    crate::friend_request::StoredFriendState::Declined,
+                    crate::friend_request::StoredFriendBlockState::BlockedByLocal,
+                )
+            })
+            .collect(),
+    })
+}
+
+pub fn cmd_osl_query_friends_tabs(state: &AppState) -> Result<SavedFriendsTabsQueryDto, String> {
+    record_activity_on_command_entry();
+    let dir = saved_friend_request_dir()?;
+    let file = load_saved_friend_request_file_with_dir(&dir)?;
+    let online_ids = state
+        .guild_list
+        .lock()
+        .expect("guild_list mutex poisoned")
+        .iter()
+        .flat_map(|guild| guild.member_ids.iter().cloned())
+        .collect::<std::collections::HashSet<_>>();
+    let accepted = file
+        .accepted
+        .iter()
+        .map(|entry| {
+            saved_friend_request_dto(
+                &file,
+                entry,
+                crate::friend_request::StoredFriendState::Accepted,
+                crate::friend_request::StoredFriendBlockState::NotBlocked,
+            )
+        })
+        .collect::<Vec<_>>();
+    let online = accepted
+        .iter()
+        .filter(|row| online_ids.contains(&row.target_id))
+        .cloned()
+        .collect::<Vec<_>>();
+    let all = accepted
+        .into_iter()
+        .filter(|row| !online_ids.contains(&row.target_id))
+        .collect::<Vec<_>>();
+    let pending = file
+        .pending
+        .iter()
+        .map(|entry| {
+            saved_friend_request_dto(
+                &file,
+                entry,
+                crate::friend_request::StoredFriendState::Pending,
+                crate::friend_request::StoredFriendBlockState::NotBlocked,
+            )
+        })
+        .collect();
+    let blocked = file
+        .blocked
+        .iter()
+        .map(|entry| {
+            saved_friend_request_dto(
+                &file,
+                entry,
+                crate::friend_request::StoredFriendState::Declined,
+                crate::friend_request::StoredFriendBlockState::BlockedByLocal,
+            )
+        })
+        .collect();
+
+    Ok(SavedFriendsTabsQueryDto {
+        online,
+        all,
+        pending,
+        blocked,
+    })
+}
+
+pub fn cmd_osl_accept_saved_friend_request(
+    state: &AppState,
+    request_id: String,
+) -> Result<SavedFriendRequestDto, String> {
+    record_activity_on_command_entry();
+    let _ = state;
+    let dir = saved_friend_request_dir()?;
+    let mut file = load_saved_friend_request_file_with_dir(&dir)?;
+    let request_id = request_id.trim();
+    let pending_index = file
+        .pending
+        .iter()
+        .position(|request| request.request_id == request_id)
+        .ok_or_else(|| "OSL: friend request is not pending".to_string())?;
+    if file.pending[pending_index].invite_redemption_count != 1 {
+        return Err("OSL: invite already reused".to_string());
+    }
+    let entry = file.pending.remove(pending_index);
+    let choices = new_friend_default_choices(state);
+    update_saved_friend_record(
+        &mut file,
+        &entry.requester_id,
+        &entry.target_id,
+        None,
+        crate::friend_request::StoredFriendState::Accepted,
+        crate::friend_request::StoredFriendBlockState::NotBlocked,
+        Some(choices),
+    )?;
+    file.accepted.push(entry.clone());
+    save_saved_friend_request_file_with_dir(&dir, &file)?;
+    Ok(saved_friend_request_dto(
+        &file,
+        &entry,
+        crate::friend_request::StoredFriendState::Accepted,
+        crate::friend_request::StoredFriendBlockState::NotBlocked,
+    ))
+}
+
+pub fn cmd_osl_decline_saved_friend_request(
+    state: &AppState,
+    request_id: String,
+) -> Result<SavedFriendRequestDto, String> {
+    record_activity_on_command_entry();
+    let _ = state;
+    let dir = saved_friend_request_dir()?;
+    let mut file = load_saved_friend_request_file_with_dir(&dir)?;
+    let request_id = request_id.trim();
+    let entry = remove_saved_request_by_id(&mut file.pending, request_id)
+        .ok_or_else(|| "OSL: friend request is not pending".to_string())?;
+    update_saved_friend_record(
+        &mut file,
+        &entry.requester_id,
+        &entry.target_id,
+        None,
+        crate::friend_request::StoredFriendState::Declined,
+        crate::friend_request::StoredFriendBlockState::NotBlocked,
+        None,
+    )?;
+    file.declined_or_revoked.push(entry.clone());
+    save_saved_friend_request_file_with_dir(&dir, &file)?;
+    Ok(saved_friend_request_dto(
+        &file,
+        &entry,
+        crate::friend_request::StoredFriendState::Declined,
+        crate::friend_request::StoredFriendBlockState::NotBlocked,
+    ))
+}
+
+pub fn cmd_osl_block_saved_friend_request(
+    state: &AppState,
+    request_id: String,
+) -> Result<SavedFriendRequestDto, String> {
+    record_activity_on_command_entry();
+    let _ = state;
+    let dir = saved_friend_request_dir()?;
+    let mut file = load_saved_friend_request_file_with_dir(&dir)?;
+    let request_id = request_id.trim();
+    let entry = take_saved_friend_request(&mut file, request_id)
+        .ok_or_else(|| "OSL: friend request is not pending".to_string())?;
+    update_saved_friend_record(
+        &mut file,
+        &entry.requester_id,
+        &entry.target_id,
+        None,
+        crate::friend_request::StoredFriendState::Declined,
+        crate::friend_request::StoredFriendBlockState::BlockedByLocal,
+        None,
+    )?;
+    file.blocked.push(entry.clone());
+    save_saved_friend_request_file_with_dir(&dir, &file)?;
+    Ok(saved_friend_request_dto(
+        &file,
+        &entry,
+        crate::friend_request::StoredFriendState::Declined,
+        crate::friend_request::StoredFriendBlockState::BlockedByLocal,
+    ))
 }
 
 pub fn cmd_osl_list_blocked_people(_state: &AppState) -> Result<Vec<BlockedPersonRecord>, String> {
@@ -20624,6 +22884,8 @@ pub fn person_blocked(person_id: &str) -> Result<bool, String> {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct TheirSideBurnDto {
+    pub choice: String,
+    pub target_content_id: String,
     pub remote_removal_count: u32,
 }
 
@@ -20669,6 +22931,8 @@ pub fn cmd_osl_burn_their_side_message(
         ));
     }
     Ok(TheirSideBurnDto {
+        choice: "Their Side".to_string(),
+        target_content_id: content_id,
         remote_removal_count: response.deleted_count,
     })
 }
@@ -20686,12 +22950,8 @@ pub fn cmd_osl_add_allowed_place_record(
     config_dir: Option<std::path::PathBuf>,
 ) -> Result<crate::allowed_places::AllowedPlaceRecord, String> {
     record_activity_on_command_entry();
-    let record = crate::allowed_places::AllowedPlaceRecord {
-        app,
-        account,
-        kind,
-        stable_id,
-    };
+    let record =
+        crate::allowed_places::AllowedPlaceRecord::from_parts(app, account, kind, stable_id);
     crate::allowed_places::validate_allowed_place_record(&record)?;
     {
         let mut prefs = state
@@ -21495,6 +23755,40 @@ fn cmd_osl_send_friend_request_with_dir_for_command(
     let dir =
         keystore::osl_config_dir().map_err(|e| format!("OSL: pending friend request dir: {e}"))?;
     cmd_osl_send_friend_request_with_dir(state, peer_discord_id, scope_input, &dir)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ScopeMembershipLocalCopyRestoreDto {
+    pub restored_items: usize,
+    pub live_copy: String,
+    pub previous_copy: String,
+}
+
+/// Rebuild the durable membership local copies from the in-memory oracle.
+///
+/// This is deliberately distinct from the normal writer: if both on-disk
+/// copies are corrupt, ordinary writes refuse so they do not clobber the last
+/// evidence. This named restore command is the explicit operator recovery path.
+pub fn cmd_osl_restore_scope_membership_local_copies(
+    state: &AppState,
+) -> Result<ScopeMembershipLocalCopyRestoreDto, String> {
+    record_activity_on_command_entry();
+    let dir = keystore::osl_config_dir().map_err(|e| format!("membership dir resolve: {e}"))?;
+    let live = dir.join("membership.json");
+    let previous = crate::membership::previous_scope_membership_path(&live);
+    let snapshot = state
+        .scope_membership
+        .lock()
+        .expect("scope_membership mutex poisoned")
+        .clone();
+    crate::membership::restore_scope_membership_local_copies(&live, &snapshot)
+        .map_err(|e| format!("membership local-copy restore: {e}"))?;
+    Ok(ScopeMembershipLocalCopyRestoreDto {
+        restored_items: snapshot.observed_member_count(),
+        live_copy: live.display().to_string(),
+        previous_copy: previous.display().to_string(),
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

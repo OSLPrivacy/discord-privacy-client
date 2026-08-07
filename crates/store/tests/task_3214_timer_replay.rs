@@ -89,6 +89,8 @@ fn put_message(store: &MessageStore, id: &str, plaintext: &str, decrypted_at: i6
             sender_osl_user_id: "task-3214-osl-sender".to_string(),
             plaintext: plaintext.to_string(),
             decrypted_at,
+            reply_parent_id: None,
+            edit_revision: 1,
             burned: false,
         })
         .unwrap();
@@ -109,7 +111,6 @@ fn refusal_reason(outcome: MessageTimerChangeOutcome) -> String {
     match outcome {
         MessageTimerChangeOutcome::Applied(applied) => panic!(
             "stale timer change applied unexpectedly: {} -> {}",
-            "{TEXT_A} is the result that should have been refused: stale timer change applied unexpectedly: {} -> {}",
             applied.before_minutes, applied.after_minutes
         ),
         MessageTimerChangeOutcome::Refused { reason } => reason,

@@ -160,6 +160,8 @@ fn their_side_burn_removes_remote_wrapped_key_and_keeps_local_record() {
             plaintext: "local copy must remain".to_string(),
             decrypted_at: 1_800_000_509,
             burned: false,
+            reply_parent_id: None,
+            edit_revision: 0,
         })
         .expect("seed local message");
     *state.message_store.lock().unwrap() = Some(store);

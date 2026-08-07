@@ -139,14 +139,6 @@ fn check_paid_feature_allowed(
     state: &AppState,
     feature: &'static str,
 ) -> Result<(), TierGateError> {
-/// View-once message creation is paid-only. Opening or receiving view-once
-/// content is intentionally checked elsewhere and remains available to free
-/// recipients.
-pub fn check_view_once_message_creation_allowed(state: &AppState) -> Result<(), TierGateError> {
-    check_paid_feature_allowed(state, "view-once messages")
-}
-
-fn check_paid_feature_allowed(state: &AppState, feature: &str) -> Result<(), TierGateError> {
     if is_paid_equivalent(state) {
         return Ok(());
     }
@@ -162,12 +154,17 @@ fn check_paid_feature_allowed(state: &AppState, feature: &str) -> Result<(), Tie
     })
 }
 
+/// View-once message creation is paid-only. Opening or receiving view-once
+/// content is intentionally checked elsewhere and remains available to free
+/// recipients.
+pub fn check_view_once_message_creation_allowed(state: &AppState) -> Result<(), TierGateError> {
+    check_paid_feature_allowed(state, "view-once messages")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use keystore::{LicenseState, LicenseStateDto};
-    }
-
 
     fn paid_state() -> LicenseStateDto {
         LicenseStateDto {
@@ -300,8 +297,18 @@ mod tests {
         install(&free, free_state());
         let err = check_view_once_create_allowed(&free)
             .expect_err("free user should be blocked from creating view-once");
+        match err {
+            TierGateError::PaidFeatureRequired {
+                feature,
+                raw_license_state,
+            } => {
+                assert_eq!(feature, "view-once messages");
+                assert_eq!(raw_license_state, "Unconfigured");
+            }
+        }
     }
 
+    #[test]
     fn view_once_message_creation_is_paid_only_by_name() {
         let paid = AppState::new();
         install(&paid, paid_state());

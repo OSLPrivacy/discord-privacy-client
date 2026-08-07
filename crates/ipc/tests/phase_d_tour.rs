@@ -119,11 +119,6 @@ fn tour_reset_clears_state() {
     assert_eq!(on_disk.tour, TourState::default());
 }
 
-/// 9-D version bump: writing through any of the new commands stamps
-/// the current version on disk. Legacy v1 files keep their stego_mode but get
-/// the version field bumped on next mutation.
-#[test]
-fn writes_stamp_current_version() {
 /// Version bump: writing through any of the app-preference commands stamps
 /// the current schema version on disk. Legacy v1 files keep their stego_mode but get
 /// the version field bumped on next mutation.

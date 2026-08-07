@@ -39,8 +39,8 @@ pub mod at_rest_boundary;
 pub mod attachment_wire;
 pub mod auto_whitelist_rules;
 pub mod bad_message_rules;
-pub mod build_switch_metadata;
 pub mod both_sides_burn_progress;
+pub mod build_switch_metadata;
 pub mod burned_scopes_file;
 pub mod cipher_store_client;
 pub mod commands;
@@ -111,7 +111,6 @@ pub mod transport;
 // Padmé applies to the stored transport object, outside the AEAD plaintext
 // padding boundary.  Expose it from the shipping IPC crate so the upload path
 // can consume the one canonical implementation as the object envelope lands.
-pub mod auto_whitelist_rules;
 pub mod transport_padding;
 pub mod whitelist;
 pub mod whitelist_rules_store;

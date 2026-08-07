@@ -116,6 +116,8 @@ fn task3179_good_update_keeps_identity_friends_places_and_upd_keep_history() {
                 plaintext: format!("{MESSAGE_MARKER} message {index}"),
                 decrypted_at: 3179 + index as i64,
                 burned: false,
+                reply_parent_id: None,
+                edit_revision: 1,
             })
             .expect("put UPD-KEEP message");
     }

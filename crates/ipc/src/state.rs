@@ -24,20 +24,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use store::MessageStore;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ChannelMessageRecord {
-    pub message_id: String,
-    pub channel_id: String,
-    pub thread_ids: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ChannelThreadRecord {
-    pub thread_id: String,
-    pub channel_id: String,
-    pub parent_message_id: String,
-}
-
 /// Time-to-live for cached sender public keys. Bounded staleness
 /// when a peer rotates their identity key — Phase 5 doesn't have
 /// push-based invalidation, so cached entries can hold an
@@ -190,8 +176,6 @@ pub struct KeyChangeAlert {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChannelMessageRecord {
-    pub message_id: String,
-    pub channel_id: String,
     pub server_id: Option<String>,
     pub message_id: String,
     pub channel_id: String,
@@ -343,13 +327,6 @@ pub struct AppState {
     /// session-local until the OSL Chats storage lane adds durable persistence.
     pub channel_messages: Mutex<HashMap<String, ChannelMessageRecord>>,
 
-    /// Thread records keyed by thread id, each attached to one parent channel
-    /// message and its channel id.
-    /// First-party OSL Chats channel messages that can own local reply
-    /// threads. The persisted message body path stays in `message_store`; this
-    /// table is only the direct command's structural target graph.
-    pub channel_messages: Mutex<HashMap<String, ChannelMessageRecord>>,
-
     /// First-party OSL Chats local thread records, keyed by thread id.
     pub channel_threads: Mutex<HashMap<String, ChannelThreadRecord>>,
 
@@ -379,10 +356,6 @@ pub struct AppState {
     /// settings-window's Bulk Whitelist modal. Not persisted —
     /// repopulated on every Discord reconnect.
     pub friend_ids: Mutex<Vec<String>>,
-
-    /// Session-local conversations that have already consumed the user's
-    /// "once" verification warning choice.
-    pub verification_warning_seen: Mutex<HashSet<String>>,
 
     /// Phase 9-C2: ephemeral list of guilds the user has access to,
     /// each carrying the gateway-loaded subset of members. Pushed
@@ -498,7 +471,6 @@ impl Default for AppState {
                 crate::auto_whitelist_rules::AutoWhitelistRules::default(),
             ),
             friend_ids: Mutex::new(Vec::new()),
-            verification_warning_seen: Mutex::new(HashSet::new()),
             guild_list: Mutex::new(Vec::new()),
             server_defaults: Mutex::new(HashMap::new()),
             server_member_lists: Mutex::new(
@@ -1255,6 +1227,13 @@ mod identity_authority_tests {
         }
     }
 
+    fn use_temp_config_dir(dir: &Path) -> ConfigDirGuard {
+        let serial = crate::test_process_globals::serialize();
+        keystore::set_active_account_dir(None);
+        keystore::set_base_dir_override(Some(dir.to_path_buf()));
+        crate::main_password::set_file_storage_key(None);
+        ConfigDirGuard(serial)
+    }
 
     #[test]
     fn default_state_has_no_identity_authority() {

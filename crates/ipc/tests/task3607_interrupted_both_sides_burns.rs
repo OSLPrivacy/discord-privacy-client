@@ -120,6 +120,8 @@ fn sample(id: &str, sender: &str, body: &str, at: i64) -> StoredMessage {
         plaintext: body.to_string(),
         decrypted_at: at,
         burned: false,
+        reply_parent_id: None,
+        edit_revision: 0,
     }
 }
 

@@ -24,6 +24,7 @@ fn main() {
         account.clone(),
         place.clone(),
         choice.to_owned(),
+        None,
     ) {
         eprintln!("TASK 0152 signal fixture place error: {error}");
         std::process::exit(1);

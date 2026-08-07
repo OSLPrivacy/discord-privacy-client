@@ -16,14 +16,6 @@ fn allowed_count(dir: &Path) -> i64 {
         .expect("count allowed places")
 }
 
-fn stored_record(dir: &Path) -> (String, String, String) {
-    let conn = Connection::open(dir.join("allowed_places.sqlite")).expect("open allowed DB");
-    conn.query_row(
-        "SELECT account, person_name, stable_id FROM allowed_places WHERE person_name = ?1",
-        [FRIEND_LABEL],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-    )
-    .expect("read SABLE-0140 allowed place")
 fn friend_results(dir: &Path) -> Vec<ipc::commands::AllowedPlaceSearchResultDto> {
     cmd_osl_search_allowed_places(dir.to_path_buf(), FRIEND_LABEL.to_string())
         .expect("search allowed places")

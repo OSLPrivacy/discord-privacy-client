@@ -95,6 +95,7 @@ fn server_member_without_allowed_list_entry_reads_and_sends_in_osl_chats() {
         CHANNEL_ID.to_string(),
         "task-1385-outbound".to_string(),
         "self can send in OSL Chats".to_string(),
+        None,
     )
     .expect("server member send path persists without an allowed-list grant");
 

@@ -18,6 +18,8 @@ fn message(id: &str, sender: &str, plaintext: &str, decrypted_at: i64) -> Stored
         plaintext: plaintext.to_string(),
         decrypted_at,
         burned: false,
+        reply_parent_id: None,
+        edit_revision: 1,
     }
 }
 

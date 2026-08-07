@@ -89,9 +89,9 @@ fn email_address_and_domain_rule_lookups_use_distinct_allowed_place_records() {
     assert_eq!(domain_lookup.choice, "never");
     assert_ne!(address_lookup.choice, domain_lookup.choice);
 
-    let address = cmd_osl_new_place(&state, email_address_place()).unwrap();
+    let address = cmd_osl_new_place(&state, email_address_place(), None).unwrap();
     let after_address = allowed_place_rows(dir.path());
-    let domain = cmd_osl_new_place(&state, email_domain_place()).unwrap();
+    let domain = cmd_osl_new_place(&state, email_domain_place(), None).unwrap();
     let after_domain = allowed_place_rows(dir.path());
 
     println!(

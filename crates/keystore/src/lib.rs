@@ -62,23 +62,11 @@ pub use account_ownership_proof::{
 pub use burn::{canonical_burn_bytes, sign_burn, BurnScope, BURN_DOMAIN};
 pub use burn_alert::{sign_burn_alert, verify_burn_alert, BurnAlertPayload, BURN_ALERT_DOMAIN};
 pub use client::{
-    BurnResponse,
-    ControlInboxItem,
-    ControlInboxPostResponse,
-    IdentityBundleError,
-    KeyServerClient,
-    LicenseRedeemResponse,
-    LicenseValidateResponse,
-    LiveServerRevisionReport,
-    PrekeyBundleOpk,
-    PrekeyBundleResponse,
-    PubkeysResponse,
-    RegisterResponse,
-    ReplenishResponse,
-    WrappedKeyOpenClaimResponse,
-    WrappedKeyPostResponse,
+    validate_peer_bundle, BurnResponse, ControlInboxItem, ControlInboxPostResponse,
+    IdentityBundleError, KeyServerClient, LicenseRedeemResponse, LicenseValidateResponse,
+    LiveServerRevisionReport, PrekeyBundleOpk, PrekeyBundleResponse, PubkeysResponse,
+    RegisterResponse, ReplenishResponse, WrappedKeyOpenClaimResponse, WrappedKeyPostResponse,
     WrappedKeyResponse,
-    validate_peer_bundle,
 };
 pub use duress::{
     build_partial_duress_handlers, build_production_duress_config_handlers,

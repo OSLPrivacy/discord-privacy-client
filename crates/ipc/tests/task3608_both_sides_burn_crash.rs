@@ -312,6 +312,7 @@ fn upload_copy(
                 single_use: false,
                 display_duration_seconds: None,
                 expires_at: "2099-01-01T00:00:00.000Z".to_owned(),
+                expiry_seconds: None,
             },
         )
         .expect("upload marked wrapped-key copy");

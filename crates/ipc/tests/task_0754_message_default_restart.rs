@@ -58,6 +58,7 @@ fn task_0754_direct_plan_reports_saved_message_defaults_after_restart() {
         AppPreferencesDto {
             stego_mode: StegoMode::Mode1,
             message_defaults: saved.clone(),
+            rn_wire_policy_requested: None,
         },
         Some(dir.path().to_path_buf()),
     )

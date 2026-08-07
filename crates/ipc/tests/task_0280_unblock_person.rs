@@ -105,7 +105,7 @@ fn task_0280_unblocking_one_named_person_leaves_no_friendship_or_allowed_places(
     )
     .unwrap();
 
-    let blocked_before = cmd_osl_list_blocked_people().unwrap();
+    let blocked_before = cmd_osl_list_blocked_people(&state).unwrap();
     assert_eq!(blocked_before.len(), 2);
 
     let unblocked = cmd_osl_unblock_person(
@@ -115,7 +115,7 @@ fn task_0280_unblocking_one_named_person_leaves_no_friendship_or_allowed_places(
     )
     .unwrap();
 
-    let blocked_after = cmd_osl_list_blocked_people().unwrap();
+    let blocked_after = cmd_osl_list_blocked_people(&state).unwrap();
     assert_eq!(blocked_after.len(), 1);
     assert!(blocked_after
         .iter()

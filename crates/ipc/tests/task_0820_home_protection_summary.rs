@@ -104,6 +104,8 @@ fn task_0820_direct_home_summary_returns_all_four_facts_from_saved_state() {
             account: "task-0820-owner".to_string(),
             kind: "direct_message".to_string(),
             stable_id: format!("telegram:task-0820-owner:direct_message:{sam_id}"),
+            place_name: sam_id.clone(),
+            person_name: sam_id.clone(),
         },
         Some(dir.path().to_path_buf()),
     )

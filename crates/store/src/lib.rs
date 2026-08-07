@@ -1866,7 +1866,6 @@ impl MessageStore {
         Ok(())
     }
 
-
     /// Stable diagnostic fingerprint of one burned row's stored bytes.
     ///
     /// This does not expose plaintext identifiers; the row is selected through

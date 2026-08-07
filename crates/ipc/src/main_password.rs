@@ -2622,9 +2622,6 @@ mod password_policy_tests {
         write_lockout(dir, &lock).unwrap();
     }
 
-    fn gate_attempt_label(result: GatePasswordAttemptResult) -> &'static str {
-    }
-
     fn gate_attempt_result_label(result: GatePasswordAttemptResult) -> &'static str {
         match result {
             GatePasswordAttemptResult::Main(_) => "main",
@@ -2633,6 +2630,10 @@ mod password_policy_tests {
             GatePasswordAttemptResult::Wrong { .. } => "wrong",
             GatePasswordAttemptResult::Duress { .. } => "duress",
         }
+    }
+
+    fn gate_attempt_label(result: GatePasswordAttemptResult) -> &'static str {
+        gate_attempt_result_label(result)
     }
 
     #[test]

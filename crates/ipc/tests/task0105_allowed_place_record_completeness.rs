@@ -1,5 +1,5 @@
 use ipc::allowed_places::{
-    add_allowed_place_record, count_allowed_place_records, get_allowed_place_record,
+    add_allowed_place_record, count_allowed_place_records, read_allowed_place_record,
     AllowedPlaceRecord,
 };
 use rusqlite::Connection;
@@ -7,11 +7,12 @@ use tempfile::tempdir;
 
 fn record(place_id: &str, display_name: &str) -> AllowedPlaceRecord {
     AllowedPlaceRecord {
-        app_kind: "discord".to_string(),
-        place_kind: "direct_message".to_string(),
-        place_id: place_id.to_string(),
-        display_name: Some(display_name.to_string()),
-        found_at_unix_secs: 1_900_000_105,
+        app: "discord".to_string(),
+        account: "local-0105".to_string(),
+        kind: "direct_message".to_string(),
+        stable_id: format!("discord:local-0105:direct_message:{place_id}"),
+        place_name: display_name.to_string(),
+        person_name: display_name.to_string(),
     }
 }
 
@@ -19,19 +20,20 @@ fn stored_record_bytes(app_data_dir: &std::path::Path) -> Vec<u8> {
     let conn = Connection::open(app_data_dir.join("allowed_places.sqlite")).expect("open store");
     let mut stmt = conn
         .prepare(
-            "SELECT app_kind, place_kind, place_id, display_name, found_at_unix_secs \
-             FROM allowed_places ORDER BY id",
+            "SELECT app, account, kind, stable_id, place_name, person_name \
+             FROM allowed_places ORDER BY stable_id",
         )
         .expect("prepare byte-stable read");
     let rows = stmt
         .query_map([], |row| {
             Ok(format!(
-                "{}\0{}\0{}\0{}\0{}\n",
+                "{}\0{}\0{}\0{}\0{}\0{}\n",
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
-                row.get::<_, Option<String>>(3)?.unwrap_or_default(),
-                row.get::<_, i64>(4)?
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?
             ))
         })
         .expect("query byte-stable records");
@@ -49,28 +51,20 @@ fn incomplete_allowed_place_records_are_refused_without_mutating_saved_records()
 
     let marble = record("marble-0105", "MARBLE-0105");
     add_allowed_place_record(&app_data_dir, &marble).expect("seed MARBLE-0105");
-    let readable =
-        get_allowed_place_record(&app_data_dir, "discord", "direct_message", "marble-0105")
-            .expect("read MARBLE-0105")
-            .expect("MARBLE-0105 exists");
+    let readable = read_allowed_place_record(&app_data_dir, &marble.stable_id)
+        .expect("read MARBLE-0105")
+        .expect("MARBLE-0105 exists");
     let before_count = count_allowed_place_records(&app_data_dir).expect("count after seed");
-    println!(
-        "TASK0105 seed.readable={}",
-        readable.display_name.as_deref().unwrap_or("")
-    );
+    println!("TASK0105 seed.readable={}", readable.place_name);
     println!("TASK0105 count.before={before_count}");
 
     let place = record("place-0105", "PLACE-0105");
     add_allowed_place_record(&app_data_dir, &place).expect("add PLACE-0105");
-    let complete =
-        get_allowed_place_record(&app_data_dir, "discord", "direct_message", "place-0105")
-            .expect("read PLACE-0105")
-            .expect("PLACE-0105 exists");
+    let complete = read_allowed_place_record(&app_data_dir, &place.stable_id)
+        .expect("read PLACE-0105")
+        .expect("PLACE-0105 exists");
     let complete_count = count_allowed_place_records(&app_data_dir).expect("count after add");
-    println!(
-        "TASK0105 complete_add.name={}",
-        complete.display_name.as_deref().unwrap_or("")
-    );
+    println!("TASK0105 complete_add.name={}", complete.place_name);
     println!("TASK0105 count.after_complete={complete_count}");
 
     assert_eq!(readable, marble);
@@ -81,30 +75,44 @@ fn incomplete_allowed_place_records_are_refused_without_mutating_saved_records()
     let saved_before_bad_calls = stored_record_bytes(&app_data_dir);
     let bad_cases = [
         (
-            "app_kind",
+            "app",
             AllowedPlaceRecord {
-                app_kind: String::new(),
+                app: String::new(),
                 ..place.clone()
             },
         ),
         (
-            "place_kind",
+            "account",
             AllowedPlaceRecord {
-                place_kind: String::new(),
+                account: String::new(),
                 ..place.clone()
             },
         ),
         (
-            "place_id",
+            "kind",
             AllowedPlaceRecord {
-                place_id: String::new(),
+                kind: String::new(),
                 ..place.clone()
             },
         ),
         (
-            "display_name",
+            "stable_id",
             AllowedPlaceRecord {
-                display_name: None,
+                stable_id: String::new(),
+                ..place.clone()
+            },
+        ),
+        (
+            "place_name",
+            AllowedPlaceRecord {
+                place_name: "bad\0place".to_string(),
+                ..place.clone()
+            },
+        ),
+        (
+            "person_name",
+            AllowedPlaceRecord {
+                person_name: "bad\0person".to_string(),
                 ..place.clone()
             },
         ),
@@ -116,14 +124,12 @@ fn incomplete_allowed_place_records_are_refused_without_mutating_saved_records()
         let count_after_bad =
             count_allowed_place_records(&app_data_dir).expect("count after refused add");
         let saved_after_bad = stored_record_bytes(&app_data_dir);
-        let marble_after =
-            get_allowed_place_record(&app_data_dir, "discord", "direct_message", "marble-0105")
-                .expect("read MARBLE-0105 after refusal")
-                .expect("MARBLE-0105 still exists");
-        let place_after =
-            get_allowed_place_record(&app_data_dir, "discord", "direct_message", "place-0105")
-                .expect("read PLACE-0105 after refusal")
-                .expect("PLACE-0105 still exists");
+        let marble_after = read_allowed_place_record(&app_data_dir, &marble.stable_id)
+            .expect("read MARBLE-0105 after refusal")
+            .expect("MARBLE-0105 still exists");
+        let place_after = read_allowed_place_record(&app_data_dir, &place.stable_id)
+            .expect("read PLACE-0105 after refusal")
+            .expect("PLACE-0105 still exists");
         let bytes_unchanged = saved_after_bad == saved_before_bad_calls;
 
         println!("TASK0105 bad_call.changed_field={field}");
@@ -132,7 +138,7 @@ fn incomplete_allowed_place_records_are_refused_without_mutating_saved_records()
         println!("TASK0105 bad_call.records_byte_for_byte_unchanged={bytes_unchanged}");
 
         assert!(
-            error.contains(field),
+            error.to_string().contains(field),
             "error {error:?} must name changed field {field}"
         );
         assert_eq!(count_after_bad, 2);

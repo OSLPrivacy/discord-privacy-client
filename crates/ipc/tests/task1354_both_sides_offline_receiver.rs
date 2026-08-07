@@ -163,6 +163,8 @@ fn make_copy(
             plaintext: mark.to_owned(),
             decrypted_at: 1_901_354_000,
             burned: false,
+            reply_parent_id: None,
+            edit_revision: 1,
         })
         .expect("seed marked message in named copy");
     *state

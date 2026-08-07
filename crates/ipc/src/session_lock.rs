@@ -34,11 +34,10 @@
 //! not reopen the window. Otherwise any background command could hold a stale
 //! session open forever without a human present.
 
+use crate::AppState;
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
-
-use crate::AppState;
 
 /// Idle window before the session locks itself. Same 15 minutes the
 /// password-gate timer used; `docs/design/unlock-and-duress.md` specifies
@@ -126,14 +125,6 @@ fn idle_window() -> Duration {
     Duration::from_secs(SESSION_IDLE_LOCK_SECONDS)
 }
 
-fn idle_window_for_state(state: &AppState) -> Option<Duration> {
-    state
-        .app_preferences
-        .lock()
-        .expect("app_preferences mutex poisoned")
-        .idle_lock_time_choice
-        .seconds()
-        .map(Duration::from_secs)
 fn idle_window_for_choice(choice: crate::app_preferences::IdleLockTimeChoice) -> Option<Duration> {
     choice.seconds().map(Duration::from_secs)
 }
@@ -182,21 +173,6 @@ pub fn idle_lock_is_due_for_state_at(state: &AppState, now: Instant) -> bool {
 
 fn idle_lock_is_due_with_window_at(window: Option<Duration>, now: Instant) -> bool {
     let Some(window) = window else {
-        return false;
-    };
-    let slot = last_activity_slot()
-        .lock()
-        .expect("session idle clock mutex poisoned");
-    match *slot {
-        Some(last) => now.saturating_duration_since(last) >= window,
-        None => false,
-    }
-}
-
-/// True when the idle clock is running and this state's configured idle window
-/// has already elapsed. `Never` deliberately returns false.
-pub fn idle_lock_is_due_for_state_at(state: &AppState, now: Instant) -> bool {
-    let Some(window) = idle_window_for_state(state) else {
         return false;
     };
     let slot = last_activity_slot()
@@ -573,8 +549,6 @@ fn reopen_message_store(state: &AppState, account_dir: &Path) -> bool {
 mod tests {
     use super::*;
     use std::time::Duration;
-    }
-
 
     fn reset_clock() {
         disarm_idle_lock();

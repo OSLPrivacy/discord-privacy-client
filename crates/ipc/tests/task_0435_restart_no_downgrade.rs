@@ -123,6 +123,7 @@ fn task_0435_restart_keeps_no_downgrade_state() {
         CHANNEL_ID.to_string(),
         MESSAGE_ID.to_string(),
         String::from_utf8(opened.plaintext).expect("plaintext utf8"),
+        None,
     )
     .expect("persist sent outbound");
 
@@ -163,6 +164,7 @@ fn task_0435_restart_keeps_no_downgrade_state() {
             CHANNEL_ID.to_string(),
             WEAK_MESSAGE_ID.to_string(),
             "TASK0435 weaker send must not persist".to_string(),
+            None,
         );
     }
 

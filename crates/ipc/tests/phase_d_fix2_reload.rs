@@ -64,12 +64,7 @@ fn reload_repopulates_app_preferences_from_disk() {
         next_generation_message_policy: Default::default(),
         ask_before_irreversible_actions:
             ipc::app_preferences::AskBeforeIrreversibleActionsChoice::On,
-        ..Default::default()
-        auto_whitelist_rules: Default::default(),
         message_defaults: Default::default(),
-        ..Default::default()
-        ask_before_irreversible_actions:
-            ipc::app_preferences::AskBeforeIrreversibleActionsChoice::On,
         ..Default::default()
     };
     write_app_preferences(&dir.path().join("app_preferences.json"), &prefs).unwrap();
@@ -349,12 +344,7 @@ fn reload_overwrites_bootstrap_defaults() {
         next_generation_message_policy: Default::default(),
         ask_before_irreversible_actions:
             ipc::app_preferences::AskBeforeIrreversibleActionsChoice::On,
-        ..Default::default()
-        auto_whitelist_rules: Default::default(),
         message_defaults: Default::default(),
-        ..Default::default()
-        ask_before_irreversible_actions:
-            ipc::app_preferences::AskBeforeIrreversibleActionsChoice::On,
         ..Default::default()
     };
     write_app_preferences(&dir.path().join("app_preferences.json"), &prefs_on_disk).unwrap();

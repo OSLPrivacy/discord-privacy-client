@@ -46,8 +46,9 @@ fn task_0182_whitelist_data_survives_full_restart() {
 
     let saved_rule = cmd_osl_save_auto_whitelist_rule(
         &state,
-        AutoWhitelistAppKind::Chat,
-        AutoWhitelistChoice::OnlyIfAFriend,
+        "chat".to_owned(),
+        AutoWhitelistChoice::OnlyIfAFriend.label().to_owned(),
+        None,
     )
     .unwrap();
 
@@ -100,7 +101,10 @@ fn task_0182_whitelist_data_survives_full_restart() {
 
     let restart_rule =
         cmd_osl_query_auto_whitelist_rule(&restart, AutoWhitelistAppKind::Chat).unwrap();
-    assert_eq!(restart_rule.saved_choice, Some(saved_rule.choice));
+    assert_eq!(
+        restart_rule.saved_choice,
+        Some(AutoWhitelistChoice::OnlyIfAFriend)
+    );
 
     let restart_relation = cmd_osl_list_all_whitelists(&restart)
         .unwrap()
@@ -134,7 +138,7 @@ fn task_0182_whitelist_data_survives_full_restart() {
     );
     println!(
         "TASK0182_RULE app_kind=chat saved_choice={} restart_choice={}",
-        saved_rule.choice.label(),
+        saved_rule.choice,
         restart_rule.saved_choice.unwrap().label()
     );
     println!(

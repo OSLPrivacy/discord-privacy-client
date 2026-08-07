@@ -1,8 +1,8 @@
 //! Task 0224: block a person.
 
 use ipc::commands::{
-    cmd_osl_block_friend_request, cmd_osl_create_friend_request, cmd_osl_list_blocked_people,
-    cmd_osl_list_friend_requests, FriendRequestDecision,
+    cmd_osl_block_friend_request, cmd_osl_list_blocked_people, cmd_osl_list_friend_requests,
+    cmd_osl_send_friend_request,
 };
 use ipc::peer_map::{PeerEntry, WhitelistEntry};
 use ipc::scope::Scope;
@@ -63,16 +63,21 @@ fn friend_request_state() -> AppState {
 }
 
 fn block_peer(state: &AppState, scope: &Scope) {
-    let created = cmd_osl_create_friend_request(state, BLOCKED_PEER_DID.to_string(), scope.into())
+    let created = cmd_osl_send_friend_request(state, BLOCKED_PEER_DID.to_string(), scope.into())
         .expect("setup pending request before blocking");
     assert_eq!(created.pending.peer_discord_id, BLOCKED_PEER_DID);
     let blocked =
-        cmd_osl_block_friend_request(state, BLOCKED_PEER_DID.to_string(), scope.into()).unwrap();
-    assert_eq!(
-        blocked.decision,
-        FriendRequestDecision::RevokedAcceptedGrant
-    );
-    assert!(blocked.revoked_grant);
+        cmd_osl_block_friend_request(state, BLOCKED_PEER_DID.to_string(), scope.into(), None)
+            .unwrap();
+    assert_eq!(blocked.pending_removed, 1);
+    assert_eq!(blocked.friendship_state, "blocked");
+    assert!(state
+        .peer_map
+        .lock()
+        .unwrap()
+        .get(BLOCKED_PEER_DID)
+        .map(|entry| entry.outgoing_whitelists.is_empty())
+        .unwrap_or(true));
 }
 
 #[test]
@@ -98,14 +103,11 @@ fn blocked_query_contains_person_and_future_request_is_refused() {
     );
     assert_eq!(blocked_person.state, "Blocked");
 
-    let request_err = match cmd_osl_create_friend_request(
-        &state,
-        BLOCKED_PEER_DID.to_string(),
-        (&scope).into(),
-    ) {
-        Ok(_) => panic!("blocked peer must not be able to create a new request"),
-        Err(err) => err,
-    };
+    let request_err =
+        match cmd_osl_send_friend_request(&state, BLOCKED_PEER_DID.to_string(), (&scope).into()) {
+            Ok(_) => panic!("blocked peer must not be able to create a new request"),
+            Err(err) => err,
+        };
     let pending_after = cmd_osl_list_friend_requests(&state).unwrap();
     println!(
         "TASK_0224_NEW_REQUEST_FROM_BLOCKED err=\"{}\" pending_count={}",
@@ -127,7 +129,7 @@ fn blocked_future_request_probe_exits_1_when_refused() {
 
     block_peer(&state, &scope);
 
-    match cmd_osl_create_friend_request(&state, BLOCKED_PEER_DID.to_string(), (&scope).into()) {
+    match cmd_osl_send_friend_request(&state, BLOCKED_PEER_DID.to_string(), (&scope).into()) {
         Err(err) if err == "OSL: friend request peer is blocked" => {
             let _ = writeln!(
                 io::stderr(),

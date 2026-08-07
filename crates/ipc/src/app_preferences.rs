@@ -25,29 +25,16 @@
 //! whether the OSL window follows whichever app is in front. Missing legacy
 //! files load as off.
 
-use serde::{
-    Deserialize,
-    Serialize,
-};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::str::FromStr;
-use std::collections::{
-    BTreeMap,
-    HashMap,
-};
-use std::collections::BTreeMap;
 
 pub const DEFAULT_LANGUAGE_CHOICE: &str = "en";
 
 pub fn default_language_choice() -> String {
     DEFAULT_LANGUAGE_CHOICE.to_string()
 }
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::path::Path;
-use std::str::FromStr;
 
 /// Active stego envelope. Mode 0 is the production `DPC0::<b64>`
 /// path; Mode 1 is the multi-message `DPC1::<sentences>` cover
@@ -275,20 +262,6 @@ impl StartWithWindowsChoice {
         match self {
             Self::On => "on",
             Self::Off => "off",
-/// Default reach granted to a newly added friend.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum NewFriendAccountReach {
-    #[default]
-    ApprovedChatsOnly,
-    AllSharedChats,
-}
-
-impl NewFriendAccountReach {
-    pub fn as_value(self) -> &'static str {
-        match self {
-            Self::ApprovedChatsOnly => "approved_chats_only",
-            Self::AllSharedChats => "all_shared_chats",
         }
     }
 }
@@ -302,15 +275,6 @@ impl FromStr for StartWithWindowsChoice {
             "off" => Ok(Self::Off),
             _ => Err(format!(
                 "OSL: unknown start-with-Windows choice {raw:?}; valid choices: on, off"
-impl FromStr for NewFriendAccountReach {
-    type Err = String;
-
-    fn from_str(raw: &str) -> Result<Self, Self::Err> {
-        match raw.trim().to_ascii_lowercase().replace(['-', ' '], "_").as_str() {
-            "approved_chats_only" => Ok(Self::ApprovedChatsOnly),
-            "all_shared_chats" => Ok(Self::AllSharedChats),
-            _ => Err(format!(
-                "OSL: unknown new-friend account reach {raw:?}; valid choices: approved_chats_only, all_shared_chats"
             )),
         }
     }
@@ -383,24 +347,6 @@ impl IdleLockTimeChoice {
             Self::Never => "never",
             Self::AfterSeconds(60) => "one_minute",
             Self::AfterSeconds(_) => "seconds",
-/// Whether new-friend verification warnings are shown by default.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub enum NewFriendVerificationWarnings {
-    #[default]
-    #[serde(rename = "always", alias = "enabled")]
-    Always,
-    #[serde(rename = "only for new people")]
-    OnlyForNewPeople,
-    #[serde(rename = "never", alias = "disabled")]
-    Never,
-}
-
-impl NewFriendVerificationWarnings {
-    pub fn as_value(self) -> &'static str {
-        match self {
-            Self::Always => "always",
-            Self::OnlyForNewPeople => "only for new people",
-            Self::Never => "never",
         }
     }
 }
@@ -446,28 +392,11 @@ impl FollowActiveAppChoice {
         match self {
             Self::On => "on",
             Self::Off => "off",
-impl FromStr for NewFriendVerificationWarnings {
-    type Err = String;
-
-    fn from_str(raw: &str) -> Result<Self, Self::Err> {
-        match raw
-            .trim()
-            .to_ascii_lowercase()
-            .replace(['-', '_'], " ")
-            .as_str()
-        {
-            "always" | "enabled" => Ok(Self::Always),
-            "only for new people" => Ok(Self::OnlyForNewPeople),
-            "never" | "disabled" => Ok(Self::Never),
-            _ => Err(format!(
-                "OSL: unknown warning choice {raw:?}; valid choices: always, only for new people, never"
-            )),
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppPreferences {
     #[serde(default)]
     pub version: u32,
@@ -494,12 +423,23 @@ pub struct AppPreferences {
     #[serde(default)]
     pub auto_whitelist_rules: HashMap<String, crate::auto_whitelist_rules::AutoWhitelistChoice>,
     #[serde(default)]
+    pub bad_message_rules: HashMap<String, crate::bad_message_rules::BadMessageRule>,
+    #[serde(default)]
+    pub new_friend_defaults: NewFriendDefaults,
+    #[serde(default)]
+    pub allowed_place_records: BTreeMap<String, crate::allowed_places::AllowedPlaceRecord>,
+    #[serde(default)]
+    pub next_generation_message_policy: NextGenerationMessagePolicy,
+    #[serde(default)]
+    pub message_defaults: MessageDefaults,
+    #[serde(default)]
     pub privacy_level: PrivacyLevel,
     #[serde(default)]
     pub privacy_level_rule_sets: HashMap<String, PrivacyLevelRuleSet>,
     #[serde(default)]
     pub verification_warning: VerificationWarningChoice,
-    pub auto_whitelist_rules: HashMap<String, crate::auto_whitelist_rules::AutoWhitelistChoice>,
+    #[serde(default)]
+    pub behaviour_choices: HashMap<String, String>,
 }
 
 impl Default for AppPreferences {
@@ -517,24 +457,20 @@ impl Default for AppPreferences {
             follow_active_app_choice: FollowActiveAppChoice::default(),
             language: default_language_choice(),
             auto_whitelist_rules: HashMap::new(),
+            bad_message_rules: HashMap::new(),
+            new_friend_defaults: NewFriendDefaults::default(),
+            allowed_place_records: BTreeMap::new(),
+            next_generation_message_policy: NextGenerationMessagePolicy::default(),
+            message_defaults: MessageDefaults::default(),
             privacy_level: PrivacyLevel::default(),
             privacy_level_rule_sets: HashMap::new(),
             verification_warning: VerificationWarningChoice::default(),
+            behaviour_choices: HashMap::new(),
         }
     }
 }
 
 pub const APP_PREFERENCES_VERSION: u32 = 5;
-    pub auto_whitelist_rules: HashMap<String, crate::auto_whitelist_rules::AutoWhitelistRule>,
-    #[serde(default)]
-    pub new_friend_account_reach: NewFriendAccountReach,
-    #[serde(default)]
-    pub new_friend_auto_whitelist: crate::auto_whitelist_rules::AutoWhitelistRule,
-    #[serde(default)]
-    pub new_friend_verification_warnings: NewFriendVerificationWarnings,
-}
-
-pub const APP_PREFERENCES_VERSION: u32 = 3;
 
 pub fn load_app_preferences(path: &Path) -> AppPreferences {
     let Ok(blob) = std::fs::read(path) else {
@@ -551,7 +487,8 @@ pub fn load_app_preferences(path: &Path) -> AppPreferences {
 }
 
 pub fn write_app_preferences(path: &Path, prefs: &AppPreferences) -> Result<(), String> {
-    let body = serialized_app_preferences_preserving_unknown_fields(path, prefs)?;
+    let body = serde_json::to_vec_pretty(prefs)
+        .map_err(|e| format!("OSL: serialize app_preferences: {e}"))?;
     let out = crate::main_password::maybe_encrypt(&body)
         .map_err(|e| format!("OSL: encrypt app_preferences: {e}"))?;
     let tmp = path.with_extension("json.tmp");
@@ -794,6 +731,17 @@ pub fn normalize_behaviour_choice_value(value: &str) -> Result<String, String> {
     Ok(value.to_string())
 }
 
+/// Saved defaults applied by friend-onboarding flows.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NewFriendDefaults {
+    #[serde(default)]
+    pub account_reach: NewFriendAccountReach,
+    #[serde(default)]
+    pub auto_whitelist: crate::auto_whitelist_rules::AutoWhitelistChoice,
+    #[serde(default)]
+    pub verification_warnings: NewFriendVerificationWarnings,
+}
+
 pub const DEFAULT_MESSAGE_BURN_SCOPE: &str = "chat";
 pub const DEFAULT_MESSAGE_TIMER_SECONDS: u32 = crate::scope_ttl_file::DEFAULT_TTL_SECONDS;
 pub const DEFAULT_VIEW_ONCE_LENGTH_SECONDS: u32 = 30;
@@ -809,15 +757,4 @@ fn default_view_once_length_seconds() -> u32 {
 
 fn default_cover_writing() -> String {
     DEFAULT_COVER_WRITING.to_owned()
-}
-
-/// Saved defaults applied by friend-onboarding flows.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct NewFriendDefaults {
-    #[serde(default)]
-    pub account_reach: NewFriendAccountReach,
-    #[serde(default)]
-    pub auto_whitelist: crate::auto_whitelist_rules::AutoWhitelistChoice,
-    #[serde(default)]
-    pub verification_warnings: NewFriendVerificationWarnings,
 }

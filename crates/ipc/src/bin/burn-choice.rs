@@ -1,4 +1,3 @@
-use ipc::commands::cmd_osl_burn_sender_message_records_choice;
 use ipc::commands::{
     cmd_osl_burn_sender_message_records_choice, cmd_osl_chat_burn_sender_message_records_choice,
 };
@@ -13,9 +12,6 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let Some(scope_choice) = args.first() else {
         eprintln!("usage: burn-choice <scope> --keyserver-url <url> [--message-id <id> ...]");
-        return ExitCode::from(2);
-    };
-
         eprintln!(
             "       burn-choice chat-burn --open-chat-id <id> --scope <scope> --keyserver-url <url>"
         );
@@ -167,6 +163,8 @@ fn run_both_sides(
                 plaintext: format!("TASK0513 selected sender record {}", index + 1),
                 decrypted_at: 1_900_513_000 + i64::try_from(index).unwrap_or(0),
                 burned: false,
+                reply_parent_id: None,
+                edit_revision: 0,
             })
             .map_err(|error| format!("OSL: seed selected record: {error}"))?;
     }
@@ -188,7 +186,6 @@ fn run_both_sides(
     Ok(())
 }
 
-fn unique_store_dir() -> std::path::PathBuf {
 fn run_chat_burn(
     open_chat_id: &str,
     selected_scope: &str,
@@ -231,6 +228,8 @@ fn run_chat_burn(
                 plaintext: (*plaintext).to_owned(),
                 decrypted_at: 1_900_525_000 + i64::try_from(index).unwrap_or(0),
                 burned: false,
+                reply_parent_id: None,
+                edit_revision: 0,
             })
             .map_err(|error| format!("OSL: seed open chat sender record: {error}"))?;
     }
@@ -257,6 +256,8 @@ fn run_chat_burn(
                 plaintext: plaintext.to_owned(),
                 decrypted_at: 1_900_525_100,
                 burned: false,
+                reply_parent_id: None,
+                edit_revision: 0,
             })
             .map_err(|error| format!("OSL: seed excluded record: {error}"))?;
     }
@@ -293,9 +294,5 @@ fn unique_store_dir_with_label(label: &str) -> std::path::PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
         .unwrap_or(0);
-    std::env::temp_dir().join(format!(
-        "osl-task0513-burn-choice-{}-{nanos}",
-        std::process::id()
-    ))
     std::env::temp_dir().join(format!("osl-task-{label}-{}-{nanos}", std::process::id(),))
 }

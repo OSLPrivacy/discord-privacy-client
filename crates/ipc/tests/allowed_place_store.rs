@@ -1,55 +1,3 @@
-use ipc::allowed_places::{add_allowed_place_record, AllowedPlaceRecord};
-use rusqlite::Connection;
-
-#[test]
-fn adding_two_allowed_places_leaves_direct_store_count_two() {
-    let tmp = tempfile::tempdir().unwrap();
-
-    let first =
-        AllowedPlaceRecord::discord_direct_message("900000000000000001", "900000000000000003");
-    let second =
-        AllowedPlaceRecord::discord_direct_message("900000000000000001", "900000000000000004");
-
-    add_allowed_place_record(tmp.path(), &first).unwrap();
-    add_allowed_place_record(tmp.path(), &second).unwrap();
-
-    let conn = Connection::open(tmp.path().join("allowed_places.sqlite")).unwrap();
-    let count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM allowed_places", [], |row| row.get(0))
-        .unwrap();
-    println!("TASK0101 allowed_place_store.count={count}");
-
-    assert_eq!(count, 2);
-use ipc::allowed_places::{
-    add_allowed_place_record, allowed_place_is_allowed, allowed_places_db_path,
-    list_allowed_place_records, remove_allowed_place_record, AllowedPlaceQuery, AllowedPlaceRecord,
-use ipc::allowed_places::{
-    add_allowed_place_record, allowed_places_db_path, is_allowed_place_record,
-    remove_allowed_place_record, AllowedPlaceRecord,
-};
-use ipc::commands::{
-    cmd_osl_trace_allowed_place_protected_message_path, compare_allowed_place_direction_state,
-    ProtectedPlaceAction,
-};
-use rusqlite::Connection;
-use tempfile::TempDir;
-
-#[test]
-fn add_remove_list_and_allowed_queries_use_the_same_store() {
-    let dir = TempDir::new().unwrap();
-    let saved = AllowedPlaceRecord::discord_direct_message("account-0107", "place-0107");
-    let other = AllowedPlaceRecord::discord_direct_message("account-0107", "place-other");
-
-    let added = add_allowed_place_record(dir.path(), saved.clone()).unwrap();
-    assert_eq!(added, saved);
-
-    let query = AllowedPlaceQuery::from(saved.clone());
-    let other_query = AllowedPlaceQuery::from(other);
-    assert!(allowed_place_is_allowed(dir.path(), &query).unwrap());
-    assert!(!allowed_place_is_allowed(dir.path(), &other_query).unwrap());
-
-    let listed = list_allowed_place_records(dir.path()).unwrap();
-    assert_eq!(listed, vec![saved.clone()]);
 use ipc::allowed_places::{
     add_allowed_place_record, allowed_places_db_path, is_allowed_place_record,
     read_allowed_place_record, remove_allowed_place_record, AllowedPlaceRecord,
@@ -63,8 +11,6 @@ use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::Path;
-use ipc::allowed_places::{add_allowed_place_record, allowed_places_db_path, AllowedPlaceRecord};
-use rusqlite::Connection;
 use tempfile::TempDir;
 
 #[test]
@@ -86,18 +32,6 @@ fn adding_two_allowed_places_leaves_direct_store_count_two() {
     let count: i64 = conn
         .query_row("SELECT COUNT(*) FROM allowed_places", [], |row| row.get(0))
         .unwrap();
-    println!("TASK0107 ipc_store_after_add_count={count}");
-    assert_eq!(count, 1);
-
-    let removed = remove_allowed_place_record(dir.path(), &saved.stable_id).unwrap();
-    assert!(removed);
-    assert!(!allowed_place_is_allowed(dir.path(), &query).unwrap());
-    let listed_after_remove = list_allowed_place_records(dir.path()).unwrap();
-    println!(
-        "TASK0107 ipc_store_removed={removed} list_after_remove_count={}",
-        listed_after_remove.len()
-    );
-    assert!(listed_after_remove.is_empty());
 
     println!("TASK0101 allowed_place_store.count={count}");
     assert_eq!(count, 2);
@@ -221,7 +155,10 @@ fn store_state(dir: &Path) -> StoreState {
         .query_row("SELECT COUNT(*) FROM allowed_places", [], |row| row.get(0))
         .unwrap();
     let mut stmt = conn
-        .prepare("SELECT app, account, kind, stable_id FROM allowed_places ORDER BY stable_id ASC")
+        .prepare(
+            "SELECT app, account, kind, stable_id, place_name, person_name \
+             FROM allowed_places ORDER BY stable_id ASC",
+        )
         .unwrap();
     let rows: Vec<String> = stmt
         .query_map([], |row| {
@@ -275,6 +212,8 @@ fn removing_one_allowed_place_by_stable_id_leaves_the_other_unchanged() {
                 account: row.get(1)?,
                 kind: row.get(2)?,
                 stable_id: row.get(3)?,
+                place_name: row.get(4)?,
+                person_name: row.get(5)?,
             })
         })
         .unwrap()
