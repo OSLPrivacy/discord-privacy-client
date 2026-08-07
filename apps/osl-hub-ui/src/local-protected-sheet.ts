@@ -1,4 +1,5 @@
 import type { LocalLoopbackContext } from "./adapters";
+import { COVER_MESSAGE_BOX_RULE, PROTECTED_TEXT_BOX_RULE } from "./protected-box-shortcuts";
 import type { SendMode } from "./state";
 
 export type LocalProtectedPane = "write" | "open";
@@ -137,14 +138,14 @@ export function localProtectedSheetMarkup(model: LocalProtectedSheetModel, sendM
   const resultHint = manualMode ? "Select and place this encrypted text yourself, or copy only by pressing the button." : "Review the destination before you send.";
   const write = `<form id="local-protect-form" class="local-protected-form">
       <label for="local-protected-draft">Message</label>
-      <textarea id="local-protected-draft" maxlength="1000" data-max-bytes="${maxCopyPayloadBytes}" rows="5" autocomplete="off" spellcheck="true" aria-describedby="local-protected-draft-bytes" placeholder="Write privately">${escapeHtml(boundedDraft.value)}</textarea>
+      <textarea id="local-protected-draft" maxlength="1000" data-max-bytes="${maxCopyPayloadBytes}" data-osl-protected-box-rule="${PROTECTED_TEXT_BOX_RULE}" rows="5" autocomplete="off" spellcheck="true" aria-describedby="local-protected-draft-bytes" placeholder="Write privately">${escapeHtml(boundedDraft.value)}</textarea>
       <small id="local-protected-draft-bytes" class="local-draft-bytes" aria-live="polite">${draftLimitNotice}</small>
       <div class="local-protected-options"><label><span>Opening authorization expires after</span><select id="local-protected-ttl">${ttlOptions}</select></label><label class="local-view-once"><span>View once</span><input id="local-protected-view-once" type="checkbox" ${model.viewOnce ? "checked" : ""}/><small>Display is bounded on cooperating OSL clients; cameras are outside OSL's control.</small></label></div>
       <small class="local-authorization-truth">After expiry, OSL refuses to open this text on this device.</small>
       <button class="local-primary" type="submit" ${model.busy ? "disabled" : ""}>${model.busy ? "Encrypting…" : primaryLabel}</button>
       <small class="local-send-truth">${escapeHtml(sendTruth)}</small>
     </form>
-    ${model.capsule ? `<section class="local-capsule-result"><label for="local-capsule-output">Encrypted text</label><textarea id="local-capsule-output" rows="4" readonly>${escapeHtml(model.capsule)}</textarea><button class="local-copy" id="local-capsule-copy" type="button">${escapeHtml(resultCopyLabel)}</button><small>${escapeHtml(resultHint)}</small></section>` : ""}`;
+    ${model.capsule ? `<section class="local-capsule-result"><label for="local-capsule-output">Encrypted text</label><textarea id="local-capsule-output" rows="4" readonly data-osl-cover-message-box="${COVER_MESSAGE_BOX_RULE}">${escapeHtml(model.capsule)}</textarea><button class="local-copy" id="local-capsule-copy" type="button">${escapeHtml(resultCopyLabel)}</button><small>${escapeHtml(resultHint)}</small></section>` : ""}`;
 
   const open = `<form id="local-open-form" class="local-protected-form">
       <label for="local-capsule-input">Encrypted text</label>

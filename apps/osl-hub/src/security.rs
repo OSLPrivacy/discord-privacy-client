@@ -2217,7 +2217,12 @@ pub fn revoke_friend_scope_entry(
     // `manual_peer_scope_storage_key`. The peer-map search below can only ever
     // see a person-level DM entry keyed `dm`, so without this branch the
     // roster's own "revoke" button matched nothing and the grant survived.
-    if storage_key == manual_peer_scope_storage_key(service_id, account_id, &person_id)? {
+    let expected_manual_storage_key =
+        manual_peer_scope_storage_key(service_id, account_id, &person_id)?;
+    if storage_key.starts_with("dm:manual-scope-") && storage_key != expected_manual_storage_key {
+        return Err("OSL friend key mismatch".to_owned());
+    }
+    if storage_key == expected_manual_storage_key {
         if prefs
             .manual_approved_scope_people
             .get(&storage_key)
@@ -6589,6 +6594,13 @@ mod tests {
         }
     }
 
+    fn choice_by_alias<'a>(people: &'a [PersonDto], alias: &str) -> &'a PersonDto {
+        people
+            .iter()
+            .find(|person| person.alias.as_deref() == Some(alias))
+            .expect("fixture person is readable by alias")
+    }
+
     #[test]
     fn no_picture_friend_returns_stable_coloured_initial_fallback() {
         let harness = FileBackedSecurityHarness::new("no-picture-fallback-0234");
@@ -7982,6 +7994,122 @@ mod tests {
             dm_scope_input(scope_id)
         )
         .unwrap());
+    }
+
+    #[test]
+    fn account_reach_edit_key_refuses_swapped_friend_id() {
+        let harness = FileBackedSecurityHarness::new("task-0243-account-reach-isolation");
+        let core = HubCoreState::default();
+        install_self_identity(&core);
+        let security = HubSecurityState::default();
+        let (person_a, mut metadata_a, peer_a) = test_friend(43);
+        let (person_b, mut metadata_b, peer_b) = test_friend(44);
+        metadata_a.alias = Some("Friend A".to_owned());
+        metadata_b.alias = Some("Friend B".to_owned());
+        write_encrypted_json(
+            &harness.path().join(PEOPLE_FILE),
+            &PeopleFile {
+                version: PEOPLE_SCHEMA_VERSION,
+                people: BTreeMap::from([
+                    (person_a.clone(), metadata_a),
+                    (person_b.clone(), metadata_b),
+                ]),
+            },
+        )
+        .unwrap();
+        let peers =
+            ipc::peer_map::PeerMap::from([(person_a.clone(), peer_a), (person_b.clone(), peer_b)]);
+        write_encrypted_json(&harness.path().join("peer_map.json"), &peers).unwrap();
+        *core.osl.peer_map.lock().unwrap() = peers;
+        write_encrypted_json(
+            &harness.path().join(SECURITY_PREFS_FILE),
+            &SecurityPreferences::default(),
+        )
+        .unwrap();
+
+        let scope_a = manual_peer_scope_id("osl-chat", "osl-main", &person_a).unwrap();
+        let scope_b = manual_peer_scope_id("osl-chat", "osl-main", &person_b).unwrap();
+        set_manual_peer_scope_permission(
+            &core,
+            &security,
+            "osl-chat",
+            "osl-main",
+            person_a.clone(),
+            dm_scope_input(scope_a.clone()),
+            true,
+        )
+        .unwrap();
+        set_manual_peer_scope_permission(
+            &core,
+            &security,
+            "osl-chat",
+            "osl-main",
+            person_b.clone(),
+            dm_scope_input(scope_b),
+            true,
+        )
+        .unwrap();
+
+        let before = list_people(&core).unwrap();
+        let before_a = choice_by_alias(&before, "Friend A");
+        let before_b = choice_by_alias(&before, "Friend B");
+        assert_eq!(before.len(), 2);
+        assert_eq!(before_a.whitelist_count, 1);
+        assert_eq!(before_b.whitelist_count, 1);
+        let friend_a_edit_key = before_a.whitelisted_scopes[0].storage_key.clone();
+        let friend_b_fingerprint_before = before_b.whitelisted_scopes[0].storage_key.clone();
+        println!(
+            "TASK0243 before readable_choices=Friend A:on:{},Friend B:on:{} reach_count={}",
+            friend_a_edit_key,
+            friend_b_fingerprint_before,
+            before.len()
+        );
+
+        let good = revoke_friend_scope_entry(
+            &core,
+            &security,
+            "osl-chat",
+            "osl-main",
+            person_a.clone(),
+            friend_a_edit_key.clone(),
+        )
+        .unwrap();
+        let after_good = list_people(&core).unwrap();
+        assert_eq!(good.alias.as_deref(), Some("Friend A"));
+        assert_eq!(good.whitelist_count, 0);
+        assert_eq!(after_good.len(), 2);
+        println!(
+            "TASK0243 good_edit friend={} state=off reach_count={}",
+            good.alias.as_deref().unwrap_or("Friend A"),
+            after_good.len()
+        );
+
+        let changed_friend_id = revoke_friend_scope_entry(
+            &core,
+            &security,
+            "osl-chat",
+            "osl-main",
+            person_b.clone(),
+            friend_a_edit_key,
+        )
+        .unwrap_err();
+        assert_eq!(changed_friend_id, "OSL friend key mismatch");
+        let after_attack = list_people(&core).unwrap();
+        assert_eq!(after_attack.len(), 2);
+        println!(
+            "TASK0243 changed_friend_id refusal=\"{}\" reach_count={}",
+            changed_friend_id,
+            after_attack.len()
+        );
+
+        let after_b = choice_by_alias(&after_attack, "Friend B");
+        assert_eq!(after_b.whitelist_count, 1);
+        let friend_b_fingerprint_after = after_b.whitelisted_scopes[0].storage_key.clone();
+        assert_eq!(friend_b_fingerprint_after, friend_b_fingerprint_before);
+        println!(
+            "TASK0243 friend_b state=on fingerprint_before={} fingerprint_after={}",
+            friend_b_fingerprint_before, friend_b_fingerprint_after
+        );
     }
 
     /// Read the burn identifiers the outbox actually persisted, so the ack half

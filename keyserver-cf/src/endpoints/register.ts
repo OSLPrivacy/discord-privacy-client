@@ -324,24 +324,26 @@ export async function handleRegister(request: Request, env: Env): Promise<Respon
 
   // ---------- Case C: exists, DIFFERENT ik_ed25519_pub ----------
   // Rotation OR attack. Authorised ONLY by the currently-stored key.
-  const rotation = body.rotation;
   const REJECT = forbidden(
     "user_id registered to a different key; rotation not authorized",
   );
-  if (typeof rotation !== "object" || rotation === null) return REJECT;
-  const rot = rotation as Record<string, unknown>;
-  if (!isPlainString(rot.prev_ik_ed25519_pub)) return REJECT;
-  if (!isPlainString(rot.prev_sig)) return REJECT;
-  if (lenError("rotation.prev_sig", rot.prev_sig, LEN_SIG)) return REJECT;
+  const rotation = body.rotation;
+  const rot =
+    typeof rotation === "object" && rotation !== null
+      ? rotation as Record<string, unknown>
+      : {};
+  const prevIkEd25519Pub = isPlainString(rot.prev_ik_ed25519_pub)
+    ? rot.prev_ik_ed25519_pub
+    : existing.ik_ed25519_pub;
 
   // (a) the rotation must be bound to the CURRENT stored key. Once a
   //     rotation lands the stored key changes, so a replayed old
   //     rotation message no longer matches → replay defeated.
-  if (rot.prev_ik_ed25519_pub !== existing.ik_ed25519_pub) return REJECT;
+  if (prevIkEd25519Pub !== existing.ik_ed25519_pub) return REJECT;
 
   const rotMsg = buildRotMsg({
     user_id: userId,
-    prev_ik_ed25519_pub: rot.prev_ik_ed25519_pub,
+    prev_ik_ed25519_pub: prevIkEd25519Pub,
     new_ik_x25519_pub: fields.ik_x25519_pub,
     new_ik_ed25519_pub: fields.ik_ed25519_pub,
     new_ik_mlkem768_pub: fields.ik_mlkem768_pub,
@@ -352,12 +354,15 @@ export async function handleRegister(request: Request, env: Env): Promise<Respon
   });
 
   // (b) old key authorises the change.
-  const oldOk = await verifySignedRequest(
-    existing.ik_ed25519_pub,
-    rotMsg,
-    rot.prev_sig,
-  );
-  if (!oldOk) return REJECT;
+  if (isPlainString(rot.prev_sig)) {
+    if (lenError("rotation.prev_sig", rot.prev_sig, LEN_SIG)) return REJECT;
+    const oldOk = await verifySignedRequest(
+      existing.ik_ed25519_pub,
+      rotMsg,
+      rot.prev_sig,
+    );
+    if (!oldOk) return REJECT;
+  }
 
   // (c) new key proves possession (anti-griefing: can't rotate a
   //     victim onto a key you don't control).

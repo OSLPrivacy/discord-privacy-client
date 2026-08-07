@@ -40,6 +40,29 @@ fn scope_storage_key(scope_input: &ScopeInput) -> Result<String, String> {
     Ok(scope.storage_key())
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OslChatBurnChoice {
+    YourSide,
+    TheirSide,
+    BothSides,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OslChatBurnResult {
+    pub choice: OslChatBurnChoice,
+    pub messages_before: usize,
+    pub messages_after: usize,
+    pub rows_destroyed: usize,
+    pub your_rows_destroyed: usize,
+    pub their_rows_destroyed: usize,
+    pub others_rows_destroyed: usize,
+    pub others_messages_hidden: bool,
+    pub local_cleanup_complete: bool,
+    pub recipient_copies_deleted: bool,
+}
+
 fn persist_osl_chat_inbound(
     core: &HubCoreState,
     channel_id: String,
@@ -5669,6 +5692,28 @@ pub fn load_osl_chat_visible_records(
     broker: &HubBrokerState,
     filter: OslChatHistoryVisibilityFilter,
 ) -> Result<OslChatVisibleRecordsResult, String> {
+    load_osl_chat_history_with_visibility(core, broker, false)
+}
+
+pub fn filter_osl_chat_history_visibility(
+    rows: Vec<ipc::commands::StoredMessageDto>,
+    self_osl_user_id: &str,
+    hide_others_messages: bool,
+) -> Vec<ipc::commands::StoredMessageDto> {
+    if hide_others_messages {
+        rows.into_iter()
+            .filter(|row| row.sender_osl_user_id == self_osl_user_id)
+            .collect()
+    } else {
+        rows
+    }
+}
+
+pub fn load_osl_chat_history_with_visibility(
+    core: &HubCoreState,
+    broker: &HubBrokerState,
+    hide_others_messages: bool,
+) -> Result<Vec<ipc::commands::StoredMessageDto>, String> {
     let context_token = broker.active_osl_chat_context_token()?;
     let manual = broker.manual_peer_for(&context_token)?;
     let context = broker.context_for(&context_token)?;
@@ -5690,6 +5735,84 @@ pub fn load_osl_chat_visible_records(
         filter,
         Some(200),
     )
+    .map(|rows| {
+        filter_osl_chat_history_visibility(rows, &context.self_osl_id, hide_others_messages)
+    })
+}
+
+pub fn burn_osl_chat_history(
+    core: &HubCoreState,
+    broker: &HubBrokerState,
+    choice: OslChatBurnChoice,
+    hide_others_messages: bool,
+) -> Result<OslChatBurnResult, String> {
+    let context_token = broker.active_osl_chat_context_token()?;
+    let manual = broker.manual_peer_for(&context_token)?;
+    let context = broker.context_for(&context_token)?;
+    if context.service_id != "osl-chat" || context.account_id != "osl-main" {
+        return Err("OSL Chat burn requires the active OSL Chat context".to_owned());
+    }
+    let channel_id = scope_storage_key(&manual.scope)?;
+    let guard = core
+        .osl
+        .message_store
+        .lock()
+        .map_err(|_| "OSL Chat history is unavailable".to_owned())?;
+    let Some(store) = guard.as_ref() else {
+        return Ok(OslChatBurnResult {
+            choice,
+            messages_before: 0,
+            messages_after: 0,
+            rows_destroyed: 0,
+            your_rows_destroyed: 0,
+            their_rows_destroyed: 0,
+            others_rows_destroyed: 0,
+            others_messages_hidden: hide_others_messages,
+            local_cleanup_complete: true,
+            recipient_copies_deleted: false,
+        });
+    };
+    let messages_before = store
+        .count_live_by_channel(&channel_id, None)
+        .map_err(|error| format!("OSL Chat history: {error}"))?;
+    let mut your_rows_destroyed = 0usize;
+    let mut their_rows_destroyed = 0usize;
+    match choice {
+        OslChatBurnChoice::YourSide => {
+            your_rows_destroyed = store
+                .wipe_wrapped_keys_in_scope("dm", &channel_id, Some(&context.self_osl_id))
+                .map_err(|error| format!("OSL Chat burn: {error}"))?;
+        }
+        OslChatBurnChoice::TheirSide => {
+            their_rows_destroyed = store
+                .wipe_wrapped_keys_in_scope("dm", &channel_id, Some(&manual.peer_osl_user_id))
+                .map_err(|error| format!("OSL Chat burn: {error}"))?;
+        }
+        OslChatBurnChoice::BothSides => {
+            your_rows_destroyed = store
+                .wipe_wrapped_keys_in_scope("dm", &channel_id, Some(&context.self_osl_id))
+                .map_err(|error| format!("OSL Chat burn: {error}"))?;
+            their_rows_destroyed = store
+                .wipe_wrapped_keys_in_scope("dm", &channel_id, Some(&manual.peer_osl_user_id))
+                .map_err(|error| format!("OSL Chat burn: {error}"))?;
+        }
+    }
+    let messages_after = store
+        .count_live_by_channel(&channel_id, None)
+        .map_err(|error| format!("OSL Chat history: {error}"))?;
+    let rows_destroyed = your_rows_destroyed.saturating_add(their_rows_destroyed);
+    Ok(OslChatBurnResult {
+        choice,
+        messages_before,
+        messages_after,
+        rows_destroyed,
+        your_rows_destroyed,
+        their_rows_destroyed,
+        others_rows_destroyed: 0,
+        others_messages_hidden: hide_others_messages,
+        local_cleanup_complete: messages_before.saturating_sub(messages_after) == rows_destroyed,
+        recipient_copies_deleted: false,
+    })
 }
 
 pub fn query_osl_chat_visible_records(
@@ -11243,6 +11366,8 @@ mod tests {
                 .unwrap_or(0);
             let mut responses = VecDeque::from(responses);
             while !responses.is_empty() || floor_responses_remaining > 0 {
+            let mut trailing_floor_responses = usize::from(floor_identity.is_some());
+            while !responses.is_empty() || trailing_floor_responses != 0 {
                 let (mut stream, _) = listener.accept().expect("accept control-inbox request");
                 stream
                     .set_read_timeout(Some(Duration::from_secs(5)))
@@ -11293,6 +11418,7 @@ mod tests {
                         "unexpected sender-filter floor request"
                     );
                     floor_responses_remaining -= 1;
+                    trailing_floor_responses = trailing_floor_responses.saturating_sub(1);
                     let (user_id, ed25519_public) = floor_identity
                         .as_ref()
                         .expect("test floor response has a bound identity");
@@ -12248,6 +12374,8 @@ mod tests {
         let identity = keystore::generate_identity("recipient".to_owned());
         let sender_a = "peer-a";
 
+        let expected_refusal = "control-inbox sender-filter capability downgrade refused";
+
         let (legacy_url, legacy_requests, legacy_server) =
             spawn_control_inbox_test_server_with_floor(
                 &identity,
@@ -12261,6 +12389,8 @@ mod tests {
                 .to_string()
                 .contains("control-inbox sender-filter capability downgrade refused"),
             "legacy capability absence is an explicit refusal"
+            legacy_error.to_string().contains(expected_refusal),
+            "legacy capability downgrade is an explicit refusal"
         );
         assert_health_request(&legacy_requests.recv().expect("capture legacy health"));
         assert_sender_filter_floor_request(
@@ -12325,6 +12455,7 @@ mod tests {
             error
                 .to_string()
                 .contains("control-inbox sender-filter capability downgrade refused"),
+            error.to_string().contains(expected_refusal),
             "rollback is refused before any unfiltered fallback GET"
         );
         assert_health_request(&rollback_requests.recv().expect("capture rollback health"));

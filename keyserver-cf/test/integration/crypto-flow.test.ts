@@ -433,6 +433,61 @@ describe("anonymous node-verified lifetime Pro flow", () => {
     });
   });
 
+  it("records nineteen simultaneous already handled retries without issuing extra codes", async () => {
+    const keys = await deliveryKeys();
+    const invoice = await quote("btc", keys.publicKey);
+    const subscriptionId = `crypto_${invoice.invoice_id}`;
+    const evidence = await settlementEvidence(invoice, "btc", 2);
+    const headers = await settlementHeaders(evidence);
+    const body = JSON.stringify(evidence);
+    const codeCount = async (): Promise<number> => {
+      const row = await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM licenses WHERE subscription_id = ?",
+      ).bind(subscriptionId).first<{ count: number }>();
+      return row?.count ?? 0;
+    };
+
+    const before = await codeCount();
+    let releaseRequests!: () => void;
+    const releaseGate = new Promise<void>((resolve) => {
+      releaseRequests = resolve;
+    });
+    const send = async (): Promise<{ ok?: unknown; duplicate?: unknown; status?: unknown }> => {
+      await releaseGate;
+      const response = await handleCryptoSettlement(new Request(
+        "http://test/v1/internal/crypto/settle",
+        { method: "POST", headers, body },
+      ), checkoutEnv(), undefined, redemptionReady);
+      expect(response.status).toBe(200);
+      return await response.json() as { ok?: unknown; duplicate?: unknown; status?: unknown };
+    };
+
+    const attempts = Array.from({ length: 20 }, () => send());
+    releaseRequests();
+    const responses = await Promise.all(attempts);
+    const afterAll = await codeCount();
+    const attemptRecords = responses.map((response) => {
+      if (response.ok === true && response.duplicate === false && response.status === "delivery_ready") {
+        return "created";
+      }
+      if (response.ok === true && response.duplicate === true && response.status === "delivery_ready") {
+        return "already handled";
+      }
+      return "unexpected";
+    });
+    const created = attemptRecords.filter((record) => record === "created").length;
+    const alreadyHandled = attemptRecords.filter((record) => record === "already handled").length;
+
+    expect(before).toBe(0);
+    expect(afterAll).toBe(1);
+    expect(created).toBe(1);
+    expect(alreadyHandled).toBe(19);
+    expect(attemptRecords.every((record) => record !== "unexpected")).toBe(true);
+    console.error(
+      `TASK 3739 extends 3196: code count before=${before}; after all twenty=${afterAll}; results=${attemptRecords.join(", ")}; created results=${created}; already handled results=${alreadyHandled}`,
+    );
+  });
+
   it("delivers the encrypted activation once and destroys it after acknowledgement", async () => {
     const commerceBefore = await getCommerceSummary(env.DB);
     const keys = await deliveryKeys();

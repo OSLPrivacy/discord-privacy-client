@@ -6,9 +6,9 @@
 //! deliberately absent here: T6-R5 owns the one post-persistence ACK point.
 //!
 //! The burn outbox is encrypted at rest, bounded, restart-safe, and refuses a
-//! full queue rather than evicting a live delete.  Its `manage_cap` is carried
-//! verbatim through reconnect retries: it is a non-expiring bearer capability,
-//! not a signed command that may be re-stamped.
+//! full queue rather than evicting a live delete. On the deployed bridge path
+//! the fetch token is also the delete token, so reconnect retries preserve that
+//! exact derived token rather than inventing a separate manage permission.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -20,19 +20,28 @@ pub const MAX_PENDING_BURNS: usize = 256;
 const MAX_QUEUE_FILE_BYTES: u64 = 256 * 1024;
 const QUEUE_VERSION: u8 = 1;
 
-/// The authority which arrived in an authenticated pointer.  The driver never
-/// derives, logs, or re-signs either capability.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The bridge authority recovered from an authenticated shipping pointer.
+///
+/// The deployed service assigns the store id and accepts one token derived from
+/// the carrier seed. It does not return or honor the retired
+/// `fetch_cap`/`manage_cap` split.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PointerArrival {
     pub blob_id: String,
-    pub fetch_cap: Vec<u8>,
-    pub manage_cap: Vec<u8>,
+    pub fetch_seed: [u8; ipc::prose_token::BRIDGE_SEED_BYTES],
+}
+
+impl PointerArrival {
+    pub fn fetch_token(&self) -> [u8; ipc::cipher_store_client::FETCH_TOKEN_BYTES] {
+        ipc::prose_token::bridge_fetch_token_from_seed(&self.fetch_seed)
+    }
 }
 
 /// Network operations supplied by T6-R2's cipher-store client adapter.
 pub trait CipherStoreTransport {
-    fn fetch(&mut self, blob_id: &str, fetch_cap: &[u8]) -> Result<Vec<u8>, String>;
-    fn burn(&mut self, blob_id: &str, manage_cap: &[u8]) -> Result<(), String>;
+    fn fetch(&mut self, blob_id: &str, fetch_token: &[u8]) -> Result<Vec<u8>, String>;
+    fn burn(&mut self, blob_id: &str, fetch_token: &[u8]) -> Result<(), String>;
 }
 
 /// Trusted local persistence.  It must authenticate/decrypt and durably write
@@ -87,8 +96,9 @@ impl<T: CipherStoreTransport, S: LocalMessageStore> EagerFetchDriver<T, S> {
         let Some(permit) = self.reservations.reserve(&pointer.blob_id)? else {
             return Ok(false);
         };
+        let fetch_token = pointer.fetch_token();
         let ciphertext = crate::eager_fetch_retry::retry_reserved_fetch(|| {
-            self.transport.fetch(&pointer.blob_id, &pointer.fetch_cap)
+            self.transport.fetch(&pointer.blob_id, &fetch_token)
         })?;
         self.store
             .decrypt_and_persist(&pointer.blob_id, &ciphertext)?;
@@ -104,7 +114,8 @@ impl<T: CipherStoreTransport, S: LocalMessageStore> EagerFetchDriver<T, S> {
             return Err("offline burn queue is full; no live delete was evicted".to_owned());
         }
         self.store.destroy_local(&pointer.blob_id)?;
-        self.burns.enqueue(&pointer.blob_id, &pointer.manage_cap)
+        let fetch_token = pointer.fetch_token();
+        self.burns.enqueue(&pointer.blob_id, &fetch_token)
     }
 
     /// Retry every durable record after reconnect.  A failure retains that
@@ -113,7 +124,7 @@ impl<T: CipherStoreTransport, S: LocalMessageStore> EagerFetchDriver<T, S> {
         let pending = self.burns.pending()?;
         let mut drained = 0;
         for burn in pending {
-            self.transport.burn(&burn.blob_id, &burn.manage_cap)?;
+            self.transport.burn(&burn.blob_id, &burn.fetch_token)?;
             self.burns.remove(&burn.blob_id)?;
             drained += 1;
         }
@@ -195,9 +206,10 @@ impl Drop for FetchPermit {
 // already part of the public surface; leaving it private only broke the
 // integration tests that consume that method.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PendingBurn {
     blob_id: String,
-    manage_cap: Vec<u8>,
+    fetch_token: Vec<u8>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -248,7 +260,7 @@ impl EncryptedBurnQueue {
         if document
             .pending
             .iter()
-            .any(|entry| entry.blob_id.is_empty() || entry.manage_cap.is_empty())
+            .any(|entry| entry.blob_id.is_empty() || entry.fetch_token.is_empty())
         {
             return Err("offline burn queue has an invalid record".to_owned());
         }
@@ -276,8 +288,8 @@ impl EncryptedBurnQueue {
             || document.pending.len() < MAX_PENDING_BURNS)
     }
 
-    pub fn enqueue(&self, blob_id: &str, manage_cap: &[u8]) -> Result<(), String> {
-        if blob_id.is_empty() || manage_cap.is_empty() {
+    pub fn enqueue(&self, blob_id: &str, fetch_token: &[u8]) -> Result<(), String> {
+        if blob_id.is_empty() || fetch_token.is_empty() {
             return Err("offline burn record is invalid".to_owned());
         }
         let mut document = self.load()?;
@@ -286,10 +298,10 @@ impl EncryptedBurnQueue {
             .iter_mut()
             .find(|entry| entry.blob_id == blob_id)
         {
-            // Replays are idempotent; preserve the original capability rather
+            // Replays are idempotent; preserve the original token rather
             // than accepting a different one for the same live record.
-            if existing.manage_cap != manage_cap {
-                return Err("offline burn replay changed its capability".to_owned());
+            if existing.fetch_token != fetch_token {
+                return Err("offline burn replay changed its token".to_owned());
             }
             return Ok(());
         }
@@ -298,7 +310,7 @@ impl EncryptedBurnQueue {
         }
         document.pending.push(PendingBurn {
             blob_id: blob_id.to_owned(),
-            manage_cap: manage_cap.to_vec(),
+            fetch_token: fetch_token.to_vec(),
         });
         self.save(&document)
     }

@@ -151,6 +151,9 @@ mod command_activity_tests {
         assert_command_marks_activity("cmd_osl_get_server_defaults", || {
             let _ = cmd_osl_get_server_defaults(&state);
         });
+        assert_command_marks_activity("cmd_osl_get_new_friend_defaults", || {
+            let _ = cmd_osl_get_new_friend_defaults(&state);
+        });
         assert_command_marks_activity("cmd_osl_get_app_preferences", || {
             let _ = cmd_osl_get_app_preferences(&state);
         });
@@ -3854,6 +3857,74 @@ pub fn cmd_osl_burn_sender_message_records_both_sides(
 ) -> Result<BurnSenderMessageRecordsBothSidesDto, String> {
     record_activity_on_command_entry();
     validate_selected_sender_message_records(&discord_message_ids)?;
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OslTheirSideBurnResult {
+    pub choice: String,
+    pub target_content_id: String,
+    pub remote_removal_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OslBothSidesBurnResult {
+    pub choice: String,
+    pub remote_removal_count: u32,
+}
+
+/// Burn the peer-visible server-held copy for one selected message.
+///
+/// This is intentionally remote-only. The local sender history is left intact;
+/// callers that want a local wipe use the separate local burn command.
+pub fn cmd_osl_burn_their_side_message(
+    state: &AppState,
+    target_content_id: String,
+) -> Result<OslTheirSideBurnResult, String> {
+    record_activity_on_command_entry();
+    if target_content_id.trim().is_empty() {
+        return Err("OSL: their-side burn needs a content id".to_string());
+    }
+    let identity = state
+        .identity_slot()
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| "OSL: their-side burn needs a loaded identity".to_string())?;
+    let client = state
+        .keyserver_slot()
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| "OSL: their-side burn needs a key server".to_string())?;
+    let response = client
+        .burn(
+            &identity,
+            &keystore::BurnScope::Single {
+                content_id: target_content_id.clone(),
+            },
+        )
+        .map_err(|error| format!("OSL: their-side burn refused: {error}"))?;
+    if response.scope != "single" {
+        return Err(format!(
+            "OSL: their-side burn returned unexpected scope {}",
+            response.scope
+        ));
+    }
+    Ok(OslTheirSideBurnResult {
+        choice: "Their Side".to_string(),
+        target_content_id,
+        remote_removal_count: response.deleted_count,
+    })
+}
+
+/// Burn every server-held wrapped-key copy authored by the loaded identity.
+///
+/// The keyserver's `all` scope is one sender-scoped DELETE, so a restart after
+/// the request either retries against the original rows or against an already
+/// empty sender lane. It must not implement "Both Sides" as two independent
+/// `single` burns, because that creates the forbidden 1/0 or 0/1 crash states.
+pub fn cmd_osl_burn_both_sides_server_copies(
+    state: &AppState,
+) -> Result<OslBothSidesBurnResult, String> {
+    record_activity_on_command_entry();
     let identity = state
         .identity_slot()
         .as_ref()
@@ -3938,6 +4009,18 @@ fn remove_sender_message_records(
         requested_count: outcome.requested_count,
         removed_count: outcome.removed_count,
         remaining_local_count: outcome.remaining_local_count,
+    let response = client
+        .burn(&identity, &keystore::BurnScope::All)
+        .map_err(|error| format!("OSL: both-sides burn refused: {error}"))?;
+    if response.scope != "all" {
+        return Err(format!(
+            "OSL: both-sides burn returned unexpected scope {}",
+            response.scope
+        ));
+    }
+    Ok(OslBothSidesBurnResult {
+        choice: "Both Sides".to_string(),
+        remote_removal_count: response.deleted_count,
     })
 }
 
@@ -17433,6 +17516,62 @@ pub fn cmd_osl_apply_server_default_to_existing_channels(
     Ok(affected)
 }
 
+// ---- New-friend defaults ----
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct NewFriendDefaultsDto {
+    pub account_reach: String,
+    pub auto_whitelist: String,
+    pub verification_warnings: String,
+}
+
+pub fn cmd_osl_get_new_friend_defaults(state: &AppState) -> Result<NewFriendDefaultsDto, String> {
+    record_activity_on_command_entry();
+    let prefs = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned");
+    Ok(NewFriendDefaultsDto {
+        account_reach: prefs.new_friend_account_reach.as_value().to_string(),
+        auto_whitelist: prefs.new_friend_auto_whitelist.label().to_string(),
+        verification_warnings: prefs
+            .new_friend_verification_warnings
+            .as_value()
+            .to_string(),
+    })
+}
+
+pub fn cmd_osl_save_new_friend_defaults(
+    state: &AppState,
+    defaults: NewFriendDefaultsDto,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<NewFriendDefaultsDto, String> {
+    record_activity_on_command_entry();
+    let account_reach = defaults
+        .account_reach
+        .parse::<crate::app_preferences::NewFriendAccountReach>()?;
+    let auto_whitelist =
+        crate::auto_whitelist_rules::parse_auto_whitelist_choice(&defaults.auto_whitelist)?;
+    let verification_warnings = defaults
+        .verification_warnings
+        .parse::<crate::app_preferences::NewFriendVerificationWarnings>()?;
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs.new_friend_account_reach = account_reach;
+        prefs.new_friend_auto_whitelist = auto_whitelist;
+        prefs.new_friend_verification_warnings = verification_warnings;
+        if let Some(dir) = config_dir {
+            let path = dir.join("app_preferences.json");
+            crate::app_preferences::write_app_preferences(&path, &prefs)?;
+        }
+    }
+    cmd_osl_get_new_friend_defaults(state)
+}
+
 // ---- Phase 9-B1: app preferences ----
 
 /// DTO mirroring [`crate::app_preferences::AppPreferences`] for the JS bridge.
@@ -17656,6 +17795,44 @@ pub fn cmd_osl_save_new_friend_defaults(
     let verification_warnings = defaults
         .verification_warnings
         .parse::<crate::app_preferences::NewFriendVerificationWarnings>()?;
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct BadMessageRuleDto {
+    pub rule_name: String,
+    pub private_word: String,
+}
+
+pub fn cmd_osl_list_bad_message_rules(state: &AppState) -> Result<Vec<BadMessageRuleDto>, String> {
+    record_activity_on_command_entry();
+    let mut rules: Vec<_> = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .bad_message_rules
+        .values()
+        .map(|rule| BadMessageRuleDto {
+            rule_name: rule.rule_name.clone(),
+            private_word: rule.private_word.clone(),
+        })
+        .collect();
+    rules.sort_by(|a, b| a.rule_name.cmp(&b.rule_name));
+    Ok(rules)
+}
+
+pub fn cmd_osl_save_bad_message_rule(
+    state: &AppState,
+    rule_name: String,
+    private_word: String,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<BadMessageRuleDto, String> {
+    record_activity_on_command_entry();
+    let rule_name = crate::bad_message_rules::parse_bad_message_rule_name(&rule_name)?
+        .name()
+        .to_string();
+    let private_word = crate::bad_message_rules::parse_private_word(&private_word)?;
+    let rule = crate::bad_message_rules::BadMessageRule {
+        rule_name: rule_name.clone(),
+        private_word: private_word.clone(),
+    };
     {
         let mut prefs = state
             .app_preferences
@@ -17689,6 +17866,9 @@ pub fn cmd_osl_save_next_generation_message_policy(
             .expect("app_preferences mutex poisoned");
         prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
         prefs.next_generation_message_policy = choice;
+        prefs
+            .bad_message_rules
+            .insert(rule_name.clone(), rule.clone());
         if let Some(dir) = config_dir {
             let path = dir.join("app_preferences.json");
             crate::app_preferences::write_app_preferences(&path, &prefs)?;
@@ -17787,6 +17967,12 @@ fn validate_new_place_record(
         return Err("OSL: new place stable id is invalid".to_string());
     }
     Ok(())
+}
+
+    Ok(BadMessageRuleDto {
+        rule_name: rule.rule_name,
+        private_word: rule.private_word,
+    })
 }
 
 // ---- G3.3: auto-updater channel ----

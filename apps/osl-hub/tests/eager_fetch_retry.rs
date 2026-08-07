@@ -56,8 +56,7 @@ fn tf_91_flaky_network_retries_inside_one_reservation_without_losing_the_payload
     let mut driver = EagerFetchDriver::new(network, Store::default(), queue);
     let pointer = PointerArrival {
         blob_id: "view-once".to_owned(),
-        fetch_cap: vec![1; 32],
-        manage_cap: vec![2; 32],
+        fetch_seed: [1; ipc::prose_token::BRIDGE_SEED_BYTES],
     };
 
     driver.on_pointer_arrival(&pointer).unwrap();

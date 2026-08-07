@@ -1,6 +1,8 @@
 use osl_privacy_hub::website_driver::{
     RealBrowserWebsiteDriver, WebsiteDriver, WebsiteNamedControl, WebsitePageRequest,
     WebsiteSendCommand, WebsiteTextPlacement,
+    RealBrowserWebsiteDriver, WebsiteDriver, WebsiteDriverError, WebsiteNamedControl,
+    WebsitePageRequest, WebsiteSendCommand, WebsiteTextPlacement,
 };
 use std::{
     io::{Read, Write},
@@ -18,6 +20,8 @@ const TASK_1204_TITLE: &str = "OSL Task 1204 Read Page Controls";
 const TASK_1216_TITLE: &str = "OSL Task 1216 Press Named Button";
 const TASK_1217_TITLE: &str = "OSL Task 1217 Send After Proof";
 const TASK_1217_MESSAGE: &str = "MAPLE-1217";
+const TASK_1218_TITLE: &str = "OSL Task 1218 Disabled Send";
+const TASK_1218_MESSAGE: &str = "MAPLE-4172";
 
 #[test]
 fn task_1201_direct_driver_command_opens_local_test_page_and_reads_title() {
@@ -241,6 +245,107 @@ fn task_1217_direct_send_command_places_once_then_presses_send_once() {
     println!("TASK1217 sent_message={sent_message}");
 }
 
+#[test]
+fn task_1218_disabled_send_is_not_bypassed_after_first_send() {
+    let server = LocalTestPage::spawn_body(
+        TASK_1218_TITLE,
+        r#"
+            <main>
+              <label id="body-label" for="body">Body</label>
+              <textarea id="body" aria-labelledby="body-label"></textarea>
+              <p aria-live="polite">Send enabled: <span id="send-enabled">yes</span></p>
+              <p aria-live="polite">Sent-message count: <span id="sent-message-count">0</span></p>
+              <p aria-live="polite">Result name: <span id="result-name"></span></p>
+              <p aria-live="polite">First message: <span id="first-message"></span></p>
+              <p>Fixture end</p>
+              <button id="send" type="button" onclick="
+                const body = document.getElementById('body');
+                const count = document.getElementById('sent-message-count');
+                count.textContent = String(Number(count.textContent) + 1);
+                document.getElementById('result-name').textContent = 'sent ' + body.value;
+                const first = document.getElementById('first-message');
+                if (!first.textContent) first.textContent = body.value;
+                this.disabled = true;
+                document.getElementById('send-enabled').textContent = 'no';
+              ">Send</button>
+            </main>
+        "#,
+    );
+    let mut driver = RealBrowserWebsiteDriver::launch().expect("launch real browser driver");
+
+    let page = driver
+        .find_page(WebsitePageRequest { url: server.url() })
+        .expect("open local test page through real browser");
+    let before = driver
+        .read_page(&page)
+        .expect("read fixture before the first send");
+    let sent_before = count_after_label(&before.text, "Sent-message count: ").expect("sent before");
+    assert_eq!(sent_before, 0);
+    assert_eq!(
+        value_after_label(&before.text, "Send enabled: ").expect("send enabled before"),
+        "yes"
+    );
+
+    let first_receipt = driver
+        .send_after_successful_placement(WebsiteSendCommand {
+            placement: WebsiteTextPlacement {
+                page: page.clone(),
+                editable_box_name: "Body".to_owned(),
+                text: TASK_1218_MESSAGE.to_owned(),
+            },
+            send_control_name: "Send".to_owned(),
+        })
+        .expect("enabled Send accepts the first message");
+    assert!(first_receipt.send_pressed);
+
+    let after_first = driver
+        .read_page(&page)
+        .expect("read fixture after the enabled send");
+    let sent_after_first =
+        count_after_label(&after_first.text, "Sent-message count: ").expect("sent after first");
+    let first_result = value_after_label(&after_first.text, "Result name: ").expect("result name");
+    let send_enabled_after_first =
+        value_after_label(&after_first.text, "Send enabled: ").expect("send enabled after first");
+    assert_eq!(sent_after_first, 1);
+    assert_eq!(first_result, "sent MAPLE-4172");
+    assert_eq!(send_enabled_after_first, "no");
+
+    let disabled = driver
+        .send_after_successful_placement(WebsiteSendCommand {
+            placement: WebsiteTextPlacement {
+                page: page.clone(),
+                editable_box_name: "Body".to_owned(),
+                text: TASK_1218_MESSAGE.to_owned(),
+            },
+            send_control_name: "Send".to_owned(),
+        })
+        .expect_err("disabled Send refuses the retry");
+    assert_eq!(disabled, WebsiteDriverError::NamedControlDisabled);
+    assert_eq!(disabled.to_string(), "Send disabled");
+
+    let after_disabled = driver
+        .read_page(&page)
+        .expect("read fixture after disabled Send refusal");
+    let sent_after_disabled = count_after_label(&after_disabled.text, "Sent-message count: ")
+        .expect("sent after disabled");
+    let first_message =
+        value_after_label(&after_disabled.text, "First message: ").expect("first message");
+    assert_eq!(sent_after_disabled, 1);
+    assert_eq!(first_message, TASK_1218_MESSAGE);
+    assert_eq!(
+        value_after_label(&after_disabled.text, "Result name: ").expect("result stays"),
+        "sent MAPLE-4172"
+    );
+
+    println!("TASK1218 sent_message_count_before={sent_before}");
+    println!("TASK1218 first_result={first_result}");
+    println!("TASK1218 sent_message_count_after_first={sent_after_first}");
+    println!("TASK1218 send_enabled_after_first={send_enabled_after_first}");
+    println!("TASK1218 disabled_refusal={disabled}");
+    println!("TASK1218 first_message_after_refusal={first_message}");
+    println!("TASK1218 sent_message_count_after_refusal={sent_after_disabled}");
+}
+
 fn fixture_send_counter(text: &str) -> Option<u32> {
     text.split("Send counter: ")
         .nth(1)?
@@ -265,6 +370,10 @@ fn value_after_label(text: &str, label: &str) -> Option<String> {
         .find("Send counter: ")
         .or_else(|| value.find("Placement proof count: "))
         .or_else(|| value.find("Send press count: "))
+        .or_else(|| value.find("Send enabled: "))
+        .or_else(|| value.find("Sent-message count: "))
+        .or_else(|| value.find("Result name: "))
+        .or_else(|| value.find("First message: "))
         .or_else(|| value.find("Event log: "))
         .or_else(|| value.find("Sent message: "))
         .or_else(|| value.find("Fixture end"))

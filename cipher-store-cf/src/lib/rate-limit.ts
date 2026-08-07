@@ -81,12 +81,13 @@ const BUDGETS: Record<Bucket, number> = {
   upload: 600,
   fetch: 120,
   delete: 600,
-  // A 512 MiB upload uses up to 65 bounded multipart requests plus session
-  // creation/completion. This still permits only two full-size attempts/hour.
-  "attachment-upload": 140,
+  // A 1 GiB upload uses up to 128 bounded multipart requests plus completion.
+  // This still permits two full-size attempts/hour; session creation has its
+  // own smaller budget below.
+  "attachment-upload": 260,
   // Session creation gets its own, far smaller budget (audit HIGH-1). A session
   // reserves capacity before any ciphertext exists, so it is the expensive
-  // request in the flow; keeping it out of the shared 140 also means a flood of
+  // request in the flow; keeping it out of the shared 260 also means a flood of
   // creations cannot consume the part-upload budget a caller needs to finish an
   // upload already in progress. Twelve full-size uploads an hour is far beyond
   // ordinary use, and holding the 64-slot reservation pool full now costs an

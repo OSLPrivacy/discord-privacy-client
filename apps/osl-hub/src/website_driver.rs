@@ -130,6 +130,7 @@ pub enum WebsiteDriverError {
     ReadFailed,
     TextPlacementFailed,
     NamedControlNotFound,
+    NamedControlDisabled,
 }
 
 impl fmt::Display for WebsiteDriverError {
@@ -145,6 +146,7 @@ impl fmt::Display for WebsiteDriverError {
             Self::ReadFailed => "website page could not be read",
             Self::TextPlacementFailed => "website text could not be placed",
             Self::NamedControlNotFound => "website named control was not found",
+            Self::NamedControlDisabled => "Send disabled",
         })
     }
 }
@@ -384,6 +386,11 @@ impl WebsiteDriver for RealBrowserWebsiteDriver {
         pressed
             .then_some(())
             .ok_or(WebsiteDriverError::NamedControlNotFound)
+        match press_named_button(&websocket_url, &control.name)? {
+            NamedButtonPress::Pressed => Ok(()),
+            NamedButtonPress::Disabled => Err(WebsiteDriverError::NamedControlDisabled),
+            NamedButtonPress::NotFound => Err(WebsiteDriverError::NamedControlNotFound),
+        }
     }
 }
 
@@ -502,6 +509,17 @@ fn place_text_in_named_editable(
 }
 
 fn press_named_button(websocket_url: &str, name: &str) -> Result<bool, WebsiteDriverError> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NamedButtonPress {
+    Pressed,
+    Disabled,
+    NotFound,
+}
+
+fn press_named_button(
+    websocket_url: &str,
+    name: &str,
+) -> Result<NamedButtonPress, WebsiteDriverError> {
     let name = serde_json::to_string(name).map_err(|_| WebsiteDriverError::NamedControlNotFound)?;
     let expression = format!(
         r#"
@@ -554,6 +572,28 @@ fn press_named_button(websocket_url: &str, name: &str) -> Result<bool, WebsiteDr
     evaluate_target(websocket_url, &expression)?
         .as_bool()
         .ok_or(WebsiteDriverError::ReadFailed)
+  const disabled = [];
+  for (const element of document.querySelectorAll('button, input[type="button"], input[type="submit"], input[type="reset"], [role="button"]')) {{
+    if (!visible(element) || controlName(element) !== wanted) continue;
+    if (enabled(element)) {{
+      matches.push(element);
+    }} else {{
+      disabled.push(element);
+    }}
+  }}
+  if (matches.length === 0 && disabled.length > 0) return 'disabled';
+  if (matches.length !== 1) return 'not_found';
+  matches[0].click();
+  return 'pressed';
+}})()
+"#
+    );
+    match evaluate_target(websocket_url, &expression)?.as_str() {
+        Some("pressed") => Ok(NamedButtonPress::Pressed),
+        Some("disabled") => Ok(NamedButtonPress::Disabled),
+        Some("not_found") => Ok(NamedButtonPress::NotFound),
+        _ => Err(WebsiteDriverError::ReadFailed),
+    }
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {

@@ -18,14 +18,16 @@ backups outside OSL's control.
   },
   "uninstall": {
     "removes_application": true,
-    "deletes_osl_data": false,
+    "deletes_osl_data": true,
+    "offers_one_identity_backup": true,
+    "backup_filename": "OSL identity backup.json",
     "is_a_burn": false,
     "requires_separate_user_action": true
   },
   "claims": {
     "remote_data_unrecoverable_only_after": "server confirmation",
     "burn_status_before_server_confirmation": "pending",
-    "uninstall_status": "application removed; data deletion is not implied"
+    "uninstall_status": "application removed; local OSL data removed; identity backup kept only if selected"
   }
 }
 ```
@@ -57,11 +59,12 @@ recipient has already made unless a separately confirmed mechanism says otherwis
 Uninstall removes the OSL application through Windows. It is a separate, optional user action that
 may be offered after an account-level burn, but never presented as a burn effect.
 
-The current NSIS uninstaller must be described honestly: uninstalling the application does not by
-itself delete OSL data. Users who want data removal must use Burn (and wait for its remote
-confirmation where that matters); users who want to remove the executable must then uninstall
-separately. Conversely, users may uninstall without burning, and the copy must not imply that this
-deletes their OSL data.
+The current NSIS uninstaller must be described honestly: uninstalling the application removes local
+OSL data after offering to write exactly one identity backup file first. Keeping the backup leaves
+that single file outside OSL's application data roots and removes the rest of OSL's local data.
+Declining the backup removes the backup file too. This is still not a burn: it does not remove
+server relay blobs, peer copies, provider messages, browser cookies, native-app history,
+screenshots, exports, or any backups outside OSL's control.
 
 ## Required wording rules for T7 and T11
 
@@ -70,9 +73,11 @@ deletes their OSL data.
   name peer deletion as pending when applicable).
 - Only after acknowledgement may copy say “Server deletion confirmed” or “Peer deletion
   confirmed.” Do not collapse either into the local completion state.
-- Describe uninstall as “Remove the OSL app from Windows.” Pair it with “This does not delete OSL
-  data” unless a future uninstaller changes that behavior and this contract is revised with a test.
-- Never equate uninstall with deletion, or an account-level burn with removal of the Windows app.
+- Describe uninstall as “Remove the OSL app from Windows.” Pair it with “This removes local OSL
+  data after offering one identity backup” unless a future uninstaller changes that behavior and
+  this contract is revised with a test.
+- Never equate uninstall with burn, remote deletion, provider-message deletion, or peer-copy
+  deletion. Never equate an account-level burn with removal of the Windows app.
 
 ## Implementation boundary
 

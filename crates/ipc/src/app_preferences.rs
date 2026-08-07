@@ -376,6 +376,7 @@ pub fn parse_idle_lock_time_choice(input: &str) -> Result<IdleLockTimeChoice, St
 }
 
 /// Default account reach for a friend who is newly accepted.
+/// Default reach granted to a newly added friend.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum NewFriendAccountReach {
@@ -409,6 +410,7 @@ impl FromStr for NewFriendAccountReach {
             .replace(['-', ' '], "_")
             .as_str()
         {
+        match raw.trim().to_ascii_lowercase().replace(['-', ' '], "_").as_str() {
             "approved_chats_only" => Ok(Self::ApprovedChatsOnly),
             "all_shared_chats" => Ok(Self::AllSharedChats),
             _ => Err(format!(
@@ -425,6 +427,14 @@ pub enum NewFriendVerificationWarnings {
     #[default]
     Enabled,
     Disabled,
+pub enum NewFriendVerificationWarnings {
+    #[default]
+    #[serde(rename = "always", alias = "enabled")]
+    Always,
+    #[serde(rename = "only for new people")]
+    OnlyForNewPeople,
+    #[serde(rename = "never", alias = "disabled")]
+    Never,
 }
 
 impl NewFriendVerificationWarnings {
@@ -432,6 +442,9 @@ impl NewFriendVerificationWarnings {
         match self {
             Self::Enabled => "enabled",
             Self::Disabled => "disabled",
+            Self::Always => "always",
+            Self::OnlyForNewPeople => "only for new people",
+            Self::Never => "never",
         }
     }
 }
@@ -450,6 +463,14 @@ impl FromStr for NewFriendVerificationWarnings {
             "disabled" => Ok(Self::Disabled),
             _ => Err(format!(
                 "OSL: unknown new-friend verification warnings {raw:?}; valid choices: enabled, disabled"
+            .replace(['-', '_'], " ")
+            .as_str()
+        {
+            "always" | "enabled" => Ok(Self::Always),
+            "only for new people" => Ok(Self::OnlyForNewPeople),
+            "never" | "disabled" => Ok(Self::Never),
+            _ => Err(format!(
+                "OSL: unknown warning choice {raw:?}; valid choices: always, only for new people, never"
             )),
         }
     }
@@ -479,6 +500,7 @@ pub struct AppPreferences {
     pub next_generation_message_policy: NextGenerationMessagePolicy,
     #[serde(default)]
     pub idle_lock_time_choice: IdleLockTimeChoice,
+    pub bad_message_rules: HashMap<String, crate::bad_message_rules::BadMessageRule>,
     #[serde(default)]
     pub new_friend_account_reach: NewFriendAccountReach,
     #[serde(default)]
@@ -504,12 +526,34 @@ pub fn load_app_preferences(path: &Path) -> AppPreferences {
 }
 
 pub fn write_app_preferences(path: &Path, prefs: &AppPreferences) -> Result<(), String> {
-    let body = serde_json::to_vec_pretty(prefs)
-        .map_err(|e| format!("OSL: serialize app_preferences: {e}"))?;
+    let body = serialized_app_preferences_preserving_unknown_fields(path, prefs)?;
     let out = crate::main_password::maybe_encrypt(&body)
         .map_err(|e| format!("OSL: encrypt app_preferences: {e}"))?;
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, &out).map_err(|e| format!("OSL: write {}: {e}", tmp.display()))?;
     std::fs::rename(&tmp, path).map_err(|e| format!("OSL: rename {}: {e}", path.display()))?;
     Ok(())
+}
+
+fn serialized_app_preferences_preserving_unknown_fields(
+    path: &Path,
+    prefs: &AppPreferences,
+) -> Result<Vec<u8>, String> {
+    let mut next =
+        serde_json::to_value(prefs).map_err(|e| format!("OSL: serialize app_preferences: {e}"))?;
+    if let Ok(blob) = std::fs::read(path) {
+        if let Ok(plain) = crate::main_password::maybe_decrypt_file(path, &blob) {
+            if let Ok(mut existing) = serde_json::from_slice::<serde_json::Value>(&plain) {
+                if let (Some(existing_object), Some(next_object)) =
+                    (existing.as_object_mut(), next.as_object())
+                {
+                    for (key, value) in next_object {
+                        existing_object.insert(key.clone(), value.clone());
+                    }
+                    next = existing;
+                }
+            }
+        }
+    }
+    serde_json::to_vec_pretty(&next).map_err(|e| format!("OSL: serialize app_preferences: {e}"))
 }
