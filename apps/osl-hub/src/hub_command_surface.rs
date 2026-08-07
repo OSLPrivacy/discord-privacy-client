@@ -35,25 +35,18 @@ use crate::runtime_switches::SafeSending;
 use crate::scrub_erasure::{self, ComposedErasureRequest, ErasureRequestInput};
 use crate::server_records::{NamedServerRecord, NamedServerRegistryState};
 use crate::service_host::ActiveServiceHost;
-use crate::website_driver::{WebsiteDriver, WebsitePageRequest};
+use crate::website_driver::{
+    WebsiteControlKind, WebsiteDriver, WebsiteLiveRunProgress, WebsiteMailboxMessage,
+    WebsiteNamedControl, WebsitePageRequest, WebsiteTextPlacement,
+};
 use serde::{Deserialize, Serialize};
-use serde::Deserialize;
-#[cfg(feature = "discord-qa-shell")]
-use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::path::Path;
-use std::sync::Mutex;
-use std::sync::{Condvar, Mutex};
-use crate::website_driver::{
-    WebsiteDriver, WebsiteLiveRunProgress, WebsiteMailboxMessage, WebsiteNamedControl,
-    WebsitePageRequest, WebsiteTextPlacement,
+use std::{
+    path::{Path, PathBuf},
+    sync::{Condvar, Mutex},
+    thread,
+    time::Duration,
 };
-use std::{path::PathBuf, sync::Mutex, thread, time::Duration};
-use crate::website_driver::{
-    WebsiteDriver, WebsiteLiveRunProgress, WebsiteNamedControl, WebsitePageRequest,
-    WebsiteTextPlacement,
-};
-use std::{path::PathBuf, sync::Mutex};
 
 pub fn write_safe_local_bytes(path: &Path, bytes: &[u8], label: &str) -> Result<(), String> {
     crate::atomic_file::write_recoverable(path, bytes, label)
@@ -405,6 +398,7 @@ where
         .press_named_control(WebsiteNamedControl {
             page: page.clone(),
             name: name.to_owned(),
+            kind: WebsiteControlKind::Button,
         })
         .map_err(|error| error.to_string())
 }
@@ -671,6 +665,7 @@ where
             .press_named_control(WebsiteNamedControl {
                 page: page.clone(),
                 name: "Next page".to_owned(),
+                kind: WebsiteControlKind::Button,
             })
             .map_err(|error| error.to_string())?;
         one_screen_scrolls += 1;

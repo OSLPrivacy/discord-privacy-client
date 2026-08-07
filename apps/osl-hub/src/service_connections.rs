@@ -993,7 +993,7 @@ impl EmailServiceConnection {
 
     pub fn request_compose_controls(
         &self,
-        driver: &impl WebsiteDriver,
+        driver: &mut impl WebsiteDriver,
         page: &WebsitePage,
     ) -> Result<EmailComposeControls, ServiceConnectionError> {
         if self.service_id != "email" {
@@ -1068,11 +1068,11 @@ mod tests {
         }
 
         fn read_named_controls(
-            &self,
+            &mut self,
             page: &WebsitePage,
             required: &[WebsiteNamedControlRequest],
         ) -> Result<Vec<WebsiteNamedControl>, WebsiteDriverError> {
-            if page.target_id != "task-1205-fixture-page" {
+            if page.url != "https://mail.example.test/task-1205" {
                 return Err(WebsiteDriverError::PageUnavailable);
             }
             self.requested
@@ -1097,10 +1097,12 @@ mod tests {
             }
             Ok(vec![
                 WebsiteNamedControl {
+                    page: page.clone(),
                     name: "compose box".to_owned(),
                     kind: WebsiteControlKind::EditableBox,
                 },
                 WebsiteNamedControl {
+                    page: page.clone(),
                     name: "Send button".to_owned(),
                     kind: WebsiteControlKind::Button,
                 },
