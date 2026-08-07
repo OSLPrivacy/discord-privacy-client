@@ -80,6 +80,7 @@ import { handleUsernameBucket } from "./endpoints/username-bucket.js";
 import {
   handlePublicNameExactSearch,
   handleUsernameClaim,
+  handleUsernameRelease,
   handleUsernameLookup,
 } from "./endpoints/usernames.js";
 import {
@@ -595,6 +596,7 @@ async function dispatch(
   if (method === "DELETE") {
     const compBatchId = matchParam(path, /^\/v1\/internal\/comp\/batches\/([^/]+)$/);
     if (compBatchId) return await handleCompBatchRevoke(request, env, compBatchId);
+    if (path === "/v1/usernames/claim") return await handleUsernameRelease(request, env);
     if (path === "/v1/wrapped-keys") return await handleWrappedKeysDelete(request, env);
     const unregUserId = matchParam(path, /^\/v1\/pubkeys\/([^/]+)$/);
     if (unregUserId) return await handleUnregister(request, env, unregUserId);

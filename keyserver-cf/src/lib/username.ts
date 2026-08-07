@@ -4,6 +4,7 @@ import { analyzeIdentifier } from "./unicode-identifier/runtime.js";
 
 export const USERNAME_CLAIM_DOMAIN = "OSL-USERNAME-CLAIM-v1";
 export const USERNAME_MOVE_DOMAIN = "OSL-USERNAME-MOVE-v1";
+export const USERNAME_RELEASE_DOMAIN = "OSL-USERNAME-RELEASE-v1";
 export const USERNAME_RE = /^[a-z0-9](?:[a-z0-9_]{1,28}[a-z0-9])?$/;
 export const USERNAME_MIN = 3;
 export const USERNAME_MAX = 30;
@@ -102,6 +103,17 @@ export function usernameMoveMessage(input: {
 }): Uint8Array {
   return new TextEncoder().encode(
     `${USERNAME_MOVE_DOMAIN}\n${input.username}\n${input.user_id}\n${input.prev_ik_ed25519_pub}\n${input.new_ik_ed25519_pub}\n${input.request_id}\n${input.timestamp_ms}`,
+  );
+}
+
+export function usernameReleaseMessage(input: {
+  username: string;
+  user_id: string;
+  request_id: string;
+  timestamp_ms: number;
+}): Uint8Array {
+  return new TextEncoder().encode(
+    `${USERNAME_RELEASE_DOMAIN}\n${input.username}\n${input.user_id}\n${input.request_id}\n${input.timestamp_ms}`,
   );
 }
 

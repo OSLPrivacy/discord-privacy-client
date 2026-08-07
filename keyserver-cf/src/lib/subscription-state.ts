@@ -254,8 +254,6 @@ async function onCheckoutCompleted(
     if (priceRefusal) {
       return { kind: "noop", reason: priceRefusal };
     }
-    const completion = await completeOneTimeStripeCheckoutClaim(env.DB, {
-      sessionId: obj.id,
     const checked = await verifyOneTimePaidCodeCallbackChecks(env.DB, {
       amountTotal: obj.amount_total,
       currency: obj.currency,

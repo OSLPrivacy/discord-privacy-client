@@ -6,7 +6,6 @@
 import type { Env } from "../env.js";
 import { hashLicense, normalizeLicense, validateChecksum } from "../lib/license.js";
 import { revokedLicenseMessage } from "../lib/license-refusal.js";
-import { badRequest, json, serviceUnavailable, tooMany } from "../lib/http.js";
 import { badRequest, conflict, json, serviceUnavailable, tooMany } from "../lib/http.js";
 import { callerIp, checkRateLimit } from "../lib/rate-limit.js";
 
@@ -72,14 +71,12 @@ export async function handleLicenseRedeem(
   ).bind(now, now, licenseHash).run();
 
   const license = await env.DB.prepare(
-    `SELECT revoked_at, revoked_reason, redeemed_at, expires_at
     `SELECT licenses.subscription_id,
             licenses.revoked_at,
             licenses.revoked_reason,
             observations.event_type AS terminal_event_type,
             licenses.redeemed_at,
             licenses.expires_at
-    `SELECT subscription_id, revoked_at, redeemed_at, expires_at
        FROM licenses
        LEFT JOIN stripe_checkout_claims AS claims
               ON claims.license_hash = licenses.license_hash
@@ -90,18 +87,13 @@ export async function handleLicenseRedeem(
   ).bind(licenseHash).first<RedemptionRow>();
   if (!license) return json({ status: "UNKNOWN", checksum_ok: true });
   if (license.revoked_at !== null) {
-    const error = revokedMessage(license.revoked_reason);
-    return json({
-      status: "REVOKED",
-      checksum_ok: true,
-      ...(error ? { error } : {}),
-    const message = revokedLicenseMessage(license);
+    const message = revokedLicenseMessage(license) ?? revokedMessage(license.revoked_reason);
     return json({
       status: "REVOKED",
       checksum_ok: true,
       ...(message ? { message } : {}),
     });
-  if (license.revoked_at !== null) return json({ status: "REVOKED", checksum_ok: true });
+  }
   if ((redemption.meta?.changes ?? 0) === 0 && license.redeemed_at !== null) {
     return conflict("license code already redeemed");
   }
@@ -116,8 +108,6 @@ export async function handleLicenseRedeem(
             updated_at = ?
       WHERE subscription_id = ?
         AND status NOT IN ('REVOKED', 'EXPIRED')`,
-        SET status = 'ACTIVE', current_period_end = ?, updated_at = ?
-      WHERE subscription_id = ?`,
   ).bind(license.expires_at, now, license.subscription_id).run();
   return json({
     status: "ACTIVE",

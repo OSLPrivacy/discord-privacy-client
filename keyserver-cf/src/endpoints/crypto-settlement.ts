@@ -475,6 +475,8 @@ async function paymentMessageAlreadyHandled(
     "SELECT 1 AS present FROM crypto_settlement_events_v2 WHERE event_id = ?",
   ).bind(eventId).first<{ present: number }>();
   return row !== null;
+}
+
 async function recordCryptoSettlementRefusal(
   db: D1Database,
   evidence: WatcherSettlementEvidence,
