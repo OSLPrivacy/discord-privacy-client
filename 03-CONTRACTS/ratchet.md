@@ -98,3 +98,9 @@ Every `RnError` variant maps to the non-empty user-visible state in the normativ
 An RN message is encrypted exactly once, at enqueue. Delivery retries reuse the stored RN wire; they never call `encrypt_rn` again. The outbox is sealed local storage and does not evict a live message.
 
 If the stored wire cannot be delivered or the session must heal, its queued plaintext remains only in that sealed local store. After a successful re-handshake it is re-sealed against the new RN session, in original order, and then sent. This is a message fallback: a desync costs a round trip, never content. A version fallback or retry-on-v3 is forbidden.
+
+## A12 refusal: no future-device key escrow
+
+Ruling A12 refuses the easy multi-device shortcut: OSL must not keep message keys, chain keys, root keys, or skipped-key descendants where a device that was not present for the traffic can fetch them later. That shortcut is forward secrecy with an off switch.
+
+Server tables, server uploads, blob stores, sync payloads, backups, and transfer/export shapes may carry ciphertext, public identity material, capability digests, non-secret routing metadata, and locally sealed plaintext for a device that already owns the conversation. They may not carry message-key, chain-key, or root-key fields or equivalents for later devices. A new device may receive future traffic after a fresh handshake or group distribution event; it may not read old traffic by fetching retained ratchet secrets.
