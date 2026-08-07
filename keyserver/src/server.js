@@ -40,6 +40,7 @@ import {
   getUser,
   insertWrappedKey,
   fetchWrappedKey,
+  purgeExpiredWrappedKeys,
   upsertPrekeyBundle,
   popPrekeyBundle,
   burnWrappedKeys,
@@ -68,6 +69,10 @@ function isPlainString(value) {
 
 function isViewOnceDisplayDurationSeconds(value) {
   return Number.isInteger(value) && value >= 1 && value <= 60;
+function deriveExpirySeconds(expiresAt, now = new Date()) {
+  const deltaMs = Date.parse(expiresAt) - now.getTime();
+  if (!Number.isFinite(deltaMs) || deltaMs <= 0) return null;
+  return Math.ceil(deltaMs / 1000);
 }
 
 // Constant-time comparison. Hashes both sides to SHA-256 first so the
@@ -161,9 +166,18 @@ export async function buildServer({
   // healthcheck happy while stragglers get pointed at the
   // Workers deployment. Railway shuts down +30 days after cutover.
   redirectTarget = null,
+  // Server-owned cleanup cadence for expired wrapped-key records.
+  // `false` disables scheduling, while tests can still run the
+  // job once through `runExpiredProtectedRecordsJob`.
+  expiryJobIntervalMs = 60_000,
 } = {}) {
   const fastify = Fastify({ logger });
   const db = openDatabase(dbFile);
+  let expiryJobTimer = null;
+
+  fastify.decorate('runExpiredProtectedRecordsJob', async (now = new Date()) =>
+    purgeExpiredWrappedKeys(db, now),
+  );
 
   // Normalise inputs once so per-route logic doesn't re-check
   // emptiness/types each time.
@@ -209,8 +223,33 @@ are open. OK for localhost dev; DO NOT do this on a public host.'
   if (rateLimit) mutationRouteOpts.config = { rateLimit };
 
   fastify.addHook('onClose', async () => {
+    if (expiryJobTimer) {
+      clearInterval(expiryJobTimer);
+      expiryJobTimer = null;
+    }
     db.close();
   });
+
+  if (
+    expiryJobIntervalMs !== false &&
+    Number.isFinite(expiryJobIntervalMs) &&
+    expiryJobIntervalMs > 0
+  ) {
+    expiryJobTimer = setInterval(() => {
+      try {
+        const result = purgeExpiredWrappedKeys(db);
+        if (result.deleted_count > 0) {
+          fastify.log.info(
+            { deleted_count: result.deleted_count },
+            'expired protected records removed',
+          );
+        }
+      } catch (err) {
+        fastify.log.error({ err }, 'expired protected records job failed');
+      }
+    }, expiryJobIntervalMs);
+    expiryJobTimer.unref?.();
+  }
 
   // F1.4 cutover: redirect everything except healthz to the new
   // Workers deployment. Installed as an onRequest hook so it fires
@@ -387,12 +426,23 @@ are open. OK for localhost dev; DO NOT do this on a public host.'
     if (Number.isNaN(Date.parse(b.expires_at))) {
       return reply.code(400).send({ error: 'expires_at must be ISO-8601' });
     }
+    if (
+      b.expiry_seconds != null &&
+      (!Number.isInteger(b.expiry_seconds) || b.expiry_seconds <= 0)
+    ) {
+      return reply.code(400).send({ error: 'expiry_seconds must be a positive integer' });
+    }
+    const expirySeconds = b.expiry_seconds ?? deriveExpirySeconds(b.expires_at);
+    if (expirySeconds == null) {
+      return reply.code(400).send({ error: 'expires_at must be in the future' });
+    }
 
     try {
       insertWrappedKey(db, {
         ...b,
         single_use: b.single_use ? 1 : 0,
         display_duration_seconds: b.display_duration_seconds ?? null,
+        expiry_seconds: expirySeconds,
         system_message_kind: b.system_message_kind ?? null,
       });
     } catch (err) {

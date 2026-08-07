@@ -60,6 +60,8 @@ fn task_1372_timer_guarantee_on_two_machines() {
     println!("TASK1372_MACHINE_B_FIRST_COUNT={machine_b_count}");
 
     let expired = expire_once(&machines, EXPIRES_AT);
+    let disabled_removal_machine = std::env::var("TASK1372_DISABLE_TIMER_REMOVAL_ON").ok();
+    let expired = expire_once(&machines, EXPIRES_AT, disabled_removal_machine.as_deref());
 
     let machine_a_after_count = exact_mark_count(&machines[0], &marked_message);
     let machine_b_after_count = exact_mark_count(&machines[1], &marked_message);
@@ -86,6 +88,26 @@ fn task_1372_timer_guarantee_on_two_machines() {
     println!("TASK1372_MACHINE_B_AFTER_COUNT={machine_b_after_count}");
     println!("TASK1372_MACHINE_A_MARKED_MESSAGE_ABSENT={machine_a_absent}");
     println!("TASK1372_MACHINE_B_MARKED_MESSAGE_ABSENT={machine_b_absent}");
+
+    let holders = [
+        (machines[0].name, machine_a_after_count),
+        (machines[1].name, machine_b_after_count),
+    ]
+    .into_iter()
+    .filter_map(|(name, count)| (count > 0).then_some(name))
+    .collect::<Vec<_>>();
+
+    if !holders.is_empty() {
+        let named_holders = holders.join(", ");
+        println!("TASK1372_STILL_HOLDING_MARKED_MESSAGE={named_holders}");
+        panic!("{named_holders} still holding the marked message");
+    }
+
+    assert_eq!(expired, 2);
+    assert_eq!(machine_a_after_count, 0);
+    assert_eq!(machine_b_after_count, 0);
+    assert!(machine_a_absent);
+    assert!(machine_b_absent);
 }
 
 fn put_marked_timer_message(
@@ -168,6 +190,11 @@ fn exact_mark_count(machine: &TestMachine, marked_message: &str) -> usize {
 }
 
 fn expire_once(machines: &[TestMachine; 2], now: i64) -> usize {
+fn expire_once(
+    machines: &[TestMachine; 2],
+    now: i64,
+    disabled_removal_machine: Option<&str>,
+) -> usize {
     let mut expired = 0usize;
     for machine in machines {
         let prune = prune_at_path(&machine.ledger_path, &KEY, now)
@@ -186,6 +213,20 @@ fn expire_once(machines: &[TestMachine; 2], now: i64) -> usize {
         assert_eq!(
             shredded, 1,
             "{} expiry must shred one cache row",
+        let timer_removal_disabled = disabled_removal_machine == Some(machine.name);
+        let shredded = if timer_removal_disabled {
+            println!("TASK1372_TIMER_REMOVAL_DISABLED_ON={}", machine.name);
+            0
+        } else {
+            machine
+                .store
+                .shred_expired_messages(&prune.shred_cache_ids)
+                .unwrap_or_else(|error| panic!("{} shred failed: {error}", machine.name))
+        };
+        let expected_shredded = if timer_removal_disabled { 0 } else { 1 };
+        assert_eq!(
+            shredded, expected_shredded,
+            "{} expiry must shred the expected cache row count",
             machine.name
         );
         assert_eq!(

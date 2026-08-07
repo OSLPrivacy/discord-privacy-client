@@ -34,6 +34,9 @@ pub use defaults_web::{
     capabilities_from_profile, tuta_web_mail_targets, x_web_default_capability_profile,
     x_web_default_profile, x_web_default_trusted_signing_key_b64, yahoo_web_mail_targets,
     TutaWebTarget, YahooWebTarget,
+    capabilities_from_profile, mail_com_web_mail_targets, validate_mail_com_web_mail_targets,
+    x_web_default_capability_profile, x_web_default_profile, x_web_default_trusted_signing_key_b64,
+    MailComWebTarget, MissingMailComWebTarget, MAIL_COM_WEB_TARGET_NAMES,
 };
 pub use envelope::{
     canonical_profile_digest, EnvelopeError, SignedProfile, ADAPTER_PROFILE_ENVELOPE_DOMAIN,

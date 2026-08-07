@@ -675,6 +675,7 @@ export interface WrappedKeyRow {
   blob_version: number;
   single_use: number;
   display_duration_seconds: number | null;
+  expiry_seconds: number | null;
   expires_at: string;
   created_at: string;
 }
@@ -691,6 +692,7 @@ export interface InsertWrappedKeyInput {
   blob_version: number;
   single_use: number;
   display_duration_seconds: number | null;
+  expiry_seconds: number | null;
   expires_at: string;
 }
 
@@ -748,15 +750,15 @@ export async function insertWrappedKeyAuthenticated(
          (content_id, content_type, system_message_kind,
           sender_id, recipient_id, session_version, share_index,
           wrapped_share_blob, blob_version, single_use,
-          display_duration_seconds, expires_at, created_at)
-       SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13
+          display_duration_seconds, expiry_seconds, expires_at, created_at)
+       SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14
         WHERE EXISTS (
           SELECT 1 FROM wrapped_key_post_receipts
-           WHERE sender_id = ?4 AND request_digest = ?14
+           WHERE sender_id = ?4 AND request_digest = ?15
         )
           AND EXISTS (
           SELECT 1 FROM users
-           WHERE user_id = ?4 AND ik_ed25519_pub = ?15
+           WHERE user_id = ?4 AND ik_ed25519_pub = ?16
         )
           AND EXISTS (
           SELECT 1 FROM users
@@ -775,6 +777,7 @@ export async function insertWrappedKeyAuthenticated(
       row.blob_version,
       row.single_use,
       row.display_duration_seconds,
+      row.expiry_seconds,
       row.expires_at,
       now,
       requestDigest,
@@ -860,8 +863,8 @@ export async function insertWrappedKey(
            (content_id, content_type, system_message_kind,
             sender_id, recipient_id, session_version, share_index,
             wrapped_share_blob, blob_version, single_use,
-            display_duration_seconds, expires_at, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)`,
+            display_duration_seconds, expiry_seconds, expires_at, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)`,
       )
       .bind(
         row.content_id,
@@ -875,6 +878,7 @@ export async function insertWrappedKey(
         row.blob_version,
         row.single_use,
         row.display_duration_seconds,
+        row.expiry_seconds,
         row.expires_at,
         now,
       )
@@ -922,7 +926,7 @@ export async function fetchReusableWrappedKey(
       `SELECT content_id, content_type, system_message_kind,
               sender_id, recipient_id, session_version, share_index,
               wrapped_share_blob, blob_version, single_use,
-              display_duration_seconds, expires_at, created_at
+              display_duration_seconds, expiry_seconds, expires_at, created_at
          FROM wrapped_keys
         WHERE content_id = ? AND single_use = 0`,
     )
@@ -958,7 +962,7 @@ export async function fetchWrappedKeyAuthenticated(
       `SELECT content_id, content_type, system_message_kind,
               sender_id, recipient_id, session_version, share_index,
               wrapped_share_blob, blob_version, single_use,
-              display_duration_seconds, expires_at, created_at
+              display_duration_seconds, expiry_seconds, expires_at, created_at
          FROM wrapped_keys
         WHERE content_id = ? AND recipient_id = ?`,
     )
@@ -1018,7 +1022,7 @@ export async function fetchWrappedKeyAuthenticated(
         `SELECT content_id, content_type, system_message_kind,
                 sender_id, recipient_id, session_version, share_index,
                 wrapped_share_blob, blob_version, single_use,
-                display_duration_seconds, expires_at, created_at
+                display_duration_seconds, expiry_seconds, expires_at, created_at
            FROM wrapped_keys
           WHERE content_id = ?3
             AND recipient_id = ?1

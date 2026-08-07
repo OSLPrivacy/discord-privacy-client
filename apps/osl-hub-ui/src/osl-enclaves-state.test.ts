@@ -1,12 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  appendOslEnclaveThreadMessage,
   blockSpaceMember,
   channelAttention,
   createOslEnclavesLocalState,
+  createOslEnclaveThreadStore,
   emptyEnclaveLocalFilters,
   hideSpaceChannel,
   markChannelRead,
   muteSpaceChannel,
+  readOslEnclaveThreadMessages,
   shouldNotifyForSpaceMessage,
   visibleSpaceChannels,
   visibleSpaceMessages,
@@ -48,6 +51,58 @@ describe("OSL Enclaves local unread state", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe("MAPLE-4172 Enclave thread channel binding", () => {
+  it("refuses reading a thread through a different channel name", () => {
+    const threadId = "maple-thread";
+    const owningChannel = "red-chat";
+    const wrongChannel = "blue-chat";
+    let store = createOslEnclaveThreadStore([{ threadId, channelName: owningChannel }]);
+
+    const before = readOslEnclaveThreadMessages(store, owningChannel, threadId);
+    expect(before.ok).toBe(true);
+    if (!before.ok) throw new Error("red-chat read unexpectedly refused before append");
+    console.log(`MAPLE-4172 before_count=${before.messages.length}`);
+
+    const appended = appendOslEnclaveThreadMessage(store, {
+      messageId: "maple-4172-message",
+      threadId,
+      channelName: owningChannel,
+      body: "MAPLE-4172",
+    });
+    expect(appended.ok).toBe(true);
+    if (!appended.ok) throw new Error("red-chat append unexpectedly refused");
+    store = appended.store;
+
+    const after = readOslEnclaveThreadMessages(store, owningChannel, threadId);
+    expect(after.ok).toBe(true);
+    if (!after.ok) throw new Error("red-chat read unexpectedly refused after append");
+    console.log(`MAPLE-4172 after_count=${after.messages.length}`);
+    console.log(`MAPLE-4172 after_message=${after.messages[0]?.body ?? ""}`);
+
+    const refused = readOslEnclaveThreadMessages(store, wrongChannel, threadId);
+    expect(refused).toEqual({
+      ok: false,
+      reason: "threadChannelMismatch",
+      actualChannelName: owningChannel,
+    });
+    console.log(
+      `MAPLE-4172 wrong_channel_refused=${!refused.ok} requested=${wrongChannel} actual=${!refused.ok && refused.reason === "threadChannelMismatch" ? refused.actualChannelName : ""}`,
+    );
+
+    const final = readOslEnclaveThreadMessages(store, owningChannel, threadId);
+    expect(final.ok).toBe(true);
+    if (!final.ok) throw new Error("red-chat read unexpectedly refused after wrong-channel read");
+    console.log(`MAPLE-4172 final_count=${final.messages.length}`);
+    console.log(`MAPLE-4172 final_message=${final.messages[0]?.body ?? ""}`);
+
+    expect(before.messages).toHaveLength(0);
+    expect(after.messages).toHaveLength(1);
+    expect(after.messages[0]?.body).toBe("MAPLE-4172");
+    expect(final.messages).toHaveLength(1);
+    expect(final.messages[0]?.body).toBe("MAPLE-4172");
   });
 });
 

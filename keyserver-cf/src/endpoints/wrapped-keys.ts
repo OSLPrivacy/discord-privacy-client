@@ -60,6 +60,12 @@ function decodeExactBase64(value: unknown, expectedBytes: number): Uint8Array | 
   }
 }
 
+function deriveExpirySeconds(expiresAtMs: number, nowMs: number): number | null {
+  const deltaMs = expiresAtMs - nowMs;
+  if (!Number.isFinite(deltaMs) || deltaMs <= 0) return null;
+  return Math.ceil(deltaMs / 1000);
+}
+
 // ---- POST /v1/wrapped-keys ----
 
 export async function handleWrappedKeysPost(
@@ -163,6 +169,14 @@ export async function handleWrappedKeysPost(
     return badRequest("expires_at cannot exceed 7 days");
   }
   if (
+    b.expiry_seconds != null &&
+    (!isPositiveInt(b.expiry_seconds) ||
+      !isU32(b.expiry_seconds) ||
+      (b.expiry_seconds as number) * 1000 > MAX_WRAPPED_KEY_LIFETIME_MS)
+  ) {
+    return badRequest("expiry_seconds must be a positive integer up to 7 days");
+  }
+  if (
     !Number.isSafeInteger(b.timestamp_ms) ||
     (b.timestamp_ms as number) <= 0 ||
     Math.abs(Date.now() - (b.timestamp_ms as number)) >
@@ -193,6 +207,7 @@ export async function handleWrappedKeysPost(
     single_use: b.single_use,
     display_duration_seconds:
       (b.display_duration_seconds as number | undefined) ?? null,
+    expiry_seconds: (b.expiry_seconds as number | undefined) ?? null,
     expires_at: expiresAt,
     timestamp_ms: b.timestamp_ms as number,
   });
@@ -232,6 +247,9 @@ export async function handleWrappedKeysPost(
         single_use: b.single_use ? 1 : 0,
         display_duration_seconds:
           (b.display_duration_seconds as number | undefined) ?? null,
+        expiry_seconds:
+          (b.expiry_seconds as number | undefined) ??
+          deriveExpirySeconds(expiresAtMs, Date.now()),
         expires_at: expiresAt,
       },
       requestDigest,

@@ -66,6 +66,8 @@ pub use client::{
     IdentityBundleError, KeyServerClient, LicenseRedeemResponse, LicenseValidateResponse,
     PrekeyBundleOpk, PrekeyBundleResponse, PubkeysResponse, RegisterResponse, ReplenishResponse,
     WrappedKeyOpenClaimResponse, WrappedKeyPostResponse, WrappedKeyResponse,
+    LiveServerRevisionReport, PrekeyBundleOpk, PrekeyBundleResponse, PubkeysResponse,
+    RegisterResponse, ReplenishResponse, WrappedKeyPostResponse, WrappedKeyResponse,
 };
 pub use duress::{
     build_partial_duress_handlers, build_production_duress_config_handlers,

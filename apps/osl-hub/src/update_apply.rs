@@ -26,6 +26,10 @@ const HUB_CORE_DIR: &str = "osl-core";
 const IDENTITIES_DIR: &str = "hub-identities";
 const MESSAGE_STORE_DB: &str = "messages.sqlite";
 const OLD_BUILD_BACKUPS_DIR: &str = "update-old-build-backups";
+const APPLY_RECORD_FILE: &str = "update-apply-record.json";
+const HUB_CORE_DIR: &str = "osl-core";
+const IDENTITIES_DIR: &str = "hub-identities";
+const MESSAGE_STORE_DB: &str = "messages.sqlite";
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -50,6 +54,15 @@ pub struct UpdateApplyRecord {
     pub staged_build_dir: String,
     pub old_build_dir: String,
     pub state_copy_record_path: String,
+    #[serde(default)]
+    pub failed_at_unix_seconds: Option<u64>,
+    #[serde(default)]
+    pub failure_message: String,
+    pub successful_start_count: u32,
+    pub install_dir: String,
+    pub staged_build_dir: String,
+    #[serde(default)]
+    pub previous_build_dir: String,
     pub protected_state_dir: String,
     pub built_files: Vec<String>,
     pub identity_sha256_before: String,
@@ -180,6 +193,7 @@ pub fn begin_update_apply_with_old_files_at(
     };
     Ok(PendingUpdateApply {
     let pending = PendingUpdateApply {
+    Ok(PendingUpdateApply {
         app_config_dir: app_config_dir.to_path_buf(),
         install_dir: install_dir.to_path_buf(),
         previous_version: previous_version.to_owned(),
@@ -192,6 +206,7 @@ pub fn begin_update_apply_with_old_files_at(
     };
     write_recovery_record(&pending, old_built_files, reserved_at_unix_seconds)?;
     Ok(pending)
+    })
 }
 
 pub fn record_replaced_built_files(
@@ -239,6 +254,11 @@ pub fn record_replaced_built_files_at(
             .as_ref()
             .map(|path| path.display().to_string())
             .unwrap_or_default(),
+        failure_message: String::new(),
+        successful_start_count: 0,
+        install_dir: pending.install_dir.display().to_string(),
+        staged_build_dir: String::new(),
+        previous_build_dir: String::new(),
         protected_state_dir: pending.app_config_dir.display().to_string(),
         built_files,
         identity_sha256_before: pending.identity_sha256_before,
@@ -382,6 +402,9 @@ pub fn apply_staged_build_update_at(
     fs::create_dir_all(install_dir)
         .map_err(|_| "OSL update apply install directory could not be created".to_owned())?;
     let pending = begin_update_apply_with_old_files_at(
+    fs::create_dir_all(install_dir)
+        .map_err(|_| "OSL update apply install directory could not be created".to_owned())?;
+    let pending = begin_update_apply(
         app_config_dir,
         install_dir,
         previous_version,
@@ -394,6 +417,18 @@ pub fn apply_staged_build_update_at(
         applied_at_unix_seconds,
     )?;
     record_recovery_desired_build(app_config_dir, staged_build_dir)?;
+    )?;
+    let staged_files = staged_built_files(staged_build_dir)?;
+    if staged_files.is_empty() {
+        return Err("OSL update apply staged build is empty".to_owned());
+    }
+    let previous_build_dir = previous_build_backup_dir(
+        app_config_dir,
+        previous_version,
+        applied_version,
+        applied_at_unix_seconds,
+    );
+    backup_previous_built_files(install_dir, &previous_build_dir, &staged_files)?;
 
     for relative in &staged_files {
         let source = staged_build_dir.join(relative);
@@ -428,6 +463,8 @@ pub fn apply_staged_build_update_at(
         APPLY_RECORD_FILE,
         applied_at_unix_seconds,
     )?;
+    record.previous_build_dir = previous_build_dir.display().to_string();
+    write_apply_record(app_config_dir, &record)?;
     Ok(record)
 }
 
@@ -460,6 +497,7 @@ pub fn mark_update_finished_after_successful_start_at(
         return Ok(Some(record));
     }
     if record.status == UpdateApplyStatus::Failed {
+    if record.status != UpdateApplyStatus::PendingRestart {
         return Ok(Some(record));
     }
     if running_version != record.applied_version {
@@ -501,6 +539,37 @@ pub fn rollback_failed_update_after_start_failure_at(
     let reason = failure_reason.trim();
     if reason.is_empty() {
         return Err("OSL update rollback failure reason is required".to_owned());
+    Ok(Some(record))
+}
+
+pub fn roll_back_failed_update_after_start(
+    app_config_dir: &Path,
+    install_dir: &Path,
+    running_version: &str,
+    failure_message: &str,
+) -> Result<Option<UpdateApplyRecord>, String> {
+    let failed_at_unix_seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| "OSL update rollback clock is unavailable".to_owned())?
+        .as_secs();
+    roll_back_failed_update_after_start_at(
+        app_config_dir,
+        install_dir,
+        running_version,
+        failure_message,
+        failed_at_unix_seconds,
+    )
+}
+
+pub fn roll_back_failed_update_after_start_at(
+    app_config_dir: &Path,
+    install_dir: &Path,
+    running_version: &str,
+    failure_message: &str,
+    failed_at_unix_seconds: u64,
+) -> Result<Option<UpdateApplyRecord>, String> {
+    if failure_message.trim().is_empty() {
+        return Err("OSL update rollback requires a failure message".to_owned());
     }
     let path = app_config_dir.join(APPLY_RECORD_FILE);
     if !path.exists() {
@@ -523,6 +592,27 @@ pub fn rollback_failed_update_after_start_failure_at(
     record.status = UpdateApplyStatus::Failed;
     record.failed_at_unix_seconds = Some(failed_at_unix_seconds);
     record.failure_reason = Some(reason.to_owned());
+    if running_version != record.applied_version {
+        return Ok(Some(record));
+    }
+    if record.previous_build_dir.is_empty() {
+        return Err("OSL update rollback has no previous build backup".to_owned());
+    }
+
+    let backup_dir = PathBuf::from(&record.previous_build_dir);
+    restore_previous_built_files(&backup_dir, install_dir, &record.built_files)?;
+
+    let identity_now = identity_state_sha256(app_config_dir)?;
+    let history_now = message_history_sha256(app_config_dir)?;
+    if identity_now != record.identity_sha256_before
+        || history_now != record.message_history_sha256_before
+    {
+        return Err("OSL update rollback changed protected account state".to_owned());
+    }
+
+    record.status = UpdateApplyStatus::Failed;
+    record.failed_at_unix_seconds = Some(failed_at_unix_seconds);
+    record.failure_message = failure_message.to_owned();
     write_apply_record(app_config_dir, &record)?;
     Ok(Some(record))
 }
@@ -880,6 +970,96 @@ fn collect_files(root: &Path, current: &Path, files: &mut Vec<PathBuf>) -> Resul
                 .map_err(|_| "OSL update apply staged build escaped root".to_owned())?;
             files.push(relative.to_path_buf());
         }
+    }
+    Ok(())
+}
+
+fn previous_build_backup_dir(
+    app_config_dir: &Path,
+    previous_version: &str,
+    applied_version: &str,
+    applied_at_unix_seconds: u64,
+) -> PathBuf {
+    app_config_dir
+        .join("update-built-file-backups")
+        .join(format!(
+            "{}-to-{}-{}",
+            sanitize_version_for_path(previous_version),
+            sanitize_version_for_path(applied_version),
+            applied_at_unix_seconds
+        ))
+}
+
+fn sanitize_version_for_path(version: &str) -> String {
+    version
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || ".+-".contains(character) {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+fn backup_previous_built_files(
+    install_dir: &Path,
+    backup_dir: &Path,
+    relative_files: &[PathBuf],
+) -> Result<(), String> {
+    if backup_dir.exists() {
+        return Err("OSL update apply previous build backup already exists".to_owned());
+    }
+    for relative in relative_files {
+        reject_unsafe_relative_path(relative)?;
+        let source = install_dir.join(relative);
+        if !source.is_file() {
+            return Err("OSL update apply previous built file is unavailable".to_owned());
+        }
+        let destination = backup_dir.join(relative);
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent).map_err(|_| {
+                "OSL update apply previous build backup directory could not be created".to_owned()
+            })?;
+        }
+        fs::copy(&source, &destination)
+            .map_err(|_| "OSL update apply previous built file could not be copied".to_owned())?;
+    }
+    Ok(())
+}
+
+fn restore_previous_built_files(
+    backup_dir: &Path,
+    install_dir: &Path,
+    relative_files: &[String],
+) -> Result<(), String> {
+    for relative_text in relative_files {
+        let relative = PathBuf::from(relative_text);
+        reject_unsafe_relative_path(&relative)?;
+        let source = backup_dir.join(&relative);
+        if !source.is_file() {
+            return Err("OSL update rollback previous built file is unavailable".to_owned());
+        }
+        let destination = install_dir.join(&relative);
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent).map_err(|_| {
+                "OSL update rollback build directory could not be created".to_owned()
+            })?;
+        }
+        fs::copy(&source, &destination)
+            .map_err(|_| "OSL update rollback built file could not be restored".to_owned())?;
+    }
+    Ok(())
+}
+
+fn reject_unsafe_relative_path(relative: &Path) -> Result<(), String> {
+    if relative.is_absolute()
+        || relative
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err("OSL update apply built file escaped root".to_owned());
     }
     Ok(())
 }

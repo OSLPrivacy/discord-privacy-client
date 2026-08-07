@@ -131,6 +131,13 @@ export interface OslChatMessage {
   body: string;
   state: OslChatDeliveryState;
   timestampLabel: string;
+  reactions?: readonly OslChatMessageReaction[];
+}
+
+export interface OslChatMessageReaction {
+  emoji: string;
+  count: number;
+  mine: boolean;
 }
 
 export interface OslChatBuildWarning {
@@ -159,6 +166,7 @@ export interface OslChatsViewModel {
   buildIntegrity?: OslChatBuildIntegrityStatus | null;
   verificationWarningSurface?: VerificationWarningSurface;
   buildWarning?: OslChatBuildWarning | null;
+  verificationWarningSurface?: VerificationWarningSurface;
 }
 
 export type OslChatBuildIntegrityStatus = "verified" | "mismatch" | "unknown";
@@ -250,6 +258,19 @@ export function applyOslChatDraftToElement(
   if (draftElement && draftElement.value !== draft) draftElement.value = draft;
 }
 
+export function submitsOslChatDraft(event: {
+  key: string;
+  isComposing?: boolean;
+  altKey?: boolean;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+  shiftKey?: boolean;
+}): boolean {
+  if (event.key !== "Enter") return false;
+  if (event.isComposing) return false;
+  return !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey;
+}
+
 function deliveryLabel(state: OslChatDeliveryState): string {
   switch (state) {
     case "queued": return "Not sent";
@@ -321,8 +342,13 @@ function oslChatMutualReadiness(friend: OslChatFriend): boolean {
 function messageRow(message: OslChatMessage, friend: OslChatFriend): string {
   const label = deliveryLabel(message.state);
   const unreadable = oslChatMessageUnreadableNote(message, friend.handshakeConfirmed === true);
+  const reactionButtons = [
+    ...(message.reactions ?? []).map((reaction) => `<button class="osl-chat-reaction${reaction.mine ? " is-mine" : ""}" type="button" data-osl-chat-reaction="${escapeHtml(message.messageId)}" data-osl-chat-emoji="${escapeHtml(reaction.emoji)}" data-osl-chat-reaction-mine="${reaction.mine ? "true" : "false"}" aria-pressed="${reaction.mine ? "true" : "false"}"><span>${escapeHtml(reaction.emoji)}</span><span>${reaction.count}</span></button>`),
+    `<button class="osl-chat-reaction is-add" type="button" data-osl-chat-reaction="${escapeHtml(message.messageId)}" data-osl-chat-emoji="👍" data-osl-chat-reaction-mine="false" aria-label="Add reaction">👍</button>`,
+  ].join("");
   return `<article class="osl-chat-message is-${message.direction}" data-message-id="${escapeHtml(message.messageId)}">
     <div class="osl-chat-message-meta"><strong>${message.direction === "outgoing" ? "You" : escapeHtml(friend.nickname)}</strong><time>${escapeHtml(message.timestampLabel)}</time></div><p class="osl-chat-message-text">${escapeHtml(message.body)}</p>
+    <div class="osl-chat-reactions">${reactionButtons}</div>
     <footer><span class="osl-chat-message-state is-${message.state}">${label}</span>${unreadable ? `<span class="osl-chat-message-unreadable">${escapeHtml(unreadable)}</span>` : ""}</footer>
   </article>`;
 }

@@ -9,6 +9,8 @@
 use crate::auto_whitelist_rules::{
     discord_whitelist_kind_labels, AutoWhitelistAppKind, AutoWhitelistChoice, AutoWhitelistRule,
     AutoWhitelistRuleQuery,
+use crate::both_sides_burn_progress::{
+    BothSidesBurnProgressDto, BothSidesBurnProgressStore, BothSidesBurnRemovalStep,
 };
 use crate::state::AppState;
 use crate::{IpcError, IpcResult};
@@ -4646,6 +4648,32 @@ pub fn cmd_osl_chat_burn_sender_message_records_choice(
         remaining_local_count: result.remaining_local_count,
         equal_removal_counts: result.equal_removal_counts,
     })
+pub fn cmd_osl_begin_both_sides_burn_progress(
+    progress_path: PathBuf,
+    burn_id: String,
+    discord_message_ids: Vec<String>,
+) -> Result<BothSidesBurnProgressDto, String> {
+    record_activity_on_command_entry();
+    validate_selected_sender_message_records(&discord_message_ids)?;
+    BothSidesBurnProgressStore::new(progress_path).begin_or_resume(&burn_id, discord_message_ids)
+}
+
+pub fn cmd_osl_save_both_sides_burn_removal_progress(
+    progress_path: PathBuf,
+    burn_id: String,
+    removal_step: String,
+) -> Result<BothSidesBurnProgressDto, String> {
+    record_activity_on_command_entry();
+    let step = BothSidesBurnRemovalStep::parse(&removal_step)?;
+    BothSidesBurnProgressStore::new(progress_path).mark_finished(&burn_id, step)
+}
+
+pub fn cmd_osl_get_both_sides_burn_progress(
+    progress_path: PathBuf,
+    burn_id: String,
+) -> Result<BothSidesBurnProgressDto, String> {
+    record_activity_on_command_entry();
+    BothSidesBurnProgressStore::new(progress_path).report(&burn_id)
 }
 
 fn validate_selected_sender_message_records(discord_message_ids: &[String]) -> Result<(), String> {
@@ -4776,6 +4804,9 @@ fn count_sender_message_records(state: &AppState, message_ids: &[String]) -> Res
     store
         .count_message_records(message_ids)
         .map_err(|e| format!("OSL: sender message burn remaining records: {e}"))
+}
+
+    })
 }
 
 /// Pull diagnostic facts out of a Phase 4 cover string for the
@@ -11534,6 +11565,8 @@ const FRIEND_INVITE_LINKS_FILE: &str = "friend_invite_links.json";
 const FRIEND_INVITE_LINK_PREFIX: &str = "OSLINV1.";
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PendingFriendRequestRecord {
     pub peer_discord_id: String,
@@ -11747,6 +11780,9 @@ fn load_friend_invite_links(path: &Path) -> Result<Vec<FriendInviteLinkRecord>, 
         .map_err(|_| "OSL: invite link storage is unreadable".to_string())?;
     if !crate::main_password::has_enc_magic(&blob) {
         save_friend_invite_links(path, &records)?;
+    }
+    if !crate::main_password::has_enc_magic(&blob) {
+        save_blocked_people(path, &records)?;
     }
     Ok(records)
 }
@@ -12148,6 +12184,68 @@ pub fn cmd_osl_unblock_person(
             &peer_discord_id,
         )?,
     })
+pub fn cmd_osl_create_friend_request(
+    state: &AppState,
+    peer_discord_id: String,
+    scope_input: crate::scope::ScopeInput,
+) -> Result<SendFriendRequestResult, String> {
+    cmd_osl_send_friend_request(state, peer_discord_id, scope_input)
+}
+
+/// Resolve an exact public OSL name and create a pending DM friend request for
+/// the identity that owns it.
+pub fn cmd_osl_create_friend_request_by_osl_name(
+    state: &AppState,
+    public_osl_name: String,
+) -> Result<SendFriendRequestResult, String> {
+    record_activity_on_command_entry();
+    if !keystore::client::is_normalized_username(&public_osl_name) {
+        return Err("OSL: public OSL name must be exact and normalized".to_string());
+    }
+
+    let identity = state
+        .identity_slot()
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| "OSL: identity not loaded".to_string())?;
+    let client = state
+        .keyserver_slot()
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| "OSL: key server not configured".to_string())?;
+
+    let resolved = client
+        .resolve_username(&public_osl_name)
+        .map_err(|error| format!("OSL: public OSL name lookup failed: {error}"))?
+        .ok_or_else(|| "OSL: public OSL name was not found".to_string())?;
+    if resolved.user_id == identity.user_id {
+        return Err("OSL: refusing friend request for local self binding".to_string());
+    }
+
+    let pubkeys = client
+        .fetch_pubkeys(&resolved.user_id)
+        .map_err(|error| format!("OSL: public OSL name identity lookup failed: {error}"))?;
+    if pubkeys.user_id != resolved.user_id
+        || pubkeys.ik_ed25519_pub != STANDARD.encode(resolved.ed25519_public)
+    {
+        return Err(
+            "OSL: public OSL name identity bundle does not bind to the directory row".to_string(),
+        );
+    }
+    keystore::client::validate_peer_bundle(&pubkeys)
+        .map_err(|_| "OSL: public OSL name identity bundle verification failed".to_string())?;
+
+    let peer_id = resolved.user_id;
+    {
+        let mut peer_map = state.peer_map.lock().expect("peer_map mutex poisoned");
+        let peer = peer_map.entry(peer_id.clone()).or_default();
+        peer.osl_user_id = Some(peer_id.clone());
+        peer.tofu_key_bundle = Some(fetched_key_bundle(&pubkeys));
+    }
+    persist_peer_map_now(state);
+
+    let scope = crate::scope::Scope::dm(&peer_id);
+    cmd_osl_send_friend_request_with_dir_for_command(state, peer_id, (&scope).into())
 }
 
 fn cmd_osl_send_friend_request_with_dir(
@@ -12203,11 +12301,15 @@ fn cmd_osl_send_friend_request_with_dir(
 }
 
 pub fn cmd_osl_create_friend_request(
+fn cmd_osl_send_friend_request_with_dir_for_command(
     state: &AppState,
     peer_discord_id: String,
     scope_input: crate::scope::ScopeInput,
 ) -> Result<SendFriendRequestResult, String> {
     cmd_osl_send_friend_request(state, peer_discord_id, scope_input)
+    let dir =
+        keystore::osl_config_dir().map_err(|e| format!("OSL: pending friend request dir: {e}"))?;
+    cmd_osl_send_friend_request_with_dir(state, peer_discord_id, scope_input, &dir)
 }
 
 pub fn cmd_osl_list_friend_requests(
@@ -18369,6 +18471,18 @@ pub fn cmd_osl_set_main_password_after_recovery(
     crate::main_password::set_main_password_after_recovery(state, &dir, &new_password, &token)
 }
 
+pub fn cmd_osl_reset_main_password_after_recovery(
+    state: &AppState,
+    recovery_phrase: String,
+    new_password: String,
+) -> Result<(), String> {
+    record_activity_on_command_entry();
+    crate::main_password::validate_new_password(&new_password)?;
+    let dir = password_dir()?;
+    let token = crate::main_password::verify_recovery_phrase(state, &dir, &recovery_phrase)?;
+    crate::main_password::set_main_password_after_recovery(state, &dir, &new_password, &token)
+}
+
 pub fn cmd_osl_lockout_status() -> Result<LockoutStatusDto, String> {
     record_activity_on_command_entry();
     let dir = password_dir()?;
@@ -22547,6 +22661,9 @@ pub fn cmd_osl_new_place(
     record.validate().map_err(|error| format!("OSL: {error}"))?;
 
     let rule = state
+    validate_new_place_record(&place)?;
+    let app_kind = crate::auto_whitelist_rules::auto_whitelist_app_kind_for_place(&place)?;
+    let choice = state
         .app_preferences
         .lock()
         .expect("app_preferences mutex poisoned")
@@ -22562,6 +22679,44 @@ pub fn cmd_osl_new_place(
             result: "unlisted".to_string(),
             prompt: false,
         }),
+        crate::auto_whitelist_rules::AutoWhitelistChoice::OnlyIfAFriend => {
+            let Some(person_id) = new_place_person_id(&place) else {
+                return Ok(NewPlaceAutoWhitelistDto {
+                    app_kind,
+                    stable_id: place.stable_id,
+                    rule_choice: choice.label().to_string(),
+                    result: "skipped".to_string(),
+                    prompt: false,
+                });
+            };
+            let is_accepted_friend = state
+                .friend_ids
+                .lock()
+                .expect("friend_ids mutex poisoned")
+                .iter()
+                .any(|accepted| accepted == &person_id);
+            if !is_accepted_friend {
+                return Ok(NewPlaceAutoWhitelistDto {
+                    app_kind,
+                    stable_id: place.stable_id,
+                    rule_choice: choice.label().to_string(),
+                    result: "skipped".to_string(),
+                    prompt: false,
+                });
+            }
+            let dir =
+                keystore::osl_config_dir().map_err(|e| format!("OSL: allowed places dir: {e}"))?;
+            let stable_id = place.stable_id.clone();
+            crate::allowed_places::add_allowed_place_record(&dir, place)
+                .map_err(|e| format!("OSL: allowed place: {e}"))?;
+            Ok(NewPlaceAutoWhitelistDto {
+                app_kind,
+                stable_id,
+                rule_choice: choice.label().to_string(),
+                result: "allowed".to_string(),
+                prompt: false,
+            })
+        }
         other => Err(format!(
             "OSL: auto-whitelist rule '{}' is not implemented for new places",
             other.label()
@@ -22968,6 +23123,22 @@ pub fn cmd_osl_read_idle_lock_time_choice(
         .expect("app_preferences mutex poisoned")
         .idle_lock_time_choice;
     Ok(choice.into())
+fn new_place_person_id(place: &crate::allowed_places::AllowedPlaceRecord) -> Option<String> {
+    match (place.app.as_str(), place.kind.as_str()) {
+        (_, "direct_message") => stable_id_suffix(place),
+        ("email", "address" | "email_address") => stable_id_suffix(place),
+        ("email_address", _) => stable_id_suffix(place),
+        _ => None,
+    }
+}
+
+fn stable_id_suffix(place: &crate::allowed_places::AllowedPlaceRecord) -> Option<String> {
+    let expected_prefix = format!("{}:{}:{}:", place.app, place.account, place.kind);
+    place
+        .stable_id
+        .strip_prefix(&expected_prefix)
+        .filter(|person_id| !person_id.is_empty())
+        .map(str::to_owned)
 }
 
 fn validate_new_place_record(

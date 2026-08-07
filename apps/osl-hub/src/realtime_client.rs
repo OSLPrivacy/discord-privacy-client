@@ -115,6 +115,9 @@ impl AuthorizedFetch {
 /// Fetch-shaped actions that follow realtime replies. Empty replies schedule no
 /// store work; real replies keep one ordinary capability-negative decoy, and a
 /// matching carrier pointer also authorizes the real fetch.
+/// Fetch-shaped work that follows a non-empty realtime reply.  A matching
+/// carrier pointer authorizes the real fetch; the real reply also keeps one
+/// ordinary capability-negative decoy. Empty replies schedule no store work.
 pub enum ScheduledFetch {
     Authorized(AuthorizedFetch),
     Decoy(DecoyFetch),
@@ -263,6 +266,10 @@ impl RealtimeClient {
         // even if a caller accidentally retained a pointer with an all-zero id.
         // Every idle client receives the same empty frame, so a pretend fetch
         // there hides nothing and only spends the store's fetch budget.
+        // T1-51's empty response is a zero/zero frame. It is not a wakeup,
+        // even if a caller accidentally retained a pointer with an all-zero id.
+        // Every idle client receives the same empty frame, so there is no real
+        // event to hide and no reason to spend a store fetch.
         if wakeup.0 == [0; ID_BYTES] && wakeup.1.is_zero() {
             return Ok(());
         }
@@ -282,6 +289,11 @@ impl RealtimeClient {
                     blob_id: wakeup.1,
                     pointer,
                 }));
+            self.scheduled_fetches
+                .push_back(ScheduledFetch::Decoy(DecoyFetch::random()));
+        } else {
+            self.scheduled_fetches
+                .push_back(ScheduledFetch::Decoy(DecoyFetch::random()));
         }
         self.scheduled_fetches
             .push_back(ScheduledFetch::Decoy(DecoyFetch::random()));

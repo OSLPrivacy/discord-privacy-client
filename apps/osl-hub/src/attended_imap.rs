@@ -891,6 +891,8 @@ pub fn still_authorizes_imap_delete(
     }
     if context.now_unix_ms >= grant.deadline_unix_ms {
         return Err(ImapPolicyError::DeleteGrantExpired);
+    if context.now_unix_ms >= grant.deadline_unix_ms {
+        return Err(ImapPolicyError::GrantExpired);
     }
     if grant.revoked {
         return Err(ImapPolicyError::AuthorityRefused);
@@ -907,6 +909,10 @@ pub fn still_authorizes_imap_delete(
     if !grant
         .message_digests
         .contains(&prepared_message_digest(candidate))
+        return Err(ImapPolicyError::SingleUseAuthorityRequired);
+    }
+    if grant.owner_osl_user_id != candidate.owner_osl_user_id
+        || grant.account_id != candidate.account_id
     {
         return Err(ImapPolicyError::FingerprintMismatch);
     }
@@ -1160,6 +1166,15 @@ mod tests {
             used: false,
             revoked: false,
         }
+    }
+
+    fn deleted_targets_in_folder(mailbox: &ImapMailbox, folder: &str) -> Vec<String> {
+        mailbox
+            .deleted
+            .iter()
+            .filter(|(_, mailbox_name, _)| mailbox_name == folder)
+            .map(|(_, _, message_id)| message_id.clone())
+            .collect()
     }
 
     #[test]
@@ -1585,6 +1600,119 @@ mod tests {
             "TASK0411 direct_bad_requests={} distinct_refusal_codes={}",
             request_count,
             distinct_codes.len()
+        );
+    }
+
+    #[test]
+    fn task_0410_delete_grant_expiry_and_replay_block_refuses_without_deleting_record() {
+        let (mut fresh_mailbox, prepared) = fixture_and_prepared();
+        let context = ImapDeleteContext {
+            entitlement: ImapEntitlement::Pro,
+            phase: ImapDeletePhase::Executing,
+            now_unix_ms: 10_000,
+        };
+
+        let mut fresh = executable_grant(&prepared, context.now_unix_ms);
+        assert!(
+            delete_prepared_with_grant(&mut fresh_mailbox, &mut fresh, context, &prepared).is_ok()
+        );
+        assert_eq!(fresh_mailbox.deleted_count(), 1);
+        assert!(fresh.used);
+        println!(
+            "TASK0410 fresh_grant delete_result=ok deleted_count={} used={}",
+            fresh_mailbox.deleted_count(),
+            fresh.used
+        );
+
+        let (mut used_mailbox, used_prepared) = fixture_and_prepared();
+        let mut used = executable_grant(&used_prepared, context.now_unix_ms);
+        used.used = true;
+        let used_refusal =
+            delete_prepared_with_grant(&mut used_mailbox, &mut used, context, &used_prepared)
+                .unwrap_err();
+        assert_eq!(used_refusal, ImapPolicyError::SingleUseAuthorityRequired);
+        assert_eq!(used_mailbox.deleted_count(), 0);
+        println!(
+            "TASK0410 used_grant refusal={used_refusal:?} deleted_count={}",
+            used_mailbox.deleted_count()
+        );
+
+        let (mut expired_mailbox, expired_prepared) = fixture_and_prepared();
+        let mut expired = executable_grant(&expired_prepared, context.now_unix_ms);
+        expired.deadline_unix_ms = context.now_unix_ms;
+        let expired_refusal = delete_prepared_with_grant(
+            &mut expired_mailbox,
+            &mut expired,
+            context,
+            &expired_prepared,
+        )
+        .unwrap_err();
+        assert_eq!(expired_refusal, ImapPolicyError::GrantExpired);
+        assert_eq!(expired_mailbox.deleted_count(), 0);
+        println!(
+            "TASK0410 expired_grant refusal={expired_refusal:?} deleted_count={}",
+            expired_mailbox.deleted_count()
+        );
+    }
+
+    #[test]
+    fn task_1227_check_folder_burn_cannot_widen_itself() {
+        let owner = "owner-maple-1";
+        let account = "acct-maple-1";
+        let message_id = "maple-mail-1";
+        let mut mailbox = ImapMailbox::from_messages(vec![
+            ImapMessageSnapshot {
+                owner_osl_user_id: owner.to_owned(),
+                account_id: account.to_owned(),
+                mailbox: "Red".to_owned(),
+                message_id: message_id.to_owned(),
+                uid: 10,
+                fingerprint: message_fingerprint(account, "Red", message_id, 10),
+                authored_by_self: true,
+            },
+            ImapMessageSnapshot {
+                owner_osl_user_id: owner.to_owned(),
+                account_id: account.to_owned(),
+                mailbox: "Blue".to_owned(),
+                message_id: message_id.to_owned(),
+                uid: 20,
+                fingerprint: message_fingerprint(account, "Blue", message_id, 20),
+                authored_by_self: true,
+            },
+        ]);
+
+        let red_targets_before = deleted_targets_in_folder(&mailbox, "Red");
+        assert_eq!(red_targets_before.len(), 0);
+        println!(
+            "TASK1227 red_count_before={} red_targets_before={red_targets_before:?}",
+            red_targets_before.len()
+        );
+
+        let prepared = prepare_delete(&mailbox, owner, account, "Red", message_id).unwrap();
+        let receipt = delete_prepared(&mut mailbox, &prepared).unwrap();
+        assert_eq!(receipt.mailbox, "Red");
+        assert_eq!(receipt.message_id, message_id);
+        let red_targets_after = deleted_targets_in_folder(&mailbox, "Red");
+        assert_eq!(red_targets_after, vec![message_id.to_owned()]);
+        println!(
+            "TASK1227 red_delete_result message_id={} red_count_after={} red_targets_after={red_targets_after:?}",
+            receipt.message_id,
+            red_targets_after.len()
+        );
+
+        let mut widened_to_blue = prepared.clone();
+        widened_to_blue.mailbox = "Blue".to_owned();
+        let blue_refusal = delete_prepared(&mut mailbox, &widened_to_blue).unwrap_err();
+        assert_eq!(blue_refusal, ImapPolicyError::FingerprintMismatch);
+        println!(
+            "TASK1227 blue_refusal=Blue is refused as outside folder Red reason={blue_refusal:?}"
+        );
+
+        let red_targets_after_blue = deleted_targets_in_folder(&mailbox, "Red");
+        assert_eq!(red_targets_after_blue, vec![message_id.to_owned()]);
+        println!(
+            "TASK1227 red_final_count={} red_final_targets={red_targets_after_blue:?}",
+            red_targets_after_blue.len()
         );
     }
 

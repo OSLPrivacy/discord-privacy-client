@@ -241,6 +241,19 @@ pub fn clear_activation_code(state: &HubCoreState) -> Result<HubLicenseState, St
     license_state(state)
 }
 
+pub fn live_server_revision_report(
+    state: &HubCoreState,
+) -> Result<keystore::LiveServerRevisionReport, String> {
+    let keyserver = state
+        .osl
+        .keyserver_slot()
+        .clone()
+        .ok_or_else(|| "OSL keyserver is not configured".to_owned())?;
+    keyserver
+        .live_server_revision_report()
+        .map_err(|error| format!("OSL live server revision report unavailable: {error}"))
+}
+
 fn normalize_activation_code(value: &str) -> Result<String, String> {
     normalize_activation_code_for_build(value, cfg!(debug_assertions))
 }

@@ -1222,3 +1222,28 @@ identifier = "allow-list-osl-chat-conversations"
 description = "Allow only the trusted main OSL window to read first-party OSL Chat conversations for the creating member."
 commands.allow = ["list_osl_chat_conversations"]
 
+[[permission]]
+identifier = "allow-get-live-server-revision-report"
+description = "Read the configured live keyserver health metadata; this performs one GET request and sends no identity, token, signature, or request body."
+commands.allow = ["get_live_server_revision_report"]
+
+[[permission]]
+identifier = "allow-add-osl-chat-reaction"
+description = "Allow only the trusted main OSL window to add one bounded emoji reaction from the unlocked identity to one opaque message id in the active first-party OSL Chat."
+commands.allow = ["add_osl_chat_reaction"]
+
+[[permission]]
+identifier = "allow-remove-osl-chat-reaction"
+description = "Allow only the trusted main OSL window to remove one bounded emoji reaction from the unlocked identity on one opaque message id in the active first-party OSL Chat."
+commands.allow = ["remove_osl_chat_reaction"]
+
+[[permission]]
+identifier = "allow-accept-osl-chat-clipboard-image-attachment"
+description = "Allow only the trusted main OSL window to turn one encoded clipboard PNG or JPEG into a bounded local OSL Chat attachment card for the active verified friend scope; never reads paths, text clipboard contents, or provider history."
+commands.allow = ["accept_osl_chat_clipboard_image_attachment"]
+
+[[permission]]
+identifier = "allow-check-hub-recovery-word-retype"
+description = "Allow only the trusted main OSL window to ask for selected recovery word positions and check the words typed for those exact positions without echoing the expected words."
+commands.allow = ["check_hub_recovery_word_retype"]
+

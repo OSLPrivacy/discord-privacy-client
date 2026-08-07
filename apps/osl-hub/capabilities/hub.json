@@ -239,6 +239,11 @@
     "allow-list-group-verification-build-entries",
     "allow-read-owner-profile-picture-for-friend",
     "allow-create-osl-chat-direct-message-conversation",
-    "allow-list-osl-chat-conversations"
+    "allow-list-osl-chat-conversations",
+    "allow-get-live-server-revision-report",
+    "allow-check-hub-recovery-word-retype",
+    "allow-add-osl-chat-reaction",
+    "allow-remove-osl-chat-reaction",
+    "allow-accept-osl-chat-clipboard-image-attachment"
   ]
 }

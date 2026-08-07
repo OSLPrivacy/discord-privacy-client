@@ -29,6 +29,9 @@ param(
   [ValidateSet('On', 'Off')]
   [string]$Visibility = 'On',
 
+  [ValidatePattern('^[A-Z0-9._-]{0,64}$')]
+  [string]$QaMessage = '',
+
   [ValidateRange(10, 180)]
   [int]$TimeoutSeconds = 60
 )
@@ -213,6 +216,7 @@ public static class OslVmDiscordUiaNative {
 $script:HarnessDeadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
 $script:ExpectedOslPath = [IO.Path]::GetFullPath($OslExePath)
 $script:ExpectedOslSha = $OslExeSha256.ToLowerInvariant()
+$script:OnePersonDiscordQaConversation = 'deckard'
 if ($script:ExpectedOslSha -cnotmatch '^[0-9a-f]{64}$') { throw 'invalid OSL executable SHA-256' }
 
 function ConvertTo-SafeJson([object]$Value) {
@@ -596,7 +600,56 @@ function Get-FreshValue(
 }
 
 function New-DeterministicQaMessage {
+  if ($QaMessage) { return $QaMessage }
   "OSL QA $CaseId`: encrypted relay proof"
+}
+
+function ConvertFrom-DiscordQaComposerName([string]$ComposerName) {
+  $trimmed = $ComposerName.Trim()
+  $match = [regex]::Match($trimmed, '^(?:Message|Compose)\s+([@#]?)(?<name>[A-Za-z0-9._-]{1,48})$')
+  if (-not $match.Success) { return $null }
+  $match.Groups['name'].Value
+}
+
+function Assert-OnePersonDiscordQaConversation([string]$Conversation) {
+  if ($Conversation -cne $script:OnePersonDiscordQaConversation) {
+    throw ("Discord one-person QA target refused conversation '{0}'; expected '{1}'." -f
+      $Conversation, $script:OnePersonDiscordQaConversation)
+  }
+  [pscustomobject]@{
+    Ok = $true
+    Conversation = $Conversation
+    ExpectedConversation = $script:OnePersonDiscordQaConversation
+  }
+}
+
+function Get-CurrentDiscordQaConversation {
+  $main = Get-FreshMainSurface
+  $condition = New-Object Windows.Automation.PropertyCondition(
+    [Windows.Automation.AutomationElement]::ControlTypeProperty,
+    [Windows.Automation.ControlType]::Edit
+  )
+  $conversations = @($main.Root.FindAll([Windows.Automation.TreeScope]::Descendants, $condition) |
+    Where-Object {
+      -not $_.Current.IsOffscreen -and
+      -not $_.Current.BoundingRectangle.IsEmpty -and
+      [string]::IsNullOrWhiteSpace([string]$_.Current.AutomationId)
+    } |
+    ForEach-Object {
+      ConvertFrom-DiscordQaComposerName -ComposerName ([string]$_.Current.Name)
+    } |
+    Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
+    Sort-Object -Unique)
+  if ($conversations.Count -ne 1) {
+    throw ('Discord one-person QA target is unavailable or ambiguous: {0}' -f
+      [string]::Join(', ', @($conversations)))
+  }
+  [string]$conversations[0]
+}
+
+function Assert-CurrentOnePersonDiscordQaConversation {
+  $conversation = Get-CurrentDiscordQaConversation
+  Assert-OnePersonDiscordQaConversation -Conversation $conversation
 }
 
 function Get-MainState {
@@ -1176,6 +1229,7 @@ try {
 
     'SetDeterministic' {
       $null = Get-FreshOverlaySurface
+      $target = Assert-CurrentOnePersonDiscordQaConversation
       $message = New-DeterministicQaMessage
       Set-FreshValue 'Overlay' @([Windows.Automation.ControlType]::Edit) @() 'protected-draft' $message
       $set = Wait-SemanticPostcondition {
@@ -1184,13 +1238,14 @@ try {
         [pscustomobject]@{ Satisfied=($freshValue -ceq (New-DeterministicQaMessage)); Key=$surface.Fingerprint + '|' + $freshValue.Length }
       } 'deterministic protected draft' 2
       [pscustomobject]@{
-        Ok=$set.Satisfied; Action='SetDeterministic'; Utf8Bytes=[Text.Encoding]::UTF8.GetByteCount($message);
+        Ok=$set.Satisfied; Action='SetDeterministic'; Conversation=$target.Conversation; Utf8Bytes=[Text.Encoding]::UTF8.GetByteCount($message);
         Lines=([regex]::Matches($message, "`n")).Count + 1
       }
     }
 
     'Send' {
       $null = Get-FreshOverlaySurface
+      $target = Assert-CurrentOnePersonDiscordQaConversation
       $expected = New-DeterministicQaMessage
       $value = Get-FreshValue 'Overlay' @([Windows.Automation.ControlType]::Edit) @() 'protected-draft'
       if ($value -cne $expected) { throw 'deterministic protected draft is not present' }
@@ -1200,6 +1255,7 @@ try {
       [pscustomobject]@{
         Ok=$protectedSendSucceeded
         Action='Send'
+        Conversation=$target.Conversation
         Classification=$sent.Classification
         ProtectedSendSucceeded=$protectedSendSucceeded
         DiscordCarrierProven=($sent.Classification -ceq 'sentDiscordMarked')
@@ -1209,6 +1265,7 @@ try {
 
     'InspectInbound' {
       $null = Get-FreshOverlaySurface
+      $target = Assert-CurrentOnePersonDiscordQaConversation
       $plain = Wait-SemanticPostcondition {
         $snapshot = Get-ExactPlaintextSnapshot
         [pscustomobject]@{
@@ -1218,7 +1275,7 @@ try {
         }
       } 'exact inbound plaintext and receive receipt' 2
       [pscustomobject]@{
-        Ok=$plain.Satisfied; Action='InspectInbound'; ExactPlaintextCount=$plain.Snapshot.ExactPlaintextCount;
+        Ok=$plain.Satisfied; Action='InspectInbound'; Conversation=$target.Conversation; ExactPlaintextCount=$plain.Snapshot.ExactPlaintextCount;
         ReceivedReceiptCount=$plain.Snapshot.ReceivedReceiptCount; Utf8Bytes=$plain.Snapshot.Utf8Bytes; Lines=$plain.Snapshot.Lines
       }
     }
@@ -1384,6 +1441,7 @@ try {
     Error = 'uia-harness-failed-closed'
     ExceptionType = $safeType
     Detail = if ($exception.Message.Length -le 160) { $exception.Message } else { $exception.Message.Substring(0, 160) }
+    PlacedCharacters = 0
   })
   exit 1
 }

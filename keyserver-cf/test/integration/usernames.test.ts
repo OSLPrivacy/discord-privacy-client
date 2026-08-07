@@ -39,6 +39,8 @@ const snowflakeId = () => `9000000000000${String(100000 + sequence++).padStart(6
 const testDb = (env as unknown as { DB: D1Database }).DB;
 const PUBLIC_NAME_PROOF_DOMAIN = "OSL-PUBLIC-NAME-PROOF-v1\u0000";
 const serviceAccountId = () => `90000000000000${String(3000 + sequence++).padStart(4, "0")}`;
+const testDb = (env as unknown as { DB: D1Database }).DB;
+const PUBLIC_NAME_PROOF_DOMAIN = "OSL-PUBLIC-NAME-PROOF-v1\u0000";
 
 function b64url(bytes: Uint8Array): string {
   let value = "";
@@ -402,6 +404,11 @@ async function rawClaim(
       signature_b64,
       public_name_proof: proof,
     }),
+  const proofFields = await publicNameProofFields(uid, pair.signingKey, username);
+  return SELF.fetch("http://test/v1/usernames/claim", {
+    method: "POST",
+    headers: { "content-type": "application/json", "cf-connecting-ip": `198.51.100.${sequence % 240 + 1}` },
+    body: JSON.stringify({ username, user_id: uid, friend_code, request_id: requestId, timestamp_ms, signature_b64, ...proofFields }),
   });
 }
 
@@ -893,6 +900,7 @@ describe("username directory", () => {
         signature_b64: wrongSig,
         public_name_proof: wrongSigProof,
       }),
+      body: JSON.stringify({ username: "wrongkey", user_id: uid, friend_code: invite, request_id, timestamp_ms, signature_b64: wrongSig, ...proofFields }),
     });
     expect(wrong.status).toBe(401);
     const attackerInvite = await friendCode(uid, attacker);
@@ -921,6 +929,7 @@ describe("username directory", () => {
       body: JSON.stringify({ username: "replay_test", user_id: uid, service_account_id: serviceAccountId, friend_code, request_id, timestamp_ms, signature_b64 }),
       body: JSON.stringify({ username: "replay_test", user_id: uid, friend_code, request_id, timestamp_ms, signature_b64, ...(await publicNameProofFields(uid, pair.signingKey, "replay_test")) }),
       body: JSON.stringify({ username: "replay_test", user_id: uid, friend_code, request_id, timestamp_ms, signature_b64, public_name_proof }),
+      body: JSON.stringify({ username: "replay_test", user_id: uid, friend_code, request_id, timestamp_ms, signature_b64, ...(await publicNameProofFields(uid, pair.signingKey, "replay_test")) }),
     };
     expect((await SELF.fetch("http://test/v1/usernames/claim", init)).status).toBe(200);
     expect((await SELF.fetch("http://test/v1/usernames/claim", init)).status).toBe(409);

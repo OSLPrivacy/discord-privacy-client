@@ -222,6 +222,7 @@ export interface WrappedKeyPostCanonicalInput {
   blob_version: number;
   single_use: boolean;
   display_duration_seconds: number | null;
+  expiry_seconds?: number | null;
   expires_at: string;
   timestamp_ms: number;
 }
@@ -254,6 +255,10 @@ export function canonicalWrappedKeyPostBytes(
     parts.push(u32be(args.display_duration_seconds));
   }
   parts.push(lpString(args.expires_at));
+  if (args.expiry_seconds != null) {
+    parts.push(u8(1));
+    parts.push(u32be(args.expiry_seconds));
+  }
   parts.push(lpString(String(args.timestamp_ms)));
   return concatBytes(parts);
 }

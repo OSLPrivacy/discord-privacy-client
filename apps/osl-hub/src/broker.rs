@@ -25,6 +25,11 @@ use crate::security::{self, HubSecurityState, ManualPeerBinding};
 use crate::service_host::{service_manifest, validate_opaque_id, ActiveServiceHost};
 use crate::service_scope_index::{ServiceScopeIndexState, ServiceScopeRegistration};
 use crate::services::{service_kind_from_id, ServiceRegistryState};
+use crate::service_scope_index::ServiceScopeRegistration;
+use crate::services::{
+    messaging_risk_refusal, require_messaging_risk_agreed, service_kind_from_id,
+    ServiceRegistryState,
+};
 
 // Kept beside the broker rather than as an unreferenced helper: this public
 // entry is the application-level path that prepares one sealed copy per device.
@@ -193,9 +198,11 @@ const MAX_VIEW_ONCE_DISPLAY_DURATION_SECONDS: u64 = 60;
 const MAX_ATTACHMENT_B64_BYTES: usize = 32 * 1024 * 1024;
 const MAX_LOCAL_LEDGER_BYTES: usize = 2 * 1024 * 1024;
 const MAX_LOCAL_LEDGER_ENTRIES: usize = 4_096;
+const MAX_OSL_CHAT_REACTION_BYTES: usize = 32;
 const LOCAL_PROTECTED_VERSION: u32 = 1;
 const PEER_PROTECTED_VERSION: u32 = 2;
 const PEER_PROTECTED_CHUNK_VERSION: u32 = 4;
+const OSL_CHAT_REACTION_VERSION: u32 = 1;
 const PEER_PROTECTED_CHUNK_PREFIX: &[u8; 8] = b"OSLTXT4\0";
 
 fn selected_view_once_display_duration(
@@ -248,6 +255,7 @@ const VIEW_ONCE_ALREADY_OPENED: &str = "This view-once message was already opene
 const LOCAL_PROTECTED_MESSAGE_TYPE: u8 = 0x80;
 const LOCAL_PROTECTED_FILE: &str = "hub_local_protected.json";
 const NATIVE_OVERLAY_RECEIPTS_FILE: &str = "hub_native_overlay_receipts.json";
+const OSL_CHAT_REACTIONS_FILE: &str = "hub_osl_chat_reactions.json";
 const LOCAL_PROTECTED_LABEL: &str = "local_protected_loopback";
 /// Must change only with the broker relay call sites themselves. The current
 /// send/receive path below uses direct-manual-v3 and never calls
@@ -387,6 +395,7 @@ pub struct HubBrokerState {
     local_protected_transition: Mutex<()>,
     native_overlay_view_once_reveal_transition: Mutex<()>,
     native_overlay_receipt_transition: Mutex<()>,
+    osl_chat_reaction_transition: Mutex<()>,
     inbound_privacy_receipts: Mutex<BTreeMap<([u8; 32], [u8; 32]), ReceiptState>>,
     native_overlay_received_view_once: Mutex<BTreeMap<String, i64>>,
     native_overlay_second_reveal_refusals: Mutex<BTreeMap<String, ViewOnceSecondRevealTrace>>,
@@ -399,6 +408,7 @@ impl core::fmt::Debug for HubBrokerState {
             .field("local_protected_transition", &"<mutex>")
             .field("native_overlay_view_once_reveal_transition", &"<mutex>")
             .field("native_overlay_receipt_transition", &"<mutex>")
+            .field("osl_chat_reaction_transition", &"<mutex>")
             .field("inbound_privacy_receipts", &"<mutex>")
             .field(
                 "native_overlay_received_view_once_len",
@@ -804,6 +814,23 @@ impl HubBrokerState {
                     && active.manual_peer.is_some()
             })
             .ok_or_else(|| "OSL native Discord protection is not active".to_owned())?;
+        Ok(active.lease.context_token.clone())
+    }
+
+    pub fn active_messaging_service_context_token(&self) -> Result<String, String> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| "OSL broker state is unavailable".to_owned())?;
+        let active = inner
+            .active
+            .as_ref()
+            .filter(|active| {
+                active.authority == ContextAuthority::ManualPeer
+                    && messaging_risk_refusal(&active.context.service_id).is_some()
+                    && active.manual_peer.is_some()
+            })
+            .ok_or_else(|| "OSL messaging service protection is not active".to_owned())?;
         Ok(active.lease.context_token.clone())
     }
 
@@ -1384,6 +1411,55 @@ pub struct PreparedNativeOverlayText {
     pub person_to_person_e2ee: bool,
     pub view_once: bool,
     pub delivered_to_osl_inbox: bool,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OslChatReactionResult {
+    pub message_id: String,
+    pub emoji: String,
+    pub identity_osl_user_id: String,
+    pub added: bool,
+    pub removed: bool,
+    pub reaction_count: usize,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OslChatMessageReaction {
+    pub emoji: String,
+    pub count: usize,
+    pub mine: bool,
+}
+
+#[derive(Clone, Serialize)]
+pub struct OslChatHistoryRow {
+    pub discord_message_id: String,
+    pub channel_id: String,
+    pub sender_discord_id: String,
+    pub sender_osl_user_id: String,
+    pub plaintext: String,
+    pub decrypted_at: i64,
+    pub burned: bool,
+    pub reactions: Vec<OslChatMessageReaction>,
+}
+
+impl OslChatHistoryRow {
+    fn from_stored(
+        row: ipc::commands::StoredMessageDto,
+        reactions: Vec<OslChatMessageReaction>,
+    ) -> Self {
+        Self {
+            discord_message_id: row.discord_message_id,
+            channel_id: row.channel_id,
+            sender_discord_id: row.sender_discord_id,
+            sender_osl_user_id: row.sender_osl_user_id,
+            plaintext: row.plaintext,
+            decrypted_at: row.decrypted_at,
+            burned: row.burned,
+            reactions,
+        }
+    }
 }
 
 /// Plaintext is deliberately nested only in the established non-Debug DTO.
@@ -2141,6 +2217,22 @@ struct NativeOverlayReceiptLedger {
     version: u32,
     #[serde(default)]
     records: BTreeMap<String, NativeOverlayReceiptRecord>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct OslChatReactionRecord {
+    scope_key_sha256: String,
+    message_id: String,
+    identity_osl_user_id: String,
+    emoji: String,
+    created_at: i64,
+}
+
+#[derive(Default, Serialize, Deserialize)]
+struct OslChatReactionLedger {
+    version: u32,
+    #[serde(default)]
+    records: BTreeMap<String, OslChatReactionRecord>,
 }
 
 pub fn prepare_encrypted_text(
@@ -4300,6 +4392,7 @@ pub fn prepare_native_discord_overlay_text_with_route_clients(
 
 #[allow(clippy::too_many_arguments)]
 pub fn prepare_native_discord_overlay_text_with_timer_picker_and_route_clients(
+pub fn prepare_active_messaging_service_overlay_text_with_route_clients(
     core: &HubCoreState,
     security_state: &HubSecurityState,
     broker: &HubBrokerState,
@@ -4311,6 +4404,10 @@ pub fn prepare_native_discord_overlay_text_with_timer_picker_and_route_clients(
     keyserver_client: Option<&keystore::KeyServerClient>,
 ) -> Result<PreparedNativeOverlayCarrier, String> {
     let context_token = broker.active_native_manual_context_token()?;
+    store_client: &ipc::cipher_store_client::CipherStoreClient,
+    keyserver_client: Option<&keystore::KeyServerClient>,
+) -> Result<PreparedNativeOverlayCarrier, String> {
+    let context_token = broker.active_messaging_service_context_token()?;
     prepare_peer_inbox_text_with_route_clients(
         core,
         security_state,
@@ -4719,6 +4816,11 @@ fn prepare_peer_inbox_text_with_route_clients(
     let manual = broker.manual_peer_for(context_token)?;
     let context = broker.context_for(context_token)?;
     security::require_person_not_blocked(&manual.person_id)?;
+    require_messaging_risk_agreed(
+        &context.self_osl_id,
+        &context.service_id,
+        &context.account_id,
+    )?;
     let now = ipc::main_password::now_unix_secs_pub();
     let expiry = peer_send_expiry_for_scope_and_picker(manual.scope.clone(), timer_picker, now)
         .map_err(|_| {
@@ -6188,7 +6290,9 @@ pub fn load_osl_chat_history_with_visibility(
     broker: &HubBrokerState,
     hide_others_messages: bool,
 ) -> Result<Vec<ipc::commands::StoredMessageDto>, String> {
+) -> Result<Vec<OslChatHistoryRow>, String> {
     let context_token = broker.active_osl_chat_context_token()?;
+    let context = broker.context_for(&context_token)?;
     let manual = broker.manual_peer_for(&context_token)?;
     let context = broker.context_for(&context_token)?;
     security::require_person_not_blocked(&manual.person_id)?;
@@ -6205,10 +6309,84 @@ pub fn load_osl_chat_history_with_visibility(
     )?;
     query_osl_chat_visible_records(
         core,
+    let rows = ipc::commands::cmd_osl_load_channel_history(
+        &core.osl,
         scope_storage_key(&manual.scope)?,
         &context.self_osl_id,
         filter,
         Some(200),
+    )?;
+    let (identity, file_key) = local_protected_identity(core, &context)?;
+    let dir = keystore::osl_config_dir()
+        .map_err(|_| "OSL Privacy account storage is unavailable".to_owned())?;
+    let _transition = broker
+        .osl_chat_reaction_transition
+        .lock()
+        .map_err(|_| "OSL Chat reaction state is unavailable".to_owned())?;
+    let ledger = load_osl_chat_reaction_ledger(&dir.join(OSL_CHAT_REACTIONS_FILE), &file_key)?;
+    let scope_key_sha256 = sha256_hex(context.conversation_id.as_bytes());
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            let reactions = reaction_summary_for_message(
+                &ledger,
+                &scope_key_sha256,
+                &row.discord_message_id,
+                &identity.user_id,
+            );
+            OslChatHistoryRow::from_stored(row, reactions)
+        })
+        .collect())
+}
+
+pub fn add_osl_chat_reaction(
+    core: &HubCoreState,
+    broker: &HubBrokerState,
+    message_id: String,
+    emoji: String,
+) -> Result<OslChatReactionResult, String> {
+    let context_token = broker.active_osl_chat_context_token()?;
+    let context = broker.context_for(&context_token)?;
+    let (identity, file_key) = local_protected_identity(core, &context)?;
+    let dir = keystore::osl_config_dir()
+        .map_err(|_| "OSL Privacy account storage is unavailable".to_owned())?;
+    let _transition = broker
+        .osl_chat_reaction_transition
+        .lock()
+        .map_err(|_| "OSL Chat reaction state is unavailable".to_owned())?;
+    add_osl_chat_reaction_at_path(
+        &dir.join(OSL_CHAT_REACTIONS_FILE),
+        &file_key,
+        &context.conversation_id,
+        &message_id,
+        &identity.user_id,
+        &emoji,
+        ipc::main_password::now_unix_secs_pub(),
+    )
+}
+
+pub fn remove_osl_chat_reaction(
+    core: &HubCoreState,
+    broker: &HubBrokerState,
+    message_id: String,
+    emoji: String,
+) -> Result<OslChatReactionResult, String> {
+    let context_token = broker.active_osl_chat_context_token()?;
+    let context = broker.context_for(&context_token)?;
+    let (identity, file_key) = local_protected_identity(core, &context)?;
+    let dir = keystore::osl_config_dir()
+        .map_err(|_| "OSL Privacy account storage is unavailable".to_owned())?;
+    let _transition = broker
+        .osl_chat_reaction_transition
+        .lock()
+        .map_err(|_| "OSL Chat reaction state is unavailable".to_owned())?;
+    remove_osl_chat_reaction_at_path(
+        &dir.join(OSL_CHAT_REACTIONS_FILE),
+        &file_key,
+        &context.conversation_id,
+        &message_id,
+        &identity.user_id,
+        &emoji,
     )
     .map(|rows| {
         filter_osl_chat_history_visibility(rows, &context.self_osl_id, hide_others_messages)
@@ -10112,6 +10290,210 @@ fn write_local_ledger(
     let encrypted = ipc::main_password::encrypt_at_rest(&plaintext, file_key)
         .map_err(|_| "OSL protected ledger encryption failed".to_owned())?;
     crate::atomic_file::write_recoverable(path, &encrypted, "OSL protected ledger")
+}
+
+fn load_osl_chat_reaction_ledger(
+    path: &Path,
+    file_key: &[u8; 32],
+) -> Result<OslChatReactionLedger, String> {
+    let Some(bytes) = crate::atomic_file::read_recoverable_bounded(
+        path,
+        MAX_LOCAL_LEDGER_BYTES as u64,
+        "OSL Chat reaction ledger",
+    )?
+    else {
+        return Ok(OslChatReactionLedger::default());
+    };
+    if bytes.len() > MAX_LOCAL_LEDGER_BYTES || !ipc::main_password::has_enc_magic(&bytes) {
+        return Err("OSL Chat reaction ledger is invalid or not encrypted".to_owned());
+    }
+    let plaintext = ipc::main_password::decrypt_at_rest(&bytes, file_key)
+        .map_err(|_| "OSL Chat reaction ledger could not be decrypted".to_owned())?;
+    let ledger: OslChatReactionLedger = serde_json::from_slice(&plaintext)
+        .map_err(|_| "OSL Chat reaction ledger is malformed".to_owned())?;
+    if ledger.version != OSL_CHAT_REACTION_VERSION
+        || ledger.records.len() > MAX_LOCAL_LEDGER_ENTRIES
+    {
+        return Err("OSL Chat reaction ledger version or size is invalid".to_owned());
+    }
+    Ok(ledger)
+}
+
+fn write_osl_chat_reaction_ledger(
+    path: &Path,
+    ledger: &OslChatReactionLedger,
+    file_key: &[u8; 32],
+) -> Result<(), String> {
+    let plaintext = serde_json::to_vec(ledger)
+        .map_err(|_| "OSL Chat reaction ledger could not be encoded".to_owned())?;
+    if plaintext.len() > MAX_LOCAL_LEDGER_BYTES {
+        return Err("OSL Chat reaction ledger exceeds its storage limit".to_owned());
+    }
+    let encrypted = ipc::main_password::encrypt_at_rest(&plaintext, file_key)
+        .map_err(|_| "OSL Chat reaction ledger encryption failed".to_owned())?;
+    crate::atomic_file::write_recoverable(path, &encrypted, "OSL Chat reaction ledger")
+}
+
+fn validate_osl_chat_reaction_inputs(
+    message_id: &str,
+    identity_osl_user_id: &str,
+    emoji: &str,
+) -> Result<(), String> {
+    if !valid_peer_message_id(message_id) {
+        return Err("OSL Chat reaction message id is invalid".to_owned());
+    }
+    validate_context_id(identity_osl_user_id, "reaction identity")?;
+    if emoji.is_empty()
+        || emoji.len() > MAX_OSL_CHAT_REACTION_BYTES
+        || emoji.trim() != emoji
+        || emoji.chars().any(char::is_control)
+    {
+        return Err("OSL Chat reaction emoji is invalid".to_owned());
+    }
+    Ok(())
+}
+
+fn osl_chat_reaction_record_key(
+    scope_key_sha256: &str,
+    message_id: &str,
+    identity_osl_user_id: &str,
+    emoji: &str,
+) -> String {
+    let mut hash = Sha256::new();
+    for part in [
+        "OSL-CHAT-REACTION-v1",
+        scope_key_sha256,
+        message_id,
+        identity_osl_user_id,
+        emoji,
+    ] {
+        hash.update((part.len() as u64).to_be_bytes());
+        hash.update(part.as_bytes());
+    }
+    sha256_hex(&hash.finalize())
+}
+
+fn reaction_count_for_message(
+    ledger: &OslChatReactionLedger,
+    scope_key_sha256: &str,
+    message_id: &str,
+) -> usize {
+    ledger
+        .records
+        .values()
+        .filter(|record| {
+            record.scope_key_sha256 == scope_key_sha256 && record.message_id == message_id
+        })
+        .count()
+}
+
+fn reaction_summary_for_message(
+    ledger: &OslChatReactionLedger,
+    scope_key_sha256: &str,
+    message_id: &str,
+    identity_osl_user_id: &str,
+) -> Vec<OslChatMessageReaction> {
+    let mut reactions = BTreeMap::<String, OslChatMessageReaction>::new();
+    for record in ledger.records.values().filter(|record| {
+        record.scope_key_sha256 == scope_key_sha256 && record.message_id == message_id
+    }) {
+        let summary =
+            reactions
+                .entry(record.emoji.clone())
+                .or_insert_with(|| OslChatMessageReaction {
+                    emoji: record.emoji.clone(),
+                    count: 0,
+                    mine: false,
+                });
+        summary.count = summary.count.saturating_add(1);
+        summary.mine |= record.identity_osl_user_id == identity_osl_user_id;
+    }
+    reactions.into_values().collect()
+}
+
+fn add_osl_chat_reaction_at_path(
+    path: &Path,
+    file_key: &[u8; 32],
+    scope_key: &str,
+    message_id: &str,
+    identity_osl_user_id: &str,
+    emoji: &str,
+    created_at: i64,
+) -> Result<OslChatReactionResult, String> {
+    validate_osl_chat_reaction_inputs(message_id, identity_osl_user_id, emoji)?;
+    if scope_key.is_empty() {
+        return Err("OSL Chat reaction scope is invalid".to_owned());
+    }
+    let scope_key_sha256 = sha256_hex(scope_key.as_bytes());
+    let record_key =
+        osl_chat_reaction_record_key(&scope_key_sha256, message_id, identity_osl_user_id, emoji);
+    let mut ledger = load_osl_chat_reaction_ledger(path, file_key)?;
+    let added = if ledger.records.contains_key(&record_key) {
+        false
+    } else {
+        if ledger.records.len() >= MAX_LOCAL_LEDGER_ENTRIES {
+            let oldest = ledger
+                .records
+                .iter()
+                .min_by_key(|(_, record)| record.created_at)
+                .map(|(id, _)| id.clone());
+            if let Some(oldest) = oldest {
+                ledger.records.remove(&oldest);
+            }
+        }
+        ledger.version = OSL_CHAT_REACTION_VERSION;
+        ledger.records.insert(
+            record_key,
+            OslChatReactionRecord {
+                scope_key_sha256: scope_key_sha256.clone(),
+                message_id: message_id.to_owned(),
+                identity_osl_user_id: identity_osl_user_id.to_owned(),
+                emoji: emoji.to_owned(),
+                created_at,
+            },
+        );
+        write_osl_chat_reaction_ledger(path, &ledger, file_key)?;
+        true
+    };
+    Ok(OslChatReactionResult {
+        message_id: message_id.to_owned(),
+        emoji: emoji.to_owned(),
+        identity_osl_user_id: identity_osl_user_id.to_owned(),
+        added,
+        removed: false,
+        reaction_count: reaction_count_for_message(&ledger, &scope_key_sha256, message_id),
+    })
+}
+
+fn remove_osl_chat_reaction_at_path(
+    path: &Path,
+    file_key: &[u8; 32],
+    scope_key: &str,
+    message_id: &str,
+    identity_osl_user_id: &str,
+    emoji: &str,
+) -> Result<OslChatReactionResult, String> {
+    validate_osl_chat_reaction_inputs(message_id, identity_osl_user_id, emoji)?;
+    if scope_key.is_empty() {
+        return Err("OSL Chat reaction scope is invalid".to_owned());
+    }
+    let scope_key_sha256 = sha256_hex(scope_key.as_bytes());
+    let record_key =
+        osl_chat_reaction_record_key(&scope_key_sha256, message_id, identity_osl_user_id, emoji);
+    let mut ledger = load_osl_chat_reaction_ledger(path, file_key)?;
+    let removed = ledger.records.remove(&record_key).is_some();
+    if removed {
+        ledger.version = OSL_CHAT_REACTION_VERSION;
+        write_osl_chat_reaction_ledger(path, &ledger, file_key)?;
+    }
+    Ok(OslChatReactionResult {
+        message_id: message_id.to_owned(),
+        emoji: emoji.to_owned(),
+        identity_osl_user_id: identity_osl_user_id.to_owned(),
+        added: false,
+        removed,
+        reaction_count: reaction_count_for_message(&ledger, &scope_key_sha256, message_id),
+    })
 }
 
 fn prune_local_ledger_context(

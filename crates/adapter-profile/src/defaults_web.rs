@@ -222,6 +222,7 @@ pub fn proton_web_control_targets() -> &'static [EmailWebControlTarget] {
 }
 
 const ICLOUD_REQUIRED_WEB_CONTROL_TARGET_NAMES: &[&str] = &[
+pub const MAIL_COM_WEB_TARGET_NAMES: [&str; 6] = [
     "compose",
     "body",
     "Send",
@@ -320,6 +321,8 @@ fn validate_required_email_web_control_targets(
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WebMailTarget {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MailComWebTarget {
     pub name: &'static str,
     pub selector: TypedSelector,
 }
@@ -337,6 +340,21 @@ pub fn yahoo_web_mail_targets() -> Vec<YahooWebTarget> {
             Some("Compose"),
         ),
         web_mail_accessibility_target(
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MissingMailComWebTarget {
+    pub name: &'static str,
+}
+
+/// Data-only targets for Mail.com's reviewed fixed-origin webmail surface.
+pub fn mail_com_web_mail_targets() -> Vec<MailComWebTarget> {
+    vec![
+        mail_com_accessibility_target(
+            "compose",
+            SelectorKind::ComposeButton,
+            "button",
+            Some("Compose E-mail"),
+        ),
+        mail_com_accessibility_target(
             "body",
             SelectorKind::BodyInput,
             "textbox",
@@ -344,6 +362,8 @@ pub fn yahoo_web_mail_targets() -> Vec<YahooWebTarget> {
         ),
         web_mail_accessibility_target("Send", SelectorKind::SendButton, "button", Some("Send")),
         web_mail_accessibility_target(
+        mail_com_accessibility_target("Send", SelectorKind::SendButton, "button", Some("Send")),
+        mail_com_accessibility_target(
             "folders",
             SelectorKind::FolderList,
             "navigation",
@@ -356,6 +376,13 @@ pub fn yahoo_web_mail_targets() -> Vec<YahooWebTarget> {
             Some("Messages"),
         ),
         web_mail_accessibility_target(
+        mail_com_accessibility_target(
+            "thread view",
+            SelectorKind::ThreadView,
+            "list",
+            Some("E-mail list"),
+        ),
+        mail_com_accessibility_target(
             "reading pane",
             SelectorKind::ReadingPane,
             "region",
@@ -402,12 +429,29 @@ pub fn tuta_web_mail_targets() -> Vec<TutaWebTarget> {
 }
 
 fn web_mail_accessibility_target(
+pub fn validate_mail_com_web_mail_targets(
+    targets: &[MailComWebTarget],
+) -> Result<(), MissingMailComWebTarget> {
+    for required in MAIL_COM_WEB_TARGET_NAMES {
+        if !targets
+            .iter()
+            .any(|target| target.name == required && target.selector.required)
+        {
+            return Err(MissingMailComWebTarget { name: required });
+        }
+    }
+    Ok(())
+}
+
+fn mail_com_accessibility_target(
     name: &'static str,
     kind: SelectorKind,
     role: &'static str,
     accessible_name: Option<&'static str>,
 ) -> WebMailTarget {
     WebMailTarget {
+) -> MailComWebTarget {
+    MailComWebTarget {
         name,
         selector: TypedSelector {
             kind,
@@ -586,5 +630,35 @@ mod tests {
             targets.len(),
             names.join("|")
         );
+    fn task_1267_mail_com_mapping_contains_all_six_named_targets_and_refuses_missing_by_name() {
+        let targets = mail_com_web_mail_targets();
+        let names = targets.iter().map(|target| target.name).collect::<Vec<_>>();
+
+        assert_eq!(names, MAIL_COM_WEB_TARGET_NAMES);
+        assert!(targets.iter().all(|target| target.selector.required));
+        validate_mail_com_web_mail_targets(&targets).expect("complete Mail.com mapping is valid");
+
+        let mut refused = Vec::new();
+        for missing in MAIL_COM_WEB_TARGET_NAMES {
+            let incomplete = targets
+                .iter()
+                .filter(|target| target.name != missing)
+                .cloned()
+                .collect::<Vec<_>>();
+            let err = validate_mail_com_web_mail_targets(&incomplete)
+                .expect_err("mapping missing a required target must be refused");
+            assert_eq!(err.name, missing);
+            refused.push(err.name);
+        }
+
+        println!(
+            "TASK1267 mail_com_targets={} names={}",
+            targets.len(),
+            names.join("|")
+        );
+        for name in &names {
+            println!("TASK1267 named_target={name}");
+        }
+        println!("TASK1267 refused_missing={}", refused.join("|"));
     }
 }

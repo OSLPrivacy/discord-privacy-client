@@ -17,6 +17,9 @@ use crate::models::{
 const REGISTRY_VERSION: u8 = 3;
 const MAX_REGISTRY_BYTES: u64 = 64 * 1024;
 const MAX_ACCOUNTS_PER_SERVICE: usize = 10;
+const MESSAGING_RISK_AGREEMENT_VERSION: u8 = 1;
+const MAX_MESSAGING_RISK_AGREEMENT_BYTES: u64 = 32 * 1024;
+const MESSAGING_RISK_AGREEMENT_FILE: &str = "messaging-risk-agreements.json.enc";
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -230,6 +233,147 @@ struct RegistryDocument {
     accounts: Vec<AccountRecord>,
 }
 
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct MessagingRiskAgreementDocument {
+    version: u8,
+    agreements: Vec<MessagingRiskAgreementRecord>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct MessagingRiskAgreementRecord {
+    owner_osl_user_id: String,
+    service_id: String,
+    #[serde(default)]
+    account_id: String,
+    agreed_at: i64,
+    #[serde(default)]
+    wording: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MessagingRiskAgreement {
+    pub service_id: String,
+    pub account_id: String,
+    pub agreed_at: i64,
+    pub wording: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConversationPlaceKind {
+    DirectMessage,
+    Group,
+    Channel,
+    Thread,
+}
+
+impl ConversationPlaceKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::DirectMessage => "direct_message",
+            Self::Group => "group",
+            Self::Channel => "channel",
+            Self::Thread => "thread",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConversationPlaceParent {
+    pub id: String,
+    pub label: String,
+}
+
+impl ConversationPlaceParent {
+    pub fn new(id: impl Into<String>, label: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            label: label.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConversationPlaceCandidate {
+    pub place_id: String,
+    pub label: String,
+    pub place_kind: ConversationPlaceKind,
+    #[serde(default)]
+    pub server: Option<ConversationPlaceParent>,
+    #[serde(default)]
+    pub channel: Option<ConversationPlaceParent>,
+}
+
+impl ConversationPlaceCandidate {
+    pub fn direct_message(id: impl Into<String>, label: impl Into<String>) -> Self {
+        Self {
+            place_id: id.into(),
+            label: label.into(),
+            place_kind: ConversationPlaceKind::DirectMessage,
+            server: None,
+            channel: None,
+        }
+    }
+
+    pub fn group(id: impl Into<String>, label: impl Into<String>) -> Self {
+        Self {
+            place_id: id.into(),
+            label: label.into(),
+            place_kind: ConversationPlaceKind::Group,
+            server: None,
+            channel: None,
+        }
+    }
+
+    pub fn channel(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        server: ConversationPlaceParent,
+    ) -> Self {
+        Self {
+            place_id: id.into(),
+            label: label.into(),
+            place_kind: ConversationPlaceKind::Channel,
+            server: Some(server),
+            channel: None,
+        }
+    }
+
+    pub fn thread(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        server: Option<ConversationPlaceParent>,
+        channel: ConversationPlaceParent,
+    ) -> Self {
+        Self {
+            place_id: id.into(),
+            label: label.into(),
+            place_kind: ConversationPlaceKind::Thread,
+            server,
+            channel: Some(channel),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SharedConversationPlace {
+    pub service_id: String,
+    pub account_id: String,
+    pub place_id: String,
+    pub label: String,
+    pub place_kind: ConversationPlaceKind,
+    #[serde(default)]
+    pub server: Option<ConversationPlaceParent>,
+    #[serde(default)]
+    pub channel: Option<ConversationPlaceParent>,
+}
+
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MailboxFolderCandidate {
@@ -282,6 +426,8 @@ impl MailboxMessageCandidate {
 pub struct MailboxReaderSnapshot {
     pub folders: Vec<MailboxFolderCandidate>,
     pub messages: Vec<MailboxMessageCandidate>,
+    #[serde(default)]
+    pub signed_in_address: Option<String>,
 }
 
 impl MailboxReaderSnapshot {
@@ -293,6 +439,43 @@ impl MailboxReaderSnapshot {
             folders: folders.into_iter().collect(),
             messages: messages.into_iter().collect(),
         }
+    }
+            signed_in_address: None,
+        }
+    }
+
+    pub fn new_for_signed_in_address(
+        signed_in_address: impl Into<String>,
+        folders: impl IntoIterator<Item = MailboxFolderCandidate>,
+        messages: impl IntoIterator<Item = MailboxMessageCandidate>,
+    ) -> Self {
+        Self {
+            folders: folders.into_iter().collect(),
+            messages: messages.into_iter().collect(),
+            signed_in_address: Some(signed_in_address.into()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SharedMailboxOwnership {
+    Yours,
+    NotYours,
+}
+
+impl SharedMailboxOwnership {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Yours => "yours",
+            Self::NotYours => "not yours",
+        }
+    }
+}
+
+impl Default for SharedMailboxOwnership {
+    fn default() -> Self {
+        Self::NotYours
     }
 }
 
@@ -315,6 +498,8 @@ pub struct SharedMailboxMessageSummary {
     pub subject: String,
     pub time: i64,
     pub sender: String,
+    #[serde(default)]
+    pub ownership: SharedMailboxOwnership,
 }
 
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
@@ -348,6 +533,11 @@ impl MailOwnerCheckError {
             Self::SenderAddressUnreadable => "OSL: sender address cannot be read",
         }
     }
+}
+
+    #[serde(default)]
+    pub ownership: SharedMailboxOwnership,
+    pub body: String,
 }
 
 /// Local metadata for isolated service profiles. It intentionally stores no
@@ -1746,6 +1936,50 @@ pub struct ServiceReadyDecision {
 pub const READY_REQUIRES_REAL_TWO_PERSON_CAPABILITY: &str =
     "ready_requires_real_two_person_protected_messaging_capability";
 pub const READY_REQUIRES_MATCHING_DELIVERY_PROOF: &str = "ready_requires_matching_delivery_proof";
+#[derive(Debug, Clone, Copy, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ServiceControlCapability {
+    OpenApp,
+    PlaceMessage,
+    ReadMessages,
+    ProtectedMessaging,
+}
+
+impl ServiceControlCapability {
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::OpenApp => "open_app",
+            Self::PlaceMessage => "place_message",
+            Self::ReadMessages => "read_messages",
+            Self::ProtectedMessaging => "protected_messaging",
+        }
+    }
+
+    const fn is_built_by(self, facts: ServiceCapabilityFacts) -> bool {
+        match self {
+            Self::OpenApp => facts.opening,
+            Self::PlaceMessage => facts.placing,
+            Self::ReadMessages => facts.reading,
+            Self::ProtectedMessaging => facts.real_two_person_protected_messaging,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServiceScreenControl {
+    pub id: &'static str,
+    pub service_id: ServiceKind,
+    pub capability: ServiceControlCapability,
+    pub label: &'static str,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServiceScreenTree {
+    pub service_id: ServiceKind,
+    pub controls: Vec<ServiceScreenControl>,
+}
 
 pub fn installed_service_count() -> usize {
     service_descriptors()
@@ -1820,6 +2054,206 @@ pub fn ready_decisions_from_service_proof_records(
                     label: None,
                     refusal: Some(refusal.to_owned()),
                 },
+pub fn installed_service_screen_trees() -> Vec<ServiceScreenTree> {
+    installed_service_capability_facts()
+        .into_iter()
+        .map(service_screen_tree_from_capability_facts)
+        .collect()
+}
+
+pub fn service_screen_tree_from_capability_facts(
+    facts: ServiceCapabilityFacts,
+) -> ServiceScreenTree {
+    let controls = SERVICE_CONTROL_DEFINITIONS
+        .into_iter()
+        .filter(|definition| definition.capability.is_built_by(facts))
+        .map(|definition| ServiceScreenControl {
+            id: definition.id,
+            service_id: facts.service_id,
+            capability: definition.capability,
+            label: definition.label,
+        })
+        .collect();
+
+    ServiceScreenTree {
+        service_id: facts.service_id,
+        controls,
+    }
+}
+
+pub fn drawn_controls_without_capability_record(
+    screen_trees: &[ServiceScreenTree],
+    capability_records: &[ServiceCapabilityFacts],
+) -> usize {
+    screen_trees
+        .iter()
+        .flat_map(|tree| tree.controls.iter())
+        .filter(|control| {
+            !capability_records.iter().any(|facts| {
+                facts.service_id == control.service_id && control.capability.is_built_by(*facts)
+            })
+        })
+        .count()
+}
+
+pub fn generated_tile_label(facts: ServiceCapabilityFacts) -> &'static str {
+    if facts.real_two_person_protected_messaging || (facts.placing && facts.reading) {
+        "Ready"
+    } else if facts.placing {
+        "Placing only"
+    } else if facts.reading {
+        "Reading only"
+    } else if facts.opening {
+        "Opens the app"
+    } else {
+        "Not started"
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct MessagingRiskFacts {
+    pub service_id: &'static str,
+    pub display_name: &'static str,
+    pub facts: [&'static str; MESSAGING_RISK_FACT_COUNT],
+}
+
+pub const MESSAGING_RISK_FACT_COUNT: usize = 5;
+
+pub const MESSAGING_RISK_FACTS: [&str; MESSAGING_RISK_FACT_COUNT] = [
+    "OSL controls the app",
+    "this may break that service's rules",
+    "the account may be suspended",
+    "OSL cannot remove that risk",
+    "you can turn it off",
+];
+
+pub fn all_messaging_risk_facts() -> [MessagingRiskFacts; 7] {
+    MESSAGING_RISK_FACT_ROWS
+}
+
+pub fn messaging_risk_facts(service_id: &str) -> Result<MessagingRiskFacts, String> {
+    MESSAGING_RISK_FACT_ROWS
+        .into_iter()
+        .find(|facts| facts.service_id == service_id)
+        .ok_or_else(|| "unknown messaging service".to_owned())
+}
+
+pub fn messaging_risk_refusal(service_id: &str) -> Option<String> {
+    let facts = MESSAGING_RISK_FACT_ROWS
+        .into_iter()
+        .find(|facts| facts.service_id == service_id)?;
+    Some(format!(
+        "you have not agreed to the {} risk",
+        facts.display_name
+    ))
+}
+
+pub fn require_messaging_risk_agreed(
+    owner_osl_user_id: &str,
+    service_id: &str,
+    account_id: &str,
+) -> Result<(), String> {
+    validate_owner_osl_user_id(owner_osl_user_id)?;
+    validate_messaging_risk_account_id(account_id)?;
+    let Some(refusal) = messaging_risk_refusal(service_id) else {
+        return Ok(());
+    };
+    let document = load_messaging_risk_agreements()?;
+    if document.agreements.iter().any(|agreement| {
+        agreement.owner_osl_user_id == owner_osl_user_id
+            && agreement.service_id == service_id
+            && agreement.account_id == account_id
+    }) {
+        Ok(())
+    } else {
+        Err(refusal)
+    }
+}
+
+pub fn save_messaging_risk_agreement(
+    owner_osl_user_id: &str,
+    service_id: &str,
+    account_id: &str,
+) -> Result<(), String> {
+    validate_owner_osl_user_id(owner_osl_user_id)?;
+    validate_messaging_risk_account_id(account_id)?;
+    let facts = messaging_risk_facts(service_id)?;
+    let mut document = load_messaging_risk_agreements()?;
+    let now = ipc::main_password::now_unix_secs_pub();
+    let wording = facts
+        .facts
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    if let Some(existing) = document.agreements.iter_mut().find(|agreement| {
+        agreement.owner_osl_user_id == owner_osl_user_id
+            && agreement.service_id == service_id
+            && agreement.account_id == account_id
+    }) {
+        existing.agreed_at = now;
+        existing.wording = wording;
+    } else {
+        document.agreements.push(MessagingRiskAgreementRecord {
+            owner_osl_user_id: owner_osl_user_id.to_owned(),
+            service_id: service_id.to_owned(),
+            account_id: account_id.to_owned(),
+            agreed_at: now,
+            wording,
+        });
+    }
+    write_messaging_risk_agreements(&document)
+}
+
+pub fn read_messaging_risk_agreement(
+    owner_osl_user_id: &str,
+    service_id: &str,
+    account_id: &str,
+) -> Result<Option<MessagingRiskAgreement>, String> {
+    validate_owner_osl_user_id(owner_osl_user_id)?;
+    validate_messaging_risk_account_id(account_id)?;
+    messaging_risk_facts(service_id)?;
+    let document = load_messaging_risk_agreements()?;
+    Ok(document
+        .agreements
+        .into_iter()
+        .find(|agreement| {
+            agreement.owner_osl_user_id == owner_osl_user_id
+                && agreement.service_id == service_id
+                && agreement.account_id == account_id
+        })
+        .map(|agreement| MessagingRiskAgreement {
+            service_id: agreement.service_id,
+            account_id: agreement.account_id,
+            agreed_at: agreement.agreed_at,
+            wording: agreement.wording,
+        }))
+}
+
+pub fn read_shared_conversation_places(
+    owner_osl_user_id: &str,
+    service_id: &str,
+    account_id: &str,
+    service_filled_places: impl IntoIterator<Item = ConversationPlaceCandidate>,
+) -> Result<Vec<SharedConversationPlace>, String> {
+    validate_owner_osl_user_id(owner_osl_user_id)?;
+    validate_messaging_risk_account_id(account_id)?;
+    messaging_risk_facts(service_id)?;
+    if read_messaging_risk_agreement(owner_osl_user_id, service_id, account_id)?.is_none() {
+        return Ok(Vec::new());
+    }
+
+    service_filled_places
+        .into_iter()
+        .map(|place| {
+            validate_conversation_place(&place)?;
+            Ok(SharedConversationPlace {
+                service_id: service_id.to_owned(),
+                account_id: account_id.to_owned(),
+                place_id: place.place_id,
+                label: place.label,
+                place_kind: place.place_kind,
+                server: place.server,
+                channel: place.channel,
             })
         })
         .collect()
@@ -1865,6 +2299,7 @@ pub fn read_shared_mailbox_messages(
         .filter(|message| message.folder_id == folder_id)
         .map(|message| {
             validate_mailbox_message(message)?;
+            let ownership = mailbox_message_ownership(service_filled_mailbox, message)?;
             Ok(SharedMailboxMessageSummary {
                 service_id: service_id.to_owned(),
                 account_id: account_id.to_owned(),
@@ -1873,6 +2308,7 @@ pub fn read_shared_mailbox_messages(
                 subject: message.subject.clone(),
                 time: message.time,
                 sender: message.sender.clone(),
+                ownership,
             })
         })
         .collect()
@@ -1902,6 +2338,7 @@ pub fn open_shared_mailbox_message(
         return Err("mailbox message is duplicated".to_owned());
     }
     validate_mailbox_message(message)?;
+    let ownership = mailbox_message_ownership(service_filled_mailbox, message)?;
     Ok(SharedMailboxMessage {
         service_id: service_id.to_owned(),
         account_id: account_id.to_owned(),
@@ -1910,6 +2347,7 @@ pub fn open_shared_mailbox_message(
         subject: message.subject.clone(),
         time: message.time,
         sender: message.sender.clone(),
+        ownership,
         body: message.body.clone(),
     })
 }
@@ -1945,6 +2383,57 @@ fn service_capability_facts_for_kind(service_id: ServiceKind) -> Option<ServiceC
         .iter()
         .copied()
         .find(|facts| facts.service_id == service_id)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ServiceControlDefinition {
+    id: &'static str,
+    capability: ServiceControlCapability,
+    label: &'static str,
+}
+
+const SERVICE_CONTROL_DEFINITIONS: [ServiceControlDefinition; 4] = [
+    ServiceControlDefinition {
+        id: "open-app",
+        capability: ServiceControlCapability::OpenApp,
+        label: "Open app",
+    },
+    ServiceControlDefinition {
+        id: "place-message",
+        capability: ServiceControlCapability::PlaceMessage,
+        label: "Place message",
+    },
+    ServiceControlDefinition {
+        id: "read-messages",
+        capability: ServiceControlCapability::ReadMessages,
+        label: "Read messages",
+    },
+    ServiceControlDefinition {
+        id: "protected-messaging",
+        capability: ServiceControlCapability::ProtectedMessaging,
+        label: "Protected messaging",
+    },
+];
+
+const MESSAGING_RISK_FACT_ROWS: [MessagingRiskFacts; 7] = [
+    messaging_risk_facts_row("discord", "Discord"),
+    messaging_risk_facts_row("telegram", "Telegram"),
+    messaging_risk_facts_row("whatsapp", "WhatsApp"),
+    messaging_risk_facts_row("x", "X"),
+    messaging_risk_facts_row("instagram", "Instagram"),
+    messaging_risk_facts_row("messenger", "Messenger"),
+    messaging_risk_facts_row("email", "email"),
+];
+
+const fn messaging_risk_facts_row(
+    service_id: &'static str,
+    display_name: &'static str,
+) -> MessagingRiskFacts {
+    MessagingRiskFacts {
+        service_id,
+        display_name,
+        facts: MESSAGING_RISK_FACTS,
+    }
 }
 
 const SERVICE_CAPABILITY_FACTS: [ServiceCapabilityFacts; 5] = [
@@ -2196,6 +2685,62 @@ fn valid_account_id(value: &str) -> bool {
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
 }
 
+fn validate_messaging_risk_account_id(account_id: &str) -> Result<(), String> {
+    if valid_account_id(account_id) {
+        Ok(())
+    } else {
+        Err("messaging risk agreement account is invalid".to_owned())
+    }
+}
+
+fn validate_conversation_place(place: &ConversationPlaceCandidate) -> Result<(), String> {
+    validate_conversation_place_text(&place.place_id, "conversation place id")?;
+    validate_conversation_place_text(&place.label, "conversation place label")?;
+    if let Some(server) = &place.server {
+        validate_conversation_place_parent(server, "conversation place server")?;
+    }
+    if let Some(channel) = &place.channel {
+        validate_conversation_place_parent(channel, "conversation place channel")?;
+    }
+    match place.place_kind {
+        ConversationPlaceKind::DirectMessage | ConversationPlaceKind::Group => Ok(()),
+        ConversationPlaceKind::Channel => {
+            if place.server.is_some() {
+                Ok(())
+            } else {
+                Err("conversation channel place is missing its server".to_owned())
+            }
+        }
+        ConversationPlaceKind::Thread => {
+            if place.channel.is_some() {
+                Ok(())
+            } else {
+                Err("conversation thread place is missing its channel".to_owned())
+            }
+        }
+    }
+}
+
+fn validate_conversation_place_parent(
+    parent: &ConversationPlaceParent,
+    label: &str,
+) -> Result<(), String> {
+    validate_conversation_place_text(&parent.id, label)?;
+    validate_conversation_place_text(&parent.label, label)
+}
+
+fn validate_conversation_place_text(value: &str, label: &str) -> Result<(), String> {
+    if value.trim() == value
+        && !value.is_empty()
+        && value.len() <= 128
+        && !value.chars().any(|character| character.is_control())
+    {
+        Ok(())
+    } else {
+        Err(format!("{label} is invalid"))
+    }
+}
+
 fn validate_mailbox_reader_binding(
     owner_osl_user_id: &str,
     service_id: &str,
@@ -2206,6 +2751,7 @@ fn validate_mailbox_reader_binding(
         return Err("mailbox account is invalid".to_owned());
         return Err("mailbox account id is invalid".to_owned());
     }
+    validate_messaging_risk_account_id(account_id)?;
     validate_mail_service_id(service_id)
 }
 
@@ -2254,6 +2800,21 @@ fn validate_mailbox_message(message: &MailboxMessageCandidate) -> Result<(), Str
     }
 }
 
+fn mailbox_message_ownership(
+    mailbox: &MailboxReaderSnapshot,
+    message: &MailboxMessageCandidate,
+) -> Result<SharedMailboxOwnership, String> {
+    let Some(signed_in_address) = mailbox.signed_in_address.as_deref() else {
+        return Ok(SharedMailboxOwnership::NotYours);
+    };
+    validate_mailbox_text(signed_in_address, "mailbox signed-in address", 254)?;
+    if message.sender.eq_ignore_ascii_case(signed_in_address) {
+        Ok(SharedMailboxOwnership::Yours)
+    } else {
+        Ok(SharedMailboxOwnership::NotYours)
+    }
+}
+
 fn validate_mailbox_text(value: &str, label: &str, max_bytes: usize) -> Result<(), String> {
     if value.trim() == value
         && !value.is_empty()
@@ -2276,6 +2837,78 @@ fn validate_mailbox_body(value: &str) -> Result<(), String> {
     } else {
         Err("mailbox message body is invalid".to_owned())
     }
+}
+
+fn messaging_risk_agreement_path() -> Result<PathBuf, String> {
+    Ok(keystore::osl_config_dir()
+        .map_err(|_| "OSL account storage is unavailable".to_owned())?
+        .join(MESSAGING_RISK_AGREEMENT_FILE))
+}
+
+fn load_messaging_risk_agreements() -> Result<MessagingRiskAgreementDocument, String> {
+    let key = ipc::main_password::get_file_storage_key()
+        .ok_or_else(|| "Unlock OSL before agreeing to messaging service risk".to_owned())?;
+    let path = messaging_risk_agreement_path()?;
+    let Some(bytes) = crate::atomic_file::read_recoverable_bounded(
+        &path,
+        MAX_MESSAGING_RISK_AGREEMENT_BYTES,
+        "messaging risk agreement state",
+    )?
+    else {
+        return Ok(MessagingRiskAgreementDocument {
+            version: MESSAGING_RISK_AGREEMENT_VERSION,
+            agreements: Vec::new(),
+        });
+    };
+    let plain = ipc::main_password::decrypt_at_rest(&bytes, &key)
+        .map_err(|_| "messaging risk agreement state is unavailable".to_owned())?;
+    let document: MessagingRiskAgreementDocument = serde_json::from_slice(&plain)
+        .map_err(|_| "messaging risk agreement state is malformed".to_owned())?;
+    if document.version != MESSAGING_RISK_AGREEMENT_VERSION {
+        return Err("messaging risk agreement state is unsupported".to_owned());
+    }
+    Ok(sanitize_messaging_risk_agreements(document))
+}
+
+fn write_messaging_risk_agreements(
+    document: &MessagingRiskAgreementDocument,
+) -> Result<(), String> {
+    let key = ipc::main_password::get_file_storage_key()
+        .ok_or_else(|| "Unlock OSL before agreeing to messaging service risk".to_owned())?;
+    let path = messaging_risk_agreement_path()?;
+    let bytes = serde_json::to_vec(document)
+        .map_err(|_| "messaging risk agreement state could not be encoded".to_owned())?;
+    if bytes.len() as u64 > MAX_MESSAGING_RISK_AGREEMENT_BYTES {
+        return Err("messaging risk agreement state exceeds limit".to_owned());
+    }
+    let sealed = ipc::main_password::encrypt_at_rest(&bytes, &key)
+        .map_err(|_| "messaging risk agreement state could not be encrypted".to_owned())?;
+    crate::atomic_file::write_recoverable(&path, &sealed, "messaging risk agreement state")
+}
+
+fn sanitize_messaging_risk_agreements(
+    mut document: MessagingRiskAgreementDocument,
+) -> MessagingRiskAgreementDocument {
+    document.agreements.retain(|agreement| {
+        validate_owner_osl_user_id(&agreement.owner_osl_user_id).is_ok()
+            && messaging_risk_refusal(&agreement.service_id).is_some()
+            && validate_messaging_risk_account_id(&agreement.account_id).is_ok()
+            && agreement.agreed_at > 0
+            && agreement.wording == MESSAGING_RISK_FACTS
+    });
+    document.agreements.sort_by(|left, right| {
+        left.owner_osl_user_id
+            .cmp(&right.owner_osl_user_id)
+            .then_with(|| left.service_id.cmp(&right.service_id))
+            .then_with(|| left.account_id.cmp(&right.account_id))
+            .then_with(|| left.agreed_at.cmp(&right.agreed_at))
+    });
+    document.agreements.dedup_by(|left, right| {
+        left.owner_osl_user_id == right.owner_osl_user_id
+            && left.service_id == right.service_id
+            && left.account_id == right.account_id
+    });
+    document
 }
 
 fn load_protected_registry(path: &Path) -> Result<Vec<AccountRecord>, String> {

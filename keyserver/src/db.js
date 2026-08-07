@@ -50,6 +50,7 @@ function initSchema(db) {
       blob_version INTEGER NOT NULL,
       single_use INTEGER NOT NULL,
       display_duration_seconds INTEGER,
+      expiry_seconds INTEGER,
       expires_at TEXT NOT NULL,
       created_at TEXT NOT NULL,
       CHECK (
@@ -99,6 +100,12 @@ function initSchema(db) {
     .get();
   if (!hasRatchetCol) {
     db.exec("ALTER TABLE users ADD COLUMN ik_ratchet_initial_pub TEXT");
+  }
+  const hasWrappedExpirySecondsCol = db
+    .prepare("SELECT 1 FROM pragma_table_info('wrapped_keys') WHERE name = 'expiry_seconds'")
+    .get();
+  if (!hasWrappedExpirySecondsCol) {
+    db.exec("ALTER TABLE wrapped_keys ADD COLUMN expiry_seconds INTEGER");
   }
 }
 
@@ -304,12 +311,12 @@ export function insertWrappedKey(db, row) {
        (content_id, content_type, system_message_kind,
         sender_id, recipient_id, session_version, share_index,
         wrapped_share_blob, blob_version, single_use,
-        display_duration_seconds, expires_at, created_at)
+        display_duration_seconds, expiry_seconds, expires_at, created_at)
      VALUES
        (@content_id, @content_type, @system_message_kind,
         @sender_id, @recipient_id, @session_version, @share_index,
         @wrapped_share_blob, @blob_version, @single_use,
-        @display_duration_seconds, @expires_at, @now)`,
+        @display_duration_seconds, @expiry_seconds, @expires_at, @now)`,
   ).run({ ...row, now });
 }
 
@@ -328,7 +335,7 @@ export function fetchWrappedKey(db, contentId) {
         `SELECT content_id, content_type, system_message_kind,
                 sender_id, recipient_id, session_version, share_index,
                 wrapped_share_blob, blob_version, single_use,
-                display_duration_seconds, expires_at, created_at
+                display_duration_seconds, expiry_seconds, expires_at, created_at
            FROM wrapped_keys WHERE content_id = ?`,
       )
       .get(id);
@@ -348,4 +355,15 @@ export function fetchWrappedKey(db, contentId) {
     return { status: 'ok', row };
   });
   return txn(contentId);
+}
+
+export function purgeExpiredWrappedKeys(db, now = new Date()) {
+  const nowIso = now instanceof Date ? now.toISOString() : new Date(now).toISOString();
+  const info = db
+    .prepare(
+      `DELETE FROM wrapped_keys
+        WHERE julianday(expires_at) <= julianday(?)`,
+    )
+    .run(nowIso);
+  return { deleted_count: info.changes };
 }

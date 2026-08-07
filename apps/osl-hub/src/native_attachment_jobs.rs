@@ -17,6 +17,8 @@ pub const MAX_ATTACHMENT_SIZE: u64 = crate::attachment_limits::MAX_ATTACHMENT_BY
 pub const MAX_CAPTION_BYTES: usize = 4_096;
 pub const PROGRESS_THROTTLE_MS: u64 = 500;
 pub const AUTHENTICATED_FIELDS: [&str; 4] = ["jobId", "metadata", "caption", "viewOnce"];
+const CLIPBOARD_PNG_FILENAME: &str = "clipboard-image.png";
+const CLIPBOARD_JPEG_FILENAME: &str = "clipboard-image.jpg";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -244,6 +246,24 @@ impl NativeAttachmentJobRegistry {
             .position(|record| record.removable_id == removable_id)
             .ok_or(NativeAttachmentJobError::JobNotFound)?;
         Ok(records.remove(index))
+    pub fn stage_clipboard_image(
+        &mut self,
+        context_id: &str,
+        media_type: &str,
+        image_bytes: Vec<u8>,
+        now_ms: u64,
+    ) -> Result<NativeAttachmentJobDto, NativeAttachmentJobError> {
+        let filename = clipboard_image_filename(media_type)?;
+        validate_clipboard_image_bytes(media_type, &image_bytes)?;
+        let size =
+            u64::try_from(image_bytes.len()).map_err(|_| NativeAttachmentJobError::InvalidSize)?;
+        let mut key_material = vec![0_u8; 32];
+        if let Err(error) = fill_os_entropy(&mut key_material) {
+            key_material.zeroize();
+            return Err(error);
+        }
+        let secrets = NativeAttachmentSecrets::new(image_bytes, key_material)?;
+        self.stage(context_id, filename, media_type, size, secrets, now_ms)
     }
 
     pub fn stage(
@@ -655,6 +675,35 @@ fn validate_size(size: u64) -> Result<u64, NativeAttachmentJobError> {
     .map_err(|_| NativeAttachmentJobError::InvalidSize)
 }
 
+fn clipboard_image_filename(media_type: &str) -> Result<&'static str, NativeAttachmentJobError> {
+    match media_type {
+        "image/png" => Ok(CLIPBOARD_PNG_FILENAME),
+        "image/jpeg" => Ok(CLIPBOARD_JPEG_FILENAME),
+        _ => Err(NativeAttachmentJobError::InvalidMediaType),
+    }
+}
+
+fn validate_clipboard_image_bytes(
+    media_type: &str,
+    image_bytes: &[u8],
+) -> Result<(), NativeAttachmentJobError> {
+    validate_size(
+        u64::try_from(image_bytes.len()).map_err(|_| NativeAttachmentJobError::InvalidSize)?,
+    )?;
+    let valid = match media_type {
+        "image/png" => image_bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+        "image/jpeg" => {
+            image_bytes.starts_with(&[0xff, 0xd8]) && image_bytes.ends_with(&[0xff, 0xd9])
+        }
+        _ => false,
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(NativeAttachmentJobError::InvalidMediaType)
+    }
+}
+
 fn validate_caption(caption: &str) -> Result<(), NativeAttachmentJobError> {
     if caption.contains('\0') {
         Err(NativeAttachmentJobError::CaptionContainsNul)
@@ -1063,6 +1112,25 @@ mod tests {
             "TASK0046 attachment_tray result=refused staged_count=0 limit_bytes={} attempted_bytes={}",
             crate::attachment_limits::MAX_ATTACHMENT_BYTES,
             crate::attachment_limits::MAX_ATTACHMENT_BYTES + 1
+    fn clipboard_image_intake_creates_one_selected_image_attachment_card() {
+        let mut registry = NativeAttachmentJobRegistry::default();
+        let card = registry
+            .stage_clipboard_image(
+                CONTEXT,
+                "image/png",
+                b"\x89PNG\r\n\x1a\nfixture".to_vec(),
+                10_000,
+            )
+            .unwrap();
+
+        assert_eq!(card.metadata.filename, "clipboard-image.png");
+        assert_eq!(card.metadata.media_type, "image/png");
+        assert_eq!(card.stage, NativeAttachmentStage::Selected);
+        assert_eq!(card.progress, 0);
+        assert_eq!(registry.snapshot(CONTEXT), Some(card));
+        assert_eq!(
+            registry.stage_clipboard_image(CONTEXT, "text/plain", b"plain".to_vec(), 10_001),
+            Err(NativeAttachmentJobError::InvalidMediaType)
         );
     }
 }

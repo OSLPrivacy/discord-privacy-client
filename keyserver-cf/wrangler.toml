@@ -55,6 +55,10 @@ CRYPTO_DONATION_BTC_ENABLED = "true"
 CRYPTO_DONATION_XMR_ENABLED = "true"
 DONATION_SUCCESS_URL = "https://oslprivacy.com/donate?donation=complete"
 DONATION_CANCEL_URL = "https://oslprivacy.com/donate?donation=cancelled"
+OSL_SERVER_CONFIGURATION_NAME = "production"
+
+[version_metadata]
+binding = "CF_VERSION_METADATA"
 
 # D1 database — create with:
 #   wrangler d1 create osl-keyserver-prod

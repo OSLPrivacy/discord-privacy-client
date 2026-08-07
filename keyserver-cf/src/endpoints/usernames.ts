@@ -22,6 +22,8 @@ import { isDiscordSnowflake, isHighEntropyRequestId, isNonEmptyBase64, isProtoco
 import { sha256Hex } from "../lib/account-ownership-challenge.js";
 import { badRequest, conflict, forbidden, json, notFound, tooMany, unauthorized } from "../lib/http.js";
 import { decodeBase64, isDiscordSnowflake, isHighEntropyRequestId, isNonEmptyBase64, isProtocolId } from "../lib/validation.js";
+import { badRequest, conflict, error, forbidden, json, tooMany, unauthorized } from "../lib/http.js";
+import { isDiscordSnowflake, isHighEntropyRequestId, isNonEmptyBase64, isProtocolId } from "../lib/validation.js";
 import { verifySignedRequest } from "../lib/signed-request.js";
 import {
   USERNAME_FRESHNESS_MS,
@@ -638,6 +640,7 @@ export async function handleUsernameClaim(request: Request, env: Env): Promise<R
            updated_at = excluded.updated_at
          WHERE public_name_directory.identity_fingerprint = excluded.identity_fingerprint`,
       ).bind(username, publicIdentityFingerprint, now, userId),
+      ).bind(username, userId, body.friend_code, now, digest, skeleton, proofCheck.nonceSha256, proofCheck.bindingSha256, current.ik_ed25519_pub),
     ]);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

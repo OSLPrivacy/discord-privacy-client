@@ -61,6 +61,20 @@ where
         Ok(job)
     }
 
+    pub fn stage_clipboard_image(
+        &mut self,
+        context_id: &str,
+        media_type: &str,
+        image_bytes: Vec<u8>,
+        now_ms: u64,
+    ) -> Result<NativeAttachmentJobDto, NativeAttachmentJobError> {
+        let job =
+            self.registry
+                .stage_clipboard_image(context_id, media_type, image_bytes, now_ms)?;
+        self.emit_changed(context_id, &job);
+        Ok(job)
+    }
+
     pub fn begin_protection(
         &mut self,
         context_id: &str,
@@ -276,5 +290,25 @@ mod tests {
             .unwrap();
 
         assert_eq!(bridge.sink.0.len(), 2);
+    }
+
+    #[test]
+    fn emits_clipboard_image_attachment_card() {
+        let mut bridge = NativeAttachmentProgressBridge::new(RecordingSink::default());
+        let card = bridge
+            .stage_clipboard_image(
+                "chat:opaque-42",
+                "image/png",
+                b"\x89PNG\r\n\x1a\nfixture".to_vec(),
+                1_000,
+            )
+            .unwrap();
+
+        assert_eq!(bridge.sink.0.len(), 1);
+        assert_eq!(bridge.sink.0[0].context_id, "chat:opaque-42");
+        assert_eq!(bridge.sink.0[0].job, card);
+        assert_eq!(card.metadata.filename, "clipboard-image.png");
+        assert_eq!(card.metadata.media_type, "image/png");
+        assert_eq!(card.stage, NativeAttachmentStage::Selected);
     }
 }

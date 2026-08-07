@@ -40,6 +40,7 @@ pub mod attachment_wire;
 pub mod auto_whitelist_rules;
 pub mod bad_message_rules;
 pub mod build_switch_metadata;
+pub mod both_sides_burn_progress;
 pub mod burned_scopes_file;
 pub mod cipher_store_client;
 pub mod commands;

@@ -1,13 +1,13 @@
 /// POST /v1/license/redeem
 ///
-/// Redeems a prepaid license exactly once. The conditional UPDATE is the
-/// idempotency boundary: retries read back the period stamped by the first
-/// successful request instead of creating another one.
+/// Redeems a prepaid license exactly once. A repeat redemption is refused;
+/// clients use `/v1/license/validate` to read back an already-redeemed period.
 
 import type { Env } from "../env.js";
 import { hashLicense, normalizeLicense, validateChecksum } from "../lib/license.js";
 import { revokedLicenseMessage } from "../lib/license-refusal.js";
 import { badRequest, json, serviceUnavailable, tooMany } from "../lib/http.js";
+import { badRequest, conflict, json, serviceUnavailable, tooMany } from "../lib/http.js";
 import { callerIp, checkRateLimit } from "../lib/rate-limit.js";
 
 interface RedemptionRow {
@@ -62,7 +62,7 @@ export async function handleLicenseRedeem(
 
   const licenseHash = await hashLicense(normalized);
   const now = Math.floor(Date.now() / 1000);
-  await env.DB.prepare(
+  const redemption = await env.DB.prepare(
     `UPDATE licenses
         SET redeemed_at = ?, expires_at = ? + grant_seconds
       WHERE license_hash = ?
@@ -79,6 +79,7 @@ export async function handleLicenseRedeem(
             observations.event_type AS terminal_event_type,
             licenses.redeemed_at,
             licenses.expires_at
+    `SELECT subscription_id, revoked_at, redeemed_at, expires_at
        FROM licenses
        LEFT JOIN stripe_checkout_claims AS claims
               ON claims.license_hash = licenses.license_hash
@@ -100,6 +101,9 @@ export async function handleLicenseRedeem(
       checksum_ok: true,
       ...(message ? { message } : {}),
     });
+  if (license.revoked_at !== null) return json({ status: "REVOKED", checksum_ok: true });
+  if ((redemption.meta?.changes ?? 0) === 0 && license.redeemed_at !== null) {
+    return conflict("license code already redeemed");
   }
   if (license.redeemed_at === null || license.expires_at === null) {
     return json({ status: "UNKNOWN", checksum_ok: true });
@@ -112,6 +116,8 @@ export async function handleLicenseRedeem(
             updated_at = ?
       WHERE subscription_id = ?
         AND status NOT IN ('REVOKED', 'EXPIRED')`,
+        SET status = 'ACTIVE', current_period_end = ?, updated_at = ?
+      WHERE subscription_id = ?`,
   ).bind(license.expires_at, now, license.subscription_id).run();
   return json({
     status: "ACTIVE",

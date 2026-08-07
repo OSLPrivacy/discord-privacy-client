@@ -1778,6 +1778,7 @@ macro_rules! hub_tauri_commands {
             list_bad_message_rules,
             installed_build_record,
             installed_build_chat_warning_status,
+            get_live_server_revision_report,
             list_hub_app_notifications,
             set_hub_notifications_enabled,
             get_hub_chat_approval_suggestion_choice,
@@ -1850,10 +1851,12 @@ macro_rules! hub_tauri_commands {
             create_hub_osl_identity,
             import_hub_osl_identity_phrase,
             setup_hub_main_password,
+            reset_hub_main_password_after_recovery,
             view_hub_recovery_phrase,
             reset_hub_main_password_after_recovery,
             check_hub_recovery_words,
             check_hub_password_reset_phrase,
+            check_hub_recovery_word_retype,
             get_hub_recovery_kit_unsaved,
             set_hub_recovery_kit_unsaved,
             lock_hub_session,
@@ -1898,6 +1901,7 @@ macro_rules! hub_tauri_commands {
             read_icloud_mailbox_for_scrub,
             read_icloud_mailbox_pages_for_scrub,
             read_protected_email_live_run_progress,
+            agree_messaging_service_risk,
             host_native_app_window,
             native_app_takeover_requires_consent,
             discord_marker_available,
@@ -1943,6 +1947,10 @@ macro_rules! hub_tauri_commands {
             burn_osl_chat_history,
             select_osl_chat_attachment,
             drop_osl_chat_attachments,
+            add_osl_chat_reaction,
+            remove_osl_chat_reaction,
+            select_osl_chat_attachment,
+            accept_osl_chat_clipboard_image_attachment,
             list_osl_chat_attachments,
             intake_osl_chat_clipboard_image,
             open_osl_chat_attachment,
@@ -2012,6 +2020,7 @@ macro_rules! hub_tauri_commands {
             compare_allowed_place_direction_state,
             compare_allowed_place_direction_state,
             list_group_verification_build_entries,
+            list_whatsapp_whitelist_kinds,
             set_hub_friend_nickname,
             add_group_member_permission,
             remove_group_member_permission,
@@ -4608,6 +4617,17 @@ mod tauri_registration_surface_tests {
         )
     }
 
+    #[test]
+    fn whatsapp_whitelist_kind_command_is_registered_and_acl_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_registered_and_granted(
+            &handlers,
+            &permissions,
+            &capability,
+            "list_whatsapp_whitelist_kinds",
+        );
+    }
+
     /// T15-A3/A4 — the "see my recovery phrase again" surface.
     ///
     /// `cmd_osl_view_recovery_phrase` has existed in `crates/ipc` all along,
@@ -4759,6 +4779,54 @@ mod tauri_registration_surface_tests {
             &permissions,
             &capability,
             &["check_hub_recovery_word_retype"],
+        );
+    }
+
+    #[test]
+    fn live_server_revision_report_is_registered_and_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &["get_live_server_revision_report"],
+        );
+    }
+
+    #[test]
+    fn burn_review_state_commands_are_registered_and_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &[
+                "save_burn_review_state",
+                "get_burn_review_state",
+                "back_burn_review",
+            ],
+        );
+    }
+
+    #[test]
+    fn recovery_word_retype_check_is_registered_and_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &["check_hub_recovery_word_retype"],
+        );
+    }
+
+    #[test]
+    fn reset_hub_main_password_after_recovery_is_registered_and_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &["reset_hub_main_password_after_recovery"],
         );
     }
 

@@ -19,6 +19,10 @@ use osl_privacy_hub::broker::{
     OpenedHubAttachment, OpenedNativeOverlayTextBatch, OpenedPeerProseMessage, PreparedCoreMessage,
     PreparedHubAttachment, PreparedLocalProtectedMessage, PreparedNativeOverlayText,
     PreparedPeerProseMessage,
+    self, DecryptedLocalProtectedMessage, HubBrokerState, OpenedHubAttachment,
+    OpenedNativeOverlayTextBatch, OpenedPeerProseMessage, OslChatHistoryRow, OslChatReactionResult,
+    PreparedCoreMessage, PreparedHubAttachment, PreparedLocalProtectedMessage,
+    PreparedNativeOverlayText, PreparedPeerProseMessage,
 };
 use osl_privacy_hub::browser_companion::{
     BrowserAccountMode, BrowserCompanionAction, BrowserCompanionState, BrowserCompanionStatus,
@@ -82,6 +86,8 @@ use osl_privacy_hub::native_discord_adapter::{
     compatibility_delay_ms, deidentify_prepared_visual_structure, AccessibilityBounds,
     DiscordCarrierLayout, DiscordCarrierMode, DiscordCarrierReceipt, DiscordCarrierStatus,
     NativeDiscordComposerState, NativeDiscordPlacementContext, MAX_VISIBLE_CARRIER_ROWS,
+use osl_privacy_hub::native_attachment_jobs_bridge::{
+    NativeAttachmentProgressBridge, NativeAttachmentProgressEvent, TauriAttachmentProgressSink,
 };
 #[cfg(feature = "discord-qa-shell")]
 use osl_privacy_hub::native_discord_adapter::{
@@ -101,6 +107,7 @@ use osl_privacy_hub::osl_profile::{self, HubProfileDto, HubProfileInput, OwnerPr
 use osl_privacy_hub::password_lifecycle::{
     self, HubIdentityCreationOwnerSignoff, HubIdentitySetupResult, HubMainPasswordSetupResult,
     HubPasswordResetPhraseCheck,
+    HubPasswordReadiness,
 };
 use osl_privacy_hub::peer_attachment_io;
 use osl_privacy_hub::preferences::{
@@ -137,6 +144,8 @@ use osl_privacy_hub::security::{
     self, AddFriendResult, AllowedPlaceDirectionStateDto, FriendCodeExport,
     GroupVerificationBuildListEntryDto, HubRevocationStatusDto, HubScopeBurnResult,
     HubSecurityState, PersonDto, RemoveFriendResult, ScopeSecurityDto,
+    self, AddFriendResult, FriendCodeExport, HubRevocationStatusDto, HubScopeBurnResult,
+    HubSecurityState, PersonDto, RemoveFriendResult, ScopeSecurityDto, WhatsAppWhitelistKind,
 };
 use osl_privacy_hub::security_credentials::{self, HubPasswordRoleStatus};
 use osl_privacy_hub::server_records::{NamedServerRecord, NamedServerRegistryState};
@@ -165,6 +174,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Mutex, OnceLock,
 };
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{Emitter, Manager, State};
 use tauri_plugin_updater::UpdaterExt;
 #[cfg(feature = "whatsapp-qa-identity")]
@@ -1983,6 +1993,24 @@ async fn setup_hub_main_password(
     .map_err(|_| "OSL password setup worker failed".to_string())?
 }
 
+#[tauri::command]
+async fn reset_hub_main_password_after_recovery(
+    app: tauri::AppHandle,
+    recovery_phrase: String,
+    new_password: String,
+) -> Result<HubPasswordReadiness, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<HubCoreState>();
+        password_lifecycle::reset_main_password_after_recovery(
+            &state,
+            recovery_phrase,
+            new_password,
+        )
+    })
+    .await
+    .map_err(|_| "OSL password reset worker failed".to_string())?
+}
+
 /// T15-A3/A4: read the password-recovery phrase back after onboarding.
 ///
 /// `cmd_osl_view_recovery_phrase` existed in `crates/ipc` but was registered
@@ -2038,6 +2066,14 @@ async fn check_hub_password_reset_phrase(
     })
     .await
     .map_err(|_| "OSL password reset phrase worker failed".to_string())?
+async fn check_hub_recovery_word_retype(
+    request: password_lifecycle::RecoveryWordRetypeRequest,
+) -> Result<password_lifecycle::RecoveryWordRetypeResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        password_lifecycle::check_recovery_word_retype(request)
+    })
+    .await
+    .map_err(|_| "OSL recovery word check worker failed".to_owned())?
 }
 
 #[tauri::command]
@@ -2598,12 +2634,17 @@ async fn install_hub_update(
         std::path::Path::new(&state_copy.backup_dir),
     );
     let pending_apply = update_apply::begin_update_apply_with_old_files(
+    let pending_apply = update_apply::begin_update_apply(
         &app_config_dir,
         install_dir,
         &previous_version,
         &expected_version,
         vec![built_file.clone()],
         Some(&state_copy_record_path),
+    )?;
+    update_state_backup::copy_identity_and_history_before_update(
+        &app_config_dir,
+        &expected_version,
     )?;
     update
         .download_and_install(|_, _| {}, || {})
@@ -6064,6 +6105,7 @@ async fn list_osl_chat_history(
     session: State<'_, HubAccountSessionState>,
     hide_others_messages: Option<bool>,
 ) -> Result<Vec<ipc::commands::StoredMessageDto>, String> {
+) -> Result<Vec<OslChatHistoryRow>, String> {
     if caller.label() != "main" {
         return Err("Only the trusted OSL window may read OSL Chat history".to_owned());
     }
@@ -6173,6 +6215,51 @@ async fn burn_osl_chat_history(
     })
     .await
     .map_err(|error| format!("OSL Chat burn worker failed: {error}"))?
+async fn add_osl_chat_reaction(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+    session: State<'_, HubAccountSessionState>,
+    message_id: String,
+    emoji: String,
+) -> Result<OslChatReactionResult, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may react to OSL Chats".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        broker::add_osl_chat_reaction(
+            &app.state::<HubCoreState>(),
+            &app.state::<HubBrokerState>(),
+            message_id,
+            emoji,
+        )
+    })
+    .await
+    .map_err(|error| format!("OSL Chat reaction worker failed: {error}"))?
+}
+
+#[tauri::command]
+async fn remove_osl_chat_reaction(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+    session: State<'_, HubAccountSessionState>,
+    message_id: String,
+    emoji: String,
+) -> Result<OslChatReactionResult, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may remove OSL Chat reactions".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        broker::remove_osl_chat_reaction(
+            &app.state::<HubCoreState>(),
+            &app.state::<HubBrokerState>(),
+            message_id,
+            emoji,
+        )
+    })
+    .await
+    .map_err(|error| format!("OSL Chat reaction worker failed: {error}"))?
 }
 
 #[tauri::command]
@@ -6220,6 +6307,38 @@ async fn drop_osl_chat_attachments(
         .lock()
         .map_err(|_| "OSL Chat attachment tray is unavailable".to_owned())?;
     tray.accept_dropped_files(paths)
+async fn accept_osl_chat_clipboard_image_attachment(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+    session: State<'_, HubAccountSessionState>,
+    media_type: String,
+    image_bytes: Vec<u8>,
+) -> Result<NativeAttachmentProgressEvent, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may accept OSL Chat clipboard images".to_owned());
+    }
+    require_active_pro_entitlement(&app.state::<HubCoreState>())?;
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        let context_id = app
+            .state::<HubBrokerState>()
+            .active_osl_chat_context_token()?;
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| "OSL clipboard image clock is unavailable".to_owned())?
+            .as_millis()
+            .try_into()
+            .unwrap_or(u64::MAX);
+        let mut bridge = NativeAttachmentProgressBridge::new(
+            TauriAttachmentProgressSink::for_trusted_window(app.clone(), "main"),
+        );
+        let job = bridge
+            .stage_clipboard_image(&context_id, &media_type, image_bytes, now_ms)
+            .map_err(|error| error.to_string())?;
+        Ok(NativeAttachmentProgressEvent { context_id, job })
+    })
+    .await
+    .map_err(|error| format!("OSL Chat clipboard image worker failed: {error}"))?
 }
 
 #[tauri::command]
@@ -6582,6 +6701,19 @@ async fn list_service_account_run_queue(
     let _session = session.transition.lock().await;
     let owner = active_unlocked_osl_user_id(&core)?;
     registry.run_queue_for_owner(&owner, service_id, &approved_account_ids)
+async fn agree_messaging_service_risk(
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    registry: State<'_, ServiceRegistryState>,
+    service_id: String,
+    account_id: String,
+) -> Result<(), String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    let service_kind = osl_privacy_hub::services::service_kind_from_id(&service_id)
+        .ok_or_else(|| "unknown service".to_owned())?;
+    registry.require_owned(&owner, service_kind, &account_id)?;
+    osl_privacy_hub::services::save_messaging_risk_agreement(&owner, &service_id, &account_id)
 }
 
 #[tauri::command]
@@ -7628,6 +7760,8 @@ async fn list_group_verification_build_entries(
 ) -> Result<Vec<GroupVerificationBuildListEntryDto>, String> {
     let _session = session.transition.lock().await;
     security::list_group_verification_build_entries(app, local_account, group_id)
+fn list_whatsapp_whitelist_kinds() -> Vec<WhatsAppWhitelistKind> {
+    security::list_whatsapp_whitelist_kinds()
 }
 
 #[tauri::command]
@@ -11026,6 +11160,15 @@ fn installed_build_chat_warning_status(
     state: State<'_, InstalledBuildRecordPath>,
 ) -> Option<InstalledBuildChatWarning> {
     installed_build_chat_warning(&state.0)
+async fn get_live_server_revision_report(
+    app: tauri::AppHandle,
+) -> Result<keystore::LiveServerRevisionReport, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<HubCoreState>();
+        core_bridge::live_server_revision_report(&state)
+    })
+    .await
+    .map_err(|_| "OSL live server revision worker failed".to_owned())?
 }
 
 macro_rules! hub_tauri_generate_handler {

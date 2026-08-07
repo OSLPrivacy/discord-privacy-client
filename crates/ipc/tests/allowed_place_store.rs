@@ -63,6 +63,8 @@ use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::Path;
+use ipc::allowed_places::{add_allowed_place_record, allowed_places_db_path, AllowedPlaceRecord};
+use rusqlite::Connection;
 use tempfile::TempDir;
 
 #[test]

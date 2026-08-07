@@ -97,6 +97,7 @@ describe("OSL Chat delivery runtime receive failures", () => {
       plaintext: "offline hello",
       createdAt: 1_700_000_001,
       decryptedAt: 1_700_002_881,
+      reactions: [{ emoji: "👍", count: 1, mine: true }],
     }], {
       personId: "p1",
       peerOslUserId: "OSLUSER-p1",
@@ -104,5 +105,6 @@ describe("OSL Chat delivery runtime receive failures", () => {
     }, (epochSeconds) => epochSeconds === 1_700_000_001 ? "11:33 AM" : "12:21 PM");
 
     expect(message?.timestampLabel).toBe("11:33 AM");
+    expect(message?.reactions).toEqual([{ emoji: "👍", count: 1, mine: true }]);
   });
 });

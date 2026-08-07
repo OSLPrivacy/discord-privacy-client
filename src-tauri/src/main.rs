@@ -1984,6 +1984,22 @@ async fn osl_get_guild_list(app: tauri::AppHandle) -> Result<Vec<ipc::commands::
     .map_err(|e| format!("OSL: join error: {e}"))?
 }
 
+/// Add one stable channel identity under its server identity.
+#[tauri::command]
+async fn osl_create_server_channel(
+    app: tauri::AppHandle,
+    server_id: String,
+    channel_id: String,
+) -> Result<ipc::commands::ServerChannelDto, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        ipc::commands::cmd_osl_create_server_channel(state.inner(), server_id, channel_id)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
 /// 9-C2: bulk-whitelist N peers under DM scope (one DM scope per
 /// peer). Used by the Bulk Whitelist modal's "Friend list" and
 /// "Paste IDs" actions. Returns the count actually mutated.
@@ -3528,6 +3544,7 @@ fn main() {
             osl_block_friend_request,
             osl_set_guild_list,
             osl_get_guild_list,
+            osl_create_server_channel,
             osl_bulk_set_dm_whitelist,
             osl_set_server_default,
             osl_get_server_defaults,

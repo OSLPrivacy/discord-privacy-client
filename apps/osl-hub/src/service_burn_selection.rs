@@ -186,6 +186,9 @@ mod tests {
     use serde_json::Value;
     use store::{MessageStore, StoredMessage};
     use tempfile::TempDir;
+#[cfg(test)]
+mod tests {
+    use super::*;
 
     const OWNER: &str = "owner-0533";
     const DISCORD_ACCOUNT: &str = "discord-acct-0533";

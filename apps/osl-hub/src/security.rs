@@ -2687,6 +2687,15 @@ pub fn connected_app_notice_records_for_pending_key_changes(
             created_at: "Pending verification".to_owned(),
         })
         .collect())
+pub fn resolve_whatsapp_whitelist_kind(id: &str) -> Result<WhatsAppWhitelistKind, String> {
+    WHATSAPP_WHITELIST_KINDS
+        .into_iter()
+        .find(|(kind_id, _)| *kind_id == id)
+        .map(|(id, name)| WhatsAppWhitelistKind {
+            id: id.to_owned(),
+            name: name.to_owned(),
+        })
+        .ok_or_else(|| format!("unsupported WhatsApp place kind: {id}"))
 }
 
 /// Grant or revoke one friend's approval for exactly one scope.
@@ -7278,6 +7287,96 @@ mod tests {
             ]
         );
         assert_eq!(kinds.len(), names.len());
+    fn task_3742_whatsapp_kind_list_has_six_resolving_kinds_and_refuses_status() {
+        let expected = [
+            ("direct_message", "direct message"),
+            ("group_chat", "group chat"),
+            ("channel", "channel"),
+            ("community", "community"),
+            ("community_group", "community group"),
+            ("broadcast_list", "broadcast list"),
+        ];
+        let kinds = list_whatsapp_whitelist_kinds();
+        let ids = kinds
+            .iter()
+            .map(|kind| kind.id.as_str())
+            .collect::<Vec<_>>()
+            .join(",");
+        let names = kinds
+            .iter()
+            .map(|kind| kind.name.as_str())
+            .collect::<Vec<_>>()
+            .join(",");
+        println!("TASK3742_KIND_COUNT={}", kinds.len());
+        println!("TASK3742_KIND_IDS={ids}");
+        println!("TASK3742_KIND_NAMES={names}");
+        assert_eq!(kinds.len(), 6);
+        assert_eq!(
+            kinds
+                .iter()
+                .map(|kind| (kind.id.as_str(), kind.name.as_str()))
+                .collect::<Vec<_>>(),
+            expected
+        );
+
+        for (id, name) in expected {
+            let resolved = resolve_whatsapp_whitelist_kind(id).expect("known kind resolves");
+            println!(
+                "TASK3742_RESOLVED id={} name={} result=allowed",
+                resolved.id, resolved.name
+            );
+            assert_eq!(resolved.id, id);
+            assert_eq!(resolved.name, name);
+        }
+
+        let invented = run_task_3742_kind_probe("invented_kind");
+        let invented_stderr = String::from_utf8_lossy(&invented.stderr);
+        println!(
+            "TASK3742_INVENTED_KIND_EXIT={}",
+            invented.status.code().unwrap_or(-1)
+        );
+        println!("TASK3742_INVENTED_KIND_REFUSAL={}", invented_stderr.trim());
+        assert_eq!(invented.status.code(), Some(1));
+        assert!(invented_stderr.contains("invented_kind"));
+
+        for (task_id, kind) in [
+            ("1089a", "community"),
+            ("1089b", "community_group"),
+            ("1089c", "broadcast_list"),
+        ] {
+            let result = resolve_whatsapp_whitelist_kind(kind)
+                .map(|_| "allowed")
+                .unwrap_or("refusal");
+            println!("TASK3742_{task_id}_KIND={kind} RESULT={result}");
+            assert_eq!(result, "allowed");
+        }
+
+        let status_refusal = resolve_whatsapp_whitelist_kind("status").unwrap_err();
+        println!("TASK3742_STATUS_REFUSAL={status_refusal}");
+        assert!(status_refusal.contains("status"));
+    }
+
+    fn run_task_3742_kind_probe(kind: &str) -> std::process::Output {
+        std::process::Command::new(std::env::current_exe().expect("current test binary"))
+            .arg("task_3742_whatsapp_kind_probe_child")
+            .arg("--ignored")
+            .arg("--nocapture")
+            .env("TASK3742_KIND_PROBE", kind)
+            .output()
+            .expect("run task 3742 child probe")
+    }
+
+    #[test]
+    #[ignore]
+    fn task_3742_whatsapp_kind_probe_child() {
+        let kind = std::env::var("TASK3742_KIND_PROBE").expect("probe kind");
+        match resolve_whatsapp_whitelist_kind(&kind) {
+            Ok(resolved) => println!("TASK3742_KIND_PROBE_ALLOWED={}", resolved.id),
+            Err(refusal) => {
+                eprintln!("{refusal}");
+                std::process::exit(1);
+            }
+        }
     }
 
     struct FileBackedSecurityHarness {
@@ -11860,6 +11959,115 @@ mod tests {
     }
 
     #[test]
+    fn task_0131_absent_place_removal_keeps_allowed_send_preparable() {
+        let harness = FileBackedSecurityHarness::new("task-0131-absent-place-removal");
+        let core = HubCoreState::default();
+        install_self_identity(&core);
+        let security = HubSecurityState::default();
+        let (allowed_person, allowed_metadata, allowed_peer) = test_friend(131);
+        let (absent_person, absent_metadata, absent_peer) = test_friend(132);
+        let people = PeopleFile {
+            version: PEOPLE_SCHEMA_VERSION,
+            people: BTreeMap::from([
+                (allowed_person.clone(), allowed_metadata),
+                (absent_person.clone(), absent_metadata),
+            ]),
+        };
+        write_encrypted_json(&harness.path().join(PEOPLE_FILE), &people).unwrap();
+        let peers = ipc::peer_map::PeerMap::from([
+            (allowed_person.clone(), allowed_peer),
+            (absent_person.clone(), absent_peer),
+        ]);
+        write_encrypted_json(&harness.path().join("peer_map.json"), &peers).unwrap();
+        *core.osl.peer_map.lock().unwrap() = peers;
+        write_encrypted_json(
+            &harness.path().join(SECURITY_PREFS_FILE),
+            &SecurityPreferences {
+                version: 2,
+                ..SecurityPreferences::default()
+            },
+        )
+        .unwrap();
+
+        let service_id = "osl-chat";
+        let account_id = "osl-main";
+        let allowed_scope_id = manual_peer_scope_id(service_id, account_id, &allowed_person)
+            .expect("allowed place has a valid scope id");
+        let absent_scope_id = manual_peer_scope_id(service_id, account_id, &absent_person)
+            .expect("absent place has a valid scope id");
+        set_manual_peer_scope_permission(
+            &core,
+            &security,
+            service_id,
+            account_id,
+            allowed_person.clone(),
+            dm_scope_input(allowed_scope_id.clone()),
+            true,
+        )
+        .expect("fixture grants the actually allowed place");
+
+        let before_prefs: SecurityPreferences =
+            load_encrypted_json(&harness.path().join(SECURITY_PREFS_FILE)).unwrap();
+        let before_allowed_list: Vec<String> = before_prefs
+            .manual_approved_scopes
+            .iter()
+            .cloned()
+            .collect();
+        let absent_remove_result = set_manual_peer_scope_permission(
+            &core,
+            &security,
+            service_id,
+            account_id,
+            absent_person.clone(),
+            dm_scope_input(absent_scope_id.clone()),
+            false,
+        );
+        let after_prefs: SecurityPreferences =
+            load_encrypted_json(&harness.path().join(SECURITY_PREFS_FILE)).unwrap();
+        let after_allowed_list: Vec<String> =
+            after_prefs.manual_approved_scopes.iter().cloned().collect();
+        let prepared = require_manual_peer_scope_approved(
+            &core,
+            service_id,
+            account_id,
+            allowed_person.clone(),
+            dm_scope_input(allowed_scope_id.clone()),
+        )
+        .map(|_| "prepare-action")
+        .unwrap_or("skipped");
+
+        let allowed_place_id =
+            manual_peer_scope_storage_key(service_id, account_id, &allowed_person).unwrap();
+        let absent_place_id =
+            manual_peer_scope_storage_key(service_id, account_id, &absent_person).unwrap();
+        let unchanged = after_allowed_list == before_allowed_list;
+        println!("TASK0131_ABSENT_REMOVE_ID={absent_place_id}");
+        println!(
+            "TASK0131_ABSENT_REMOVE_RESULT={}",
+            absent_remove_result.is_ok()
+        );
+        println!("TASK0131_ALLOWED_PLACE_ID={allowed_place_id}");
+        println!(
+            "TASK0131_ALLOWED_LIST_BEFORE_COUNT={}",
+            before_allowed_list.len()
+        );
+        println!(
+            "TASK0131_ALLOWED_LIST_AFTER_COUNT={}",
+            after_allowed_list.len()
+        );
+        println!("TASK0131_ALLOWED_LIST_BEFORE={before_allowed_list:?}");
+        println!("TASK0131_ALLOWED_LIST_AFTER={after_allowed_list:?}");
+        println!("TASK0131_ALLOWED_LIST_UNCHANGED={unchanged}");
+        println!("TASK0131_ALLOWED_SEND_PREPARE={prepared}");
+
+        assert_ne!(absent_place_id, allowed_place_id);
+        assert_eq!(absent_remove_result, Ok(()));
+        assert_eq!(before_allowed_list, vec![allowed_place_id]);
+        assert_eq!(after_allowed_list, before_allowed_list);
+        assert_eq!(prepared, "prepare-action");
+    }
+
+    #[test]
     fn person_reach_is_never_implied_by_an_ordinary_approval() {
         let gc = Scope::gc("gc-1");
         let channel = Scope::server_channel("space-1", "channel-1");
@@ -12240,6 +12448,18 @@ key"
         let outside_a_readable_after = after_outside.iter().any(|mark| mark == &outside_mark_a);
         let outside_b_readable_after = after_outside.iter().any(|mark| mark == &outside_mark_b);
 
+        if !after_server_a.is_empty() {
+            println!(
+                "TASK0531_MARKED_SERVER_MESSAGE_STILL_PRESENT channel={} marks={:?}",
+                server_channel_a, after_server_a
+            );
+        }
+        if !after_server_b.is_empty() {
+            println!(
+                "TASK0531_MARKED_SERVER_MESSAGE_STILL_PRESENT channel={} marks={:?}",
+                server_channel_b, after_server_b
+            );
+        }
         assert_eq!(result.channels_destroyed, 2);
         assert_eq!(result.rows_destroyed, 2);
         assert!(after_server_a.is_empty());
@@ -12279,6 +12499,265 @@ key"
             outside_b_readable_after,
             outside_mark_b
         );
+    }
+
+    #[derive(Debug, Clone)]
+    struct Task1353Mark {
+        copy: &'static str,
+        bucket: &'static str,
+        channel_id: String,
+        mark: String,
+    }
+
+    fn task_1353_read_plaintexts(core: &HubCoreState, channel_id: &str) -> Vec<String> {
+        ipc::commands::cmd_osl_load_channel_history(&core.osl, channel_id.to_owned(), Some(20))
+            .expect("read task 1353 channel history")
+            .into_iter()
+            .map(|message| message.plaintext)
+            .collect()
+    }
+
+    fn task_1353_count_exact(
+        core: &HubCoreState,
+        seeded: &[Task1353Mark],
+        copy: &str,
+        bucket: &str,
+    ) -> usize {
+        let Some(channel_id) = seeded
+            .iter()
+            .find(|mark| mark.copy == copy && mark.bucket == bucket)
+            .map(|mark| mark.channel_id.as_str())
+        else {
+            return 0;
+        };
+        let history = task_1353_read_plaintexts(core, channel_id);
+        seeded
+            .iter()
+            .filter(|mark| mark.copy == copy && mark.bucket == bucket)
+            .filter(|mark| history.iter().any(|plaintext| plaintext == &mark.mark))
+            .count()
+    }
+
+    fn task_1353_print_counts(
+        stage: &str,
+        copy: &str,
+        core: &HubCoreState,
+        seeded: &[Task1353Mark],
+    ) -> (usize, usize, usize, usize) {
+        let selected_thread = task_1353_count_exact(core, seeded, copy, "selected_thread");
+        let sibling_thread = task_1353_count_exact(core, seeded, copy, "sibling_thread");
+        let selected_channel = task_1353_count_exact(core, seeded, copy, "selected_channel");
+        let other_channel = task_1353_count_exact(core, seeded, copy, "other_channel");
+        println!(
+            "TASK1353_{stage}_COUNTS copy={copy} selected_thread={selected_thread} sibling_thread={sibling_thread} selected_channel={selected_channel} other_channel={other_channel} total={}",
+            selected_thread + sibling_thread + selected_channel + other_channel
+        );
+        (
+            selected_thread,
+            sibling_thread,
+            selected_channel,
+            other_channel,
+        )
+    }
+
+    fn task_1353_assert_readable(
+        stage: &str,
+        copy: &str,
+        core: &HubCoreState,
+        seeded: &[Task1353Mark],
+        buckets: &[&str],
+    ) {
+        for bucket in buckets {
+            let Some(channel_id) = seeded
+                .iter()
+                .find(|mark| mark.copy == copy && mark.bucket == *bucket)
+                .map(|mark| mark.channel_id.as_str())
+            else {
+                panic!("missing task 1353 bucket {bucket} for {copy}");
+            };
+            let history = task_1353_read_plaintexts(core, channel_id);
+            for mark in seeded
+                .iter()
+                .filter(|mark| mark.copy == copy && mark.bucket == *bucket)
+            {
+                let readable = history.iter().any(|plaintext| plaintext == &mark.mark);
+                println!(
+                    "TASK1353_{stage}_READABLE copy={} bucket={} mark={} readable={}",
+                    mark.copy, mark.bucket, mark.mark, readable
+                );
+                assert!(
+                    readable,
+                    "TASK1353 {stage}: exact mark was not readable before burn: {:?}",
+                    mark
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn task_1353_burn_scopes_cannot_over_delete_threads_or_channels_on_either_copy() {
+        let harness = FileBackedSecurityHarness::new("task-1353-burn-scope-overdelete");
+        write_encrypted_json(
+            &harness.path().join(SECURITY_PREFS_FILE),
+            &SecurityPreferences::default(),
+        )
+        .unwrap();
+        write_scope_blobs(
+            &harness.path().join("scope_blobs.json"),
+            &ipc::scope_blobs_file::ScopeBlobsFile::default(),
+        )
+        .unwrap();
+
+        let copy_a = HubCoreState::default();
+        let copy_b = HubCoreState::default();
+        let security = HubSecurityState::default();
+        let random_suffix = lower_hex(&rand::random::<[u8; 32]>());
+        let nonce = format!("{}-{random_suffix}", std::process::id());
+        let server_id = format!("task1353-server-{nonce}");
+        let selected_thread = format!("task1353-selected-thread-{nonce}");
+        let sibling_thread = format!("task1353-sibling-thread-{nonce}");
+        let selected_channel = format!("task1353-selected-channel-{nonce}");
+        let other_channel = format!("task1353-other-channel-{nonce}");
+        let buckets = [
+            ("selected_thread", selected_thread.as_str()),
+            ("sibling_thread", sibling_thread.as_str()),
+            ("selected_channel", selected_channel.as_str()),
+            ("other_channel", other_channel.as_str()),
+        ];
+        let mut seeded = Vec::new();
+
+        for (copy_label, core, dir_name) in [
+            ("copy_a", &copy_a, "copy-a-history"),
+            ("copy_b", &copy_b, "copy-b-history"),
+        ] {
+            let history = store::MessageStore::open(&harness.path().join(dir_name), &TEST_FILE_KEY)
+                .expect("open task 1353 history store");
+            for (bucket_index, &(bucket, channel_id)) in buckets.iter().enumerate() {
+                for mark_index in 0..2 {
+                    let mark = format!(
+                        "TASK1353_MARK copy={copy_label} bucket={bucket} index={mark_index} nonce={nonce}"
+                    );
+                    let message_id = format!("task1353-{copy_label}-{bucket}-{mark_index}-{nonce}");
+                    history
+                        .put(&store::StoredMessage {
+                            discord_message_id: message_id,
+                            channel_id: channel_id.to_owned(),
+                            sender_discord_id: format!("task1353-sender-{copy_label}"),
+                            sender_osl_user_id: format!("task1353-sender-{copy_label}"),
+                            plaintext: mark.clone(),
+                            decrypted_at: 1_901_353_000
+                                + (bucket_index as i64 * 10)
+                                + mark_index as i64,
+                            burned: false,
+                        })
+                        .expect("seed task 1353 message");
+                    seeded.push(Task1353Mark {
+                        copy: copy_label,
+                        bucket,
+                        channel_id: channel_id.to_owned(),
+                        mark,
+                    });
+                }
+            }
+            *core.osl.message_store.lock().unwrap() = Some(history);
+        }
+
+        for (copy_label, core) in [("copy_a", &copy_a), ("copy_b", &copy_b)] {
+            task_1353_assert_readable(
+                "BEFORE_THREAD_BURN",
+                copy_label,
+                core,
+                &seeded,
+                &[
+                    "selected_thread",
+                    "sibling_thread",
+                    "selected_channel",
+                    "other_channel",
+                ],
+            );
+            assert_eq!(
+                task_1353_print_counts("BEFORE_THREAD_BURN", copy_label, core, &seeded),
+                (2, 2, 2, 2)
+            );
+        }
+
+        for (copy_label, core) in [("copy_a", &copy_a), ("copy_b", &copy_b)] {
+            let thread_result = burn_scope(
+                core,
+                &security,
+                ScopeInput::from(&Scope::server_channel(
+                    server_id.clone(),
+                    selected_thread.clone(),
+                )),
+                Vec::new(),
+                true,
+                Vec::new(),
+            )
+            .expect("selected thread burn runs");
+            println!(
+                "TASK1353_THREAD_BURN_RESULT copy={copy_label} storage_key={} channels_destroyed={} rows_destroyed={}",
+                thread_result.storage_key,
+                thread_result.channels_destroyed,
+                thread_result.rows_destroyed
+            );
+            assert_eq!(thread_result.channels_destroyed, 1);
+            assert_eq!(thread_result.rows_destroyed, 2);
+        }
+
+        for (copy_label, core) in [("copy_a", &copy_a), ("copy_b", &copy_b)] {
+            let after_thread =
+                task_1353_print_counts("AFTER_THREAD_BURN", copy_label, core, &seeded);
+            assert_eq!(after_thread, (0, 2, 2, 2));
+            task_1353_assert_readable(
+                "BEFORE_CHANNEL_BURN",
+                copy_label,
+                core,
+                &seeded,
+                &["sibling_thread", "selected_channel", "other_channel"],
+            );
+        }
+
+        for (copy_label, core) in [("copy_a", &copy_a), ("copy_b", &copy_b)] {
+            let channel_result = burn_scope(
+                core,
+                &security,
+                ScopeInput::from(&Scope::server_channel(
+                    server_id.clone(),
+                    selected_channel.clone(),
+                )),
+                Vec::new(),
+                true,
+                Vec::new(),
+            )
+            .expect("selected channel burn runs");
+            println!(
+                "TASK1353_CHANNEL_BURN_RESULT copy={copy_label} storage_key={} channels_destroyed={} rows_destroyed={}",
+                channel_result.storage_key,
+                channel_result.channels_destroyed,
+                channel_result.rows_destroyed
+            );
+            assert_eq!(channel_result.channels_destroyed, 1);
+            assert_eq!(channel_result.rows_destroyed, 2);
+        }
+
+        for (copy_label, core) in [("copy_a", &copy_a), ("copy_b", &copy_b)] {
+            assert_eq!(
+                task_1353_print_counts("AFTER_CHANNEL_BURN", copy_label, core, &seeded),
+                (0, 2, 0, 2)
+            );
+            task_1353_assert_readable(
+                "AFTER_CHANNEL_BURN_SURVIVORS",
+                copy_label,
+                core,
+                &seeded,
+                &["sibling_thread", "other_channel"],
+            );
+        }
+
+        println!("TASK1353_SELECTED_THREAD={selected_thread}");
+        println!("TASK1353_SIBLING_THREAD={sibling_thread}");
+        println!("TASK1353_SELECTED_CHANNEL={selected_channel}");
+        println!("TASK1353_OTHER_CHANNEL={other_channel}");
     }
 
     #[test]

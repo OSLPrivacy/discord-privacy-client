@@ -12,6 +12,10 @@ use ipc::state::AppState;
 };
 use ipc::state::AppState;
 use std::process::Command;
+    cmd_osl_get_auto_whitelist_rule_choices, cmd_osl_new_place, cmd_osl_read_auto_whitelist_rule,
+    cmd_osl_save_auto_whitelist_rule,
+};
+use ipc::state::AppState;
 
 #[test]
 fn direct_rule_query_prints_each_valid_choice() {

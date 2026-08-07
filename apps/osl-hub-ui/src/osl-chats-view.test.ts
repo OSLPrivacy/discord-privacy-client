@@ -6,6 +6,7 @@ import {
   applyOslChatDraftToElement,
   oslChatDraftBytes,
   oslChatsViewMarkup,
+  submitsOslChatDraft,
   type OslChatFriend,
   type OslChatsViewModel,
 } from "./osl-chats-view";
@@ -231,6 +232,16 @@ describe("send button re-enablement while typing", () => {
     const markup = oslChatsViewMarkup(model({ draft: "hello" }));
     expect(markup).toContain('data-osl-chat-send-context="1"');
     expect(markup).not.toMatch(/class="osl-chat-send"[^>]*disabled/u);
+  });
+
+  it("submits the typing box only on a bare Enter", () => {
+    expect(submitsOslChatDraft({ key: "Enter" })).toBe(true);
+    expect(submitsOslChatDraft({ key: "Enter", shiftKey: true })).toBe(false);
+    expect(submitsOslChatDraft({ key: "Enter", ctrlKey: true })).toBe(false);
+    expect(submitsOslChatDraft({ key: "Enter", altKey: true })).toBe(false);
+    expect(submitsOslChatDraft({ key: "Enter", metaKey: true })).toBe(false);
+    expect(submitsOslChatDraft({ key: "Enter", isComposing: true })).toBe(false);
+    expect(submitsOslChatDraft({ key: "a" })).toBe(false);
   });
 
   it("send success clears the live textarea element through the draft source of truth", () => {

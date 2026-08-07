@@ -73,7 +73,7 @@ export function onboardingTorMarkup(state: TorOnboardingState): string {
   const card = (choice: Exclude<TorChoice, null>, title: string, diagram: string, caption: string): string => {
     const selected = state.choice === choice;
     return `<label class="tor-choice-card${selected ? " selected" : ""}">
-      <input class="sr-only" type="radio" name="tor-route" value="${choice}"${selected ? " checked" : ""}/>
+      <input class="sr-only" type="radio" name="tor-route" value="${choice}" aria-label="${choice === "tor" ? "Tor" : "direct"}"${selected ? " checked" : ""}/>
       <span class="tor-card-head">${choiceRadio()}<strong>${title}</strong></span>
       ${diagram}
       <span class="tor-card-caption">${caption}</span>
@@ -81,7 +81,7 @@ export function onboardingTorMarkup(state: TorOnboardingState): string {
   };
 
   return `<section class="tor-onboarding" aria-labelledby="tor-onboarding-heading">
-    <h1 id="tor-onboarding-heading" tabindex="-1" class="tor-title">Choose how OSL connects</h1>
+    <h1 id="tor-onboarding-heading" tabindex="-1" class="tor-title">Connection choice</h1>
     <fieldset class="tor-choice-grid"><legend class="sr-only">Connection route</legend>
       ${card("tor", "Use Tor", torDiagram(), "travel time · 2–6 s")}
       ${card("direct", "Connect directly", directDiagram(), "travel time · under 1 s")}

@@ -73,6 +73,168 @@ local data. Declining the backup removes any prior backup too. This is still not
 remove server relay blobs, peer copies, provider messages, browser cookies, native-app history,
 screenshots, exports, or any backups outside OSL's control.
 
+## Uninstall footprint map
+
+This is the full uninstall-facing map of places OSL writes to in the current Hub build. It groups
+the footprint by user-actionable location. The `count` field is deliberately one per named place:
+the direct checker reports these seven names and only these seven names unless a new place is added
+to this machine-readable list.
+
+```json uninstall-footprint-map
+{
+  "schema_version": 1,
+  "places": [
+    {
+      "name": "program files",
+      "count": 1,
+      "locations": [
+        "%ProgramFiles%\\OSL Privacy\\ or the per-user NSIS install root for the OSL Privacy executable, bundled WebView assets, icons and updater metadata"
+      ],
+      "source": "apps/osl-hub/tauri.conf.json declares productName OSL Privacy, identifier org.oslprivacy.hub and the NSIS bundle target"
+    },
+    {
+      "name": "settings",
+      "count": 1,
+      "locations": [
+        "%APPDATA%\\org.oslprivacy.hub\\preview-preferences.json",
+        "%APPDATA%\\org.oslprivacy.hub\\burn-review-state.json",
+        "%APPDATA%\\org.oslprivacy.hub\\tor-preference.json",
+        "%APPDATA%\\org.oslprivacy.hub\\service-registry.json",
+        "%APPDATA%\\org.oslprivacy.hub\\service-scope-index.json",
+        "%APPDATA%\\org.oslprivacy.hub\\browser-footprint.json",
+        "%APPDATA%\\org.oslprivacy.hub\\deadman-bindings.json",
+        "%APPDATA%\\org.oslprivacy.hub\\osl-core\\app_preferences.json",
+        "%APPDATA%\\org.oslprivacy.hub\\osl-core\\allowed_places.sqlite"
+      ],
+      "source": "apps/osl-hub/src/main.rs startup loads these config files; apps/osl-hub/src/cleanup.rs lists the same roots; crates/ipc/src/allowed_places.rs writes allowed_places.sqlite"
+    },
+    {
+      "name": "keys",
+      "count": 1,
+      "locations": [
+        "%APPDATA%\\org.oslprivacy.hub\\osl-core\\identity.json",
+        "%APPDATA%\\org.oslprivacy.hub\\osl-core\\password_marker.json",
+        "%APPDATA%\\org.oslprivacy.hub\\osl-core\\pending_rotation.json",
+        "%APPDATA%\\org.oslprivacy.hub\\osl-core\\keyserver.json",
+        "%APPDATA%\\org.oslprivacy.hub\\osl-core\\accounts\\<slot>\\identity.json",
+        "Windows Credential Manager / OS keyring entry used by KeyringSealer",
+        "Windows TPM or NCrypt persisted key when that sealer is available"
+      ],
+      "source": "crates/keystore/src/recipients.rs resolves the OSL base/config directory; crates/ipc/src/state.rs and crates/keystore/src/duress.rs bind identity.json and the keyring/TPM material"
+    },
+    {
+      "name": "stored messages",
+      "count": 1,
+      "locations": [
+        "%APPDATA%\\org.oslprivacy.hub\\osl-core\\store\\messages.sqlite and WAL/SHM siblings",
+        "%APPDATA%\\org.oslprivacy.hub\\osl-core\\rn-sessions\\",
+        "%APPDATA%\\org.oslprivacy.hub\\osl-core\\message_open_clock.json",
+        "%APPDATA%\\org.oslprivacy.hub\\osl-core\\receipt_dedup.json",
+        "%APPDATA%\\org.oslprivacy.hub\\osl-core\\revocation_outbox.json",
+        "WebView2 localStorage under the org.oslprivacy.hub profile for OSL Chat local state"
+      ],
+      "source": "crates/ipc/src/fresh_start.rs names store/messages.sqlite; crates/ipc/src/wire_rn.rs stores RN sessions; apps/osl-hub/src/message_expiry.rs stores message clocks; apps/osl-hub/src/osl_chat_local_state_key.rs documents renderer localStorage state"
+    },
+    {
+      "name": "downloaded files",
+      "count": 1,
+      "locations": [
+        "%APPDATA%\\org.oslprivacy.hub\\components-v1\\component-payloads\\",
+        "%APPDATA%\\org.oslprivacy.hub\\osl-core\\osl-assets\\chunks\\",
+        "%LOCALAPPDATA%\\org.oslprivacy.hub\\peer-attachment-staging\\"
+      ],
+      "source": "apps/osl-hub/src/cleanup.rs lists components-v1; apps/osl-hub/src/osl_assets.rs stores asset chunks under osl_config_dir; apps/osl-hub/src/message_expiry.rs and peer_attachment_io.rs use peer-attachment-staging"
+    },
+    {
+      "name": "startup entry",
+      "count": 1,
+      "locations": [
+        "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\\OSL Privacy or a Startup-folder shortcut created for an OSL-owned autostart install"
+      ],
+      "source": "the uninstall residue script must inventory Windows uninstall/startup registry surfaces; no product code may treat this as data deletion"
+    },
+    {
+      "name": "logs",
+      "count": 1,
+      "locations": [
+        "%LOCALAPPDATA%\\Temp\\osl-diagnostics.log",
+        "%LOCALAPPDATA%\\Temp\\osl-diagnostics.log.1",
+        "%LOCALAPPDATA%\\Temp\\osl-startup-trace.txt",
+        ".profiles\\<qa-profile>\\logs\\backend.log when a harness redirects stderr"
+      ],
+      "source": "apps/osl-hub/src/diagnostics.rs writes capped diagnostic logs; apps/osl-hub/src/main.rs writes the startup breadcrumb trace"
+    }
+  ]
+}
+```
+
+## Temporary uninstall inventory
+
+The uninstaller may remove OSL-owned temporary diagnostics and staging artifacts that are outside
+the user data roots above. This is not a Burn claim: message stores, identities, settings, provider
+profiles, and downloaded user files stay governed by the uninstall footprint map. Each section
+below has exactly one `marked_for_uninstall` item so the direct checker can prove the uninstaller's
+temporary-data removal work covers temporary files, logs, and crash dumps without silently omitting
+one class.
+
+```json temporary-uninstall-inventory
+{
+  "schema_version": 1,
+  "sections": [
+    {
+      "name": "temporary files",
+      "items": [
+        {
+          "name": "device transfer scratch directories",
+          "marked_for_uninstall": true,
+          "uninstall_action": "remove_on_uninstall",
+          "locations": [
+            "%LOCALAPPDATA%\\Temp\\osl-transfer-*"
+          ],
+          "removal_work": "remove matching OSL transfer scratch directories during uninstall cleanup",
+          "source": "apps/osl-hub/src/device_transfer.rs creates std::env::temp_dir()/osl-transfer-<suffix> scratch directories and best-effort removes them after use"
+        }
+      ]
+    },
+    {
+      "name": "logs",
+      "items": [
+        {
+          "name": "temporary diagnostic and startup logs",
+          "marked_for_uninstall": true,
+          "uninstall_action": "remove_on_uninstall",
+          "locations": [
+            "%LOCALAPPDATA%\\Temp\\osl-diagnostics.log",
+            "%LOCALAPPDATA%\\Temp\\osl-diagnostics.log.1",
+            "%LOCALAPPDATA%\\Temp\\osl-startup-trace.txt"
+          ],
+          "removal_work": "delete OSL-owned temporary diagnostic and startup trace files during uninstall cleanup",
+          "source": "apps/osl-hub/src/diagnostics.rs writes osl-diagnostics.log in std::env::temp_dir(); apps/osl-hub/src/main.rs and native_window_host.rs write osl-startup-trace.txt"
+        }
+      ]
+    },
+    {
+      "name": "crash dumps",
+      "items": [
+        {
+          "name": "Windows Error Reporting dumps for OSL executables",
+          "marked_for_uninstall": true,
+          "uninstall_action": "remove_on_uninstall",
+          "locations": [
+            "%LOCALAPPDATA%\\CrashDumps\\OSL Privacy*.dmp",
+            "%LOCALAPPDATA%\\CrashDumps\\osl-hub*.dmp",
+            "%LOCALAPPDATA%\\Microsoft\\Windows\\WER\\ReportArchive\\AppCrash_OSL*",
+            "%LOCALAPPDATA%\\Microsoft\\Windows\\WER\\ReportQueue\\AppCrash_OSL*"
+          ],
+          "removal_work": "remove OSL-named Windows crash dump and WER report artifacts during uninstall cleanup",
+          "source": "Windows may persist crash dumps for the OSL Privacy / osl-hub process outside OSL data roots; the uninstall inventory treats only OSL-named dump artifacts as removable"
+        }
+      ]
+    }
+  ]
+}
+```
+
 ## Required wording rules for T7 and T11
 
 - “Burn local data” is appropriate for the local action. “Uninstall OSL” is a separate action.

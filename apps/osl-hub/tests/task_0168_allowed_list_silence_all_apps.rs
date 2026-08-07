@@ -188,6 +188,15 @@ fn task_0168_allowed_list_is_silent_for_all_apps_outside_marked_places() {
     for (fixture, record) in APPS.iter().zip(allowed_records.iter()) {
         let actions =
             (fixture.runner)(&places, &mut log, record).unwrap_or_else(|error| panic!("{error}"));
+    for record in &allowed_records {
+        let read_request = request(&record.app, &record.stable_place_id, "read");
+        let draft_request = request(&record.app, &record.stable_place_id, "draft");
+        let place_request = request(&record.app, &record.stable_place_id, "placed");
+
+        let read = read_hosted_place(&places, &mut log, &read_request).expect("read allowed");
+        let draft =
+            prepare_hosted_place_draft(&places, &mut log, &draft_request).expect("draft allowed");
+        let placed = place_hosted_item(&places, &mut log, &place_request).expect("place allowed");
 
         println!(
             "TASK0168_ALLOWED_APP app={} read_item={} draft_item={} placed_item={} cumulative_action_count={}",
@@ -195,11 +204,15 @@ fn task_0168_allowed_list_is_silent_for_all_apps_outside_marked_places() {
             actions.read_item,
             actions.draft_item,
             actions.placed_item,
+            read.item_id,
+            draft.item_id,
+            placed.item_id,
             log.action_count()
         );
         allowed_action_names.push(format!(
             "{}:{},{},{}",
             record.app, actions.read_item, actions.draft_item, actions.placed_item
+            record.app, read.item_id, draft.item_id, placed.item_id
         ));
     }
 

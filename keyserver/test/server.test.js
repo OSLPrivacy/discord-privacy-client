@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import Database from 'better-sqlite3';
 import { buildServer } from '../src/server.js';
 
 function ts(offsetMs = 0) {
@@ -97,6 +98,9 @@ async function assertWrappedKeyRoundtripAcrossSessions(payload) {
       fetched.body.display_duration_seconds,
       payload.display_duration_seconds ?? null,
     );
+    if (payload.expiry_seconds != null) {
+      assert.equal(fetched.body.expiry_seconds, payload.expiry_seconds);
+    }
     assert.equal(fetched.body.expires_at, payload.expires_at);
     assert.match(fetched.body.created_at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
   } finally {
@@ -242,6 +246,48 @@ test('wrapped-keys POST: 201 on valid upload', async () => {
   assert.equal(r.statusCode, 201);
   assert.equal(r.body.content_id, 'msg-1');
   await s.close();
+});
+
+test('wrapped-keys POST: sent record stores exact chosen expiry seconds', async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'osl-keyserver-expiry-seconds-'));
+  const dbFile = path.join(tempDir, 'keyserver.sqlite');
+  const chosenSeconds = 90;
+  const contentId = 'msg-expiry-seconds';
+  let s;
+  try {
+    s = await buildServer({ logger: false, dbFile });
+    const r = await inject(s, {
+      method: 'POST',
+      url: '/v1/wrapped-keys',
+      payload: validWrappedKey({
+        content_id: contentId,
+        expiry_seconds: chosenSeconds,
+        expires_at: ts(chosenSeconds * 1000),
+      }),
+    });
+    assert.equal(r.statusCode, 201);
+    await s.close();
+    s = null;
+
+    const db = new Database(dbFile, { readonly: true });
+    try {
+      const row = db
+        .prepare('SELECT expiry_seconds FROM wrapped_keys WHERE content_id = ?')
+        .get(contentId);
+      console.log(JSON.stringify({
+        task: '0546',
+        direct_query: 'SELECT expiry_seconds FROM wrapped_keys WHERE content_id = ?',
+        chosen_seconds: chosenSeconds,
+        sent_record_expiry_seconds: row.expiry_seconds,
+      }));
+      assert.equal(row.expiry_seconds, chosenSeconds);
+    } finally {
+      db.close();
+    }
+  } finally {
+    if (s) await s.close();
+    await rm(tempDir, { recursive: true, force: true });
+  }
 });
 
 test('wrapped-keys POST: 409 on duplicate content_id', async () => {
@@ -433,6 +479,47 @@ test('wrapped-keys GET: 410 on past-expiry tombstone', async () => {
   // Subsequent fetch returns 404 (lazy-tombstoned).
   const r2 = await inject(s, { method: 'GET', url: '/v1/wrapped-keys/msg-1' });
   assert.equal(r2.statusCode, 404);
+  await s.close();
+});
+
+test('wrapped-keys expiry job: record expired one second ago is absent after one run', async () => {
+  const s = await newServer();
+  const expired = validWrappedKey({
+    content_id: 'msg-expired',
+    expires_at: ts(-1000),
+  });
+  const live = validWrappedKey({
+    content_id: 'msg-live',
+    expires_at: ts(60 * 60 * 1000),
+  });
+
+  const expiredUpload = await inject(s, {
+    method: 'POST',
+    url: '/v1/wrapped-keys',
+    payload: expired,
+  });
+  assert.equal(expiredUpload.statusCode, 201);
+  const liveUpload = await inject(s, {
+    method: 'POST',
+    url: '/v1/wrapped-keys',
+    payload: live,
+  });
+  assert.equal(liveUpload.statusCode, 201);
+
+  const jobResult = await s.runExpiredProtectedRecordsJob();
+  assert.equal(jobResult.deleted_count, 1);
+
+  const expiredFetch = await inject(s, {
+    method: 'GET',
+    url: '/v1/wrapped-keys/msg-expired',
+  });
+  assert.equal(expiredFetch.statusCode, 404);
+  const liveFetch = await inject(s, {
+    method: 'GET',
+    url: '/v1/wrapped-keys/msg-live',
+  });
+  assert.equal(liveFetch.statusCode, 200);
+  assert.equal(liveFetch.body.content_id, 'msg-live');
   await s.close();
 });
 
