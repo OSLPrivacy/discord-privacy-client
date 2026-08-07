@@ -454,6 +454,83 @@ impl RolePermissionOverrideScope {
     }
 }
 
+pub const CHANNEL_REACTION_SETTING_SENTENCE: &str =
+    "This reaction setting runs in every honest app the same way automatic rules do.";
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ChannelReactionPolicyMode {
+    All,
+    ChosenSet,
+    None,
+}
+
+impl ChannelReactionPolicyMode {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::ChosenSet => "chosen set",
+            Self::None => "none",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelReactionPolicy {
+    pub server_id: String,
+    pub channel_id: String,
+    pub mode: ChannelReactionPolicyMode,
+    pub allowed_emoji: Vec<String>,
+    pub setting_sentence: String,
+}
+
+impl ChannelReactionPolicy {
+    fn all(server_id: String, channel_id: String) -> Self {
+        Self {
+            server_id,
+            channel_id,
+            mode: ChannelReactionPolicyMode::All,
+            allowed_emoji: Vec::new(),
+            setting_sentence: CHANNEL_REACTION_SETTING_SENTENCE.to_owned(),
+        }
+    }
+
+    fn allows(&self, emoji: &str) -> bool {
+        match self.mode {
+            ChannelReactionPolicyMode::All => true,
+            ChannelReactionPolicyMode::ChosenSet => {
+                self.allowed_emoji.iter().any(|allowed| allowed == emoji)
+            }
+            ChannelReactionPolicyMode::None => false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelReactionResult {
+    pub server_id: String,
+    pub channel_id: String,
+    pub message_id: String,
+    pub actor_name: String,
+    pub emoji: String,
+    pub landed: bool,
+    pub reaction_count: usize,
+    pub policy_mode: ChannelReactionPolicyMode,
+    pub setting_sentence: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct ChannelReactionRecord {
+    server_id: String,
+    channel_id: String,
+    message_id: String,
+    actor_name: String,
+    emoji: String,
+}
+
 impl ServerPermission {
     pub const ALL: [Self; 7] = [
         Self::Read,
@@ -665,6 +742,10 @@ pub struct ServerThreadPermissionStore {
     threads: BTreeMap<String, ServerThreadRecord>,
     #[serde(default)]
     role_overrides: BTreeMap<String, RolePermissionOverrideScope>,
+    #[serde(default)]
+    channel_reaction_policies: BTreeMap<String, ChannelReactionPolicy>,
+    #[serde(default)]
+    channel_reactions: BTreeMap<String, ChannelReactionRecord>,
 }
 
 impl ServerThreadPermissionStore {
@@ -945,6 +1026,111 @@ impl ServerThreadPermissionStore {
             .table())
     }
 
+    pub fn set_channel_reaction_policy(
+        &mut self,
+        server_id: String,
+        channel_id: String,
+        mode: ChannelReactionPolicyMode,
+        allowed_emoji: Vec<String>,
+    ) -> Result<ChannelReactionPolicy, ServerThreadPermissionError> {
+        let server_id = bounded_non_empty(server_id, "server_id")
+            .map_err(ServerThreadPermissionError::Membership)?;
+        let channel_id = bounded_non_empty(channel_id, "channel_id")
+            .map_err(ServerThreadPermissionError::Membership)?;
+        self.channel(&server_id, &channel_id)?;
+        let allowed_emoji = normalize_allowed_reaction_set(mode, allowed_emoji)?;
+        let policy = ChannelReactionPolicy {
+            server_id,
+            channel_id,
+            mode,
+            allowed_emoji,
+            setting_sentence: CHANNEL_REACTION_SETTING_SENTENCE.to_owned(),
+        };
+        self.channel_reaction_policies.insert(
+            channel_key(&policy.server_id, &policy.channel_id),
+            policy.clone(),
+        );
+        Ok(policy)
+    }
+
+    pub fn read_channel_reaction_policy(
+        &self,
+        server_id: String,
+        channel_id: String,
+    ) -> Result<ChannelReactionPolicy, ServerThreadPermissionError> {
+        let server_id = bounded_non_empty(server_id, "server_id")
+            .map_err(ServerThreadPermissionError::Membership)?;
+        let channel_id = bounded_non_empty(channel_id, "channel_id")
+            .map_err(ServerThreadPermissionError::Membership)?;
+        self.channel(&server_id, &channel_id)?;
+        Ok(self
+            .channel_reaction_policies
+            .get(&channel_key(&server_id, &channel_id))
+            .cloned()
+            .unwrap_or_else(|| ChannelReactionPolicy::all(server_id, channel_id)))
+    }
+
+    pub fn add_channel_reaction(
+        &mut self,
+        server_id: String,
+        channel_id: String,
+        message_id: String,
+        actor_name: String,
+        emoji: String,
+    ) -> Result<ChannelReactionResult, ServerThreadPermissionError> {
+        let server_id = bounded_non_empty(server_id, "server_id")
+            .map_err(ServerThreadPermissionError::Membership)?;
+        let channel_id = bounded_non_empty(channel_id, "channel_id")
+            .map_err(ServerThreadPermissionError::Membership)?;
+        let message_id = bounded_non_empty(message_id, "message_id")
+            .map_err(ServerThreadPermissionError::Membership)?;
+        let actor_name = bounded_non_empty(actor_name, "actor_name")
+            .map_err(ServerThreadPermissionError::Membership)?;
+        validate_reaction_emoji(&emoji)?;
+        self.channel(&server_id, &channel_id)?;
+        let policy = self.read_channel_reaction_policy(server_id.clone(), channel_id.clone())?;
+        if !policy.allows(&emoji) {
+            return Err(ServerThreadPermissionError::ReactionRefused { emoji });
+        }
+        let key = channel_reaction_key(&server_id, &channel_id, &message_id, &actor_name, &emoji);
+        self.channel_reactions
+            .entry(key)
+            .or_insert_with(|| ChannelReactionRecord {
+                server_id: server_id.clone(),
+                channel_id: channel_id.clone(),
+                message_id: message_id.clone(),
+                actor_name: actor_name.clone(),
+                emoji: emoji.clone(),
+            });
+        Ok(ChannelReactionResult {
+            reaction_count: self.channel_reaction_count(&server_id, &channel_id, &message_id),
+            server_id,
+            channel_id,
+            message_id,
+            actor_name,
+            emoji,
+            landed: true,
+            policy_mode: policy.mode,
+            setting_sentence: policy.setting_sentence,
+        })
+    }
+
+    pub fn channel_reaction_count(
+        &self,
+        server_id: &str,
+        channel_id: &str,
+        message_id: &str,
+    ) -> usize {
+        self.channel_reactions
+            .values()
+            .filter(|record| {
+                record.server_id == server_id
+                    && record.channel_id == channel_id
+                    && record.message_id == message_id
+            })
+            .count()
+    }
+
     fn channel(
         &self,
         server_id: &str,
@@ -992,6 +1178,12 @@ pub enum ServerThreadPermissionError {
     ThreadOverrideMoreOpenThanChannel,
     #[error("OSL: role override table must contain exactly 120 unique cells")]
     InvalidRoleOverrideTable,
+    #[error("OSL: channel reaction emoji is invalid")]
+    InvalidReactionEmoji,
+    #[error("OSL: chosen reaction set must contain at least one emoji")]
+    EmptyReactionSet,
+    #[error("OSL: reaction {emoji} is not allowed in this channel")]
+    ReactionRefused { emoji: String },
 }
 
 fn channel_key(server_id: &str, channel_id: &str) -> String {
@@ -1006,6 +1198,47 @@ fn role_override_scope_key(server_id: &str, channel_id: &str, thread_id: Option<
     match thread_id {
         Some(thread_id) => format!("{server_id}\n{channel_id}\n{thread_id}"),
         None => format!("{server_id}\n{channel_id}"),
+    }
+}
+
+fn channel_reaction_key(
+    server_id: &str,
+    channel_id: &str,
+    message_id: &str,
+    actor_name: &str,
+    emoji: &str,
+) -> String {
+    format!("{server_id}\n{channel_id}\n{message_id}\n{actor_name}\n{emoji}")
+}
+
+fn validate_reaction_emoji(emoji: &str) -> Result<(), ServerThreadPermissionError> {
+    if emoji.is_empty()
+        || emoji.len() > 64
+        || emoji.trim() != emoji
+        || emoji.chars().any(char::is_control)
+    {
+        Err(ServerThreadPermissionError::InvalidReactionEmoji)
+    } else {
+        Ok(())
+    }
+}
+
+fn normalize_allowed_reaction_set(
+    mode: ChannelReactionPolicyMode,
+    allowed_emoji: Vec<String>,
+) -> Result<Vec<String>, ServerThreadPermissionError> {
+    if mode != ChannelReactionPolicyMode::ChosenSet {
+        return Ok(Vec::new());
+    }
+    let mut unique = BTreeSet::new();
+    for emoji in allowed_emoji {
+        validate_reaction_emoji(&emoji)?;
+        unique.insert(emoji);
+    }
+    if unique.is_empty() {
+        Err(ServerThreadPermissionError::EmptyReactionSet)
+    } else {
+        Ok(unique.into_iter().collect())
     }
 }
 
