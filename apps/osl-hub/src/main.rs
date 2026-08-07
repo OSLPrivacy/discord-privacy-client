@@ -11325,6 +11325,12 @@ fn main() {
 #[cfg(not(feature = "signal-qa-shell"))]
 fn main() {
     if let Some(exit_code) =
+        osl_privacy_hub::front_window_grab::run_front_window_route_cli_from_env()
+    {
+        std::process::exit(exit_code);
+    }
+
+    if let Some(exit_code) =
         osl_privacy_hub::front_window_grab::run_front_window_grab_cli_from_env()
     {
         std::process::exit(exit_code);
