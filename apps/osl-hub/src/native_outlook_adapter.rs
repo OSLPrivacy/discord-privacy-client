@@ -283,10 +283,12 @@ mod tests {
             driver.title_reader_command
         );
     }
-//! Outlook desktop read-only adapter pieces.
-//!
-//! The mailbox reader is deliberately local and read-only. It adapts Outlook
-//! desktop message facts into the shared mailbox reader contract used by Scrub.
+}
+
+// Outlook desktop read-only adapter pieces.
+//
+// The mailbox reader is deliberately local and read-only. It adapts Outlook
+// desktop message facts into the shared mailbox reader contract used by Scrub.
 
 use crate::services::{
     open_shared_mailbox_message, read_shared_mailbox_folders, read_shared_mailbox_messages,
@@ -310,8 +312,6 @@ pub struct OutlookDesktopMailbox {
 }
 
 impl OutlookDesktopMailbox {
-    }
-
     pub fn new(
         owner_osl_user_id: impl Into<String>,
         account_id: impl Into<String>,
@@ -424,4 +424,105 @@ pub fn seeded_outlook_desktop_scrub_mailbox() -> OutlookDesktopMailbox {
             ],
         ),
     )
+}
+
+pub const OUTLOOK_DESKTOP_TASK_1286_MARKER: &str = "OSL-OUTLOOK-DESKTOP-1286";
+pub const OUTLOOK_DESKTOP_TASK_1286_COVER_WORDS: &str = "OSL-OUTLOOK-DESKTOP-1286 cover message";
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct OutlookDesktopMappedControl {
+    pub name: &'static str,
+}
+
+pub const OUTLOOK_DESKTOP_TASK_1286_CONTROLS: &[OutlookDesktopMappedControl] = &[
+    OutlookDesktopMappedControl { name: "Place" },
+    OutlookDesktopMappedControl { name: "Read" },
+    OutlookDesktopMappedControl { name: "Send" },
+];
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct OutlookDesktopTask1286Fixture {
+    controls: Vec<&'static str>,
+    placed_messages: Vec<String>,
+    sent_messages: Vec<String>,
+}
+
+impl Default for OutlookDesktopTask1286Fixture {
+    fn default() -> Self {
+        Self {
+            controls: OUTLOOK_DESKTOP_TASK_1286_CONTROLS
+                .iter()
+                .map(|control| control.name)
+                .collect(),
+            placed_messages: Vec::new(),
+            sent_messages: Vec::new(),
+        }
+    }
+}
+
+impl OutlookDesktopTask1286Fixture {
+    pub fn start() -> Self {
+        Self::default()
+    }
+
+    pub fn control_names(&self) -> Vec<&'static str> {
+        self.controls.clone()
+    }
+
+    pub fn placed_message_count(&self) -> usize {
+        self.placed_messages.len()
+    }
+
+    pub fn sent_count(&self) -> usize {
+        self.sent_messages.len()
+    }
+
+    pub fn place(&mut self) -> Result<&'static str, String> {
+        self.require_control("Place")?;
+        self.placed_messages
+            .push(OUTLOOK_DESKTOP_TASK_1286_COVER_WORDS.to_owned());
+        Ok(OUTLOOK_DESKTOP_TASK_1286_COVER_WORDS)
+    }
+
+    pub fn read(&self) -> Result<&str, String> {
+        self.require_control("Read")?;
+        self.placed_messages
+            .last()
+            .map(String::as_str)
+            .ok_or_else(|| "Outlook desktop fixture has no placed cover message".to_owned())
+    }
+
+    pub fn send(&mut self) -> Result<usize, String> {
+        self.require_control("Send")?;
+        let message = self
+            .placed_messages
+            .last()
+            .cloned()
+            .ok_or_else(|| "Outlook desktop fixture has no placed cover message".to_owned())?;
+        self.sent_messages.push(message);
+        Ok(self.sent_messages.len())
+    }
+
+    pub fn remove_control(&mut self, name: &str) -> Result<bool, String> {
+        if name == "Send" {
+            return Err("Outlook desktop fixture refused removing Send".to_owned());
+        }
+        let before = self.controls.len();
+        self.controls.retain(|control| *control != name);
+        Ok(self.controls.len() != before)
+    }
+
+    fn require_control(&self, name: &str) -> Result<(), String> {
+        if self.controls.contains(&name) {
+            Ok(())
+        } else {
+            Err(format!(
+                "Outlook desktop fixture control {name} is unavailable"
+            ))
+        }
+    }
+}
+
+pub fn fake_outlook_desktop_task_1286_fixture() -> OutlookDesktopTask1286Fixture {
+    OutlookDesktopTask1286Fixture::start()
 }
