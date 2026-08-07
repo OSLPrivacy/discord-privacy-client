@@ -1,5 +1,90 @@
+#[cfg(any(target_os = "windows", test))]
+#[derive(Debug, PartialEq, Eq)]
+enum ReadbackComparison {
+    Matched,
+    DidNotMatch {
+        position: usize,
+        expected: Option<char>,
+        actual: Option<char>,
+    },
+}
+
+#[cfg(any(target_os = "windows", test))]
+impl ReadbackComparison {
+    fn status_line(&self) -> String {
+        match self {
+            Self::Matched => "matched".to_owned(),
+            Self::DidNotMatch {
+                position,
+                expected,
+                actual,
+            } => format!(
+                "did-not-match first_differing_character_position={position} expected={} actual={}",
+                printable_char(*expected),
+                printable_char(*actual)
+            ),
+        }
+    }
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn compare_readback(expected: &str, actual: &str) -> ReadbackComparison {
+    let mut expected_chars = expected.chars();
+    let mut actual_chars = actual.chars();
+    for position in 1.. {
+        match (expected_chars.next(), actual_chars.next()) {
+            (Some(left), Some(right)) if left == right => {}
+            (None, None) => return ReadbackComparison::Matched,
+            (expected, actual) => {
+                return ReadbackComparison::DidNotMatch {
+                    position,
+                    expected,
+                    actual,
+                }
+            }
+        }
+    }
+    unreachable!("unbounded loop returns on match or first differing character")
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn printable_char(value: Option<char>) -> String {
+    match value {
+        Some(ch) => format!("{ch:?}"),
+        None => "<end>".to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod task_3407_tests {
+    use super::{compare_readback, ReadbackComparison};
+
+    #[test]
+    fn clean_readback_returns_matched() {
+        assert_eq!(
+            compare_readback("MAPLE-3407", "MAPLE-3407"),
+            ReadbackComparison::Matched
+        );
+        assert_eq!(
+            compare_readback("MAPLE-3407", "MAPLE-3407").status_line(),
+            "matched"
+        );
+    }
+
+    #[test]
+    fn changed_character_names_the_first_differing_character_position() {
+        let comparison = compare_readback("MAPLE-3407", "MAPLE-X407");
+        assert_eq!(
+            comparison.status_line(),
+            "did-not-match first_differing_character_position=7 expected='3' actual='X'"
+        );
+    }
+}
+
 #[cfg(target_os = "windows")]
 mod windows_place_text {
+    use super::{compare_readback, printable_char, ReadbackComparison};
+
     use std::ffi::{c_void, OsString};
     use std::mem::size_of;
     use std::os::windows::ffi::OsStringExt;
@@ -46,6 +131,7 @@ mod windows_place_text {
     const DEFAULT_APP: &str = "Discord";
     const DEFAULT_TEXT: &str = "MAPLE-3406";
     const DEFAULT_INITIAL_FRONT: &str = "Photos";
+    const DEFAULT_WAIT_BEFORE_READ_MS: u64 = 0;
     const EVENT_SYSTEM_ALERT: u32 = 0x0002;
     const ELECTRON_A11Y_OBJECT_ID: i32 = 1;
     const OBJID_CLIENT: i32 = -4;
@@ -220,9 +306,15 @@ mod windows_place_text {
             .map_err(|error| CommandError::exit1(format!("clipboard stage failed: {error}")))?;
         send_ctrl_v().map_err(CommandError::exit1)?;
         thread::sleep(Duration::from_millis(320));
+        if args.wait_before_read_ms > 0 {
+            println!("waiting_before_read_ms={}", args.wait_before_read_ms);
+            thread::sleep(Duration::from_millis(args.wait_before_read_ms));
+        }
 
         let readback = value_of(&composer).unwrap_or_default();
         println!("readback={readback:?}");
+        let comparison = compare_readback(&args.text, &readback);
+        println!("{}", comparison.status_line());
         restorer
             .restore()
             .map_err(|error| CommandError::exit1(format!("clipboard restore failed: {error}")))?;
@@ -234,10 +326,16 @@ mod windows_place_text {
         println!("clipboard_restored_exact={}", before_digest == after_digest);
         println!("osl_clipboard_entries=0");
 
-        if readback != args.text {
+        if let ReadbackComparison::DidNotMatch {
+            position,
+            expected,
+            actual,
+        } = comparison
+        {
             return Err(CommandError::exit1(format!(
-                "{} readback did not equal {:?}",
-                args.app, args.text
+                "did-not-match first_differing_character_position={position} expected={} actual={}",
+                printable_char(expected),
+                printable_char(actual)
             )));
         }
         if before_digest != after_digest {
@@ -252,6 +350,7 @@ mod windows_place_text {
         initial_front: String,
         app: String,
         text: String,
+        wait_before_read_ms: u64,
     }
 
     impl Args {
@@ -259,6 +358,7 @@ mod windows_place_text {
             let mut initial_front = DEFAULT_INITIAL_FRONT.to_owned();
             let mut app = DEFAULT_APP.to_owned();
             let mut text = DEFAULT_TEXT.to_owned();
+            let mut wait_before_read_ms = DEFAULT_WAIT_BEFORE_READ_MS;
             let mut args = std::env::args().skip(1);
             while let Some(arg) = args.next() {
                 match arg.as_str() {
@@ -277,9 +377,19 @@ mod windows_place_text {
                             .next()
                             .ok_or_else(|| CommandError::usage("--text needs a value"))?;
                     }
+                    "--wait-before-read-ms" => {
+                        let value = args.next().ok_or_else(|| {
+                            CommandError::usage("--wait-before-read-ms needs a value")
+                        })?;
+                        wait_before_read_ms = value.parse().map_err(|_| {
+                            CommandError::usage(
+                                "--wait-before-read-ms must be a non-negative integer",
+                            )
+                        })?;
+                    }
                     "--help" | "-h" => {
                         return Err(CommandError::usage(
-                            "usage: task_3406_place_text [--initial-front Photos] [--app Discord] [--text MAPLE-3406]",
+                            "usage: task_3406_place_text [--initial-front Photos] [--app Discord] [--text MAPLE-3406] [--wait-before-read-ms 0]",
                         ));
                     }
                     other => {
@@ -294,6 +404,7 @@ mod windows_place_text {
                 initial_front,
                 app,
                 text,
+                wait_before_read_ms,
             })
         }
     }
@@ -686,9 +797,7 @@ mod windows_place_text {
                 }
                 let size = unsafe { GlobalSize(handle as _) };
                 if size == 0 {
-                    return Err(format!(
-                        "clipboard format {format} is not byte-copyable"
-                    ));
+                    return Err(format!("clipboard format {format} is not byte-copyable"));
                 }
                 let source = unsafe { GlobalLock(handle as _) };
                 if source.is_null() {
