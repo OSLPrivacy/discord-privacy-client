@@ -20,6 +20,18 @@ use std::collections::BTreeMap;
 const DB_FILE: &str = "allowed_places.sqlite";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+//!
+//! Merge note (lane n): task 0104 and task 0137 both introduced this module in
+//! parallel lanes. `AllowedPlaceRecord` is the 0104 wire record used by the
+//! hub restart path; `StoredAllowedPlace` is the 0137 sqlite row (named
+//! `AllowedPlaceRecord` in lane f) used by the auto-whitelist rule commands.
+
+use rusqlite::{params, Connection};
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+
+/// One local place the user has explicitly allowed.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AllowedPlaceRecord {
     pub app: String,
@@ -77,6 +89,7 @@ impl AllowedPlaceRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AllowedPlaceQuery {
     pub app: String,
@@ -92,6 +105,13 @@ impl From<AllowedPlaceRecord> for AllowedPlaceQuery {
             account: record.account,
             kind: record.kind,
             stable_id: record.stable_id,
+impl AllowedPlaceRecord {
+    pub fn discord_direct_message(account: &str, conversation_id: &str) -> Self {
+        Self {
+            app: "discord".to_owned(),
+            account: account.to_owned(),
+            kind: "direct_message".to_owned(),
+            stable_id: format!("discord:{account}:direct_message:{conversation_id}"),
         }
     }
 }
@@ -388,6 +408,52 @@ fn require_present(field: &str, value: &str) -> Result<(), String> {
     if value.trim().is_empty() {
         return Err(format!("OSL: allowed place {field} is missing"));
     }
+pub const ALLOWED_PLACES_DB: &str = "allowed_places.sqlite";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredAllowedPlace {
+    pub app_kind: String,
+    pub place_kind: String,
+    pub place_id: String,
+    pub display_name: Option<String>,
+    pub found_at_unix_secs: i64,
+}
+
+impl StoredAllowedPlace {
+    pub fn discord_direct_message(peer_discord_id: impl Into<String>) -> Self {
+        let place_id = peer_discord_id.into();
+        Self {
+            app_kind: "discord".to_string(),
+            place_kind: "direct_message".to_string(),
+            display_name: Some(place_id.clone()),
+            place_id,
+            found_at_unix_secs: 0,
+        }
+    }
+}
+
+pub fn allowed_places_db_path(app_data_dir: &Path) -> PathBuf {
+    app_data_dir.join(ALLOWED_PLACES_DB)
+}
+
+pub fn add_allowed_place_record(
+    app_data_dir: &Path,
+    record: &StoredAllowedPlace,
+) -> Result<(), String> {
+    let conn = open_allowed_places(app_data_dir)?;
+    conn.execute(
+        "INSERT INTO allowed_places \
+         (app_kind, place_kind, place_id, display_name, found_at_unix_secs) \
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![
+            record.app_kind,
+            record.place_kind,
+            record.place_id,
+            record.display_name,
+            record.found_at_unix_secs
+        ],
+    )
+    .map_err(|e| format!("OSL: insert allowed place: {e}"))?;
     Ok(())
 }
 
@@ -417,6 +483,7 @@ pub fn get_allowed_place_record(
     place_kind: &str,
     place_id: &str,
 ) -> Result<Option<AllowedPlaceRecord>, String> {
+) -> Result<Option<StoredAllowedPlace>, String> {
     let conn = open_allowed_places(app_data_dir)?;
     let mut stmt = conn
         .prepare(
@@ -437,6 +504,7 @@ pub fn get_allowed_place_record(
         return Ok(None);
     };
     Ok(Some(AllowedPlaceRecord {
+    Ok(Some(StoredAllowedPlace {
         app_kind: row
             .get(0)
             .map_err(|e| format!("OSL: read allowed place app_kind: {e}"))?,

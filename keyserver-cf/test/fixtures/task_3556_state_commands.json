@@ -1,0 +1,10 @@
+{
+  "commands": [
+    "add_allowed_place_record",
+    "remove_allowed_place_record",
+    "scrub_imap_verify",
+    "consume_peer_message",
+    "GET /v1/wrapped-keys/:content_id",
+    "POST /v1/license/redeem"
+  ]
+}

@@ -70,6 +70,7 @@ fn reload_repopulates_app_preferences_from_disk() {
         ..Default::default()
         ask_before_irreversible_actions:
             ipc::app_preferences::AskBeforeIrreversibleActionsChoice::On,
+        ..Default::default()
     };
     write_app_preferences(&dir.path().join("app_preferences.json"), &prefs).unwrap();
 
@@ -354,6 +355,7 @@ fn reload_overwrites_bootstrap_defaults() {
         ..Default::default()
         ask_before_irreversible_actions:
             ipc::app_preferences::AskBeforeIrreversibleActionsChoice::On,
+        ..Default::default()
     };
     write_app_preferences(&dir.path().join("app_preferences.json"), &prefs_on_disk).unwrap();
 

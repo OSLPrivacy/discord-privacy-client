@@ -6,6 +6,9 @@ use serde::{
 };
 use std::collections::BTreeMap;
 use std::path::Path;
+//! User rules for automatically allowing newly discovered places.
+
+use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -560,6 +563,7 @@ impl FromStr for AutoWhitelistRule {
             "only if a friend" => Ok(Self::OnlyIfFriend),
             _ => Err(format!(
                 "OSL: unknown auto-rule choice {raw:?}; valid choices: {}",
+                "OSL: unknown auto-whitelist rule {raw:?}; valid choices: {}",
                 Self::VALID_CHOICES
                     .iter()
                     .map(|rule| rule.as_label())

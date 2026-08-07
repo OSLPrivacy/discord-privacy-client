@@ -8312,6 +8312,224 @@ mod tests {
         assert_eq!(enabled[0].title, "Friend encryption key changed");
     }
 
+    fn task_3556_state_command_list() -> Vec<String> {
+        #[derive(Deserialize)]
+        struct StateCommandList {
+            commands: Vec<String>,
+        }
+
+        serde_json::from_str::<StateCommandList>(include_str!(
+            "../../../keyserver-cf/test/fixtures/task_3556_state_commands.json"
+        ))
+        .unwrap()
+        .commands
+    }
+
+    fn task_3556_assert_state_command_list_contains(command: &str) {
+        let commands = task_3556_state_command_list();
+        assert!(
+            commands.iter().any(|listed| listed == command),
+            "TASK3556 saved state command list must name {command}"
+        );
+        println!(
+            "TASK3556 state_command_list_count={} commands={}",
+            commands.len(),
+            commands.join(",")
+        );
+    }
+
+    fn task_3556_peer_replay_count(path: &Path) -> usize {
+        load_encrypted_json_with_key::<PeerReplayLedger>(
+            &path.join(PEER_REPLAY_FILE),
+            &TEST_FILE_KEY,
+        )
+        .unwrap()
+        .consumed_by_scope
+        .values()
+        .map(BTreeMap::len)
+        .sum()
+    }
+
+    #[test]
+    fn task_3556_allowed_place_and_view_once_state_commands_are_repeat_safe() {
+        task_3556_assert_state_command_list_contains("add_allowed_place_record");
+        task_3556_assert_state_command_list_contains("remove_allowed_place_record");
+        task_3556_assert_state_command_list_contains("consume_peer_message");
+
+        let harness = FileBackedSecurityHarness::new("task-3556-sequential");
+        let security = HubSecurityState::default();
+        let add_record =
+            AllowedPlaceRecord::discord_direct_message("900000000000003556", "900000000000003557");
+        add_allowed_place_record(&security, add_record.clone()).unwrap();
+        add_allowed_place_record(&security, add_record.clone()).unwrap();
+        let add_count = list_allowed_place_records(&security).unwrap().len();
+        assert_eq!(
+            add_count, 1,
+            "add_allowed_place_record repeated sequentially created {add_count} records"
+        );
+        println!(
+            "TASK3556 command=add_allowed_place_record mode=sequential intended_state_changes={} second_result=safe_repeat_same_record",
+            add_count
+        );
+
+        let removed_first =
+            remove_allowed_place_record(&security, add_record.stable_id.clone()).unwrap();
+        let removed_second =
+            remove_allowed_place_record(&security, add_record.stable_id.clone()).unwrap();
+        let remove_count = usize::from(removed_first) + usize::from(removed_second);
+        assert!(removed_first);
+        assert!(!removed_second);
+        assert_eq!(remove_count, 1);
+        println!(
+            "TASK3556 command=remove_allowed_place_record mode=sequential intended_state_changes={} second_result=safe_repeat_absent",
+            remove_count
+        );
+
+        let scope = dm_scope_input("task-3556-view-once-scope".to_owned());
+        let message_id = "peer-35560000000000000000000000000000";
+        consume_peer_message(
+            &security,
+            scope.clone(),
+            message_id,
+            1_700_003_600,
+            1_700_000_000,
+        )
+        .unwrap();
+        let second = consume_peer_message(
+            &security,
+            scope.clone(),
+            message_id,
+            1_700_003_600,
+            1_700_000_001,
+        )
+        .unwrap_err();
+        let consume_count = task_3556_peer_replay_count(harness.path());
+        assert_eq!(second, PEER_OPEN_ERROR);
+        assert_eq!(
+            consume_count, 1,
+            "consume_peer_message repeated sequentially created count {consume_count}"
+        );
+        println!(
+            "TASK3556 command=consume_peer_message mode=sequential intended_state_changes={} second_result=refusal:{PEER_OPEN_ERROR}",
+            consume_count
+        );
+
+        drop(harness);
+
+        let harness = FileBackedSecurityHarness::new("task-3556-concurrent-add");
+        let security = std::sync::Arc::new(HubSecurityState::default());
+        let record =
+            AllowedPlaceRecord::discord_direct_message("900000000000003558", "900000000000003559");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let mut handles = Vec::new();
+        for _ in 0..2 {
+            let security = std::sync::Arc::clone(&security);
+            let record = record.clone();
+            let barrier = std::sync::Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                add_allowed_place_record(&security, record)
+            }));
+        }
+        let add_results = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect::<Vec<_>>();
+        let add_count = list_allowed_place_records(&security).unwrap().len();
+        assert_eq!(
+            add_results.iter().filter(|result| result.is_ok()).count(),
+            2
+        );
+        assert_eq!(
+            add_count, 1,
+            "add_allowed_place_record repeated concurrently created {add_count} records"
+        );
+        println!(
+            "TASK3556 command=add_allowed_place_record mode=concurrent intended_state_changes={} second_result=safe_repeat_same_record",
+            add_count
+        );
+        drop(harness);
+
+        let harness = FileBackedSecurityHarness::new("task-3556-concurrent-remove");
+        let security = std::sync::Arc::new(HubSecurityState::default());
+        let record =
+            AllowedPlaceRecord::discord_direct_message("900000000000003560", "900000000000003561");
+        add_allowed_place_record(&security, record.clone()).unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let mut handles = Vec::new();
+        for _ in 0..2 {
+            let security = std::sync::Arc::clone(&security);
+            let stable_id = record.stable_id.clone();
+            let barrier = std::sync::Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                remove_allowed_place_record(&security, stable_id)
+            }));
+        }
+        let remove_results = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap().unwrap())
+            .collect::<Vec<_>>();
+        let remove_count = remove_results.iter().filter(|removed| **removed).count();
+        assert_eq!(
+            remove_count, 1,
+            "remove_allowed_place_record repeated concurrently changed count {remove_count}"
+        );
+        assert_eq!(list_allowed_place_records(&security).unwrap().len(), 0);
+        println!(
+            "TASK3556 command=remove_allowed_place_record mode=concurrent intended_state_changes={} second_result=safe_repeat_absent",
+            remove_count
+        );
+        drop(harness);
+
+        let harness = FileBackedSecurityHarness::new("task-3556-concurrent-consume");
+        let security = std::sync::Arc::new(HubSecurityState::default());
+        let scope = dm_scope_input("task-3556-view-once-concurrent".to_owned());
+        let message_id = "peer-35560000000000000000000000000001".to_owned();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let mut handles = Vec::new();
+        for _ in 0..2 {
+            let security = std::sync::Arc::clone(&security);
+            let scope = scope.clone();
+            let message_id = message_id.clone();
+            let barrier = std::sync::Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                consume_peer_message(&security, scope, &message_id, 1_700_003_600, 1_700_000_000)
+            }));
+        }
+        let consume_results = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect::<Vec<_>>();
+        let consume_count = task_3556_peer_replay_count(harness.path());
+        assert_eq!(
+            consume_results
+                .iter()
+                .filter(|result| result.is_ok())
+                .count(),
+            1
+        );
+        assert_eq!(
+            consume_results
+                .iter()
+                .filter(|result| result
+                    .as_ref()
+                    .err()
+                    .is_some_and(|error| error == PEER_OPEN_ERROR))
+                .count(),
+            1
+        );
+        assert_eq!(
+            consume_count, 1,
+            "consume_peer_message repeated concurrently created count {consume_count}"
+        );
+        println!(
+            "TASK3556 command=consume_peer_message mode=concurrent intended_state_changes={} second_result=refusal:{PEER_OPEN_ERROR}",
+            consume_count
+        );
+    }
+
     fn fresh_test_dir(label: &str) -> std::path::PathBuf {
         let base = std::env::temp_dir();
         for attempt in 0..100 {
@@ -8894,6 +9112,77 @@ mod tests {
     #[test]
 
     #[test]
+
+    #[test]
+    fn task0704_chat_approval_suggestion_respects_choice_and_approval() {
+        let harness = FileBackedSecurityHarness::new("task0704");
+        let core = HubCoreState::default();
+        let security = HubSecurityState::default();
+        install_self_identity(&core);
+        let (person_id, metadata, peer) = test_friend(0x70);
+        write_people(harness.path(), &person_id, metadata);
+        install_peer_map(&core, harness.path(), &person_id, peer);
+        let scope = dm_scope_input(
+            manual_peer_scope_id("osl-chat", "osl-main", &person_id).expect("manual scope id"),
+        );
+
+        let saved_on =
+            save_chat_approval_suggestion_choice(&security, "on".to_owned()).expect("save on");
+        println!("TASK0704 saved_choice_on={}", saved_on.choice);
+        let unchecked_on = chat_approval_suggestion_for_manual_peer_scope(
+            &core,
+            "osl-chat",
+            "osl-main",
+            person_id.clone(),
+            scope.clone(),
+        )
+        .expect("answer unchecked chat with choice on");
+        println!(
+            "TASK0704 unchecked_chat_choice_on={}",
+            unchecked_on.suggestion
+        );
+        assert_eq!(saved_on.choice, "on");
+        assert_eq!(unchecked_on.suggestion, "offer_approval");
+
+        let saved_off =
+            save_chat_approval_suggestion_choice(&security, "off".to_owned()).expect("save off");
+        println!("TASK0704 saved_choice_off={}", saved_off.choice);
+        let unchecked_off = chat_approval_suggestion_for_manual_peer_scope(
+            &core,
+            "osl-chat",
+            "osl-main",
+            person_id.clone(),
+            scope.clone(),
+        )
+        .expect("answer unchecked chat with choice off");
+        println!(
+            "TASK0704 unchecked_chat_choice_off={}",
+            unchecked_off.suggestion
+        );
+        assert_eq!(saved_off.choice, "off");
+        assert_eq!(unchecked_off.suggestion, "no_suggestion");
+
+        save_chat_approval_suggestion_choice(&security, "on".to_owned()).expect("restore on");
+        set_manual_peer_scope_permission(
+            &core,
+            &security,
+            "osl-chat",
+            "osl-main",
+            person_id.clone(),
+            scope.clone(),
+            true,
+        )
+        .expect("approve chat");
+        let approved_on = chat_approval_suggestion_for_manual_peer_scope(
+            &core, "osl-chat", "osl-main", person_id, scope,
+        )
+        .expect("answer approved chat with choice on");
+        println!(
+            "TASK0704 approved_chat_choice_on={}",
+            approved_on.suggestion
+        );
+        assert_eq!(approved_on.suggestion, "no_suggestion");
+    }
 
     #[test]
     fn manual_peer_scope_accepts_broker_dm_channel_binding() {

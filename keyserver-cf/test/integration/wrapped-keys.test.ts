@@ -553,6 +553,16 @@ describe("GET /v1/wrapped-keys/:content_id", () => {
       .bind(contentId)
       .first<{ count: number }>();
     return row?.count ?? 0;
+  async function readCommand(
+    signedUrl: string,
+  ): Promise<{ exitCode: number; status: number; contentBytes: number }> {
+    const res = await SELF.fetch(signedUrl);
+    if (res.status !== 200) {
+      await res.body?.cancel();
+      return { exitCode: 1, status: res.status, contentBytes: 0 };
+    }
+    const content = await res.arrayBuffer();
+    return { exitCode: 0, status: res.status, contentBytes: content.byteLength };
   }
 
   it("404s for unknown content_id", async () => {
@@ -634,6 +644,29 @@ describe("GET /v1/wrapped-keys/:content_id", () => {
     expect(r2.status).toBe(200);
     expect(((await r2.json()) as Record<string, unknown>).wrapped_share_blob).toBe(
       body.wrapped_share_blob,
+    );
+  });
+
+  it("TASK 0559 read command opens one view-once record only once", async () => {
+    const body = await seedWrappedKey({
+      single_use: true,
+      display_duration_seconds: 10,
+    });
+    const signedUrl = await signedGetUrl(body.content_id as string);
+
+    const first = await readCommand(signedUrl);
+    const second = await readCommand(signedUrl);
+
+    expect(first.exitCode).toBe(0);
+    expect(first.status).toBe(200);
+    expect(first.contentBytes).toBeGreaterThan(0);
+    expect(second.exitCode).toBe(1);
+    expect(second.contentBytes).toBe(0);
+
+    console.log(
+      `TASK0559 first_exit=${first.exitCode} first_status=${first.status} `
+      + `first_content_bytes=${first.contentBytes} second_exit=${second.exitCode} `
+      + `second_status=${second.status} second_content_bytes=${second.contentBytes}`,
     );
   });
 

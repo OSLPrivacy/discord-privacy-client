@@ -314,6 +314,10 @@ fn both_sides_burn_removes_one_marked_message_from_both_named_copies() {
             copy_name: copy.name,
             result,
         });
+        assert_eq!(result.requested_count, 1);
+        assert_eq!(result.local_removal_count, 1);
+        assert_eq!(result.remote_removal_count, 1);
+        assert!(result.equal_removal_counts);
     }
     let (remote_requests, remote_remaining) = server.join();
     assert_eq!(
@@ -328,6 +332,8 @@ fn both_sides_burn_removes_one_marked_message_from_both_named_copies() {
             "TASK0514 after copy=\"{}\" exact_text=\"{}\" exact_text_present={} count={} present={}",
             copy.name,
             exact_text.as_deref().unwrap_or("<absent>"),
+            "TASK0514 after copy=\"{}\" exact_text_present={} count={} present={}",
+            copy.name,
             exact_text.is_some(),
             count,
             present
@@ -357,6 +363,9 @@ fn both_sides_burn_removes_one_marked_message_from_both_named_copies() {
         assert_eq!(burn.result.local_removal_count, 1, "{}", burn.copy_name);
         assert_eq!(burn.result.remote_removal_count, 1, "{}", burn.copy_name);
         assert!(burn.result.equal_removal_counts, "{}", burn.copy_name);
+        assert_eq!(count, 0);
+        assert!(!present);
+        assert!(exact_text.is_none());
     }
     println!(
         "TASK0514 remote_requests={} remote_remaining={} marked=\"{}\"",

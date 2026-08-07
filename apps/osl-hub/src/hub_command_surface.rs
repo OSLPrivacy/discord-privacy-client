@@ -5398,6 +5398,7 @@ mod tauri_registration_surface_tests {
 
     #[test]
     fn group_member_permission_commands_are_registered_and_acl_granted() {
+    fn allowed_place_commands_are_registered_and_acl_granted() {
         let (handlers, permissions, capability) = registration_inputs();
         for command in [
             "add_group_member_permission",
@@ -6037,6 +6038,7 @@ mod tauri_registration_surface_tests {
             review_token: "review-token".to_owned(),
             plan_digest: "a".repeat(64),
             reviewed_item_count: 1,
+            pace_milliseconds: autoscrub_run::MIN_REVIEWED_RUN_PACE_MILLISECONDS,
             consent: autoscrub_run::AutoScrubRunConsent::ReviewedBatchOnly,
         };
         let owner_identity = state

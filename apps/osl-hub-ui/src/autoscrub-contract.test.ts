@@ -42,6 +42,7 @@ const fleetStatus = {
     phase: "running",
     reviewedItemCount: 3,
     remainingItemCount: 2,
+    paceMilliseconds: 500,
     stopRequested: false,
     mutationAllowed: false,
     lastOutcome: "prepared",

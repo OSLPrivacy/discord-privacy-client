@@ -1175,6 +1175,95 @@ mod tests {
             .filter(|(_, mailbox_name, _)| mailbox_name == folder)
             .map(|(_, _, message_id)| message_id.clone())
             .collect()
+    fn task_3556_state_command_list() -> Vec<String> {
+        #[derive(Deserialize)]
+        struct StateCommandList {
+            commands: Vec<String>,
+        }
+
+        serde_json::from_str::<StateCommandList>(include_str!(
+            "../../../keyserver-cf/test/fixtures/task_3556_state_commands.json"
+        ))
+        .unwrap()
+        .commands
+    }
+
+    fn task_3556_reviewed_grant() -> (ReviewedAttendedImapBatch, ImapDeleteGrant) {
+        let (_mailbox, prepared) = fixture_and_prepared();
+        let reviewed = authorize_attended_imap_batch_reviewed(
+            std::slice::from_ref(&prepared),
+            &prepared.owner_osl_user_id,
+            &prepared.account_id,
+        )
+        .unwrap();
+        let mut authorizer = AttendedImapDeleteAuthorizer::default();
+        let grant = authorize_attended_imap_batch(&mut authorizer, reviewed.clone(), 10_000, 5_000)
+            .unwrap();
+        (reviewed, grant)
+    }
+
+    #[test]
+    fn task_3556_scrub_imap_verify_state_command_is_repeat_safe() {
+        let commands = task_3556_state_command_list();
+        assert!(
+            commands
+                .iter()
+                .any(|command| command == "scrub_imap_verify"),
+            "TASK3556 saved state command list must name scrub_imap_verify"
+        );
+        println!(
+            "TASK3556 state_command_list_count={} commands={}",
+            commands.len(),
+            commands.join(",")
+        );
+
+        let (reviewed, mut grant) = task_3556_reviewed_grant();
+        scrub_imap_verify(&mut grant, &reviewed).unwrap();
+        let second = scrub_imap_verify(&mut grant, &reviewed).unwrap_err();
+        let intended_state_changes = usize::from(grant.used);
+        assert_eq!(second, ImapPolicyError::SingleUseAuthorityRequired);
+        assert_eq!(intended_state_changes, 1);
+        println!(
+            "TASK3556 command=scrub_imap_verify mode=sequential intended_state_changes={} second_result=refusal:{}",
+            intended_state_changes,
+            second
+        );
+
+        let (reviewed, grant) = task_3556_reviewed_grant();
+        let reviewed = std::sync::Arc::new(reviewed);
+        let grant = std::sync::Arc::new(std::sync::Mutex::new(grant));
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let mut handles = Vec::new();
+        for _ in 0..2 {
+            let reviewed = std::sync::Arc::clone(&reviewed);
+            let grant = std::sync::Arc::clone(&grant);
+            let barrier = std::sync::Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                let mut grant = grant.lock().unwrap();
+                scrub_imap_verify(&mut grant, &reviewed)
+            }));
+        }
+        let results = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect::<Vec<_>>();
+        let intended_state_changes = usize::from(grant.lock().unwrap().used);
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| result.as_ref().err()
+                    == Some(&ImapPolicyError::SingleUseAuthorityRequired))
+                .count(),
+            1
+        );
+        assert_eq!(intended_state_changes, 1);
+        println!(
+            "TASK3556 command=scrub_imap_verify mode=concurrent intended_state_changes={} second_result=refusal:{}",
+            intended_state_changes,
+            ImapPolicyError::SingleUseAuthorityRequired
+        );
     }
 
     #[test]

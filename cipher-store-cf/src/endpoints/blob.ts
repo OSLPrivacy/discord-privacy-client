@@ -326,6 +326,8 @@ export async function handleDelete(request: Request, env: Env, blobId: string): 
       return error(403, validation.code, "delete grant refused");
     }
   }
+  const grantCheck = await validateDeleteGrant(request, env, blobId);
+  if (grantCheck !== null) return grantCheck;
   return applyBurn({
     async manageCapabilityDigestFor(id) {
       if (!ID_RE.test(id)) return null;
@@ -427,4 +429,50 @@ function deleteGrantAllowsStoredCopyDelete(grant: unknown, row: DeleteGrantBlobR
     allowedBurnScope: row.burn_scope,
   });
   return validation.ok;
+}
+
+type DeleteGrantRow = {
+  delete_message: string | null;
+  delete_owner: string | null;
+  burn_scope: string | null;
+};
+
+async function validateDeleteGrant(
+  request: Request,
+  env: Env,
+  blobId: string,
+): Promise<Response | null> {
+  if (!ID_RE.test(blobId)) return null;
+  const row = await env.DB.prepare(
+    `SELECT delete_message, delete_owner, burn_scope
+       FROM blob_capability_index
+      WHERE blob_id = ? LIMIT 1`,
+  ).bind(blobId).first<DeleteGrantRow>();
+  if (!row) return null;
+  const expected = [row.delete_message, row.delete_owner, row.burn_scope];
+  const protectedRow = expected.some((value) => value !== null);
+  if (!protectedRow) return null;
+  if (!row.delete_message || !row.delete_owner || !row.burn_scope) {
+    return error(403, "delete_grant_required", "delete grant required");
+  }
+  const header = request.headers.get("x-osl-delete-grant");
+  if (header === null) {
+    return error(403, "delete_grant_required", "delete grant required");
+  }
+  const grant = parseDeleteGrant(header);
+  if (typeof grant === "string") {
+    return error(403, grant, "delete grant refused");
+  }
+  if (
+    grant.message !== row.delete_message
+    || grant.owner !== row.delete_owner
+    || grant.scope !== row.burn_scope
+  ) {
+    return error(403, "delete_grant_scope", "delete grant refused");
+  }
+  const manageCap = request.headers.get("x-osl-manage-cap")?.trim().toLowerCase();
+  if (manageCap !== grant.grant) {
+    return error(403, "delete_grant_capability", "delete grant refused");
+  }
+  return null;
 }

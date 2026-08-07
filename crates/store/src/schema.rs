@@ -62,9 +62,10 @@ use rusqlite::{params, Connection, Transaction};
 ///        New inventories are complete; migrated inventories are explicitly
 ///        marked incomplete because history cannot prove what was never
 ///        cached.
-///   v8 — Removes plaintext `burned_at` from message and attachment audit
-///        stubs. The terminal `burned` bit remains queryable, but an offline
-///        reader no longer learns the exact time of destructive activity.
+///   v8 — Removes plaintext `burned_at` values from message and attachment
+///        audit stubs. The terminal `burned` bit remains queryable, but an
+///        offline reader no longer learns the exact time of destructive
+///        activity.
 ///   v9 — Adds receipt lifecycle fields and per-device acknowledgement rows.
 ///   v10 — Marks every pre-grant message unable to use destructive remote burn.
 pub(crate) const SCHEMA_VERSION: u32 = 10;
@@ -110,6 +111,7 @@ CREATE TABLE IF NOT EXISTS messages (
     nonce BLOB NOT NULL,
     seq INTEGER NOT NULL,
     burned INTEGER NOT NULL DEFAULT 0,
+    burned_at INTEGER,
     content_version INTEGER NOT NULL DEFAULT 1,
     wrapped_key_nonce BLOB,
     wrapped_key BLOB,
@@ -125,11 +127,11 @@ CREATE TABLE IF NOT EXISTS messages (
     destructive_remote_burn_grant BLOB,
 
     -- Null downgrade-guard columns. The exact final v3 reader (adff4e45)
-    -- creates its legacy indexes before checking schema_version. Keeping the
-    -- columns present but permanently NULL lets that unchanged reader reach
-    -- and return its explicit "newer than supported" refusal instead of
-    -- failing early with "no such column". They are never selectors or data
-    -- storage in v4.
+    -- creates indexes and applies additive legacy columns before checking
+    -- schema_version. Keeping these present but permanently NULL lets that
+    -- unchanged reader reach and return its explicit "newer than supported"
+    -- refusal instead of changing the schema first. They are never selectors
+    -- or data storage in v4+.
     discord_message_id TEXT,
     channel_id TEXT,
     sender_discord_id TEXT,
@@ -225,6 +227,7 @@ CREATE TABLE IF NOT EXISTS attachment_manifests (
 /// earlier v4 build. Fresh and newly migrated databases get the same columns
 /// directly from their CREATE TABLE statements above.
 const V4_MESSAGE_DOWNGRADE_COLUMNS: &[&str] = &[
+    "ALTER TABLE messages ADD COLUMN burned_at INTEGER",
     "ALTER TABLE messages ADD COLUMN discord_message_id TEXT",
     "ALTER TABLE messages ADD COLUMN channel_id TEXT",
     "ALTER TABLE messages ADD COLUMN sender_discord_id TEXT",
@@ -1274,10 +1277,12 @@ fn migrate_v7_to_v8(conn: &Connection) -> Result<(), StoreError> {
 /// sealing and no wall-clock event time or destruction reason is exposed to an
 /// offline SQLite reader.
 fn migrate_v8_to_v9(conn: &Connection) -> Result<(), StoreError> {
+    refuse_plaintext_burn_time_columns(conn)?;
     let added_columns = missing_columns(
         conn,
         "messages",
         &[
+            "ALTER TABLE messages ADD COLUMN burned_at INTEGER",
             "ALTER TABLE messages ADD COLUMN delivered_at BLOB",
             "ALTER TABLE messages ADD COLUMN opened_at BLOB",
             "ALTER TABLE messages ADD COLUMN destroyed_at BLOB",
@@ -1385,15 +1390,27 @@ pub(crate) fn clear_vacuum_pending_tx(tx: &Transaction<'_>) -> Result<(), StoreE
 }
 
 fn refuse_plaintext_burn_time_columns(conn: &Connection) -> Result<(), StoreError> {
-    for table in ["messages", "attachments"] {
-        if existing_columns(conn, table)?
-            .iter()
-            .any(|column| column == "burned_at")
-        {
+    let message_columns = existing_columns(conn, "messages")?;
+    if message_columns.iter().any(|column| column == "burned_at") {
+        let non_null_burn_times: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM messages WHERE burned_at IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )?;
+        if non_null_burn_times != 0 {
             return Err(StoreError::Schema(format!(
-                "schema v8 {table} table still contains plaintext burned_at"
+                "schema v8 messages table still contains plaintext burned_at"
             )));
         }
+    }
+
+    if existing_columns(conn, "attachments")?
+        .iter()
+        .any(|column| column == "burned_at")
+    {
+        return Err(StoreError::Schema(
+            "schema v8 attachments table still contains plaintext burned_at".to_string(),
+        ));
     }
     Ok(())
 }

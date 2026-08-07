@@ -43,6 +43,10 @@ pub const DEFAULT_LANGUAGE_CHOICE: &str = "en";
 pub fn default_language_choice() -> String {
     DEFAULT_LANGUAGE_CHOICE.to_string()
 }
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::Path;
+use std::str::FromStr;
 
 /// Active stego envelope. Mode 0 is the production `DPC0::<b64>`
 /// path; Mode 1 is the multi-message `DPC1::<sentences>` cover
@@ -270,6 +274,20 @@ impl StartWithWindowsChoice {
         match self {
             Self::On => "on",
             Self::Off => "off",
+/// Default reach granted to a newly added friend.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NewFriendAccountReach {
+    #[default]
+    ApprovedChatsOnly,
+    AllSharedChats,
+}
+
+impl NewFriendAccountReach {
+    pub fn as_value(self) -> &'static str {
+        match self {
+            Self::ApprovedChatsOnly => "approved_chats_only",
+            Self::AllSharedChats => "all_shared_chats",
         }
     }
 }
@@ -283,6 +301,15 @@ impl FromStr for StartWithWindowsChoice {
             "off" => Ok(Self::Off),
             _ => Err(format!(
                 "OSL: unknown start-with-Windows choice {raw:?}; valid choices: on, off"
+impl FromStr for NewFriendAccountReach {
+    type Err = String;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw.trim().to_ascii_lowercase().replace(['-', ' '], "_").as_str() {
+            "approved_chats_only" => Ok(Self::ApprovedChatsOnly),
+            "all_shared_chats" => Ok(Self::AllSharedChats),
+            _ => Err(format!(
+                "OSL: unknown new-friend account reach {raw:?}; valid choices: approved_chats_only, all_shared_chats"
             )),
         }
     }
@@ -355,6 +382,24 @@ impl IdleLockTimeChoice {
             Self::Never => "never",
             Self::AfterSeconds(60) => "one_minute",
             Self::AfterSeconds(_) => "seconds",
+/// Whether new-friend verification warnings are shown by default.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub enum NewFriendVerificationWarnings {
+    #[default]
+    #[serde(rename = "always", alias = "enabled")]
+    Always,
+    #[serde(rename = "only for new people")]
+    OnlyForNewPeople,
+    #[serde(rename = "never", alias = "disabled")]
+    Never,
+}
+
+impl NewFriendVerificationWarnings {
+    pub fn as_value(self) -> &'static str {
+        match self {
+            Self::Always => "always",
+            Self::OnlyForNewPeople => "only for new people",
+            Self::Never => "never",
         }
     }
 }
@@ -400,11 +445,28 @@ impl FollowActiveAppChoice {
         match self {
             Self::On => "on",
             Self::Off => "off",
+impl FromStr for NewFriendVerificationWarnings {
+    type Err = String;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw
+            .trim()
+            .to_ascii_lowercase()
+            .replace(['-', '_'], " ")
+            .as_str()
+        {
+            "always" | "enabled" => Ok(Self::Always),
+            "only for new people" => Ok(Self::OnlyForNewPeople),
+            "never" | "disabled" => Ok(Self::Never),
+            _ => Err(format!(
+                "OSL: unknown warning choice {raw:?}; valid choices: always, only for new people, never"
+            )),
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppPreferences {
     #[serde(default)]
     pub version: u32,
@@ -461,6 +523,16 @@ impl Default for AppPreferences {
 }
 
 pub const APP_PREFERENCES_VERSION: u32 = 5;
+    pub auto_whitelist_rules: HashMap<String, crate::auto_whitelist_rules::AutoWhitelistRule>,
+    #[serde(default)]
+    pub new_friend_account_reach: NewFriendAccountReach,
+    #[serde(default)]
+    pub new_friend_auto_whitelist: crate::auto_whitelist_rules::AutoWhitelistRule,
+    #[serde(default)]
+    pub new_friend_verification_warnings: NewFriendVerificationWarnings,
+}
+
+pub const APP_PREFERENCES_VERSION: u32 = 3;
 
 pub fn load_app_preferences(path: &Path) -> AppPreferences {
     let Ok(blob) = std::fs::read(path) else {
@@ -477,8 +549,7 @@ pub fn load_app_preferences(path: &Path) -> AppPreferences {
 }
 
 pub fn write_app_preferences(path: &Path, prefs: &AppPreferences) -> Result<(), String> {
-    let body = serde_json::to_vec_pretty(prefs)
-        .map_err(|e| format!("OSL: serialize app_preferences: {e}"))?;
+    let body = serialized_app_preferences_preserving_unknown_fields(path, prefs)?;
     let out = crate::main_password::maybe_encrypt(&body)
         .map_err(|e| format!("OSL: encrypt app_preferences: {e}"))?;
     let tmp = path.with_extension("json.tmp");

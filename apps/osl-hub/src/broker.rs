@@ -5184,9 +5184,10 @@ fn prepare_peer_inbox_text_with_route_clients(
     #[cfg(feature = "discord-qa-shell")]
     record_fixed_discord_qa_broker_stage(is_fixed_discord_qa_probe, "record", "ready", None)?;
     if let Some(history_plaintext) = history_plaintext {
+        let history_channel_id = scope_storage_key(&manual.scope)?;
         ipc::commands::cmd_osl_persist_outbound(
             &core.osl,
-            context.conversation_id.clone(),
+            history_channel_id,
             logical_message_id.clone(),
             history_plaintext,
             None,
@@ -6630,6 +6631,8 @@ fn begin_peer_attachment(
         ipc::attachment_wire::MAX_STREAMED_ATTACHMENT_BYTES
     };
     if plaintext_size == 0 || plaintext_size > plaintext_limit {
+    let tier = active_attachment_account_tier(core);
+    if crate::attachment_limits::check_attachment_limits(tier, plaintext_size, 1).is_err() {
         return Err(ERROR.to_owned());
     }
     let ttl_seconds = security::scope_security(manual.scope.clone())
@@ -6681,6 +6684,12 @@ fn active_attachment_account_tier(
         }
         keystore::LicenseState::Free => crate::attachment_limits::AttachmentAccountTier::Free,
     })
+) -> crate::attachment_limits::AttachmentAccountTier {
+    if ipc::tier_gate::is_paid_equivalent(&core.osl) {
+        crate::attachment_limits::AttachmentAccountTier::Pro
+    } else {
+        crate::attachment_limits::AttachmentAccountTier::Free
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

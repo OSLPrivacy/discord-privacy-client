@@ -28522,6 +28522,84 @@ mod tests {
     }
 
     #[test]
+    fn task_3006_owner_check_refuses_another_persons_message() {
+        fn scrub_marker(line: &str) -> &str {
+            line.split_whitespace()
+                .find(|part| part.starts_with("SCRUB-"))
+                .expect("TASK 3006 seeded row must carry its scrub marker")
+        }
+
+        let rows = vec![
+            owned_read_row("Deckard SCRUB-MINE-1", 0, 44, 61),
+            peer_read_row("Deckard SCRUB-THEIRS-1", 44, 88, 62),
+            owned_read_row("Deckard SCRUB-MINE-2", 88, 132, 63),
+            peer_read_row("Deckard SCRUB-THEIRS-2", 132, 176, 64),
+            owned_read_row("Deckard SCRUB-MINE-3", 176, 220, 65),
+            peer_read_row("Deckard SCRUB-THEIRS-3", 220, 264, 66),
+        ];
+        let owner_check: Vec<(&str, bool)> = rows
+            .iter()
+            .map(|row| {
+                (
+                    scrub_marker(&row.line),
+                    deletion_row_is_provider_attributed_to_operator(row),
+                )
+            })
+            .collect();
+        let yours: Vec<&str> = owner_check
+            .iter()
+            .filter_map(|(marker, owned)| owned.then_some(*marker))
+            .collect();
+        println!(
+            "TASK 3006 owner_check_yours_before_anything_else={}_of_{}",
+            yours.len(),
+            owner_check.len()
+        );
+        println!("TASK 3006 owner_check_yours_markers={}", yours.join(","));
+        assert_eq!(yours, vec!["SCRUB-MINE-1", "SCRUB-MINE-2", "SCRUB-MINE-3"]);
+
+        let not_yours_error = guided_deletion::PlanRefusal::ForeignRow.reason();
+        let refused: Vec<(&str, &str)> = owner_check
+            .iter()
+            .filter_map(|(marker, owned)| (!owned).then_some((*marker, not_yours_error)))
+            .collect();
+        for (marker, reason) in &refused {
+            println!("TASK 3006 refused_marker={marker} error={reason}");
+        }
+        assert_eq!(
+            refused,
+            vec![
+                ("SCRUB-THEIRS-1", "row_is_not_your_own_message"),
+                ("SCRUB-THEIRS-2", "row_is_not_your_own_message"),
+                ("SCRUB-THEIRS-3", "row_is_not_your_own_message"),
+            ]
+        );
+
+        let scan = deletion_scan_from_rows(
+            &rows,
+            "scope",
+            9,
+            &["Deckard".to_owned()],
+            MAX_VISIBLE_CARRIER_ROWS,
+            Some(true),
+        );
+        let scanned_markers: Vec<&str> = scan
+            .candidates
+            .iter()
+            .map(|candidate| scrub_marker(&rows[candidate.scan_ordinal].line))
+            .collect();
+        println!(
+            "TASK 3006 scan_candidates_after_owner_check={}",
+            scanned_markers.join(",")
+        );
+        assert_eq!(scan.rows_seen, 6);
+        assert_eq!(
+            scanned_markers,
+            vec!["SCRUB-MINE-1", "SCRUB-MINE-2", "SCRUB-MINE-3"]
+        );
+    }
+
+    #[test]
     fn a_peer_who_renames_themselves_to_the_operator_is_never_a_deletion_candidate() {
         // THE ATTACK. A Discord display name is chosen by the account that holds
         // it, so the rendered accessible line is attacker-controlled input. This

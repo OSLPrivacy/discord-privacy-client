@@ -241,6 +241,7 @@ mod tests {
 
     fn fingerprint(bytes: &[u8]) -> String {
         let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+        let mut hash = 0xcbf2_9ce4_8422_2325u64;
         for byte in bytes {
             hash ^= u64::from(*byte);
             hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
@@ -253,6 +254,45 @@ mod tests {
             .unwrap()
             .expect("restart read returns a committed item");
         fingerprint(&bytes)
+    }
+
+    #[test]
+    #[test]
+    fn task_3609g_local_save_retains_known_good_previous_copy() {
+        let dir = test_path("task-3609g");
+        let path = dir.join("state.json");
+        let old = br#"{"generation":"old","value":1}"#;
+        let new = br#"{"generation":"new","value":2}"#;
+        let old_fingerprint = fingerprint(old);
+        let new_fingerprint = fingerprint(new);
+
+        write_recoverable(&path, old, "test state").unwrap();
+        std::fs::write(temporary_path(&path), new).unwrap();
+        let stopped_before_replacement = fingerprint(&std::fs::read(&path).unwrap());
+        assert_eq!(stopped_before_replacement, old_fingerprint);
+
+        write_recoverable(&path, new, "test state").unwrap();
+        let finished_replacement = fingerprint(
+            &read_recoverable(&path, "test state")
+                .unwrap()
+                .expect("replacement remains readable"),
+        );
+        let previous_copy = std::fs::read(backup_path(&path)).expect("previous copy remains");
+        let previous_copy_fingerprint = fingerprint(&previous_copy);
+
+        assert_eq!(finished_replacement, new_fingerprint);
+        assert_eq!(previous_copy_fingerprint, old_fingerprint);
+        assert_eq!(previous_copy, old);
+        assert!(!temporary_path(&path).exists());
+
+        println!("old_fingerprint={old_fingerprint}");
+        println!("new_fingerprint={new_fingerprint}");
+        println!("stopped_before_replacement={stopped_before_replacement}");
+        println!("finished_replacement={finished_replacement}");
+        println!("previous_copy_fingerprint={previous_copy_fingerprint}");
+        println!("previous_copy_readable_bytes={}", previous_copy.len());
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
