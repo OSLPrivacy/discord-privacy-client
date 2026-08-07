@@ -217,6 +217,7 @@ import { senderReceiptStatus } from "./receipt-status";
 import { attachmentProgressMarkup, parseAttachmentProgressEvent, type AttachmentProgressEvent } from "./attachment-progress";
 import { destructStatusMarkup, type ServerDestructStatus } from "./destruct-status";
 import { offlineCapabilityStatus, type OfflineUnavailableCapability, type OslConnectionState } from "./offline-capability-status";
+import { activeVerifiedDiscordPeer } from "./verified-discord-peer";
 import type { NativeDiscordOverlayOpenedBatch } from "./overlay-state";
 import type { NativeOverlayPendingAttachment } from "./overlay-state";
 import { listOslChatAttachments, openOslChatAttachment, selectOslChatAttachment } from "./native-overlay-adapter";
@@ -6935,13 +6936,7 @@ async function openNativeDiscordProtection(personId: string): Promise<boolean> {
 }
 
 function activeVerifiedDiscordQaPeer(): { context: ManualPeerContext; person: HubPerson } | null {
-  if (!discordQaShell) return null;
-  const context = peerProtectedSheet.context;
-  if (!context || context.contextToken !== activeContextToken) return null;
-  const person = hubPeople.find((candidate) => candidate.personId === context.personId
-    && candidate.safetyNumberVerified
-    && !candidate.pendingKeyChange);
-  return person ? { context, person } : null;
+  return activeVerifiedDiscordPeer(peerProtectedSheet.context, activeContextToken, hubPeople);
 }
 
 async function setDiscordQaWhitelistPermission(enabled: boolean): Promise<void> {
@@ -7043,26 +7038,25 @@ async function toggleDiscordQaTranscriptVisibility(): Promise<void> {
   discordQaHeaderBusy = "visibility";
   peerProtectedSheet.decryptDisplayEnabled = requested;
   render();
-  const qaImmediate = import.meta.env.VITE_OSL_DISCORD_QA_SHELL === "1"
-    && transcriptSurfaceLive
+  const saved = await saveActiveContextSecurity(
+    active.context.contextToken,
+    peerProtectedSheet.ttlSeconds,
+    requested,
+  );
+  const transcriptNotified = transcriptSurfaceLive
     ? await emitTo(
       "native-discord-overlay",
       PROTECTED_DISPLAY_VISIBILITY_CHANGED_EVENT,
       requested,
     ).then(() => true).catch(() => false)
     : true;
-  const saved = await saveActiveContextSecurity(
-    active.context.contextToken,
-    peerProtectedSheet.ttlSeconds,
-    requested,
-  );
   if (!saved
     || saved.decryptDisplayEnabled !== requested
     || !isLocalTtlSeconds(saved.ttlSeconds)
     || activeVerifiedDiscordQaPeer()?.context.contextToken !== active.context.contextToken
-    || !qaImmediate) {
+    || !transcriptNotified) {
     peerProtectedSheet.decryptDisplayEnabled = previous;
-    if (import.meta.env.VITE_OSL_DISCORD_QA_SHELL === "1" && transcriptSurfaceLive) {
+    if (transcriptSurfaceLive) {
       await emitTo(
         "native-discord-overlay",
         PROTECTED_DISPLAY_VISIBILITY_CHANGED_EVENT,
@@ -7080,19 +7074,6 @@ async function toggleDiscordQaTranscriptVisibility(): Promise<void> {
   // the next eye press.
   peerProtectedSheet.ttlSeconds = saved.ttlSeconds;
   peerProtectedSheet.decryptDisplayEnabled = saved.decryptDisplayEnabled;
-  if (transcriptSurfaceLive && import.meta.env.VITE_OSL_DISCORD_QA_SHELL !== "1") {
-    const notified = await emitTo(
-      "native-discord-overlay",
-      PROTECTED_DISPLAY_VISIBILITY_CHANGED_EVENT,
-    ).then(() => true).catch(() => false);
-    if (!notified) {
-      discordQaHeaderBusy = null;
-      discordQaTranscriptVisibilityOutcome = "failed";
-      showToast("Transcript visibility was saved; the protected display will refresh on focus");
-      render();
-      return;
-    }
-  }
   discordQaHeaderBusy = null;
   // Saved with no display surface in existence is not success: say so on the
   // control instead of claiming a change the operator cannot see. The lock's
@@ -9883,7 +9864,7 @@ const DISCORD_QA_SCOPE_SECURITY_MIN_INTERVAL_MS = 5_000;
  * reads the same stored policy and is callable from the main window.
  */
 async function refreshDiscordQaTranscriptVisibility(force = false): Promise<void> {
-  if (!discordQaShell || discordQaScopeSecurityPolling || discordQaHeaderBusy) return;
+  if (discordQaScopeSecurityPolling || discordQaHeaderBusy) return;
   const active = activeVerifiedDiscordQaPeer();
   if (!active) return;
   const now = Date.now();
