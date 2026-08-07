@@ -77,6 +77,39 @@ const READ_SCREEN = `(() => {
 
 const clickChoice = (choice) => `document.querySelector('input[value="${choice}"]').click(), "clicked"`;
 
+/**
+ * Where each required name is drawn, in viewport pixels. TASK 0750 reads these
+ * back out of the captured PNG: `innerText` proves a string is in the DOM, not
+ * that any ink for it landed in the image.
+ */
+const MEASURE_LABELS = `(() => {
+  const selectors = {
+    "Verification warning": "#verification-warning-title",
+    "every time": '.vw-choice[for="verification-warning-every-time"] strong',
+    once: '.vw-choice[for="verification-warning-once"] strong',
+    "before sending": '.vw-choice[for="verification-warning-before-sending"] strong',
+    never: '.vw-choice[for="verification-warning-never"] strong',
+    Save: "[data-vw-save]",
+    Reset: "[data-vw-reset]",
+  };
+  const rects = {};
+  for (const [name, selector] of Object.entries(selectors)) {
+    const element = document.querySelector(selector);
+    if (!element) throw new Error("no element for " + name);
+    if ((element.textContent ?? "").trim() !== name) {
+      throw new Error("element for " + name + " reads " + (element.textContent ?? "").trim());
+    }
+    // A Range over the contents, NOT the element box: a button's box includes
+    // its border and fill, and that chrome is enough ink to hide the fact that
+    // no glyphs were drawn inside it.
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    const rect = range.getBoundingClientRect();
+    rects[name] = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+  }
+  return JSON.stringify(rects);
+})()`;
+
 export async function captureVerificationWarningScreen({ output = DEFAULT_OUTPUT } = {}) {
   const server = await createViteServer({
     root: APP_ROOT,
@@ -146,6 +179,7 @@ export async function captureVerificationWarningScreen({ output = DEFAULT_OUTPUT
     const screenTree = flattenAxTree(axTree.nodes);
     requireAllStrings(screenTree, REQUIRED_NAMES, "screen tree");
 
+    const labelRects = JSON.parse(await page.evaluate(MEASURE_LABELS));
     const png = await page.screenshot({ captureBeyondViewport: false, fromSurface: true });
     const facts = pngFacts(png);
     if (facts.width !== FIXED_VIEWPORT.width || facts.height !== FIXED_VIEWPORT.height) {
@@ -159,6 +193,8 @@ export async function captureVerificationWarningScreen({ output = DEFAULT_OUTPUT
     writeFileSync(output, png);
     return {
       screenshot: output,
+      pngBytes: png,
+      labelRects,
       viewport: FIXED_VIEWPORT,
       selectedChoice: screen.selected,
       selectedChoiceCount: screen.selectedCount,
@@ -181,7 +217,8 @@ const isCli = process.argv[1] && fileURLToPath(import.meta.url) === path.resolve
 if (isCli) {
   captureVerificationWarningScreen(parseArgs(process.argv.slice(2))).then((result) => {
     if (!existsSync(result.screenshot)) throw new Error("screenshot file was not written");
-    console.log(JSON.stringify(result, null, 2));
+    const { pngBytes: _bytes, ...printable } = result;
+    console.log(JSON.stringify(printable, null, 2));
   }).catch((error) => {
     console.error(`capture-verification-warning-screen: ${error.stack || error.message}`);
     process.exit(1);

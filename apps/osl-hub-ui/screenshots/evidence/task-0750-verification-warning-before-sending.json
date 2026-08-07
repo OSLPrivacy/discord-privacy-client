@@ -1,0 +1,93 @@
+{
+  "viewport": {
+    "width": 800,
+    "height": 620
+  },
+  "capturedChoice": "before sending",
+  "labelsInImage": {
+    "Verification warning": {
+      "rect": {
+        "x": 90,
+        "y": 28,
+        "width": 292,
+        "height": 30
+      },
+      "inkPixels": 3361,
+      "area": 8760,
+      "background": "rgb(10,10,10)",
+      "distinctColors": 442
+    },
+    "every time": {
+      "rect": {
+        "x": 136,
+        "y": 147,
+        "width": 91,
+        "height": 18
+      },
+      "inkPixels": 652,
+      "area": 1638,
+      "background": "rgb(20,20,20)",
+      "distinctColors": 217
+    },
+    "once": {
+      "rect": {
+        "x": 136,
+        "y": 205,
+        "width": 40,
+        "height": 18
+      },
+      "inkPixels": 288,
+      "area": 720,
+      "background": "rgb(20,20,20)",
+      "distinctColors": 115
+    },
+    "before sending": {
+      "rect": {
+        "x": 136,
+        "y": 264,
+        "width": 128,
+        "height": 18
+      },
+      "inkPixels": 1014,
+      "area": 2304,
+      "background": "rgb(9,27,30)",
+      "distinctColors": 305
+    },
+    "never": {
+      "rect": {
+        "x": 136,
+        "y": 322,
+        "width": 48,
+        "height": 18
+      },
+      "inkPixels": 345,
+      "area": 864,
+      "background": "rgb(20,20,20)",
+      "distinctColors": 125
+    },
+    "Save": {
+      "rect": {
+        "x": 106,
+        "y": 478,
+        "width": 41,
+        "height": 18
+      },
+      "inkPixels": 284,
+      "area": 738,
+      "background": "rgb(6,182,212)",
+      "distinctColors": 146
+    },
+    "Reset": {
+      "rect": {
+        "x": 189,
+        "y": 478,
+        "width": 48,
+        "height": 18
+      },
+      "inkPixels": 397,
+      "area": 864,
+      "background": "rgb(10,10,10)",
+      "distinctColors": 150
+    }
+  }
+}
