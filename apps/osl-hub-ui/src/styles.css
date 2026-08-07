@@ -6355,6 +6355,21 @@ code {
   line-height: 1;
   color: var(--success);
 }
+.group-verification-tick {
+  border: 0;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+}
+.group-build-list { display: grid; gap: 8px; }
+.group-build-entries { display: grid; gap: 6px; list-style: none; margin: 0; padding: 0; }
+.group-build-entry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.group-build-label { color: var(--muted); font-size: .85em; }
 .whitelist-roster-row { display: grid; gap: 8px; }
 .whitelist-roster-row > header {
   display: flex;
