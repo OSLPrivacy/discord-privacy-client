@@ -51,6 +51,7 @@ fn task1377_direct_command_grants_read_send_only_and_refuses_other_server_action
         .collect();
 
     let refused_actions = [
+        ServerPermission::MentionEveryone,
         ServerPermission::Invite,
         ServerPermission::MakeChannels,
         ServerPermission::RemoveMessages,
@@ -105,7 +106,7 @@ fn task1377_direct_command_grants_read_send_only_and_refuses_other_server_action
             .join(",")
     );
 
-    assert_eq!(ServerPermission::ALL.len(), 7);
+    assert_eq!(ServerPermission::ALL.len(), 8);
     assert_eq!(granted_names, vec!["read", "send"]);
     assert_eq!(success_names, vec!["read", "send"]);
     assert!(
@@ -116,6 +117,7 @@ fn task1377_direct_command_grants_read_send_only_and_refuses_other_server_action
     assert_eq!(
         refusal_names,
         vec![
+            "mention-everyone",
             "invite",
             "make channels",
             "remove messages",
@@ -124,7 +126,7 @@ fn task1377_direct_command_grants_read_send_only_and_refuses_other_server_action
         ]
     );
     assert_eq!(successes.len(), 2);
-    assert_eq!(refusals.len(), 5);
+    assert_eq!(refusals.len(), 6);
     for (name, error) in refusals {
         assert_eq!(
             error,

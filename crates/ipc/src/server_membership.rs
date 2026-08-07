@@ -170,6 +170,7 @@ fn bounded_non_empty(value: String, field: &'static str) -> Result<String, Serve
 pub enum ServerPermission {
     Read,
     Send,
+    MentionEveryone,
     Invite,
     MakeChannels,
     RemoveMessages,
@@ -178,9 +179,10 @@ pub enum ServerPermission {
 }
 
 impl ServerPermission {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Read,
         Self::Send,
+        Self::MentionEveryone,
         Self::Invite,
         Self::MakeChannels,
         Self::RemoveMessages,
@@ -192,6 +194,7 @@ impl ServerPermission {
         match self {
             Self::Read => "read",
             Self::Send => "send",
+            Self::MentionEveryone => "mention-everyone",
             Self::Invite => "invite",
             Self::MakeChannels => "make channels",
             Self::RemoveMessages => "remove messages",
@@ -290,6 +293,101 @@ pub enum ServerPermissionError {
 
 fn grant_key(server_id: &str, person_name: &str) -> String {
     format!("{server_id}\n{person_name}")
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "camelCase")]
+pub enum ServerMentionKind {
+    Everyone,
+    Here,
+    Role,
+}
+
+impl ServerMentionKind {
+    pub const ALL_TRUST_ROWS: [Self; 3] = [Self::Everyone, Self::Here, Self::Role];
+
+    pub const fn typed_text(self) -> &'static str {
+        match self {
+            Self::Everyone => "@everyone",
+            Self::Here => "@here",
+            Self::Role => "@role",
+        }
+    }
+
+    pub const fn row_name(self) -> &'static str {
+        match self {
+            Self::Everyone => "everyone",
+            Self::Here => "here",
+            Self::Role => "role",
+        }
+    }
+
+    pub const fn trust_row(self) -> MentionPermissionTrust {
+        MentionPermissionTrust::Trust
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum MentionPermissionTrust {
+    Trust,
+}
+
+impl MentionPermissionTrust {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Trust => "TRUST",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerMentionSendReceipt {
+    pub accepted: bool,
+    pub text: String,
+}
+
+pub fn accept_server_mention_text(
+    text: impl Into<String>,
+) -> Result<ServerMentionSendReceipt, ServerMembershipError> {
+    let text = bounded_non_empty(text.into(), "message_text")?;
+    Ok(ServerMentionSendReceipt {
+        accepted: true,
+        text,
+    })
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HonestMentionRingDecision {
+    pub mention: ServerMentionKind,
+    pub trust: MentionPermissionTrust,
+    pub honest_receiving_apps: usize,
+    pub ringing_apps: usize,
+    pub highlighted_apps: usize,
+}
+
+pub fn honest_mention_ring_decision(
+    permissions: &ServerPermissionStore,
+    server_id: &str,
+    sender_name: &str,
+    mention: ServerMentionKind,
+    honest_receiving_apps: usize,
+    sender_claimed_mention_everyone: bool,
+) -> HonestMentionRingDecision {
+    let _ = sender_claimed_mention_everyone;
+    let can_ring = permissions
+        .require_person_permission(server_id, sender_name, ServerPermission::MentionEveryone)
+        .is_ok();
+    let ringing_apps = if can_ring { honest_receiving_apps } else { 0 };
+    HonestMentionRingDecision {
+        mention,
+        trust: mention.trust_row(),
+        honest_receiving_apps,
+        ringing_apps,
+        highlighted_apps: ringing_apps,
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
