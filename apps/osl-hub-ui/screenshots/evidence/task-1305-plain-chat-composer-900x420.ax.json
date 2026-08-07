@@ -1,0 +1,106 @@
+[
+  {
+    "role": "RootWebArea",
+    "name": "Chat composer"
+  },
+  {
+    "role": "form",
+    "name": "Chat composer"
+  },
+  {
+    "role": "heading",
+    "name": "Chat composer"
+  },
+  {
+    "role": "textbox",
+    "name": "Message"
+  },
+  {
+    "role": "toolbar",
+    "name": "Message controls"
+  },
+  {
+    "role": "button",
+    "name": "Send"
+  },
+  {
+    "role": "StaticText",
+    "name": "Chat composer"
+  },
+  {
+    "role": "button",
+    "name": "Cancel reply"
+  },
+  {
+    "role": "StaticText",
+    "name": "Message"
+  },
+  {
+    "role": "button",
+    "name": "Attachments"
+  },
+  {
+    "role": "button",
+    "name": "Images"
+  },
+  {
+    "role": "button",
+    "name": "Emoji"
+  },
+  {
+    "role": "button",
+    "name": "Replies"
+  },
+  {
+    "role": "button",
+    "name": "Edits"
+  },
+  {
+    "role": "StaticText",
+    "name": "Send"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Chat composer"
+  },
+  {
+    "role": "StaticText",
+    "name": "Replying to Ben"
+  },
+  {
+    "role": "StaticText",
+    "name": "see you at the reading club"
+  },
+  {
+    "role": "StaticText",
+    "name": "×"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Message"
+  },
+  {
+    "role": "StaticText",
+    "name": "Edit"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Send"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Replying to Ben"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "see you at the reading club"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "×"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Edit"
+  }
+]
