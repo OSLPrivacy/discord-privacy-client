@@ -396,6 +396,11 @@ pub fn auto_whitelist_rule_key_for_place(app: &str, kind: &str) -> Result<String
 pub fn normalize_auto_whitelist_app_kind(input: &str) -> Result<String, String> {
     let normalized = input.trim().to_ascii_lowercase().replace('-', "_");
     if let Some((app, kind)) = normalized.split_once(':') {
+        if app == "discord" {
+            return Ok(discord_auto_whitelist_rule_key(
+                parse_discord_whitelist_kind(kind)?,
+            ));
+        }
         if app == "instagram" {
             return Ok(instagram_auto_whitelist_rule_key(
                 parse_instagram_whitelist_kind(kind)?,
