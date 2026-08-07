@@ -19,7 +19,7 @@ use crypto::x25519;
 use keystore::{Identity, KeyServerClient};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use store::MessageStore;
@@ -243,6 +243,10 @@ pub struct AppState {
     /// `crates/store` for the on-disk crypto + schema posture.
     pub message_store: Mutex<Option<MessageStore>>,
 
+    /// Session-visible data allowance bytes charged this month for explicit
+    /// history copies onto this device.
+    pub history_copy_data_allowance_this_month_bytes: AtomicU64,
+
     /// Sealed OSL-RN session and pin store for the active account. The sealer
     /// is process-local and selected with the same best-available policy as
     /// identity storage; callers must not construct ad hoc plaintext RN stores.
@@ -451,6 +455,7 @@ impl Default for AppState {
             sender_pubkey_cache: SenderPubkeyCache::default(),
             peer_map: Mutex::new(PeerMap::default()),
             message_store: Mutex::new(None),
+            history_copy_data_allowance_this_month_bytes: AtomicU64::new(0),
             rn_session_store: default_rn_session_store(),
             rn_session_sealer: keystore::select_best_sealer(),
             duress_engine: Mutex::new(default_production_duress_engine()),
