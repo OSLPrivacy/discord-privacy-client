@@ -370,7 +370,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn task_1248_yahoo_mapping_contains_all_six_named_targets() {
         let targets = yahoo_web_mail_targets();
@@ -452,6 +451,199 @@ mod tests {
             println!("TASK1267 named_target={name}");
         }
         println!("TASK1267 refused_missing={}", refused.join("|"));
+    }
+
+    #[test]
+    fn task_1269_mail_com_fake_page_flow_sends_once_and_refuses_without_reading_pane() {
+        let mut page = MailComFakePage::new();
+        let initial_controls = page.control_names();
+
+        assert_eq!(initial_controls, TASK_1269_CONTROLS);
+        assert_eq!(page.sent_emails(), 0);
+        assert_eq!(page.placed_messages(), 0);
+
+        let flow = page.run_flow().expect("complete Mail.com fake flow runs");
+
+        assert_eq!(flow.sent_before, 0);
+        assert_eq!(flow.placed_before, 0);
+        assert_eq!(flow.compose_words, TASK_1269_WORDS);
+        assert_eq!(flow.place_words, TASK_1269_WORDS);
+        assert_eq!(flow.reading_pane_words, TASK_1269_WORDS);
+        assert_eq!(flow.readback_words, TASK_1269_WORDS);
+        assert_eq!(flow.send_words, TASK_1269_WORDS);
+        assert_eq!(flow.placed_after, 1);
+        assert_eq!(flow.sent_after, 1);
+
+        println!("TASK1269 initial_sent_emails={}", flow.sent_before);
+        println!("TASK1269 named_controls={}", initial_controls.join("|"));
+        println!("TASK1269 Compose words={}", flow.compose_words);
+        println!("TASK1269 Place words={}", flow.place_words);
+        println!("TASK1269 Reading_pane words={}", flow.reading_pane_words);
+        println!("TASK1269 Readback words={}", flow.readback_words);
+        println!("TASK1269 Send words={}", flow.send_words);
+        println!(
+            "TASK1269 placed_message_count_before={} after={}",
+            flow.placed_before, flow.placed_after
+        );
+        println!(
+            "TASK1269 sent_email_count_before={} after={}",
+            flow.sent_before, flow.sent_after
+        );
+
+        let mut missing_reading_pane = page.clone().without_reading_pane();
+        let placed_before_refusal = missing_reading_pane.placed_messages();
+        let sent_before_refusal = missing_reading_pane.sent_emails();
+        let refused = missing_reading_pane
+            .run_flow()
+            .expect_err("missing Reading pane must refuse the Mail.com fake flow");
+
+        assert_eq!(refused, MailComFlowRefusal::MissingControl("Reading pane"));
+        assert_eq!(
+            missing_reading_pane.placed_messages(),
+            placed_before_refusal
+        );
+        assert_eq!(missing_reading_pane.sent_emails(), sent_before_refusal);
+
+        println!("TASK1269 removed_control=Reading pane run_status=refused");
+        println!(
+            "TASK1269 refusal_missing_control={}",
+            refused.control_name()
+        );
+        println!(
+            "TASK1269 removed_reading_pane_placed_before={} after={}",
+            placed_before_refusal,
+            missing_reading_pane.placed_messages()
+        );
+        println!(
+            "TASK1269 removed_reading_pane_sent_before={} after={}",
+            sent_before_refusal,
+            missing_reading_pane.sent_emails()
+        );
+    }
+
+    const TASK_1269_WORDS: &str = "OSL-MAILCOM-1269";
+    const TASK_1269_CONTROLS: [&str; 5] = ["Compose", "Place", "Reading pane", "Readback", "Send"];
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct MailComFakePage {
+        controls: Vec<&'static str>,
+        draft_words: Option<&'static str>,
+        placed_messages: usize,
+        sent_emails: usize,
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct MailComFlowEvidence {
+        sent_before: usize,
+        placed_before: usize,
+        compose_words: &'static str,
+        place_words: &'static str,
+        reading_pane_words: &'static str,
+        readback_words: &'static str,
+        send_words: &'static str,
+        placed_after: usize,
+        sent_after: usize,
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    enum MailComFlowRefusal {
+        MissingControl(&'static str),
+    }
+
+    impl MailComFlowRefusal {
+        fn control_name(&self) -> &'static str {
+            match self {
+                Self::MissingControl(name) => name,
+            }
+        }
+    }
+
+    impl MailComFakePage {
+        fn new() -> Self {
+            Self {
+                controls: TASK_1269_CONTROLS.to_vec(),
+                draft_words: None,
+                placed_messages: 0,
+                sent_emails: 0,
+            }
+        }
+
+        fn without_reading_pane(mut self) -> Self {
+            self.controls.retain(|name| *name != "Reading pane");
+            self
+        }
+
+        fn control_names(&self) -> Vec<&'static str> {
+            self.controls.clone()
+        }
+
+        fn placed_messages(&self) -> usize {
+            self.placed_messages
+        }
+
+        fn sent_emails(&self) -> usize {
+            self.sent_emails
+        }
+
+        fn run_flow(&mut self) -> Result<MailComFlowEvidence, MailComFlowRefusal> {
+            for control in TASK_1269_CONTROLS {
+                self.require_control(control)?;
+            }
+
+            let sent_before = self.sent_emails;
+            let placed_before = self.placed_messages;
+            let compose_words = self.compose();
+            let place_words = self.place();
+            let reading_pane_words = self.reading_pane();
+            let readback_words = self.readback();
+            let send_words = self.send();
+
+            Ok(MailComFlowEvidence {
+                sent_before,
+                placed_before,
+                compose_words,
+                place_words,
+                reading_pane_words,
+                readback_words,
+                send_words,
+                placed_after: self.placed_messages,
+                sent_after: self.sent_emails,
+            })
+        }
+
+        fn require_control(&self, name: &'static str) -> Result<(), MailComFlowRefusal> {
+            self.controls
+                .contains(&name)
+                .then_some(())
+                .ok_or(MailComFlowRefusal::MissingControl(name))
+        }
+
+        fn compose(&mut self) -> &'static str {
+            self.draft_words = Some(TASK_1269_WORDS);
+            TASK_1269_WORDS
+        }
+
+        fn place(&mut self) -> &'static str {
+            assert_eq!(self.draft_words, Some(TASK_1269_WORDS));
+            self.placed_messages += 1;
+            TASK_1269_WORDS
+        }
+
+        fn reading_pane(&self) -> &'static str {
+            assert_eq!(self.draft_words, Some(TASK_1269_WORDS));
+            TASK_1269_WORDS
+        }
+
+        fn readback(&self) -> &'static str {
+            assert_eq!(self.draft_words, Some(TASK_1269_WORDS));
+            TASK_1269_WORDS
+        }
+
+        fn send(&mut self) -> &'static str {
+            assert_eq!(self.draft_words, Some(TASK_1269_WORDS));
+            self.sent_emails += 1;
+            TASK_1269_WORDS
+        }
     }
 
     #[test]
