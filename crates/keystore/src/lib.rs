@@ -77,7 +77,9 @@ pub use duress::{
 };
 pub use identity::{
     generate_identity, generate_native_identity, identity_from_entropy,
-    native_identity_from_entropy, native_user_id, Identity, IDENTITY_BLOB_VERSION,
+    native_identity_from_entropy, native_user_id, AccountDevice, AccountRootKey, DeviceListError,
+    DevicePrivateKeys, DevicePublicKeys, Identity, SignedDeviceList, StoredDeviceList,
+    COPIED_IDENTITY_FILE_REFUSAL, DEVICE_PRIVATE_KEY_FILE_BYTES, IDENTITY_BLOB_VERSION,
 };
 pub use keystore_anchor::KeystoreBackedAnchor;
 pub use license_cache::{
