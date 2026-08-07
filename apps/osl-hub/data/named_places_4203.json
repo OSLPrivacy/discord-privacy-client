@@ -92,6 +92,8 @@
     "placeName": "Telegram story",
     "state": "look-only-refused",
     "sourceTask": "1155",
+    "researchTask": "1029a",
+    "buildTask": "4218",
     "provingCheck": "task-1155-look-only-no-typing-box",
     "personCanDo": "Look at Telegram stories; OSL refuses protected writing there."
   },
@@ -100,6 +102,8 @@
     "placeName": "WhatsApp Status",
     "state": "look-only-refused",
     "sourceTask": "1190",
+    "researchTask": "1089d",
+    "buildTask": "4220",
     "provingCheck": "task-1190-look-only-no-typing-box",
     "personCanDo": "Look at WhatsApp Status; OSL refuses protected writing there."
   }
