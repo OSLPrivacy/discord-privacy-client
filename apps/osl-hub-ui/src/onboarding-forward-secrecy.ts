@@ -5,18 +5,20 @@ import { choiceRadio, continueButton } from "./onboarding-controls";
 export type ForwardSecrecyChoice = "protect-past" | "keep-group-delivery";
 
 export interface ForwardSecrecyOnboardingState {
-  choice: ForwardSecrecyChoice;
+  choice: ForwardSecrecyChoice | null;
 }
 
-// 2026-08-06: starts on "stay locked" rather than on nothing. The choice is
-// still saved on Continue, so what gets stored is what is on screen.
-export const initialForwardSecrecyOnboardingState = (): ForwardSecrecyOnboardingState => ({ choice: "protect-past" });
+const forwardSecrecyChoices: readonly ForwardSecrecyChoice[] = ["protect-past", "keep-group-delivery"];
+
+export const initialForwardSecrecyOnboardingState = (): ForwardSecrecyOnboardingState => ({ choice: null });
 
 export function chooseForwardSecrecyMode(
-  _state: ForwardSecrecyOnboardingState,
-  choice: ForwardSecrecyChoice,
+  state: ForwardSecrecyOnboardingState,
+  choice: unknown,
 ): ForwardSecrecyOnboardingState {
-  return { choice };
+  return forwardSecrecyChoices.includes(choice as ForwardSecrecyChoice)
+    ? { choice: choice as ForwardSecrecyChoice }
+    : state;
 }
 
 /** Guards the Continue handler against a restored session with no choice. */
@@ -81,6 +83,6 @@ export function onboardingForwardSecrecyMarkup(state: ForwardSecrecyOnboardingSt
         "three locks swinging open",
       )}
     </fieldset>
-    <div class="setup-footer onboarding-actions">${continueButton("data-forward-secrecy-continue", "fs-continue")}</div>
+    <div class="setup-footer onboarding-actions">${continueButton(`data-forward-secrecy-continue ${canContinuePastForwardSecrecyChoice(state) ? "" : 'disabled aria-disabled="true"'}`, "fs-continue")}</div>
   </section>`;
 }

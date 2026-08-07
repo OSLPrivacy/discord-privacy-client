@@ -2,6 +2,9 @@
 
 pub const FREE_MAX_ATTACHMENT_BYTES: u64 = 25_000_000;
 pub const PRO_MAX_ATTACHMENT_BYTES: u64 = 1_000_000_000;
+pub const FREE_MAX_ATTACHMENT_BYTES: u64 = 25 * 1024 * 1024;
+pub const PRO_MAX_ATTACHMENT_BYTES: u64 = 1024 * 1024 * 1024;
+pub const MAX_ATTACHMENT_BYTES: u64 = PRO_MAX_ATTACHMENT_BYTES;
 pub const MAX_ATTACHMENTS_PER_MESSAGE: usize = 16;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -70,6 +73,17 @@ pub fn check_attachment_request(
     check_attachment_count(count)
 }
 
+pub fn attachment_limit_command(
+    tier: AttachmentAccountTier,
+    bytes_per_file: u64,
+    file_count: usize,
+) -> &'static str {
+    match check_attachment_request(bytes_per_file, file_count, tier) {
+        Ok(()) => "accept",
+        Err(_) => "reject",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -80,6 +94,38 @@ mod tests {
         } else {
             "reject"
         }
+    #[test]
+    fn shared_attachment_size_check_uses_the_account_tier_window() {
+        assert_eq!(
+            check_attachment_size(0, AttachmentAccountTier::Free),
+            Err(AttachmentLimitError::Empty)
+        );
+        assert_eq!(
+            check_attachment_size(1, AttachmentAccountTier::Free),
+            Ok(())
+        );
+        assert_eq!(
+            check_attachment_size(FREE_MAX_ATTACHMENT_BYTES, AttachmentAccountTier::Free),
+            Ok(())
+        );
+        assert_eq!(
+            check_attachment_size(FREE_MAX_ATTACHMENT_BYTES + 1, AttachmentAccountTier::Free),
+            Err(AttachmentLimitError::TooLarge {
+                got: FREE_MAX_ATTACHMENT_BYTES + 1,
+                max: FREE_MAX_ATTACHMENT_BYTES,
+            })
+        );
+        assert_eq!(
+            check_attachment_size(PRO_MAX_ATTACHMENT_BYTES, AttachmentAccountTier::Pro),
+            Ok(())
+        );
+        assert_eq!(
+            check_attachment_size(PRO_MAX_ATTACHMENT_BYTES + 1, AttachmentAccountTier::Pro),
+            Err(AttachmentLimitError::TooLarge {
+                got: PRO_MAX_ATTACHMENT_BYTES + 1,
+                max: PRO_MAX_ATTACHMENT_BYTES,
+            })
+        );
     }
 
     #[test]
@@ -119,21 +165,39 @@ mod tests {
                     1,
                     AttachmentAccountTier::Pro,
                 )),
+        const MIB: u64 = 1024 * 1024;
+        let cases = [
+            ("24 MB", AttachmentAccountTier::Free, 24 * MIB, 1, "accept"),
+            ("26 MB", AttachmentAccountTier::Free, 26 * MIB, 1, "reject"),
+            ("999 MB", AttachmentAccountTier::Pro, 999 * MIB, 1, "accept"),
+            (
+                "1.1 GB",
+                AttachmentAccountTier::Pro,
+                1127 * MIB,
+                1,
                 "reject",
             ),
             (
                 "16 files",
                 verdict(check_attachment_request(1, 16, AttachmentAccountTier::Pro)),
+                AttachmentAccountTier::Free,
+                1 * MIB,
+                16,
                 "accept",
             ),
             (
                 "17 files",
                 verdict(check_attachment_request(1, 17, AttachmentAccountTier::Pro)),
+                AttachmentAccountTier::Free,
+                1 * MIB,
+                17,
                 "reject",
             ),
         ];
 
         for (label, actual, expected) in cases {
+        for (label, tier, bytes_per_file, file_count, expected) in cases {
+            let actual = attachment_limit_command(tier, bytes_per_file, file_count);
             println!("TASK0051 attachment_limit case={label} result={actual}");
             assert_eq!(actual, expected, "{label} must be {expected}");
         }

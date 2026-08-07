@@ -211,6 +211,9 @@ impl ExpiryVerdict {
 
 const OPEN_CLOCK_FILE: &str = "message_open_clock.json";
 const OPEN_CLOCK_LABEL: &str = "OSL message expiry ledger";
+pub const TIMED_DELETE_FILE: &str = "timed_delete_records.json";
+const TIMED_DELETE_LABEL: &str = "OSL timed-delete ledger";
+const TIMED_DELETE_PRO_REQUIRED: &str = "Timed delete requires OSL Pro";
 
 /// Bounds mirroring the peer replay ledger, scaled for a heavier record.
 ///
@@ -221,6 +224,8 @@ const MAX_OPEN_CLOCK_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_OPEN_CLOCK_SCOPES: usize = 512;
 const MAX_OPEN_CLOCK_ENTRIES_PER_SCOPE: usize = 512;
 const MAX_OPEN_CLOCK_ENTRIES_TOTAL: usize = 2_048;
+const MAX_TIMED_DELETE_BYTES: u64 = 512 * 1024;
+const MAX_TIMED_DELETE_ENTRIES: usize = 2_048;
 
 /// Longest opaque identifier the ledger will key on.
 const MAX_ID_LEN: usize = 96;
@@ -354,6 +359,242 @@ fn store_open_clock(path: &Path, ledger: &OpenClockLedger, key: &[u8; 32]) -> Re
         return Err(format!("{OPEN_CLOCK_LABEL} exceeds its storage limit"));
     }
     crate::atomic_file::write_recoverable(path, &sealed, OPEN_CLOCK_LABEL)
+}
+
+// ---------------------------------------------------------------------------
+// Timed-delete creation ledger
+// ---------------------------------------------------------------------------
+
+/// Whether the carrier row is already protected by OSL encryption.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TimedDeleteProtection {
+    Protected,
+    Ordinary,
+}
+
+impl TimedDeleteProtection {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Protected => "protected",
+            Self::Ordinary => "ordinary",
+        }
+    }
+}
+
+/// One timed-delete instruction OSL accepted for later visible deletion.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TimedDeleteRecord {
+    pub app: String,
+    pub conversation: String,
+    pub locator: String,
+    pub sent_at: i64,
+    pub delete_at: i64,
+    pub protection: TimedDeleteProtection,
+}
+
+#[derive(Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct TimedDeleteLedger {
+    #[serde(default)]
+    version: u32,
+    #[serde(default)]
+    records: Vec<TimedDeleteRecord>,
+}
+
+impl TimedDeleteLedger {
+    fn validate(&self) -> Result<(), String> {
+        if !matches!(self.version, 0 | 1) || self.records.len() > MAX_TIMED_DELETE_ENTRIES {
+            return Err(format!("{TIMED_DELETE_LABEL} is malformed"));
+        }
+        for record in &self.records {
+            validate_timed_delete_record(record)?;
+        }
+        Ok(())
+    }
+}
+
+/// Request DTO for the direct timed-delete creation command.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TimedDeleteRequest {
+    pub app: String,
+    pub conversation: String,
+    pub locator: String,
+    pub sent_at: i64,
+    pub delete_at: i64,
+    pub protection: TimedDeleteProtection,
+}
+
+fn load_timed_delete(path: &Path, key: &[u8; 32]) -> Result<TimedDeleteLedger, String> {
+    let Some(bytes) = crate::atomic_file::read_recoverable_bounded(
+        path,
+        MAX_TIMED_DELETE_BYTES,
+        TIMED_DELETE_LABEL,
+    )?
+    else {
+        return Ok(TimedDeleteLedger::default());
+    };
+    if !ipc::main_password::has_enc_magic(&bytes) {
+        return Err(format!("{TIMED_DELETE_LABEL} is not encrypted"));
+    }
+    let plain = Zeroizing::new(
+        ipc::main_password::decrypt_at_rest(&bytes, key)
+            .map_err(|_| format!("{TIMED_DELETE_LABEL} could not be opened"))?,
+    );
+    let ledger: TimedDeleteLedger =
+        serde_json::from_slice(&plain).map_err(|_| format!("{TIMED_DELETE_LABEL} is malformed"))?;
+    ledger.validate()?;
+    Ok(ledger)
+}
+
+fn store_timed_delete(
+    path: &Path,
+    ledger: &TimedDeleteLedger,
+    key: &[u8; 32],
+) -> Result<(), String> {
+    let body = Zeroizing::new(
+        serde_json::to_vec(ledger)
+            .map_err(|_| format!("{TIMED_DELETE_LABEL} could not be encoded"))?,
+    );
+    let sealed = ipc::main_password::encrypt_at_rest(&body, key)
+        .map_err(|_| format!("{TIMED_DELETE_LABEL} could not be encrypted"))?;
+    if sealed.len() as u64 > MAX_TIMED_DELETE_BYTES {
+        return Err(format!("{TIMED_DELETE_LABEL} exceeds its storage limit"));
+    }
+    crate::atomic_file::write_recoverable(path, &sealed, TIMED_DELETE_LABEL)
+}
+
+fn validate_timed_delete_record(record: &TimedDeleteRecord) -> Result<(), String> {
+    if !is_opaque_id(&record.app) {
+        return Err("OSL timed-delete record missing app".to_owned());
+    }
+    if !is_opaque_id(&record.conversation) {
+        return Err("OSL timed-delete record missing conversation".to_owned());
+    }
+    if !is_opaque_id(&record.locator) {
+        return Err("OSL timed-delete record missing message".to_owned());
+    }
+    if record.sent_at < 0 || record.delete_at <= record.sent_at {
+        return Err("OSL timed-delete record has invalid timing".to_owned());
+    }
+    Ok(())
+}
+
+fn record_timed_delete_at_path(
+    path: &Path,
+    key: &[u8; 32],
+    request: TimedDeleteRequest,
+) -> Result<TimedDeleteRecord, String> {
+    let record = TimedDeleteRecord {
+        app: request.app,
+        conversation: request.conversation,
+        locator: request.locator,
+        sent_at: request.sent_at,
+        delete_at: request.delete_at,
+        protection: request.protection,
+    };
+    validate_timed_delete_record(&record)?;
+
+    let mut ledger = load_timed_delete(path, key)?;
+    if ledger.records.len() >= MAX_TIMED_DELETE_ENTRIES
+        && !ledger.records.iter().any(|existing| existing == &record)
+    {
+        return Err("OSL timed-delete ledger reached its safe limit".to_owned());
+    }
+    if !ledger.records.iter().any(|existing| existing == &record) {
+        ledger.records.push(record.clone());
+        ledger.version = 1;
+        store_timed_delete(path, &ledger, key)?;
+    }
+    Ok(record)
+}
+
+/// Direct command seam for creating a timed-delete record.
+///
+/// Creating a timer is a Pro feature. This deliberately gates creation only:
+/// view-once receipt/open paths below do not accept `AppState`, so viewing a
+/// view-once message remains free.
+pub fn cmd_record_timed_delete_at_path(
+    state: &ipc::AppState,
+    path: &Path,
+    key: &[u8; 32],
+    request: TimedDeleteRequest,
+) -> Result<TimedDeleteRecord, String> {
+    if !ipc::tier_gate::is_paid_equivalent(state) {
+        return Err(TIMED_DELETE_PRO_REQUIRED.to_owned());
+    }
+    record_timed_delete_at_path(path, key, request)
+}
+
+/// Count timed-delete records from a fresh ledger read. Missing means zero;
+/// malformed or unreadable still fails rather than becoming proof of no data.
+pub fn timed_delete_count_at_path(path: &Path, key: &[u8; 32]) -> Result<usize, String> {
+    Ok(load_timed_delete(path, key)?.records.len())
+}
+
+/// Timed-delete records whose deadlines were reached by one pass.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct TimedDeleteFireReport {
+    /// Records whose already-promised delete deadline is due.
+    pub fired: Vec<TimedDeleteRecord>,
+    /// Records still waiting for their promised deadline.
+    pub retained: usize,
+}
+
+/// Remove and return every timed-delete record due at `now`.
+///
+/// This takes no entitlement state on purpose. Creating a timed delete is gated
+/// by Pro; firing a timer OSL already accepted is a promise to the recipient and
+/// must survive a later account lapse.
+pub fn fire_due_timed_deletes_at_path(
+    path: &Path,
+    key: &[u8; 32],
+    now: i64,
+) -> Result<TimedDeleteFireReport, String> {
+    let ledger = load_timed_delete(path, key)?;
+    if ledger.records.is_empty() {
+        return Ok(TimedDeleteFireReport::default());
+    }
+
+    let mut report = TimedDeleteFireReport::default();
+    let mut retained = Vec::with_capacity(ledger.records.len());
+    for record in ledger.records {
+        if now >= record.delete_at {
+            report.fired.push(record);
+        } else {
+            retained.push(record);
+        }
+    }
+    report.retained = retained.len();
+
+    if !report.fired.is_empty() {
+        store_timed_delete(
+            path,
+            &TimedDeleteLedger {
+                version: 1,
+                records: retained,
+            },
+            key,
+        )?;
+    }
+
+    Ok(report)
+}
+
+/// Direct command seam for firing already-accepted timed deletes.
+///
+/// The state parameter binds this to the current account context, but this
+/// function deliberately does not inspect entitlement. A Pro lapse may stop new
+/// promises; it must not break promises already made.
+pub fn cmd_fire_due_timed_deletes_at_path(
+    _state: &ipc::AppState,
+    path: &Path,
+    key: &[u8; 32],
+    now: i64,
+) -> Result<TimedDeleteFireReport, String> {
+    fire_due_timed_deletes_at_path(path, key, now)
 }
 
 // ---------------------------------------------------------------------------
@@ -1294,6 +1535,7 @@ pub struct PassReport {
     /// were unreadable and the pass was a no-op by design.
     pub ran: bool,
     pub expired_messages: usize,
+    pub fired_timed_deletes: usize,
     pub shredded_cache_rows: usize,
     pub dropped_receipt_records: usize,
     pub removed_staging_files: usize,
@@ -1312,6 +1554,12 @@ fn receipt_dedup_path() -> Result<PathBuf, String> {
     Ok(keystore::osl_config_dir()
         .map_err(|_| "OSL account storage is unavailable".to_owned())?
         .join(RECEIPT_DEDUP_FILE))
+}
+
+fn timed_delete_path() -> Result<PathBuf, String> {
+    Ok(keystore::osl_config_dir()
+        .map_err(|_| "OSL account storage is unavailable".to_owned())?
+        .join(TIMED_DELETE_FILE))
 }
 
 /// The deadline in force for one message, using the active account's ledger.
@@ -1415,17 +1663,43 @@ pub fn run_pass(
         Err(_) => report.degraded = true,
     }
 
+    match timed_delete_path().and_then(|path| fire_due_timed_deletes_at_path(&path, &key, now)) {
+        Ok(fired) => report.fired_timed_deletes = fired.fired.len(),
+        Err(_) => report.degraded = true,
+    }
+
     report
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use keystore::{LicenseState, LicenseStateDto};
+    use std::sync::{Mutex, OnceLock};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     const KEY: [u8; 32] = [9u8; 32];
     const SCOPE: &str = "dm:aaaabbbbccccdddd";
     const MESSAGE: &str = "peer-0123456789abcdef0123456789abcdef";
+    const MARKED_CACHE_ID: &str = "marked-message-1343";
+
+    fn global_fixture_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    struct GlobalFixtureReset {
+        root: PathBuf,
+    }
+
+    impl Drop for GlobalFixtureReset {
+        fn drop(&mut self) {
+            ipc::main_password::set_file_storage_key(None);
+            keystore::set_active_account_dir(None);
+            keystore::set_base_dir_override(None);
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
 
     /// Same isolation discipline as the other native tests in this crate: a
     /// per-process, per-nanosecond directory, so concurrent runs never share a
@@ -1487,6 +1761,14 @@ mod tests {
             sender_osl_user_id: "task1342-sender".to_owned(),
             plaintext: body.to_owned(),
             decrypted_at: at,
+    fn stored_message(id: &str, plaintext: &str, decrypted_at: i64) -> store::StoredMessage {
+        store::StoredMessage {
+            discord_message_id: id.to_owned(),
+            channel_id: "offline-timer-channel".to_owned(),
+            sender_discord_id: "offline-timer-sender".to_owned(),
+            sender_osl_user_id: "offline-timer-peer".to_owned(),
+            plaintext: plaintext.to_owned(),
+            decrypted_at,
             burned: false,
         }
     }
@@ -1528,6 +1810,138 @@ mod tests {
             exact_history_texts(first_store, channel, text).len(),
             exact_history_texts(second_store, channel, text).len(),
         ]
+    fn state_with_license(state: LicenseState, raw_status: &str) -> ipc::AppState {
+        let app = ipc::AppState::new();
+        *app.license_state.lock().expect("license state lock") = LicenseStateDto {
+            state,
+            raw_status: raw_status.to_owned(),
+            current_period_end: None,
+            last_validated_at: None,
+        };
+        app
+    }
+
+    fn timed_delete_request(locator: &str) -> TimedDeleteRequest {
+        TimedDeleteRequest {
+            app: "discord".to_owned(),
+            conversation: "dm:task-3326".to_owned(),
+            locator: locator.to_owned(),
+            sent_at: 1_900_000_000,
+            delete_at: 1_900_003_600,
+            protection: TimedDeleteProtection::Protected,
+        }
+    }
+
+    // ---- direct timed-delete creation command ----
+
+    #[test]
+    fn task_3326_creating_timed_delete_requires_pro_and_free_stays_empty() {
+        let pro = state_with_license(LicenseState::Paid, "ACTIVE");
+        let free = state_with_license(LicenseState::Free, "Unconfigured");
+        let pro_path = root("task-3326-pro").join(TIMED_DELETE_FILE);
+        let free_path = root("task-3326-free").join(TIMED_DELETE_FILE);
+
+        let pro_record = cmd_record_timed_delete_at_path(
+            &pro,
+            &pro_path,
+            &KEY,
+            timed_delete_request("discord-message-3326-pro"),
+        )
+        .expect("Pro creates a timed delete");
+        let pro_count = timed_delete_count_at_path(&pro_path, &KEY).unwrap();
+
+        let free_error = cmd_record_timed_delete_at_path(
+            &free,
+            &free_path,
+            &KEY,
+            timed_delete_request("discord-message-3326-free"),
+        )
+        .expect_err("Free is refused before creating a timed delete");
+        let free_count = timed_delete_count_at_path(&free_path, &KEY).unwrap();
+
+        println!("task_3326_direct_command=cmd_record_timed_delete_at_path");
+        println!(
+            "task_3326_pro_account raw_status=ACTIVE result=created app={} conversation={} locator={} sent_at={} delete_at={} protection={}",
+            pro_record.app,
+            pro_record.conversation,
+            pro_record.locator,
+            pro_record.sent_at,
+            pro_record.delete_at,
+            pro_record.protection.as_str()
+        );
+        println!("task_3326_pro_timed_delete_count={pro_count}");
+        println!("task_3326_free_refused_by_name={free_error}");
+        println!("task_3326_free_timed_delete_count={free_count}");
+
+        assert_eq!(pro_count, 1);
+        assert_eq!(free_error, TIMED_DELETE_PRO_REQUIRED);
+        assert_eq!(free_count, 0);
+        assert_eq!(pro_record.locator, "discord-message-3326-pro");
+    }
+
+    #[test]
+    fn task_3327_existing_timed_delete_fires_after_pro_switches_to_free() {
+        let account = state_with_license(LicenseState::Paid, "ACTIVE");
+        let path = root("task-3327-lapse").join(TIMED_DELETE_FILE);
+
+        let existing = cmd_record_timed_delete_at_path(
+            &account,
+            &path,
+            &KEY,
+            timed_delete_request("discord-message-3327-existing"),
+        )
+        .expect("Pro creates the already-promised timed delete");
+        let before_lapse_count = timed_delete_count_at_path(&path, &KEY).unwrap();
+
+        *account.license_state.lock().expect("license state lock") = LicenseStateDto {
+            state: LicenseState::Free,
+            raw_status: "Unconfigured".to_owned(),
+            current_period_end: None,
+            last_validated_at: None,
+        };
+
+        let fire_report =
+            cmd_fire_due_timed_deletes_at_path(&account, &path, &KEY, existing.delete_at).unwrap();
+        let fired_count_after_lapse = fire_report.fired.len();
+        let after_fire_count = timed_delete_count_at_path(&path, &KEY).unwrap();
+
+        let new_timer_error = cmd_record_timed_delete_at_path(
+            &account,
+            &path,
+            &KEY,
+            timed_delete_request("discord-message-3327-new"),
+        )
+        .expect_err("Free account cannot create a new timed delete");
+        let fired_count_after_refusal = fired_count_after_lapse;
+        let after_refusal_count = timed_delete_count_at_path(&path, &KEY).unwrap();
+
+        println!("task_3327_create_command=cmd_record_timed_delete_at_path");
+        println!("task_3327_fire_command=cmd_fire_due_timed_deletes_at_path");
+        println!("task_3327_initial_account raw_status=ACTIVE access=pro");
+        println!("task_3327_switched_account raw_status=Unconfigured access=free");
+        println!("task_3327_existing_timer_locator={}", existing.locator);
+        println!("task_3327_before_lapse_timed_delete_count={before_lapse_count}");
+        println!(
+            "task_3327_existing_timer_deleted_on_time_at={} fired_locator={}",
+            existing.delete_at, fire_report.fired[0].locator
+        );
+        println!("task_3327_fired_count_after_lapse={fired_count_after_lapse}");
+        println!("task_3327_after_fire_timed_delete_count={after_fire_count}");
+        println!("task_3327_new_timer_refused_by_name={new_timer_error}");
+        println!("task_3327_fired_count_after_refusal={fired_count_after_refusal}");
+        println!("task_3327_after_refusal_timed_delete_count={after_refusal_count}");
+
+        assert_eq!(before_lapse_count, 1);
+        assert_eq!(fired_count_after_lapse, 1);
+        assert_eq!(
+            fire_report.fired[0].locator,
+            "discord-message-3327-existing"
+        );
+        assert_eq!(fire_report.retained, 0);
+        assert_eq!(after_fire_count, 0);
+        assert_eq!(new_timer_error, TIMED_DELETE_PRO_REQUIRED);
+        assert_eq!(fired_count_after_refusal, fired_count_after_lapse);
+        assert_eq!(after_refusal_count, 0);
     }
 
     // ---- two clocks ----
@@ -2727,6 +3141,64 @@ mod tests {
             "a file inside the age window must survive a tick"
         );
         assert_eq!(sweep_abandoned_staging(&local_data, Duration::ZERO), 1);
+    }
+
+    #[test]
+    fn offline_timer_pass_shreds_expired_reopened_copy() {
+        let _guard = global_fixture_lock().lock().expect("global fixture lock");
+        ipc::main_password::set_file_storage_key(None);
+        keystore::set_active_account_dir(None);
+        keystore::set_base_dir_override(None);
+
+        let account_dir = root("offline-copy-expiry");
+        let local_data = account_dir.join("local-data");
+        let store_dir = account_dir.join("message-store");
+        let _reset = GlobalFixtureReset {
+            root: account_dir.clone(),
+        };
+        std::fs::create_dir_all(&local_data).unwrap();
+        std::fs::create_dir_all(&store_dir).unwrap();
+        keystore::set_base_dir_override(Some(account_dir.clone()));
+        keystore::set_active_account_dir(Some(account_dir.clone()));
+        ipc::main_password::set_file_storage_key(Some(KEY));
+
+        let sent_at = 1_000_000i64;
+        let marked = stored_message(MARKED_CACHE_ID, "marked offline timer copy", sent_at);
+        {
+            let store = store::MessageStore::open(&store_dir, &KEY).expect("open message store");
+            store.put(&marked).expect("seed marked message");
+        }
+        let reopened =
+            store::MessageStore::open(&store_dir, &KEY).expect("reopen marked message store");
+        assert!(
+            reopened
+                .get(MARKED_CACHE_ID)
+                .expect("read marked message before expiry")
+                .is_some(),
+            "test fixture did not seed the marked offline copy"
+        );
+
+        note(
+            &open_clock_path().expect("open-clock path"),
+            absolute_release(sent_at, ipc::cipher_store_client::TTL_1H).unwrap(),
+            Some(MARKED_CACHE_ID),
+            sent_at,
+        )
+        .expect("record marked message timer");
+
+        let report = run_pass(&local_data, Some(&reopened), sent_at + 3_600);
+        assert!(report.ran, "offline timer pass did not read sealed ledgers");
+        assert_eq!(report.expired_messages, 1);
+        assert!(
+            reopened
+                .get(MARKED_CACHE_ID)
+                .expect("read marked message after expiry")
+                .is_none(),
+            "reopened copy still holding {MARKED_CACHE_ID}"
+        );
+        assert_eq!(report.shredded_cache_rows, 1);
+
+        drop(reopened);
     }
 
     #[test]

@@ -7,6 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use crate::attachment_scan::{
     scan_attachments, AttachmentAnalyzers, LocalAttachmentCandidate, UninspectedAttachment,
@@ -18,11 +19,20 @@ const MAX_TEXT_BYTES: usize = 8 * 1024;
 const MAX_LOCATOR_BYTES: usize = 256;
 const MAX_PREVIEW_CHARS: usize = 120;
 const MAX_SENDER_BYTES: usize = 256;
+const MAX_EMAIL_RECIPIENTS: usize = 64;
+const MAX_EMAIL_RECIPIENT_BYTES: usize = 256;
+const MAX_EMAIL_BURN_ID_BYTES: usize = 256;
 const MAX_ATTACHMENT_ID_BYTES: usize = 128;
 const MAX_ATTACHMENT_DISPLAY_NAME_BYTES: usize = 256;
 const MAX_ATTACHMENT_ENCODED_BYTES: usize = MAX_ATTACHMENT_BYTES.div_ceil(3) * 4;
 pub(crate) const MAX_ATTACHMENT_BATCH_ENCODED_BYTES: usize = 12 * 1024 * 1024;
 pub(crate) const MAX_FINDINGS: usize = 1_000;
+pub const GMAIL_ORDINARY_ATTACHMENT_LIMIT_MB: u64 = 25;
+pub const GMAIL_ORDINARY_ATTACHMENT_LIMIT_BYTES: u64 =
+    GMAIL_ORDINARY_ATTACHMENT_LIMIT_MB * 1024 * 1024;
+pub const MAIL_DOT_COM_FREE_ORDINARY_ATTACHMENT_LIMIT_MB: u64 = 30;
+pub const MAIL_DOT_COM_PREMIUM_ORDINARY_ATTACHMENT_LIMIT_MB: u64 = 100;
+pub const EXCHANGE_ORDINARY_ATTACHMENT_LIMIT_MB: u64 = 150;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -34,6 +44,16 @@ pub struct LocalMessageCandidate {
     pub authored_by_self: bool,
     pub created_at_unix_ms: Option<i64>,
     pub text: String,
+    #[serde(default)]
+    pub reply_recipient: Option<String>,
+    #[serde(default)]
+    pub visible_recipients: Vec<String>,
+    #[serde(default)]
+    pub hidden_recipients: Vec<String>,
+    #[serde(default)]
+    pub email_thread_identity: Option<String>,
+    #[serde(default)]
+    pub email_folder_identity: Option<String>,
     #[serde(default)]
     pub attachments: Vec<LocalAttachmentCandidate>,
 }
@@ -157,6 +177,8 @@ pub struct LocalPrivacyFinding {
 #[serde(rename_all = "camelCase")]
 pub struct LocalPrivacyScanResult {
     pub findings: Vec<LocalPrivacyFinding>,
+    pub email_protection_checks: Vec<EmailProtectionCheckDisplay>,
+    pub email_burn_target_lists: Vec<EmailBurnTargetListDisplay>,
     pub messages_scanned: usize,
     pub messages_rejected: usize,
     pub truncated: bool,
@@ -178,6 +200,19 @@ pub struct SavedReviewMatch {
     pub place: String,
     pub date: String,
     pub time: String,
+pub struct EmailProtectionCheckDisplay {
+    pub message_locator: String,
+    pub reply_recipients: Vec<String>,
+    pub reply_all_recipients: Vec<String>,
+    pub visible_recipients: Vec<String>,
+    pub distinct_recipient_count: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EmailBurnScope {
+    Thread,
+    Folder,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -185,6 +220,26 @@ pub struct SavedReviewMatch {
 pub struct ReviewResultAccountGroup {
     pub account_id: String,
     pub matches: Vec<SavedReviewMatch>,
+pub struct EmailBurnTargetListDisplay {
+    pub scope: EmailBurnScope,
+    pub identity: String,
+    pub message_locators: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ProtectedEmailReplyAction {
+    Reply,
+    ReplyAll,
+}
+
+impl ProtectedEmailReplyAction {
+    fn draft_kind(self) -> &'static str {
+        match self {
+            Self::Reply => "reply",
+            Self::ReplyAll => "replyAll",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -192,6 +247,62 @@ pub struct ReviewResultAccountGroup {
 pub struct ReviewResultStoreOutput {
     pub groups: Vec<ReviewResultAccountGroup>,
     pub total_matches: usize,
+pub struct ProtectedEmailReplyDraft {
+    pub draft_id: String,
+    pub message_locator: String,
+    pub action: ProtectedEmailReplyAction,
+    pub recipients: Vec<String>,
+    pub protected: bool,
+    pub ordinary_attachment_bytes: u64,
+    pub osl_stored_file_bytes: u64,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum EmailDraftAttachmentStorage {
+    Ordinary,
+    OslStored,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EmailDraftAttachment {
+    pub display_name: String,
+    pub size_bytes: u64,
+    pub storage: EmailDraftAttachmentStorage,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum EmailDraftMailLimitProfile {
+    Gmail,
+    MailDotComFree,
+    MailDotComPremium,
+    Exchange,
+}
+
+impl EmailDraftMailLimitProfile {
+    fn display_name(self) -> &'static str {
+        match self {
+            Self::Gmail => "Gmail",
+            Self::MailDotComFree => "Mail.com free",
+            Self::MailDotComPremium => "Mail.com premium",
+            Self::Exchange => "Exchange",
+        }
+    }
+
+    fn ordinary_attachment_limit_mb(self) -> u64 {
+        match self {
+            Self::Gmail => GMAIL_ORDINARY_ATTACHMENT_LIMIT_MB,
+            Self::MailDotComFree => MAIL_DOT_COM_FREE_ORDINARY_ATTACHMENT_LIMIT_MB,
+            Self::MailDotComPremium => MAIL_DOT_COM_PREMIUM_ORDINARY_ATTACHMENT_LIMIT_MB,
+            Self::Exchange => EXCHANGE_ORDINARY_ATTACHMENT_LIMIT_MB,
+        }
+    }
+
+    fn ordinary_attachment_limit_bytes(self) -> u64 {
+        self.ordinary_attachment_limit_mb() * 1024 * 1024
+    }
 }
 
 /// Scan bounded caller-provided text entirely in process memory.
@@ -330,6 +441,9 @@ pub fn scan_local_messages_with_analyzers(
     analyzers: AttachmentAnalyzers<'_>,
 ) -> LocalPrivacyScanResult {
     let mut findings = Vec::new();
+    let mut email_protection_checks = Vec::new();
+    let mut thread_burn_targets = BTreeMap::<String, Vec<String>>::new();
+    let mut folder_burn_targets = BTreeMap::<String, Vec<String>>::new();
     let mut messages_scanned = 0usize;
     let mut messages_rejected = messages.len().saturating_sub(MAX_MESSAGES);
     let mut truncated = messages.len() > MAX_MESSAGES;
@@ -343,6 +457,10 @@ pub fn scan_local_messages_with_analyzers(
             continue;
         }
         messages_scanned += 1;
+        if let Some(check) = email_protection_check(&message) {
+            email_protection_checks.push(check.display);
+        }
+        collect_email_burn_targets(&message, &mut thread_burn_targets, &mut folder_burn_targets);
         let mut categories = HashSet::new();
         for (category, confidence, reason) in classify(&message.text) {
             if !categories.insert((category, None::<String>)) {
@@ -438,6 +556,8 @@ pub fn scan_local_messages_with_analyzers(
 
     LocalPrivacyScanResult {
         findings,
+        email_protection_checks,
+        email_burn_target_lists: email_burn_target_lists(thread_burn_targets, folder_burn_targets),
         messages_scanned,
         messages_rejected,
         truncated,
@@ -449,6 +569,214 @@ pub fn scan_local_messages_with_analyzers(
         attachment_types_scanned,
         uninspected_attachments,
     }
+}
+
+struct EmailProtectionCheck {
+    display: EmailProtectionCheckDisplay,
+}
+
+fn email_protection_check(message: &LocalMessageCandidate) -> Option<EmailProtectionCheck> {
+    if message.service_id != "email"
+        || (message.visible_recipients.is_empty() && message.hidden_recipients.is_empty())
+    {
+        return None;
+    }
+
+    let distinct_recipients = message
+        .visible_recipients
+        .iter()
+        .chain(message.hidden_recipients.iter())
+        .cloned()
+        .collect::<BTreeSet<_>>();
+
+    Some(EmailProtectionCheck {
+        display: EmailProtectionCheckDisplay {
+            message_locator: message.message_locator.clone(),
+            reply_recipients: message.reply_recipient.iter().cloned().collect::<Vec<_>>(),
+            reply_all_recipients: unique_ordered_recipients(&message.visible_recipients),
+            visible_recipients: message.visible_recipients.clone(),
+            distinct_recipient_count: distinct_recipients.len(),
+        },
+    })
+}
+
+fn collect_email_burn_targets(
+    message: &LocalMessageCandidate,
+    thread_burn_targets: &mut BTreeMap<String, Vec<String>>,
+    folder_burn_targets: &mut BTreeMap<String, Vec<String>>,
+) {
+    if message.service_id != "email" {
+        return;
+    }
+
+    if let Some(thread_identity) = &message.email_thread_identity {
+        push_unique_locator(
+            thread_burn_targets
+                .entry(thread_identity.clone())
+                .or_default(),
+            &message.message_locator,
+        );
+    }
+    if let Some(folder_identity) = &message.email_folder_identity {
+        push_unique_locator(
+            folder_burn_targets
+                .entry(folder_identity.clone())
+                .or_default(),
+            &message.message_locator,
+        );
+    }
+}
+
+fn push_unique_locator(targets: &mut Vec<String>, locator: &str) {
+    if !targets.iter().any(|existing| existing == locator) {
+        targets.push(locator.to_owned());
+    }
+}
+
+fn email_burn_target_lists(
+    thread_burn_targets: BTreeMap<String, Vec<String>>,
+    folder_burn_targets: BTreeMap<String, Vec<String>>,
+) -> Vec<EmailBurnTargetListDisplay> {
+    thread_burn_targets
+        .into_iter()
+        .map(|(identity, message_locators)| EmailBurnTargetListDisplay {
+            scope: EmailBurnScope::Thread,
+            identity,
+            message_locators,
+        })
+        .chain(
+            folder_burn_targets
+                .into_iter()
+                .map(|(identity, message_locators)| EmailBurnTargetListDisplay {
+                    scope: EmailBurnScope::Folder,
+                    identity,
+                    message_locators,
+                }),
+        )
+        .collect()
+}
+
+pub fn create_protected_email_reply_draft(
+    check: &EmailProtectionCheckDisplay,
+    action: ProtectedEmailReplyAction,
+) -> Result<ProtectedEmailReplyDraft, String> {
+    create_protected_email_reply_draft_with_attachments(check, action, &[])
+}
+
+pub fn create_protected_email_reply_draft_with_attachments(
+    check: &EmailProtectionCheckDisplay,
+    action: ProtectedEmailReplyAction,
+    attachments: &[EmailDraftAttachment],
+) -> Result<ProtectedEmailReplyDraft, String> {
+    create_protected_email_reply_draft_with_attachments_for_profile(
+        check,
+        action,
+        attachments,
+        EmailDraftMailLimitProfile::Gmail,
+    )
+}
+
+pub fn create_protected_email_reply_draft_with_attachments_for_profile(
+    check: &EmailProtectionCheckDisplay,
+    action: ProtectedEmailReplyAction,
+    attachments: &[EmailDraftAttachment],
+    mail_limit_profile: EmailDraftMailLimitProfile,
+) -> Result<ProtectedEmailReplyDraft, String> {
+    let recipients = match action {
+        ProtectedEmailReplyAction::Reply => check.reply_recipients.clone(),
+        ProtectedEmailReplyAction::ReplyAll => check.reply_all_recipients.clone(),
+    };
+    if recipients.is_empty() || !valid_recipient_list(&recipients) {
+        return Err("Protected email reply draft recipients are invalid".to_owned());
+    }
+    let attachment_bytes = email_draft_attachment_bytes(attachments, mail_limit_profile)?;
+    Ok(ProtectedEmailReplyDraft {
+        draft_id: format!(
+            "protected-email-{}-{}",
+            check.message_locator,
+            action.draft_kind()
+        ),
+        message_locator: check.message_locator.clone(),
+        action,
+        recipients,
+        protected: true,
+        ordinary_attachment_bytes: attachment_bytes.ordinary,
+        osl_stored_file_bytes: attachment_bytes.osl_stored,
+    })
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct EmailDraftAttachmentBytes {
+    ordinary: u64,
+    osl_stored: u64,
+}
+
+fn email_draft_attachment_bytes(
+    attachments: &[EmailDraftAttachment],
+    mail_limit_profile: EmailDraftMailLimitProfile,
+) -> Result<EmailDraftAttachmentBytes, String> {
+    let mut bytes = EmailDraftAttachmentBytes::default();
+    for attachment in attachments {
+        if attachment.display_name.is_empty()
+            || attachment.display_name.len() > MAX_ATTACHMENT_DISPLAY_NAME_BYTES
+            || attachment
+                .display_name
+                .chars()
+                .any(unsafe_attachment_metadata_char)
+        {
+            return Err("Email draft attachment name is invalid".to_owned());
+        }
+
+        match attachment.storage {
+            EmailDraftAttachmentStorage::Ordinary => {
+                bytes.ordinary = bytes
+                    .ordinary
+                    .checked_add(attachment.size_bytes)
+                    .ok_or_else(|| mail_attachment_over_limit_message(mail_limit_profile))?;
+                if bytes.ordinary > mail_limit_profile.ordinary_attachment_limit_bytes() {
+                    return Err(format!(
+                        "{} refuses ordinary attachments over {} MB: {} makes the ordinary attachment set {} MB",
+                        mail_limit_profile.display_name(),
+                        mail_limit_profile.ordinary_attachment_limit_mb(),
+                        attachment.display_name,
+                        bytes_to_whole_mb(bytes.ordinary),
+                    ));
+                }
+            }
+            EmailDraftAttachmentStorage::OslStored => {
+                bytes.osl_stored = bytes
+                    .osl_stored
+                    .checked_add(attachment.size_bytes)
+                    .ok_or_else(|| {
+                        "OSL-stored email draft attachment total is invalid".to_owned()
+                    })?;
+            }
+        }
+    }
+    Ok(bytes)
+}
+
+fn mail_attachment_over_limit_message(mail_limit_profile: EmailDraftMailLimitProfile) -> String {
+    format!(
+        "{} refuses ordinary attachments over {} MB",
+        mail_limit_profile.display_name(),
+        mail_limit_profile.ordinary_attachment_limit_mb()
+    )
+}
+
+fn bytes_to_whole_mb(bytes: u64) -> u64 {
+    bytes / (1024 * 1024)
+}
+
+fn unique_ordered_recipients(recipients: &[String]) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    let mut unique = Vec::new();
+    for recipient in recipients {
+        if seen.insert(recipient.clone()) {
+            unique.push(recipient.clone());
+        }
+    }
+    unique
 }
 
 fn valid_candidate(message: &LocalMessageCandidate) -> bool {
@@ -464,6 +792,20 @@ fn valid_candidate(message: &LocalMessageCandidate) -> bool {
         && (!message.text.is_empty() || !message.attachments.is_empty())
         && message.text.len() <= MAX_TEXT_BYTES
         && !message.text.contains('\0')
+        && message
+            .reply_recipient
+            .as_ref()
+            .is_none_or(|recipient| valid_recipient_display_value(recipient))
+        && valid_recipient_list(&message.visible_recipients)
+        && valid_recipient_list(&message.hidden_recipients)
+        && message
+            .email_thread_identity
+            .as_ref()
+            .is_none_or(|identity| valid_email_burn_identity(identity))
+        && message
+            .email_folder_identity
+            .as_ref()
+            .is_none_or(|identity| valid_email_burn_identity(identity))
         && message.attachments.len() <= MAX_ATTACHMENTS_PER_MESSAGE
         && message.attachments.iter().all(valid_attachment_input)
 }
@@ -480,6 +822,25 @@ fn normalized_sender(
         return Err(MessageOwnerCheckError::InvalidSender);
     }
     Ok(sender)
+fn valid_email_burn_identity(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_EMAIL_BURN_ID_BYTES
+        && !value.chars().any(unsafe_attachment_metadata_char)
+}
+
+fn valid_recipient_list(recipients: &[String]) -> bool {
+    recipients.len() <= MAX_EMAIL_RECIPIENTS
+        && recipients
+            .iter()
+            .all(|recipient| valid_recipient_display_value(recipient))
+}
+
+fn valid_recipient_display_value(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_EMAIL_RECIPIENT_BYTES
+        && !value.chars().any(|ch| {
+            ch.is_control() || matches!(ch, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+        })
 }
 
 fn valid_attachment_input(value: &LocalAttachmentCandidate) -> bool {
@@ -843,6 +1204,11 @@ mod tests {
             authored_by_self: true,
             created_at_unix_ms: Some(1_700_000_000_000),
             text: text.to_owned(),
+            reply_recipient: None,
+            visible_recipients: Vec::new(),
+            hidden_recipients: Vec::new(),
+            email_thread_identity: None,
+            email_folder_identity: None,
             attachments: Vec::new(),
         }
     }
@@ -1252,5 +1618,427 @@ mod tests {
         assert!(!result.images_checked);
         assert_eq!(result.attachments_scanned, 0);
         assert_eq!(result.uninspected_attachments.len(), 1);
+    }
+
+    #[test]
+    fn task1220_email_protection_check_counts_visible_and_hidden_recipients_but_hides_bcc() {
+        let bcc_recipient = "bcc-task1220@oslprivacy.com";
+        let mut candidate = message("password: email draft secret");
+        candidate.service_id = "email".to_owned();
+        candidate.visible_recipients = vec![
+            "to-task1220@oslprivacy.com".to_owned(),
+            "cc-task1220@oslprivacy.com".to_owned(),
+        ];
+        candidate.hidden_recipients = vec![bcc_recipient.to_owned()];
+        let visible_sent = candidate.visible_recipients.len();
+        let hidden_sent = candidate.hidden_recipients.len();
+
+        let result = scan_local_messages(vec![candidate]);
+        let check = result
+            .email_protection_checks
+            .first()
+            .expect("email protection check is emitted for the email draft");
+        let display_output = format!("visibleRecipients={}", check.visible_recipients.join(","));
+
+        println!(
+            "TASK1220 email_protection_check visible_sent={} hidden_sent={} distinct_recipients={} display_output=\"{}\" bcc_hidden_in_display={}",
+            visible_sent,
+            hidden_sent,
+            check.distinct_recipient_count,
+            display_output,
+            !display_output.contains(bcc_recipient),
+        );
+
+        assert_eq!(check.visible_recipients.len(), visible_sent);
+        assert_eq!(hidden_sent, 1);
+        assert_eq!(check.distinct_recipient_count, 3);
+        assert!(!display_output.contains(bcc_recipient));
+        assert_eq!(result.findings.len(), 1);
+    }
+
+    #[test]
+    fn task1291_direct_command_returns_reply_and_reply_all_without_bcc() {
+        let reply_recipient = "from-task1291@oslprivacy.com";
+        let to_recipient = "to-task1291@oslprivacy.com";
+        let cc_recipient = "cc-task1291@oslprivacy.com";
+        let bcc_recipient = "bcc-task1291@oslprivacy.com";
+        let mut candidate = message("password: protected reply draft");
+        candidate.service_id = "email".to_owned();
+        candidate.reply_recipient = Some(reply_recipient.to_owned());
+        candidate.visible_recipients = vec![to_recipient.to_owned(), cc_recipient.to_owned()];
+        candidate.hidden_recipients = vec![bcc_recipient.to_owned()];
+
+        let result = scan_local_messages(vec![candidate]);
+        let check = result
+            .email_protection_checks
+            .first()
+            .expect("email protection check returns protected reply recipients");
+        let reply_output = check.reply_recipients.join(",");
+        let reply_all_output = check.reply_all_recipients.join(",");
+        let reply_all_excludes_bcc = !check
+            .reply_all_recipients
+            .iter()
+            .any(|recipient| recipient == bcc_recipient);
+
+        println!(
+            "TASK1291 protected_email_replies direct_command=scan_local_messages Reply count={} recipients={} ReplyAll count={} recipients={} bcc_excluded={}",
+            check.reply_recipients.len(),
+            reply_output,
+            check.reply_all_recipients.len(),
+            reply_all_output,
+            reply_all_excludes_bcc,
+        );
+
+        assert_eq!(check.reply_recipients, vec![reply_recipient.to_owned()]);
+        assert_eq!(
+            check.reply_all_recipients,
+            vec![to_recipient.to_owned(), cc_recipient.to_owned()]
+        );
+        assert!(reply_all_excludes_bcc);
+        assert!(!reply_output.contains(bcc_recipient));
+    }
+
+    #[test]
+    fn task1292_fixture_commands_create_reply_and_reply_all_drafts_with_expected_recipients() {
+        let reply_recipient = "from-task1292@oslprivacy.com";
+        let to_recipient = "to-task1292@oslprivacy.com";
+        let cc_recipient = "cc-task1292@oslprivacy.com";
+        let bcc_recipient = "bcc-task1292@oslprivacy.com";
+        let mut candidate = message("password: protected reply draft");
+        candidate.service_id = "email".to_owned();
+        candidate.message_locator = "task1292-message".to_owned();
+        candidate.reply_recipient = Some(reply_recipient.to_owned());
+        candidate.visible_recipients = vec![to_recipient.to_owned(), cc_recipient.to_owned()];
+        candidate.hidden_recipients = vec![bcc_recipient.to_owned()];
+
+        let result = scan_local_messages(vec![candidate]);
+        let check = result
+            .email_protection_checks
+            .first()
+            .expect("email protection check returns protected reply recipients");
+        let reply_draft =
+            create_protected_email_reply_draft(check, ProtectedEmailReplyAction::Reply)
+                .expect("reply draft is created from the protected recipient list");
+        let reply_all_draft =
+            create_protected_email_reply_draft(check, ProtectedEmailReplyAction::ReplyAll)
+                .expect("reply-all draft is created from the protected recipient list");
+
+        println!(
+            "TASK1292 protected_email_reply_drafts fixture_command=create_protected_email_reply_draft reply_drafts=1 reply_recipients_count={} reply_recipients={} reply_all_drafts=1 reply_all_recipients_count={} reply_all_recipients={} bcc_in_reply_all={}",
+            reply_draft.recipients.len(),
+            reply_draft.recipients.join(","),
+            reply_all_draft.recipients.len(),
+            reply_all_draft.recipients.join(","),
+            reply_all_draft
+                .recipients
+                .iter()
+                .any(|recipient| recipient == bcc_recipient),
+        );
+
+        assert!(reply_draft.protected);
+        assert_eq!(reply_draft.action, ProtectedEmailReplyAction::Reply);
+        assert_eq!(reply_draft.recipients, vec![reply_recipient.to_owned()]);
+        assert!(reply_all_draft.protected);
+        assert_eq!(reply_all_draft.action, ProtectedEmailReplyAction::ReplyAll);
+        assert_eq!(
+            reply_all_draft.recipients,
+            vec![to_recipient.to_owned(), cc_recipient.to_owned()]
+        );
+        assert!(!reply_all_draft
+            .recipients
+            .iter()
+            .any(|recipient| recipient == bcc_recipient));
+    }
+
+    #[test]
+    fn task3760_gmail_counts_only_ordinary_attachments_against_twenty_five_mb() {
+        const MB: u64 = 1024 * 1024;
+
+        fn draft_attachment(
+            display_name: &str,
+            size_mb: u64,
+            storage: EmailDraftAttachmentStorage,
+        ) -> EmailDraftAttachment {
+            EmailDraftAttachment {
+                display_name: display_name.to_owned(),
+                size_bytes: size_mb * MB,
+                storage,
+            }
+        }
+
+        let mut candidate = message("password: protected Gmail attachment draft");
+        candidate.service_id = "email".to_owned();
+        candidate.message_locator = "task3760-gmail-draft".to_owned();
+        candidate.reply_recipient = Some("from-task3760@oslprivacy.com".to_owned());
+        candidate.visible_recipients = vec!["to-task3760@oslprivacy.com".to_owned()];
+
+        let result = scan_local_messages(vec![candidate]);
+        let check = result
+            .email_protection_checks
+            .first()
+            .expect("email protection check returns Gmail draft recipients");
+
+        let ordinary_24 = [
+            draft_attachment(
+                "task3760-ordinary-12a.bin",
+                12,
+                EmailDraftAttachmentStorage::Ordinary,
+            ),
+            draft_attachment(
+                "task3760-ordinary-12b.bin",
+                12,
+                EmailDraftAttachmentStorage::Ordinary,
+            ),
+        ];
+        let accepted_ordinary_24 = create_protected_email_reply_draft_with_attachments(
+            check,
+            ProtectedEmailReplyAction::Reply,
+            &ordinary_24,
+        )
+        .expect("24 MB of ordinary Gmail attachments is accepted");
+
+        let ordinary_26 = [
+            draft_attachment(
+                "task3760-ordinary-13a.bin",
+                13,
+                EmailDraftAttachmentStorage::Ordinary,
+            ),
+            draft_attachment(
+                "task3760-ordinary-13b.bin",
+                13,
+                EmailDraftAttachmentStorage::Ordinary,
+            ),
+        ];
+        let refused_ordinary_26 = create_protected_email_reply_draft_with_attachments(
+            check,
+            ProtectedEmailReplyAction::Reply,
+            &ordinary_26,
+        )
+        .expect_err("26 MB of ordinary Gmail attachments is refused by name");
+
+        let osl_stored_26 = [
+            draft_attachment(
+                "task3760-osl-stored-13a.bin",
+                13,
+                EmailDraftAttachmentStorage::OslStored,
+            ),
+            draft_attachment(
+                "task3760-osl-stored-13b.bin",
+                13,
+                EmailDraftAttachmentStorage::OslStored,
+            ),
+        ];
+        let accepted_osl_stored_26 = create_protected_email_reply_draft_with_attachments(
+            check,
+            ProtectedEmailReplyAction::Reply,
+            &osl_stored_26,
+        )
+        .expect("26 MB of OSL-stored Gmail files does not count as ordinary attachments");
+
+        println!(
+            "TASK3760 gmail_attachment_limit ordinary_24_status=accepted ordinary_24_mb={} ordinary_26_status=refused ordinary_26_mb=26 refusal=\"{}\" gmail_limit_mb={} osl_stored_26_status=accepted osl_stored_26_mb={} osl_stored_ordinary_counted_mb={}",
+            bytes_to_whole_mb(accepted_ordinary_24.ordinary_attachment_bytes),
+            refused_ordinary_26,
+            GMAIL_ORDINARY_ATTACHMENT_LIMIT_MB,
+            bytes_to_whole_mb(accepted_osl_stored_26.osl_stored_file_bytes),
+            bytes_to_whole_mb(accepted_osl_stored_26.ordinary_attachment_bytes),
+        );
+
+        assert_eq!(accepted_ordinary_24.ordinary_attachment_bytes, 24 * MB);
+        assert_eq!(accepted_ordinary_24.osl_stored_file_bytes, 0);
+        assert!(refused_ordinary_26.contains("task3760-ordinary-13b.bin"));
+        assert!(refused_ordinary_26.contains("25 MB"));
+        assert!(refused_ordinary_26.contains("26 MB"));
+        assert_eq!(accepted_osl_stored_26.osl_stored_file_bytes, 26 * MB);
+        assert_eq!(accepted_osl_stored_26.ordinary_attachment_bytes, 0);
+    }
+
+    #[test]
+    fn task3762_two_hundred_mb_osl_stored_files_ignore_mail_attachment_limits() {
+        const MB: u64 = 1024 * 1024;
+        const FILE_MB: u64 = 200;
+
+        fn draft_attachment(
+            display_name: &str,
+            storage: EmailDraftAttachmentStorage,
+        ) -> EmailDraftAttachment {
+            EmailDraftAttachment {
+                display_name: display_name.to_owned(),
+                size_bytes: FILE_MB * MB,
+                storage,
+            }
+        }
+
+        let mut candidate = message("password: protected 200 MB mail limit draft");
+        candidate.service_id = "email".to_owned();
+        candidate.message_locator = "task3762-mail-limit-draft".to_owned();
+        candidate.reply_recipient = Some("from-task3762@oslprivacy.com".to_owned());
+        candidate.visible_recipients = vec!["to-task3762@oslprivacy.com".to_owned()];
+
+        let result = scan_local_messages(vec![candidate]);
+        let check = result
+            .email_protection_checks
+            .first()
+            .expect("email protection check returns mail-limit draft recipients");
+
+        let profiles = [
+            (
+                "gmail",
+                EmailDraftMailLimitProfile::Gmail,
+                GMAIL_ORDINARY_ATTACHMENT_LIMIT_MB,
+            ),
+            (
+                "maildotcom-free",
+                EmailDraftMailLimitProfile::MailDotComFree,
+                MAIL_DOT_COM_FREE_ORDINARY_ATTACHMENT_LIMIT_MB,
+            ),
+            (
+                "maildotcom-premium",
+                EmailDraftMailLimitProfile::MailDotComPremium,
+                MAIL_DOT_COM_PREMIUM_ORDINARY_ATTACHMENT_LIMIT_MB,
+            ),
+            (
+                "exchange",
+                EmailDraftMailLimitProfile::Exchange,
+                EXCHANGE_ORDINARY_ATTACHMENT_LIMIT_MB,
+            ),
+        ];
+
+        let mut accepted_profiles = Vec::new();
+        let mut refused_by_name = Vec::new();
+        let mut limit_numbers = Vec::new();
+
+        for (slug, profile, expected_limit_mb) in profiles {
+            let osl_stored_name = format!("task3762-{slug}-osl-stored-200mb.bin");
+            let ordinary_name = format!("task3762-{slug}-ordinary-200mb.bin");
+            let osl_stored = [draft_attachment(
+                &osl_stored_name,
+                EmailDraftAttachmentStorage::OslStored,
+            )];
+            let ordinary = [draft_attachment(
+                &ordinary_name,
+                EmailDraftAttachmentStorage::Ordinary,
+            )];
+
+            let accepted_osl_stored =
+                create_protected_email_reply_draft_with_attachments_for_profile(
+                    check,
+                    ProtectedEmailReplyAction::Reply,
+                    &osl_stored,
+                    profile,
+                )
+                .expect("200 MB OSL-stored file is accepted regardless of mail limit");
+            let refused_ordinary = create_protected_email_reply_draft_with_attachments_for_profile(
+                check,
+                ProtectedEmailReplyAction::Reply,
+                &ordinary,
+                profile,
+            )
+            .expect_err("200 MB ordinary attachment is refused by provider limit");
+
+            assert_eq!(profile.ordinary_attachment_limit_mb(), expected_limit_mb);
+            assert_eq!(accepted_osl_stored.osl_stored_file_bytes, FILE_MB * MB);
+            assert_eq!(accepted_osl_stored.ordinary_attachment_bytes, 0);
+            assert!(refused_ordinary.contains(profile.display_name()));
+            assert!(refused_ordinary.contains(&ordinary_name));
+            assert!(refused_ordinary.contains(&format!("{expected_limit_mb} MB")));
+            assert!(refused_ordinary.contains("200 MB"));
+
+            accepted_profiles.push(profile.display_name());
+            refused_by_name.push(format!("{}:{ordinary_name}", profile.display_name()));
+            limit_numbers.push(format!("{}={expected_limit_mb}", profile.display_name()));
+        }
+
+        println!(
+            "TASK3762 mail_size_limits osl_stored_file_mb={FILE_MB} ordinary_attachment_mb={FILE_MB} osl_stored_acceptances={} ordinary_refusals_by_name={} accepted_profiles=\"{}\" refused_by_name=\"{}\" limits_mb=\"{}\"",
+            accepted_profiles.len(),
+            refused_by_name.len(),
+            accepted_profiles.join("|"),
+            refused_by_name.join("|"),
+            limit_numbers.join("|"),
+        );
+
+        assert_eq!(
+            accepted_profiles,
+            vec!["Gmail", "Mail.com free", "Mail.com premium", "Exchange"]
+        );
+        assert_eq!(accepted_profiles.len(), 4);
+        assert_eq!(refused_by_name.len(), 4);
+    }
+
+    #[test]
+    fn task1226_direct_command_produces_separate_thread_and_folder_burn_target_lists() {
+        let thread_identity = "email-thread-1225-stable";
+        let folder_identity = "email-folder-1225-inbox";
+        let mut open_message = message("password: task1226 burn scope seed");
+        open_message.service_id = "email".to_owned();
+        open_message.message_locator = "task1226-open-message".to_owned();
+        open_message.email_thread_identity = Some(thread_identity.to_owned());
+        open_message.email_folder_identity = Some(folder_identity.to_owned());
+
+        let mut same_thread_message = message("secret: same thread, archived");
+        same_thread_message.service_id = "email".to_owned();
+        same_thread_message.message_locator = "task1226-same-thread-message".to_owned();
+        same_thread_message.email_thread_identity = Some(thread_identity.to_owned());
+
+        let mut same_folder_message = message("token: same folder, different thread");
+        same_folder_message.service_id = "email".to_owned();
+        same_folder_message.message_locator = "task1226-same-folder-message".to_owned();
+        same_folder_message.email_folder_identity = Some(folder_identity.to_owned());
+
+        let result =
+            scan_local_messages(vec![open_message, same_thread_message, same_folder_message]);
+        let thread_lists = result
+            .email_burn_target_lists
+            .iter()
+            .filter(|list| list.scope == EmailBurnScope::Thread)
+            .collect::<Vec<_>>();
+        let folder_lists = result
+            .email_burn_target_lists
+            .iter()
+            .filter(|list| list.scope == EmailBurnScope::Folder)
+            .collect::<Vec<_>>();
+        let thread_list = thread_lists
+            .first()
+            .expect("thread burn target list is emitted");
+        let folder_list = folder_lists
+            .first()
+            .expect("folder burn target list is emitted");
+        let target_lists_separate = thread_list.scope != folder_list.scope
+            && thread_list.identity != folder_list.identity
+            && thread_list.message_locators != folder_list.message_locators;
+
+        println!(
+            "TASK1226 email_burn_scopes direct_command=scan_local_messages thread_target_list_count={} thread_identity={} thread_targets_count={} thread_targets={} folder_target_list_count={} folder_identity={} folder_targets_count={} folder_targets={} target_lists_separate={}",
+            thread_lists.len(),
+            thread_list.identity,
+            thread_list.message_locators.len(),
+            thread_list.message_locators.join(","),
+            folder_lists.len(),
+            folder_list.identity,
+            folder_list.message_locators.len(),
+            folder_list.message_locators.join(","),
+            target_lists_separate,
+        );
+
+        assert_eq!(thread_lists.len(), 1);
+        assert_eq!(thread_list.identity, thread_identity);
+        assert_eq!(
+            thread_list.message_locators,
+            vec![
+                "task1226-open-message".to_owned(),
+                "task1226-same-thread-message".to_owned()
+            ]
+        );
+        assert_eq!(folder_lists.len(), 1);
+        assert_eq!(folder_list.identity, folder_identity);
+        assert_eq!(
+            folder_list.message_locators,
+            vec![
+                "task1226-open-message".to_owned(),
+                "task1226-same-folder-message".to_owned()
+            ]
+        );
+        assert!(target_lists_separate);
     }
 }

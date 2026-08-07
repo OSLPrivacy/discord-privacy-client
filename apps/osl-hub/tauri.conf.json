@@ -41,6 +41,7 @@
       },
       "nsis": {
         "installerHooks": "nsis/osl-uninstall-hooks.nsh"
+        "installerHooks": "windows/remove-program-uninstall-hooks.nsh"
       }
     },
     "icon": [

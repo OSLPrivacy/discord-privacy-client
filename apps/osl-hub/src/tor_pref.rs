@@ -690,6 +690,8 @@ mod tests {
         "set_hub_screenshot_protection",
         "save_onboarding_preferences",
         "set_tor_preference",
+        "get_follow_active_app_choice",
+        "set_follow_active_app_choice",
         "scan_local_privacy",
         "open_hosted_session_scan",
         "request_hosted_session_scan",
@@ -707,6 +709,8 @@ mod tests {
         "cancel_scrub_index",
         "list_linked_services",
         "list_scrub_accounts",
+        "create_hub_named_server",
+        "list_hub_named_servers",
         "get_core_readiness",
         "list_core_features",
         "get_hub_license_state",
@@ -866,6 +870,8 @@ mod tests {
         "query_allowed_place_allowed",
         "compare_allowed_place_direction_state",
         "list_whatsapp_whitelist_kinds",
+        "get_hub_friend_future_account_auto_whitelist",
+        "set_hub_friend_future_account_auto_whitelist",
         "set_active_hub_friend_permission",
         "set_active_hub_friend_reach",
         "revoke_active_hub_friend_scope",
@@ -890,6 +896,7 @@ mod tests {
         "set_ai_carrier_preview_enabled",
         "build_integrity_status",
         "verify_peer_build_integrity",
+        "list_bad_message_rules",
     ];
 
     /// The commands that hold an authorized route open across their own send.

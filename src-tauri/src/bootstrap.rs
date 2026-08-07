@@ -318,8 +318,10 @@ fn run_autostart_mode(state: &AppState, register_online: bool) {
     tracing::info!(
         mode = ?prefs.stego_mode,
         next_generation_messages = next_generation_message_policy.label(),
+        rn_wire_policy_requested = prefs.rn_wire_policy_requested,
         "OSL bootstrap: app_preferences loaded"
     );
+    state.set_rn_wire_in_enabled(prefs.rn_wire_policy_requested);
     *state
         .app_preferences
         .lock()

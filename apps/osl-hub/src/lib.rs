@@ -13,6 +13,7 @@ pub mod adapters;
 pub mod allowed_place_commands;
 #[cfg(feature = "core")]
 pub mod attachment_formats;
+pub mod attachment_limits;
 #[cfg(feature = "core")]
 pub mod attachment_limits;
 #[cfg(feature = "core")]
@@ -34,6 +35,7 @@ pub mod ai_consent;
 #[cfg(feature = "core")]
 pub mod app_own_names;
 pub mod attended_imap;
+pub mod bad_message_rules;
 #[cfg(feature = "core")]
 pub mod autoscrub_bridge;
 #[cfg(feature = "core")]
@@ -54,6 +56,7 @@ pub mod burn_contract;
 pub mod burn_dispatch;
 #[cfg(feature = "core")]
 pub mod burn_journal_bridge;
+pub mod burn_review_state;
 #[cfg(feature = "core")]
 pub mod burn_server;
 pub mod carrier_placement;
@@ -165,6 +168,8 @@ pub(crate) mod seam_ledger;
 /// offline send queue could not be wired at all before this module existed.
 pub mod secure_disk_backend;
 pub mod service_connections;
+#[cfg(feature = "core")]
+pub mod server_records;
 pub mod service_host;
 #[cfg(feature = "core")]
 pub mod services;

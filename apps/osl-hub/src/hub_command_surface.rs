@@ -32,6 +32,7 @@ use crate::preferences::{
 };
 use crate::runtime_switches::{ResolvedTestOnlyRunTimeSwitches, SAFE_SENDING_DRY_RUN_FOR_TEST};
 use crate::scrub_erasure::{self, ComposedErasureRequest, ErasureRequestInput};
+use crate::server_records::{NamedServerRecord, NamedServerRegistryState};
 use crate::service_host::ActiveServiceHost;
 use crate::website_driver::{WebsiteDriver, WebsitePageRequest};
 use serde::{Deserialize, Serialize};
@@ -703,6 +704,32 @@ where
     driver
         .read_live_run_progress(&page)
         .map_err(|error| error.to_string())
+}
+
+pub fn list_hub_named_servers_for_chats(
+    registry: &NamedServerRegistryState,
+    owner_osl_user_id: &str,
+) -> Result<Vec<NamedServerRecord>, String> {
+    registry.list_for_owner(owner_osl_user_id)
+}
+
+pub fn create_hub_named_server_for_chats(
+    registry: &NamedServerRegistryState,
+    owner_osl_user_id: &str,
+    name: String,
+    member_osl_user_ids: Vec<String>,
+) -> Result<NamedServerRecord, String> {
+    let server =
+        registry.create_launch_server_for_owner(owner_osl_user_id, name, member_osl_user_ids)?;
+    let creator_servers = list_hub_named_servers_for_chats(registry, owner_osl_user_id)?;
+    if creator_servers
+        .iter()
+        .any(|listed| listed.server_id == server.server_id)
+    {
+        Ok(server)
+    } else {
+        Err("created server was not added to the creator's server list".to_owned())
+    }
 }
 
 pub fn require_review_ui_identity_binding_from_verifier(
@@ -1567,6 +1594,7 @@ macro_rules! hub_tauri_commands {
             build_integrity_status,
             installed_build_version_record,
             verify_peer_build_integrity,
+            list_bad_message_rules,
             list_hub_app_notifications,
             set_hub_notifications_enabled,
             get_hub_chat_approval_suggestion_choice,
@@ -1574,7 +1602,12 @@ macro_rules! hub_tauri_commands {
             answer_hub_chat_approval_suggestion,
             set_hub_screenshot_protection,
             save_onboarding_preferences,
+            save_burn_review_state,
+            get_burn_review_state,
+            back_burn_review,
             set_tor_preference,
+            get_follow_active_app_choice,
+            set_follow_active_app_choice,
             scan_local_privacy,
             open_hosted_session_scan,
             request_hosted_session_scan,
@@ -1595,6 +1628,8 @@ macro_rules! hub_tauri_commands {
             record_connected_app_own_names,
             get_connected_app_own_names,
             correct_connected_app_own_names,
+            create_hub_named_server,
+            list_hub_named_servers,
             get_core_readiness,
             list_core_features,
             get_hub_license_state,
@@ -1775,6 +1810,8 @@ macro_rules! hub_tauri_commands {
             query_allowed_place_allowed,
             compare_allowed_place_direction_state,
             list_whatsapp_whitelist_kinds,
+            get_hub_friend_future_account_auto_whitelist,
+            set_hub_friend_future_account_auto_whitelist,
             set_active_hub_friend_permission,
             set_active_hub_friend_reach,
             revoke_active_hub_friend_scope,
@@ -3040,6 +3077,7 @@ mod tauri_registration_surface_tests {
     use std::sync::{mpsc, Arc};
     use std::thread;
     use std::time::{Duration, Instant};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn handler_commands() -> BTreeSet<String> {
         hub_tauri_commands!(hub_tauri_command_names)
@@ -3709,6 +3747,43 @@ mod tauri_registration_surface_tests {
         );
     }
 
+    #[test]
+    fn recovery_word_retype_check_is_registered_and_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &["check_hub_recovery_word_retype"],
+        );
+    }
+
+    #[test]
+    fn live_server_revision_report_is_registered_and_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &["get_live_server_revision_report"],
+        );
+    }
+
+    #[test]
+    fn burn_review_state_commands_are_registered_and_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &[
+                "save_burn_review_state",
+                "get_burn_review_state",
+                "back_burn_review",
+            ],
+        );
+    }
+
     /// D-108 — the missing construction site for the UI's `SecureLocalStore`.
     ///
     /// The store is implemented and unit-tested in `secure-local-store.ts` and
@@ -3800,6 +3875,18 @@ mod tauri_registration_surface_tests {
 
     #[test]
     fn protected_email_open_message_reader_is_registered_and_granted() {
+    fn bad_message_rules_command_is_registered_and_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_registered_and_granted(
+            &handlers,
+            &permissions,
+            &capability,
+            "list_bad_message_rules",
+        );
+    }
+
+    #[test]
+    fn future_account_auto_whitelist_commands_are_registered_and_granted() {
         let (handlers, permissions, capability) = registration_inputs();
         assert_each_registration_surface_is_required(
             &handlers,
@@ -3811,8 +3898,91 @@ mod tauri_registration_surface_tests {
                 "read_icloud_mailbox_for_scrub",
                 "read_icloud_mailbox_pages_for_scrub",
                 "read_protected_email_live_run_progress",
+                "get_hub_friend_future_account_auto_whitelist",
+                "set_hub_friend_future_account_auto_whitelist",
             ],
         );
+    }
+
+    #[test]
+    fn named_server_command_is_registered_and_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &["create_hub_named_server", "list_hub_named_servers"],
+        );
+    }
+
+    #[test]
+    fn follow_active_app_choice_commands_are_registered_and_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &[
+                "get_follow_active_app_choice",
+                "set_follow_active_app_choice",
+            ],
+        );
+    }
+
+    #[test]
+    fn task1318_direct_chats_action_adds_new_server_to_creators_server_list() {
+        let _serial = crate::global_keystore_test_lock();
+        ipc::main_password::set_file_storage_key(Some([0x18; 32]));
+        let owner = "owner-1318";
+        let member_a = "member-1318-a";
+        let member_b = "member-1318-b";
+        let path = std::env::temp_dir().join(format!(
+            "osl-hub-task1318-server-records-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let registry = NamedServerRegistryState::load(path.clone());
+
+        let before = list_hub_named_servers_for_chats(&registry, owner)
+            .expect("creator server list is readable before creation");
+        let created = create_hub_named_server_for_chats(
+            &registry,
+            owner,
+            "Chats Command Server".to_owned(),
+            vec![member_a.to_owned(), member_b.to_owned()],
+        )
+        .expect("Chats command path creates and lists a named server");
+        let after = list_hub_named_servers_for_chats(&registry, owner)
+            .expect("creator server list is readable after creation");
+        let added_count = after
+            .iter()
+            .filter(|server| server.server_id == created.server_id)
+            .count();
+
+        println!(
+            "TASK1318 direct_action=create_hub_named_server creator={} before_count={} after_count={} added_count={} created_server={} creator_server_list={}",
+            owner,
+            before.len(),
+            after.len(),
+            added_count,
+            created.server_id,
+            after
+                .iter()
+                .map(|server| server.server_id.as_str())
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+
+        assert!(before.is_empty());
+        assert_eq!(after.len(), 1);
+        assert_eq!(added_count, 1);
+        assert_eq!(after[0], created);
+        assert_eq!(after[0].owner_osl_user_id, owner);
+        assert_eq!(after[0].name, "Chats Command Server");
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

@@ -205,6 +205,9 @@ export interface LocalMessageCandidate {
   authoredBySelf: boolean;
   createdAtUnixMs: number | null;
   text: string;
+  replyRecipient?: string | null;
+  visibleRecipients?: string[];
+  hiddenRecipients?: string[];
   attachments?: LocalAttachmentCandidate[];
 }
 export interface LocalAttachmentCandidate {
@@ -230,6 +233,7 @@ export interface UninspectedAttachment {
 }
 export interface LocalPrivacyScanResult {
   findings: LocalPrivacyFinding[];
+  emailProtectionChecks: EmailProtectionCheckDisplay[];
   messagesScanned: number;
   messagesRejected: number;
   truncated: boolean;
@@ -240,6 +244,13 @@ export interface LocalPrivacyScanResult {
   videosChecked: boolean;
   attachmentTypesScanned: string[];
   uninspectedAttachments: UninspectedAttachment[];
+}
+export interface EmailProtectionCheckDisplay {
+  messageLocator: string;
+  replyRecipients: string[];
+  replyAllRecipients: string[];
+  visibleRecipients: string[];
+  distinctRecipientCount: number;
 }
 export interface PersistedLocalPrivacyScanResult extends Omit<LocalPrivacyScanResult, "persisted"> {
   persisted: true;
@@ -1724,8 +1735,10 @@ function parsePrivacyScan(raw: unknown, persisted: boolean): LocalPrivacyScanRes
   if (!isRecord(raw)) return null;
   const baseKeys = ["findings", "messagesScanned", "messagesRejected", "truncated", "analysisLocation", "persisted"];
   const attachmentKeys = ["attachmentsScanned", "imagesChecked", "videosChecked", "attachmentTypesScanned", "uninspectedAttachments"];
+  const emailProtectionKeys = ["emailProtectionChecks"];
   const hasAttachmentKeys = attachmentKeys.some((key) => Object.prototype.hasOwnProperty.call(raw, key));
-  if (!exact(raw, hasAttachmentKeys ? [...baseKeys, ...attachmentKeys] : baseKeys)) return null;
+  const hasEmailProtectionKeys = emailProtectionKeys.some((key) => Object.prototype.hasOwnProperty.call(raw, key));
+  if (!exact(raw, [...baseKeys, ...(hasAttachmentKeys ? attachmentKeys : []), ...(hasEmailProtectionKeys ? emailProtectionKeys : [])])) return null;
   const maxMessages = persisted ? 10_000_000 : 2_000;
   if (!Array.isArray(raw.findings) || raw.findings.length > 1_000 || !Number.isSafeInteger(raw.messagesScanned) || Number(raw.messagesScanned) < 0 || Number(raw.messagesScanned) > maxMessages || !Number.isSafeInteger(raw.messagesRejected) || Number(raw.messagesRejected) < 0 || typeof raw.truncated !== "boolean" || raw.analysisLocation !== "this_device_only" || raw.persisted !== persisted) return null;
   const attachmentsScanned = hasAttachmentKeys ? raw.attachmentsScanned : 0;
@@ -1733,6 +1746,7 @@ function parsePrivacyScan(raw: unknown, persisted: boolean): LocalPrivacyScanRes
   const videosChecked = hasAttachmentKeys ? raw.videosChecked : false;
   const attachmentTypesScanned = hasAttachmentKeys ? raw.attachmentTypesScanned : [];
   const uninspectedAttachments = hasAttachmentKeys ? raw.uninspectedAttachments : [];
+  const emailProtectionChecks = hasEmailProtectionKeys ? raw.emailProtectionChecks : [];
   if (!boundedCount(attachmentsScanned)
     || typeof imagesChecked !== "boolean"
     || typeof videosChecked !== "boolean"
@@ -1742,10 +1756,30 @@ function parsePrivacyScan(raw: unknown, persisted: boolean): LocalPrivacyScanRes
     || new Set(attachmentTypesScanned).size !== attachmentTypesScanned.length
     || !Array.isArray(uninspectedAttachments)
     || uninspectedAttachments.length > 1_000
-    || !uninspectedAttachments.every(validUninspectedAttachment)) return null;
+    || !uninspectedAttachments.every(validUninspectedAttachment)
+    || !Array.isArray(emailProtectionChecks)
+    || emailProtectionChecks.length > maxMessages
+    || !emailProtectionChecks.every(validEmailProtectionCheckDisplay)) return null;
   const findings = raw.findings.map(parsePrivacyFinding);
   if (!findings.every((finding): finding is LocalPrivacyFinding => finding !== null)) return null;
-  return { ...raw, findings, attachmentsScanned, imagesChecked, videosChecked, attachmentTypesScanned, uninspectedAttachments } as LocalPrivacyScanResult | PersistedLocalPrivacyScanResult;
+  return { ...raw, findings, emailProtectionChecks, attachmentsScanned, imagesChecked, videosChecked, attachmentTypesScanned, uninspectedAttachments } as LocalPrivacyScanResult | PersistedLocalPrivacyScanResult;
+}
+
+function validEmailProtectionCheckDisplay(value: unknown): boolean {
+  if (!isRecord(value) || !exact(value, ["messageLocator", "replyRecipients", "replyAllRecipients", "visibleRecipients", "distinctRecipientCount"])) return false;
+  return safePlaintext(value.messageLocator, 256)
+    && Array.isArray(value.replyRecipients)
+    && value.replyRecipients.length <= 1
+    && value.replyRecipients.every((recipient) => safePlaintext(recipient, 256))
+    && Array.isArray(value.replyAllRecipients)
+    && value.replyAllRecipients.length <= 64
+    && value.replyAllRecipients.every((recipient) => safePlaintext(recipient, 256))
+    && Array.isArray(value.visibleRecipients)
+    && value.visibleRecipients.length <= 64
+    && value.visibleRecipients.every((recipient) => safePlaintext(recipient, 256))
+    && Number.isSafeInteger(value.distinctRecipientCount)
+    && Number(value.distinctRecipientCount) >= value.visibleRecipients.length
+    && Number(value.distinctRecipientCount) <= 128;
 }
 
 function parsePrivacyFinding(raw: unknown): LocalPrivacyFinding | null {
@@ -1765,11 +1799,20 @@ function validLocalCandidate(candidate: LocalMessageCandidate): boolean {
     && safePlaintext(candidate.messageLocator, 256)
     && typeof candidate.authoredBySelf === "boolean"
     && (candidate.createdAtUnixMs === null || Number.isSafeInteger(candidate.createdAtUnixMs))
+    && (candidate.replyRecipient === undefined || candidate.replyRecipient === null || safePlaintext(candidate.replyRecipient, 256))
+    && (candidate.visibleRecipients === undefined || validRecipientList(candidate.visibleRecipients))
+    && (candidate.hiddenRecipients === undefined || validRecipientList(candidate.hiddenRecipients))
     && ((safePlaintext(candidate.text, 8 * 1024)) || (candidate.text === "" && Boolean(candidate.attachments?.length)))
     && (candidate.attachments === undefined || (Array.isArray(candidate.attachments)
       && candidate.attachments.length > 0
       && candidate.attachments.length <= 64
       && candidate.attachments.every(validLocalAttachment)));
+}
+
+function validRecipientList(recipients: unknown): recipients is string[] {
+  return Array.isArray(recipients)
+    && recipients.length <= 64
+    && recipients.every((recipient) => safePlaintext(recipient, 256));
 }
 
 function validLocalAttachment(attachment: LocalAttachmentCandidate): boolean {

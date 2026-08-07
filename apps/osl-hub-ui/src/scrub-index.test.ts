@@ -86,6 +86,7 @@ describe("Scrub index IPC", () => {
     const scan = {
       findings: [], messagesScanned: 1, messagesRejected: 0, truncated: false,
       analysisLocation: "this_device_only", persisted: true,
+      emailProtectionChecks: [],
       attachmentsScanned: 0, imagesChecked: false, videosChecked: false,
       attachmentTypesScanned: [], uninspectedAttachments: [],
     } as const;

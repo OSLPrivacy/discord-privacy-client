@@ -207,6 +207,16 @@
     "allow-check-hub-recovery-words",
     "allow-read-protected-email-open-message",
     "allow-read-proton-mailbox-for-scrub",
-    "allow-read-protected-email-live-run-progress"
+    "allow-read-protected-email-live-run-progress",
+    "allow-list-bad-message-rules",
+    "allow-save-burn-review-state",
+    "allow-get-burn-review-state",
+    "allow-back-burn-review",
+    "allow-get-follow-active-app-choice",
+    "allow-set-follow-active-app-choice",
+    "allow-create-hub-named-server",
+    "allow-list-hub-named-servers",
+    "allow-get-hub-friend-future-account-auto-whitelist",
+    "allow-set-hub-friend-future-account-auto-whitelist"
   ]
 }

@@ -141,6 +141,7 @@ fn tauri_get_then_set_writes_through_to_disk() {
     let dto = AppPreferencesDto {
         stego_mode: StegoMode::Mode1,
         message_defaults: Default::default(),
+        rn_wire_policy_requested: None,
     };
     cmd_osl_set_app_preferences(&state, dto, Some(dir.path().to_path_buf())).unwrap();
 

@@ -311,6 +311,14 @@ fn marker_path(dir: &Path) -> PathBuf {
     dir.join(MARKER_FILENAME)
 }
 
+fn marker_temporary_path(dir: &Path) -> PathBuf {
+    marker_path(dir).with_extension("tmp")
+}
+
+fn marker_backup_path(dir: &Path) -> PathBuf {
+    marker_path(dir).with_extension("bak")
+}
+
 fn lockout_path(dir: &Path) -> PathBuf {
     dir.join(LOCKOUT_FILENAME)
 }
@@ -322,7 +330,7 @@ fn device_bound_fallback_key_path(dir: &Path) -> PathBuf {
 /// Reports whether a main password is configured (the marker file
 /// exists). Does not validate the file's contents.
 pub fn marker_exists(dir: &Path) -> bool {
-    marker_path(dir).exists()
+    marker_path(dir).exists() || marker_backup_path(dir).exists()
 }
 
 // =====================================================================
@@ -474,7 +482,19 @@ pub fn reset_device_bound_mint_refusals() {
 
 fn read_marker(dir: &Path) -> Result<PasswordMarker, String> {
     let path = marker_path(dir);
-    let bytes = std::fs::read(&path).map_err(|e| format!("OSL: read {}: {e}", path.display()))?;
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let backup = marker_backup_path(dir);
+            let bytes =
+                std::fs::read(&backup).map_err(|e| format!("OSL: read {}: {e}", path.display()))?;
+            std::fs::copy(&backup, &path)
+                .map_err(|e| format!("OSL: recover {} from backup: {e}", path.display()))?;
+            let _ = std::fs::remove_file(&backup);
+            bytes
+        }
+        Err(error) => return Err(format!("OSL: read {}: {error}", path.display())),
+    };
     let marker: PasswordMarker = serde_json::from_slice(&bytes)
         .map_err(|e| format!("OSL: parse password_marker.json: {e}"))?;
     // 7d-B2: accept both v1 and v2 markers. v1 markers parse fine
@@ -495,15 +515,54 @@ fn write_marker(dir: &Path, marker: &PasswordMarker) -> Result<(), String> {
         std::fs::create_dir_all(dir).map_err(|e| format!("OSL: mkdir {}: {e}", dir.display()))?;
     }
     let path = marker_path(dir);
+    let temporary = marker_temporary_path(dir);
+    let backup = marker_backup_path(dir);
     let bytes = serde_json::to_vec_pretty(marker)
         .map_err(|e| format!("OSL: serialize password_marker: {e}"))?;
-    std::fs::write(&path, &bytes).map_err(|e| format!("OSL: write {}: {e}", path.display()))
+    let _ = std::fs::remove_file(&temporary);
+    {
+        use std::io::Write as _;
+        let mut file = std::fs::File::create(&temporary)
+            .map_err(|e| format!("OSL: create {}: {e}", temporary.display()))?;
+        file.write_all(&bytes)
+            .map_err(|e| format!("OSL: write {}: {e}", temporary.display()))?;
+        file.sync_all()
+            .map_err(|e| format!("OSL: sync {}: {e}", temporary.display()))?;
+    }
+
+    if backup.exists() {
+        std::fs::remove_file(&backup)
+            .map_err(|e| format!("OSL: remove stale {}: {e}", backup.display()))?;
+    }
+    let had_previous = path.exists();
+    if had_previous {
+        std::fs::rename(&path, &backup)
+            .map_err(|e| format!("OSL: preserve {}: {e}", path.display()))?;
+    }
+    if let Err(error) = std::fs::rename(&temporary, &path) {
+        if had_previous {
+            let _ = std::fs::rename(&backup, &path);
+        }
+        let _ = std::fs::remove_file(&temporary);
+        return Err(format!("OSL: commit {}: {error}", path.display()));
+    }
+    if had_previous {
+        let _ = std::fs::remove_file(&backup);
+    }
+    Ok(())
 }
 
 fn delete_marker(dir: &Path) -> Result<(), String> {
-    let path = marker_path(dir);
-    if path.exists() {
-        std::fs::remove_file(&path).map_err(|e| format!("OSL: remove {}: {e}", path.display()))?;
+    for path in [
+        marker_path(dir),
+        marker_temporary_path(dir),
+        marker_backup_path(dir),
+    ] {
+        match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("OSL: remove {}: {error}", path.display())),
+        }
     }
     Ok(())
 }
@@ -2509,6 +2568,7 @@ mod password_policy_tests {
     }
 
     fn gate_attempt_label(result: GatePasswordAttemptResult) -> &'static str {
+    fn gate_attempt_result_label(result: GatePasswordAttemptResult) -> &'static str {
         match result {
             GatePasswordAttemptResult::Main(_) => "main",
             GatePasswordAttemptResult::Stealth => "stealth",
@@ -3129,6 +3189,76 @@ mod password_policy_tests {
             marker_path(dir.path()).exists(),
             "the reset counter must keep the marker intact after one new wrong attempt"
         );
+        set_file_storage_key(None);
+    }
+
+    #[test]
+    fn task0306_stealth_password_store_returns_three_unlock_results() {
+        let _serial = crate::test_process_globals::serialize();
+        set_file_storage_key(None);
+        let dir = tempfile::tempdir().unwrap();
+        write_marker(dir.path(), &build_fast_test_marker(TEST_MAIN_PASSWORD)).unwrap();
+
+        let stealth_password = "stealth-secret";
+        set_stealth_password(dir.path(), TEST_MAIN_PASSWORD, stealth_password)
+            .expect("stealth password can be stored after checking main password");
+
+        let marker = read_marker(dir.path()).expect("stored marker can be read");
+        let stealth_hash = marker
+            .stealth_password_hash_b64
+            .as_ref()
+            .expect("stealth hash must be separately stored");
+        assert_ne!(
+            marker.password_hash_b64, *stealth_hash,
+            "stealth password must not overwrite or alias the main password hash"
+        );
+
+        let normal_result = gate_attempt_result_label(
+            verify_gate_password_attempt(dir.path(), TEST_MAIN_PASSWORD).unwrap(),
+        );
+        assert_eq!(normal_result, "main");
+        assert!(
+            get_file_storage_key().is_some(),
+            "normal/main unlock must install the real workspace file key"
+        );
+
+        set_file_storage_key(None);
+        let stealth_result = gate_attempt_result_label(
+            verify_gate_password_attempt(dir.path(), stealth_password).unwrap(),
+        );
+        assert_eq!(stealth_result, "stealth");
+        assert_eq!(
+            get_file_storage_key(),
+            None,
+            "stealth unlock must not install the real workspace file key"
+        );
+
+        let wrong_result = gate_attempt_result_label(
+            verify_gate_password_attempt(dir.path(), "wrong-password").unwrap(),
+        );
+        assert_eq!(wrong_result, "wrong");
+        assert_eq!(
+            get_file_storage_key(),
+            None,
+            "wrong unlock must not install the real workspace file key"
+        );
+
+        let unique_results =
+            std::collections::BTreeSet::from([normal_result, stealth_result, wrong_result]);
+        assert_eq!(
+            unique_results.len(),
+            3,
+            "normal, stealth, and wrong passwords must produce three different unlock results"
+        );
+        println!(
+            "TASK0306 unlock_results normal={} stealth={} wrong={} distinct_count={} stealth_hash_stored={}",
+            normal_result,
+            stealth_result,
+            wrong_result,
+            unique_results.len(),
+            marker.stealth_password_hash_b64.is_some()
+        );
+
         set_file_storage_key(None);
     }
 

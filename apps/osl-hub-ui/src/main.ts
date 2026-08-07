@@ -25,7 +25,7 @@ import {
   type SetupState,
 } from "./state";
 import { isTauriRuntime, loadOnboardingPreferences, saveOnboardingPreferences } from "./preferences";
-import { chooseForwardSecrecyMode, initialForwardSecrecyOnboardingState, onboardingForwardSecrecyMarkup, type ForwardSecrecyOnboardingState } from "./onboarding-forward-secrecy";
+import { chooseForwardSecrecyMode, initialForwardSecrecyOnboardingState, onboardingForwardSecrecyMarkup, type ForwardSecrecyChoice, type ForwardSecrecyOnboardingState } from "./onboarding-forward-secrecy";
 import { onboardingPasswordRoleContent as passwordRoleContent } from "./password-roles";
 import { chooseTorRoute, initialTorOnboardingState, onboardingTorMarkup, type TorOnboardingState } from "./onboarding-tor";
 import { chooseCoverInsertion, initialCoverInsertionChoice, onboardingCoverMarkup, type CoverInsertionChoice } from "./onboarding-cover";
@@ -10274,6 +10274,8 @@ type OslHubUiTestStatePatch = {
   inboxFilter?: InboxFilter;
   oslMailNotifications?: boolean;
   licenseAccess?: HubLicenseState["access"];
+  forwardSecrecyChoice?: ForwardSecrecyChoice | null;
+  forwardSecrecyMode?: "protectPast" | "keepGroupDelivery";
   autoScrubFleetStatus?: AutoScrubFleetStatus | null;
   hubIdentities?: HubIdentitySlot[];
   hubIdentitiesLoad?: IdentityListLoad;
@@ -10381,6 +10383,8 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   buildIntegrityStatus = patch.buildIntegrityStatus ?? null;
   proOnboardingReadyResult = false;
   proOnboardingCodeEntryRequested = false;
+  forwardSecrecyOnboarding = { choice: patch.forwardSecrecyChoice ?? null };
+  forwardSecrecyMode = patch.forwardSecrecyMode ?? "keepGroupDelivery";
   autoScrubFleetStatus = patch.autoScrubFleetStatus ?? null;
   autoScrubStatusLoading = false;
   autoScrubStopPending = false;
@@ -10669,6 +10673,8 @@ export const __oslHubUiTest = {
     ownedConfirmationPersonId: string | null;
     silentVisibleMode: SilentVisibleMode | null;
     coverInsertion: CoverInsertionChoice | null;
+    forwardSecrecyChoice: ForwardSecrecyChoice | null;
+    forwardSecrecyMode: "protectPast" | "keepGroupDelivery";
   } {
     return {
       route,
@@ -10690,6 +10696,8 @@ export const __oslHubUiTest = {
         : null,
       silentVisibleMode,
       coverInsertion,
+      forwardSecrecyChoice: forwardSecrecyOnboarding.choice,
+      forwardSecrecyMode,
     };
   },
 };

@@ -170,6 +170,38 @@ impl Default for FriendRelationship {
     fn default() -> Self {
         Self::Accepted
     }
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FriendFutureAccountAutoWhitelistDto {
+    pub person_id: String,
+    pub enabled: bool,
+    pub result: &'static str,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HubFriendDirectAccountDto {
+    pub service_id: String,
+    pub account_id: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HubFriendAccountReachRowDto {
+    pub service_id: String,
+    pub account_id: String,
+    pub label: String,
+    pub allowed: bool,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HubFriendAccountReachDto {
+    pub action: &'static str,
+    pub person_id: String,
+    pub accounts: Vec<HubFriendAccountReachRowDto>,
+    pub changed_count: usize,
 }
 
 /// A local-only description of one approved encryption scope. It deliberately
@@ -717,6 +749,8 @@ struct PersonMetadata {
     pending_ed25519_public: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pending_key_bundle: Option<FriendCodeUnsigned>,
+    #[serde(default)]
+    auto_whitelist_future_accounts: bool,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -1183,6 +1217,7 @@ pub fn add_friend_code(
             auto_whitelist_future_accounts: false,
             pending_ed25519_public: None,
             pending_key_bundle: None,
+            auto_whitelist_future_accounts: false,
         },
     );
     if let Err(error) = write_encrypted_json(&dir.join(PEOPLE_FILE), &people) {
@@ -1549,6 +1584,27 @@ pub fn set_friend_relationship(
     person_id: String,
     relationship: FriendRelationship,
 ) -> Result<PersonDto, String> {
+pub fn query_friend_future_account_auto_whitelist(
+    person_id: String,
+) -> Result<FriendFutureAccountAutoWhitelistDto, String> {
+    require_unlocked()?;
+    validate_person_id(&person_id)?;
+    let people = load_people_file(&config_dir()?)?;
+    let metadata = people
+        .people
+        .get(&person_id)
+        .ok_or_else(|| "OSL friend is unknown".to_owned())?;
+    Ok(friend_future_account_auto_whitelist_dto(
+        &person_id,
+        metadata.auto_whitelist_future_accounts,
+    ))
+}
+
+pub fn set_friend_future_account_auto_whitelist(
+    security: &HubSecurityState,
+    person_id: String,
+    enabled: bool,
+) -> Result<FriendFutureAccountAutoWhitelistDto, String> {
     require_unlocked()?;
     validate_person_id(&person_id)?;
     let _transition = security
@@ -2123,6 +2179,62 @@ pub fn list_one_use_invite_links(
     let prefs =
         load_encrypted_json::<SecurityPreferences>(&config_dir()?.join(SECURITY_PREFS_FILE))?;
     Ok(one_use_invite_link_records(&prefs))
+    metadata.auto_whitelist_future_accounts = enabled;
+    write_encrypted_json(&dir.join(PEOPLE_FILE), &people)?;
+    Ok(friend_future_account_auto_whitelist_dto(
+        &person_id, enabled,
+    ))
+}
+
+pub fn apply_future_account_auto_whitelist(
+    core: &HubCoreState,
+    security: &HubSecurityState,
+    service_id: &str,
+    account_id: &str,
+) -> Result<Vec<String>, String> {
+    require_unlocked()?;
+    validate_manual_peer_service_account(service_id, account_id)?;
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL manual peer settings are unavailable".to_owned())?;
+    let dir = config_dir()?;
+    let people = load_people_file(&dir)?;
+    let peers = core
+        .osl
+        .peer_map
+        .lock()
+        .map_err(|_| "OSL peer state is unavailable".to_owned())?
+        .clone();
+    let path = dir.join(SECURITY_PREFS_FILE);
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
+    prefs.version = 2;
+    let mut applied = Vec::new();
+    for (person_id, metadata) in people
+        .people
+        .iter()
+        .filter(|(_, metadata)| metadata.auto_whitelist_future_accounts)
+    {
+        let peer = peers
+            .get(person_id)
+            .ok_or_else(|| "OSL friend key state is missing".to_owned())?;
+        ensure_manual_peer_available(metadata, people.version, true)?;
+        validate_manual_peer_identity(person_id, metadata, peer)?;
+        let _trusted_bundle = trusted_peer_key_bundle(person_id, metadata, peer)?;
+        let storage_key = manual_peer_scope_storage_key(service_id, account_id, person_id)?;
+        if prefs.burned_manual_scopes.contains(&storage_key) {
+            return Err("This manual conversation was burned and cannot be reapproved".to_owned());
+        }
+        prefs.manual_approved_scopes.insert(storage_key.clone());
+        prefs
+            .manual_approved_scope_people
+            .insert(storage_key, person_id.clone());
+        applied.push(person_id.clone());
+    }
+    if !applied.is_empty() {
+        write_encrypted_json(&path, &prefs)?;
+    }
+    Ok(applied)
 }
 
 /// Grant or revoke one friend's approval for exactly one scope.
@@ -3138,6 +3250,91 @@ pub fn set_manual_peer_scope_permission(
     let storage_key = manual_peer_scope_storage_key(service_id, account_id, &binding.person_id)?;
     withdraw_manual_scope_grant(&mut prefs, &storage_key);
     write_encrypted_json(&path, &prefs)
+}
+
+pub fn set_hub_friend_account_reach_everywhere(
+    core: &HubCoreState,
+    security: &HubSecurityState,
+    person_id: String,
+    accounts: Vec<HubFriendDirectAccountDto>,
+) -> Result<HubFriendAccountReachDto, String> {
+    set_hub_friend_account_reach(core, security, person_id, accounts, true, "everywhere")
+}
+
+pub fn set_hub_friend_account_reach_nowhere(
+    core: &HubCoreState,
+    security: &HubSecurityState,
+    person_id: String,
+    accounts: Vec<HubFriendDirectAccountDto>,
+) -> Result<HubFriendAccountReachDto, String> {
+    set_hub_friend_account_reach(core, security, person_id, accounts, false, "nowhere")
+}
+
+fn set_hub_friend_account_reach(
+    core: &HubCoreState,
+    security: &HubSecurityState,
+    person_id: String,
+    accounts: Vec<HubFriendDirectAccountDto>,
+    allowed: bool,
+    action: &'static str,
+) -> Result<HubFriendAccountReachDto, String> {
+    let binding = manual_peer_binding(core, person_id)?;
+    if accounts.is_empty() {
+        return Err("no accounts".to_owned());
+    }
+    let mut rows = Vec::with_capacity(accounts.len());
+    let mut storage_keys = Vec::with_capacity(accounts.len());
+    for account in accounts {
+        crate::services::service_kind_from_id(&account.service_id)
+            .ok_or_else(|| "OSL service is unknown".to_owned())?;
+        let storage_key = manual_peer_scope_storage_key(
+            &account.service_id,
+            &account.account_id,
+            &binding.person_id,
+        )?;
+        rows.push(HubFriendAccountReachRowDto {
+            service_id: account.service_id,
+            account_id: account.account_id,
+            label: account.label,
+            allowed,
+        });
+        storage_keys.push(storage_key);
+    }
+
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL manual peer settings are unavailable".to_owned())?;
+    let dir = config_dir()?;
+    let path = dir.join(SECURITY_PREFS_FILE);
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
+    prefs.version = 2;
+    let mut changed_count = 0usize;
+    for storage_key in storage_keys {
+        if allowed {
+            if prefs.burned_manual_scopes.contains(&storage_key) {
+                return Err(
+                    "This manual conversation was burned and cannot be reapproved".to_owned(),
+                );
+            }
+            let inserted_scope = prefs.manual_approved_scopes.insert(storage_key.clone());
+            let previous_person = prefs
+                .manual_approved_scope_people
+                .insert(storage_key, binding.person_id.clone());
+            if inserted_scope || previous_person.as_deref() != Some(binding.person_id.as_str()) {
+                changed_count += 1;
+            }
+        } else if withdraw_manual_scope_grant(&mut prefs, &storage_key) {
+            changed_count += 1;
+        }
+    }
+    write_encrypted_json(&path, &prefs)?;
+    Ok(HubFriendAccountReachDto {
+        action,
+        person_id: binding.person_id,
+        accounts: rows,
+        changed_count,
+    })
 }
 
 /// Apply one already-minted scoped trust grant to the hub's manual approval
@@ -5319,6 +5516,17 @@ fn person_picture_fallback_colour(person_id: &str, metadata: &PersonMetadata) ->
     let digest = hash.finalize();
     let index = usize::from(digest[0]) % PERSON_PICTURE_FALLBACK_COLOURS.len();
     PERSON_PICTURE_FALLBACK_COLOURS[index].to_owned()
+}
+
+fn friend_future_account_auto_whitelist_dto(
+    person_id: &str,
+    enabled: bool,
+) -> FriendFutureAccountAutoWhitelistDto {
+    FriendFutureAccountAutoWhitelistDto {
+        person_id: person_id.to_owned(),
+        enabled,
+        result: if enabled { "on" } else { "off" },
+    }
 }
 
 fn person_dto(
@@ -8635,6 +8843,769 @@ mod tests {
     }
 
     #[test]
+    fn task0263_future_account_auto_whitelist_direct_query_returns_on_and_off_for_one_friend() {
+        let harness = FileBackedSecurityHarness::new("task0263-future-account-auto-whitelist");
+        let security = HubSecurityState::default();
+        let (person_id, metadata, _) = test_friend(26);
+        write_people(harness.path(), &person_id, metadata);
+
+        let on = set_friend_future_account_auto_whitelist(&security, person_id.clone(), true)
+            .expect("future-account auto-whitelist turns on");
+        let queried_on = query_friend_future_account_auto_whitelist(person_id.clone())
+            .expect("direct query returns saved on state");
+        println!(
+            "TASK0263 direct query friend={} future_account_auto_whitelist={}",
+            queried_on.person_id, queried_on.result
+        );
+        assert!(on.enabled);
+        assert_eq!(queried_on.person_id, person_id);
+        assert_eq!(queried_on.result, "on");
+
+        let off = set_friend_future_account_auto_whitelist(&security, person_id.clone(), false)
+            .expect("future-account auto-whitelist turns off");
+        let queried_off = query_friend_future_account_auto_whitelist(person_id.clone())
+            .expect("direct query returns saved off state");
+        println!(
+            "TASK0263 direct query friend={} future_account_auto_whitelist={}",
+            queried_off.person_id, queried_off.result
+        );
+        assert!(!off.enabled);
+        assert_eq!(queried_off.person_id, person_id);
+        assert_eq!(queried_off.result, "off");
+    }
+
+    #[test]
+    fn task0264_added_account_auto_whitelists_only_friends_with_future_account_switch_on() {
+        let harness = FileBackedSecurityHarness::new("task0264-future-account-auto-whitelist");
+        let core = HubCoreState::default();
+        install_self_identity(&core);
+        let security = HubSecurityState::default();
+        let (on_person_id, mut on_metadata, on_peer) = test_friend(64);
+        let (off_person_id, off_metadata, off_peer) = test_friend(65);
+        on_metadata.auto_whitelist_future_accounts = true;
+        let people = PeopleFile {
+            version: PEOPLE_SCHEMA_VERSION,
+            people: BTreeMap::from([
+                (on_person_id.clone(), on_metadata),
+                (off_person_id.clone(), off_metadata),
+            ]),
+        };
+        write_encrypted_json(&harness.path().join(PEOPLE_FILE), &people).unwrap();
+        let peers = ipc::peer_map::PeerMap::from([
+            (on_person_id.clone(), on_peer),
+            (off_person_id.clone(), off_peer),
+        ]);
+        write_encrypted_json(&harness.path().join("peer_map.json"), &peers).unwrap();
+        *core.osl.peer_map.lock().unwrap() = peers;
+        write_encrypted_json(
+            &harness.path().join(SECURITY_PREFS_FILE),
+            &SecurityPreferences::default(),
+        )
+        .unwrap();
+
+        let registry =
+            crate::services::ServiceRegistryState::load(harness.path().join("services.json"));
+        let account = registry
+            .create_for_owner(
+                "owner-0264",
+                crate::models::ServiceKind::Email,
+                "Future account".to_owned(),
+            )
+            .expect("task fixture adds one account");
+        let account_count = registry
+            .list_for_owner("owner-0264")
+            .unwrap()
+            .into_iter()
+            .find(|service| service.id == crate::models::ServiceKind::Email)
+            .unwrap()
+            .accounts
+            .len();
+        let applied =
+            apply_future_account_auto_whitelist(&core, &security, "email", &account.id).unwrap();
+        let on_scope = manual_peer_scope_id("email", &account.id, &on_person_id).unwrap();
+        let off_scope = manual_peer_scope_id("email", &account.id, &off_person_id).unwrap();
+        let on_ticked = manual_peer_scope_approved(
+            &core,
+            "email",
+            &account.id,
+            on_person_id.clone(),
+            dm_scope_input(on_scope),
+        )
+        .unwrap();
+        let off_ticked = manual_peer_scope_approved(
+            &core,
+            "email",
+            &account.id,
+            off_person_id.clone(),
+            dm_scope_input(off_scope),
+        )
+        .unwrap();
+        println!(
+            "TASK0264 added_account service=email account={} account_count={} on_fixture={} off_fixture={} applied_count={}",
+            account.id,
+            account_count,
+            if on_ticked { "ticked" } else { "unticked" },
+            if off_ticked { "ticked" } else { "unticked" },
+            applied.len()
+        );
+        assert_eq!(account_count, 1);
+        assert_eq!(applied, vec![on_person_id]);
+        assert!(on_ticked, "on fixture must be ticked for the added account");
+        assert!(
+            !off_ticked,
+            "off fixture must stay unticked for the added account"
+        );
+    }
+
+    fn task_0266_email_accounts(
+        registry: &crate::services::ServiceRegistryState,
+        owner: &str,
+    ) -> Vec<crate::models::LinkedAccountDemo> {
+        registry
+            .list_for_owner(owner)
+            .unwrap()
+            .into_iter()
+            .find(|service| service.id == crate::models::ServiceKind::Email)
+            .unwrap()
+            .accounts
+    }
+
+    fn task_0266_reach_count(dir: &Path) -> usize {
+        load_encrypted_json::<SecurityPreferences>(&dir.join(SECURITY_PREFS_FILE))
+            .unwrap()
+            .manual_approved_scope_people
+            .len()
+    }
+
+    fn task_0266_account_fingerprint(account: &crate::models::LinkedAccountDemo) -> String {
+        let mut hash = Sha256::new();
+        hash.update(b"TASK0266/account/v1");
+        hash.update(account.id.as_bytes());
+        hash.update(b"\0");
+        hash.update(account.label.as_bytes());
+        hash.update(b"\0");
+        hash.update(format!("{:?}", account.provider).as_bytes());
+        let digest: [u8; 32] = hash.finalize().into();
+        lower_hex(&digest)
+    }
+
+    fn task_0266_reach_fingerprint(
+        dir: &Path,
+        service_id: &str,
+        account_id: &str,
+        person_id: &str,
+    ) -> String {
+        let storage_key = manual_peer_scope_storage_key(service_id, account_id, person_id).unwrap();
+        let prefs =
+            load_encrypted_json::<SecurityPreferences>(&dir.join(SECURITY_PREFS_FILE)).unwrap();
+        let approved = prefs.manual_approved_scopes.contains(&storage_key);
+        let attributed = prefs
+            .manual_approved_scope_people
+            .get(&storage_key)
+            .map(String::as_str)
+            .unwrap_or("");
+        let mut hash = Sha256::new();
+        hash.update(b"TASK0266/reach/v1");
+        hash.update(storage_key.as_bytes());
+        hash.update(b"\0");
+        hash.update(if approved {
+            b"approved".as_slice()
+        } else {
+            b"not-approved".as_slice()
+        });
+        hash.update(b"\0");
+        hash.update(attributed.as_bytes());
+        let digest: [u8; 32] = hash.finalize().into();
+        lower_hex(&digest)
+    }
+
+    #[test]
+    fn task_0266_failed_account_add_does_not_break_auto_whitelist() {
+        let harness = FileBackedSecurityHarness::new("task-0266-account-auto-whitelist");
+        let core = HubCoreState::default();
+        install_self_identity(&core);
+        let security = HubSecurityState::default();
+        let (person_id, mut metadata, peer) = test_friend(0x26);
+        metadata.auto_whitelist_future_accounts = true;
+        write_people(harness.path(), &person_id, metadata);
+        install_peer_map(&core, harness.path(), &person_id, peer);
+        write_encrypted_json(
+            &harness.path().join(SECURITY_PREFS_FILE),
+            &SecurityPreferences::default(),
+        )
+        .unwrap();
+
+        let registry =
+            crate::services::ServiceRegistryState::load(harness.path().join("services.json"));
+        let owner = "owner-0266";
+        let ash = registry
+            .create_for_owner(
+                owner,
+                crate::models::ServiceKind::Email,
+                "ASH-0266".to_owned(),
+            )
+            .expect("task fixture adds the seed account");
+        let ash_readable = task_0266_email_accounts(&registry, owner)
+            .into_iter()
+            .find(|account| account.id == ash.id)
+            .map(|account| account.label)
+            .unwrap_or_default();
+        let account_count_before = task_0266_email_accounts(&registry, owner).len();
+        let reach_count_before = task_0266_reach_count(harness.path());
+        println!("TASK0266 seed_account.readable={ash_readable}");
+        println!("TASK0266 switch.future_account_auto_whitelist=on");
+        println!("TASK0266 account_count.before={account_count_before}");
+        println!("TASK0266 reach_count.before={reach_count_before}");
+        assert_eq!(ash_readable, "ASH-0266");
+        assert_eq!(account_count_before, 1);
+        assert_eq!(reach_count_before, 0);
+
+        let elm = registry
+            .create_for_owner(
+                owner,
+                crate::models::ServiceKind::Email,
+                "ELM-0266".to_owned(),
+            )
+            .expect("task fixture adds the good account");
+        let applied =
+            apply_future_account_auto_whitelist(&core, &security, "email", &elm.id).unwrap();
+        let elm_readable = task_0266_email_accounts(&registry, owner)
+            .into_iter()
+            .find(|account| account.id == elm.id)
+            .expect("ELM-0266 account exists");
+        let account_count_after_good = task_0266_email_accounts(&registry, owner).len();
+        let reach_count_after_good = task_0266_reach_count(harness.path());
+        let elm_fingerprint_before_bad = task_0266_account_fingerprint(&elm_readable);
+        let reach_fingerprint_before_bad =
+            task_0266_reach_fingerprint(harness.path(), "email", &elm.id, &person_id);
+        println!("TASK0266 good_add.name={}", elm_readable.label);
+        println!("TASK0266 good_add.auto_reach_added={}", applied.len());
+        println!("TASK0266 account_count.after_good={account_count_after_good}");
+        println!("TASK0266 reach_count.after_good={reach_count_after_good}");
+        println!("TASK0266 elm_account.fingerprint.before_bad={elm_fingerprint_before_bad}");
+        println!("TASK0266 elm_friend_reach.fingerprint.before_bad={reach_fingerprint_before_bad}");
+        assert_eq!(elm_readable.label, "ELM-0266");
+        assert_eq!(reach_count_after_good, 1, "ELM-0266 friend-reach missing");
+        assert_eq!(applied, vec![person_id.clone()]);
+        assert_eq!(account_count_after_good, 2);
+
+        let bad_account_id = "invalid account";
+        let bad_error =
+            apply_future_account_auto_whitelist(&core, &security, "email", bad_account_id)
+                .expect_err("invalid account is refused");
+        let account_count_after_bad = task_0266_email_accounts(&registry, owner).len();
+        let reach_count_after_bad = task_0266_reach_count(harness.path());
+        let elm_after_bad = task_0266_email_accounts(&registry, owner)
+            .into_iter()
+            .find(|account| account.id == elm.id)
+            .expect("ELM-0266 survives invalid account retry");
+        let elm_fingerprint_after_bad = task_0266_account_fingerprint(&elm_after_bad);
+        let reach_fingerprint_after_bad =
+            task_0266_reach_fingerprint(harness.path(), "email", &elm.id, &person_id);
+        println!("TASK0266 bad_add.changed_field=account");
+        println!("TASK0266 bad_add.account_value={bad_account_id}");
+        println!("TASK0266 bad_add.error={bad_error}");
+        println!("TASK0266 account_count.after_bad={account_count_after_bad}");
+        println!("TASK0266 reach_count.after_bad={reach_count_after_bad}");
+        println!("TASK0266 elm_account.fingerprint.after_bad={elm_fingerprint_after_bad}");
+        println!("TASK0266 elm_friend_reach.fingerprint.after_bad={reach_fingerprint_after_bad}");
+        println!(
+            "TASK0266 elm_account.fingerprint_kept={}",
+            elm_fingerprint_after_bad == elm_fingerprint_before_bad
+        );
+        println!(
+            "TASK0266 elm_friend_reach.fingerprint_kept={}",
+            reach_fingerprint_after_bad == reach_fingerprint_before_bad
+        );
+        assert_eq!(bad_error, "invalid opaque identifier");
+        assert_eq!(account_count_after_bad, 2);
+        assert_eq!(reach_count_after_bad, 1);
+        assert_eq!(elm_after_bad.label, "ELM-0266");
+        assert_eq!(elm_fingerprint_after_bad, elm_fingerprint_before_bad);
+        assert_eq!(reach_fingerprint_after_bad, reach_fingerprint_before_bad);
+    }
+
+    fn task0258_accounts() -> Vec<HubFriendDirectAccountDto> {
+        vec![
+            HubFriendDirectAccountDto {
+                service_id: "discord".to_owned(),
+                account_id: "native-discord-task0258-a".to_owned(),
+                label: "OLIVE-0258 Discord".to_owned(),
+            },
+            HubFriendDirectAccountDto {
+                service_id: "telegram".to_owned(),
+                account_id: "acct-task0258-telegram".to_owned(),
+                label: "OLIVE-0258 Telegram".to_owned(),
+            },
+            HubFriendDirectAccountDto {
+                service_id: "email".to_owned(),
+                account_id: "acct-task0258-mail".to_owned(),
+                label: "OLIVE-0258 Mail".to_owned(),
+            },
+        ]
+    }
+
+    fn task0258_protected_message_actions(
+        core: &HubCoreState,
+        person_id: &str,
+        accounts: &[HubFriendDirectAccountDto],
+    ) -> Vec<&'static str> {
+        accounts
+            .iter()
+            .map(|account| {
+                let scope_id =
+                    manual_peer_scope_id(&account.service_id, &account.account_id, person_id)
+                        .unwrap();
+                match require_manual_peer_scope_approved(
+                    core,
+                    &account.service_id,
+                    &account.account_id,
+                    person_id.to_owned(),
+                    dm_scope_input(scope_id),
+                ) {
+                    Ok(_) => "act",
+                    Err(error)
+                        if error == "Approve encryption for this friend before continuing" =>
+                    {
+                        "skipped"
+                    }
+                    Err(error) => panic!("unexpected protected-message action error: {error}"),
+                }
+            })
+            .collect()
+    }
+
+    fn task0259_account() -> HubFriendDirectAccountDto {
+        HubFriendDirectAccountDto {
+            service_id: "discord".to_owned(),
+            account_id: "native-discord-task0259".to_owned(),
+            label: "OLIVE-0259".to_owned(),
+        }
+    }
+
+    fn task0259_install_fixture(
+        label: &str,
+    ) -> (
+        FileBackedSecurityHarness,
+        HubCoreState,
+        HubSecurityState,
+        String,
+    ) {
+        let harness = FileBackedSecurityHarness::new(label);
+        let core = HubCoreState::default();
+        install_self_identity(&core);
+        let security = HubSecurityState::default();
+        let (person_id, metadata, peer) = test_friend(59);
+        write_people(harness.path(), &person_id, metadata);
+        install_peer_map(&core, harness.path(), &person_id, peer);
+        write_encrypted_json(
+            &harness.path().join(SECURITY_PREFS_FILE),
+            &SecurityPreferences::default(),
+        )
+        .unwrap();
+        (harness, core, security, person_id)
+    }
+
+    fn task0259_reach_count(
+        core: &HubCoreState,
+        person_id: &str,
+        accounts: &[HubFriendDirectAccountDto],
+    ) -> usize {
+        accounts
+            .iter()
+            .filter(|account| {
+                let scope_id =
+                    manual_peer_scope_id(&account.service_id, &account.account_id, person_id)
+                        .unwrap();
+                manual_peer_scope_approved(
+                    core,
+                    &account.service_id,
+                    &account.account_id,
+                    person_id.to_owned(),
+                    dm_scope_input(scope_id),
+                )
+                .unwrap()
+            })
+            .count()
+    }
+
+    fn task0259_total_reach_count(dir: &Path) -> usize {
+        load_encrypted_json::<SecurityPreferences>(&dir.join(SECURITY_PREFS_FILE))
+            .unwrap()
+            .manual_approved_scopes
+            .len()
+    }
+
+    fn task0518_marked_friend() -> (String, PersonMetadata, PeerEntry, String) {
+        let ed25519_bytes: [u8; ED25519_PUBLIC_BYTES] = rand::random();
+        let x25519_bytes: [u8; X25519_PUBLIC_BYTES] = rand::random();
+        let mark = format!(
+            "TASK0518-MARK-{}",
+            lower_hex(&Sha256::digest(ed25519_bytes).into())
+        );
+        let ed25519_public = STANDARD.encode(ed25519_bytes);
+        let x25519_public = STANDARD.encode(x25519_bytes);
+        let mlkem768_public = STANDARD.encode([0x51u8; MLKEM768_PUBLIC_BYTES]);
+        let person_id = person_id(&ed25519_public);
+        let key_bundle = KeyBundle {
+            ed25519_pub: ed25519_public.clone(),
+            x25519_pub: x25519_public.clone(),
+            mlkem768_pub: mlkem768_public.clone(),
+            ratchet_initial_pub: None,
+        };
+        (
+            person_id,
+            PersonMetadata {
+                osl_user_id: mark.clone(),
+                ed25519_public,
+                safety_number_verified: true,
+                ..PersonMetadata::default()
+            },
+            PeerEntry {
+                osl_user_id: Some(mark.clone()),
+                pubkey: Some(x25519_public),
+                ik_mlkem768_pub: Some(mlkem768_public),
+                tofu_ed25519_pub: Some(key_bundle.ed25519_pub.clone()),
+                tofu_key_bundle: Some(key_bundle),
+                ..PeerEntry::default()
+            },
+            mark,
+        )
+    }
+
+    fn task0518_copy_count_and_mark(dir: &Path) -> (usize, Option<String>) {
+        let prefs =
+            load_encrypted_json::<SecurityPreferences>(&dir.join(SECURITY_PREFS_FILE)).unwrap();
+        let people = load_people_file(dir).unwrap();
+        let mark = prefs
+            .manual_approved_scope_people
+            .values()
+            .next()
+            .and_then(|person_id| people.people.get(person_id))
+            .map(|metadata| metadata.osl_user_id.clone());
+        (prefs.manual_approved_scope_people.len(), mark)
+    }
+
+    #[test]
+    fn task0258_everywhere_then_nowhere_immediately_controls_protected_message_actions() {
+        let harness = FileBackedSecurityHarness::new("task0258-everywhere-nowhere");
+        let core = HubCoreState::default();
+        install_self_identity(&core);
+        let security = HubSecurityState::default();
+        let (person_id, metadata, peer) = test_friend(58);
+        write_people(harness.path(), &person_id, metadata);
+        install_peer_map(&core, harness.path(), &person_id, peer);
+        write_encrypted_json(
+            &harness.path().join(SECURITY_PREFS_FILE),
+            &SecurityPreferences::default(),
+        )
+        .unwrap();
+
+        let accounts = task0258_accounts();
+        let everywhere = set_hub_friend_account_reach_everywhere(
+            &core,
+            &security,
+            person_id.clone(),
+            accounts.clone(),
+        )
+        .expect("everywhere action succeeds");
+        let after_everywhere = task0258_protected_message_actions(&core, &person_id, &accounts);
+        let everywhere_act = after_everywhere
+            .iter()
+            .filter(|action| **action == "act")
+            .count();
+        let everywhere_skipped = after_everywhere
+            .iter()
+            .filter(|action| **action == "skipped")
+            .count();
+        let everywhere_states = accounts
+            .iter()
+            .zip(after_everywhere.iter())
+            .map(|(account, action)| format!("{}={action}", account.label))
+            .collect::<Vec<_>>()
+            .join("|");
+        println!(
+            "TASK0258 phase=after-everywhere action={} accounts={} act={} skipped={} states={}",
+            everywhere.action,
+            everywhere.accounts.len(),
+            everywhere_act,
+            everywhere_skipped,
+            everywhere_states
+        );
+        assert_eq!(everywhere.action, "everywhere");
+        assert_eq!(everywhere.accounts.len(), 3);
+        assert_eq!(everywhere.changed_count, 3);
+        assert!(everywhere.accounts.iter().all(|account| account.allowed));
+        assert_eq!(everywhere_act, 3);
+        assert_eq!(everywhere_skipped, 0);
+        assert_eq!(after_everywhere, vec!["act", "act", "act"]);
+
+        let nowhere = set_hub_friend_account_reach_nowhere(
+            &core,
+            &security,
+            person_id.clone(),
+            accounts.clone(),
+        )
+        .expect("nowhere action succeeds");
+        let after_nowhere = task0258_protected_message_actions(&core, &person_id, &accounts);
+        let nowhere_act = after_nowhere
+            .iter()
+            .filter(|action| **action == "act")
+            .count();
+        let nowhere_skipped = after_nowhere
+            .iter()
+            .filter(|action| **action == "skipped")
+            .count();
+        let nowhere_states = accounts
+            .iter()
+            .zip(after_nowhere.iter())
+            .map(|(account, action)| format!("{}={action}", account.label))
+            .collect::<Vec<_>>()
+            .join("|");
+        println!(
+            "TASK0258 phase=after-nowhere action={} accounts={} act={} skipped={} states={}",
+            nowhere.action,
+            nowhere.accounts.len(),
+            nowhere_act,
+            nowhere_skipped,
+            nowhere_states
+        );
+        assert_eq!(nowhere.action, "nowhere");
+        assert_eq!(nowhere.accounts.len(), 3);
+        assert_eq!(nowhere.changed_count, 3);
+        assert!(nowhere.accounts.iter().all(|account| !account.allowed));
+        assert_eq!(nowhere_act, 0);
+        assert_eq!(nowhere_skipped, 3);
+        assert_eq!(after_nowhere, vec!["skipped", "skipped", "skipped"]);
+    }
+
+    #[test]
+    fn task0518_hide_other_people_stays_local() {
+        let named_harness = FileBackedSecurityHarness::new("task0518-named-copy");
+        let named_dir = named_harness.path().to_path_buf();
+        let other_dir = fresh_test_dir("task0518-other-copy");
+        let core_named = HubCoreState::default();
+        let core_other = HubCoreState::default();
+        let security = HubSecurityState::default();
+        install_self_identity(&core_named);
+        install_self_identity(&core_other);
+        let (person_id, metadata, peer, mark) = task0518_marked_friend();
+        write_people(&named_dir, &person_id, metadata.clone());
+        write_people(&other_dir, &person_id, metadata);
+        install_peer_map(&core_named, &named_dir, &person_id, peer.clone());
+        install_peer_map(&core_other, &other_dir, &person_id, peer);
+        for dir in [&named_dir, &other_dir] {
+            write_encrypted_json(
+                &dir.join(SECURITY_PREFS_FILE),
+                &SecurityPreferences::default(),
+            )
+            .unwrap();
+        }
+        let accounts = vec![HubFriendDirectAccountDto {
+            service_id: "discord".to_owned(),
+            account_id: "native-discord-task0518".to_owned(),
+            label: "named-recipient-copy-0518".to_owned(),
+        }];
+
+        keystore::set_active_account_dir(Some(named_dir.clone()));
+        set_hub_friend_account_reach_everywhere(
+            &core_named,
+            &security,
+            person_id.clone(),
+            accounts.clone(),
+        )
+        .expect("seed named copy recipient mark");
+        keystore::set_active_account_dir(Some(other_dir.clone()));
+        set_hub_friend_account_reach_everywhere(
+            &core_other,
+            &security,
+            person_id.clone(),
+            accounts.clone(),
+        )
+        .expect("seed other copy recipient mark");
+
+        let (named_before_count, named_before_mark) = task0518_copy_count_and_mark(&named_dir);
+        let (other_before_count, other_before_mark) = task0518_copy_count_and_mark(&other_dir);
+        println!(
+            "TASK0518 before copy=named mark={} count={}",
+            named_before_mark.as_deref().unwrap_or("<missing>"),
+            named_before_count
+        );
+        println!(
+            "TASK0518 before copy=other mark={} count={}",
+            other_before_mark.as_deref().unwrap_or("<missing>"),
+            other_before_count
+        );
+        assert_eq!(named_before_mark.as_deref(), Some(mark.as_str()));
+        assert_eq!(other_before_mark.as_deref(), Some(mark.as_str()));
+        assert_eq!(named_before_count, 1);
+        assert_eq!(other_before_count, 1);
+
+        keystore::set_active_account_dir(Some(named_dir.clone()));
+        let hidden =
+            set_hub_friend_account_reach_nowhere(&core_named, &security, person_id, accounts)
+                .expect("hide-other-people action changes only the named copy");
+        let (named_after_count, named_after_mark) = task0518_copy_count_and_mark(&named_dir);
+        let (other_after_count, other_after_mark) = task0518_copy_count_and_mark(&other_dir);
+        println!(
+            "TASK0518 action=hide-other-people enabled_once=true named_action={} named_changed_count={}",
+            hidden.action, hidden.changed_count
+        );
+        println!(
+            "TASK0518 after copy=named count={} mark_readable={}",
+            named_after_count,
+            named_after_mark.is_some()
+        );
+        println!(
+            "TASK0518 after copy=other count={} mark={} mark_readable={}",
+            other_after_count,
+            other_after_mark.as_deref().unwrap_or("<missing>"),
+            other_after_mark.as_deref() == Some(mark.as_str())
+        );
+        assert_eq!(hidden.action, "nowhere");
+        assert_eq!(hidden.changed_count, 1);
+        assert_eq!(named_after_count, 0);
+        assert!(named_after_mark.is_none());
+        assert_eq!(other_after_count, 1);
+        assert_eq!(other_after_mark.as_deref(), Some(mark.as_str()));
+
+        let _ = std::fs::remove_dir_all(&other_dir);
+    }
+
+    #[test]
+    fn task0259_friend_wide_actions_refuse_zero_accounts() {
+        let (good_harness, good_core, good_security, person_id) =
+            task0259_install_fixture("task0259-one-account");
+        let good_accounts = vec![task0259_account()];
+        let seeded_name = good_accounts
+            .first()
+            .map(|account| account.label.as_str())
+            .unwrap_or("");
+        let before_reach = task0259_reach_count(&good_core, &person_id, &good_accounts);
+        println!(
+            "TASK0259 seed readable={} name={} account-count={} reach-count={}",
+            seeded_name == "OLIVE-0259",
+            seeded_name,
+            good_accounts.len(),
+            before_reach
+        );
+        assert_eq!(seeded_name, "OLIVE-0259");
+        assert_eq!(before_reach, 0);
+
+        let everywhere = set_hub_friend_account_reach_everywhere(
+            &good_core,
+            &good_security,
+            person_id.clone(),
+            good_accounts.clone(),
+        )
+        .expect("one-account everywhere succeeds");
+        let everywhere_names = everywhere
+            .accounts
+            .iter()
+            .map(|account| account.label.as_str())
+            .collect::<Vec<_>>()
+            .join("|");
+        println!(
+            "TASK0259 action={} names={} changed-count={} reach-count={}",
+            everywhere.action,
+            everywhere_names,
+            everywhere.changed_count,
+            task0259_reach_count(&good_core, &person_id, &good_accounts)
+        );
+        assert_eq!(everywhere.action, "everywhere");
+        assert_eq!(everywhere_names, "OLIVE-0259");
+        assert_eq!(everywhere.changed_count, 1);
+        assert_eq!(
+            task0259_reach_count(&good_core, &person_id, &good_accounts),
+            1
+        );
+
+        let nowhere = set_hub_friend_account_reach_nowhere(
+            &good_core,
+            &good_security,
+            person_id.clone(),
+            good_accounts.clone(),
+        )
+        .expect("one-account nowhere succeeds");
+        let nowhere_names = nowhere
+            .accounts
+            .iter()
+            .map(|account| account.label.as_str())
+            .collect::<Vec<_>>()
+            .join("|");
+        let restored_reach = task0259_reach_count(&good_core, &person_id, &good_accounts);
+        println!(
+            "TASK0259 action={} names={} changed-count={} restored-reach-count={}",
+            nowhere.action, nowhere_names, nowhere.changed_count, restored_reach
+        );
+        assert_eq!(nowhere.action, "nowhere");
+        assert_eq!(nowhere_names, "OLIVE-0259");
+        assert_eq!(nowhere.changed_count, 1);
+        assert_eq!(restored_reach, 0);
+
+        write_encrypted_json(
+            &good_harness.path().join(SECURITY_PREFS_FILE),
+            &SecurityPreferences::default(),
+        )
+        .unwrap();
+        let zero_accounts: Vec<HubFriendDirectAccountDto> = Vec::new();
+        println!(
+            "TASK0259 zero-fixture only-changed-field=accounts before-count={} after-count={}",
+            good_accounts.len(),
+            zero_accounts.len()
+        );
+        let zero_before = task0259_total_reach_count(good_harness.path());
+        let zero_everywhere = set_hub_friend_account_reach_everywhere(
+            &good_core,
+            &good_security,
+            person_id.clone(),
+            zero_accounts.clone(),
+        )
+        .expect_err("zero-account everywhere must be refused");
+        let zero_after_everywhere = task0259_total_reach_count(good_harness.path());
+        println!(
+            "TASK0259 zero-account action=everywhere refused-as={} changed-count={} reach-count={}",
+            zero_everywhere,
+            zero_after_everywhere.saturating_sub(zero_before),
+            zero_after_everywhere
+        );
+        assert_eq!(zero_everywhere, "no accounts");
+        assert_eq!(zero_before, 0);
+        assert_eq!(zero_after_everywhere, 0);
+
+        let zero_nowhere = set_hub_friend_account_reach_nowhere(
+            &good_core,
+            &good_security,
+            person_id,
+            zero_accounts,
+        )
+        .expect_err("zero-account nowhere must be refused");
+        let zero_after_nowhere = task0259_total_reach_count(good_harness.path());
+        println!(
+            "TASK0259 zero-account action=nowhere refused-as={} changed-count={} reach-count={}",
+            zero_nowhere,
+            zero_after_nowhere.saturating_sub(zero_after_everywhere),
+            zero_after_nowhere
+        );
+        assert_eq!(zero_nowhere, "no accounts");
+        assert_eq!(zero_after_nowhere, 0);
+
+        let good_final_count = task0259_total_reach_count(good_harness.path());
+        let good_final_name = good_accounts
+            .first()
+            .map(|account| account.label.as_str())
+            .unwrap_or("");
+        println!(
+            "TASK0259 good-fixture final-reach-count={} name={} unchanged={}",
+            good_final_count,
+            good_final_name,
+            good_final_count == 0 && good_final_name == "OLIVE-0259"
+        );
+        assert_eq!(good_final_count, 0);
+        assert_eq!(good_final_name, "OLIVE-0259");
+    }
+
+    #[test]
     fn whitelist_descriptions_do_not_invent_service_or_account_links() {
         assert_eq!(
             whitelist_scope_dto(&WhitelistEntry::Dm {
@@ -9583,6 +10554,10 @@ key"
         let security = HubSecurityState::default();
         let channel_id = "task0530-server-channel";
         let mark = "TASK0530 marked channel message still present";
+    fn task_0531_whole_server_burn_clears_each_server_channel_and_leaves_outside_history() {
+        let harness = FileBackedSecurityHarness::new("task-0531-whole-server-burn");
+        let core = HubCoreState::default();
+        let security = HubSecurityState::default();
         write_encrypted_json(
             &harness.path().join(SECURITY_PREFS_FILE),
             &SecurityPreferences::default(),
@@ -9607,6 +10582,78 @@ key"
             })
             .unwrap();
         *core.osl.message_store.lock().unwrap() = Some(store);
+
+        let history_dir = harness.path().join("history");
+        let history = store::MessageStore::open(&history_dir, &TEST_FILE_KEY)
+            .expect("open task 0531 history store");
+        let random_suffix = lower_hex(&rand::random::<[u8; 32]>());
+        let nonce = format!("{}-{random_suffix}", std::process::id());
+        let server_id = format!("task0531-server-{nonce}");
+        let server_channel_a = format!("task0531-server-channel-a-{nonce}");
+        let server_channel_b = format!("task0531-server-channel-b-{nonce}");
+        let outside_channel = format!("task0531-outside-channel-{nonce}");
+        let server_mark_a = format!("TASK0531_SERVER_A_MARK_{nonce}");
+        let server_mark_b = format!("TASK0531_SERVER_B_MARK_{nonce}");
+        let outside_mark_a = format!("TASK0531_OUTSIDE_A_MARK_{nonce}");
+        let outside_mark_b = format!("TASK0531_OUTSIDE_B_MARK_{nonce}");
+
+        for (message_id, channel_id, mark, at) in [
+            (
+                "task0531-server-a-message",
+                server_channel_a.as_str(),
+                server_mark_a.as_str(),
+                1_900_531_001,
+            ),
+            (
+                "task0531-server-b-message",
+                server_channel_b.as_str(),
+                server_mark_b.as_str(),
+                1_900_531_002,
+            ),
+            (
+                "task0531-outside-a-message",
+                outside_channel.as_str(),
+                outside_mark_a.as_str(),
+                1_900_531_003,
+            ),
+            (
+                "task0531-outside-b-message",
+                outside_channel.as_str(),
+                outside_mark_b.as_str(),
+                1_900_531_004,
+            ),
+        ] {
+            history
+                .put(&store::StoredMessage {
+                    discord_message_id: format!("{message_id}-{nonce}"),
+                    channel_id: channel_id.to_owned(),
+                    sender_discord_id: "task0531-sender".to_owned(),
+                    sender_osl_user_id: "task0531-sender".to_owned(),
+                    plaintext: mark.to_owned(),
+                    decrypted_at: at,
+                    burned: false,
+                })
+                .expect("seed task 0531 message");
+        }
+        *core.osl.message_store.lock().unwrap() = Some(history);
+
+        let read_plaintexts = |channel_id: &str| -> Vec<String> {
+            ipc::commands::cmd_osl_load_channel_history(&core.osl, channel_id.to_owned(), Some(10))
+                .expect("read task 0531 channel history")
+                .into_iter()
+                .map(|message| message.plaintext)
+                .collect()
+        };
+
+        let before_server_a = read_plaintexts(&server_channel_a);
+        let before_server_b = read_plaintexts(&server_channel_b);
+        let before_outside = read_plaintexts(&outside_channel);
+        let before_outside_count = before_outside.len();
+        assert_eq!(before_server_a, vec![server_mark_a.clone()]);
+        assert_eq!(before_server_b, vec![server_mark_b.clone()]);
+        assert!(before_outside.iter().any(|mark| mark == &outside_mark_a));
+        assert!(before_outside.iter().any(|mark| mark == &outside_mark_b));
+        assert_eq!(before_outside_count, 2);
 
         let result = burn_scope(
             &core,
@@ -9640,6 +10687,58 @@ key"
             mark, channel_id
         );
         assert_eq!(result.rows_destroyed, 1);
+            ScopeInput::from(&Scope::server_full(server_id.clone())),
+            vec![server_channel_b.clone(), server_channel_a.clone()],
+            true,
+            Vec::new(),
+        )
+        .expect("whole server burn runs once");
+
+        let after_server_a = read_plaintexts(&server_channel_a);
+        let after_server_b = read_plaintexts(&server_channel_b);
+        let after_outside = read_plaintexts(&outside_channel);
+        let outside_a_readable_after = after_outside.iter().any(|mark| mark == &outside_mark_a);
+        let outside_b_readable_after = after_outside.iter().any(|mark| mark == &outside_mark_b);
+
+        assert_eq!(result.channels_destroyed, 2);
+        assert_eq!(result.rows_destroyed, 2);
+        assert!(after_server_a.is_empty());
+        assert!(after_server_b.is_empty());
+        assert_eq!(after_outside.len(), 2);
+        assert!(outside_a_readable_after);
+        assert!(outside_b_readable_after);
+
+        println!("TASK0531_SERVER_ID={server_id}");
+        println!("TASK0531_SERVER_CHANNEL_A={server_channel_a}");
+        println!("TASK0531_SERVER_CHANNEL_B={server_channel_b}");
+        println!("TASK0531_OUTSIDE_CHANNEL={outside_channel}");
+        println!("TASK0531_BEFORE_SERVER_A_MARK={server_mark_a}");
+        println!("TASK0531_BEFORE_SERVER_B_MARK={server_mark_b}");
+        println!("TASK0531_BEFORE_OUTSIDE_A_MARK={outside_mark_a}");
+        println!("TASK0531_BEFORE_OUTSIDE_B_MARK={outside_mark_b}");
+        println!(
+            "TASK0531_BEFORE_COUNTS server_a={} server_b={} outside={}",
+            before_server_a.len(),
+            before_server_b.len(),
+            before_outside_count
+        );
+        println!(
+            "TASK0531_BURN_ONCE storage_key={} channels_destroyed={} rows_destroyed={}",
+            result.storage_key, result.channels_destroyed, result.rows_destroyed
+        );
+        println!(
+            "TASK0531_AFTER_COUNTS server_a={} server_b={} outside={}",
+            after_server_a.len(),
+            after_server_b.len(),
+            after_outside.len()
+        );
+        println!(
+            "TASK0531_AFTER_OUTSIDE_MARKS outside_a_readable={} outside_a_mark={} outside_b_readable={} outside_b_mark={}",
+            outside_a_readable_after,
+            outside_mark_a,
+            outside_b_readable_after,
+            outside_mark_b
+        );
     }
 
     #[test]

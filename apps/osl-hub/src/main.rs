@@ -9,6 +9,7 @@ use osl_privacy_hub::ai_carrier::{
 };
 use osl_privacy_hub::app_own_names::{AppOwnNameConfirmation, AppOwnNameState};
 use osl_privacy_hub::autoscrub_run::{self, AutoScrubFleetStatus, AutoScrubReviewedRunRequest};
+use osl_privacy_hub::bad_message_rules::BadMessageRuleChoice;
 use osl_privacy_hub::broker::{
     self, DecryptedLocalProtectedMessage, HubBrokerState, HubContextBurnChoice,
     OpenedHubAttachment, OpenedNativeOverlayTextBatch, OpenedPeerProseMessage, PreparedCoreMessage,
@@ -27,6 +28,9 @@ use osl_privacy_hub::browser_profile_scan::{
 };
 use osl_privacy_hub::build_integrity::{
     check_current, verify_peer_build_from_hex, BuildIntegrity, PeerBuildCheck,
+use osl_privacy_hub::build_integrity::{check_current, BuildIntegrity};
+use osl_privacy_hub::burn_review_state::{
+    BurnReviewBackResult, BurnReviewSelection, BurnReviewState,
 };
 use osl_privacy_hub::chat_capture_protection::{
     ChatCaptureProtectionState, ConsentTransition, EffectiveCaptureProtection,
@@ -104,8 +108,12 @@ use osl_privacy_hub::security::{
     WhatsAppWhitelistKind,
     self, AddFriendResult, FriendCodeExport, GroupMemberPermissionRecord, HubRevocationStatusDto,
     HubScopeBurnResult, HubSecurityState, PersonDto, RemoveFriendResult, ScopeSecurityDto,
+    self, AddFriendResult, FriendCodeExport, FriendFutureAccountAutoWhitelistDto,
+    HubRevocationStatusDto, HubScopeBurnResult, HubSecurityState, PersonDto, RemoveFriendResult,
+    ScopeSecurityDto,
 };
 use osl_privacy_hub::security_credentials::{self, HubPasswordRoleStatus};
+use osl_privacy_hub::server_records::{NamedServerRecord, NamedServerRegistryState};
 use osl_privacy_hub::service_host::{self, ActiveServiceHost, ServiceHostState};
 use osl_privacy_hub::service_scope_index::{ImmutableServiceBurnManifest, ServiceScopeIndexState};
 use osl_privacy_hub::services::{ScrubAccountDescriptor, ServiceRegistryState};
@@ -229,6 +237,7 @@ use osl_privacy_hub::hub_command_surface::{
     read_icloud_mailbox_pages_for_scrub_with_driver,
     read_protected_email_live_run_progress_with_driver,
     read_protected_email_open_message_with_driver, read_proton_mailbox_for_scrub_with_driver,
+    create_hub_named_server_for_chats, list_hub_named_servers_for_chats,
     require_native_discord_product_send_authority,
     require_review_ui_identity_binding_from_verifier, service_kind_id, service_terms_address,
     start_autoscrub_reviewed_run_after_review_ui_binding, start_autoscrub_reviewed_run_checked,
@@ -742,6 +751,25 @@ fn continue_discord_scrub_after_risk_agreement(
 ) -> Result<DiscordScrubRiskAgreementRead, String> {
     let owner = active_unlocked_osl_user_id(&core)?;
     continue_discord_scrub_after_risk_agreement_command(&state, &owner)
+fn save_burn_review_state(
+    state: State<'_, BurnReviewState>,
+    selected_scope: String,
+    selected_chat: String,
+    hide_other_people: bool,
+) -> Result<BurnReviewSelection, String> {
+    state.save_command(selected_scope, selected_chat, hide_other_people)
+}
+
+#[tauri::command]
+fn get_burn_review_state(
+    state: State<'_, BurnReviewState>,
+) -> Result<Option<BurnReviewSelection>, String> {
+    state.get_command()
+}
+
+#[tauri::command]
+fn back_burn_review(state: State<'_, BurnReviewState>) -> Result<BurnReviewBackResult, String> {
+    state.back_command()
 }
 
 /// Persist the explicit connection route selected during onboarding.
@@ -754,6 +782,19 @@ fn set_tor_preference(
     preference: TorPreference,
 ) -> Result<TorPreference, String> {
     state.set_preference(preference)
+}
+
+#[tauri::command]
+fn get_follow_active_app_choice(core: State<'_, HubCoreState>) -> Result<String, String> {
+    ipc::commands::cmd_osl_get_follow_active_app_choice(&core.osl)
+}
+
+#[tauri::command]
+fn set_follow_active_app_choice(
+    core: State<'_, HubCoreState>,
+    value: String,
+) -> Result<String, String> {
+    ipc::commands::cmd_osl_set_follow_active_app_choice(&core.osl, &value, None)
 }
 
 #[tauri::command]
@@ -1328,6 +1369,27 @@ async fn correct_connected_app_own_names(
     let _session = session.transition.lock().await;
     let owner = active_unlocked_osl_user_id(&core)?;
     state.correction_for_person(&owner, service_id, &account_id, corrected_names)
+async fn create_hub_named_server(
+    state: State<'_, NamedServerRegistryState>,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    name: String,
+    member_osl_user_ids: Vec<String>,
+) -> Result<NamedServerRecord, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    create_hub_named_server_for_chats(&state, &owner, name, member_osl_user_ids)
+}
+
+#[tauri::command]
+async fn list_hub_named_servers(
+    state: State<'_, NamedServerRegistryState>,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<Vec<NamedServerRecord>, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    list_hub_named_servers_for_chats(&state, &owner)
 }
 
 #[tauri::command]
@@ -5961,6 +6023,7 @@ fn with_indexed_context_write<T>(
 #[tauri::command]
 async fn create_service_account(
     core: State<'_, HubCoreState>,
+    security_state: State<'_, HubSecurityState>,
     registry: State<'_, ServiceRegistryState>,
     index: State<'_, ServiceScopeIndexState>,
     security_state: State<'_, HubSecurityState>,
@@ -5984,6 +6047,7 @@ async fn create_service_account(
         return Err(error);
     }
     security::auto_whitelist_new_account_if_enabled(&core, &security_state, service, &account.id)?;
+    security::apply_future_account_auto_whitelist(&core, &security_state, service, &account.id)?;
     Ok(account)
 }
 
@@ -7063,6 +7127,23 @@ async fn compare_allowed_place_direction_state(
 #[tauri::command]
 fn list_whatsapp_whitelist_kinds() -> Vec<WhatsAppWhitelistKind> {
     security::list_whatsapp_whitelist_kinds()
+async fn get_hub_friend_future_account_auto_whitelist(
+    session: State<'_, HubAccountSessionState>,
+    person_id: String,
+) -> Result<FriendFutureAccountAutoWhitelistDto, String> {
+    let _session = session.transition.lock().await;
+    security::query_friend_future_account_auto_whitelist(person_id)
+}
+
+#[tauri::command]
+async fn set_hub_friend_future_account_auto_whitelist(
+    security_state: State<'_, HubSecurityState>,
+    session: State<'_, HubAccountSessionState>,
+    person_id: String,
+    enabled: bool,
+) -> Result<FriendFutureAccountAutoWhitelistDto, String> {
+    let _session = session.transition.lock().await;
+    security::set_friend_future_account_auto_whitelist(&security_state, person_id, enabled)
 }
 
 #[tauri::command]
@@ -10257,6 +10338,8 @@ fn installed_build_version_record(
 #[tauri::command]
 fn verify_peer_build_integrity(peer_exe_sha256: String) -> Result<PeerBuildCheck, String> {
     verify_peer_build_from_hex(&peer_exe_sha256)
+fn list_bad_message_rules() -> Vec<BadMessageRuleChoice> {
+    osl_privacy_hub::bad_message_rules::list_bad_message_rules()
 }
 
 macro_rules! hub_tauri_generate_handler {
@@ -10344,6 +10427,35 @@ fn main() {
         osl_privacy_hub::allowed_place_commands::run_allowed_place_cli_from_env()
     {
         std::process::exit(exit_code);
+    #[cfg(feature = "core")]
+    if std::env::args_os()
+        .any(|arg| arg == std::ffi::OsStr::new(cleanup::WINDOWS_REMOVE_PROGRAM_UNINSTALL_ARG))
+    {
+        match cleanup::execute_windows_remove_program_uninstall_from_env() {
+            Ok(report) if report.local_cleanup_complete => {
+                println!(
+                    "OSL uninstall step {} complete: removed_targets={} failed_targets=0",
+                    cleanup::WINDOWS_REMOVE_PROGRAM_UNINSTALL_STEP,
+                    report.removed_targets.len()
+                );
+                std::process::exit(0);
+            }
+            Ok(report) => {
+                eprintln!(
+                    "OSL uninstall step {} incomplete: failed_targets={:?}",
+                    cleanup::WINDOWS_REMOVE_PROGRAM_UNINSTALL_STEP,
+                    report.failed_targets
+                );
+                std::process::exit(1);
+            }
+            Err(error) => {
+                eprintln!(
+                    "OSL uninstall step {} failed: {error}",
+                    cleanup::WINDOWS_REMOVE_PROGRAM_UNINSTALL_STEP
+                );
+                std::process::exit(1);
+            }
+        }
     }
 
     #[cfg(feature = "discord-qa-shell")]
@@ -10615,6 +10727,10 @@ fn main() {
             config_dir.join("preview-preferences.json"),
         ));
         startup_breadcrumb("setup_step_14_preview_state_managed"); // STARTUP-TRACE
+        app.manage(BurnReviewState::load(
+            config_dir.join("burn-review-state.json"),
+        ));
+        startup_breadcrumb("setup_step_14b_burn_review_state_managed"); // STARTUP-TRACE
         app.manage(TorPreferenceState::load_with_arti_proxy_config(
             config_dir.join("tor-preference.json"),
             osl_privacy_hub::tor_pref::arti_proxy_config_from_env(),
@@ -10624,6 +10740,9 @@ fn main() {
         ));
         startup_breadcrumb("setup_step_15_service_registry_state_managed"); // STARTUP-TRACE
         app.manage(AppOwnNameState::load(config_dir.join("app-own-names.json")));
+        app.manage(NamedServerRegistryState::load(
+            config_dir.join("server-records.json"),
+        ));
         app.manage(ServiceScopeIndexState::load(
             config_dir.join("service-scope-index.json"),
         ));
@@ -10808,11 +10927,20 @@ fn main() {
         qa_selftest::spawn_trigger_watcher(app.handle().clone());
         #[cfg(feature = "discord-qa-shell")]
         startup_breadcrumb("setup_step_46_qa_selftest_watcher_spawned"); // STARTUP-TRACE
+        update_apply::recover_interrupted_update_before_start_at(
+            &config_dir,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| "OSL update recovery clock is unavailable".to_owned())?
+                .as_secs(),
+        )?;
+        startup_breadcrumb("setup_step_47_update_apply_recovered"); // STARTUP-TRACE
         update_apply::mark_update_finished_after_successful_start(
             &config_dir,
             &app.package_info().version.to_string(),
         )?;
         startup_breadcrumb("setup_step_47_update_apply_marked"); // STARTUP-TRACE
+        startup_breadcrumb("setup_step_48_update_apply_marked"); // STARTUP-TRACE
         startup_breadcrumb("setup_done"); // STARTUP-TRACE
         Ok(())
     });
@@ -11683,6 +11811,15 @@ mod tauri_command_acl_tests {
     #[test]
     fn scr_g1_erasure_composition_is_registered_on_the_shipping_command_surface() {
         assert_registered_and_acl_granted(&["compose_scrub_erasure_request"]);
+    }
+
+    #[test]
+    fn burn_review_state_commands_are_registered_and_acl_granted() {
+        assert_registered_and_acl_granted(&[
+            "save_burn_review_state",
+            "get_burn_review_state",
+            "back_burn_review",
+        ]);
     }
 
     #[test]

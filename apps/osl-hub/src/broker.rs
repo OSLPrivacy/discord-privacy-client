@@ -1518,6 +1518,32 @@ pub struct OpenedNativeOverlayText {
     pub expires_at: i64,
 }
 
+#[cfg(test)]
+impl OpenedNativeOverlayText {
+    pub(crate) fn test_fixture(
+        message_id: &str,
+        cover_pointer: Option<&str>,
+        plaintext: &str,
+        context_verified: bool,
+        person_to_person_e2ee: bool,
+        view_once_consumed: bool,
+        created_at: i64,
+        expires_at: i64,
+    ) -> Self {
+        Self {
+            message_id: message_id.to_owned(),
+            sender_order: None,
+            cover_pointer: cover_pointer.map(str::to_owned),
+            plaintext: plaintext.to_owned(),
+            context_verified,
+            person_to_person_e2ee,
+            view_once_consumed,
+            created_at,
+            expires_at,
+        }
+    }
+}
+
 /// A single-device protected capsule. This is intentionally not described as
 /// person-to-person E2EE: the current identity encrypts to its own X25519 key
 /// and the context-bound ledger is local to this OSL Privacy identity.
@@ -6269,6 +6295,7 @@ fn begin_peer_attachment(
     }
     let tier = active_attachment_account_tier(core)?;
     if crate::attachment_limits::check_attachment_size(plaintext_size, tier).is_err() {
+    if crate::attachment_limits::check_attachment_request(plaintext_size, 1, tier).is_err() {
         return Err(ERROR.to_owned());
     }
     let ttl_seconds = security::scope_security(manual.scope.clone())
@@ -10636,6 +10663,52 @@ mod tests {
 
         assert!(receipt.ratchet_wire_in_enabled);
         assert!(!receipt.startup_blockers.contains(&"rn_wire_in_disabled"));
+    }
+
+    #[test]
+    fn task0713_prepared_protected_message_plan_reports_saved_policy_state() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
+        ipc::main_password::set_file_storage_key(None);
+        keystore::set_active_account_dir(None);
+        keystore::set_base_dir_override(Some(dir.path().to_path_buf()));
+        let _guard = KeystoreGlobalsGuard;
+        let prefs = ipc::app_preferences::AppPreferences {
+            version: ipc::app_preferences::APP_PREFERENCES_VERSION,
+            rn_wire_policy_requested: true,
+            ..ipc::app_preferences::AppPreferences::default()
+        };
+        ipc::app_preferences::write_app_preferences(
+            &dir.path().join("app_preferences.json"),
+            &prefs,
+        )
+        .expect("write saved next-generation message policy");
+
+        let core = HubCoreState::default();
+        assert!(
+            !core.osl.rn_wire_in_enabled(),
+            "fresh core must start from the forced-off default before saved preferences load"
+        );
+        let report = ipc::state_reload::reload_encrypted_state_after_unlock(&core.osl, dir.path())
+            .expect("reload saved app preferences");
+        let plan = discord_qa_b6_preflight(&core);
+
+        let blocker_state = if plan.startup_blockers.contains(&"rn_wire_in_disabled") {
+            "present"
+        } else {
+            "absent"
+        };
+        println!(
+            "TASK0713 prepared_protected_message_plan saved_policy_state={} app_prefs_loaded={} ratchet_wire_in_enabled={} rn_wire_in_disabled_blocker={}",
+            if prefs.rn_wire_policy_requested { "on" } else { "off" },
+            report.app_prefs_loaded,
+            plan.ratchet_wire_in_enabled,
+            blocker_state
+        );
+
+        assert!(report.app_prefs_loaded);
+        assert!(plan.ratchet_wire_in_enabled);
+        assert_eq!(blocker_state, "absent");
     }
 
     #[test]

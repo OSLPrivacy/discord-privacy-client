@@ -1042,3 +1042,53 @@ identifier = "allow-check-hub-recovery-words"
 description = "Allow only the trusted main OSL window to verify selected 1-based password-recovery phrase words against their positions, after the owner's current main password is supplied and verified."
 commands.allow = ["check_hub_recovery_words"]
 
+[[permission]]
+identifier = "allow-list-bad-message-rules"
+description = "List the six static bad-message rule choices and plain explanations; it accepts no input and reads no messages, files, accounts, credentials, or network data."
+commands.allow = ["list_bad_message_rules"]
+
+[[permission]]
+identifier = "allow-save-burn-review-state"
+description = "Persist only the local burn review choices the trusted Hub UI is currently displaying."
+commands.allow = ["save_burn_review_state"]
+
+[[permission]]
+identifier = "allow-get-burn-review-state"
+description = "Read the current local burn review choices without issuing a burn."
+commands.allow = ["get_burn_review_state"]
+
+[[permission]]
+identifier = "allow-back-burn-review"
+description = "Discard the local burn review choices and return cancelled without local or remote burn authority."
+commands.allow = ["back_burn_review"]
+
+[[permission]]
+identifier = "allow-get-follow-active-app-choice"
+description = "Read the local on/off choice for whether the trusted OSL window follows whichever app is in front."
+commands.allow = ["get_follow_active_app_choice"]
+
+[[permission]]
+identifier = "allow-set-follow-active-app-choice"
+description = "Persist only the explicit on/off choice for whether the trusted OSL window follows whichever app is in front."
+commands.allow = ["set_follow_active_app_choice"]
+
+[[permission]]
+identifier = "allow-create-hub-named-server"
+description = "Create one owner-bound named launch server record with explicit member identifiers."
+commands.allow = ["create_hub_named_server"]
+
+[[permission]]
+identifier = "allow-list-hub-named-servers"
+description = "Read owner-bound named launch server records for the active OSL identity."
+commands.allow = ["list_hub_named_servers"]
+
+[[permission]]
+identifier = "allow-get-hub-friend-future-account-auto-whitelist"
+description = "Read one friend's encrypted local preference for automatically allowing accounts added later."
+commands.allow = ["get_hub_friend_future_account_auto_whitelist"]
+
+[[permission]]
+identifier = "allow-set-hub-friend-future-account-auto-whitelist"
+description = "Set one friend's encrypted local preference for automatically allowing accounts added later."
+commands.allow = ["set_hub_friend_future_account_auto_whitelist"]
+

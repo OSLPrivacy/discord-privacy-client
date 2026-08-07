@@ -25,6 +25,38 @@ use crate::group_send::{
     OSL_RESULT_RECOVERY_IGNORED,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProtectedPlaceAction {
+    Read,
+    Show,
+    Type,
+    Send,
+    Scrub,
+}
+
+impl ProtectedPlaceAction {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Show => "show",
+            Self::Type => "type",
+            Self::Send => "send",
+            Self::Scrub => "scrub",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AllowedPlaceDirectionStateDto {
+    pub saved_directions: u8,
+    pub whitelist_state: String,
+    pub verification_state: String,
+    pub first_to_second: bool,
+    pub second_to_first: bool,
+}
+
 // 9-TD2.3: F0-FIX3 trace logs.
 //
 // Set the `OSL_TRACE` env var (any value) to surface the snowflake
@@ -74,6 +106,96 @@ fn guard_session_on_command_entry(state: &AppState) -> Result<(), String> {
     }
     record_activity_on_command_entry();
     Ok(())
+}
+
+pub fn cmd_osl_trace_allowed_place_protected_message_path(
+    app_data_dir: PathBuf,
+    action: ProtectedPlaceAction,
+    place: crate::allowed_places::AllowedPlaceRecord,
+) -> Result<Vec<String>, String> {
+    let mut trace = vec![format!(
+        "TASK0120 command trace action={} stable_id={}",
+        action.as_str(),
+        place.stable_id
+    )];
+    crate::allowed_places::require_allowed_place_record(&app_data_dir, &place)
+        .map_err(|e| format!("OSL: allowed-place check refused: {e}"))?;
+    trace.push(format!(
+        "TASK0120 allowed-place check=allowed app={} account={} kind={} stable_id={}",
+        place.app, place.account, place.kind, place.stable_id
+    ));
+    trace.push(format!(
+        "TASK0120 protected-message path reached action={} stable_id={}",
+        action.as_str(),
+        place.stable_id
+    ));
+    Ok(trace)
+}
+
+pub fn compare_allowed_place_direction_state(
+    app_data_dir: PathBuf,
+    first_to_second_place: crate::allowed_places::AllowedPlaceRecord,
+    second_to_first_place: crate::allowed_places::AllowedPlaceRecord,
+) -> Result<AllowedPlaceDirectionStateDto, String> {
+    let first_to_second =
+        crate::allowed_places::is_allowed_place_record(&app_data_dir, &first_to_second_place)
+            .map_err(|e| format!("OSL: allowed-place direction check failed: {e}"))?;
+    let second_to_first =
+        crate::allowed_places::is_allowed_place_record(&app_data_dir, &second_to_first_place)
+            .map_err(|e| format!("OSL: allowed-place direction check failed: {e}"))?;
+    let saved_directions = u8::from(first_to_second) + u8::from(second_to_first);
+    let whitelist_state = match saved_directions {
+        2 => "two-way",
+        1 => "one-way",
+        _ => "none",
+    };
+    let verification_state = if saved_directions == 2 {
+        "visible"
+    } else {
+        "hidden"
+    };
+
+    Ok(AllowedPlaceDirectionStateDto {
+        saved_directions,
+        whitelist_state: whitelist_state.to_string(),
+        verification_state: verification_state.to_string(),
+        first_to_second,
+        second_to_first,
+    })
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WhitelistRuleLookupDto {
+    pub conversation_id: String,
+    pub result: String,
+}
+
+pub fn cmd_osl_save_whitelist_rules(
+    app_data_dir: PathBuf,
+    allowed_conversations: Vec<String>,
+    newly_found_conversation_rule: String,
+) -> Result<(), String> {
+    let rule = crate::whitelist_rules_store::NewlyFoundConversationRule::try_from(
+        newly_found_conversation_rule.as_str(),
+    )
+    .map_err(|e| format!("OSL: whitelist rules save failed: {e}"))?;
+    let rules = crate::whitelist_rules_store::WhitelistRulesFile::new(allowed_conversations, rule);
+    crate::whitelist_rules_store::save_whitelist_rules(app_data_dir, &rules)
+        .map_err(|e| format!("OSL: whitelist rules save failed: {e}"))
+}
+
+pub fn cmd_osl_lookup_whitelist_rule(
+    app_data_dir: PathBuf,
+    conversation_id: String,
+) -> Result<WhitelistRuleLookupDto, String> {
+    let decision =
+        crate::whitelist_rules_store::lookup_whitelist_rule(&app_data_dir, &conversation_id)
+            .map_err(|e| format!("OSL: whitelist rules lookup failed: {e}"))?;
+    Ok(WhitelistRuleLookupDto {
+        conversation_id,
+        result: decision.as_str().to_string(),
+    })
 }
 
 /// Manual "Lock now": drop every live secret immediately, without waiting for
@@ -219,11 +341,84 @@ mod command_activity_tests {
         assert_command_marks_activity("cmd_osl_get_app_preferences", || {
             let _ = cmd_osl_get_app_preferences(&state);
         });
+        assert_command_marks_activity("cmd_osl_save_privacy_level_rule_set", || {
+            let _ = cmd_osl_save_privacy_level_rule_set(&state, "balanced".to_owned(), None);
+        });
+        assert_command_marks_activity("cmd_osl_read_privacy_level_rule_set", || {
+            let _ = cmd_osl_read_privacy_level_rule_set(&state, "balanced".to_owned());
+        });
+        assert_command_marks_activity("cmd_osl_read_privacy_protection_choices", || {
+            let _ = cmd_osl_read_privacy_protection_choices(&state);
+        });
+        assert_command_marks_activity("cmd_osl_save_verification_warning_choice", || {
+            let _ =
+                cmd_osl_save_verification_warning_choice(&state, "before sending".to_owned(), None);
+        });
+        assert_command_marks_activity("cmd_osl_read_verification_warning_choice", || {
+            let _ = cmd_osl_read_verification_warning_choice(&state);
+        });
+        assert_command_marks_activity("cmd_osl_check_verification_warning_on_opening", || {
+            let _ = cmd_osl_check_verification_warning_on_opening(
+                &state,
+                "activity-opening".to_owned(),
+                false,
+            );
+        });
+        assert_command_marks_activity("cmd_osl_check_verification_warning_before_sending", || {
+            let _ = cmd_osl_check_verification_warning_before_sending(
+                &state,
+                "activity-sending".to_owned(),
+                false,
+            );
+        });
+        assert_command_marks_activity("cmd_osl_home_protection_summary", || {
+            let _ = cmd_osl_home_protection_summary(&state, None);
+        });
+        assert_command_marks_activity("cmd_osl_get_follow_active_app_choice", || {
+            let _ = cmd_osl_get_follow_active_app_choice(&state);
+        });
+        assert_command_marks_activity("cmd_osl_set_follow_active_app_choice", || {
+            let _ = cmd_osl_set_follow_active_app_choice(&state, "on", None);
+        });
         assert_command_marks_activity("cmd_osl_get_start_with_windows_choice", || {
             let _ = cmd_osl_get_start_with_windows_choice(&state);
         });
         assert_command_marks_activity("cmd_osl_save_start_with_windows_choice", || {
             let _ = cmd_osl_save_start_with_windows_choice(&state, "on".to_owned(), None);
+        });
+        assert_command_marks_activity("cmd_osl_reset_start_with_windows_choice", || {
+            let _ = cmd_osl_reset_start_with_windows_choice(&state, None);
+        });
+        assert_command_marks_activity("cmd_osl_read_idle_lock_time_choice", || {
+            let _ = cmd_osl_read_idle_lock_time_choice(&state);
+        });
+        assert_command_marks_activity("cmd_osl_save_idle_lock_time_choice", || {
+            let _ = cmd_osl_save_idle_lock_time_choice(&state, "never".to_owned(), None);
+        });
+        assert_command_marks_activity("cmd_osl_reset_idle_lock_time_choice", || {
+            let _ = cmd_osl_reset_idle_lock_time_choice(&state, None);
+        });
+        assert_command_marks_activity("cmd_osl_get_ask_before_irreversible_actions_choice", || {
+            let _ = cmd_osl_get_ask_before_irreversible_actions_choice(&state);
+        });
+        assert_command_marks_activity("cmd_osl_set_ask_before_irreversible_actions_choice", || {
+            let _ =
+                cmd_osl_set_ask_before_irreversible_actions_choice(&state, "off".to_owned(), None);
+        });
+        assert_command_marks_activity(
+            "cmd_osl_reset_ask_before_irreversible_actions_choice",
+            || {
+                let _ = cmd_osl_reset_ask_before_irreversible_actions_choice(&state, None);
+            },
+        );
+        assert_command_marks_activity("cmd_osl_read_alert_mode_choice", || {
+            let _ = cmd_osl_read_alert_mode_choice(&state);
+        });
+        assert_command_marks_activity("cmd_osl_save_alert_mode_choice", || {
+            let _ = cmd_osl_save_alert_mode_choice(&state, "quiet".to_owned(), None);
+        });
+        assert_command_marks_activity("cmd_osl_reset_alert_mode_choice", || {
+            let _ = cmd_osl_reset_alert_mode_choice(&state, None);
         });
         assert_command_marks_activity("cmd_osl_get_language_choice", || {
             let _ = cmd_osl_get_language_choice(&state);
@@ -236,6 +431,14 @@ mod command_activity_tests {
         });
         assert_command_marks_activity("cmd_osl_check_message_timer_before_send", || {
             let _ = cmd_osl_check_message_timer_before_send(&state, "Discord".to_owned(), 60);
+        assert_command_marks_activity("cmd_osl_reset_language_choice", || {
+            let _ = cmd_osl_reset_language_choice(&state, None);
+        });
+        assert_command_marks_activity("cmd_osl_read_screen_words", || {
+            let _ = cmd_osl_read_screen_words(&state, "welcome".to_owned());
+        });
+        assert_command_marks_activity("cmd_osl_reset_follow_active_app_choice", || {
+            let _ = cmd_osl_reset_follow_active_app_choice(&state, None);
         });
         assert_command_marks_activity("cmd_osl_get_self_user_id", || {
             let _ = cmd_osl_get_self_user_id(&state);
@@ -18942,6 +19145,8 @@ pub struct AppPreferencesDto {
     pub stego_mode: crate::app_preferences::StegoMode,
     #[serde(default)]
     pub message_defaults: crate::app_preferences::MessageDefaults,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rn_wire_policy_requested: Option<bool>,
 }
 
 pub fn cmd_osl_get_app_preferences(state: &AppState) -> Result<AppPreferencesDto, String> {
@@ -18953,6 +19158,7 @@ pub fn cmd_osl_get_app_preferences(state: &AppState) -> Result<AppPreferencesDto
     Ok(AppPreferencesDto {
         stego_mode: g.stego_mode,
         message_defaults: g.message_defaults.clone(),
+        rn_wire_policy_requested: Some(g.rn_wire_policy_requested),
     })
 }
 
@@ -18970,6 +19176,12 @@ pub fn cmd_osl_set_app_preferences(
         g.version = crate::app_preferences::APP_PREFERENCES_VERSION;
         g.stego_mode = dto.stego_mode;
         g.message_defaults = dto.message_defaults;
+        if let Some(requested) = dto.rn_wire_policy_requested {
+            g.rn_wire_policy_requested = requested;
+        }
+    }
+    if let Some(requested) = dto.rn_wire_policy_requested {
+        state.set_rn_wire_in_enabled(requested);
     }
     if let Some(dir) = config_dir {
         let g = state
@@ -19072,6 +19284,412 @@ pub struct WhatsAppAutoWhitelistRuleDto {
     pub auto_rule_app_kind: String,
     pub allowed_place: crate::allowed_places::AllowedPlaceRecord,
     pub choice: String,
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NewPlaceAllowRequestDto {
+    pub request_id: String,
+    pub choice_required: bool,
+    pub allowed_choices: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NewPlaceDecisionDto {
+    pub status: String,
+    pub rule: String,
+    pub prompt: bool,
+    pub allow_request: Option<NewPlaceAllowRequestDto>,
+    pub place: crate::allowed_places::AllowedPlaceRecord,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PrivacyLevelRuleSetDto {
+    pub level: String,
+    pub label: String,
+    pub before_send_warnings: bool,
+    pub attachment_cleaning: bool,
+    pub cleanup_review_days: u16,
+    pub public_post_checks: bool,
+    pub vpn_required_actions: bool,
+    pub protected_contacts_required: bool,
+}
+
+impl PrivacyLevelRuleSetDto {
+    fn from_parts(
+        level: crate::app_preferences::PrivacyLevel,
+        rules: crate::app_preferences::PrivacyLevelRuleSet,
+    ) -> Self {
+        Self {
+            level: level.id().to_string(),
+            label: level.label().to_string(),
+            before_send_warnings: rules.before_send_warnings,
+            attachment_cleaning: rules.attachment_cleaning,
+            cleanup_review_days: rules.cleanup_review_days,
+            public_post_checks: rules.public_post_checks,
+            vpn_required_actions: rules.vpn_required_actions,
+            protected_contacts_required: rules.protected_contacts_required,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PrivacyProtectionChoicesDto {
+    pub level: String,
+    pub label: String,
+    pub warnings: String,
+    pub cleanup: String,
+    pub app_exceptions: String,
+    pub contact_rules: String,
+}
+
+impl PrivacyProtectionChoicesDto {
+    fn from_parts(
+        level: crate::app_preferences::PrivacyLevel,
+        rules: crate::app_preferences::PrivacyLevelRuleSet,
+    ) -> Self {
+        let warnings = match (rules.before_send_warnings, rules.public_post_checks) {
+            (false, false) => "warnings_off",
+            (true, false) => "before_send_warnings",
+            (false, true) => "public_post_warnings",
+            (true, true) => "before_send_and_public_post_warnings",
+        };
+        let cleanup = match (rules.attachment_cleaning, rules.cleanup_review_days) {
+            (false, 0) => "cleanup_off".to_string(),
+            (false, days) => format!("cleanup_review_{days}_days"),
+            (true, days) => format!("attachment_cleaning_plus_{days}_day_review"),
+        };
+        let app_exceptions = if rules.public_post_checks || rules.vpn_required_actions {
+            "app_exceptions_restricted"
+        } else if rules.before_send_warnings
+            || rules.attachment_cleaning
+            || rules.cleanup_review_days > 0
+        {
+            "app_exceptions_reviewed"
+        } else {
+            "app_exceptions_allowed"
+        };
+        let contact_rules = if rules.protected_contacts_required {
+            "protected_contacts_required"
+        } else if rules.before_send_warnings
+            || rules.attachment_cleaning
+            || rules.cleanup_review_days > 0
+        {
+            "verified_contacts_suggested"
+        } else {
+            "contacts_optional"
+        };
+
+        Self {
+            level: level.id().to_string(),
+            label: level.label().to_string(),
+            warnings: warnings.to_string(),
+            cleanup,
+            app_exceptions: app_exceptions.to_string(),
+            contact_rules: contact_rules.to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VerificationWarningChoiceDto {
+    pub choice: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VerificationWarningCheckDto {
+    pub conversation_id: String,
+    pub choice: String,
+    pub check: String,
+    pub warning_point: String,
+    pub should_warn: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HomeProtectionSummaryDto {
+    pub protection_state: String,
+    pub privacy_level: String,
+    pub protection_choices: PrivacyProtectionChoicesDto,
+    pub verification_warning: String,
+    pub trusted_people_count: usize,
+    pub trusted_people: String,
+    pub connected_app_count: usize,
+    pub allowed_place_count: usize,
+    pub apps: String,
+    pub next_safe_step: String,
+}
+
+fn saved_privacy_level_and_rules(
+    state: &AppState,
+) -> (
+    crate::app_preferences::PrivacyLevel,
+    crate::app_preferences::PrivacyLevelRuleSet,
+) {
+    let prefs = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned");
+    let level = prefs.privacy_level;
+    let rules = prefs
+        .privacy_level_rule_sets
+        .get(level.id())
+        .copied()
+        .unwrap_or_else(|| crate::app_preferences::PrivacyLevelRuleSet::for_level(level));
+    (level, rules)
+}
+
+pub fn cmd_osl_save_privacy_level_rule_set(
+    state: &AppState,
+    level: String,
+    config_dir: Option<PathBuf>,
+) -> Result<PrivacyLevelRuleSetDto, String> {
+    record_activity_on_command_entry();
+    let level = crate::app_preferences::parse_privacy_level(&level)?;
+    let rules = crate::app_preferences::PrivacyLevelRuleSet::for_level(level);
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs.privacy_level = level;
+        prefs
+            .privacy_level_rule_sets
+            .insert(level.id().to_string(), rules);
+        if let Some(dir) = config_dir {
+            let path = dir.join("app_preferences.json");
+            crate::app_preferences::write_app_preferences(&path, &prefs)?;
+        }
+    }
+    Ok(PrivacyLevelRuleSetDto::from_parts(level, rules))
+}
+
+pub fn cmd_osl_read_privacy_level_rule_set(
+    state: &AppState,
+    level: String,
+) -> Result<PrivacyLevelRuleSetDto, String> {
+    record_activity_on_command_entry();
+    let level = crate::app_preferences::parse_privacy_level(&level)?;
+    let rules = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .privacy_level_rule_sets
+        .get(level.id())
+        .copied()
+        .unwrap_or_else(|| crate::app_preferences::PrivacyLevelRuleSet::for_level(level));
+    Ok(PrivacyLevelRuleSetDto::from_parts(level, rules))
+}
+
+pub fn cmd_osl_read_privacy_protection_choices(
+    state: &AppState,
+) -> Result<PrivacyProtectionChoicesDto, String> {
+    record_activity_on_command_entry();
+    let (level, rules) = saved_privacy_level_and_rules(state);
+    Ok(PrivacyProtectionChoicesDto::from_parts(level, rules))
+}
+
+pub fn cmd_osl_save_verification_warning_choice(
+    state: &AppState,
+    choice: String,
+    config_dir: Option<PathBuf>,
+) -> Result<VerificationWarningChoiceDto, String> {
+    record_activity_on_command_entry();
+    let choice = crate::app_preferences::parse_verification_warning_choice(&choice)?;
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs.verification_warning = choice;
+        if let Some(dir) = config_dir {
+            let path = dir.join("app_preferences.json");
+            crate::app_preferences::write_app_preferences(&path, &prefs)?;
+        }
+    }
+    Ok(VerificationWarningChoiceDto {
+        choice: choice.label().to_string(),
+    })
+}
+
+pub fn cmd_osl_read_verification_warning_choice(
+    state: &AppState,
+) -> Result<VerificationWarningChoiceDto, String> {
+    record_activity_on_command_entry();
+    let choice = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .verification_warning;
+    Ok(VerificationWarningChoiceDto {
+        choice: choice.label().to_string(),
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VerificationWarningCheck {
+    Opening,
+    Sending,
+}
+
+impl VerificationWarningCheck {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Opening => "opening",
+            Self::Sending => "sending",
+        }
+    }
+}
+
+pub fn cmd_osl_check_verification_warning_on_opening(
+    state: &AppState,
+    conversation_id: String,
+    verified: bool,
+) -> Result<VerificationWarningCheckDto, String> {
+    record_activity_on_command_entry();
+    verification_warning_check(
+        state,
+        conversation_id,
+        verified,
+        VerificationWarningCheck::Opening,
+    )
+}
+
+pub fn cmd_osl_check_verification_warning_before_sending(
+    state: &AppState,
+    conversation_id: String,
+    verified: bool,
+) -> Result<VerificationWarningCheckDto, String> {
+    record_activity_on_command_entry();
+    verification_warning_check(
+        state,
+        conversation_id,
+        verified,
+        VerificationWarningCheck::Sending,
+    )
+}
+
+fn verification_warning_check(
+    state: &AppState,
+    conversation_id: String,
+    verified: bool,
+    check: VerificationWarningCheck,
+) -> Result<VerificationWarningCheckDto, String> {
+    let conversation_id = normalize_verification_warning_conversation_id(conversation_id)?;
+    let choice = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .verification_warning;
+    let should_warn = if verified {
+        false
+    } else {
+        match choice {
+            crate::app_preferences::VerificationWarningChoice::EveryTime => true,
+            crate::app_preferences::VerificationWarningChoice::Once => {
+                let mut seen = state
+                    .verification_warning_seen
+                    .lock()
+                    .expect("verification_warning_seen mutex poisoned");
+                seen.insert(conversation_id.clone())
+            }
+            crate::app_preferences::VerificationWarningChoice::BeforeSending => {
+                check == VerificationWarningCheck::Sending
+            }
+            crate::app_preferences::VerificationWarningChoice::Never => false,
+        }
+    };
+    let warning_point = if should_warn { check.label() } else { "none" };
+    Ok(VerificationWarningCheckDto {
+        conversation_id,
+        choice: choice.label().to_string(),
+        check: check.label().to_string(),
+        warning_point: warning_point.to_string(),
+        should_warn,
+    })
+}
+
+fn normalize_verification_warning_conversation_id(
+    conversation_id: String,
+) -> Result<String, String> {
+    let trimmed = conversation_id.trim();
+    if trimmed.is_empty() || trimmed.len() > 256 {
+        return Err("OSL: verification warning conversation id is invalid".to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
+pub fn cmd_osl_home_protection_summary(
+    state: &AppState,
+    app_data_dir: Option<PathBuf>,
+) -> Result<HomeProtectionSummaryDto, String> {
+    record_activity_on_command_entry();
+    let cloud_state = state.cloud_registration_state();
+    let protection_state = if state.has_identity()
+        && state.has_keyserver()
+        && cloud_state == crate::state::CloudRegistrationState::Registered
+    {
+        "protected"
+    } else {
+        "needs-attention"
+    }
+    .to_string();
+    let choices = cmd_osl_read_privacy_protection_choices(state)?;
+    let verification_warning = cmd_osl_read_verification_warning_choice(state)?.choice;
+    let trusted_people_count = {
+        let pending = state
+            .key_change_alerts
+            .lock()
+            .expect("key_change_alerts mutex poisoned");
+        state
+            .peer_map
+            .lock()
+            .expect("peer_map mutex poisoned")
+            .iter()
+            .filter(|(discord_id, entry)| {
+                entry.is_self != Some(true)
+                    && entry.tofu_key_bundle.is_some()
+                    && !pending.contains_key(*discord_id)
+            })
+            .count()
+    };
+    let place_summary = match app_data_dir {
+        Some(dir) => crate::allowed_places::allowed_place_summary(&dir)
+            .map_err(|error| format!("OSL: allowed place summary: {error}"))?,
+        None => crate::allowed_places::AllowedPlaceSummary {
+            distinct_apps: 0,
+            places: 0,
+        },
+    };
+    let trusted_people = match trusted_people_count {
+        1 => "1 trusted person".to_string(),
+        count => format!("{count} trusted people"),
+    };
+    let apps = match place_summary.distinct_apps {
+        1 => "1 connected app".to_string(),
+        count => format!("{count} connected apps"),
+    };
+    let next_safe_step = if protection_state != "protected" {
+        "Finish account protection"
+    } else if place_summary.distinct_apps == 0 {
+        "Connect an app"
+    } else if trusted_people_count == 0 {
+        "Add a trusted person"
+    } else {
+        "Open a protected conversation"
+    }
+    .to_string();
+
+    Ok(HomeProtectionSummaryDto {
+        protection_state,
+        privacy_level: choices.level.clone(),
+        protection_choices: choices,
+        verification_warning,
+        trusted_people_count,
+        trusted_people,
+        connected_app_count: place_summary.distinct_apps,
+        allowed_place_count: place_summary.places,
+        apps,
+        next_safe_step,
+    })
 }
 
 pub fn cmd_osl_get_auto_whitelist_rule_choices() -> Result<Vec<AutoWhitelistRuleChoiceDto>, String>
@@ -19236,6 +19854,56 @@ pub fn cmd_osl_read_signal_auto_whitelist_rule(
     let kind = crate::auto_whitelist_rules::parse_signal_whitelist_kind(&signal_kind)?;
     let auto_rule_app_kind = kind.auto_rule_app_kind().to_owned();
     let choice = state
+fn pending_allow_request_id(record: &crate::allowed_places::AllowedPlaceRecord) -> String {
+    format!("allow:{}", record.stable_id)
+}
+
+fn new_place_person_id(record: &crate::allowed_places::AllowedPlaceRecord) -> Option<String> {
+    if record.kind != "direct_message" {
+        return None;
+    }
+    let expected_prefix = format!("{}:{}:{}:", record.app, record.account, record.kind);
+    record
+        .stable_id
+        .strip_prefix(&expected_prefix)
+        .filter(|person_id| !person_id.is_empty())
+        .map(str::to_owned)
+}
+
+fn validate_new_place_record(
+    record: &crate::allowed_places::AllowedPlaceRecord,
+) -> Result<(), String> {
+    fn valid_part(value: &str) -> bool {
+        !value.is_empty()
+            && value.len() <= 512
+            && !value.contains('\0')
+            && !value.chars().any(char::is_whitespace)
+    }
+
+    if !valid_part(&record.app)
+        || !valid_part(&record.account)
+        || !valid_part(&record.kind)
+        || !valid_part(&record.stable_id)
+    {
+        return Err("OSL: new place is invalid".to_string());
+    }
+    let expected_prefix = format!("{}:{}:{}:", record.app, record.account, record.kind);
+    if !record.stable_id.starts_with(&expected_prefix) {
+        return Err("OSL: new place stable id is invalid".to_string());
+    }
+    Ok(())
+}
+
+pub fn cmd_osl_new_place(
+    state: &AppState,
+    record: crate::allowed_places::AllowedPlaceRecord,
+    app_data_dir: Option<PathBuf>,
+) -> Result<NewPlaceDecisionDto, String> {
+    record_activity_on_command_entry();
+    let app_kind = crate::auto_whitelist_rules::normalize_auto_whitelist_app_kind(&record.app)?;
+    validate_new_place_record(&record)?;
+
+    let rule = state
         .app_preferences
         .lock()
         .expect("app_preferences mutex poisoned")
@@ -19478,6 +20146,77 @@ pub fn cmd_osl_read_whatsapp_auto_whitelist_rule(
     Ok(NextGenerationMessagePolicyDto {
         choice: choice.label().to_string(),
     })
+
+    match rule {
+        crate::auto_whitelist_rules::AutoWhitelistChoice::Never => Ok(NewPlaceDecisionDto {
+            status: "unlisted".to_string(),
+            rule: rule.label().to_string(),
+            prompt: false,
+            allow_request: None,
+            place: record,
+        }),
+        crate::auto_whitelist_rules::AutoWhitelistChoice::AskMe => Ok(NewPlaceDecisionDto {
+            status: "pending_allow_request".to_string(),
+            rule: rule.label().to_string(),
+            prompt: true,
+            allow_request: Some(NewPlaceAllowRequestDto {
+                request_id: pending_allow_request_id(&record),
+                choice_required: true,
+                allowed_choices: vec!["allow".to_string(), "deny".to_string()],
+            }),
+            place: record,
+        }),
+        crate::auto_whitelist_rules::AutoWhitelistChoice::Always => {
+            let dir =
+                app_data_dir.ok_or_else(|| "OSL: allowed-place data dir is missing".to_string())?;
+            crate::allowed_places::add_allowed_place_record(&dir, record.clone())
+                .map_err(|error| format!("OSL: allowed place: {error}"))?;
+            Ok(NewPlaceDecisionDto {
+                status: "allowed".to_string(),
+                rule: rule.label().to_string(),
+                prompt: false,
+                allow_request: None,
+                place: record,
+            })
+        }
+        crate::auto_whitelist_rules::AutoWhitelistChoice::OnlyIfAFriend => {
+            let Some(person_id) = new_place_person_id(&record) else {
+                return Ok(NewPlaceDecisionDto {
+                    status: "skipped".to_string(),
+                    rule: rule.label().to_string(),
+                    prompt: false,
+                    allow_request: None,
+                    place: record,
+                });
+            };
+            let is_accepted_friend = state
+                .friend_ids
+                .lock()
+                .expect("friend_ids mutex poisoned")
+                .iter()
+                .any(|accepted| accepted == &person_id);
+            if !is_accepted_friend {
+                return Ok(NewPlaceDecisionDto {
+                    status: "skipped".to_string(),
+                    rule: rule.label().to_string(),
+                    prompt: false,
+                    allow_request: None,
+                    place: record,
+                });
+            }
+            let dir =
+                app_data_dir.ok_or_else(|| "OSL: allowed-place data dir is missing".to_string())?;
+            crate::allowed_places::add_allowed_place_record(&dir, record.clone())
+                .map_err(|error| format!("OSL: allowed place: {error}"))?;
+            Ok(NewPlaceDecisionDto {
+                status: "allowed".to_string(),
+                rule: rule.label().to_string(),
+                prompt: false,
+                allow_request: None,
+                place: record,
+            })
+        }
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -19802,6 +20541,17 @@ pub fn cmd_osl_read_message_default_cover_writing(state: &AppState) -> Result<St
         .message_defaults
         .cover_writing
         .clone())
+pub fn cmd_osl_reset_idle_lock_time_choice(
+    state: &AppState,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<IdleLockTimeChoiceDto, String> {
+    record_activity_on_command_entry();
+    let choice = mutate_app_preferences_result(state, config_dir, |prefs| {
+        let choice = crate::app_preferences::IdleLockTimeChoice::default();
+        prefs.idle_lock_time_choice = choice;
+        choice
+    })?;
+    Ok(choice.into())
 }
 
 // ---- G3.3: auto-updater channel ----
@@ -19993,6 +20743,261 @@ pub fn cmd_osl_save_start_with_windows_choice(
         prefs
             .privacy_level_rule_sets
             .insert(level.id().to_owned(), rules);
+        prefs.start_with_windows = choice;
+    }
+    persist_app_preferences_now(state, config_dir);
+    Ok(choice.as_value().to_string())
+}
+
+pub fn cmd_osl_reset_start_with_windows_choice(
+    state: &AppState,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<String, String> {
+    record_activity_on_command_entry();
+    let choice = mutate_app_preferences_result(state, config_dir, |prefs| {
+        let choice = crate::app_preferences::StartWithWindowsChoice::default();
+        prefs.start_with_windows = choice;
+        choice
+    })?;
+    Ok(choice.as_value().to_string())
+}
+
+// ---- Task 3154: ask before irreversible actions ----
+
+pub fn cmd_osl_get_ask_before_irreversible_actions_choice(
+    state: &AppState,
+) -> Result<crate::app_preferences::AskBeforeIrreversibleActionsChoice, String> {
+    record_activity_on_command_entry();
+    let g = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned");
+    Ok(g.ask_before_irreversible_actions)
+}
+
+pub fn cmd_osl_set_ask_before_irreversible_actions_choice(
+    state: &AppState,
+    choice: String,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<crate::app_preferences::AskBeforeIrreversibleActionsChoice, String> {
+    record_activity_on_command_entry();
+    let choice =
+        crate::app_preferences::AskBeforeIrreversibleActionsChoice::parse(choice.as_str())?;
+    {
+        let mut g = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        g.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        g.ask_before_irreversible_actions = choice;
+    }
+    if let Some(dir) = config_dir {
+        let g = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        let path = dir.join("app_preferences.json");
+        crate::app_preferences::write_app_preferences(&path, &g)?;
+    }
+    Ok(choice)
+}
+
+pub fn cmd_osl_reset_ask_before_irreversible_actions_choice(
+    state: &AppState,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<crate::app_preferences::AskBeforeIrreversibleActionsChoice, String> {
+    record_activity_on_command_entry();
+    mutate_app_preferences_result(state, config_dir, |prefs| {
+        let choice = crate::app_preferences::AskBeforeIrreversibleActionsChoice::default();
+        prefs.ask_before_irreversible_actions = choice;
+        choice
+    })
+}
+
+// ---- Task 3148: follow whichever app is in front ----
+
+pub fn cmd_osl_get_follow_active_app_choice(state: &AppState) -> Result<String, String> {
+    record_activity_on_command_entry();
+    let g = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned");
+    Ok(g.follow_active_app_choice.as_str().to_owned())
+}
+
+pub fn cmd_osl_set_follow_active_app_choice(
+    state: &AppState,
+    value: &str,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<String, String> {
+    record_activity_on_command_entry();
+    let choice = crate::app_preferences::FollowActiveAppChoice::parse(value)?;
+    let previous = {
+        let mut g = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        let previous = g.clone();
+        g.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        g.follow_active_app_choice = choice;
+        previous
+    };
+
+    if let Err(error) = persist_app_preferences_result(state, config_dir) {
+        *state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned") = previous;
+        return Err(error);
+    }
+
+    Ok(choice.as_str().to_owned())
+}
+
+pub fn cmd_osl_reset_follow_active_app_choice(
+    state: &AppState,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<String, String> {
+    record_activity_on_command_entry();
+    let choice = mutate_app_preferences_result(state, config_dir, |prefs| {
+        let choice = crate::app_preferences::FollowActiveAppChoice::default();
+        prefs.follow_active_app_choice = choice;
+        choice
+    })?;
+    Ok(choice.as_str().to_owned())
+}
+
+fn mutate_app_preferences_result<T>(
+    state: &AppState,
+    config_dir: Option<std::path::PathBuf>,
+    update: impl FnOnce(&mut crate::app_preferences::AppPreferences) -> T,
+) -> Result<T, String> {
+    let (previous, value) = {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        let previous = prefs.clone();
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        let value = update(&mut prefs);
+        (previous, value)
+    };
+
+    if let Err(error) = persist_app_preferences_result(state, config_dir) {
+        *state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned") = previous;
+        return Err(error);
+    }
+
+    Ok(value)
+}
+
+fn persist_app_preferences_result(
+    state: &AppState,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<(), String> {
+    let dir = match config_dir {
+        Some(dir) => dir,
+        None => keystore::osl_base_dir()
+            .map_err(|_| "OSL preferences storage is unavailable".to_owned())?,
+    };
+    let g = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .clone();
+    let path = dir.join("app_preferences.json");
+    crate::app_preferences::write_app_preferences(&path, &g)
+}
+
+#[cfg(test)]
+mod task3148_follow_active_app_choice_tests {
+    use super::*;
+
+    struct FileStorageKeyGuard;
+
+    impl Drop for FileStorageKeyGuard {
+        fn drop(&mut self) {
+            crate::main_password::set_file_storage_key(None);
+        }
+    }
+
+    #[test]
+    fn task3148_direct_command_saves_reads_off_and_refuses_bad_follow_active_app_choice() {
+        let _serial = crate::test_process_globals::serialize();
+        let _key_guard = FileStorageKeyGuard;
+        crate::main_password::set_file_storage_key(Some([0x31; 32]));
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let state = AppState::new();
+
+        let saved_on =
+            cmd_osl_set_follow_active_app_choice(&state, "on", Some(dir.path().to_path_buf()))
+                .expect("save on");
+        let read_on = cmd_osl_get_follow_active_app_choice(&state).expect("read on");
+        let persisted_on =
+            crate::app_preferences::load_app_preferences(&dir.path().join("app_preferences.json"))
+                .follow_active_app_choice
+                .as_str()
+                .to_owned();
+        let saved_off =
+            cmd_osl_set_follow_active_app_choice(&state, "off", Some(dir.path().to_path_buf()))
+                .expect("save off");
+        let bad_value_error =
+            cmd_osl_set_follow_active_app_choice(&state, "maybe", Some(dir.path().to_path_buf()))
+                .expect_err("bad value refused");
+        let after_bad = cmd_osl_get_follow_active_app_choice(&state).expect("read after bad");
+
+        println!(
+            "TASK3148 follow_active_app_choice direct_command=set_follow_active_app_choice save_on={} read_returns={} persisted_on={} save_off_returns={} bad_value_refused={} after_bad_value={}",
+            saved_on,
+            read_on,
+            persisted_on,
+            saved_off,
+            bad_value_error,
+            after_bad
+        );
+
+        assert_eq!(saved_on, "on");
+        assert_eq!(read_on, "on");
+        assert_eq!(persisted_on, "on");
+        assert_eq!(saved_off, "off");
+        assert_eq!(
+            bad_value_error,
+            "follow_active_app_choice must be \"on\" or \"off\""
+        );
+        assert_eq!(after_bad, "off");
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct AlertModeChoiceDto {
+    pub mode: String,
+}
+
+impl From<crate::app_preferences::AlertModeChoice> for AlertModeChoiceDto {
+    fn from(mode: crate::app_preferences::AlertModeChoice) -> Self {
+        Self {
+            mode: mode.words().to_string(),
+        }
+    }
+}
+
+pub fn cmd_osl_save_alert_mode_choice(
+    state: &AppState,
+    mode: String,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<AlertModeChoiceDto, String> {
+    record_activity_on_command_entry();
+    let mode = crate::app_preferences::parse_alert_mode_choice(&mode)?;
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs.alert_mode_choice = mode;
         if let Some(dir) = config_dir {
             let path = dir.join("app_preferences.json");
             crate::app_preferences::write_app_preferences(&path, &prefs)?;
@@ -20028,6 +21033,30 @@ pub fn cmd_osl_read_privacy_protection_choices(
     }
     persist_app_preferences_now(state, config_dir);
     Ok(choice.as_value().to_string())
+    Ok(mode.into())
+}
+
+pub fn cmd_osl_read_alert_mode_choice(state: &AppState) -> Result<AlertModeChoiceDto, String> {
+    record_activity_on_command_entry();
+    let mode = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .alert_mode_choice;
+    Ok(mode.into())
+}
+
+pub fn cmd_osl_reset_alert_mode_choice(
+    state: &AppState,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<AlertModeChoiceDto, String> {
+    record_activity_on_command_entry();
+    let mode = mutate_app_preferences_result(state, config_dir, |prefs| {
+        let mode = crate::app_preferences::AlertModeChoice::default();
+        prefs.alert_mode_choice = mode;
+        mode
+    })?;
+    Ok(mode.into())
 }
 
 // ---- Language choice and screen words ----
@@ -20058,6 +21087,18 @@ pub fn cmd_osl_save_language_choice(
     }
     persist_app_preferences_now(state, config_dir);
     Ok(language)
+}
+
+pub fn cmd_osl_reset_language_choice(
+    state: &AppState,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<String, String> {
+    record_activity_on_command_entry();
+    mutate_app_preferences_result(state, config_dir, |prefs| {
+        let language = crate::app_preferences::default_language_choice();
+        prefs.language = language.clone();
+        language
+    })
 }
 
 pub fn cmd_osl_read_screen_words(
@@ -20653,6 +21694,11 @@ fn cmd_osl_burn_engage_finish(
         .friend_ids
         .lock()
         .expect("friend_ids mutex poisoned")
+        .clear();
+    state
+        .verification_warning_seen
+        .lock()
+        .expect("verification_warning_seen mutex poisoned")
         .clear();
     state
         .guild_list

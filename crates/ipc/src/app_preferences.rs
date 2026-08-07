@@ -17,10 +17,19 @@
 //! 9-D added `tour` (onboarding tour resume/complete state). The
 //! W4 removal dropped the old `vpn_warning_dismissed_forever` field;
 //! legacy files carrying it still load (unknown keys are ignored).
+//!
+//! 0713 added `rn_wire_policy_requested`, the saved next-generation
+//! protected-message policy choice. Missing legacy files load as false.
+//!
+//! 3148 added `follow_active_app_choice`, the explicit on/off choice for
+//! whether the OSL window follows whichever app is in front. Missing legacy
+//! files load as off.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::collections::BTreeMap;
+use std::path::Path;
+use std::str::FromStr;
 use std::path::Path;
 use std::str::FromStr;
 use std::path::Path;
@@ -234,6 +243,89 @@ impl PrivacyLevelRuleSet {
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum NextGenerationMessagePolicy {
+        }
+    }
+}
+
+impl Default for PrivacyLevelRuleSet {
+    fn default() -> Self {
+        Self::for_level(PrivacyLevel::Balanced)
+    }
+}
+
+/// When to warn before interacting with a conversation whose verification has
+/// not been confirmed by the user.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub enum VerificationWarningChoice {
+    #[default]
+    #[serde(rename = "every time")]
+    EveryTime,
+    #[serde(rename = "once")]
+    Once,
+    #[serde(rename = "before sending")]
+    BeforeSending,
+    #[serde(rename = "never")]
+    Never,
+}
+
+impl VerificationWarningChoice {
+    pub const ALL: [Self; 4] = [
+        Self::EveryTime,
+        Self::Once,
+        Self::BeforeSending,
+        Self::Never,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::EveryTime => "every time",
+            Self::Once => "once",
+            Self::BeforeSending => "before sending",
+            Self::Never => "never",
+        }
+    }
+}
+
+pub fn parse_verification_warning_choice(
+    choice: &str,
+) -> Result<VerificationWarningChoice, String> {
+    VerificationWarningChoice::ALL
+        .into_iter()
+        .find(|candidate| candidate.label() == choice)
+        .ok_or_else(|| format!("OSL: unknown verification warning choice '{choice}'"))
+}
+
+/// Whether the app should ask again before executing an irreversible action.
+///
+/// Default = `On`; fresh installs should make the user explicitly confirm
+/// anything that cannot be undone unless they later choose otherwise.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AskBeforeIrreversibleActionsChoice {
+    #[default]
+    On,
+    Off,
+}
+
+impl AskBeforeIrreversibleActionsChoice {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::On => "on",
+            Self::Off => "off",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "on" => Ok(Self::On),
+            "off" => Ok(Self::Off),
+            other => Err(format!(
+                "OSL: invalid ask-before-irreversible-actions choice '{other}'"
+            )),
+        }
+    }
+}
+
 /// User's choice for whether OSL should start when Windows starts.
 /// This stores only the user's on/off preference; platform-specific
 /// startup registration is handled outside `app_preferences.json`.
@@ -270,6 +362,51 @@ pub fn parse_next_generation_message_policy(
             "OSL: unknown next-generation message policy '{input}'"
         )),
     }
+}
+
+}
+
+impl FromStr for StartWithWindowsChoice {
+    type Err = String;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "on" => Ok(Self::On),
+            "off" => Ok(Self::Off),
+            _ => Err(format!(
+                "OSL: unknown start-with-Windows choice {raw:?}; valid choices: on, off"
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AlertModeChoice {
+    Silent,
+    Quiet,
+    #[default]
+    Normal,
+}
+
+impl AlertModeChoice {
+    pub const ALL: [Self; 3] = [Self::Silent, Self::Quiet, Self::Normal];
+
+    pub fn words(self) -> &'static str {
+        match self {
+            Self::Silent => "silent",
+            Self::Quiet => "quiet",
+            Self::Normal => "normal",
+        }
+    }
+}
+
+pub fn parse_alert_mode_choice(input: &str) -> Result<AlertModeChoice, String> {
+    let normalized = input.trim().to_ascii_lowercase().replace(['-', '_'], " ");
+    AlertModeChoice::ALL
+        .into_iter()
+        .find(|choice| normalized == choice.words())
+        .ok_or_else(|| format!("OSL: unknown alert mode choice '{input}'"))
 }
 
 /// How long OSL waits after the last owner activity before it locks itself.
@@ -445,6 +582,28 @@ impl NewFriendAccountReach {
         match self {
             Self::ApprovedChatsOnly => "approved_chats_only",
             Self::AllSharedChats => "all_shared_chats",
+/// Whether the OSL window should follow whichever app currently has focus.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FollowActiveAppChoice {
+    #[default]
+    Off,
+    On,
+}
+
+impl FollowActiveAppChoice {
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "on" => Ok(Self::On),
+            "off" => Ok(Self::Off),
+            _ => Err("follow_active_app_choice must be \"on\" or \"off\"".to_owned()),
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::On => "on",
+            Self::Off => "off",
         }
     }
 }
@@ -585,6 +744,29 @@ pub const APP_PREFERENCES_VERSION: u32 = 3;
     pub language: String,
 }
 
+    pub ask_before_irreversible_actions: AskBeforeIrreversibleActionsChoice,
+    #[serde(default)]
+    pub rn_wire_policy_requested: bool,
+    #[serde(default)]
+    pub start_with_windows: StartWithWindowsChoice,
+    #[serde(default)]
+    pub idle_lock_time_choice: IdleLockTimeChoice,
+    #[serde(default)]
+    pub alert_mode_choice: AlertModeChoice,
+    #[serde(default)]
+    pub follow_active_app_choice: FollowActiveAppChoice,
+    #[serde(default = "default_language_choice")]
+    pub language: String,
+    #[serde(default)]
+    pub auto_whitelist_rules: HashMap<String, crate::auto_whitelist_rules::AutoWhitelistChoice>,
+    #[serde(default)]
+    pub privacy_level: PrivacyLevel,
+    #[serde(default)]
+    pub privacy_level_rule_sets: HashMap<String, PrivacyLevelRuleSet>,
+    #[serde(default)]
+    pub verification_warning: VerificationWarningChoice,
+}
+
 impl Default for AppPreferences {
     fn default() -> Self {
         Self {
@@ -598,11 +780,23 @@ impl Default for AppPreferences {
             new_friend_verification_warnings: NewFriendVerificationWarnings::default(),
             start_with_windows: StartWithWindowsChoice::default(),
             language: default_language_choice(),
+            ask_before_irreversible_actions: AskBeforeIrreversibleActionsChoice::default(),
+            rn_wire_policy_requested: false,
+            start_with_windows: StartWithWindowsChoice::default(),
+            idle_lock_time_choice: IdleLockTimeChoice::default(),
+            alert_mode_choice: AlertModeChoice::default(),
+            follow_active_app_choice: FollowActiveAppChoice::default(),
+            language: default_language_choice(),
+            auto_whitelist_rules: HashMap::new(),
+            privacy_level: PrivacyLevel::default(),
+            privacy_level_rule_sets: HashMap::new(),
+            verification_warning: VerificationWarningChoice::default(),
         }
     }
 }
 
 pub const APP_PREFERENCES_VERSION: u32 = 4;
+pub const APP_PREFERENCES_VERSION: u32 = 5;
 
 pub fn load_app_preferences(path: &Path) -> AppPreferences {
     let Ok(blob) = std::fs::read(path) else {

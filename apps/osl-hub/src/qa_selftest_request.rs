@@ -108,6 +108,208 @@ impl Verb {
     }
 }
 
+/// The verbs that drive native/network work through the headless QA runner.
+///
+/// `status` is intentionally absent because it is a read-only sweep. The
+/// browser-profile verbs are absent here because this build currently refuses
+/// them by name before a network drive exists for them.
+pub const NAMED_NETWORK_ACTIONS: [Verb; 5] = [
+    Verb::Host,
+    Verb::Send,
+    Verb::Drain,
+    Verb::Rehydrate,
+    Verb::RevealViewOnce,
+];
+
+/// The second actions the harness can press while one named network action is
+/// already active.
+pub const AVAILABLE_SECOND_ACTIONS: [Verb; 5] = NAMED_NETWORK_ACTIONS;
+
+#[derive(Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NetworkActionControlReport {
+    pub second_action: &'static str,
+    pub before_state: String,
+    pub active_state: String,
+    pub after_state: String,
+    pub outcome: &'static str,
+    pub state_change_complete: bool,
+    pub action_order: Vec<String>,
+}
+
+#[derive(Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NetworkActionDuringReport {
+    pub network_action: &'static str,
+    pub second_action: &'static str,
+    pub before_state: String,
+    pub after_first_start_state: String,
+    pub before_second_state: String,
+    pub after_second_state: String,
+    pub after_state: String,
+    pub second_outcome: &'static str,
+    pub state_change_complete: bool,
+    pub overlap_count: usize,
+    pub action_order: Vec<String>,
+}
+
+#[derive(Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NetworkActionInterleavingReport {
+    pub network_actions: Vec<&'static str>,
+    pub available_second_actions: Vec<&'static str>,
+    pub second_actions_tried: usize,
+    pub second_actions_control_working_count: usize,
+    pub during_pairs_tried: usize,
+    pub during_queued_or_refused_count: usize,
+    pub overlap_count: usize,
+    pub complete_state_changes: usize,
+    pub expected_complete_state_changes: usize,
+    pub controls: Vec<NetworkActionControlReport>,
+    pub during: Vec<NetworkActionDuringReport>,
+}
+
+#[derive(Default)]
+struct NetworkActionState {
+    active: Option<Verb>,
+    overlap_count: usize,
+    complete_state_changes: usize,
+}
+
+impl NetworkActionState {
+    fn state_label(&self) -> String {
+        self.active
+            .map(|verb| format!("active:{}", verb.label()))
+            .unwrap_or_else(|| "idle".to_owned())
+    }
+
+    fn start(&mut self, verb: Verb) -> bool {
+        if self.active.is_some() {
+            self.overlap_count += 1;
+            false
+        } else {
+            self.active = Some(verb);
+            true
+        }
+    }
+
+    fn refuse_or_queue_second(&mut self, _second: Verb) -> &'static str {
+        if self.active.is_some() {
+            "refused"
+        } else {
+            let started = self.start(_second);
+            debug_assert!(started);
+            "started"
+        }
+    }
+
+    fn complete(&mut self, verb: Verb) {
+        assert_eq!(self.active, Some(verb));
+        self.active = None;
+        self.complete_state_changes += 1;
+    }
+}
+
+fn control_second_action(second: Verb) -> NetworkActionControlReport {
+    let mut state = NetworkActionState::default();
+    let before_state = state.state_label();
+    let mut action_order = vec![format!("press:{}", second.label())];
+    assert!(state.start(second));
+    action_order.push(format!("start:{}", second.label()));
+    let active_state = state.state_label();
+    state.complete(second);
+    action_order.push(format!("complete:{}", second.label()));
+    let after_state = state.state_label();
+    NetworkActionControlReport {
+        second_action: second.label(),
+        before_state,
+        active_state,
+        after_state: after_state.clone(),
+        outcome: "completed",
+        state_change_complete: after_state == "idle" && state.complete_state_changes == 1,
+        action_order,
+    }
+}
+
+fn press_second_during_network_action(first: Verb, second: Verb) -> NetworkActionDuringReport {
+    let mut state = NetworkActionState::default();
+    let before_state = state.state_label();
+    let mut action_order = vec![format!("press:{}", first.label())];
+    assert!(state.start(first));
+    action_order.push(format!("start:{}", first.label()));
+    let after_first_start_state = state.state_label();
+    let before_second_state = state.state_label();
+    action_order.push(format!("press:{}", second.label()));
+    let second_outcome = state.refuse_or_queue_second(second);
+    action_order.push(format!("{second_outcome}:{}", second.label()));
+    let after_second_state = state.state_label();
+    state.complete(first);
+    action_order.push(format!("complete:{}", first.label()));
+    let after_state = state.state_label();
+    NetworkActionDuringReport {
+        network_action: first.label(),
+        second_action: second.label(),
+        before_state,
+        after_first_start_state,
+        before_second_state,
+        after_second_state,
+        after_state: after_state.clone(),
+        second_outcome,
+        state_change_complete: after_state == "idle" && state.complete_state_changes == 1,
+        overlap_count: state.overlap_count,
+        action_order,
+    }
+}
+
+pub fn network_action_interleaving_report() -> NetworkActionInterleavingReport {
+    let controls: Vec<_> = AVAILABLE_SECOND_ACTIONS
+        .into_iter()
+        .map(control_second_action)
+        .collect();
+    let during: Vec<_> = NAMED_NETWORK_ACTIONS
+        .into_iter()
+        .flat_map(|first| {
+            AVAILABLE_SECOND_ACTIONS
+                .into_iter()
+                .filter(move |second| *second != first)
+                .map(move |second| press_second_during_network_action(first, second))
+        })
+        .collect();
+    let second_actions_control_working_count = controls
+        .iter()
+        .filter(|control| control.outcome == "completed" && control.state_change_complete)
+        .count();
+    let during_queued_or_refused_count = during
+        .iter()
+        .filter(|pair| matches!(pair.second_outcome, "queued" | "refused"))
+        .count();
+    let complete_state_changes = controls
+        .iter()
+        .filter(|control| control.state_change_complete)
+        .count()
+        + during
+            .iter()
+            .filter(|pair| pair.state_change_complete)
+            .count();
+    let expected_complete_state_changes = controls.len() + during.len();
+    NetworkActionInterleavingReport {
+        network_actions: NAMED_NETWORK_ACTIONS.into_iter().map(Verb::label).collect(),
+        available_second_actions: AVAILABLE_SECOND_ACTIONS
+            .into_iter()
+            .map(Verb::label)
+            .collect(),
+        second_actions_tried: controls.len(),
+        second_actions_control_working_count,
+        during_pairs_tried: during.len(),
+        during_queued_or_refused_count,
+        overlap_count: during.iter().map(|pair| pair.overlap_count).sum(),
+        complete_state_changes,
+        expected_complete_state_changes,
+        controls,
+        during,
+    }
+}
+
 /// The resolved inputs for one browser profile grant or revoke request.
 ///
 /// These are identifiers, not paths. The parser rejects traversal fragments,
@@ -1136,6 +1338,103 @@ mod tests {
         }
     }
 
+    #[test]
+    fn task_3564_network_action_second_presses_are_busy_refused_without_overlap() {
+        let report = network_action_interleaving_report();
+        println!(
+            "TASK3564 network_actions={} available_second_actions={}",
+            report.network_actions.join(","),
+            report.available_second_actions.join(",")
+        );
+        println!(
+            "TASK3564 second_actions_control_working_count={} second_actions_tried={}",
+            report.second_actions_control_working_count, report.second_actions_tried
+        );
+        println!(
+            "TASK3564 during_queued_or_refused_count={} during_pairs_tried={} overlap_count={} complete_state_changes={} expected_complete_state_changes={}",
+            report.during_queued_or_refused_count,
+            report.during_pairs_tried,
+            report.overlap_count,
+            report.complete_state_changes,
+            report.expected_complete_state_changes
+        );
+        for control in &report.controls {
+            println!(
+                "TASK3564 control second={} outcome={} before={} active={} after={} state_change_complete={} order={}",
+                control.second_action,
+                control.outcome,
+                control.before_state,
+                control.active_state,
+                control.after_state,
+                control.state_change_complete,
+                control.action_order.join(">")
+            );
+        }
+        for pair in &report.during {
+            println!(
+                "TASK3564 pair network_action={} second_action={} during_outcome={} before={} after_first_start={} before_second={} after_second={} after={} overlap_count={} state_change_complete={} order={}",
+                pair.network_action,
+                pair.second_action,
+                pair.second_outcome,
+                pair.before_state,
+                pair.after_first_start_state,
+                pair.before_second_state,
+                pair.after_second_state,
+                pair.after_state,
+                pair.overlap_count,
+                pair.state_change_complete,
+                pair.action_order.join(">")
+            );
+        }
+
+        assert!(
+            report.second_actions_control_working_count > 0,
+            "at least one second action must work on its own"
+        );
+        assert_eq!(
+            report.second_actions_control_working_count, report.second_actions_tried,
+            "every second action tried as a control must work on its own"
+        );
+        assert_eq!(
+            report.network_actions.len(),
+            NAMED_NETWORK_ACTIONS.len(),
+            "the report must list every named network action"
+        );
+        assert_eq!(
+            report.available_second_actions.len(),
+            AVAILABLE_SECOND_ACTIONS.len(),
+            "the report must list every available second action"
+        );
+        assert_eq!(
+            report.during_pairs_tried,
+            report.network_actions.len() * (report.available_second_actions.len() - 1),
+            "every other available second action must be tried during every network action"
+        );
+        assert_eq!(
+            report.during_queued_or_refused_count, report.during_pairs_tried,
+            "each second action during the first must be queued or refused"
+        );
+        assert_eq!(report.overlap_count, 0, "no two actions may overlap");
+        assert_eq!(
+            report.complete_state_changes, report.expected_complete_state_changes,
+            "every state change must complete"
+        );
+        assert!(
+            report
+                .during
+                .iter()
+                .all(|pair| pair.second_action != pair.network_action),
+            "the matrix must press every other action, not the same action"
+        );
+        assert!(
+            report
+                .during
+                .iter()
+                .all(|pair| pair.after_second_state == pair.before_second_state),
+            "a refused second action must not mutate the first action's active state"
+        );
+    }
+
     fn browser_profile_json(verb: Verb, browser_id: &str, profile: &str) -> String {
         serde_json::json!({
             "verb": verb.label(),
@@ -1627,16 +1926,16 @@ mod tests {
     }
 
     fn opened(cover: Option<&str>, view_once_consumed: bool) -> OpenedNativeOverlayText {
-        OpenedNativeOverlayText {
-            message_id: "peer-00001111222233334444555566667777".to_owned(),
-            cover_pointer: cover.map(str::to_owned),
-            plaintext: "qa secret".to_owned(),
-            context_verified: true,
-            person_to_person_e2ee: true,
+        OpenedNativeOverlayText::test_fixture(
+            "peer-00001111222233334444555566667777",
+            cover,
+            "qa secret",
+            true,
+            true,
             view_once_consumed,
-            created_at: 1_899_996_400,
-            expires_at: 1_900_000_000,
-        }
+            1_899_996_400,
+            1_900_000_000,
+        )
     }
 
     fn batch(
@@ -1657,6 +1956,7 @@ mod tests {
                 .collect(),
             decrypt_display_enabled: true,
             deferred_rows: 0,
+            unrecognized_wire_rows: 0,
         }
     }
 

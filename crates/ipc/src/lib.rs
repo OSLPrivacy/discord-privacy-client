@@ -108,6 +108,7 @@ pub mod transport;
 pub mod auto_whitelist_rules;
 pub mod transport_padding;
 pub mod whitelist;
+pub mod whitelist_rules_store;
 pub mod whitelist_state;
 pub mod wire_v2;
 // OSL-RN (wire 0x10) integration: version selection with downgrade

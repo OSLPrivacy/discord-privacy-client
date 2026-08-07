@@ -17,10 +17,7 @@ use std::sync::Arc;
 const MAX_SIGNAL_A11Y_NODES: usize = 4_096;
 const MAX_SIGNAL_A11Y_DEPTH: usize = 64;
 
-/// The L2-only operations supplied by Signal's native accessibility bridge.
-///
-/// Deliberately omits any send/submit operation: Signal placement writes a
-/// draft, while committing it is reserved for the later L3 task.
+/// The operations supplied by Signal's native accessibility bridge.
 pub trait SignalBackend: Send + Sync {
     fn capabilities(&self, now_unix_seconds: u64) -> CapabilitySet;
     fn locate(&self, target: &SurfaceTarget) -> Result<SurfaceBinding, AdapterRefusal>;
@@ -440,6 +437,8 @@ mod tests {
 
     struct PlacementBackend {
         placements: AtomicUsize,
+        commits: AtomicUsize,
+        signal_route: Option<&'static str>,
     }
 
     fn binding(generation: u64) -> SurfaceBinding {
@@ -464,13 +463,17 @@ mod tests {
 
     impl SignalBackend for PlacementBackend {
         fn capabilities(&self, _: u64) -> CapabilitySet {
-            [
+            let mut capabilities = [
                 adapter_profile::Capability::InspectVisibleComposer,
                 adapter_profile::Capability::InspectVisibleTranscript,
                 adapter_profile::Capability::PlaceProtectedPayload,
             ]
             .into_iter()
-            .collect()
+            .collect::<CapabilitySet>();
+            if self.signal_route.is_some() {
+                capabilities.insert(adapter_profile::Capability::SendProtectedPayload);
+            }
+            capabilities
         }
 
         fn locate(&self, target: &SurfaceTarget) -> Result<SurfaceBinding, AdapterRefusal> {
@@ -508,6 +511,10 @@ mod tests {
             SendReceipt {
                 outcome: SendOutcome::NotSent,
                 elapsed_ms: 0,
+            self.commits.fetch_add(1, Ordering::SeqCst);
+            SendReceipt {
+                outcome: SendOutcome::Sent,
+                elapsed_ms: 1,
             }
         }
     }
@@ -633,6 +640,7 @@ mod tests {
                 outcome: SendOutcome::Sent,
                 elapsed_ms: 1,
             }
+            unreachable!("destination attestation never commits a send")
         }
     }
 
@@ -671,6 +679,8 @@ mod tests {
     fn t3_t15_places_only_a_focused_empty_draft_and_never_submits() {
         let adapter = SignalSurfaceAdapter::new(PlacementBackend {
             placements: AtomicUsize::new(0),
+            commits: AtomicUsize::new(0),
+            signal_route: None,
         });
         let binding = binding(1);
 
@@ -697,6 +707,44 @@ mod tests {
         );
         assert_eq!(refused.status, PlacementStatus::NotPlaced);
         assert_eq!(adapter.backend.placements.load(Ordering::SeqCst), 1);
+    }
+
+    fn direct_signal_request(adapter: &SignalSurfaceAdapter<PlacementBackend>) -> String {
+        let binding = binding(1);
+        let placed = adapter.place(
+            &binding,
+            &PlacementAuthorization::for_scope("scope-a"),
+            &Carrier("carrier".into()),
+        );
+        assert_eq!(placed.status, PlacementStatus::Placed);
+        let receipt = adapter.commit(&binding, &SendAuthorization::for_scope("scope-a"), &placed);
+        let commits = adapter.backend.commits.load(Ordering::SeqCst);
+        match (adapter.backend.signal_route, receipt.outcome, commits) {
+            (Some(route), SendOutcome::Sent, 1) => format!("route {route} called once"),
+            (None, SendOutcome::NotSent, 0) => "Signal route not selected".to_owned(),
+            other => panic!("unexpected direct Signal request result: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn task1030a_signal_direct_send_uses_selected_route_and_refuses_without_route() {
+        let routed = SignalSurfaceAdapter::new(PlacementBackend {
+            placements: AtomicUsize::new(0),
+            commits: AtomicUsize::new(0),
+            signal_route: Some("SIGNAL-TEST-ROUTE"),
+        });
+        let routed_result = direct_signal_request(&routed);
+        println!("{routed_result}");
+        assert_eq!(routed_result, "route SIGNAL-TEST-ROUTE called once");
+
+        let unrouted = SignalSurfaceAdapter::new(PlacementBackend {
+            placements: AtomicUsize::new(0),
+            commits: AtomicUsize::new(0),
+            signal_route: None,
+        });
+        let unrouted_result = direct_signal_request(&unrouted);
+        println!("{unrouted_result}");
+        assert_eq!(unrouted_result, "Signal route not selected");
     }
 
     #[test]

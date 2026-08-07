@@ -35,6 +35,11 @@ pub fn before_unencrypted_send(
         authored_by_self: true,
         created_at_unix_ms: None,
         text: text.to_owned(),
+        reply_recipient: None,
+        visible_recipients: Vec::new(),
+        hidden_recipients: Vec::new(),
+        email_thread_identity: None,
+        email_folder_identity: None,
         attachments: Vec::new(),
     }]);
 

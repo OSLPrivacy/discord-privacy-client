@@ -24,7 +24,7 @@ adapter-profile = { path = "../../crates/adapter-profile" }
 cover-draft = { path = "../../crates/cover-draft", package = "osl-cover-draft" }
 # This policy must be linked by the desktop send boundary, rather than living
 # only in an isolated workspace test crate.
-cover-ai = { path = "../../crates/cover-ai" }
+cover-ai = { path = "../../crates/cover-ai", default-features = false }
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.149"
 minisign-verify = "=0.2.5"

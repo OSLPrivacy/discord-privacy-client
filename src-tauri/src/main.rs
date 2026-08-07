@@ -68,12 +68,18 @@ use ipc::commands::{
     cmd_osl_change_main_password, cmd_osl_clear_license, cmd_osl_decrypt_message_v2,
     cmd_osl_encrypt_message, cmd_osl_encrypt_message_v2, cmd_osl_get_identity_info,
     cmd_osl_get_license_state, cmd_osl_get_scope_encryption_state,
+    cmd_osl_burn_password_status, cmd_osl_burn_scope_data, cmd_osl_change_main_password,
+    cmd_osl_clear_license, cmd_osl_decrypt_message_v2, cmd_osl_encrypt_message,
+    cmd_osl_encrypt_message_v2, cmd_osl_get_ask_before_irreversible_actions_choice,
+    cmd_osl_get_identity_info, cmd_osl_get_license_state, cmd_osl_get_scope_encryption_state,
     cmd_osl_get_scope_whitelist_summary, cmd_osl_get_self_user_id, cmd_osl_get_tier_gate_status,
     cmd_osl_list_all_whitelists, cmd_osl_list_burned_scopes, cmd_osl_load_channel_history,
     cmd_osl_lockout_status, cmd_osl_mark_scope_burned, cmd_osl_password_status,
     cmd_osl_persist_edit, cmd_osl_register_self_snowflake, cmd_osl_remove_burn_password,
     cmd_osl_remove_main_password, cmd_osl_remove_stealth_password, cmd_osl_send_burn_marker,
     cmd_osl_set_burn_password, cmd_osl_set_main_password, cmd_osl_set_main_password_after_recovery,
+    cmd_osl_set_ask_before_irreversible_actions_choice, cmd_osl_set_burn_password,
+    cmd_osl_set_main_password, cmd_osl_set_main_password_after_recovery,
     cmd_osl_set_stealth_password, cmd_osl_set_whitelist, cmd_osl_stealth_mode_engage,
     cmd_osl_stealth_password_status, cmd_osl_toggle_scope_encryption, cmd_osl_unburn_scope,
     cmd_osl_unwhitelist_scope, cmd_osl_validate_license, cmd_osl_verify_gate_password,
@@ -2040,6 +2046,36 @@ async fn osl_set_app_preferences(
     .map_err(|e| format!("OSL: join error: {e}"))?
 }
 
+/// Task 3154: read the on/off choice for asking again before irreversible actions.
+#[tauri::command]
+async fn osl_get_ask_before_irreversible_actions_choice(
+    app: tauri::AppHandle,
+) -> Result<ipc::app_preferences::AskBeforeIrreversibleActionsChoice, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        cmd_osl_get_ask_before_irreversible_actions_choice(state.inner())
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// Task 3154: persist the on/off choice for asking again before irreversible actions.
+#[tauri::command]
+async fn osl_set_ask_before_irreversible_actions_choice(
+    app: tauri::AppHandle,
+    choice: String,
+) -> Result<ipc::app_preferences::AskBeforeIrreversibleActionsChoice, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        let dir = keystore::osl_config_dir().ok();
+        cmd_osl_set_ask_before_irreversible_actions_choice(state.inner(), choice, dir)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
 // ---- Phase 9-D: onboarding tour + VPN warning ----
 
 /// 9-TD1.4: read + clear the most recent disk-persist failure
@@ -2718,10 +2754,13 @@ async fn osl_prose_token_send(
         if let Ok(scope) = TryInto::<ipc::scope::Scope>::try_into(scope_input) {
             let blobs_path = dir.join("scope_blobs.json");
             let mut blobs = ipc::scope_blobs_file::load(&blobs_path);
-            ipc::scope_blobs_file::record_blob(
+            ipc::scope_blobs_file::record_blob_with_capability(
                 &mut blobs,
                 scope.storage_key(),
-                r.blob_id.clone(),
+                ipc::scope_blobs_file::RecordedBlob {
+                    blob_id: r.blob_id.clone(),
+                    burn_capability: r.burn_capability.clone(),
+                },
             );
             if let Err(e) = ipc::scope_blobs_file::write(&blobs_path, &blobs) {
                 tracing::warn!(error = %e, "OSL: scope_blobs persist failed (send still succeeded)");
@@ -2754,6 +2793,7 @@ async fn osl_prose_token_send(
 struct ScopeBurnBlobsDto {
     deleted: u32,
     failed: u32,
+    affected_scope: String,
 }
 
 #[tauri::command]
@@ -2770,14 +2810,20 @@ async fn osl_scope_burn_blobs(
         let dir = keystore::osl_config_dir().map_err(|e| format!("OSL: config_dir: {e}"))?;
         let path = dir.join("scope_blobs.json");
         let mut file = ipc::scope_blobs_file::load(&path);
-        let blob_ids = ipc::scope_blobs_file::take_blobs(&mut file, &scope.storage_key());
+        let affected_scope = scope.storage_key();
+        let blobs = ipc::scope_blobs_file::take_blobs_for_burn(&mut file, &affected_scope);
         let mut deleted = 0u32;
         let mut failed = 0u32;
-        for id in &blob_ids {
-            match ipc::prose_token::prose_token_burn_id(&dir, &scope_for_token, id) {
+        for recorded in &blobs {
+            match ipc::prose_token::prose_token_burn_recorded(
+                &dir,
+                &scope_for_token,
+                &recorded.blob_id,
+                recorded.burn_capability.as_deref(),
+            ) {
                 Ok(()) => deleted += 1,
                 Err(e) => {
-                    tracing::warn!(blob_id = %id, error = %e, "OSL: scope_burn_blobs delete failed");
+                    tracing::warn!(blob_id = %recorded.blob_id, error = %e, "OSL: scope_burn_blobs delete failed");
                     failed += 1;
                 }
             }
@@ -2786,12 +2832,16 @@ async fn osl_scope_burn_blobs(
             tracing::warn!(error = %e, "OSL: scope_blobs persist (post-burn clear) failed");
         }
         tracing::info!(
-            scope = %scope.storage_key(),
+            scope = %affected_scope,
             deleted,
             failed,
             "OSL: scope_burn_blobs"
         );
-        Ok(ScopeBurnBlobsDto { deleted, failed })
+        Ok(ScopeBurnBlobsDto {
+            deleted,
+            failed,
+            affected_scope,
+        })
     })
     .await
     .map_err(|e| format!("OSL: join error: {e}"))?
@@ -3429,6 +3479,8 @@ fn main() {
             osl_apply_server_default_to_existing_channels,
             osl_get_app_preferences,
             osl_set_app_preferences,
+            osl_get_ask_before_irreversible_actions_choice,
+            osl_set_ask_before_irreversible_actions_choice,
             osl_tour_get_state,
             osl_tour_advance,
             osl_tour_complete,

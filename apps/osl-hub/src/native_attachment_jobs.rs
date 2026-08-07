@@ -13,7 +13,7 @@ use std::fmt;
 use std::io::Read;
 use zeroize::{Zeroize, Zeroizing};
 
-pub const MAX_ATTACHMENT_SIZE: u64 = 512 * 1024 * 1024;
+pub const MAX_ATTACHMENT_SIZE: u64 = crate::attachment_limits::MAX_ATTACHMENT_BYTES;
 pub const MAX_CAPTION_BYTES: usize = 4_096;
 pub const PROGRESS_THROTTLE_MS: u64 = 500;
 pub const AUTHENTICATED_FIELDS: [&str; 4] = ["jobId", "metadata", "caption", "viewOnce"];
@@ -646,11 +646,13 @@ fn valid_media_type_byte(byte: u8) -> bool {
 }
 
 fn validate_size(size: u64) -> Result<u64, NativeAttachmentJobError> {
-    if (1..=MAX_ATTACHMENT_SIZE).contains(&size) {
-        Ok(size)
-    } else {
-        Err(NativeAttachmentJobError::InvalidSize)
-    }
+    crate::attachment_limits::check_attachment_request(
+        size,
+        1,
+        crate::attachment_limits::AttachmentAccountTier::Pro,
+    )
+    .map(|()| size)
+    .map_err(|_| NativeAttachmentJobError::InvalidSize)
 }
 
 fn validate_caption(caption: &str) -> Result<(), NativeAttachmentJobError> {
@@ -1041,6 +1043,26 @@ mod tests {
         assert_eq!(
             format!("{:?}", secrets(1)),
             "NativeAttachmentSecrets([REDACTED])"
+        );
+    }
+
+    #[test]
+    fn over_limit_file_never_enters_the_attachment_tray() {
+        let mut registry = NativeAttachmentJobRegistry::default();
+        let refused = registry.stage(
+            CONTEXT,
+            "oversized.png",
+            "image/png",
+            crate::attachment_limits::MAX_ATTACHMENT_BYTES + 1,
+            secrets(4),
+            1_000,
+        );
+        assert_eq!(refused, Err(NativeAttachmentJobError::InvalidSize));
+        assert_eq!(registry.snapshot(CONTEXT), None);
+        println!(
+            "TASK0046 attachment_tray result=refused staged_count=0 limit_bytes={} attempted_bytes={}",
+            crate::attachment_limits::MAX_ATTACHMENT_BYTES,
+            crate::attachment_limits::MAX_ATTACHMENT_BYTES + 1
         );
     }
 }

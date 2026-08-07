@@ -10,8 +10,9 @@ use std::path::{Path, PathBuf};
 
 const FROZEN_GATE_CALLS: &[(&str, usize)] = &[
     ("autoscrub_run.rs", 1),
-    ("main.rs", 4),
+    ("main.rs", 5),
     ("mass_cleanup.rs", 1),
+    ("message_expiry.rs", 1),
     ("native_attachment_transport.rs", 1),
 ];
 

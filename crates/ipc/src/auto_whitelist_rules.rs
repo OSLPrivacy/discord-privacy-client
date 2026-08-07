@@ -398,6 +398,8 @@ pub fn normalize_auto_whitelist_app_kind(input: &str) -> Result<String, String> 
                 .to_owned());
         }
     }
+pub fn normalize_auto_whitelist_app_kind(input: &str) -> Result<String, String> {
+    let normalized = input.trim().to_ascii_lowercase().replace('-', "_");
     if AUTO_WHITELIST_APP_KINDS.contains(&normalized.as_str()) {
         Ok(normalized)
     } else {

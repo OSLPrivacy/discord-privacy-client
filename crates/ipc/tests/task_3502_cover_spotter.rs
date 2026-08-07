@@ -57,6 +57,11 @@ fn task_3502_proves_one_plain_text_cover_spotter() {
         .count();
 
     let ordinary = ordinary_messages();
+    let ordinary_false_positives: Vec<&str> = ordinary
+        .iter()
+        .copied()
+        .filter(|text| decode_token(&cipher, detection_key, text).is_some())
+        .collect();
     let ordinary_not_cover_count = ordinary
         .iter()
         .filter(|text| decode_token(&cipher, detection_key, text).is_none())
@@ -87,6 +92,11 @@ fn task_3502_proves_one_plain_text_cover_spotter() {
     println!("TASK3502 app_free_same_answers={app_free_same_answers}");
 
     assert_eq!(pointer_found_count, 20);
+    assert!(
+        ordinary_false_positives.is_empty(),
+        "ordinary messages wrongly called covers: {:?}",
+        ordinary_false_positives
+    );
     assert_eq!(ordinary_not_cover_count, 20);
     assert_eq!(app_free_same_answers, 40);
 
