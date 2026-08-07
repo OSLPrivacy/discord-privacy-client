@@ -454,6 +454,14 @@ pub struct ProseTokenPointer {
     pub blob_id: String,
 }
 
+/// Store authority recovered from a prose carrier without performing a fetch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProseTokenPointerArrival {
+    pub blob_id: String,
+    pub fetch_cap: [u8; FETCH_TOKEN_BYTES],
+    pub manage_cap: [u8; FETCH_TOKEN_BYTES],
+}
+
 /// Put an already prepared prose-token cover into the visible body of an OSL
 /// Mail message.
 ///
@@ -628,6 +636,29 @@ pub fn prose_token_recover_pointer(
     Ok(Some(ProseTokenPointer {
         blob_id: hex_lower(&id),
     }))
+}
+
+/// Decode a prose carrier into deployed store authority, but do not fetch.
+pub fn prose_token_pointer_arrival(
+    scope_input: &ScopeInput,
+    detection_key: &[u8; MAC_KEY_LEN],
+    msg: &str,
+) -> Result<Option<ProseTokenPointerArrival>, ProseTokenError> {
+    let Some(carrier) = prose_token_decode_carrier(scope_input, detection_key, msg)? else {
+        return Ok(None);
+    };
+    let (id, seed) = bridge_unpack(&carrier);
+    let fetch_token = bridge_fetch_token(&seed);
+    Ok(Some(ProseTokenPointerArrival {
+        blob_id: hex_lower(&id),
+        fetch_cap: fetch_token,
+        manage_cap: fetch_token,
+    }))
+}
+
+/// Rebuild the regular receive wire from a fetched prose-token store object.
+pub fn prose_token_wire_from_object(object: &[u8]) -> Result<String, ProseTokenError> {
+    prose_token_bridge_object_to_wire(object)
 }
 
 /// Try to decode a Discord message as an OSL prose-token, keeping the two
