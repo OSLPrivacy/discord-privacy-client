@@ -150,6 +150,7 @@ pub mod scrub_erasure;
 pub mod scrub_erasure_queue;
 pub mod scrub_erasure_tracker;
 pub mod scrub_evidence_manifest;
+pub mod shared_web_reader_shape;
 pub mod shared_conversation_scroll;
 pub mod tor_pref;
 pub mod scrub_hosted {
