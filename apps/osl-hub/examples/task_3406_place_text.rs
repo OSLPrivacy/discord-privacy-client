@@ -18,7 +18,11 @@ mod windows_place_text {
         UIA_DocumentControlTypeId, UIA_EditControlTypeId, UIA_TextControlTypeId,
         UIA_ValuePatternId,
     };
-    use windows_sys::Win32::Foundation::{CloseHandle, BOOL, HWND, LPARAM, POINT, TRUE};
+    use windows_sys::Win32::Foundation::{CloseHandle, BOOL, HANDLE, HWND, LPARAM, POINT, TRUE};
+    use windows_sys::Win32::Security::{
+        GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, TokenIntegrityLevel,
+        TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
+    };
     use windows_sys::Win32::System::DataExchange::{
         CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardData, OpenClipboard,
         SetClipboardData,
@@ -28,8 +32,8 @@ mod windows_place_text {
     };
     use windows_sys::Win32::System::Ole::CF_UNICODETEXT;
     use windows_sys::Win32::System::Threading::{
-        AttachThreadInput, GetCurrentThreadId, OpenProcess, QueryFullProcessImageNameW,
-        PROCESS_QUERY_LIMITED_INFORMATION,
+        AttachThreadInput, GetCurrentThreadId, OpenProcess, OpenProcessToken,
+        QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
     };
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
         SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_KEYUP,
@@ -159,6 +163,7 @@ mod windows_place_text {
             describe_window(&discord).replace('\n', " "),
             initially_behind
         );
+        refuse_if_app_has_more_permission_than_osl(&args.app, discord.hwnd)?;
         if !initially_behind {
             return Err(CommandError::exit1(format!(
                 "{} was already the foreground window",
@@ -235,16 +240,19 @@ mod windows_place_text {
         println!("osl_clipboard_entries=0");
 
         if readback != args.text {
+            println!("placed_count=0");
             return Err(CommandError::exit1(format!(
                 "{} readback did not equal {:?}",
                 args.app, args.text
             )));
         }
         if before_digest != after_digest {
+            println!("placed_count=0");
             return Err(CommandError::exit1(
                 "clipboard content changed across placement",
             ));
         }
+        println!("placed_count=1");
         Ok(())
     }
 
@@ -521,6 +529,131 @@ mod windows_place_text {
         }
     }
 
+    fn refuse_if_app_has_more_permission_than_osl(
+        app: &str,
+        hwnd: HWND,
+    ) -> Result<(), CommandError> {
+        let mut pid = 0u32;
+        if unsafe { GetWindowThreadProcessId(hwnd, &mut pid) } == 0 || pid == 0 {
+            return Err(CommandError::exit1(format!(
+                "{app} permission check failed: process id unavailable"
+            )));
+        }
+        let osl = process_integrity(std::process::id()).map_err(|error| {
+            CommandError::exit1(format!("OSL permission check failed: {error}"))
+        })?;
+        let target = process_integrity(pid).map_err(|error| {
+            CommandError::exit1(format!("{app} permission check failed: {error}"))
+        })?;
+        println!(
+            "permission_check app={} osl_integrity={} osl_integrity_rid={} target_integrity={} target_integrity_rid={}",
+            app,
+            integrity_name(osl),
+            osl,
+            integrity_name(target),
+            target
+        );
+        if target > osl {
+            let before_digest = snapshot_clipboard()
+                .map_err(|error| {
+                    CommandError::exit1(format!(
+                        "{app} has more permission than OSL; clipboard snapshot failed: {error}"
+                    ))
+                })?
+                .digest();
+            let after_digest = snapshot_clipboard()
+                .map_err(|error| {
+                    CommandError::exit1(format!(
+                        "{app} has more permission than OSL; clipboard resnapshot failed: {error}"
+                    ))
+                })?
+                .digest();
+            println!("clipboard_before_digest={before_digest:016x}");
+            println!("clipboard_after_digest={after_digest:016x}");
+            println!("clipboard_restored_exact={}", before_digest == after_digest);
+            println!("osl_clipboard_entries=0");
+            println!("placed_count=0");
+            return Err(CommandError::exit1(format!(
+                "{app} has more permission than OSL: {app} integrity {} ({}) is higher than OSL integrity {} ({})",
+                integrity_name(target),
+                target,
+                integrity_name(osl),
+                osl
+            )));
+        }
+        Ok(())
+    }
+
+    fn process_integrity(pid: u32) -> Result<u32, String> {
+        let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if process.is_null() {
+            return Err(format!("OpenProcess failed for pid {pid}"));
+        }
+        let mut token: HANDLE = ptr::null_mut();
+        let opened = unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) } != 0;
+        unsafe { CloseHandle(process) };
+        if !opened {
+            return Err(format!("OpenProcessToken failed for pid {pid}"));
+        }
+
+        let result = token_integrity(token);
+        unsafe { CloseHandle(token) };
+        result
+    }
+
+    fn token_integrity(token: HANDLE) -> Result<u32, String> {
+        let mut needed = 0u32;
+        unsafe {
+            GetTokenInformation(token, TokenIntegrityLevel, ptr::null_mut(), 0, &mut needed);
+        }
+        if needed == 0 {
+            return Err("GetTokenInformation size query failed".to_owned());
+        }
+        let mut bytes = vec![0u8; needed as usize];
+        if unsafe {
+            GetTokenInformation(
+                token,
+                TokenIntegrityLevel,
+                bytes.as_mut_ptr().cast(),
+                needed,
+                &mut needed,
+            )
+        } == 0
+        {
+            return Err("GetTokenInformation failed".to_owned());
+        }
+        let label = unsafe { &*(bytes.as_ptr().cast::<TOKEN_MANDATORY_LABEL>()) };
+        let sid = label.Label.Sid;
+        if sid.is_null() {
+            return Err("integrity SID was null".to_owned());
+        }
+        let count = unsafe { GetSidSubAuthorityCount(sid) };
+        if count.is_null() {
+            return Err("integrity SID subauthority count unavailable".to_owned());
+        }
+        let count = unsafe { *count };
+        if count == 0 {
+            return Err("integrity SID had no subauthority".to_owned());
+        }
+        let rid = unsafe { GetSidSubAuthority(sid, u32::from(count - 1)) };
+        if rid.is_null() {
+            return Err("integrity SID RID unavailable".to_owned());
+        }
+        Ok(unsafe { *rid })
+    }
+
+    fn integrity_name(rid: u32) -> &'static str {
+        match rid {
+            0x5000.. => "Protected",
+            0x4000..=0x4fff => "System",
+            0x3000..=0x3fff => "High",
+            0x2100..=0x2fff => "MediumPlus",
+            0x2000..=0x20ff => "Medium",
+            0x1000..=0x1fff => "Low",
+            _ => "Untrusted",
+        }
+    }
+
     fn window_matches(window: &WindowInfo, wanted: &str) -> bool {
         let wanted = normalize(wanted.trim_end_matches(".exe"));
         normalize(window.process_name.trim_end_matches(".exe")) == wanted
@@ -686,9 +819,7 @@ mod windows_place_text {
                 }
                 let size = unsafe { GlobalSize(handle as _) };
                 if size == 0 {
-                    return Err(format!(
-                        "clipboard format {format} is not byte-copyable"
-                    ));
+                    return Err(format!("clipboard format {format} is not byte-copyable"));
                 }
                 let source = unsafe { GlobalLock(handle as _) };
                 if source.is_null() {
