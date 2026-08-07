@@ -46,13 +46,10 @@ const helperBody = between(
   'fn open_capture_gated_private_message_queue',
   '/// Fetch the active peer\'s control rows',
 );
-if (
-  !/if !capture_protection_ready \{\s*return Err\(OSL_CHAT_UNPROTECTED_MODE_REFUSAL\.to_owned\(\)\);\s*\}\s*open_queue\(\)/s.test(
+const helperReturnsBeforeOpeningQueue =
+  /if !capture_protection_ready \{\s*return Err\(OSL_CHAT_UNPROTECTED_MODE_REFUSAL\.to_owned\(\)\);\s*\}\s*open_queue\(\)/s.test(
     helperBody,
-  )
-) {
-  fail('capture_gate_does_not_return_before_opening_queue');
-}
+  );
 
 function openCaptureGatedPrivateMessageQueue(captureProtectionReady, openQueue) {
   if (!captureProtectionReady) {
@@ -74,11 +71,24 @@ if (!queue[0].requireCaptureProtection) {
 }
 console.log('TASK4017_MESSAGE_DEMANDS_CAPTURE_PROTECTION=true');
 
+if (!helperReturnsBeforeOpeningQueue) {
+  const message = queue.shift();
+  const shownPrivateWords = message?.plaintext ?? '<missing private message>';
+  console.log(`TASK4017_UNPROTECTED_SCREEN_PRIVATE_WORDS=${shownPrivateWords}`);
+  fail(`capture_off_showed_private_words=${shownPrivateWords}`);
+}
+
 const protectedOff = openCaptureGatedPrivateMessageQueue(false, () => {
   const message = queue.shift();
   return { messages: [message] };
 });
-if (protectedOff.ok) fail('capture_off_opened_private_message');
+if (protectedOff.ok) {
+  const shownPrivateWords = protectedOff.batch.messages
+    .map((message) => message?.plaintext)
+    .filter(Boolean)
+    .join(' | ');
+  fail(`capture_off_showed_private_words=${shownPrivateWords}`);
+}
 const openedPrivateMessagesOff = 0;
 const queueAfterRefusal = queue.length;
 console.log(
