@@ -175,6 +175,7 @@ pub mod osl_chat_local_state_key;
 #[cfg(feature = "core")]
 #[cfg(not(task3982_focused))]
 pub mod osl_mail;
+pub mod osl_enclave_roles;
 #[cfg(feature = "core")]
 #[cfg(not(task3982_focused))]
 pub mod osl_profile;
