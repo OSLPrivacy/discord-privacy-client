@@ -13890,6 +13890,16 @@ pub struct EmailSendModeDto {
     pub name: String,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct EmailSendReviewDto {
+    pub mode_id: String,
+    pub mode_name: String,
+    pub subject: String,
+    pub visible_subject_warning: Option<String>,
+    pub named_send_command: String,
+    pub rows: Vec<String>,
+}
+
 /// Static email auto-whitelist kind query for settings/rule wiring.
 pub fn cmd_osl_list_email_whitelist_kinds() -> Vec<EmailWhitelistKindDto> {
     record_activity_on_command_entry();
@@ -13899,6 +13909,32 @@ pub fn cmd_osl_list_email_whitelist_kinds() -> Vec<EmailWhitelistKindDto> {
             name: kind.name().to_string(),
         })
         .collect()
+}
+
+/// The send review the named Send command opens, for the composer UI.
+///
+/// `rows` is the read order: the visible-subject warning, when there is one,
+/// comes before the named Send command, never after it.
+pub fn cmd_osl_open_email_send_review(
+    mode_id: &str,
+    subject: &str,
+    body: &str,
+) -> Result<EmailSendReviewDto, String> {
+    record_activity_on_command_entry();
+    let mode = crate::email_send_modes::EmailSendMode::ALL
+        .iter()
+        .copied()
+        .find(|mode| mode.id() == mode_id)
+        .ok_or_else(|| format!("OSL: unknown email send mode: {mode_id}"))?;
+    let review = crate::email_send_modes::open_email_send_review(mode, subject, body);
+    Ok(EmailSendReviewDto {
+        mode_id: review.rule.id().to_string(),
+        mode_name: review.rule.name().to_string(),
+        subject: review.subject.clone(),
+        visible_subject_warning: review.visible_subject_warning.clone(),
+        named_send_command: review.named_send_command.to_string(),
+        rows: review.rows(),
+    })
 }
 
 /// Static email send-mode choices for settings/review wiring.
