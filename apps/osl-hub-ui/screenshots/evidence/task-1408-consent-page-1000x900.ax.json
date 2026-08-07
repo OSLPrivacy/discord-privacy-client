@@ -1,0 +1,274 @@
+[
+  {
+    "role": "RootWebArea",
+    "name": "Scrub consent"
+  },
+  {
+    "role": "region",
+    "name": "Before Scrub touches your Discord"
+  },
+  {
+    "role": "heading",
+    "name": "Before Scrub touches your Discord"
+  },
+  {
+    "role": "button",
+    "name": "Back"
+  },
+  {
+    "role": "button",
+    "name": "Continue"
+  },
+  {
+    "role": "StaticText",
+    "name": "Before Scrub touches your Discord"
+  },
+  {
+    "role": "StaticText",
+    "name": "Read this for each account you chose. Continue stays closed until you accept the ban risk for every one of them."
+  },
+  {
+    "role": "heading",
+    "name": "Ada on Discord"
+  },
+  {
+    "role": "button",
+    "name": "Read Discord's terms"
+  },
+  {
+    "role": "checkbox",
+    "name": "I have read the ban risk and I accept it for Ada on Discord."
+  },
+  {
+    "role": "heading",
+    "name": "Ada's spare Discord"
+  },
+  {
+    "role": "button",
+    "name": "Read Discord's terms"
+  },
+  {
+    "role": "checkbox",
+    "name": "I have read the ban risk and I accept it for Ada's spare Discord."
+  },
+  {
+    "role": "StaticText",
+    "name": "Back"
+  },
+  {
+    "role": "StaticText",
+    "name": "Continue"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Before Scrub touches your Discord"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Read this for each account you chose. Continue stays closed until you accept the ban risk for "
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "every one of them."
+  },
+  {
+    "role": "StaticText",
+    "name": "Ada on Discord"
+  },
+  {
+    "role": "StaticText",
+    "name": "discord-account-alpha-1408"
+  },
+  {
+    "role": "StaticText",
+    "name": "Read Discord's terms"
+  },
+  {
+    "role": "StaticText",
+    "name": "Press the button to see the address. OSL never opens it for you."
+  },
+  {
+    "role": "StaticText",
+    "name": "Ada's spare Discord"
+  },
+  {
+    "role": "StaticText",
+    "name": "discord-account-beta-1408"
+  },
+  {
+    "role": "StaticText",
+    "name": "Read Discord's terms"
+  },
+  {
+    "role": "StaticText",
+    "name": "Press the button to see the address. OSL never opens it for you."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Back"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Continue"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Ada on Discord"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "discord-account-alpha-1408"
+  },
+  {
+    "role": "ListMarker",
+    "name": "◦ "
+  },
+  {
+    "role": "StaticText",
+    "name": "Real reading: Scrub signs in as you and reads this account's messages one by one. Deletions are permanent."
+  },
+  {
+    "role": "ListMarker",
+    "name": "◦ "
+  },
+  {
+    "role": "StaticText",
+    "name": "Careful scrolling: Scrub scrolls slowly, like a person. A busy account can take hours, and closing the window stops it part-way."
+  },
+  {
+    "role": "ListMarker",
+    "name": "◦ "
+  },
+  {
+    "role": "StaticText",
+    "name": "Service rules: deleting in bulk can break Discord's rules. You are asking OSL to act on your account under those rules."
+  },
+  {
+    "role": "ListMarker",
+    "name": "◦ "
+  },
+  {
+    "role": "StaticText",
+    "name": "Ban risk: Discord can limit or permanently ban this account for it. Nobody at OSL can undo a ban, and a banned account can lose everything on it."
+  },
+  {
+    "role": "ListMarker",
+    "name": "◦ "
+  },
+  {
+    "role": "StaticText",
+    "name": "Stopping: you can stop at any time. What is already deleted stays deleted, and the rest is left untouched."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Read Discord's terms"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Press the button to see the address. OSL never opens it for you."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Ada's spare Discord"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "discord-account-beta-1408"
+  },
+  {
+    "role": "ListMarker",
+    "name": "◦ "
+  },
+  {
+    "role": "StaticText",
+    "name": "Real reading: Scrub signs in as you and reads this account's messages one by one. Deletions are permanent."
+  },
+  {
+    "role": "ListMarker",
+    "name": "◦ "
+  },
+  {
+    "role": "StaticText",
+    "name": "Careful scrolling: Scrub scrolls slowly, like a person. A busy account can take hours, and closing the window stops it part-way."
+  },
+  {
+    "role": "ListMarker",
+    "name": "◦ "
+  },
+  {
+    "role": "StaticText",
+    "name": "Service rules: deleting in bulk can break Discord's rules. You are asking OSL to act on your account under those rules."
+  },
+  {
+    "role": "ListMarker",
+    "name": "◦ "
+  },
+  {
+    "role": "StaticText",
+    "name": "Ban risk: Discord can limit or permanently ban this account for it. Nobody at OSL can undo a ban, and a banned account can lose everything on it."
+  },
+  {
+    "role": "ListMarker",
+    "name": "◦ "
+  },
+  {
+    "role": "StaticText",
+    "name": "Stopping: you can stop at any time. What is already deleted stays deleted, and the rest is left untouched."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Read Discord's terms"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Press the button to see the address. OSL never opens it for you."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Real reading: Scrub signs in as you and reads this account's messages one by one. Deletions are permanent."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Careful scrolling: Scrub scrolls slowly, like a person. A busy account can take hours, and closing the window stops it part-way."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Service rules: deleting in bulk can break Discord's rules. You are asking OSL to act on your account under those rules."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Ban risk: Discord can limit or permanently ban this account for it. Nobody at OSL can undo a ban, and a banned account can lose "
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "everything on it."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Stopping: you can stop at any time. What is already deleted stays deleted, and the rest is left untouched."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Real reading: Scrub signs in as you and reads this account's messages one by one. Deletions are permanent."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Careful scrolling: Scrub scrolls slowly, like a person. A busy account can take hours, and closing the window stops it part-way."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Service rules: deleting in bulk can break Discord's rules. You are asking OSL to act on your account under those rules."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Ban risk: Discord can limit or permanently ban this account for it. Nobody at OSL can undo a ban, and a banned account can lose "
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "everything on it."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Stopping: you can stop at any time. What is already deleted stays deleted, and the rest is left untouched."
+  }
+]
