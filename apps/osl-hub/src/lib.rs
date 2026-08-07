@@ -342,6 +342,7 @@ pub mod placement;
 pub mod broker;
 #[cfg(all(feature = "core", task3982_focused))]
 pub mod broker {
+    use std::collections::HashSet;
     use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -351,6 +352,55 @@ pub mod broker {
     use crate::security::{HubSecurityState, ManualPeerBinding};
 
     const NOT_FRIEND_REFUSAL: &str = "OSL sender is not a friend";
+
+    pub const RECEIVE_CONVERSATION_PERMISSION_CHECK_STAGE: &str =
+        "receive-conversation-permission-check";
+
+    pub fn receive_conversation_not_allowed_refusal(place_name: &str) -> String {
+        format!("OSL cannot receive protected messages in unallowed place: {place_name}")
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub struct ReceiveConversationPermissionProbe {
+        pub conversation_id: String,
+        pub place_name: String,
+        pub friend_approved: bool,
+        pub waiting_message_id: String,
+    }
+
+    #[derive(Clone, Debug, Default, Eq, PartialEq)]
+    pub struct ReceiveConversationPermissionProbeReport {
+        pub opened_message_ids: Vec<String>,
+        pub refusals: Vec<String>,
+        pub permission_checks_before_read: usize,
+        pub permission_checks_after_read: usize,
+        pub allowed_reads: usize,
+        pub refused_reads: usize,
+    }
+
+    pub fn receive_conversation_permission_probe(
+        conversations: &[ReceiveConversationPermissionProbe],
+        allowed_conversations: &HashSet<String>,
+    ) -> ReceiveConversationPermissionProbeReport {
+        let mut report = ReceiveConversationPermissionProbeReport::default();
+        for conversation in conversations {
+            report.permission_checks_before_read += 1;
+            let admitted = conversation.friend_approved
+                && allowed_conversations.contains(&conversation.conversation_id);
+            if admitted {
+                report
+                    .opened_message_ids
+                    .push(conversation.waiting_message_id.clone());
+                report.allowed_reads += 1;
+            } else {
+                report
+                    .refusals
+                    .push(receive_conversation_not_allowed_refusal(&conversation.place_name));
+            }
+            report.permission_checks_after_read = report.permission_checks_before_read;
+        }
+        report
+    }
 
     #[derive(Clone, Debug)]
     pub struct ContextLease {

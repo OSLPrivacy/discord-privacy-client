@@ -5415,6 +5415,90 @@ fn retained_attachment_control_inbox_refusal(
     }
 }
 
+pub const RECEIVE_CONVERSATION_PERMISSION_CHECK_STAGE: &str = "receive-conversation-permission-check";
+
+pub fn receive_conversation_not_allowed_refusal(place_name: &str) -> String {
+    format!("OSL cannot receive protected messages in unallowed place: {place_name}")
+}
+
+fn receive_conversation_allowed_from_rules(conversation_id: &str) -> Result<bool, String> {
+    use ipc::whitelist_rules_store::{
+        WhitelistConversationDecision, WhitelistRulesStoreError,
+    };
+
+    let config_dir =
+        keystore::osl_config_dir().map_err(|_| "OSL account storage is unavailable".to_owned())?;
+    match ipc::whitelist_rules_store::lookup_whitelist_rule(&config_dir, conversation_id) {
+        Ok(WhitelistConversationDecision::Allowed) => Ok(true),
+        Ok(WhitelistConversationDecision::Denied | WhitelistConversationDecision::Ask) => Ok(false),
+        Err(WhitelistRulesStoreError::Fs(error))
+            if error.kind() == std::io::ErrorKind::NotFound =>
+        {
+            Ok(true)
+        }
+        Err(_) => Err("OSL could not receive protected messages".to_owned()),
+    }
+}
+
+fn require_receive_conversation_admission(
+    core: &HubCoreState,
+    manual: &ManualPeerContext,
+    context: &HubConversationContext,
+    place_name: &str,
+) -> Result<ManualPeerBinding, String> {
+    let verified = security::require_manual_peer_scope_approved(
+        core,
+        &manual.service_id,
+        &manual.account_id,
+        manual.person_id.clone(),
+        manual.scope.clone(),
+    )?;
+    if !receive_conversation_allowed_from_rules(&context.conversation_id)? {
+        return Err(receive_conversation_not_allowed_refusal(place_name));
+    }
+    Ok(verified)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReceiveConversationPermissionProbe {
+    pub conversation_id: String,
+    pub place_name: String,
+    pub friend_approved: bool,
+    pub waiting_message_id: String,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ReceiveConversationPermissionProbeReport {
+    pub opened_message_ids: Vec<String>,
+    pub refusals: Vec<String>,
+    pub permission_checks_before_read: usize,
+    pub permission_checks_after_read: usize,
+    pub allowed_reads: usize,
+    pub refused_reads: usize,
+}
+
+pub fn receive_conversation_permission_probe(
+    conversations: &[ReceiveConversationPermissionProbe],
+    allowed_conversations: &HashSet<String>,
+) -> ReceiveConversationPermissionProbeReport {
+    let mut report = ReceiveConversationPermissionProbeReport::default();
+    for conversation in conversations {
+        report.permission_checks_before_read += 1;
+        let admitted = conversation.friend_approved
+            && allowed_conversations.contains(&conversation.conversation_id);
+        if admitted {
+            report.opened_message_ids.push(conversation.waiting_message_id.clone());
+            report.allowed_reads += 1;
+        } else {
+            report
+                .refusals
+                .push(receive_conversation_not_allowed_refusal(&conversation.place_name));
+        }
+        report.permission_checks_after_read = report.permission_checks_before_read;
+    }
+    report
+}
+
 fn drain_peer_inbox_text(
     core: &HubCoreState,
     security_state: &HubSecurityState,
@@ -5440,12 +5524,11 @@ fn drain_peer_inbox_text(
     let burn_storage_key = burn_scope.storage_key();
     let scope_id = native_overlay_relay_scope_id(&context.conversation_id)
         .map_err(|_| "OSL could not receive protected messages".to_owned())?;
-    let verified = security::require_manual_peer_scope_approved(
+    let verified = require_receive_conversation_admission(
         core,
-        &manual.service_id,
-        &manual.account_id,
-        manual.person_id.clone(),
-        manual.scope.clone(),
+        &manual,
+        &context,
+        &context.conversation_id,
     )?;
     let (identity, client) = keyserver_transport(core)?;
     let page = fetch_peer_control_inbox(&identity, &client, &manual.peer_osl_user_id)
