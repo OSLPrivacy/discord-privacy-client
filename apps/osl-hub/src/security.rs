@@ -5912,7 +5912,12 @@ fn validate_allowed_place_record(record: &AllowedPlaceRecord) -> Result<(), Stri
     {
         return Err("OSL Instagram allowed-place kind is invalid".to_owned());
     }
-    if record.app == "x" && !matches!(record.kind.as_str(), "direct_message" | "post") {
+    if record.app == "x"
+        && !matches!(
+            record.kind.as_str(),
+            "direct_message" | "public_post" | "group_direct_message" | "reply"
+        )
+    {
         return Err("OSL X allowed-place kind is invalid".to_owned());
     }
     validate_allowed_place_id(&record.stable_id, "OSL allowed-place identifier is invalid")?;
@@ -5934,6 +5939,9 @@ fn validate_allowed_place_id(value: &str, message: &str) -> Result<(), String> {
         || value.chars().any(char::is_whitespace)
     {
         return Err(message.to_owned());
+    }
+    Ok(())
+}
 fn validate_allowed_place_component(value: &str, label: &str) -> Result<(), String> {
     if value.is_empty()
         || value.len() > 80
@@ -6021,6 +6029,7 @@ fn look_choice_records(prefs: &SecurityPreferences) -> Vec<LookChoiceRecord> {
             value: value.clone(),
         })
         .collect()
+}
 fn allowed_place_direction_key(app: &str, account: &str, kind: &str, stable_id: &str) -> String {
     format!("{app}:{account}:{kind}:{stable_id}")
 }

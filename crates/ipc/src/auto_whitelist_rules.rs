@@ -67,7 +67,14 @@ pub fn normalize_app_kind(raw: &str) -> Result<String, String> {
 
 pub const X_DIRECT_MESSAGE_PLACE_KIND: &str = "direct_message";
 pub const X_PUBLIC_POST_PLACE_KIND: &str = "public_post";
-pub const X_PLACE_KINDS: [&str; 2] = [X_DIRECT_MESSAGE_PLACE_KIND, X_PUBLIC_POST_PLACE_KIND];
+pub const X_GROUP_DIRECT_MESSAGE_PLACE_KIND: &str = "group_direct_message";
+pub const X_REPLY_PLACE_KIND: &str = "reply";
+pub const X_PLACE_KINDS: [&str; 4] = [
+    X_DIRECT_MESSAGE_PLACE_KIND,
+    X_PUBLIC_POST_PLACE_KIND,
+    X_GROUP_DIRECT_MESSAGE_PLACE_KIND,
+    X_REPLY_PLACE_KIND,
+];
 
 pub fn normalize_place_kind_for_app(app_kind: &str, raw: &str) -> Result<String, String> {
     let place_kind = normalize_place_kind(raw)?;

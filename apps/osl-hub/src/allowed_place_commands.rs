@@ -10,13 +10,6 @@ pub const ALLOWED_PLACE_CLI_FLAG: &str = "--allowed-place";
 const HEADLESS_ALLOWED_PLACE_FILE_KEY: [u8; 32] = [0xA7; 32];
 static HEADLESS_ALLOWED_PLACE_LOCK: Mutex<()> = Mutex::new(());
 
-use ipc::allowed_places::{
-    add_allowed_place_record, allowed_place_is_allowed, list_allowed_place_records,
-    remove_allowed_place_record, AllowedPlaceQuery, AllowedPlaceRecord,
-};
-
-pub const ALLOWED_PLACE_CLI_FLAG: &str = "--allowed-place";
-
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase", tag = "command")]
 pub enum AllowedPlaceCommandJson {
@@ -80,7 +73,6 @@ where
         },
         Err(error) => HeadlessCommandResult {
             exit_code: 1,
-            exit_code: 2,
             stdout: format_json_line(&AllowedPlaceErrorJson {
                 ok: false,
                 command: if command.is_empty() {
@@ -103,8 +95,6 @@ pub fn add_allowed_place_json(
         let record = security::add_allowed_place_record(security, record)?;
         Ok(AllowedPlaceCommandJson::Add { ok: true, record })
     })
-    let record = add_allowed_place_record(store_dir, record).map_err(|error| error.to_string())?;
-    Ok(AllowedPlaceCommandJson::Add { ok: true, record })
 }
 
 pub fn remove_allowed_place_json(
@@ -118,12 +108,6 @@ pub fn remove_allowed_place_json(
             stable_id,
             removed,
         })
-    let removed =
-        remove_allowed_place_record(store_dir, &stable_id).map_err(|error| error.to_string())?;
-    Ok(AllowedPlaceCommandJson::Remove {
-        ok: true,
-        stable_id,
-        removed,
     })
 }
 
@@ -135,11 +119,6 @@ pub fn list_allowed_places_json(store_dir: &Path) -> Result<AllowedPlaceCommandJ
             count: records.len(),
             records,
         })
-    let records = list_allowed_place_records(store_dir).map_err(|error| error.to_string())?;
-    Ok(AllowedPlaceCommandJson::List {
-        ok: true,
-        count: records.len(),
-        records,
     })
 }
 
@@ -154,11 +133,6 @@ pub fn allowed_place_allowed_json(
             allowed,
             query,
         })
-    let allowed = allowed_place_is_allowed(store_dir, &query).map_err(|error| error.to_string())?;
-    Ok(AllowedPlaceCommandJson::Allowed {
-        ok: true,
-        allowed,
-        query,
     })
 }
 
@@ -290,7 +264,12 @@ mod tests {
     use tempfile::TempDir;
 
     const INSTAGRAM_KINDS: [&str; 3] = ["direct_message", "group_chat", "channel"];
-    const X_KINDS: [&str; 2] = ["direct_message", "post"];
+    const X_KINDS: [&str; 4] = [
+        "direct_message",
+        "public_post",
+        "group_direct_message",
+        "reply",
+    ];
 
     fn args(items: &[&str]) -> Vec<OsString> {
         items.iter().map(OsString::from).collect()
@@ -493,14 +472,14 @@ mod tests {
     }
 
     #[test]
-    fn x_allowed_place_fixtures_accept_two_kinds_and_reject_group_chat() {
+    fn task_3743_x_allowed_place_fixtures_accept_four_kinds_and_reject_invented() {
         let _serial = crate::global_keystore_test_lock();
         let dir = TempDir::new().unwrap();
         let store = dir.path().to_string_lossy();
         let mut resolved = Vec::new();
 
         for kind in X_KINDS {
-            let stable_id = format!("x:account-0158:{kind}:place-0158-{kind}");
+            let stable_id = format!("x:account-3743:{kind}:place-3743-{kind}");
             let add = run_allowed_place_cli(args(&[
                 "osl-privacy-hub",
                 "--allowed-place",
@@ -510,7 +489,7 @@ mod tests {
                 "--app",
                 "x",
                 "--account",
-                "account-0158",
+                "account-3743",
                 "--kind",
                 kind,
                 "--stable-id",
@@ -528,7 +507,7 @@ mod tests {
                 "--app",
                 "x",
                 "--account",
-                "account-0158",
+                "account-3743",
                 "--kind",
                 kind,
                 "--stable-id",
@@ -550,24 +529,36 @@ mod tests {
             "--app",
             "x",
             "--account",
-            "account-0158",
+            "account-3743",
             "--kind",
-            "group_chat",
+            "invented_kind",
             "--stable-id",
-            "x:account-0158:group_chat:place-0158-group-chat",
+            "x:account-3743:invented_kind:place-3743-invented-kind",
         ]))
         .expect("allowed-place command recognized");
         assert_eq!(rejected.exit_code, 1);
         let rejected_json = json(&rejected.stdout);
         assert_eq!(rejected_json["ok"], false);
-        assert_eq!(rejected_json["error"], "OSL X allowed-place kind is invalid");
+        assert_eq!(
+            rejected_json["error"],
+            "OSL X allowed-place kind is invalid"
+        );
 
         println!(
-            "TASK0158 x_allowed_place_kinds created={} resolved={} kinds={} rejected_kind=group_chat rejected_exit_code={}",
+            "TASK3743 x_allowed_place_kinds created={} resolved={} kinds={} rejected_kind=invented_kind rejected_exit_code={}",
             X_KINDS.len(),
             resolved.len(),
             resolved.join(","),
             rejected.exit_code
         );
+        for (task_id, kind) in [("1125", "group_direct_message"), ("1127", "reply")] {
+            let result = if resolved.contains(&kind) {
+                "allowed"
+            } else {
+                "refusal"
+            };
+            println!("TASK3743_TASK_{task_id}_KIND={kind} RESULT={result}");
+            assert_eq!(result, "allowed");
+        }
     }
 }
