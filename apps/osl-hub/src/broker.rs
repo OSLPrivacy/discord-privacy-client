@@ -24,8 +24,6 @@ use crate::row_who_wrote_it::SharedRowWhoWroteIt;
 use crate::security::{self, HubSecurityState, ManualPeerBinding};
 use crate::service_host::{service_manifest, validate_opaque_id, ActiveServiceHost};
 use crate::service_scope_index::{ServiceScopeIndexState, ServiceScopeRegistration};
-use crate::services::{service_kind_from_id, ServiceRegistryState};
-use crate::service_scope_index::ServiceScopeRegistration;
 use crate::services::{
     messaging_risk_refusal, require_messaging_risk_agreed, service_kind_from_id,
     ServiceRegistryState,
@@ -4223,7 +4221,7 @@ fn authenticate_oriented_prose_pointer(
     }
     let manual = broker.manual_peer_for(context_token)?;
     if sender_person_id != manual.person_id {
-        return Err(PeerProsePointerFailure::Rejected.into());
+        return Err(PeerProsePointerFailure::NotFriend.into());
     }
     security::require_person_not_blocked(&manual.person_id)
         .map_err(|_| PeerProsePointerFailure::Rejected)?;
@@ -8210,6 +8208,10 @@ fn native_text_group_whole(
 /// Nothing here is derived from content, and none of these values is logged.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PeerProsePointerFailure {
+    /// The provider row names a sender that is not the accepted friend bound to
+    /// the active receive context. This is checked before token recovery so a
+    /// stranger row cannot trigger a cipher-store fetch.
+    NotFriend,
     /// The cover carried no prose token for this conversation's scope.
     ///
     /// Cheap and permanent: ordinary chat looks exactly like this, the check is
@@ -8250,6 +8252,7 @@ impl PeerProsePointerFailure {
 
     fn user_message(self) -> String {
         match self {
+            Self::NotFriend => "OSL sender is not a friend".to_owned(),
             // A store outage is the one refusal the operator can act on and the
             // one that will clear itself, so it is the one that gets its own
             // sentence. It names no row, no cover and no message.

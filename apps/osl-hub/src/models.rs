@@ -43,6 +43,8 @@ pub struct HomeTileArrangementInput {
 pub struct HomeTileArrangementRead {
     pub visible_tiles: Vec<String>,
     pub hidden_tiles: Vec<String>,
+    pub visible_tile_data: Vec<HomeTileData>,
+    pub hidden_tile_data: Vec<HomeTileData>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
@@ -63,8 +65,6 @@ pub enum HomeTileArrangementAction {
         tile_id: String,
     },
     Done,
-    pub visible_tile_data: Vec<HomeTileData>,
-    pub hidden_tile_data: Vec<HomeTileData>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]

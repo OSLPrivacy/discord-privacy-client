@@ -1,13 +1,10 @@
 //! Shared native attachment admission limits.
 
-pub const FREE_MAX_ATTACHMENT_BYTES: u64 = 25_000_000;
-pub const PRO_MAX_ATTACHMENT_BYTES: u64 = 1_000_000_000;
 pub const FREE_MAX_ATTACHMENT_BYTES: u64 = 25 * 1024 * 1024;
 pub const PRO_MAX_ATTACHMENT_BYTES: u64 = 1024 * 1024 * 1024;
 pub const MAX_ATTACHMENT_BYTES: u64 = PRO_MAX_ATTACHMENT_BYTES;
 pub const MAX_ATTACHMENTS_PER_MESSAGE: usize = 16;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AttachmentAccountTier {
     Free,
@@ -16,6 +13,9 @@ pub enum AttachmentAccountTier {
 
 impl AttachmentAccountTier {
     pub const fn max_attachment_bytes(self) -> u64 {
+        self.max_bytes_per_file()
+    }
+
     pub const fn max_bytes_per_file(self) -> u64 {
         match self {
             Self::Free => FREE_MAX_ATTACHMENT_BYTES,
@@ -31,12 +31,25 @@ impl AttachmentAccountTier {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AttachmentLimitError {
     Empty,
-    TooLarge { got: u64, max: u64 },
+    TooLarge {
+        got: u64,
+        max: u64,
+    },
     EmptyBatch,
-    TooManyFiles { got: usize, max: usize },
+    TooManyFiles {
+        got: usize,
+        max: usize,
+    },
+    InvalidFileSize,
+    FileTooLarge {
+        tier: AttachmentAccountTier,
+        bytes: u64,
+        max: u64,
+    },
+    InvalidFileCount,
 }
 
 pub fn check_attachment_size(
@@ -75,25 +88,6 @@ pub fn check_attachment_request(
     check_attachment_count(count)
 }
 
-pub const FREE_MAX_ATTACHMENT_BYTES: u64 = 25 * 1024 * 1024;
-pub const PRO_MAX_ATTACHMENT_BYTES: u64 = 1024 * 1024 * 1024;
-pub const MAX_ATTACHMENTS_PER_MESSAGE: usize = 16;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AttachmentLimitError {
-    InvalidFileSize,
-    FileTooLarge {
-        tier: AttachmentAccountTier,
-        bytes: u64,
-        max: u64,
-    },
-    InvalidFileCount,
-    TooManyFiles {
-        count: usize,
-        max: usize,
-    },
-}
-
 pub fn check_attachment_limits(
     tier: AttachmentAccountTier,
     bytes_per_file: u64,
@@ -110,20 +104,10 @@ pub fn check_attachment_limits(
             max,
         });
     }
-    check_attachment_count(file_count)
-}
-
-pub fn check_attachment_count(file_count: usize) -> Result<(), AttachmentLimitError> {
-    if file_count == 0 {
-        return Err(AttachmentLimitError::InvalidFileCount);
-    }
-    if file_count > MAX_ATTACHMENTS_PER_MESSAGE {
-        return Err(AttachmentLimitError::TooManyFiles {
-            count: file_count,
-            max: MAX_ATTACHMENTS_PER_MESSAGE,
-        });
-    }
-    Ok(())
+    check_attachment_count(file_count).map_err(|error| match error {
+        AttachmentLimitError::EmptyBatch => AttachmentLimitError::InvalidFileCount,
+        other => other,
+    })
 }
 
 pub fn attachment_limit_command(
@@ -131,7 +115,6 @@ pub fn attachment_limit_command(
     bytes_per_file: u64,
     file_count: usize,
 ) -> &'static str {
-    match check_attachment_request(bytes_per_file, file_count, tier) {
     match check_attachment_limits(tier, bytes_per_file, file_count) {
         Ok(()) => "accept",
         Err(_) => "reject",
@@ -142,12 +125,8 @@ pub fn attachment_limit_command(
 mod tests {
     use super::*;
 
-    fn verdict(result: Result<(), AttachmentLimitError>) -> &'static str {
-        if result.is_ok() {
-            "accept"
-        } else {
-            "reject"
-        }
+    const MIB: u64 = 1024 * 1024;
+
     #[test]
     fn shared_attachment_size_check_uses_the_account_tier_window() {
         assert_eq!(
@@ -173,54 +152,10 @@ mod tests {
             check_attachment_size(PRO_MAX_ATTACHMENT_BYTES, AttachmentAccountTier::Pro),
             Ok(())
         );
-        assert_eq!(
-            check_attachment_size(PRO_MAX_ATTACHMENT_BYTES + 1, AttachmentAccountTier::Pro),
-            Err(AttachmentLimitError::TooLarge {
-                got: PRO_MAX_ATTACHMENT_BYTES + 1,
-                max: PRO_MAX_ATTACHMENT_BYTES,
-            })
-        );
     }
-    const MIB: u64 = 1024 * 1024;
 
     #[test]
     fn task0051_checks_attachment_limits_directly() {
-        let cases = [
-            (
-                "24 MB",
-                verdict(check_attachment_request(
-                    24_000_000,
-                    1,
-                    AttachmentAccountTier::Free,
-                )),
-                "accept",
-            ),
-            (
-                "26 MB",
-                verdict(check_attachment_request(
-                    26_000_000,
-                    1,
-                    AttachmentAccountTier::Free,
-                )),
-                "reject",
-            ),
-            (
-                "999 MB",
-                verdict(check_attachment_request(
-                    999_000_000,
-                    1,
-                    AttachmentAccountTier::Pro,
-                )),
-                "accept",
-            ),
-            (
-                "1.1 GB",
-                verdict(check_attachment_request(
-                    1_100_000_000,
-                    1,
-                    AttachmentAccountTier::Pro,
-                )),
-        const MIB: u64 = 1024 * 1024;
         let cases = [
             ("24 MB", AttachmentAccountTier::Free, 24 * MIB, 1, "accept"),
             ("26 MB", AttachmentAccountTier::Free, 26 * MIB, 1, "reject"),
@@ -234,7 +169,6 @@ mod tests {
             ),
             (
                 "16 files",
-                verdict(check_attachment_request(1, 16, AttachmentAccountTier::Pro)),
                 AttachmentAccountTier::Free,
                 1 * MIB,
                 16,
@@ -242,7 +176,6 @@ mod tests {
             ),
             (
                 "17 files",
-                verdict(check_attachment_request(1, 17, AttachmentAccountTier::Pro)),
                 AttachmentAccountTier::Free,
                 1 * MIB,
                 17,
@@ -250,7 +183,6 @@ mod tests {
             ),
         ];
 
-        for (label, actual, expected) in cases {
         for (label, tier, bytes_per_file, file_count, expected) in cases {
             let actual = attachment_limit_command(tier, bytes_per_file, file_count);
             println!("TASK0051 attachment_limit case={label} result={actual}");
