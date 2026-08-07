@@ -67,7 +67,7 @@ function renderLock(input: {
     "verifiedPeer",
     "lock",
     "escapeHtml",
-    `${block}\nreturn { composerLockState, composerProtectionLabel, composerControl, composerRefusalNotice };`,
+    `const openPlaceAllowed = true;\n${block}\nreturn { composerLockState, composerProtectionLabel, composerControl, composerRefusalNotice };`,
   ) as (
     protectionActive: boolean,
     busy: boolean,
@@ -298,7 +298,7 @@ describe("Discord QA lock refusal is visible and explained", () => {
     // The composer-less lock-visibility gate stays inert.
     expect(source).toContain("let discordMarkerAvailable = true;");
     expect(headerControls).toContain(
-      "const composerControl = discordMarkerAvailable || nativeDiscordProtectionActive",
+      "const composerControl = openPlaceAllowed && (discordMarkerAvailable || nativeDiscordProtectionActive)",
     );
   });
 });
