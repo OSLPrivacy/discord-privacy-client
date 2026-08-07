@@ -5297,6 +5297,11 @@ code {
 .osl-chat-view-once input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 .osl-chat-view-once span,
 .osl-chat-send span { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+/* TASK 0594: a view-once cell that is off for tier stops being a 44px icon and
+   makes room for the sentence saying why, beside the icon it disables. */
+.osl-chat-composer-bar:has(.osl-chat-view-once[data-osl-view-once-off-reason="tier"]) { grid-template-columns: minmax(0, 236px) minmax(0, 1fr) 44px; }
+.osl-chat-view-once[data-osl-view-once-off-reason="tier"] { width: auto; padding: 8px 10px; grid-auto-flow: column; place-items: center start; gap: 8px; cursor: default; }
+.osl-chat-view-once .view-once-tier-note { display: block; color: var(--text); font-size: 11px; line-height: 1.35; }
 .osl-chat-composer-meta { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 11px; }
 .osl-chat-readiness:empty { display: none; }
 .osl-chat-send { width: 44px; min-height: 44px; border: 0; background: var(--brand); color: #001014; display: grid; place-items: center; cursor: pointer; }
@@ -5985,6 +5990,14 @@ code {
   width: 100%;
   height: 72px;
   min-height: 72px;
+  /* TASK 0816: the bar carries five labelled controls now, so it is a flex
+     line rather than .home-header's fixed 180px/1fr/auto grid -- in that grid
+     the labelled controls were sized by the track, not by their own words,
+     which is exactly how label text gets clipped. Flex lets every control take
+     the width its word needs and pushes the leftover space between them. */
+  display: flex;
+  align-items: center;
+  gap: 16px;
   padding: 0 24px;
   justify-content: space-between;
 }
@@ -6005,6 +6018,7 @@ code {
 }
 .home-logo-button img { width: 100%; height: 100%; display: block; object-fit: contain; }
 .home-command-actions { display: flex; align-items: center; gap: 4px; }
+
 .home-command-icon {
   position: relative;
   width: 44px;
@@ -6057,6 +6071,71 @@ code {
   height: 6px;
   border: 1px solid var(--panel);
   border-radius: 50%;
+  background: var(--brand);
+}
+
+/* TASK 0816 -- the five Home top-bar controls: logo, Friends, Notifications,
+   Settings, Profile. Each one is a mark plus the word it is called; the word is
+   the control, so nothing here may shrink, wrap or ellipsise it. */
+.home-top-bar-control {
+  position: relative;
+  width: auto;
+  min-width: 0;
+  height: 44px;
+  padding: 0 12px;
+  border-radius: 8px;
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+.home-logo-button.home-top-bar-control { padding-left: 7px; }
+.home-logo-button.home-top-bar-control img { width: 30px; height: 30px; flex: 0 0 30px; }
+.home-command-icon.home-top-bar-control svg { flex: 0 0 21px; }
+.home-top-bar-label {
+  flex: 0 0 auto;
+  overflow: visible;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: .01em;
+  /* Not `line-height: 1`. At 13px that gave the box 13px for glyphs that need
+     14, so the label's own scrollHeight exceeded its clientHeight -- descenders
+     were being trimmed. 18px leaves room and the capture checks it. */
+  line-height: 18px;
+  white-space: nowrap;
+}
+.home-command-actions { flex-wrap: nowrap; gap: 6px; }
+
+/* The pending-friends count and the new-notification dot were absolutely
+   positioned over the top-right corner of a 44px square. On a control that now
+   carries a word, that corner is on top of the word's last letters, which reads
+   as clipped text even though nothing is clipped. In the bar they sit in flow,
+   after the label, where they cover nothing. */
+.home-top-bar-control .home-command-badge,
+.home-top-bar-control .home-command-dot {
+  position: static;
+  top: auto;
+  right: auto;
+  flex: 0 0 auto;
+  border-width: 0;
+}
+
+/* Current-page state. The highlight, the underline and aria-current are all
+   driven by the same `current` class the markup sets from one boolean. */
+.home-top-bar-control.current {
+  border-color: color-mix(in srgb, var(--brand) 58%, var(--line));
+  background: color-mix(in srgb, var(--brand) 18%, var(--panel-2));
+  color: var(--text);
+}
+.home-top-bar-control.current .home-top-bar-label { font-weight: 700; }
+.home-top-bar-control.current::after {
+  content: "";
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 3px;
+  height: 2px;
   background: var(--brand);
 }
 .home-dashboard {
@@ -6269,6 +6348,13 @@ code {
   white-space: nowrap;
 }
 .whitelist-dropdown-row small { color: var(--muted); }
+.verification-tick {
+  display: inline-block;
+  margin-left: 6px;
+  font-size: .78em;
+  line-height: 1;
+  color: var(--success);
+}
 .whitelist-roster-row { display: grid; gap: 8px; }
 .whitelist-roster-row > header {
   display: flex;

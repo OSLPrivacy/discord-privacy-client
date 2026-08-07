@@ -55,7 +55,7 @@ function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-function parsePng(buffer) {
+export function parsePng(buffer) {
   const signature = buffer.subarray(0, 8);
   if (!signature.equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) {
     throw new Error("screenshot is not a PNG");
@@ -130,7 +130,7 @@ function parsePng(buffer) {
   return { width, height, pixels };
 }
 
-function cropFacts(png, rect) {
+export function cropFacts(png, rect) {
   const x0 = Math.max(0, Math.floor(rect.x));
   const y0 = Math.max(0, Math.floor(rect.y));
   const x1 = Math.min(png.width, Math.ceil(rect.x + rect.width));
@@ -407,7 +407,12 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(`capture-linux-notifications: ${error.stack || error.message}`);
-  process.exitCode = 1;
-});
+// Guarded so `parsePng`/`cropFacts` can be imported by other captures instead
+// of being copied a fourth time; running the file directly still captures.
+const isCli = process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
+if (isCli) {
+  main().catch((error) => {
+    console.error(`capture-linux-notifications: ${error.stack || error.message}`);
+    process.exitCode = 1;
+  });
+}

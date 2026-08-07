@@ -15,6 +15,7 @@
     "build": "tsc --noEmit && vite build",
     "build:discord-qa": "tsc --noEmit && vite build --mode discord-qa",
     "check:cssvars": "node scripts/check-css-vars.mjs",
+    "screenshot:home-top-bar": "node screenshots/capture-home-top-bar.mjs",
     "screenshot:notifications": "node screenshots/capture-linux-notifications.mjs",
     "screenshot:pro-code": "node screenshots/capture-pro-code.mjs",
     "typecheck": "tsc --noEmit",
