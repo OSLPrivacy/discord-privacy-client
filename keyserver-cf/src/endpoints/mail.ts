@@ -194,7 +194,11 @@ export async function handleMailRead(request: Request, env: Env, operation: "LIS
   }
   if (operation === "ACK" || operation === "DELETE") {
     if (!isProtocolId(body.message_id)) return badRequest("message_id invalid");
-    return json(await box.ack(auth.userId, auth.requestId, body.message_id, Date.now()));
+    const result = await box.ack(auth.userId, auth.requestId, body.message_id, Date.now());
+    if ("refused" in result && result.refused === "never_opened") {
+      return conflict(`message was never opened: ${result.message_id}`);
+    }
+    return json(result);
   }
   const result = await box.deleteAll(auth.userId, auth.requestId, Date.now());
   await env.DB.prepare(
