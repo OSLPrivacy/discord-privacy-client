@@ -177,6 +177,283 @@ pub enum ServerPermission {
     ChangeServer,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "camelCase")]
+pub enum RolePermissionOverrideRole {
+    Owner,
+    Moderator,
+    Member,
+}
+
+impl RolePermissionOverrideRole {
+    pub const ALL: [Self; 3] = [Self::Owner, Self::Moderator, Self::Member];
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Owner => "owner",
+            Self::Moderator => "moderator",
+            Self::Member => "member",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "camelCase")]
+pub enum RolePermissionOverridePermission {
+    ReadMessages,
+    SendMessages,
+    AttachFiles,
+    EmbedLinks,
+    AddReactions,
+    UseEmoji,
+    CreateThreads,
+    ReplyThreads,
+    ManageThreads,
+    PinMessages,
+    DeleteOwnMessages,
+    DeleteAnyMessages,
+    EditOwnMessages,
+    EditAnyMessages,
+    MentionEveryone,
+    MentionRoles,
+    InvitePeople,
+    RemovePeople,
+    MutePeople,
+    TimeoutPeople,
+    BanPeople,
+    KickPeople,
+    ChangeChannelName,
+    ChangeChannelTopic,
+    ChangeSlowMode,
+    ChangePermissions,
+    ViewAuditLog,
+    ManageRoles,
+    ManageWebhooks,
+    ManageIntegrations,
+    StartVoice,
+    JoinVoice,
+    SpeakVoice,
+    MuteVoice,
+    DeafenVoice,
+    StreamVoice,
+    ShareScreen,
+    StartPolls,
+    VotePolls,
+    ManagePolls,
+}
+
+impl RolePermissionOverridePermission {
+    pub const ALL: [Self; 40] = [
+        Self::ReadMessages,
+        Self::SendMessages,
+        Self::AttachFiles,
+        Self::EmbedLinks,
+        Self::AddReactions,
+        Self::UseEmoji,
+        Self::CreateThreads,
+        Self::ReplyThreads,
+        Self::ManageThreads,
+        Self::PinMessages,
+        Self::DeleteOwnMessages,
+        Self::DeleteAnyMessages,
+        Self::EditOwnMessages,
+        Self::EditAnyMessages,
+        Self::MentionEveryone,
+        Self::MentionRoles,
+        Self::InvitePeople,
+        Self::RemovePeople,
+        Self::MutePeople,
+        Self::TimeoutPeople,
+        Self::BanPeople,
+        Self::KickPeople,
+        Self::ChangeChannelName,
+        Self::ChangeChannelTopic,
+        Self::ChangeSlowMode,
+        Self::ChangePermissions,
+        Self::ViewAuditLog,
+        Self::ManageRoles,
+        Self::ManageWebhooks,
+        Self::ManageIntegrations,
+        Self::StartVoice,
+        Self::JoinVoice,
+        Self::SpeakVoice,
+        Self::MuteVoice,
+        Self::DeafenVoice,
+        Self::StreamVoice,
+        Self::ShareScreen,
+        Self::StartPolls,
+        Self::VotePolls,
+        Self::ManagePolls,
+    ];
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::ReadMessages => "read messages",
+            Self::SendMessages => "send messages",
+            Self::AttachFiles => "attach files",
+            Self::EmbedLinks => "embed links",
+            Self::AddReactions => "add reactions",
+            Self::UseEmoji => "use emoji",
+            Self::CreateThreads => "create threads",
+            Self::ReplyThreads => "reply threads",
+            Self::ManageThreads => "manage threads",
+            Self::PinMessages => "pin messages",
+            Self::DeleteOwnMessages => "delete own messages",
+            Self::DeleteAnyMessages => "delete any messages",
+            Self::EditOwnMessages => "edit own messages",
+            Self::EditAnyMessages => "edit any messages",
+            Self::MentionEveryone => "mention everyone",
+            Self::MentionRoles => "mention roles",
+            Self::InvitePeople => "invite people",
+            Self::RemovePeople => "remove people",
+            Self::MutePeople => "mute people",
+            Self::TimeoutPeople => "timeout people",
+            Self::BanPeople => "ban people",
+            Self::KickPeople => "kick people",
+            Self::ChangeChannelName => "change channel name",
+            Self::ChangeChannelTopic => "change channel topic",
+            Self::ChangeSlowMode => "change slow mode",
+            Self::ChangePermissions => "change permissions",
+            Self::ViewAuditLog => "view audit log",
+            Self::ManageRoles => "manage roles",
+            Self::ManageWebhooks => "manage webhooks",
+            Self::ManageIntegrations => "manage integrations",
+            Self::StartVoice => "start voice",
+            Self::JoinVoice => "join voice",
+            Self::SpeakVoice => "speak voice",
+            Self::MuteVoice => "mute voice",
+            Self::DeafenVoice => "deafen voice",
+            Self::StreamVoice => "stream voice",
+            Self::ShareScreen => "share screen",
+            Self::StartPolls => "start polls",
+            Self::VotePolls => "vote polls",
+            Self::ManagePolls => "manage polls",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum RolePermissionOverrideState {
+    Allow,
+    Deny,
+    Inherit,
+}
+
+impl RolePermissionOverrideState {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Allow => "allow",
+            Self::Deny => "deny",
+            Self::Inherit => "inherit",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RolePermissionOverrideCell {
+    pub role: RolePermissionOverrideRole,
+    pub permission: RolePermissionOverridePermission,
+    pub state: RolePermissionOverrideState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RolePermissionOverrideTable {
+    pub server_id: String,
+    pub channel_id: String,
+    pub thread_id: Option<String>,
+    pub cells: Vec<RolePermissionOverrideCell>,
+    pub saved_cell_count: usize,
+    pub explicit_grant_row_count: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct RolePermissionOverrideKey {
+    role: RolePermissionOverrideRole,
+    permission: RolePermissionOverridePermission,
+}
+
+impl RolePermissionOverrideKey {
+    fn from_cell(cell: &RolePermissionOverrideCell) -> Self {
+        Self {
+            role: cell.role,
+            permission: cell.permission,
+        }
+    }
+
+    fn storage_key(self) -> String {
+        format!("{}\n{}", self.role.name(), self.permission.name())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct RolePermissionOverrideScope {
+    server_id: String,
+    channel_id: String,
+    thread_id: Option<String>,
+    rows: BTreeMap<String, RolePermissionOverrideState>,
+}
+
+impl RolePermissionOverrideScope {
+    fn new(server_id: String, channel_id: String, thread_id: Option<String>) -> Self {
+        Self {
+            server_id,
+            channel_id,
+            thread_id,
+            rows: BTreeMap::new(),
+        }
+    }
+
+    fn set_cell(&mut self, cell: RolePermissionOverrideCell) {
+        let key = RolePermissionOverrideKey::from_cell(&cell).storage_key();
+        match cell.state {
+            RolePermissionOverrideState::Allow | RolePermissionOverrideState::Deny => {
+                self.rows.insert(key, cell.state);
+            }
+            RolePermissionOverrideState::Inherit => {
+                self.rows.remove(&key);
+            }
+        }
+    }
+
+    fn cell_state(
+        &self,
+        role: RolePermissionOverrideRole,
+        permission: RolePermissionOverridePermission,
+    ) -> RolePermissionOverrideState {
+        self.rows
+            .get(&RolePermissionOverrideKey { role, permission }.storage_key())
+            .copied()
+            .unwrap_or(RolePermissionOverrideState::Inherit)
+    }
+
+    fn table(&self) -> RolePermissionOverrideTable {
+        let cells = RolePermissionOverrideRole::ALL
+            .into_iter()
+            .flat_map(|role| {
+                RolePermissionOverridePermission::ALL
+                    .into_iter()
+                    .map(move |permission| RolePermissionOverrideCell {
+                        role,
+                        permission,
+                        state: self.cell_state(role, permission),
+                    })
+            })
+            .collect::<Vec<_>>();
+        RolePermissionOverrideTable {
+            server_id: self.server_id.clone(),
+            channel_id: self.channel_id.clone(),
+            thread_id: self.thread_id.clone(),
+            saved_cell_count: cells.len(),
+            explicit_grant_row_count: self.rows.len(),
+            cells,
+        }
+    }
+}
+
 impl ServerPermission {
     pub const ALL: [Self; 7] = [
         Self::Read,
@@ -386,6 +663,8 @@ pub struct ServerThreadRead {
 pub struct ServerThreadPermissionStore {
     channels: BTreeMap<String, ServerChannelAccessRecord>,
     threads: BTreeMap<String, ServerThreadRecord>,
+    #[serde(default)]
+    role_overrides: BTreeMap<String, RolePermissionOverrideScope>,
 }
 
 impl ServerThreadPermissionStore {
@@ -556,6 +835,116 @@ impl ServerThreadPermissionStore {
         Ok(0)
     }
 
+    pub fn set_channel_role_permission_overrides(
+        &mut self,
+        server_id: String,
+        channel_id: String,
+        cells: Vec<RolePermissionOverrideCell>,
+    ) -> Result<RolePermissionOverrideTable, ServerThreadPermissionError> {
+        let server_id = bounded_non_empty(server_id, "server_id")
+            .map_err(ServerThreadPermissionError::Membership)?;
+        let channel_id = bounded_non_empty(channel_id, "channel_id")
+            .map_err(ServerThreadPermissionError::Membership)?;
+        self.channel(&server_id, &channel_id)?;
+        validate_override_table(&cells)?;
+
+        let key = role_override_scope_key(&server_id, &channel_id, None);
+        let scope = self
+            .role_overrides
+            .entry(key)
+            .or_insert_with(|| RolePermissionOverrideScope::new(server_id, channel_id, None));
+        for cell in cells {
+            scope.set_cell(cell);
+        }
+        Ok(scope.table())
+    }
+
+    pub fn read_channel_role_permission_overrides(
+        &self,
+        server_id: String,
+        channel_id: String,
+    ) -> Result<RolePermissionOverrideTable, ServerThreadPermissionError> {
+        let server_id = bounded_non_empty(server_id, "server_id")
+            .map_err(ServerThreadPermissionError::Membership)?;
+        let channel_id = bounded_non_empty(channel_id, "channel_id")
+            .map_err(ServerThreadPermissionError::Membership)?;
+        self.channel(&server_id, &channel_id)?;
+        let key = role_override_scope_key(&server_id, &channel_id, None);
+        Ok(self
+            .role_overrides
+            .get(&key)
+            .cloned()
+            .unwrap_or_else(|| RolePermissionOverrideScope::new(server_id, channel_id, None))
+            .table())
+    }
+
+    pub fn set_thread_role_permission_overrides(
+        &mut self,
+        server_id: String,
+        channel_id: String,
+        thread_id: String,
+        cells: Vec<RolePermissionOverrideCell>,
+    ) -> Result<RolePermissionOverrideTable, ServerThreadPermissionError> {
+        let server_id = bounded_non_empty(server_id, "server_id")
+            .map_err(ServerThreadPermissionError::Membership)?;
+        let channel_id = bounded_non_empty(channel_id, "channel_id")
+            .map_err(ServerThreadPermissionError::Membership)?;
+        let thread_id = bounded_non_empty(thread_id, "thread_id")
+            .map_err(ServerThreadPermissionError::Membership)?;
+        self.thread(&server_id, &channel_id, &thread_id)?;
+        validate_override_table(&cells)?;
+
+        let channel_key = role_override_scope_key(&server_id, &channel_id, None);
+        let parent = self
+            .role_overrides
+            .get(&channel_key)
+            .cloned()
+            .unwrap_or_else(|| {
+                RolePermissionOverrideScope::new(server_id.clone(), channel_id.clone(), None)
+            });
+        for cell in &cells {
+            if cell.state == RolePermissionOverrideState::Allow
+                && parent.cell_state(cell.role, cell.permission)
+                    == RolePermissionOverrideState::Deny
+            {
+                return Err(ServerThreadPermissionError::ThreadOverrideMoreOpenThanChannel);
+            }
+        }
+
+        let key = role_override_scope_key(&server_id, &channel_id, Some(&thread_id));
+        let scope = self.role_overrides.entry(key).or_insert_with(|| {
+            RolePermissionOverrideScope::new(server_id, channel_id, Some(thread_id))
+        });
+        for cell in cells {
+            scope.set_cell(cell);
+        }
+        Ok(scope.table())
+    }
+
+    pub fn read_thread_role_permission_overrides(
+        &self,
+        server_id: String,
+        channel_id: String,
+        thread_id: String,
+    ) -> Result<RolePermissionOverrideTable, ServerThreadPermissionError> {
+        let server_id = bounded_non_empty(server_id, "server_id")
+            .map_err(ServerThreadPermissionError::Membership)?;
+        let channel_id = bounded_non_empty(channel_id, "channel_id")
+            .map_err(ServerThreadPermissionError::Membership)?;
+        let thread_id = bounded_non_empty(thread_id, "thread_id")
+            .map_err(ServerThreadPermissionError::Membership)?;
+        self.thread(&server_id, &channel_id, &thread_id)?;
+        let key = role_override_scope_key(&server_id, &channel_id, Some(&thread_id));
+        Ok(self
+            .role_overrides
+            .get(&key)
+            .cloned()
+            .unwrap_or_else(|| {
+                RolePermissionOverrideScope::new(server_id, channel_id, Some(thread_id))
+            })
+            .table())
+    }
+
     fn channel(
         &self,
         server_id: &str,
@@ -599,6 +988,10 @@ pub enum ServerThreadPermissionError {
         thread_id: String,
         channel_id: String,
     },
+    #[error("thread cannot be more open than channel")]
+    ThreadOverrideMoreOpenThanChannel,
+    #[error("OSL: role override table must contain exactly 120 unique cells")]
+    InvalidRoleOverrideTable,
 }
 
 fn channel_key(server_id: &str, channel_id: &str) -> String {
@@ -607,4 +1000,27 @@ fn channel_key(server_id: &str, channel_id: &str) -> String {
 
 fn thread_key(server_id: &str, channel_id: &str, thread_id: &str) -> String {
     format!("{server_id}\n{channel_id}\n{thread_id}")
+}
+
+fn role_override_scope_key(server_id: &str, channel_id: &str, thread_id: Option<&str>) -> String {
+    match thread_id {
+        Some(thread_id) => format!("{server_id}\n{channel_id}\n{thread_id}"),
+        None => format!("{server_id}\n{channel_id}"),
+    }
+}
+
+fn validate_override_table(
+    cells: &[RolePermissionOverrideCell],
+) -> Result<(), ServerThreadPermissionError> {
+    let expected =
+        RolePermissionOverrideRole::ALL.len() * RolePermissionOverridePermission::ALL.len();
+    let unique = cells
+        .iter()
+        .map(RolePermissionOverrideKey::from_cell)
+        .collect::<BTreeSet<_>>();
+    if cells.len() == expected && unique.len() == expected {
+        Ok(())
+    } else {
+        Err(ServerThreadPermissionError::InvalidRoleOverrideTable)
+    }
 }
