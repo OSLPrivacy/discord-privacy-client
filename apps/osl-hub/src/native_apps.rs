@@ -7,11 +7,14 @@
 
 use adapter_profile::{AdapterService, AdapterSurface, SupportLevel};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::windows_executable_trust::ExecutablePublisher;
 #[cfg(target_os = "windows")]
 use crate::windows_executable_trust::{verify_executable, TrustedExecutable};
 
+#[cfg(target_os = "windows")]
+use std::io::{Read, Write};
 #[cfg(target_os = "windows")]
 use std::os::windows::ffi::OsStringExt;
 #[cfg(target_os = "windows")]
@@ -276,6 +279,12 @@ pub struct MullvadStatus {
 #[serde(rename_all = "camelCase")]
 pub struct MullvadActionResult {
     pub started: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub installer_sha256: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub installer_source: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
@@ -520,6 +529,30 @@ static VERIFIED_INSTALLER_AVAILABLE: Mutex<InstallerAvailabilityCache> =
 
 #[cfg(any(target_os = "windows", test))]
 const MULLVAD_PACKAGE_ID: &str = "MullvadVPN.MullvadVPN";
+
+#[cfg(any(target_os = "windows", test))]
+const MULLVAD_VENDOR_INSTALLER_VERSION: &str = "2026.3";
+
+#[cfg(any(target_os = "windows", test))]
+const MULLVAD_VENDOR_INSTALLER_FILENAME: &str = "MullvadVPN-2026.3_x64.exe";
+
+#[cfg(any(target_os = "windows", test))]
+const MULLVAD_VENDOR_INSTALLER_URL: &str =
+    "https://github.com/mullvad/mullvadvpn-app/releases/download/2026.3/MullvadVPN-2026.3_x64.exe";
+
+#[cfg(any(target_os = "windows", test))]
+const MULLVAD_VENDOR_INSTALLER_SHA256: &str =
+    "e335507b948083100b54f8000ef5bb733e3ee959f8df6a573e9404c506cb139a";
+
+#[cfg(any(target_os = "windows", test))]
+const MULLVAD_HASH_MISMATCH: &str = "MULLVAD-HASH-MISMATCH";
+
+#[cfg(any(target_os = "windows", test))]
+const MULLVAD_VENDOR_INSTALLER_MAX_BYTES: u64 = 160 * 1024 * 1024;
+
+#[cfg(target_os = "windows")]
+const MULLVAD_VENDOR_INSTALLER_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(120);
+
 #[cfg(any(target_os = "windows", test))]
 const DISCORD_DEDICATED_PACKAGE_ID: &str = "Discord.Discord.PTB";
 
@@ -1462,7 +1495,7 @@ pub fn install_discord_dedicated_channel() -> Result<(), String> {
 pub fn get_mullvad_status() -> MullvadStatus {
     let availability = if mullvad_executable().is_some() {
         NativeAppAvailability::Installed
-    } else if installer_available_for_listing() {
+    } else if mullvad_installer_available_for_listing() {
         NativeAppAvailability::Installable
     } else {
         NativeAppAvailability::Unavailable
@@ -1470,18 +1503,46 @@ pub fn get_mullvad_status() -> MullvadStatus {
     MullvadStatus { availability }
 }
 
-/// Starts only the exact current Mullvad package from the public winget
-/// repository. Winget verifies the selected manifest and installer; OSL does
-/// not accept a package id, source, executable path, or argument from the UI.
+#[cfg(target_os = "windows")]
+fn mullvad_installer_available_for_listing() -> bool {
+    true
+}
+
+#[cfg(not(target_os = "windows"))]
+fn mullvad_installer_available_for_listing() -> bool {
+    false
+}
+
+/// Starts only Mullvad's pinned vendor installer. Winget remains a second
+/// choice only when it is already present and the direct download could not be
+/// started or completed. OSL does not accept a package id, source, executable
+/// path, URL, hash, or argument from the UI.
 pub fn install_mullvad() -> Result<MullvadActionResult, String> {
     #[cfg(target_os = "windows")]
     {
-        let winget = installer_executable()
-            .ok_or_else(|| "Windows App Installer (winget) is unavailable".to_owned())?;
-        let arguments = mullvad_install_arguments();
-        spawn_detached(&winget, &arguments)
-            .map_err(|_| "The Mullvad installer could not be started".to_owned())?;
-        Ok(MullvadActionResult { started: true })
+        match install_mullvad_from_verified_vendor_installer() {
+            Ok(()) => Ok(MullvadActionResult {
+                started: true,
+                version: Some(MULLVAD_VENDOR_INSTALLER_VERSION),
+                installer_sha256: Some(MULLVAD_VENDOR_INSTALLER_SHA256),
+                installer_source: Some("vendor"),
+            }),
+            Err(error) if error == MULLVAD_HASH_MISMATCH => Err(error),
+            Err(direct_error) => {
+                let Some(winget) = installer_executable() else {
+                    return Err(direct_error);
+                };
+                let arguments = mullvad_winget_install_arguments();
+                spawn_detached(&winget, &arguments)
+                    .map_err(|_| "The Mullvad installer could not be started".to_owned())?;
+                Ok(MullvadActionResult {
+                    started: true,
+                    version: Some(MULLVAD_VENDOR_INSTALLER_VERSION),
+                    installer_sha256: Some(MULLVAD_VENDOR_INSTALLER_SHA256),
+                    installer_source: Some("winget"),
+                })
+            }
+        }
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -1490,7 +1551,7 @@ pub fn install_mullvad() -> Result<MullvadActionResult, String> {
 }
 
 #[cfg(any(target_os = "windows", test))]
-fn mullvad_install_arguments() -> [&'static str; 9] {
+fn mullvad_winget_install_arguments() -> [&'static str; 9] {
     [
         "install",
         "--id",
@@ -1502,6 +1563,120 @@ fn mullvad_install_arguments() -> [&'static str; 9] {
         "--accept-package-agreements",
         "--silent",
     ]
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn mullvad_vendor_installer_arguments() -> [&'static str; 1] {
+    ["/S"]
+}
+
+#[cfg(target_os = "windows")]
+fn install_mullvad_from_verified_vendor_installer() -> Result<(), String> {
+    eprintln!("MULLVAD-INSTALLER-VERSION={MULLVAD_VENDOR_INSTALLER_VERSION}");
+    eprintln!("MULLVAD-INSTALLER-PINNED-SHA256={MULLVAD_VENDOR_INSTALLER_SHA256}");
+    let installer = download_mullvad_vendor_installer()?;
+    let actual_sha256 = sha256_file_hex(&installer).map_err(|_| {
+        remove_downloaded_mullvad_installer(&installer);
+        "The Mullvad installer hash could not be checked".to_owned()
+    })?;
+    if actual_sha256 != MULLVAD_VENDOR_INSTALLER_SHA256 {
+        remove_downloaded_mullvad_installer(&installer);
+        eprintln!("{MULLVAD_HASH_MISMATCH}");
+        return Err(MULLVAD_HASH_MISMATCH.to_owned());
+    }
+    spawn_detached(&installer, &mullvad_vendor_installer_arguments())
+        .map_err(|_| "The Mullvad installer could not be started".to_owned())
+}
+
+#[cfg(target_os = "windows")]
+fn download_mullvad_vendor_installer() -> Result<PathBuf, String> {
+    let destination = mullvad_vendor_installer_download_path();
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent).map_err(|_| {
+            "The Mullvad installer download directory could not be prepared".to_owned()
+        })?;
+    }
+    let mut response = reqwest::blocking::Client::builder()
+        .redirect(reqwest::redirect::Policy::limited(5))
+        .timeout(MULLVAD_VENDOR_INSTALLER_DOWNLOAD_TIMEOUT)
+        .user_agent("OSL Mullvad installer/1")
+        .build()
+        .map_err(|_| "The Mullvad installer downloader could not be prepared".to_owned())?
+        .get(MULLVAD_VENDOR_INSTALLER_URL)
+        .send()
+        .map_err(|_| "The Mullvad installer could not be downloaded".to_owned())?
+        .error_for_status()
+        .map_err(|_| "The Mullvad installer could not be downloaded".to_owned())?;
+    if response
+        .content_length()
+        .is_some_and(|bytes| bytes > MULLVAD_VENDOR_INSTALLER_MAX_BYTES)
+    {
+        return Err("The Mullvad installer download is too large".to_owned());
+    }
+
+    let partial = destination.with_extension("exe.partial");
+    let mut file = std::fs::File::create(&partial)
+        .map_err(|_| "The Mullvad installer download could not be created".to_owned())?;
+    let mut copied = 0u64;
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = response
+            .read(&mut buffer)
+            .map_err(|_| "The Mullvad installer download could not be read".to_owned())?;
+        if read == 0 {
+            break;
+        }
+        copied += read as u64;
+        if copied > MULLVAD_VENDOR_INSTALLER_MAX_BYTES {
+            remove_downloaded_mullvad_installer(&partial);
+            return Err("The Mullvad installer download is too large".to_owned());
+        }
+        file.write_all(&buffer[..read])
+            .map_err(|_| "The Mullvad installer download could not be written".to_owned())?;
+    }
+    file.sync_all()
+        .map_err(|_| "The Mullvad installer download could not be finalized".to_owned())?;
+    drop(file);
+    std::fs::rename(&partial, &destination)
+        .map_err(|_| "The Mullvad installer download could not be finalized".to_owned())?;
+    Ok(destination)
+}
+
+#[cfg(target_os = "windows")]
+fn mullvad_vendor_installer_download_path() -> PathBuf {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    std::env::temp_dir().join(format!(
+        "osl-mullvad-{unique}-{}-{MULLVAD_VENDOR_INSTALLER_FILENAME}",
+        std::process::id()
+    ))
+}
+
+#[cfg(target_os = "windows")]
+fn remove_downloaded_mullvad_installer(path: &Path) {
+    let _ = std::fs::remove_file(path);
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn sha256_bytes_hex(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+#[cfg(target_os = "windows")]
+fn sha256_file_hex(path: &Path) -> std::io::Result<String> {
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -1517,7 +1692,12 @@ pub fn open_mullvad() -> Result<MullvadActionResult, String> {
         let executable = mullvad_executable()
             .ok_or_else(|| "Mullvad is not installed in a supported Windows location".to_owned())?;
         spawn_detached(&executable, &[]).map_err(|_| "Mullvad could not be opened".to_owned())?;
-        Ok(MullvadActionResult { started: true })
+        Ok(MullvadActionResult {
+            started: true,
+            version: None,
+            installer_sha256: None,
+            installer_source: None,
+        })
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -3068,8 +3248,24 @@ pub(crate) mod tests {
     #[test]
     fn mullvad_actions_use_fixed_package_and_path() {
         assert_eq!(MULLVAD_PACKAGE_ID, "MullvadVPN.MullvadVPN");
+        assert_eq!(MULLVAD_VENDOR_INSTALLER_VERSION, "2026.3");
         assert_eq!(
-            mullvad_install_arguments(),
+            MULLVAD_VENDOR_INSTALLER_FILENAME,
+            "MullvadVPN-2026.3_x64.exe"
+        );
+        assert_eq!(
+            MULLVAD_VENDOR_INSTALLER_URL,
+            "https://github.com/mullvad/mullvadvpn-app/releases/download/2026.3/MullvadVPN-2026.3_x64.exe"
+        );
+        assert_eq!(
+            MULLVAD_VENDOR_INSTALLER_SHA256,
+            "e335507b948083100b54f8000ef5bb733e3ee959f8df6a573e9404c506cb139a"
+        );
+        assert_eq!(MULLVAD_HASH_MISMATCH, "MULLVAD-HASH-MISMATCH");
+        assert_eq!(MULLVAD_VENDOR_INSTALLER_MAX_BYTES, 160 * 1024 * 1024);
+        assert_eq!(mullvad_vendor_installer_arguments(), ["/S"]);
+        assert_eq!(
+            mullvad_winget_install_arguments(),
             [
                 "install",
                 "--id",
@@ -3101,10 +3297,24 @@ pub(crate) mod tests {
             assert!(!candidate.relative_path.contains(':'));
             assert!(candidate.relative_path.ends_with(r"Mullvad VPN.exe"));
         }
-        assert!(
-            serde_json::to_value(MullvadActionResult { started: true }).unwrap()["started"]
-                .as_bool()
-                .unwrap()
+        assert!(serde_json::to_value(MullvadActionResult {
+            started: true,
+            version: Some(MULLVAD_VENDOR_INSTALLER_VERSION),
+            installer_sha256: Some(MULLVAD_VENDOR_INSTALLER_SHA256),
+            installer_source: Some("vendor"),
+        })
+        .unwrap()["started"]
+            .as_bool()
+            .unwrap());
+    }
+
+    #[test]
+    fn mullvad_vendor_installer_hash_mismatch_has_exact_sentinel() {
+        assert_eq!(MULLVAD_HASH_MISMATCH, "MULLVAD-HASH-MISMATCH");
+        assert_ne!(
+            sha256_bytes_hex(b"corrupted Mullvad installer"),
+            MULLVAD_VENDOR_INSTALLER_SHA256,
+            "a corrupted download must not reach installer launch"
         );
     }
 

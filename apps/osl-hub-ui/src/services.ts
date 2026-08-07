@@ -174,6 +174,9 @@ export interface MullvadStatus {
 
 export interface MullvadAction {
   started: true;
+  version?: string;
+  installerSha256?: string;
+  installerSource?: "vendor" | "winget";
 }
 
 export interface MullvadWindowHostAction {
@@ -666,7 +669,11 @@ function isAndroidWorkspace(value: unknown): boolean {
 }
 
 function parseMullvadAction(raw: unknown): MullvadAction {
-  if (!isExactRecord(raw, ["started"]) || raw.started !== true) throw new Error("invalid Mullvad action");
+  if (!isExactRecord(raw, ["started"]) && !isExactRecord(raw, ["started", "version", "installerSha256", "installerSource"])) throw new Error("invalid Mullvad action");
+  if (raw.started !== true
+    || ("version" in raw && (typeof raw.version !== "string" || raw.version.length > 32))
+    || ("installerSha256" in raw && !sha256Pattern.test(String(raw.installerSha256)))
+    || ("installerSource" in raw && raw.installerSource !== "vendor" && raw.installerSource !== "winget")) throw new Error("invalid Mullvad action");
   return raw as unknown as MullvadAction;
 }
 

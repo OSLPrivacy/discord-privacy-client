@@ -274,10 +274,16 @@ describe("native window host IPC", () => {
   });
 
   it("uses argument-free fixed Mullvad commands", async () => {
+    const installResult = {
+      started: true,
+      version: "2026.3",
+      installerSha256: "e335507b948083100b54f8000ef5bb733e3ee959f8df6a573e9404c506cb139a",
+      installerSource: "vendor",
+    };
     mocks.invoke
       .mockResolvedValueOnce({ availability: "installed" })
       .mockResolvedValueOnce({ started: true })
-      .mockResolvedValueOnce({ started: true });
+      .mockResolvedValueOnce(installResult);
     await expect(loadMullvadStatus()).resolves.toEqual({
       availability: "installed",
       integrationState: "availableToOpen",
@@ -285,7 +291,7 @@ describe("native window host IPC", () => {
       connectionState: "notObserved",
     });
     await expect(openMullvad()).resolves.toEqual({ started: true });
-    await expect(installMullvad()).resolves.toEqual({ started: true });
+    await expect(installMullvad()).resolves.toEqual(installResult);
     expect(mocks.invoke.mock.calls).toEqual([
       ["get_mullvad_status"],
       ["open_mullvad"],
