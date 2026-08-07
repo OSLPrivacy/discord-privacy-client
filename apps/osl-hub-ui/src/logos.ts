@@ -6,6 +6,7 @@ import {
   siGmail,
   siGmx,
   siGooglechrome,
+  siInstagram,
   siMaildotcom,
   siOpera,
   siSignal,
@@ -19,6 +20,7 @@ import type { BrowserImportId, ServiceId } from "./services";
 const serviceIcons: Partial<Record<ServiceId | "signal", SimpleIcon>> = {
   discord: siDiscord,
   telegram: siTelegram,
+  instagram: siInstagram,
   signal: siSignal,
   whatsapp: siWhatsapp,
 };

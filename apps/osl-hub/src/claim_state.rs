@@ -111,11 +111,12 @@
 /// exists, so they are two rows.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
 pub enum Surface {
-    // Chat carriers — 4.
+    // Chat carriers.
     Discord,
     Signal,
     Whatsapp,
     Telegram,
+    Instagram,
     // Native email carrier — Outlook desktop, which has a `NativeAppId` variant.
     OutlookDesktop,
     // Email carriers on the web — the eight with legal analysis, plus Tuta.
@@ -424,6 +425,15 @@ pub const SURFACE_CLAIMS: &[SurfaceClaim] = &[
         authority: "D-206; support-matrix telegram_desktop_public (externally_blocked)",
         reason: "OSL has carried cover text through Telegram's composer and earned a live carry receipt for it -- the only surface that has. But OSL's own support matrix still records Telegram as externally blocked, which is a claim about Telegram rather than about us. Those disagree, so OSL makes no claim about it.",
     },
+    SurfaceClaim {
+        surface: Surface::Instagram,
+        carrier: CarrierEvidence::NotBuilt,
+        delivery: DeliveryEvidence::NeverProvenLive,
+        blockers: &[],
+        matrix: MatrixPosition::NoCapabilityClaim,
+        authority: "TASK 4256 catalogue restore; TASK 4264/4265 own send and readiness proofs",
+        reason: "No Instagram carrier is wired in this build. Instagram is restored to the catalog, but it cannot send, read as Ready, or claim protected delivery until its own proofs pass.",
+    },
     // ---- Native email carrier ---------------------------------------------
     SurfaceClaim {
         surface: Surface::OutlookDesktop,
@@ -666,6 +676,7 @@ impl Surface {
             Self::Signal => "signal",
             Self::Whatsapp => "whatsapp",
             Self::Telegram => "telegram",
+            Self::Instagram => "instagram",
             Self::OutlookDesktop | Self::OutlookWeb => "outlook",
             Self::Gmail => "gmail",
             Self::Proton => "proton",
@@ -905,6 +916,7 @@ mod tests {
             Surface::Signal => Some(NativeAppId::Signal),
             Surface::Whatsapp => Some(NativeAppId::Whatsapp),
             Surface::Telegram => Some(NativeAppId::Telegram),
+            Surface::Instagram => Some(NativeAppId::Instagram),
             Surface::OutlookDesktop => Some(NativeAppId::Outlook),
             _ => None,
         }

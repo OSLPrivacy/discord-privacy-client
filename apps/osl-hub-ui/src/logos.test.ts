@@ -3,7 +3,7 @@ import { providerLogo, serviceLogo } from "./logos";
 
 describe("bundled service marks", () => {
   it("renders every launch service without a network asset", () => {
-    for (const id of ["discord", "telegram", "email", "signal", "whatsapp"] as const) {
+    for (const id of ["discord", "telegram", "instagram", "email", "signal", "whatsapp"] as const) {
       const logo = serviceLogo(id);
       expect(logo).toContain("<svg");
       expect(logo).not.toMatch(/https?:\/\//);

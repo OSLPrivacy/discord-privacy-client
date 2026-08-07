@@ -255,7 +255,7 @@ describe("surface ruling synchronization", () => {
     const pricing = JSON.parse(source("data/pricing.json")) as { surface_policy: { surface_ruling: Ruling } };
 
     const checkedLists: CheckedList[] = [
-      { name: "ruling chat carriers", actual: ruling.chat_carriers, expected: ["discord", "signal", "whatsapp", "telegram"] },
+      { name: "ruling chat carriers", actual: ruling.chat_carriers, expected: ["discord", "signal", "whatsapp", "telegram", "instagram"] },
       { name: "ruling email carriers", actual: ruling.email_carriers, expected: ["gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud", "tuta"] },
       { name: "ruling native_email_carriers", actual: ruling.native_email_carriers, expected: ["outlook"] },
       { name: "ruling first-party non-carriers", actual: ruling.first_party_surfaces, expected: ["osl-chats", "osl-mail"] },
@@ -292,6 +292,12 @@ describe("surface ruling synchronization", () => {
     const tileColourList: CheckedList = { name: "TS app tile colours", actual: cssTileColourIds(stylesCss), expected: tileColourSurfaceIds };
     assertNoTask4254SkippedLists(checkedLists);
     console.log(`TASK4254_TILE_COLOURS_CHECKED=${tileColourList.name === "TS app tile colours"}`);
+    const instagramRequiredLists = [...checkedLists, tileColourList]
+      .filter((list) => list.expected.includes("instagram"));
+    const instagramMissingLists = instagramRequiredLists
+      .filter((list) => !list.actual.includes("instagram"));
+    console.log(`TASK4256_LISTS_REQUIRING_INSTAGRAM=${instagramRequiredLists.length}`);
+    console.log(`TASK4256_LISTS_MISSING_INSTAGRAM=${instagramMissingLists.length}`);
 
     for (const list of checkedLists) {
       assertSameSet(list.name, list.actual, list.expected);

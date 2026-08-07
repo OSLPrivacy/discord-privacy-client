@@ -6750,7 +6750,11 @@ async fn create_service_account(
     let _session = session.transition.lock().await;
     if matches!(
         service_id,
-        ServiceKind::Discord | ServiceKind::Telegram | ServiceKind::Signal | ServiceKind::WhatsApp
+        ServiceKind::Discord
+            | ServiceKind::Telegram
+            | ServiceKind::Instagram
+            | ServiceKind::Signal
+            | ServiceKind::WhatsApp
     ) {
         return Err("This service requires its dedicated native app".to_owned());
     }
@@ -6807,7 +6811,7 @@ async fn open_service_host(
     let _session = session.transition.lock().await;
     if matches!(
         service_id.as_str(),
-        "discord" | "telegram" | "signal" | "whatsapp"
+        "discord" | "telegram" | "instagram" | "signal" | "whatsapp"
     ) {
         return Err("This service requires its dedicated native app".to_owned());
     }

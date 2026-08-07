@@ -629,6 +629,7 @@ fn every_shipped_profile_judges_independently() {
     for provider in [
         NativeAppId::Discord,
         NativeAppId::Telegram,
+        NativeAppId::Instagram,
         NativeAppId::Signal,
         NativeAppId::Whatsapp,
         NativeAppId::Outlook,
@@ -745,7 +746,11 @@ fn an_unmeasured_provider_gets_no_neighbours_numbers() {
     // excused: its profile is pinned field by field in
     // `whatsapps_profile_records_what_was_measured_rather_than_what_is_usual`,
     // and the run that took the figures wrote nothing into a conversation.
-    for provider in [NativeAppId::Signal, NativeAppId::Outlook] {
+    for provider in [
+        NativeAppId::Signal,
+        NativeAppId::Instagram,
+        NativeAppId::Outlook,
+    ] {
         let ProfileLookup::Unmeasured { missing, .. } = landing_profile(provider) else {
             panic!("{provider:?} claims a measured profile it has not earned");
         };
@@ -766,6 +771,7 @@ fn exactly_three_surfaces_have_a_measured_profile_today() {
     let measured: Vec<_> = [
         NativeAppId::Discord,
         NativeAppId::Telegram,
+        NativeAppId::Instagram,
         NativeAppId::Signal,
         NativeAppId::Whatsapp,
         NativeAppId::Outlook,
@@ -989,6 +995,7 @@ fn every_shipped_profile_declares_its_primary_channel_in_its_judges() {
     for provider in [
         NativeAppId::Discord,
         NativeAppId::Telegram,
+        NativeAppId::Instagram,
         NativeAppId::Signal,
         NativeAppId::Whatsapp,
         NativeAppId::Outlook,

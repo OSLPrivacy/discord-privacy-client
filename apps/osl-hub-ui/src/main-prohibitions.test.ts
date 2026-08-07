@@ -8,13 +8,13 @@ const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
 const localProtectedSheetSource = readFileSync(new URL("./local-protected-sheet.ts", import.meta.url), "utf8");
 
 const originalAppRoster = [
-  "discord", "telegram", "signal", "whatsapp",
+  "discord", "telegram", "instagram", "signal", "whatsapp",
   "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud", "tuta",
 ] as const;
 const unsupportedOriginalApps = originalAppRoster.filter((id) => id !== "discord");
 
 function linkedServiceFixture(): unknown[] {
-  const ids = ["discord", "telegram", "email", "signal", "whatsapp"];
+  const ids = ["discord", "telegram", "instagram", "email", "signal", "whatsapp"];
   return ids.map((id, sidebarOrder) => ({
     id,
     displayName: id,
@@ -103,7 +103,7 @@ describe("B0-07b main.ts prohibitions", () => {
     expect(detected).not.toContain('nativeSessionModeSettingChoices("outlook", "Outlook")');
     expect(guide).toContain("supportedNativeAppIds.has(activeHomeAppId as NativeAppId)");
     expect(binding).not.toContain('finishNativeAccountChoice("telegram")');
-    expect(countOccurrences(source, "data-home-app=")).toBe(5);
+    expect(countOccurrences(source, "data-home-app=")).toBe(6);
 
     expect(topStrip).toContain("configuredTopStripApps(homeAppsFromServices(services), homeTileOrder)");
     expect(home).toContain('app.launchState === "available" && rememberedHomeApps.has(app.id)');

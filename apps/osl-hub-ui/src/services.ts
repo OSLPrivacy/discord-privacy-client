@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { isTauriRuntime } from "./preferences";
 
-export type ServiceId = "discord" | "telegram" | "email" | "signal" | "whatsapp";
+export type ServiceId = "discord" | "telegram" | "instagram" | "email" | "signal" | "whatsapp";
 export type ConnectionState = "demoLinked" | "notLinked";
 export type EmailProvider = "gmail" | "outlook" | "proton" | "tuta" | "yahoo" | "aol" | "gmx" | "maildotcom" | "icloud";
 export type ServiceCategory = "consumer" | "enterprise";
@@ -10,7 +10,7 @@ export type OfferedEmailProvider = "gmail" | "outlook" | "proton" | "yahoo" | "a
 export type HomeAppId = Exclude<ServiceId, "email"> | OfferedEmailProvider;
 export type HomeAppVisibility = "launch" | "later";
 export type HomeAppSection = "social" | "email" | "later";
-export type NativeAppId = "discord" | "telegram" | "signal" | "whatsapp" | "outlook";
+export type NativeAppId = "discord" | "telegram" | "instagram" | "signal" | "whatsapp" | "outlook";
 export type NativeSessionMode = "dedicated" | "existingSession";
 export type DiscordSessionMode = NativeSessionMode;
 export type NativeDiscordTakeover = "borrowExisting" | "quitAndRelaunch";
@@ -340,11 +340,11 @@ export const AndroidSurface = {
   },
 };
 
-const serviceIds: readonly ServiceId[] = ["discord", "telegram", "email", "signal", "whatsapp"];
+const serviceIds: readonly ServiceId[] = ["discord", "telegram", "instagram", "email", "signal", "whatsapp"];
 const connectionStates: readonly ConnectionState[] = ["demoLinked", "notLinked"];
 const emailProviders: readonly EmailProvider[] = ["gmail", "outlook", "proton", "tuta", "yahoo", "aol", "gmx", "maildotcom", "icloud"];
 const maxAccountsPerService = 10;
-const nativeAppIds: readonly NativeAppId[] = ["discord", "telegram", "signal", "whatsapp", "outlook"];
+const nativeAppIds: readonly NativeAppId[] = ["discord", "telegram", "instagram", "signal", "whatsapp", "outlook"];
 const browserImportIds: readonly BrowserImportId[] = ["chrome", "edge", "firefox", "brave", "opera", "duckduckgo"];
 const firefoxServiceIds: readonly HomeAppId[] = [
   "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud", "tuta",
@@ -390,6 +390,7 @@ const nativePreviewApps: readonly NativeApp[] = [
   // Those are different assertions, so allowlist rule 5's "conflicting" clause
   // applies and the answer is no claim, with the disagreement named.
   { id: "telegram", displayName: "Telegram", availability: "installable", supportStatus: "noClaim", carrierEvidence: "provenLiveWithReceipt", deliveryEvidence: "neverProvenLive", claimBlockers: [], claimNote: "OSL has carried cover text through Telegram's composer and earned a live carry receipt for it -- the only surface that has. But OSL's own support matrix still records Telegram as externally blocked, which is a claim about Telegram rather than about us. Those disagree, so OSL makes no claim about it.", statusPage: { capability: "live carry capability is proven; delivery is not live-proven", generatedLabel: "Not claimed", explanation: "OSL has carried cover text through Telegram's composer and earned a live carry receipt for it -- the only surface that has. But OSL's own support matrix still records Telegram as externally blocked, which is a claim about Telegram rather than about us. Those disagree, so OSL makes no claim about it." }, protectedMode: "unavailable", isolatedProfileAvailable: true, supportsOverlay: false },
+  { id: "instagram", displayName: "Instagram", availability: "unavailable", supportStatus: "comingSoon", carrierEvidence: "notBuilt", deliveryEvidence: "neverProvenLive", claimBlockers: [], claimNote: "No Instagram carrier is wired in this build. Instagram is restored to the catalog, but it cannot send, read as Ready, or claim protected delivery until its own proofs pass.", statusPage: { capability: "no carrier capability is wired", generatedLabel: "Coming later", explanation: "No Instagram carrier is wired in this build. Instagram is restored to the catalog, but it cannot send, read as Ready, or claim protected delivery until its own proofs pass." }, protectedMode: "unavailable", isolatedProfileAvailable: false, supportsOverlay: false },
   { id: "signal", displayName: "Signal", availability: "installable", supportStatus: "comingSoon", carrierEvidence: "builtNeverProvenLive", deliveryEvidence: "neverProvenLive", claimBlockers: ["send-input-generalisation"], claimNote: "A Signal adapter profile exists and has never been driven against the live client. Signal's adapter also refuses synthesised input by design, which is the only technique any surface has been shown to land by, so nothing is proven here.", statusPage: { capability: "carrier capability is wired but not live-proven", generatedLabel: "Coming later", explanation: "A Signal adapter profile exists and has never been driven against the live client. Signal's adapter also refuses synthesised input by design, which is the only technique any surface has been shown to land by, so nothing is proven here." }, protectedMode: "unavailable", isolatedProfileAvailable: true, supportsOverlay: false },
   // D-234. Measured against the live client and REFUSED -- not unfinished work.
   // Same badge as Signal, different state, and the sentence is what keeps them
@@ -414,6 +415,7 @@ const homeAppDefinitions: readonly HomeAppDefinition[] = [
   // not just the native-account setup branch. Keep the specs visible for
   // roadmap signaling, but only Discord can present as a working integration.
   homeApp("telegram", "Telegram", "telegram", null, "launch", "comingSoon"),
+  homeApp("instagram", "Instagram", "instagram", null, "launch", "comingSoon"),
   homeApp("signal", "Signal", "signal", null, "launch", "comingSoon"),
   homeApp("whatsapp", "WhatsApp", "whatsapp", null, "launch", "comingSoon"),
   homeApp("gmail", "Gmail", "email", "gmail", "launch", "comingSoon"),
@@ -430,9 +432,10 @@ const homeAppDefinitions: readonly HomeAppDefinition[] = [
 const previewRegistry: unknown = [
   service("discord", "Discord", "DC", 0, "consumer", "available"),
   service("telegram", "Telegram", "TG", 1, "consumer", "available"),
-  service("email", "Email", "EM", 2, "consumer", "available"),
-  service("signal", "Signal", "SG", 3, "consumer", "available"),
-  service("whatsapp", "WhatsApp", "WA", 4, "consumer", "available"),
+  service("instagram", "Instagram", "IG", 2, "consumer", "available"),
+  service("email", "Email", "EM", 3, "consumer", "available"),
+  service("signal", "Signal", "SG", 4, "consumer", "available"),
+  service("whatsapp", "WhatsApp", "WA", 5, "consumer", "available"),
 ];
 
 export async function loadLinkedServices(): Promise<LinkedService[]> {

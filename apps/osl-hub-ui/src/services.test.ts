@@ -3,13 +3,13 @@ import { describe, expect, it } from "vitest";
 import { configuredTopStripApps, embeddedAccountsForHomeApp, escapeHtml, homeAppsFromServices, loadLinkedServices, loadNativeApps, nativeAppGeneratedLabel, notificationIntegrationEligibility, parseEmbeddedServiceHost, parseFirefoxStatus, parseLinkedAccount, parseLinkedServices, parseMullvadStatus, parseNativeAppAction, parseNativeApps, serviceAccountsForProvider } from "./services";
 
 const originalAppRoster = [
-  "discord", "telegram", "signal", "whatsapp",
+  "discord", "telegram", "instagram", "signal", "whatsapp",
   "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud", "tuta",
 ] as const;
 const unsupportedOriginalApps = originalAppRoster.filter((id) => id !== "discord");
 
 function validRegistry(): unknown[] {
-  const ids = ["discord", "telegram", "email", "signal", "whatsapp"];
+  const ids = ["discord", "telegram", "instagram", "email", "signal", "whatsapp"];
   return ids.map((id, sidebarOrder) => ({
     id,
     displayName: id,
@@ -25,7 +25,48 @@ function validRegistry(): unknown[] {
 
 describe("linked-service contract", () => {
   it("accepts and orders the exact ruled-service Rust payload", () => {
-    expect(parseLinkedServices(validRegistry())).toHaveLength(5);
+    expect(parseLinkedServices(validRegistry())).toHaveLength(6);
+  });
+
+  it("task 4256 returns Instagram from the app service catalog without making it sendable or Ready", async () => {
+    const services = await loadLinkedServices();
+    const instagram = services.find((service) => service.id === "instagram");
+    const homeTile = homeAppsFromServices(services).find((app) => app.id === "instagram");
+    const nativePreview = (await loadNativeApps()).find((app) => app.id === "instagram");
+    const missingLists = [
+      services.some((service) => service.id === "instagram"),
+      homeTile?.id === "instagram",
+      nativePreview?.id === "instagram",
+    ].filter((present) => !present).length;
+
+    expect(instagram).toMatchObject({
+      id: "instagram",
+      displayName: "Instagram",
+      sidebarGlyph: "IG",
+      launchState: "available",
+    });
+    expect(homeTile).toMatchObject({
+      id: "instagram",
+      displayName: "Instagram",
+      serviceId: "instagram",
+      launchState: "comingSoon",
+      setupEligible: false,
+    });
+    expect(nativePreview).toMatchObject({
+      id: "instagram",
+      displayName: "Instagram",
+      availability: "unavailable",
+      supportStatus: "comingSoon",
+      carrierEvidence: "notBuilt",
+      deliveryEvidence: "neverProvenLive",
+      protectedMode: "unavailable",
+      supportsOverlay: false,
+    });
+    expect(missingLists).toBe(0);
+    console.log(`TASK4256_APP_SERVICE_RESULT id=${instagram?.id} displayName=${instagram?.displayName} shortName=${instagram?.sidebarGlyph}`);
+    console.log(`TASK4256_HOME_TILE id=${homeTile?.id} launchState=${homeTile?.launchState} setupEligible=${homeTile?.setupEligible}`);
+    console.log(`TASK4256_NATIVE_PREVIEW id=${nativePreview?.id} availability=${nativePreview?.availability} supportStatus=${nativePreview?.supportStatus} carrierEvidence=${nativePreview?.carrierEvidence} protectedMode=${nativePreview?.protectedMode} supportsOverlay=${nativePreview?.supportsOverlay}`);
+    console.log(`TASK4256_MISSING_INSTAGRAM_LIST_COUNT=${missingLists}`);
   });
 
   it("keeps WhatsApp in the service registry without making it a launch tile", async () => {
@@ -50,7 +91,7 @@ describe("linked-service contract", () => {
     const malformed = validRegistry();
     ((malformed[1] as Record<string, unknown>).accounts as Array<Record<string, unknown>>)[0].id = "../cookie";
     const parsed = parseLinkedServices(malformed);
-    expect(parsed).toHaveLength(5);
+    expect(parsed).toHaveLength(6);
     expect(parsed?.find((service) => service.id === "telegram")?.accounts).toEqual([]);
     expect(parsed?.find((service) => service.id === "discord")?.accounts).toHaveLength(1);
   });
@@ -90,7 +131,7 @@ describe("linked-service contract", () => {
     expect(() => parseNativeApps([{ ...telegram, claimBlockers: "none" }])).toThrow();
     expect(() => parseNativeApps([{ ...telegram, statusPage: { ...telegram.statusPage, generatedLabel: "Available" } }])).toThrow();
     expect(() => parseNativeApps([{ ...telegram, statusPage: { ...telegram.statusPage, explanation: "A second source of truth." } }])).toThrow();
-    expect(() => parseNativeAppAction({ id: "instagram", started: true }, false)).toThrow();
+    expect(() => parseNativeAppAction({ id: "snapchat", started: true }, false)).toThrow();
   });
 
   it("strictly validates Firefox workspace availability", () => {
@@ -151,7 +192,7 @@ describe("linked-service contract", () => {
       expect(apps.find((app) => app.id === unsupported)).toMatchObject({ launchState: "comingSoon", setupEligible: false });
     }
     expect(launch.filter((app) => app.section === "social").map((app) => app.id)).toEqual([
-      "discord", "telegram", "signal", "whatsapp",
+      "discord", "telegram", "instagram", "signal", "whatsapp",
     ]);
     expect(launch.filter((app) => app.section === "email").map((app) => app.id)).toEqual([
       "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud", "tuta",
@@ -244,6 +285,7 @@ describe("linked-service contract", () => {
     const apps = homeAppsFromServices(parseLinkedServices(validRegistry())!);
     expect(apps.filter((app) => app.visibility === "launch" && app.launchState === "comingSoon")).toEqual([
       expect.objectContaining({ id: "telegram", setupEligible: false }),
+      expect.objectContaining({ id: "instagram", setupEligible: false }),
       expect.objectContaining({ id: "signal", setupEligible: false }),
       expect.objectContaining({ id: "whatsapp", setupEligible: false }),
       expect.objectContaining({ id: "gmail", setupEligible: false }),
@@ -358,14 +400,14 @@ describe("native app catalog agrees with the Rust support decision", () => {
   }
 
   it("reads a support level per app, and they are not all the same", () => {
-    const levels = ["Discord", "Telegram", "Signal", "Whatsapp", "Outlook"].map(rustSupportLevel);
-    expect(levels).toHaveLength(5);
+    const levels = ["Discord", "Telegram", "Instagram", "Signal", "Whatsapp", "Outlook"].map(rustSupportLevel);
+    expect(levels).toHaveLength(6);
     expect(new Set(levels).size).toBeGreaterThan(1);
   });
 
   it("never claims more than Rust does", async () => {
     const rustSurfaceFor: Record<string, string> = {
-      discord: "Discord", telegram: "Telegram", signal: "Signal",
+      discord: "Discord", telegram: "Telegram", instagram: "Instagram", signal: "Signal",
       whatsapp: "Whatsapp", outlook: "OutlookDesktop",
     };
     const catalog = await loadNativeApps();

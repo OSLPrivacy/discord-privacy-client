@@ -11,6 +11,7 @@ import type { SendMode } from "./state";
 export type DesktopServiceId =
   | "discord"
   | "telegram"
+  | "instagram"
   | "signal"
   | "whatsapp"
   | "outlook"
@@ -158,6 +159,7 @@ const discordSendModeRisk: NonNullable<DesktopServicePolicy["sendModeRisk"]> = [
 export const desktopServicePolicies: readonly DesktopServicePolicy[] = [
   policy("discord", "verified", discordSendModeRisk),
   policy("telegram", "verified"),
+  policy("instagram", "packagedWeb"),
   policy("signal", "verified"),
   policy("whatsapp", "verified"),
   policy("outlook", "verified"),

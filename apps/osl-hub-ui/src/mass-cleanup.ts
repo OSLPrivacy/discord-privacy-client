@@ -29,7 +29,7 @@ export interface MassCleanupCapabilityManifest {
 }
 
 const serviceIds: readonly ServiceId[] = [
-  "discord", "telegram", "email", "signal", "whatsapp",
+  "discord", "telegram", "instagram", "email", "signal", "whatsapp",
 ];
 const availabilities: readonly MassCleanupAvailability[] = ["unavailable", "discoveryOnly", "available"];
 const actions: readonly MassCleanupAction[] = [

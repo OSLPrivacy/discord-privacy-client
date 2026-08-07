@@ -1703,6 +1703,7 @@ pub fn service_kind_id(kind: ServiceKind) -> &'static str {
     match kind {
         ServiceKind::Discord => "discord",
         ServiceKind::Telegram => "telegram",
+        ServiceKind::Instagram => "instagram",
         ServiceKind::WhatsApp => "whatsapp",
         ServiceKind::Email => "email",
         ServiceKind::Signal => "signal",
@@ -1729,6 +1730,7 @@ pub fn supported_service_terms_addresses() -> Vec<ServiceTermsAddress> {
     [
         ServiceKind::Discord,
         ServiceKind::Telegram,
+        ServiceKind::Instagram,
         ServiceKind::WhatsApp,
         ServiceKind::Email,
         ServiceKind::Signal,
@@ -1745,6 +1747,7 @@ fn terms_address_for_service(kind: ServiceKind) -> &'static str {
     match kind {
         ServiceKind::Discord => "https://discord.com/terms",
         ServiceKind::Telegram => "https://telegram.org/tos",
+        ServiceKind::Instagram => "https://help.instagram.com/581066165581870",
         ServiceKind::WhatsApp => "https://www.whatsapp.com/legal/terms-of-service",
         ServiceKind::Email => "https://policies.google.com/terms",
         ServiceKind::Signal => "https://signal.org/legal/",

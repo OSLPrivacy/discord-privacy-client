@@ -36,6 +36,7 @@ use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
 pub enum NativeAppId {
     Discord,
     Telegram,
+    Instagram,
     Signal,
     Whatsapp,
     Outlook,
@@ -394,6 +395,8 @@ const WHATSAPP_CANDIDATES: &[ExecutableCandidate] = &[ExecutableCandidate {
     relative_path: r"WhatsApp\WhatsApp.exe",
 }];
 
+const INSTAGRAM_CANDIDATES: &[ExecutableCandidate] = &[];
+
 // Classic Outlook is a signed Win32 desktop application. Restrict discovery
 // to Microsoft's documented Click-to-Run Office16 layout; never use the
 // user-writable App Paths registry or an executable-name search.
@@ -588,6 +591,18 @@ const NATIVE_APPS: &[NativeAppManifest] = &[
         package_source: "winget",
         candidates: SIGNAL_CANDIDATES,
         publisher: Some(ExecutablePublisher::Signal),
+        store_package_family_name: None,
+    },
+    NativeAppManifest {
+        id: NativeAppId::Instagram,
+        display_name: "Instagram",
+        adapter_service: AdapterService::Instagram,
+        adapter_surface: AdapterSurface::FixedOfficialWebOrigin,
+        adapter_support: SupportLevel::ComingSoon,
+        package_id: "",
+        package_source: "unavailable",
+        candidates: INSTAGRAM_CANDIDATES,
+        publisher: None,
         store_package_family_name: None,
     },
     NativeAppManifest {
@@ -796,8 +811,9 @@ fn manifest(id: NativeAppId) -> &'static NativeAppManifest {
         NativeAppId::Discord => &NATIVE_APPS[0],
         NativeAppId::Telegram => &NATIVE_APPS[1],
         NativeAppId::Signal => &NATIVE_APPS[2],
-        NativeAppId::Whatsapp => &NATIVE_APPS[3],
-        NativeAppId::Outlook => &NATIVE_APPS[4],
+        NativeAppId::Instagram => &NATIVE_APPS[3],
+        NativeAppId::Whatsapp => &NATIVE_APPS[4],
+        NativeAppId::Outlook => &NATIVE_APPS[5],
     }
 }
 
@@ -829,6 +845,7 @@ pub(crate) const fn claim_surface(id: NativeAppId) -> crate::claim_state::Surfac
         NativeAppId::Telegram => Surface::Telegram,
         NativeAppId::Signal => Surface::Signal,
         NativeAppId::Whatsapp => Surface::Whatsapp,
+        NativeAppId::Instagram => Surface::Instagram,
         NativeAppId::Outlook => Surface::OutlookDesktop,
     }
 }
@@ -855,6 +872,7 @@ fn native_app_protected_mode(id: NativeAppId) -> NativeAppProtectedMode {
     match id {
         NativeAppId::Discord => NativeAppProtectedMode::AssistOnly,
         NativeAppId::Telegram
+        | NativeAppId::Instagram
         | NativeAppId::Signal
         | NativeAppId::Whatsapp
         | NativeAppId::Outlook => NativeAppProtectedMode::Unavailable,
@@ -942,7 +960,7 @@ fn list_native_apps_with_claims_and_installer_probe(
     {
         for status in &mut statuses {
             if status.availability == NativeAppAvailability::Unavailable
-                && status.id != NativeAppId::Outlook
+                && !matches!(status.id, NativeAppId::Outlook | NativeAppId::Instagram)
             {
                 status.availability = NativeAppAvailability::Installable;
             }
@@ -1307,11 +1325,11 @@ pub fn install_native_app(id: NativeAppId) -> Result<NativeInstallResult, String
     #[cfg(target_os = "windows")]
     {
         let app = manifest(id);
-        if id == NativeAppId::Outlook {
-            return Err(
-                "Outlook installation is managed by Microsoft 365 or the Microsoft Store"
-                    .to_owned(),
-            );
+        if matches!(id, NativeAppId::Outlook | NativeAppId::Instagram) {
+            return Err(format!(
+                "{} installation is unavailable in this build",
+                app.display_name
+            ));
         }
         let winget = installer_executable()
             .ok_or_else(|| "Windows App Installer (winget) is unavailable".to_owned())?;
@@ -2635,7 +2653,7 @@ pub(crate) mod tests {
                  rows, and no carrier surface has earned one.",
                 app.id
             );
-            if app.id == NativeAppId::Outlook {
+            if matches!(app.id, NativeAppId::Outlook | NativeAppId::Instagram) {
                 assert!(app.package_id.is_empty());
                 assert_eq!(app.package_source, "unavailable");
             } else {
@@ -2647,7 +2665,11 @@ pub(crate) mod tests {
                     .all(|byte| byte.is_ascii_alphanumeric() || byte == b'.'));
                 assert!(matches!(app.package_source, "winget" | "msstore"));
             }
-            assert!(!app.candidates.is_empty());
+            if app.id == NativeAppId::Instagram {
+                assert!(app.candidates.is_empty());
+            } else {
+                assert!(!app.candidates.is_empty());
+            }
             assert!(NATIVE_APPS[..index]
                 .iter()
                 .all(|previous| previous.id != app.id));
@@ -2688,6 +2710,10 @@ pub(crate) mod tests {
             &AdapterService::Signal
         );
         assert_eq!(
+            &manifest(NativeAppId::Instagram).adapter_service,
+            &AdapterService::Instagram
+        );
+        assert_eq!(
             &manifest(NativeAppId::Whatsapp).adapter_service,
             &AdapterService::Whatsapp
         );
@@ -2709,6 +2735,7 @@ pub(crate) mod tests {
             Some(ExecutablePublisher::Signal)
         );
         assert_eq!(native_app_publisher(NativeAppId::Whatsapp), None);
+        assert_eq!(native_app_publisher(NativeAppId::Instagram), None);
         assert_eq!(
             native_app_publisher(NativeAppId::Outlook),
             Some(ExecutablePublisher::Microsoft)
@@ -2716,6 +2743,7 @@ pub(crate) mod tests {
         assert!(isolated_native_profile_available(NativeAppId::Discord));
         assert!(isolated_native_profile_available(NativeAppId::Telegram));
         assert!(!isolated_native_profile_available(NativeAppId::Signal));
+        assert!(!isolated_native_profile_available(NativeAppId::Instagram));
         assert!(!isolated_native_profile_available(NativeAppId::Whatsapp));
         assert!(!isolated_native_profile_available(NativeAppId::Outlook));
     }
@@ -3030,7 +3058,10 @@ pub(crate) mod tests {
                     assert_eq!(status.support_status, NativeAppSupportStatus::NoClaim);
                     assert_eq!(status.protected_mode, NativeAppProtectedMode::Unavailable);
                 }
-                NativeAppId::Signal | NativeAppId::Whatsapp | NativeAppId::Outlook => {
+                NativeAppId::Signal
+                | NativeAppId::Instagram
+                | NativeAppId::Whatsapp
+                | NativeAppId::Outlook => {
                     assert_eq!(status.support_status, NativeAppSupportStatus::ComingSoon);
                     assert_eq!(status.protected_mode, NativeAppProtectedMode::Unavailable);
                 }
@@ -3178,6 +3209,7 @@ pub(crate) mod tests {
             NativeAppId::Telegram => CarrySeam::Uia2Substrate,
             NativeAppId::Signal => CarrySeam::ProviderOwnedBackend,
             NativeAppId::Whatsapp => CarrySeam::Uia2Substrate,
+            NativeAppId::Instagram => CarrySeam::NoCarryPath,
             NativeAppId::Outlook => CarrySeam::NoCarryPath,
         }
     }
@@ -4440,6 +4472,7 @@ pub(crate) mod tests {
             match id {
                 NativeAppId::Discord => "discord",
                 NativeAppId::Telegram => "telegram",
+                NativeAppId::Instagram => "instagram",
                 NativeAppId::Signal => "signal",
                 NativeAppId::Whatsapp => "whatsapp",
                 NativeAppId::Outlook => "outlook",
@@ -4453,6 +4486,7 @@ pub(crate) mod tests {
             match id {
                 NativeAppId::Discord => Some("src/native_discord_adapter.rs"),
                 NativeAppId::Telegram => Some("src/native_telegram_adapter.rs"),
+                NativeAppId::Instagram => None,
                 NativeAppId::Signal => Some("src/native_signal_adapter.rs"),
                 NativeAppId::Whatsapp => Some("src/native_whatsapp_adapter.rs"),
                 NativeAppId::Outlook => None,

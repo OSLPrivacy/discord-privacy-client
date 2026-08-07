@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { parseMassCleanupCapabilities } from "./mass-cleanup";
 
 const serviceIds = [
-  "telegram", "discord", "whatsapp", "email", "signal",
+  "telegram", "discord", "whatsapp", "instagram", "email", "signal",
 ] as const;
 
 function manifest() {
@@ -25,7 +25,7 @@ function manifest() {
 describe("Mass Cleanup capability boundary", () => {
   it("accepts only the complete fail-closed native manifest", () => {
     const parsed = parseMassCleanupCapabilities(manifest());
-    expect(parsed.services).toHaveLength(5);
+    expect(parsed.services).toHaveLength(6);
     expect(parsed.unattendedExecutionAllowed).toBe(false);
     expect(parsed.services.every((service) => !service.mutationSupported)).toBe(true);
   });

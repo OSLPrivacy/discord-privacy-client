@@ -1887,6 +1887,7 @@ pub fn service_kind_from_id(service_id: &str) -> Option<ServiceKind> {
     Some(match service_id {
         "discord" => ServiceKind::Discord,
         "telegram" => ServiceKind::Telegram,
+        "instagram" => ServiceKind::Instagram,
         "whatsapp" => ServiceKind::WhatsApp,
         "email" => ServiceKind::Email,
         "signal" => ServiceKind::Signal,
@@ -3146,7 +3147,7 @@ pub fn service_descriptor(id: ServiceKind) -> ServiceDescriptor {
         .expect("every ServiceKind has a descriptor")
 }
 
-fn service_descriptors() -> [ServiceDescriptor; 5] {
+fn service_descriptors() -> [ServiceDescriptor; 6] {
     use ServiceCategory::Consumer;
     use ServiceLaunchState::Available;
     [
@@ -3171,6 +3172,14 @@ fn service_descriptors() -> [ServiceDescriptor; 5] {
             "WhatsApp",
             "WA",
             25,
+            Consumer,
+            Available,
+        ),
+        descriptor(
+            ServiceKind::Instagram,
+            "Instagram",
+            "IG",
+            30,
             Consumer,
             Available,
         ),
@@ -3412,7 +3421,7 @@ mod tests {
         let path = temporary_registry();
         let state = ServiceRegistryState::load(path.clone());
         let services = state.list_for_owner(OWNER_A).unwrap();
-        assert_eq!(services.len(), 5);
+        assert_eq!(services.len(), 6);
         assert!(services.iter().all(|service| service.accounts.is_empty()));
         let signal = services
             .iter()
@@ -3491,10 +3500,13 @@ mod tests {
             Some(ServiceKind::WhatsApp)
         );
         assert_eq!(service_kind_from_id("signal"), Some(ServiceKind::Signal));
+        assert_eq!(
+            service_kind_from_id("instagram"),
+            Some(ServiceKind::Instagram)
+        );
         // Superseded by the owner ruling on 2026-08-05: social and enterprise
         // IDs are cut surfaces, not service aliases.
         for cut in [
-            "instagram",
             "snapchat",
             "x",
             "messenger",

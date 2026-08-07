@@ -179,6 +179,13 @@ const SERVICES: &[ServiceManifest] = &[
         launch_active: false,
     },
     ServiceManifest {
+        id: "instagram",
+        display_name: "Instagram",
+        initial_url: "https://www.instagram.com/",
+        allowed_hosts: &["www.instagram.com"],
+        launch_active: false,
+    },
+    ServiceManifest {
         id: "email",
         display_name: "Email",
         initial_url: "https://mail.google.com/",
@@ -1999,7 +2006,7 @@ mod tests {
                 );
             }
         }
-        for cut in ["instagram", "snapchat", "x", "messenger", "slack", "teams"] {
+        for cut in ["snapchat", "x", "messenger", "slack", "teams"] {
             assert_eq!(
                 service_manifest(cut),
                 Err(ServiceHostError::UnknownService),
@@ -2010,7 +2017,7 @@ mod tests {
 
     #[test]
     fn native_messengers_never_launch_through_the_embedded_browser_host() {
-        for service_id in ["discord", "telegram", "signal", "whatsapp"] {
+        for service_id in ["discord", "telegram", "instagram", "signal", "whatsapp"] {
             let manifest = service_manifest(service_id).unwrap();
             assert!(!manifest.launch_active, "{service_id}");
             assert_eq!(

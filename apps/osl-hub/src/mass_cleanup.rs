@@ -143,6 +143,7 @@ fn compiled_manifest() -> MassCleanupCapabilityManifest {
             Service::WhatsApp,
             &[Action::LeaveAndRemoveChat, Action::ClearHistoryForSelf],
         ),
+        (Service::Instagram, &[Action::DeleteConversationForSelf]),
         (
             Service::Email,
             &[
@@ -270,7 +271,7 @@ mod tests {
         assert!(manifest.review_required_every_batch);
         assert!(manifest.typed_confirmation_required_every_batch);
         assert!(!manifest.unattended_execution_allowed);
-        assert_eq!(manifest.services.len(), 5);
+        assert_eq!(manifest.services.len(), 6);
         assert!(manifest.services.iter().all(|service| {
             service.availability == MassCleanupAvailability::Unavailable
                 && !service.discovery_supported

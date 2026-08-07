@@ -303,6 +303,7 @@ fn native_service_account_id(id: NativeAppId, owner_namespace: &str) -> Option<S
     let service_id = match id {
         NativeAppId::Discord => "discord",
         NativeAppId::Telegram => "telegram",
+        NativeAppId::Instagram => "instagram",
         NativeAppId::Signal => "signal",
         NativeAppId::Whatsapp => "whatsapp",
         NativeAppId::Outlook => "outlook",
@@ -985,6 +986,7 @@ fn borrowed_presentation_attempt_limit(id: NativeAppId) -> usize {
     // restoring; they never discover or adopt a new one.
     match id {
         NativeAppId::Signal | NativeAppId::Whatsapp | NativeAppId::Outlook => 7,
+        NativeAppId::Instagram => 3,
         NativeAppId::Discord | NativeAppId::Telegram => 3,
     }
 }
@@ -1282,6 +1284,7 @@ fn existing_window_identity_allowed(
                     OUTLOOK_CLASSIC_PRIMARY_WINDOW_CLASS | OUTLOOK_NEW_PRIMARY_WINDOW_CLASS
                 )
         }
+        NativeAppId::Instagram => false,
         NativeAppId::Discord => visible && class_name == DISCORD_PRIMARY_WINDOW_CLASS,
         NativeAppId::Telegram => visible,
     }
@@ -2751,6 +2754,7 @@ fn profile_component(id: NativeAppId) -> &'static str {
     match id {
         NativeAppId::Discord => "discord",
         NativeAppId::Telegram => "telegram",
+        NativeAppId::Instagram => "instagram",
         NativeAppId::Signal => "signal",
         NativeAppId::Whatsapp => "whatsapp",
         NativeAppId::Outlook => "outlook",
@@ -2786,6 +2790,7 @@ fn fixed_secondary_launch(id: NativeAppId) -> FixedSecondaryLaunch {
         NativeAppId::Discord => FixedSecondaryLaunch::DiscordDedicatedChannel,
         NativeAppId::Telegram => FixedSecondaryLaunch::TelegramManyWorkdir,
         NativeAppId::Signal => FixedSecondaryLaunch::SignalUserDataDir,
+        NativeAppId::Instagram => FixedSecondaryLaunch::Unsupported,
         NativeAppId::Whatsapp => FixedSecondaryLaunch::Unsupported,
         NativeAppId::Outlook => FixedSecondaryLaunch::Unsupported,
     }
@@ -2934,6 +2939,7 @@ fn native_accessibility_process_name(id: NativeAppId, trusted_path: &Path) -> Op
             Some(crate::native_telegram_adapter::TELEGRAM_DESKTOP_PROCESS_NAME)
         }
         NativeAppId::Signal => Some(crate::native_signal_adapter::SIGNAL_DESKTOP_PROCESS_NAME),
+        NativeAppId::Instagram => None,
         NativeAppId::Whatsapp => {
             Some(crate::native_whatsapp_adapter::WHATSAPP_DESKTOP_PROCESS_NAME)
         }
@@ -3860,6 +3866,7 @@ mod windows {
         match id {
             NativeAppId::Discord => "discord",
             NativeAppId::Telegram => "telegram",
+            NativeAppId::Instagram => "instagram",
             NativeAppId::Signal => "signal",
             NativeAppId::Whatsapp => "whatsapp",
             NativeAppId::Outlook => "outlook",
@@ -3870,6 +3877,7 @@ mod windows {
         match value {
             "discord" => Some(NativeAppId::Discord),
             "telegram" => Some(NativeAppId::Telegram),
+            "instagram" => Some(NativeAppId::Instagram),
             "signal" => Some(NativeAppId::Signal),
             "whatsapp" => Some(NativeAppId::Whatsapp),
             "outlook" => Some(NativeAppId::Outlook),
@@ -6016,6 +6024,9 @@ mod windows {
                     .ok_or(NativeWindowHostReason::ExistingSessionUnavailable)?],
                 NativeAppId::Whatsapp => vec![crate::native_apps::whatsapp_store_executable_path()
                     .ok_or(NativeWindowHostReason::ExistingSessionUnavailable)?],
+                NativeAppId::Instagram => {
+                    return Err(NativeWindowHostReason::ExistingSessionUnavailable);
+                }
                 NativeAppId::Outlook => {
                     let paths = crate::native_apps::outlook_native_executable_paths();
                     if paths.is_empty() {
@@ -6133,6 +6144,9 @@ mod windows {
             }
             NativeAppId::Telegram => (telegram_executable(), ExecutablePublisher::Telegram),
             NativeAppId::Signal => (signal_executable(), ExecutablePublisher::Signal),
+            NativeAppId::Instagram => {
+                return Err(NativeWindowHostReason::ExistingSessionUnavailable);
+            }
             NativeAppId::Whatsapp => {
                 launch_whatsapp_aumid()?;
                 return wait_for_relaunched_existing_host(
@@ -8718,6 +8732,7 @@ mod windows {
             service_id: match app_id {
                 NativeAppId::Discord => "discord",
                 NativeAppId::Telegram => "telegram",
+                NativeAppId::Instagram => "instagram",
                 NativeAppId::Signal => "signal",
                 NativeAppId::Whatsapp => "whatsapp",
                 NativeAppId::Outlook => "outlook",
@@ -9277,6 +9292,7 @@ mod tests {
         ));
         for id in [
             NativeAppId::Telegram,
+            NativeAppId::Instagram,
             NativeAppId::Signal,
             NativeAppId::Whatsapp,
             NativeAppId::Outlook,
@@ -9355,6 +9371,7 @@ mod tests {
         // other client is handed invented switches.
         for id in [
             NativeAppId::Telegram,
+            NativeAppId::Instagram,
             NativeAppId::Signal,
             NativeAppId::Whatsapp,
             NativeAppId::Outlook,
@@ -9552,6 +9569,7 @@ mod tests {
         let ids = [
             NativeAppId::Discord,
             NativeAppId::Telegram,
+            NativeAppId::Instagram,
             NativeAppId::Signal,
             NativeAppId::Whatsapp,
             NativeAppId::Outlook,
@@ -10301,6 +10319,7 @@ mod tests {
         for id in [
             NativeAppId::Discord,
             NativeAppId::Telegram,
+            NativeAppId::Instagram,
             NativeAppId::Signal,
             NativeAppId::Whatsapp,
             NativeAppId::Outlook,

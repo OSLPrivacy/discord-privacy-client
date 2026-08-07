@@ -657,6 +657,7 @@ mod tests {
 pub enum ServiceKind {
     Discord,
     Telegram,
+    Instagram,
     #[serde(rename = "whatsapp")]
     WhatsApp,
     Email,
