@@ -12,6 +12,7 @@ pub mod loader;
 pub mod schema;
 pub mod score;
 pub mod trust;
+pub mod visible_subject;
 
 pub use contract::{
     run_contract_self_test, CheckOutcome, ContractVerdict, Predicate, ReportError, SelfTestProbe,
@@ -61,4 +62,8 @@ pub use score::{
 pub use trust::{
     verify_signed_profile, ShippedAnchorKey, TrustError, DISCORD_PROFILE_ROLLBACK_FLOOR,
     SHIPPED_ANCHOR_KEYS,
+};
+pub use visible_subject::{
+    visible_subject_is_private_fact, SubjectProvider, VisibleSubjectError,
+    VisibleSubjectSendLedger, EMAIL_SUBJECT_PROVIDERS, PRIVATE_SUBJECT_PROVIDERS,
 };
