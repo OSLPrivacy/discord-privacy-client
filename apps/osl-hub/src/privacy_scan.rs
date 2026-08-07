@@ -6,7 +6,6 @@
 //! those inputs encrypted and deterministically reproduce findings from disk.
 
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashSet};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use crate::attachment_scan::{
@@ -30,6 +29,9 @@ pub(crate) const MAX_FINDINGS: usize = 1_000;
 pub const GMAIL_ORDINARY_ATTACHMENT_LIMIT_MB: u64 = 25;
 pub const GMAIL_ORDINARY_ATTACHMENT_LIMIT_BYTES: u64 =
     GMAIL_ORDINARY_ATTACHMENT_LIMIT_MB * 1024 * 1024;
+pub const PROTON_ORDINARY_ATTACHMENT_LIMIT_MB: u64 = 18;
+pub const PROTON_ORDINARY_ATTACHMENT_LIMIT_BYTES: u64 =
+    PROTON_ORDINARY_ATTACHMENT_LIMIT_MB * 1024 * 1024;
 pub const MAIL_DOT_COM_FREE_ORDINARY_ATTACHMENT_LIMIT_MB: u64 = 30;
 pub const MAIL_DOT_COM_PREMIUM_ORDINARY_ATTACHMENT_LIMIT_MB: u64 = 100;
 pub const EXCHANGE_ORDINARY_ATTACHMENT_LIMIT_MB: u64 = 150;
@@ -141,6 +143,10 @@ impl From<MessageOwnerCheckError> for FoundMessageRecordError {
                 Self::MissingSignedInAccountSender
             }
             MessageOwnerCheckError::InvalidSender => Self::InvalidField,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OrdinaryAttachmentSetItem {
     pub display_name: String,
@@ -249,6 +255,10 @@ pub struct SavedReviewMatch {
     pub place: String,
     pub date: String,
     pub time: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct EmailProtectionCheckDisplay {
     pub message_locator: String,
     pub reply_recipients: Vec<String>,
@@ -269,6 +279,10 @@ pub enum EmailBurnScope {
 pub struct ReviewResultAccountGroup {
     pub account_id: String,
     pub matches: Vec<SavedReviewMatch>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct EmailBurnTargetListDisplay {
     pub scope: EmailBurnScope,
     pub identity: String,
@@ -296,6 +310,10 @@ impl ProtectedEmailReplyAction {
 pub struct ReviewResultStoreOutput {
     pub groups: Vec<ReviewResultAccountGroup>,
     pub total_matches: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProtectedEmailReplyDraft {
     pub draft_id: String,
     pub message_locator: String,
@@ -325,6 +343,7 @@ pub struct EmailDraftAttachment {
 #[serde(rename_all = "camelCase")]
 pub enum EmailDraftMailLimitProfile {
     Gmail,
+    Proton,
     MailDotComFree,
     MailDotComPremium,
     Exchange,
@@ -334,6 +353,7 @@ impl EmailDraftMailLimitProfile {
     fn display_name(self) -> &'static str {
         match self {
             Self::Gmail => "Gmail",
+            Self::Proton => "Proton Mail",
             Self::MailDotComFree => "Mail.com free",
             Self::MailDotComPremium => "Mail.com premium",
             Self::Exchange => "Exchange",
@@ -343,6 +363,7 @@ impl EmailDraftMailLimitProfile {
     fn ordinary_attachment_limit_mb(self) -> u64 {
         match self {
             Self::Gmail => GMAIL_ORDINARY_ATTACHMENT_LIMIT_MB,
+            Self::Proton => PROTON_ORDINARY_ATTACHMENT_LIMIT_MB,
             Self::MailDotComFree => MAIL_DOT_COM_FREE_ORDINARY_ATTACHMENT_LIMIT_MB,
             Self::MailDotComPremium => MAIL_DOT_COM_PREMIUM_ORDINARY_ATTACHMENT_LIMIT_MB,
             Self::Exchange => EXCHANGE_ORDINARY_ATTACHMENT_LIMIT_MB,
@@ -909,6 +930,8 @@ fn normalized_sender(
         return Err(MessageOwnerCheckError::InvalidSender);
     }
     Ok(sender)
+}
+
 fn valid_email_burn_identity(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= MAX_EMAIL_BURN_ID_BYTES
@@ -1379,6 +1402,11 @@ mod tests {
             authored_by_self: true,
             created_at_unix_ms: Some(created_at_unix_ms),
             text: text.to_owned(),
+            reply_recipient: None,
+            visible_recipients: Vec::new(),
+            hidden_recipients: Vec::new(),
+            email_thread_identity: None,
+            email_folder_identity: None,
             attachments: Vec::new(),
         }
     }
@@ -2243,6 +2271,88 @@ mod tests {
         );
         assert_eq!(accepted_profiles.len(), 4);
         assert_eq!(refused_by_name.len(), 4);
+    }
+
+    #[test]
+    fn task1246_proton_pointer_file_ignores_eighteen_mb_mail_size() {
+        const MB: u64 = 1024 * 1024;
+        const FILE_MB: u64 = PROTON_ORDINARY_ATTACHMENT_LIMIT_MB + 1;
+        const FILE_BYTES: u64 = FILE_MB * MB;
+
+        fn draft_attachment(
+            display_name: &str,
+            storage: EmailDraftAttachmentStorage,
+        ) -> EmailDraftAttachment {
+            EmailDraftAttachment {
+                display_name: display_name.to_owned(),
+                size_bytes: FILE_BYTES,
+                storage,
+            }
+        }
+
+        let mut candidate = message("password: protected Proton pointer file draft");
+        candidate.service_id = "email".to_owned();
+        candidate.message_locator = "task1246-proton-pointer-draft".to_owned();
+        candidate.reply_recipient = Some("from-task1246@proton.test".to_owned());
+        candidate.visible_recipients = vec!["to-task1246@proton.test".to_owned()];
+
+        let result = scan_local_messages(vec![candidate]);
+        let check = result
+            .email_protection_checks
+            .first()
+            .expect("email protection check returns Proton draft recipients");
+
+        let pointer_file = [draft_attachment(
+            "task1246-proton-pointer-over-18mb.bin",
+            EmailDraftAttachmentStorage::OslStored,
+        )];
+        let accepted_pointer = create_protected_email_reply_draft_with_attachments_for_profile(
+            check,
+            ProtectedEmailReplyAction::Reply,
+            &pointer_file,
+            EmailDraftMailLimitProfile::Proton,
+        )
+        .expect("OSL-stored Proton pointer file does not count against mail size");
+
+        let ordinary_file = [draft_attachment(
+            "task1246-proton-ordinary-over-18mb.bin",
+            EmailDraftAttachmentStorage::Ordinary,
+        )];
+        let refused_ordinary = create_protected_email_reply_draft_with_attachments_for_profile(
+            check,
+            ProtectedEmailReplyAction::Reply,
+            &ordinary_file,
+            EmailDraftMailLimitProfile::Proton,
+        )
+        .expect_err("ordinary Proton attachment over 18 MB is refused");
+
+        let cover_draft_bytes = accepted_pointer.ordinary_attachment_bytes;
+        let file_record_bytes = accepted_pointer.osl_stored_file_bytes;
+        let limit_bytes = PROTON_ORDINARY_ATTACHMENT_LIMIT_BYTES;
+
+        println!(
+            "TASK1246 proton_pointer_file_split provider=\"{}\" proton_limit_mb={} proton_limit_bytes={} cover_draft_bytes={} cover_draft_mb={} cover_draft_below_18mb={} file_record_bytes={} file_record_mb={} file_record_larger_than_18mb={} ordinary_without_split_status=refused refusal=\"{}\"",
+            EmailDraftMailLimitProfile::Proton.display_name(),
+            PROTON_ORDINARY_ATTACHMENT_LIMIT_MB,
+            limit_bytes,
+            cover_draft_bytes,
+            bytes_to_whole_mb(cover_draft_bytes),
+            cover_draft_bytes < limit_bytes,
+            file_record_bytes,
+            bytes_to_whole_mb(file_record_bytes),
+            file_record_bytes > limit_bytes,
+            refused_ordinary,
+        );
+
+        assert!(accepted_pointer.protected);
+        assert_eq!(cover_draft_bytes, 0);
+        assert!(cover_draft_bytes < limit_bytes);
+        assert_eq!(file_record_bytes, FILE_BYTES);
+        assert!(file_record_bytes > limit_bytes);
+        assert!(refused_ordinary.contains("Proton Mail"));
+        assert!(refused_ordinary.contains("18 MB"));
+        assert!(refused_ordinary.contains("19 MB"));
+        assert!(refused_ordinary.contains("task1246-proton-ordinary-over-18mb.bin"));
     }
 
     #[test]
