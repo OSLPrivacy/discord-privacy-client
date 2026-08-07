@@ -7,6 +7,10 @@
 
 use super::WebSurfaceBackend;
 use crate::adapters::*;
+use crate::row_who_wrote_it::{
+    accept_published_row_batch, SharedRowWhoWroteIt, SharedRowWhoWroteItBatch,
+    SharedRowWhoWroteItError, SharedRowWhoWroteItEvidence,
+};
 use sha2::{Digest, Sha256};
 
 /// A conversation header observed by the accessibility driver.  These values
@@ -19,12 +23,78 @@ pub struct XConversationHeader {
     pub recipient_labels: Vec<String>,
 }
 
+/// X page part used to read the row's published sender/authorship area.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum XTranscriptPagePartKind {
+    WhoWroteIt,
+}
+
+impl XTranscriptPagePartKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::WhoWroteIt => "whoWroteIt",
+        }
+    }
+}
+
+/// Accessibility reference for the page part that produced a row answer.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct XTranscriptPagePart {
+    pub kind: XTranscriptPagePartKind,
+    pub node: Option<NodeRef>,
+}
+
+impl XTranscriptPagePart {
+    pub const fn who_wrote_it(node: Option<NodeRef>) -> Self {
+        Self {
+            kind: XTranscriptPagePartKind::WhoWroteIt,
+            node,
+        }
+    }
+}
+
 /// One visible transcript row.  `carrier` is present only when the driver can
 /// prove this row is the carrier that OSL placed or sent.
 #[derive(Clone, Debug)]
 pub struct XTranscriptRow {
     pub rect: Bounds,
     pub carrier: Option<String>,
+    pub message_text: String,
+    pub who_wrote_it: SharedRowWhoWroteIt,
+    pub who_wrote_it_part: XTranscriptPagePart,
+}
+
+impl XTranscriptRow {
+    pub fn from_web_reading_parts(
+        rect: Bounds,
+        carrier: Option<String>,
+        message_text: impl Into<String>,
+        who_wrote_it_name: Option<&str>,
+        who_wrote_it_node: Option<NodeRef>,
+    ) -> Result<Self, SharedRowWhoWroteItError> {
+        let who_wrote_it = match who_wrote_it_name {
+            Some(name) => SharedRowWhoWroteIt::parse_name(name)?,
+            None => SharedRowWhoWroteIt::NotPublishedByApp,
+        };
+        Ok(Self {
+            rect,
+            carrier,
+            message_text: message_text.into(),
+            who_wrote_it,
+            who_wrote_it_part: XTranscriptPagePart::who_wrote_it(who_wrote_it_node),
+        })
+    }
+}
+
+pub fn accept_x_web_rows(rows: &[XTranscriptRow]) -> SharedRowWhoWroteItBatch {
+    let evidence = rows
+        .iter()
+        .enumerate()
+        .map(|(index, row)| {
+            SharedRowWhoWroteItEvidence::new(format!("x-web-row-{index}"), Some(row.who_wrote_it))
+        })
+        .collect::<Vec<_>>();
+    accept_published_row_batch(&evidence)
 }
 
 /// A fresh accessibility snapshot. `scope_binding_hash` is host-derived when
@@ -353,6 +423,11 @@ mod tests {
             snapshot.rows.push(XTranscriptRow {
                 rect,
                 carrier: Some(carrier),
+                message_text: String::new(),
+                who_wrote_it: SharedRowWhoWroteIt::Yours,
+                who_wrote_it_part: XTranscriptPagePart::who_wrote_it(Some(
+                    NodeRef::for_claimed_node(3),
+                )),
             });
             Ok(SendOutcome::Sent)
         }
@@ -468,6 +543,11 @@ mod tests {
                 height: 10,
             },
             carrier: Some("osl1_carrier".into()),
+            message_text: "visible OSL carrier text".into(),
+            who_wrote_it: SharedRowWhoWroteIt::Yours,
+            who_wrote_it_part: XTranscriptPagePart::who_wrote_it(Some(NodeRef::for_claimed_node(
+                3,
+            ))),
         });
         let backend = XWebBackend::new(Fixture(Mutex::new(initial)));
         let binding = SurfaceBinding::for_claimed_surface(
