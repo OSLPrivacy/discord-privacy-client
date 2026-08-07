@@ -1,0 +1,149 @@
+/* ---------------------------------------------------------------------------
+   TASK 1413 - What counts as a bad message (Scrub setup).
+
+   Built on the shared `.settings-options` / `.setting-option` grid so it looks
+   like the rest of setup. What is its own here is the tick: this is a
+   multi-choice page, so the control is a square box rather than the product's
+   round "pick one" radio, and the ticked boxes are drawn in --brand so a
+   screenshot shows which rules are on without reading the markup.
+   --------------------------------------------------------------------------- */
+.what-to-find {
+  max-width: 640px;
+  font-family: var(--font-ui);
+  color: var(--text);
+}
+
+.what-to-find h1 {
+  margin: 0 0 6px;
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: -.01em;
+}
+
+.wtf-intro {
+  margin: 0;
+  max-width: 58ch;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+/* "possible match" is the whole promise of this page, so it is the one phrase
+   in the lead paragraph that is not muted. */
+.wtf-intro strong { color: var(--text); font-weight: 600; }
+
+/* One column, not the settings grid's two: every choice carries a full
+   sentence, and two columns broke each of them over three lines. */
+.wtf-choices {
+  margin: 16px 0 0;
+  padding: 0;
+  border: 0;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+}
+
+.wtf-choice {
+  display: block;
+  min-height: 0;
+  padding: 11px 13px;
+  border-left: 3px solid transparent;
+}
+
+.wtf-choice-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.wtf-choice-head strong {
+  display: inline;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.wtf-choice-box {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--brand);
+}
+
+.wtf-choice.selected {
+  border-left-color: var(--brand);
+  background: var(--panel-2);
+}
+
+.wtf-choice.selected .wtf-choice-head strong { color: var(--brand); }
+
+.wtf-choice-explanation {
+  display: block;
+  margin-top: 4px;
+  /* Lines up under the label, clear of the 16px box and its 9px gap. */
+  padding-left: 25px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.wtf-choice.selected .wtf-choice-explanation { color: var(--text); }
+
+/* The shortcut is separated from the five rules it stands for, so it does not
+   read as a sixth thing to look for. */
+.wtf-choice-all { margin-top: 4px; border-top: 1px solid var(--line); }
+
+.wtf-words {
+  display: block;
+  margin: 18px 0 0;
+}
+
+.wtf-words-label {
+  display: block;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.wtf-words-hint {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.wtf-words textarea {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  line-height: 1.6;
+  resize: vertical;
+}
+
+.wtf-words textarea:focus-visible { border-color: var(--brand); outline: none; }
+
+.wtf-words-count {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.wtf-state {
+  margin: 14px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.wtf-actions {
+  margin: 16px 0 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.wtf-actions .button { min-width: 92px; justify-content: center; }
+.wtf-actions .osl-continue { flex: 1; }

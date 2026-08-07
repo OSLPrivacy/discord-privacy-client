@@ -83,8 +83,12 @@ export function parsePng(buffer) {
   return { width, height, pixels };
 }
 
+function isBackground(r, g, b, background) {
+  return Math.abs(r - background[0]) + Math.abs(g - background[1]) + Math.abs(b - background[2]) <= 24;
+}
+
 /** Facts about one rectangle of the screenshot, in device pixels. */
-export function cropFacts(png, rect) {
+export function cropFacts(png, rect, { background = [10, 10, 10], brightSum = 360 } = {}) {
   const x0 = Math.max(0, Math.floor(rect.x));
   const y0 = Math.max(0, Math.floor(rect.y));
   const x1 = Math.min(png.width, Math.ceil(rect.x + rect.width));
@@ -92,6 +96,8 @@ export function cropFacts(png, rect) {
   const colors = new Set();
   let count = 0;
   let saturated = 0;
+  let nonBackground = 0;
+  let brightPixels = 0;
   let totalR = 0;
   let totalG = 0;
   let totalB = 0;
@@ -105,6 +111,8 @@ export function cropFacts(png, rect) {
       // "Saturated" = a colour no part of the grey app chrome can produce, so a
       // count above zero means real picture pixels, not a card border.
       if (Math.max(r, g, b) - Math.min(r, g, b) > 30) saturated += 1;
+      if (!isBackground(r, g, b, background)) nonBackground += 1;
+      if (r + g + b > brightSum) brightPixels += 1;
       totalR += r;
       totalG += g;
       totalB += b;
@@ -117,21 +125,31 @@ export function cropFacts(png, rect) {
     pixels: count,
     distinctColors: colors.size,
     saturatedPixels: saturated,
+    nonBackground,
+    brightPixels,
     meanColor: count === 0 ? null : `${Math.round(totalR / count)},${Math.round(totalG / count)},${Math.round(totalB / count)}`,
   };
 }
 
 /** Whole-image facts plus the named crops. */
-export function imageFacts(buffer, rects = {}) {
+export function imageFacts(buffer, rects = {}, options = {}) {
+  const background = options.background ?? [10, 10, 10];
   const png = parsePng(buffer);
   const colors = new Set();
+  let nonBackground = 0;
   for (let index = 0; index < png.pixels.length; index += 4) {
-    colors.add(`${png.pixels[index]},${png.pixels[index + 1]},${png.pixels[index + 2]}`);
+    const r = png.pixels[index];
+    const g = png.pixels[index + 1];
+    const b = png.pixels[index + 2];
+    colors.add(`${r},${g},${b}`);
+    if (!isBackground(r, g, b, background)) nonBackground += 1;
   }
   return {
     width: png.width,
     height: png.height,
     distinctColors: colors.size,
-    crops: Object.fromEntries(Object.entries(rects).map(([name, rect]) => [name, cropFacts(png, rect)])),
+    nonBackground,
+    nearlyBlank: colors.size < 20 || nonBackground < 2_000,
+    crops: Object.fromEntries(Object.entries(rects).map(([name, rect]) => [name, cropFacts(png, rect, options)])),
   };
 }
