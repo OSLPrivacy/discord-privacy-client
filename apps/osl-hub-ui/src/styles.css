@@ -10933,6 +10933,24 @@ code {
 
 .osl-chat-build-warning small { display: block; margin-top: 2px; color: var(--muted); }
 
+/* TASK 1310 -- direct-message list item: name, latest message, changed-build warning. */
+.osl-chat-dm-list-shell { min-height: 0; overflow-y: auto; }
+.osl-chat-dm-list { margin: 0; padding: 0; list-style: none; }
+.osl-chat-dm-item { min-height: 64px; border-bottom: 1px solid var(--line-soft); display: grid; }
+.osl-chat-dm-item.is-active { background: color-mix(in srgb, var(--brand) 7%, var(--bg)); box-shadow: inset 2px 0 var(--brand); }
+.osl-chat-dm-open { min-width: 0; min-height: 44px; padding: 10px 14px; border: 0; background: transparent; color: var(--text); text-align: left; cursor: pointer; display: grid; grid-template-columns: 38px minmax(0, 1fr) 22px auto; align-items: center; gap: 10px; }
+.osl-chat-dm-copy { min-width: 0; display: block; }
+.osl-chat-dm-line { min-width: 0; display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.osl-chat-dm-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 600; }
+.osl-chat-dm-time { flex: none; color: var(--muted); font-size: 11px; }
+.osl-chat-dm-latest { display: block; min-width: 0; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 11px; }
+.osl-chat-dm-latest-speaker { color: var(--subtle); }
+.osl-chat-dm-unread { min-width: 20px; min-height: 20px; padding: 0 6px; border-radius: 10px; background: var(--brand); color: #001014; display: grid; place-items: center; font-size: 11px; font-weight: 700; }
+.osl-chat-dm-build-warning { margin: 0; padding: 8px 14px 10px; border-width: 0 0 0 3px; border-style: solid; border-color: var(--warn, #ffb020); border-radius: 0; background: var(--warn-soft, rgba(255, 176, 32, .12)); color: var(--text); font-size: 12px; line-height: 1.45; }
+.osl-chat-dm-build-warning small { display: block; margin-top: 2px; color: var(--muted); }
+.osl-chat-dm-list-empty { margin: 0; padding: 16px 14px; color: var(--muted); font-size: 12px; }
+.osl-chat-dm-open:focus-visible { outline: 2px solid var(--brand); outline-offset: -2px; }
+
 
 
 
