@@ -28,7 +28,7 @@ param(
   [ValidatePattern('^[A-Za-z0-9_.\\-]+$')]
   [string]$InteractiveUser = 'osladmin',
 
-  [ValidateRange(5, 240)]
+  [ValidateRange(5, 900)]
   [int]$WaitSeconds = 90
 )
 
