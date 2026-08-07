@@ -92,12 +92,30 @@ pub fn outlook_desktop_control_driver() -> OutlookDesktopControlDriver {
 }
 
 pub const OUTLOOK_DESKTOP_TASK_1287_WORDS: &str = "OSL-OUTLOOK-DESKTOP-1287";
+pub const OUTLOOK_DESKTOP_TASK_1288_SUBJECT: &str = "HELLO";
+pub const OUTLOOK_DESKTOP_TASK_1288_WORDS: &str = "MAPLE-4172";
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum OutlookDesktopComposeField {
+    Subject,
+    Body,
+}
+
+impl OutlookDesktopComposeField {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Subject => "Subject",
+            Self::Body => "Body",
+        }
+    }
+}
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum OutlookDesktopFixtureError {
     MissingControl(String),
     RequiredControlCannotBeRemoved(String),
     ComposeNotStarted,
+    ComposeBodyNotFocused(String),
     MessageNotPlaced,
 }
 
@@ -105,6 +123,9 @@ pub enum OutlookDesktopFixtureError {
 pub struct OutlookDesktopEmailFixture {
     controls: Vec<&'static str>,
     composed_message: Option<String>,
+    focused_field: OutlookDesktopComposeField,
+    subject_text: String,
+    body_text: String,
     placed_messages: Vec<String>,
     sent_messages: Vec<String>,
 }
@@ -117,6 +138,9 @@ impl Default for OutlookDesktopEmailFixture {
                 .map(|target| target.name)
                 .collect(),
             composed_message: None,
+            focused_field: OutlookDesktopComposeField::Body,
+            subject_text: OUTLOOK_DESKTOP_TASK_1288_SUBJECT.to_owned(),
+            body_text: String::new(),
             placed_messages: Vec::new(),
             sent_messages: Vec::new(),
         }
@@ -136,10 +160,34 @@ impl OutlookDesktopEmailFixture {
         self.sent_messages.len()
     }
 
-    pub fn compose(&mut self) -> Result<&str, OutlookDesktopFixtureError> {
+    pub fn focused_field_name(&self) -> &'static str {
+        self.focused_field.name()
+    }
+
+    pub fn subject_text(&self) -> &str {
+        &self.subject_text
+    }
+
+    pub fn body_text(&self) -> &str {
+        &self.body_text
+    }
+
+    pub fn focus_field(&mut self, field: OutlookDesktopComposeField) {
+        self.focused_field = field;
+    }
+
+    pub fn compose_with_body(
+        &mut self,
+        words: impl Into<String>,
+    ) -> Result<&str, OutlookDesktopFixtureError> {
         self.require_control("Compose")?;
-        self.composed_message = Some(OUTLOOK_DESKTOP_TASK_1287_WORDS.to_owned());
+        self.focused_field = OutlookDesktopComposeField::Body;
+        self.composed_message = Some(words.into());
         Ok(self.composed_message.as_deref().unwrap_or_default())
+    }
+
+    pub fn compose(&mut self) -> Result<&str, OutlookDesktopFixtureError> {
+        self.compose_with_body(OUTLOOK_DESKTOP_TASK_1287_WORDS)
     }
 
     pub fn place(&mut self) -> Result<&str, OutlookDesktopFixtureError> {
@@ -148,9 +196,15 @@ impl OutlookDesktopEmailFixture {
             .composed_message
             .as_ref()
             .ok_or(OutlookDesktopFixtureError::ComposeNotStarted)?;
+        if self.focused_field != OutlookDesktopComposeField::Body {
+            return Err(OutlookDesktopFixtureError::ComposeBodyNotFocused(
+                self.focused_field.name().to_owned(),
+            ));
+        }
         if self.placed_messages.last() != Some(message) {
             self.placed_messages.push(message.clone());
         }
+        self.body_text = message.clone();
         Ok(self
             .placed_messages
             .last()
