@@ -1,0 +1,87 @@
+/* ---------------------------------------------------------------------------
+   TASK 1349 - view once player: play button, open item, countdown, X close.
+   --------------------------------------------------------------------------- */
+.view-once-player-screen {
+  display: grid;
+  gap: 16px;
+  font-family: var(--font-ui);
+  color: var(--text);
+}
+
+.vop-empty-copy {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.vop-item {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 220px;
+  height: 220px;
+  background: var(--panel-2);
+  border: 1px solid var(--panel-3);
+}
+
+.vop-item-play {
+  gap: 10px;
+}
+
+.vop-play {
+  width: 56px;
+  height: 56px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 999px;
+  background: var(--brand);
+  color: var(--brand-ink);
+  font-size: 20px;
+  cursor: pointer;
+}
+
+.vop-item-caption {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.vop-item-open {
+  background: var(--panel-3);
+}
+
+.vop-open-media {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(135deg, var(--brand-wash), var(--panel-3));
+}
+
+.vop-countdown {
+  position: absolute;
+  top: 10px;
+  right: 44px;
+  min-width: 24px;
+  padding: 4px 8px;
+  background: rgba(10, 10, 10, .65);
+  color: var(--text);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.vop-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  background: rgba(10, 10, 10, .65);
+  color: var(--text);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
