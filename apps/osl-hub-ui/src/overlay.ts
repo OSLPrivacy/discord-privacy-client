@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { checkedBackendResponse, lastBackendFailure, recordBackendFailure, recordInvalidBackendResponse } from "./backend-failure";
 import { burnNativeDiscordOverlayChat, captureC4NativeReceipt, clearC4NativeReceiptEvidence, getNativeDiscordOverlayQaDiagnostic, getNativeDiscordOverlayState, listNativeDiscordOverlayAttachments, openNativeDiscordOverlayAttachment, openNativeDiscordOverlayText, prepareNativeDiscordOverlayText, revealNativeDiscordOverlayViewOnce, selectNativeDiscordOverlayAttachment, sendNativeDiscordOverlayCarrier, sendNativeDiscordQaAtomicText, sendNativeDiscordQaProbe, setNativeDiscordOverlaySecurity, type NativeDiscordCarrierLayout, type NativeDiscordCarrierMode, type NativeDiscordCarrierSendOutcome } from "./native-overlay-adapter";
-import { boundedProtectedDraft, MAX_PROTECTED_DRAFT_BYTES, NATIVE_OVERLAY_TTL_OPTIONS, overlayExpiryDelayMs, PROTECTED_DRAFT_WARNING_BYTES, type NativeOverlayTtlSeconds, type NativeSurfaceCapture, utf8Length } from "./overlay-state";
+import { boundedProtectedDraft, MAX_PROTECTED_DRAFT_BYTES, NATIVE_OVERLAY_TTL_OPTIONS, nativeDiscordOverlayReceiveScreen, overlayExpiryDelayMs, PROTECTED_DRAFT_WARNING_BYTES, type NativeOverlayTtlSeconds, type NativeSurfaceCapture, utf8Length } from "./overlay-state";
 import { OverlaySendGesture, type OverlaySendGestureResult, type OverlaySendMode } from "./overlay-send-gesture";
 import { CoarseTypingRate } from "./coarse-typing-rate";
 import { TwoStepBurnConfirmation } from "./two-step-burn";
@@ -1458,14 +1458,10 @@ async function drainReceived(): Promise<void> {
     const attachments = attachmentsEnabled ? await listNativeDiscordOverlayAttachments() : [];
     if (!attachments) throw new Error("invalid attachment response");
     for (const attachment of attachments) appendPendingAttachment(attachment);
-    // A deferred row keeps the poll brisk on purpose: backing off while the store
-    // is unreachable is how a transient outage turns into a ten-second-deep hole.
-        // Fixed sentences only, and only ever about counts and states -- never a
+    // Fixed sentences only, and only ever about counts and states -- never a
     // fragment of what arrived.
-    if (opened > 0) status.textContent = `${opened} private ${opened === 1 ? "message" : "messages"} received through OSL.`;
-    else if (batch.deferredRows > 0) status.textContent = "OSL could not reach the protected message store. Retrying.";
-    else if (batch.unrecognizedWireRows > 0) status.textContent = "A protected message needs a newer version of OSL to open.";
-    else if (!batch.decryptDisplayEnabled) status.textContent = "Decrypted text is off for this conversation.";
+    const receiveScreen = nativeDiscordOverlayReceiveScreen(batch, opened);
+    if (receiveScreen) status.textContent = receiveScreen.statusText;
   } catch (error) {
     // This was the last swallowed failure in the file: a bare `catch` that only
     // doubled the poll interval, so even the one error the backend did return was

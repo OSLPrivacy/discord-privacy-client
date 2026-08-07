@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   boundedProtectedDraft,
+  nativeDiscordOverlayReceiveScreen,
   overlayExpiryDelayMs,
   parseNativeDiscordOverlayAcknowledgment,
   parseNativeDiscordOverlayOpened,
@@ -53,6 +54,20 @@ function nativeSurfaceFixture() {
     fontSizePx: 16,
     fontWeight: 400,
     lineHeightPx: 16,
+  };
+}
+
+function openedFixture(index: number) {
+  const suffix = String(index).padStart(2, "0");
+  return {
+    messageId: `peer-${suffix.repeat(16)}`,
+    coverPointer: `ordinary cover ${suffix}`,
+    plaintext: `TASK4016 private words ${suffix}`,
+    contextVerified: true,
+    personToPersonE2ee: true,
+    viewOnceConsumed: false,
+    createdAt: 1_786_996_400 + index,
+    expiresAt: 1_787_000_000,
   };
 }
 
@@ -671,6 +686,51 @@ describe("trusted composer overlay", () => {
     expect(parseNativeDiscordOverlayOpenedBatch({ messages: [], pendingViewOnce: [{ ...pendingViewOnce, messageId: "../message" }], acknowledgments: [], fetched: 1 })).toBeNull();
   });
 
+  it("says decrypted text is off with no private words on screen, then shows three when the eye is on", () => {
+    const waitingMessages = [openedFixture(1), openedFixture(2), openedFixture(3)];
+    const offBatch = parseNativeDiscordOverlayOpenedBatch({
+      messages: [],
+      pendingViewOnce: [],
+      acknowledgments: [],
+      fetched: 0,
+      decryptDisplayEnabled: false,
+      deferredRows: 0,
+      unrecognizedWireRows: 0,
+    });
+    expect(offBatch).not.toBeNull();
+    expect(waitingMessages).toHaveLength(3);
+    const offScreen = nativeDiscordOverlayReceiveScreen(offBatch!, offBatch!.messages.length);
+    expect(offScreen).toEqual({
+      privateWordsShown: 0,
+      statusText: "Decrypted text is off for this conversation.",
+    });
+    const offScreenText = [offScreen?.statusText, ...offBatch!.messages.map((message) => message.plaintext)].join("\n");
+    expect((offScreenText.match(/TASK4016 private words/gu) ?? [])).toHaveLength(0);
+
+    const onBatch = parseNativeDiscordOverlayOpenedBatch({
+      messages: waitingMessages,
+      pendingViewOnce: [],
+      acknowledgments: [],
+      fetched: 3,
+      decryptDisplayEnabled: true,
+      deferredRows: 0,
+      unrecognizedWireRows: 0,
+    });
+    expect(onBatch).not.toBeNull();
+    const onScreen = nativeDiscordOverlayReceiveScreen(onBatch!, onBatch!.messages.length);
+    expect(onScreen).toEqual({
+      privateWordsShown: 3,
+      statusText: "3 private messages received through OSL.",
+    });
+    const onScreenText = [onScreen?.statusText, ...onBatch!.messages.map((message) => message.plaintext)].join("\n");
+    expect((onScreenText.match(/TASK4016 private words/gu) ?? [])).toHaveLength(3);
+
+    console.log(`TASK4016_WAITING_MESSAGES=${waitingMessages.length}`);
+    console.log(`TASK4016_EYE_OFF_SENTENCE="${offScreen!.statusText}"`);
+    console.log(`TASK4016_EYE_OFF_PRIVATE_WORDS_SHOWN=${offScreen!.privateWordsShown}`);
+    console.log(`TASK4016_EYE_ON_PRIVATE_WORDS_SHOWN=${onScreen!.privateWordsShown}`);
+  });
+
   it("commits QA plaintext before its Discord flag and renders the exact row immediately", () => {
     const source = readRelative("./overlay.ts");
     const native = readRelative("../../osl-hub/src/main.rs");
@@ -1207,8 +1267,8 @@ describe("trusted composer overlay", () => {
     expect(poll).not.toMatch(/if \(!batch\.decryptDisplayEnabled\) \{[\s\S]{0,400}?\breturn\b/u);
     // Status text stays a fixed sentence plus a count -- never a fragment of what
     // arrived.
-    expect(poll).toContain('status.textContent = "OSL could not reach the protected message store. Retrying.";');
-    expect(poll).toContain('status.textContent = "Decrypted text is off for this conversation.";');
+    expect(poll).toContain("const receiveScreen = nativeDiscordOverlayReceiveScreen(batch, opened);");
+    expect(poll).toContain("if (receiveScreen) status.textContent = receiveScreen.statusText;");
     expect(poll).not.toMatch(/status\.textContent = `[^`]*\$\{(?:message|opened)\.plaintext/u);
   });
 

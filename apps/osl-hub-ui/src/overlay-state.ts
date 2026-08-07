@@ -149,6 +149,11 @@ export interface NativeDiscordOverlayAcknowledgment {
   acknowledgedAt: number;
 }
 
+export interface NativeDiscordOverlayReceiveScreen {
+  statusText: string;
+  privateWordsShown: number;
+}
+
 export interface NativeOverlayPreparedAttachment {
   attachmentId: string;
   originalFilename: string;
@@ -448,6 +453,38 @@ export function parseNativeDiscordOverlayOpenedBatch(value: unknown): NativeDisc
   if (messages.some((message) => message === null) || pendingViewOnce.some((message) => message === null)
     || acknowledgments.some((receipt) => receipt === null)) return null;
   return { messages: messages as NativeDiscordOverlayOpened[], pendingViewOnce: pendingViewOnce as NativeDiscordOverlayPendingViewOnce[], acknowledgments: acknowledgments as NativeDiscordOverlayAcknowledgment[], fetched: value.fetched as number, decryptDisplayEnabled: value.decryptDisplayEnabled as boolean, deferredRows: value.deferredRows as number, unrecognizedWireRows: value.unrecognizedWireRows as number };
+}
+
+export function nativeDiscordOverlayReceiveScreen(
+  batch: Pick<NativeDiscordOverlayOpenedBatch, "decryptDisplayEnabled" | "deferredRows" | "unrecognizedWireRows">,
+  privateWordsShown: number,
+): NativeDiscordOverlayReceiveScreen | null {
+  if (!Number.isSafeInteger(privateWordsShown) || privateWordsShown < 0) return null;
+  if (privateWordsShown > 0) {
+    return {
+      privateWordsShown,
+      statusText: `${privateWordsShown} private ${privateWordsShown === 1 ? "message" : "messages"} received through OSL.`,
+    };
+  }
+  if (batch.deferredRows > 0) {
+    return {
+      privateWordsShown,
+      statusText: "OSL could not reach the protected message store. Retrying.",
+    };
+  }
+  if (batch.unrecognizedWireRows > 0) {
+    return {
+      privateWordsShown,
+      statusText: "A protected message needs a newer version of OSL to open.",
+    };
+  }
+  if (!batch.decryptDisplayEnabled) {
+    return {
+      privateWordsShown,
+      statusText: "Decrypted text is off for this conversation.",
+    };
+  }
+  return null;
 }
 
 function validAttachmentId(value: unknown): value is string {
