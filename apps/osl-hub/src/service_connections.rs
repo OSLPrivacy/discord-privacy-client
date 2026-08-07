@@ -43,6 +43,8 @@ pub const AOL_CONTROL_NAMES: [&str; 6] = [
     "reading pane",
 ];
 
+pub const ICLOUD_CONTROL_NAMES: [&str; 4] = ["Compose", "Place", "Readback", "Send"];
+
 const GMAIL_CONTROL_REQUESTS: [WebsiteNamedControlRequest; 6] = [
     WebsiteNamedControlRequest {
         name: "compose",
@@ -97,12 +99,35 @@ const AOL_CONTROL_REQUESTS: [WebsiteNamedControlRequest; 6] = [
     },
 ];
 
+const ICLOUD_CONTROL_REQUESTS: [WebsiteNamedControlRequest; 4] = [
+    WebsiteNamedControlRequest {
+        name: "Compose",
+        kind: WebsiteControlKind::Button,
+    },
+    WebsiteNamedControlRequest {
+        name: "Place",
+        kind: WebsiteControlKind::EditableBox,
+    },
+    WebsiteNamedControlRequest {
+        name: "Readback",
+        kind: WebsiteControlKind::VisibleMessageArea,
+    },
+    WebsiteNamedControlRequest {
+        name: "Send",
+        kind: WebsiteControlKind::Button,
+    },
+];
+
 pub const fn gmail_control_mapping() -> &'static [WebsiteNamedControlRequest] {
     &GMAIL_CONTROL_REQUESTS
 }
 
 pub const fn aol_control_mapping() -> &'static [WebsiteNamedControlRequest] {
     &AOL_CONTROL_REQUESTS
+}
+
+pub const fn icloud_control_mapping() -> &'static [WebsiteNamedControlRequest] {
+    &ICLOUD_CONTROL_REQUESTS
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -943,6 +968,12 @@ pub fn validate_aol_control_mapping(
     validate_required_control_names(mapping, &AOL_CONTROL_NAMES)
 }
 
+pub fn validate_icloud_control_mapping(
+    mapping: &[WebsiteNamedControlRequest],
+) -> Result<(), ServiceControlMappingError> {
+    validate_required_control_names(mapping, &ICLOUD_CONTROL_NAMES)
+}
+
 fn validate_required_control_names(
     mapping: &[WebsiteNamedControlRequest],
     required_names: &'static [&'static str],
@@ -964,11 +995,20 @@ pub struct EmailComposeControls {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
+pub struct IcloudEmailFlowControls {
+    pub compose: WebsiteNamedControl,
+    pub place: WebsiteNamedControl,
+    pub readback: WebsiteNamedControl,
+    pub send: WebsiteNamedControl,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum ServiceConnectionError {
     UnsupportedService,
     Driver(WebsiteDriverError),
     MissingComposeBox,
     MissingSendButton,
+    MissingNamedTarget(&'static str),
 }
 
 impl From<WebsiteDriverError> for ServiceConnectionError {
@@ -1020,9 +1060,42 @@ impl EmailServiceConnection {
         })
     }
 
+    pub fn request_icloud_flow_controls(
+        &self,
+        driver: &impl WebsiteDriver,
+        page: &WebsitePage,
+    ) -> Result<IcloudEmailFlowControls, ServiceConnectionError> {
+        if self.service_id != ICLOUD_SERVICE_ID {
+            return Err(ServiceConnectionError::UnsupportedService);
+        }
+        let controls = driver.read_named_controls(page, icloud_control_mapping())?;
+        Ok(IcloudEmailFlowControls {
+            compose: required_control(&controls, "Compose", WebsiteControlKind::Button)?,
+            place: required_control(&controls, "Place", WebsiteControlKind::EditableBox)?,
+            readback: required_control(
+                &controls,
+                "Readback",
+                WebsiteControlKind::VisibleMessageArea,
+            )?,
+            send: required_control(&controls, "Send", WebsiteControlKind::Button)?,
+        })
+    }
+
     pub fn account_id(&self) -> &str {
         &self.account_id
     }
+}
+
+fn required_control(
+    controls: &[WebsiteNamedControl],
+    name: &'static str,
+    kind: WebsiteControlKind,
+) -> Result<WebsiteNamedControl, ServiceConnectionError> {
+    controls
+        .iter()
+        .find(|control| control.name == name && control.kind == kind)
+        .cloned()
+        .ok_or(ServiceConnectionError::MissingNamedTarget(name))
 }
 
 #[cfg(test)]
