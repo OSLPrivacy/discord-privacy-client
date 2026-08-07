@@ -46,6 +46,12 @@ import { deviceTransferManifestScreen } from "./device-transfer";
 import { initialOldDeviceCopyDecision, oldDeviceCopyDecisionView } from "./device-transfer-source";
 import { renderDeadmanScreen, selectDeadmanAction } from "./deadman";
 import { groupOnboardingApps } from "./onboarding-app-groups";
+import {
+  dragHomeTileArrangement,
+  moveHomeTileArrangement,
+  normalizeHomeTileArrangement,
+  toggleHomeTileVisibility,
+} from "./home-tile-arrangement";
 import { peopleDestinationHeaderMarkup } from "./people-destination-header";
 import { lastBackendFailure, recordBackendFailure } from "./backend-failure";
 import { unlockAttemptWarning } from "./unlock-attempts";
@@ -375,6 +381,9 @@ function requireRoot(): HTMLDivElement {
   return element;
 }
 const runningUnderVitest = Boolean(import.meta.vitest || (typeof process !== "undefined" && process.env.VITEST));
+const fixedNoRecoverySecretFixture = !runningUnderVitest
+  && import.meta.env.DEV
+  && new URLSearchParams(window.location.search).get("osl-fixture") === "no-recovery-secret";
 const root = runningUnderVitest
   ? (globalThis.document?.querySelector<HTMLDivElement>("#app") ?? globalThis.document?.createElement("div") ?? {} as HTMLDivElement)
   : requireRoot();
@@ -1563,7 +1572,7 @@ function commitRender(): void {
     refreshActiveBrowserAccountsReady();
     if (route === "onboarding") renderOnboarding();
     else renderWorkspace();
-    bindDesktopTitlebar();
+    if (!fixedNoRecoverySecretFixture) bindDesktopTitlebar();
     const focusKey = route === "onboarding"
       ? `${route}:${onboardingRoute}`
       : route === "settings"
@@ -3502,6 +3511,7 @@ function bindOnboarding(): void {
     onboardingRoute = "tor";
     render();
   });
+  document.querySelector("#continue-defaults-review")?.addEventListener("click", () => { onboardingRoute = "sending"; render(); });
   document.querySelectorAll<HTMLInputElement>('input[name="tor-route"]').forEach((input) => input.addEventListener("change", () => {
     if (input.checked && (input.value === "tor" || input.value === "direct")) {
       torOnboarding = chooseTorRoute(torOnboarding, input.value);
@@ -3511,7 +3521,7 @@ function bindOnboarding(): void {
   document.querySelector<HTMLButtonElement>("[data-tor-choice-continue]")?.addEventListener("click", () => {
     if (torOnboarding.choice === null) return;
     void invoke("set_tor_preference", { preference: torOnboarding.choice }).then(() => {
-      onboardingRoute = "sending";
+      onboardingRoute = "defaults";
       render();
     }).catch(() => {
       // Do not advance: without native persistence the send boundary remains
@@ -3601,7 +3611,7 @@ function bindOnboarding(): void {
     if (next === "browser") void refreshBrowserImportReadiness();
     if (next === "mullvad") void refreshMullvadSetup();
   }));
-  document.querySelector("#continue-onboarding-privacy")?.addEventListener("click", () => { onboardingRoute = "defaults"; render(); });
+  document.querySelector("#continue-onboarding-privacy")?.addEventListener("click", () => { onboardingRoute = "tor"; render(); });
   document.querySelector<HTMLInputElement>("#window-capture-enabled")?.addEventListener("change", async (event) => {
     windowCaptureEnabled = (event.currentTarget as HTMLInputElement).checked;
     await setScreenshotProtection(windowCaptureEnabled).catch(() => false);
@@ -4856,9 +4866,14 @@ function workspaceContent(): string {
   const byId = new Map(homeApps.map((app) => [app.id, app]));
   const moduleById = new Map(modules.map((module) => [module.id, module]));
   const defaultIds = [...homeApps.map((app) => app.id), ...modules.map((module) => module.id)];
-  const orderedIds = [...homeTileOrder.filter((id) => defaultIds.includes(id as HomeAppId)), ...defaultIds.filter((id) => !homeTileOrder.includes(id))];
+  const arranged = normalizeHomeTileArrangement(defaultIds, {
+    order: homeTileOrder,
+    hidden: [...hiddenHomeTiles],
+  });
+  const orderedIds = arranged.order;
+  const arrangedHidden = new Set(arranged.hidden);
   const renderHomeTile = (id: string, index: number): string => {
-    const hidden = hiddenHomeTiles.has(id);
+    const hidden = arrangedHidden.has(id);
     if (hidden && !homeEditMode) return "";
     const controls = homeEditMode ? `<span class="tile-edit-controls"><button class="tile-remove" type="button" data-tile-toggle="${escapeHtml(id)}" aria-label="${hidden ? "Show" : "Remove"} ${escapeHtml(id)}">${hidden ? "+" : "−"}</button><span class="tile-keyboard-controls"><button type="button" data-tile-move="${escapeHtml(id)}:-1" ${index === 0 ? "disabled" : ""} aria-label="Move before">←</button><button type="button" data-tile-move="${escapeHtml(id)}:1" ${index === orderedIds.length - 1 ? "disabled" : ""} aria-label="Move after">→</button></span></span>` : "";
     const module = moduleById.get(id as typeof modules[number]["id"]);
@@ -6493,8 +6508,16 @@ function oslChatNotificationSettings(): string {
   return `<section class="settings-list osl-chat-notification-settings" aria-label="OSL Chat controls"><label class="setting-line interactive"><span><strong>Encrypted chat alerts</strong><small>New-message activity from unmuted OSL friends.</small></span><input id="notification-chat-activity" type="checkbox" ${notificationChatActivity ? "checked" : ""}/></label><label class="setting-line interactive"><span><strong>OSL Chat previews</strong><small>${previewText}</small></span><input id="osl-chat-preview-toggle" type="checkbox" ${previewsChecked ? "checked" : ""}/></label></section>${mutedDetails}`;
 }
 
+function setNotificationAppPreference(id: ServiceId, enabled: boolean): void {
+  notificationAppPreferences[id] = enabled;
+  localStorage.setItem(notificationAppsStorageKey, JSON.stringify(notificationAppPreferences));
+}
+
 function visibleAppNotifications(): AppNotification[] {
-  return (appNotifications ?? []).filter((item) => item.detail === "New encrypted message" ? notificationChatActivity : notificationSecurityActivity);
+  return (appNotifications ?? []).filter((item) => {
+    if (item.appId && notificationAppPreferences[item.appId] === false) return false;
+    return item.detail === "New encrypted message" ? notificationChatActivity : notificationSecurityActivity;
+  });
 }
 
 type IdentityStorageProtection = "device" | "fallback" | "unknown";
@@ -7107,7 +7130,7 @@ async function toggleDiscordQaTranscriptVisibility(): Promise<void> {
   render();
 }
 
-if (!runningUnderVitest) {
+if (!runningUnderVitest && !fixedNoRecoverySecretFixture) {
   bindAttachmentProgressEvents();
   bindAttachmentDeletionEvents();
   void listen<void>(MAIN_WINDOW_CAPTURE_REFUSED_EVENT, () => {
@@ -7171,7 +7194,7 @@ function applyNativeDiscordComposerUnreachable(
   }
 }
 
-if (!runningUnderVitest) {
+if (!runningUnderVitest && !fixedNoRecoverySecretFixture) {
   void listen<{ reason?: unknown; unreachable?: unknown }>(
     NATIVE_DISCORD_COMPOSER_UNREACHABLE_EVENT,
     ({ payload }) => {
@@ -8194,6 +8217,8 @@ function bindWorkspace(): void {
   document.querySelector<HTMLInputElement>("#notification-previews")?.addEventListener("change", (event) => { notificationPreviewContent = (event.currentTarget as HTMLInputElement).checked; localStorage.setItem(notificationPreviewStorageKey, String(notificationPreviewContent)); });
   document.querySelector<HTMLInputElement>("#notification-scope-suggestions")?.addEventListener("change", (event) => void setNotificationScopeSuggestions((event.currentTarget as HTMLInputElement).checked));
   document.querySelectorAll<HTMLInputElement>("[data-notification-app]").forEach((input) => input.addEventListener("change", () => { const id = input.dataset.notificationApp as ServiceId; notificationAppPreferences[id] = input.checked; localStorage.setItem(notificationAppsStorageKey, JSON.stringify(notificationAppPreferences)); }));
+  document.querySelector<HTMLInputElement>("#notification-scope-suggestions")?.addEventListener("change", (event) => { notificationScopeSuggestions = (event.currentTarget as HTMLInputElement).checked; localStorage.setItem(notificationScopeStorageKey, String(notificationScopeSuggestions)); });
+  document.querySelectorAll<HTMLInputElement>("[data-notification-app]").forEach((input) => input.addEventListener("change", () => { setNotificationAppPreference(input.dataset.notificationApp as ServiceId, input.checked); }));
   document.querySelectorAll<HTMLButtonElement>("[data-osl-chat-unmute]").forEach((button) => button.addEventListener("click", () => {
     oslChatMutedPeople.delete(button.dataset.oslChatUnmute ?? "");
     persistOslChatMutedPeople();
@@ -8638,27 +8663,23 @@ function moveHomeTile(raw: string): void {
   const separator = raw.lastIndexOf(":");
   const id = raw.slice(0, separator);
   const delta = Number(raw.slice(separator + 1));
-  const defaults = currentHomeTileIds();
-  const order = [...homeTileOrder.filter((item) => defaults.includes(item)), ...defaults.filter((item) => !homeTileOrder.includes(item))];
-  const index = order.indexOf(id);
-  const target = index + delta;
-  if (index < 0 || !Number.isSafeInteger(delta) || Math.abs(delta) !== 1 || target < 0 || target >= order.length) return;
-  [order[index], order[target]] = [order[target], order[index]];
-  homeTileOrder = order;
+  const arranged = moveHomeTileArrangement(currentHomeTileIds(), {
+    order: homeTileOrder,
+    hidden: [...hiddenHomeTiles],
+  }, id, delta);
+  homeTileOrder = arranged.order;
+  hiddenHomeTiles = new Set(arranged.hidden);
   saveHomeTilePreferences();
   render();
 }
 
 function reorderHomeTile(sourceId: string | null, targetId: string | null): void {
-  if (!sourceId || !targetId || sourceId === targetId) return;
-  const defaults = currentHomeTileIds();
-  const order = [...homeTileOrder.filter((item) => defaults.includes(item)), ...defaults.filter((item) => !homeTileOrder.includes(item))];
-  const source = order.indexOf(sourceId);
-  const target = order.indexOf(targetId);
-  if (source < 0 || target < 0) return;
-  order.splice(source, 1);
-  order.splice(target, 0, sourceId);
-  homeTileOrder = order;
+  const arranged = dragHomeTileArrangement(currentHomeTileIds(), {
+    order: homeTileOrder,
+    hidden: [...hiddenHomeTiles],
+  }, sourceId, targetId);
+  homeTileOrder = arranged.order;
+  hiddenHomeTiles = new Set(arranged.hidden);
   saveHomeTilePreferences();
   render();
 }
@@ -8672,6 +8693,13 @@ function toggleHomeTile(id: string): void {
     showToast(result.error ?? HOME_TILE_ARRANGEMENT_REFUSAL);
     return;
   }
+  const arranged = toggleHomeTileVisibility(currentHomeTileIds(), {
+    order: homeTileOrder,
+    hidden: [...hiddenHomeTiles],
+  }, id);
+  homeTileOrder = arranged.order;
+  hiddenHomeTiles = new Set(arranged.hidden);
+  saveHomeTilePreferences();
   render();
 }
 
@@ -8793,6 +8821,10 @@ function persistOslChatNotifications(): void {
   void persistSensitiveOslChatJson(oslChatNotificationStorageKey, encodeOslChatNotifications(metadata));
 }
 
+function recordAppNotification(notification: AppNotification): void {
+  appNotifications = [notification, ...(appNotifications ?? [])].slice(0, 20);
+}
+
 function mergePersistedOslChatNotifications(items: AppNotification[] | null): AppNotification[] {
   const chat = (appNotifications ?? []).filter((item) => item.detail === "New encrypted message");
   const merged = [...chat, ...(items ?? [])];
@@ -8834,12 +8866,12 @@ function commitOslChatBatch(personId: string, batch: NativeDiscordOverlayOpenedB
     if (background) {
       oslChatUnread.set(personId, Math.min(10_000, (oslChatUnread.get(personId) ?? 0) + 1));
       if (notificationsEnabled && notificationChatActivity && !oslChatMutedPeople.has(personId)) {
-        appNotifications = [{
+        recordAppNotification({
           id: localMessageId,
           title: "OSL Chat",
           detail: "New encrypted message",
           createdAt: "Now",
-        }, ...(appNotifications ?? [])].slice(0, 20);
+        });
       }
     }
   }
@@ -10399,7 +10431,7 @@ async function bootstrap(): Promise<void> {
   }
 }
 
-if (!runningUnderVitest) {
+if (!runningUnderVitest && !fixedNoRecoverySecretFixture) {
   window.matchMedia("(prefers-color-scheme: light)").addEventListener("change", () => { if (themeChoice === "system") applyTheme("system"); });
   window.addEventListener("keydown", (event) => {
     if (event.key !== "F11" || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
@@ -10591,6 +10623,8 @@ type OslHubUiTestStatePatch = {
   activeOslChatPersonId?: string | null;
   activeOslChatScopeApproved?: boolean;
   oslChatDraft?: string;
+  recoveryBundle?: { userId: string; identityPhrase: string | null; passwordPhrase: string } | null;
+  recoveryKitUnsaved?: boolean;
 };
 
 function testHubPerson(person: Partial<HubPerson> & { personId: string }): HubPerson {
@@ -10637,6 +10671,7 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   silentVisibleMode = patch.silentVisibleMode ?? null;
   coverInsertion = patch.coverInsertion ?? initialCoverInsertionChoice();
   deleteChoices = initialDeleteChoices();
+  torOnboarding = initialTorOnboardingState();
   settingsSection = "account";
   activeService = null;
   activeHomeAppId = null;
@@ -10669,6 +10704,10 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   protectionPreset = patch.protectionPreset ?? loadProtectionPreset();
   inboxFilter = patch.inboxFilter ?? "all";
   resetAccountRecovery();
+  recoveryBundle = patch.recoveryBundle ?? null;
+  recoverySavedAcknowledged = false;
+  recoveryShownWithoutProtection = false;
+  void recoveryKitUnsavedFlag.set(patch.recoveryKitUnsaved ?? false);
   oslMailNotifications = patch.oslMailNotifications ?? (localStorage.getItem(oslMailNotificationsStorageKey) !== "false");
   oslMailThreadSyncUnavailable = false;
   oslMailThreads = [];
@@ -10688,6 +10727,9 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   identityListRefreshInFlight = false;
   privateEnclaveAudiences = parsedEnclaveAudiences(patch.enclaveAudienceRecords ?? []);
   notificationsEnabled = patch.notificationsEnabled ?? false;
+  notificationAppPreferences = {};
+  notificationChatActivity = true;
+  notificationSecurityActivity = true;
   notificationPreviewContent = patch.notificationPreviewContent ?? true;
   appNotifications = patch.appNotifications ?? [];
   licenseState = { ...unconfiguredLicenseState, access: patch.licenseAccess ?? "free" };
@@ -11213,6 +11255,74 @@ export const __oslHubUiTest = {
   renderProtectedSheets(): string {
     return workspaceProtectedSheetMarkup();
   },
+  renderDialogSurfaceForTest(
+    name: "friends" | "people-in-chat" | "whitelist-roster" | "native-protect-friend" | "scrub-review" | "burn" | "owned-confirmation" | "update" | "osl-chat-settings",
+  ): string {
+    friendsDialogOpen = false;
+    whitelistRosterOpen = false;
+    nativeProtectPickerOpen = false;
+    scrubReviewOpen = false;
+    burnDialogOpen = false;
+    ownedConfirmation = null;
+    updateStatus = { state: "unavailable" };
+    oslChatSettingsPersonId = null;
+    activeNativeHostId = null;
+    activeNativeHostMode = null;
+    activeService = null;
+    activeHomeAppId = null;
+
+    if (name === "friends") {
+      route = "home";
+      friendsDialogOpen = true;
+      return friendsDialogMarkup();
+    }
+    if (name === "people-in-chat") {
+      this.renderServiceHeader("discord");
+      return peopleDialogMarkup();
+    }
+    if (name === "whitelist-roster") {
+      whitelistRosterOpen = true;
+      return whitelistRosterMarkup();
+    }
+    if (name === "native-protect-friend") {
+      activeNativeHostId = "discord";
+      activeNativeHostMode = "dedicated";
+      nativeProtectPickerOpen = true;
+      return nativeDiscordProtectPickerMarkup();
+    }
+    if (name === "scrub-review") {
+      scrubReviewOpen = true;
+      return scrubReviewDialogMarkup();
+    }
+    if (name === "burn") {
+      burnDialogOpen = true;
+      burnScope = "account";
+      return burnDialogMarkup();
+    }
+    if (name === "owned-confirmation") {
+      ownedConfirmation = { kind: "clearActivation" };
+      return ownedConfirmationMarkup();
+    }
+    if (name === "update") {
+      updateStatus = { state: "available", current: "0.1.0", next: "0.1.1", notes: "Focused keyboard travel fixture." };
+      return updateDialogMarkup();
+    }
+
+    const friend = testHubPerson({ personId: "friend-1", alias: "Verified friend", safetyNumberVerified: true });
+    hubPeople = [friend];
+    route = "osl-chat";
+    activeOslChatPersonId = friend.personId;
+    activeOslChatContext = {
+      contextToken: "test-context",
+      serviceId: "osl-chat",
+      accountId: "local",
+      personId: friend.personId,
+      peerOslUserId: friend.oslUserId,
+      scopeApproved: true,
+    };
+    oslChatSettingsPersonId = friend.personId;
+    return oslChatFriendSettingsMarkup(friend);
+  },
   /** D80: the rendered onboarding screen, markup only, for the unlock-screen
    * advertisement audit in `unlock-screen-single-credential.test.ts`. */
   renderOnboardingRoute(destination: OnboardingRoute): string {
@@ -11311,6 +11421,16 @@ export const __oslHubUiTest = {
   },
   persistOslChatNotifications(): void {
     persistOslChatNotifications();
+  },
+  changeAppNotificationTick(appId: ServiceId, enabled: boolean): void {
+    setNotificationAppPreference(appId, enabled);
+  },
+  sendTestAppActivity(notification: AppNotification): void {
+    recordAppNotification(notification);
+  },
+  localNoticeCount(appId?: ServiceId): number {
+    const notices = visibleAppNotifications();
+    return appId ? notices.filter((item) => item.appId === appId).length : notices.length;
   },
   handleUnhandledRejection(event: PromiseRejectionEvent): void {
     handleUnhandledRejection(event);
@@ -11514,6 +11634,7 @@ export const __oslHubUiTest = {
     forwardSecrecyMode: "protectPast" | "keepGroupDelivery";
     setup: SetupState;
     windowCaptureEnabled: boolean;
+    torChoice: TorOnboardingState["choice"];
   } {
     return {
       route,
@@ -11542,6 +11663,7 @@ export const __oslHubUiTest = {
       forwardSecrecyMode,
       setup: { ...setup },
       windowCaptureEnabled,
+      torChoice: torOnboarding.choice,
     };
   },
 };
@@ -11561,28 +11683,49 @@ if (!runningUnderVitest && !skipAutoBootstrap) {
   void bindMainWindowFocusChanges(
     (handler) => desktopWindow.onFocusChanged(handler),
     {
+if (!runningUnderVitest) {
+  if (fixedNoRecoverySecretFixture) {
+    applyOslHubUiTestState({
+      route: "onboarding",
+      onboardingRoute: "recovery",
+      recoveryBundle: null,
+      recoveryKitUnsaved: false,
+    });
+    render();
+  } else {
+    const desktopWindow = getCurrentWindow();
+    bindWindowLifecycleRealignment(
+      window,
+      desktopWindow,
+      document,
       scheduleNativeHostRealignment,
-      hasRecoverySecrets: () => Boolean(recoveryBundle || newIdentityRecoveryPhrase),
-      proveRecoveryCaptureProtection,
-      invalidateRecoveryCapture: () => recoveryCaptureGate.invalidate(),
-      setScreenshotProtectionEnabled: (enabled) => { screenshotProtectionEnabled = enabled; },
-      render,
-    },
-  ).catch(() => undefined);
-  document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "hidden") {
-      recoveryCaptureGate.invalidate();
-      screenshotProtectionEnabled = false;
-      newIdentityRecoveryPhrase = null;
-      if (recoveryBundle || (route === "settings" && settingsSection === "account")) render();
-      return;
-    }
-    if (recoveryBundle || newIdentityRecoveryPhrase) {
-      void proveRecoveryCaptureProtection().then(() => render());
-    }
-  });
-  window.addEventListener("error", (event) => { event.preventDefault(); containBackgroundFailure(); });
-  window.addEventListener(unhandledRejectionEventType, handleUnhandledRejection);
-  void bootstrap();
-  scheduleOslChatBackgroundSync(1_000);
+    );
+    void bindMainWindowFocusChanges(
+      (handler) => desktopWindow.onFocusChanged(handler),
+      {
+        scheduleNativeHostRealignment,
+        hasRecoverySecrets: () => Boolean(recoveryBundle || newIdentityRecoveryPhrase),
+        proveRecoveryCaptureProtection,
+        invalidateRecoveryCapture: () => recoveryCaptureGate.invalidate(),
+        setScreenshotProtectionEnabled: (enabled) => { screenshotProtectionEnabled = enabled; },
+        render,
+      },
+    ).catch(() => undefined);
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") {
+        recoveryCaptureGate.invalidate();
+        screenshotProtectionEnabled = false;
+        newIdentityRecoveryPhrase = null;
+        if (recoveryBundle || (route === "settings" && settingsSection === "account")) render();
+        return;
+      }
+      if (recoveryBundle || newIdentityRecoveryPhrase) {
+        void proveRecoveryCaptureProtection().then(() => render());
+      }
+    });
+    window.addEventListener("error", (event) => { event.preventDefault(); containBackgroundFailure(); });
+    window.addEventListener(unhandledRejectionEventType, handleUnhandledRejection);
+    void bootstrap();
+    scheduleOslChatBackgroundSync(1_000);
+  }
 }

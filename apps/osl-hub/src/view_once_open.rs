@@ -181,6 +181,37 @@ pub struct NamedViewOnceCopies {
 impl NamedViewOnceCopies {
     }
 
+#[derive(Debug, Eq, PartialEq)]
+pub struct ViewOnceOpenRequest {
+    pub exit_code: i32,
+    pub content: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ViewOnceViewerTier {
+    Free,
+    Pro,
+}
+
+impl ViewOnceViewerTier {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Free => "free",
+            Self::Pro => "pro",
+        }
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct ViewOnceOpenResultRecord {
+    pub message_id: String,
+    pub viewer: String,
+    pub viewer_tier: ViewOnceViewerTier,
+    pub exit_code: i32,
+    pub content: String,
+}
+
+impl NamedViewOnceCopies {
     pub fn insert_mark(
         &mut self,
         machine: impl Into<String>,
@@ -210,6 +241,35 @@ impl NamedViewOnceCopies {
             copy.remove(item_id);
         }
         Some(mark)
+    }
+
+    pub fn request_open(&mut self, machine: &str, item_id: &str) -> ViewOnceOpenRequest {
+        match self.open_and_destroy_all(machine, item_id) {
+            Some(content) => ViewOnceOpenRequest {
+                exit_code: 0,
+                content,
+            },
+            None => ViewOnceOpenRequest {
+                exit_code: 1,
+                content: String::new(),
+            },
+        }
+    }
+
+    pub fn request_open_for_viewer(
+        &mut self,
+        viewer: &str,
+        tier: ViewOnceViewerTier,
+        item_id: &str,
+    ) -> ViewOnceOpenResultRecord {
+        let opened = self.request_open(viewer, item_id);
+        ViewOnceOpenResultRecord {
+            message_id: item_id.to_owned(),
+            viewer: viewer.to_owned(),
+            viewer_tier: tier,
+            exit_code: opened.exit_code,
+            content: opened.content,
+        }
     }
 }
 
@@ -325,6 +385,7 @@ mod tests {
         open_view_once, validate_native_image_viewer_lifecycle, NamedViewOnceCopies,
         NativeImageDisplayDuration, NativeImageViewerEvent as ImageEvent, ViewOnceOpenEffects,
         MAX_NATIVE_IMAGE_DISPLAY_SECONDS,
+        ViewOnceOpenResultRecord, ViewOnceViewerTier,
     };
 
     #[derive(Debug, PartialEq, Eq)]
@@ -654,6 +715,118 @@ mod tests {
         assert_eq!(after_b, 0);
         assert!(absent_a);
         assert!(absent_b);
+    }
+
+    #[test]
+    fn task_1373_view_once_second_requests_fail_on_both_machines() {
+        let item_id = "peer-13731373137313731373137313731373";
+        let mark = format!("TASK1373-MARK-{:016x}", rand::random::<u64>());
+        let mut copies = NamedViewOnceCopies::default();
+        copies.insert_mark("chat-machine-a", item_id, mark.as_str());
+        copies.insert_mark("chat-machine-b", item_id, mark.as_str());
+
+        let first_a = copies
+            .read_mark("chat-machine-a", item_id)
+            .expect("machine A can read the pending mark")
+            .to_owned();
+        let first_b = copies
+            .read_mark("chat-machine-b", item_id)
+            .expect("machine B can read the pending mark")
+            .to_owned();
+        let before_a = copies.count("chat-machine-a");
+        let before_b = copies.count("chat-machine-b");
+        println!(
+            "TASK1373 first_read machine_a_mark={first_a} machine_b_mark={first_b} \
+             machine_a_count={before_a} machine_b_count={before_b}"
+        );
+        assert_eq!(first_a, mark);
+        assert_eq!(first_b, mark);
+        assert_eq!(first_a, first_b);
+        assert_eq!(before_a, 1);
+        assert_eq!(before_b, 1);
+
+        let first_open = copies.request_open("chat-machine-a", item_id);
+        println!(
+            "TASK1373 first_open exit_code={} content={}",
+            first_open.exit_code, first_open.content
+        );
+        assert_eq!(first_open.exit_code, 0);
+        assert_eq!(first_open.content, mark);
+
+        let after_a = copies.count("chat-machine-a");
+        let after_b = copies.count("chat-machine-b");
+        println!("TASK1373 after_first_open machine_a_count={after_a} machine_b_count={after_b}");
+        assert_eq!(after_a, 0);
+        assert_eq!(after_b, 0);
+
+        let second_a = copies.request_open("chat-machine-a", item_id);
+        let second_b = copies.request_open("chat-machine-b", item_id);
+        println!(
+            "TASK1373 second_open machine_a_exit={} machine_a_content_len={} \
+             machine_b_exit={} machine_b_content_len={}",
+            second_a.exit_code,
+            second_a.content.len(),
+            second_b.exit_code,
+            second_b.content.len()
+        );
+        assert_eq!(second_a.exit_code, 1);
+        assert_eq!(second_b.exit_code, 1);
+        assert!(second_a.content.is_empty());
+        assert!(second_b.content.is_empty());
+    }
+
+    #[test]
+    fn task_0592_free_and_pro_viewers_each_get_exactly_one_open() {
+        const ITEM_ID: &str = "peer-05920592059205920592059205920592";
+        const CONTENT: &str = "the exact words";
+
+        fn exercise_viewer(
+            tier: ViewOnceViewerTier,
+            viewer: &'static str,
+        ) -> (ViewOnceOpenResultRecord, ViewOnceOpenResultRecord) {
+            let mut copies = NamedViewOnceCopies::default();
+            copies.insert_mark(viewer, ITEM_ID, CONTENT);
+
+            let first = copies.request_open_for_viewer(viewer, tier, ITEM_ID);
+            let second = copies.request_open_for_viewer(viewer, tier, ITEM_ID);
+            (first, second)
+        }
+
+        let (free_first, free_second) = exercise_viewer(ViewOnceViewerTier::Free, "free-viewer");
+        let (pro_first, pro_second) = exercise_viewer(ViewOnceViewerTier::Pro, "pro-viewer");
+
+        for (label, first, second) in [
+            ("free", &free_first, &free_second),
+            ("pro", &pro_first, &pro_second),
+        ] {
+            println!(
+                "TASK0592 {label}_first message={} viewer={} tier={} exit_code={} content={}",
+                first.message_id,
+                first.viewer,
+                first.viewer_tier.label(),
+                first.exit_code,
+                first.content
+            );
+            println!(
+                "TASK0592 {label}_second message={} viewer={} tier={} exit_code={} content_len={}",
+                second.message_id,
+                second.viewer,
+                second.viewer_tier.label(),
+                second.exit_code,
+                second.content.len()
+            );
+
+            assert_eq!(first.message_id, ITEM_ID);
+            assert_eq!(second.message_id, ITEM_ID);
+            assert_eq!(first.viewer, format!("{label}-viewer"));
+            assert_eq!(second.viewer, format!("{label}-viewer"));
+            assert_eq!(first.viewer_tier.label(), label);
+            assert_eq!(second.viewer_tier.label(), label);
+            assert_eq!(first.exit_code, 0);
+            assert_eq!(first.content, CONTENT);
+            assert_eq!(second.exit_code, 1);
+            assert!(second.content.is_empty());
+        }
     }
 
     #[test]

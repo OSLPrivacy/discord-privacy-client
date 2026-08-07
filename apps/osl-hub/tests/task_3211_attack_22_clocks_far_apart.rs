@@ -92,6 +92,11 @@ fn task_3211_attack_22_clocks_far_apart() {
         offline_after_deadline_count, 0,
         "TASK3211_OFFLINE_AFTER_DEADLINE_READ_COUNT should be 0 after the deadline, got {offline_after_deadline_count}"
     );
+    assert_eq!(before_deadline_count, 1);
+
+    let offline_after_deadline_count =
+        authenticated_read_count(&receiver, &store, &marked_text, AFTER_DEADLINE);
+    assert_eq!(offline_after_deadline_count, 0);
 
     let _account_dir = use_receiver_account_dir(&receiver.config_dir);
     let offline_pass = run_pass(
@@ -111,6 +116,8 @@ fn task_3211_attack_22_clocks_far_apart() {
         "TASK3211_OFFLINE_PASS_SHREDDED_CACHE_ROWS should be 1 after the offline expiry pass, got {}",
         offline_pass.shredded_cache_rows
     );
+    assert_eq!(offline_pass.expired_messages, 1);
+    assert_eq!(offline_pass.shredded_cache_rows, 1);
 
     let reconnected_after_deadline_count = authenticated_read_count(
         &receiver,
@@ -145,6 +152,12 @@ fn task_3211_attack_22_clocks_far_apart() {
         receiver_text_hits, 0,
         "TASK3211_RECEIVER_TEXT_HITS_AFTER_RECONNECT should be 0 for the marked plaintext after reconnect, got {receiver_text_hits}"
     );
+    assert_eq!(reconnected_after_deadline_count, 0);
+    assert!(reconnected_pass.ran);
+    assert!(!reconnected_pass.degraded);
+    assert_eq!(reconnected_pass.expired_messages, 0);
+    assert_eq!(reconnected_pass.shredded_cache_rows, 0);
+    assert_eq!(receiver_text_hits, 0);
     assert!(
         store
             .get(&receiver.message_id)

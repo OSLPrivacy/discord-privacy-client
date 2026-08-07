@@ -167,6 +167,8 @@ record = {
     "oneBuildVersion": version,
     "switches": switches,
     "recordedAtUtc": datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+    "recordedAtUtc": os.environ.get("VMQA_TEST_METADATA_RECORDED_AT_UTC")
+    or datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
 }
 (directory / f"{category}-{slug}.json").write_text(
     json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n",

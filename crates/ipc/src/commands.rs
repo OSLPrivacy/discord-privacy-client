@@ -62,6 +62,7 @@ use base64::Engine;
 use crypto::{aead, ed25519, hkdf, random, x25519};
 use keystore::{generate_identity, select_best_sealer, BurnScope, KeyServerClient};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -10658,6 +10659,19 @@ fn record_accepted_friend_relationship(state: &AppState, requester_discord_id: &
 }
 
 const PENDING_FRIEND_REQUESTS_FILE: &str = "pending_friend_requests.json";
+
+    let mut friend_ids = state.friend_ids.lock().expect("friend_ids mutex poisoned");
+    for id in self_discord_id
+        .into_iter()
+        .chain(std::iter::once(requester_discord_id.to_owned()))
+    {
+        if !friend_ids.iter().any(|existing| existing == &id) {
+            friend_ids.push(id);
+        }
+    }
+}
+
+const PENDING_FRIEND_REQUESTS_FILE: &str = "pending_friend_requests.json";
 const FRIEND_INVITE_LINKS_FILE: &str = "friend_invite_links.json";
 const FRIEND_INVITE_LINK_PREFIX: &str = "OSLINV1.";
 
@@ -15300,6 +15314,14 @@ mod account_transfer_tests {
         state
     }
 
+    fn state_with_transfer_identity(entropy: [u8; 16], snowflake: &str) -> AppState {
+        let state = AppState::new();
+        let mut identity = keystore::identity_from_entropy(entropy, format!("user-{snowflake}"));
+        identity.discord_snowflake = Some(snowflake.to_string());
+        state.install_identity(identity);
+        state
+    }
+
     fn open_export(encoded: &str, entropy: [u8; 16]) -> serde_json::Value {
         let raw = STANDARD.decode(encoded).unwrap();
         let offset = OSL_EXPORT_MAGIC.len() + crypto::aead::NONCE_SIZE;
@@ -15371,6 +15393,77 @@ mod account_transfer_tests {
                     sender_osl_user_id: ACCOUNT.to_owned(),
                     plaintext: MESSAGE_TEXT.to_owned(),
                     decrypted_at: 459,
+    fn transfer_phrase(entropy: [u8; 16]) -> String {
+        bip39::Mnemonic::from_entropy_in(bip39::Language::English, &entropy)
+            .unwrap()
+            .to_string()
+    }
+
+    fn mutate_one_backup_byte(blob_b64: &str) -> String {
+        let mut raw = STANDARD.decode(blob_b64).unwrap();
+        let last = raw.last_mut().expect("export blob is non-empty");
+        *last ^= 0x01;
+        STANDARD.encode(raw)
+    }
+
+    fn count_records(
+        dir: &Path,
+        identity_secret: &[u8; 32],
+    ) -> (usize, Option<String>, Option<String>) {
+        if !dir.join("store/messages.sqlite").exists() {
+            return (0, None, None);
+        }
+        let store = MessageStore::open(&dir.join("store"), identity_secret).unwrap();
+        let rows = store.list_by_channel("CHANNEL-0461", 10).unwrap();
+        let name = rows.first().map(|row| row.discord_message_id.clone());
+        let fingerprint = rows.first().map(|row| row.plaintext.clone());
+        (rows.len(), name, fingerprint)
+    }
+
+    fn recover_account_from_export_with_password_confirmation(
+        state: &AppState,
+        blob_b64: String,
+        phrase: String,
+        new_password: &str,
+        confirm_password: &str,
+        dir: &Path,
+    ) -> Result<(), String> {
+        if new_password != confirm_password {
+            return Err("OSL: passwords differ; backup restore was not started".to_string());
+        }
+        cmd_osl_recover_account_from_export_with_dir(state, blob_b64, phrase, dir)
+    }
+
+    #[test]
+    fn task_0461_malformed_second_device_restore_is_refused_without_records() {
+        let _guard = crate::test_process_globals::serialize();
+        let _reset = FileKeyReset;
+        crate::main_password::set_file_storage_key(None);
+
+        const SNOWFLAKE: &str = "0461";
+        const RECORD_NAME: &str = "RECORD-0461";
+        const FINGERPRINT: &str = "JADE-0461";
+        const PASSWORD: &str = "restore-password-0461";
+        let entropy = [0x46; 16];
+        let phrase = transfer_phrase(entropy);
+
+        let source_dir = TempDir::new().unwrap();
+        let source = state_with_transfer_identity(entropy, SNOWFLAKE);
+        let source_identity = source.identity_slot().as_ref().unwrap().clone();
+        {
+            let store = MessageStore::open(
+                &source_dir.path().join("store"),
+                source_identity.x25519_secret.as_bytes(),
+            )
+            .unwrap();
+            store
+                .put(&StoredMessage {
+                    discord_message_id: RECORD_NAME.to_string(),
+                    channel_id: "CHANNEL-0461".to_string(),
+                    sender_discord_id: "sender-0461".to_string(),
+                    sender_osl_user_id: "sender-osl-0461".to_string(),
+                    plaintext: FINGERPRINT.to_string(),
+                    decrypted_at: 46,
                     burned: false,
                 })
                 .unwrap();
@@ -15806,6 +15899,145 @@ mod account_transfer_tests {
             "TASK1371_EXACT_MESSAGES_MATCH={}",
             restored_messages == EXPECTED_MESSAGES_NEWEST_FIRST
         );
+        let (source_count, source_name, source_fingerprint) =
+            count_records(source_dir.path(), source_identity.x25519_secret.as_bytes());
+        assert_eq!(source_count, 1);
+        assert_eq!(source_name.as_deref(), Some(RECORD_NAME));
+        assert_eq!(source_fingerprint.as_deref(), Some(FINGERPRINT));
+        println!("TASK0461_SEEDED_BACKUP_FINGERPRINT={FINGERPRINT}");
+        println!("TASK0461_SEEDED_RECORD_NAME={RECORD_NAME}");
+        println!("TASK0461_SEEDED_RECORD_COUNT={source_count}");
+
+        let backup = cmd_osl_export_data_with_dir(&source, source_dir.path()).unwrap();
+        let backup_digest = {
+            let mut hasher = Sha256::new();
+            hasher.update(backup.as_bytes());
+            format!("{:x}", hasher.finalize())
+        };
+        println!("TASK0461_BACKUP_SHA256={backup_digest}");
+
+        let imported_identity = decode_export_identity(
+            open_export(&backup, entropy).get("identity").unwrap(),
+            entropy,
+        )
+        .unwrap();
+        let imported_secret = *imported_identity.x25519_secret.as_bytes();
+
+        let clean_dir = TempDir::new().unwrap();
+        let clean = state_with_transfer_identity([0x51; 16], SNOWFLAKE);
+        let (clean_before, _, _) = count_records(clean_dir.path(), &imported_secret);
+        assert_eq!(clean_before, 0);
+        println!("TASK0461_CLEAN_PROFILE_COUNT_BEFORE={clean_before}");
+        recover_account_from_export_with_password_confirmation(
+            &clean,
+            backup.clone(),
+            phrase.clone(),
+            PASSWORD,
+            PASSWORD,
+            clean_dir.path(),
+        )
+        .unwrap();
+        let clean_identity_secret = *clean
+            .identity_slot()
+            .as_ref()
+            .unwrap()
+            .x25519_secret
+            .as_bytes();
+        let (clean_count, clean_name, clean_fingerprint) =
+            count_records(clean_dir.path(), &clean_identity_secret);
+        assert_eq!(clean_count, 1);
+        assert_eq!(clean_name.as_deref(), Some(RECORD_NAME));
+        assert_eq!(clean_fingerprint.as_deref(), Some(FINGERPRINT));
+        println!("TASK0461_CLEAN_RESTORE_NAME={}", clean_name.unwrap());
+        println!("TASK0461_CLEAN_RESTORE_COUNT={clean_count}");
+        println!(
+            "TASK0461_CLEAN_RESTORE_FINGERPRINT={}",
+            clean_fingerprint.unwrap()
+        );
+        println!("TASK0461_JADE_READABLE={FINGERPRINT}");
+
+        let bad_byte_dir = TempDir::new().unwrap();
+        let bad_byte = state_with_transfer_identity([0x52; 16], SNOWFLAKE);
+        let (bad_byte_before, _, _) = count_records(bad_byte_dir.path(), &imported_secret);
+        assert_eq!(bad_byte_before, 0);
+        println!("TASK0461_BAD_BYTES_COUNT_BEFORE={bad_byte_before}");
+        let bad_byte_err = recover_account_from_export_with_password_confirmation(
+            &bad_byte,
+            mutate_one_backup_byte(&backup),
+            phrase.clone(),
+            PASSWORD,
+            PASSWORD,
+            bad_byte_dir.path(),
+        )
+        .unwrap_err();
+        assert!(bad_byte_err.contains("file is corrupt"), "{bad_byte_err}");
+        let (bad_byte_after, _, _) = count_records(bad_byte_dir.path(), &imported_secret);
+        assert_eq!(bad_byte_after, 0);
+        println!("TASK0461_BAD_BYTES_REFUSED=backup bytes changed");
+        println!("TASK0461_BAD_BYTES_ERROR={bad_byte_err}");
+        println!("TASK0461_BAD_BYTES_COUNT_AFTER={bad_byte_after}");
+
+        let bad_phrase_dir = TempDir::new().unwrap();
+        let bad_phrase = state_with_transfer_identity([0x53; 16], SNOWFLAKE);
+        let (bad_phrase_before, _, _) = count_records(bad_phrase_dir.path(), &imported_secret);
+        assert_eq!(bad_phrase_before, 0);
+        println!("TASK0461_BAD_PHRASE_COUNT_BEFORE={bad_phrase_before}");
+        let bad_phrase_err = recover_account_from_export_with_password_confirmation(
+            &bad_phrase,
+            backup.clone(),
+            transfer_phrase([0x47; 16]),
+            PASSWORD,
+            PASSWORD,
+            bad_phrase_dir.path(),
+        )
+        .unwrap_err();
+        assert!(
+            bad_phrase_err.contains("phrase doesn't match"),
+            "{bad_phrase_err}"
+        );
+        let (bad_phrase_after, _, _) = count_records(bad_phrase_dir.path(), &imported_secret);
+        assert_eq!(bad_phrase_after, 0);
+        println!("TASK0461_BAD_PHRASE_REFUSED=phrase wrong");
+        println!("TASK0461_BAD_PHRASE_ERROR={bad_phrase_err}");
+        println!("TASK0461_BAD_PHRASE_COUNT_AFTER={bad_phrase_after}");
+
+        let bad_password_dir = TempDir::new().unwrap();
+        let bad_password = state_with_transfer_identity([0x54; 16], SNOWFLAKE);
+        let (bad_password_before, _, _) = count_records(bad_password_dir.path(), &imported_secret);
+        assert_eq!(bad_password_before, 0);
+        println!("TASK0461_BAD_PASSWORD_COUNT_BEFORE={bad_password_before}");
+        let bad_password_err = recover_account_from_export_with_password_confirmation(
+            &bad_password,
+            backup,
+            phrase,
+            PASSWORD,
+            "changed-restore-password-0461",
+            bad_password_dir.path(),
+        )
+        .unwrap_err();
+        assert!(
+            bad_password_err.contains("passwords differ"),
+            "{bad_password_err}"
+        );
+        let (bad_password_after, _, _) = count_records(bad_password_dir.path(), &imported_secret);
+        assert_eq!(bad_password_after, 0);
+        println!("TASK0461_BAD_PASSWORD_REFUSED=passwords differ");
+        println!("TASK0461_BAD_PASSWORD_ERROR={bad_password_err}");
+        println!("TASK0461_BAD_PASSWORD_COUNT_AFTER={bad_password_after}");
+
+        let (final_count, final_name, final_fingerprint) =
+            count_records(clean_dir.path(), &clean_identity_secret);
+        assert_eq!(final_count, 1);
+        assert_eq!(final_name.as_deref(), Some(RECORD_NAME));
+        assert_eq!(final_fingerprint.as_deref(), Some(FINGERPRINT));
+        println!("TASK0461_FINAL_RECORD_NAME={}", final_name.unwrap());
+        println!("TASK0461_FINAL_RECORD_COUNT={final_count}");
+        println!(
+            "TASK0461_FINAL_RECORD_FINGERPRINT={}",
+            final_fingerprint.unwrap()
+        );
+
+        crate::main_password::set_file_storage_key(None);
     }
 
     #[test]
@@ -17561,6 +17793,405 @@ pub fn cmd_osl_get_friend_ids(state: &AppState) -> Result<Vec<String>, String> {
     Ok(g.clone())
 }
 
+const SAVED_FRIEND_REQUEST_TTL_MS: u64 = 30 * 24 * 60 * 60 * 1000;
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedFriendRequestDto {
+    pub request_id: String,
+    pub requester_id: String,
+    pub target_id: String,
+    pub scope_key: String,
+    pub state: crate::friend_request::StoredFriendState,
+    pub display_name: String,
+    pub block_state: crate::friend_request::StoredFriendBlockState,
+    pub request_fingerprint: String,
+    pub received_at_ms: u64,
+    pub expires_at_ms: u64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedFriendRequestListDto {
+    pub pending: Vec<SavedFriendRequestDto>,
+    pub accepted: Vec<SavedFriendRequestDto>,
+    pub declined: Vec<SavedFriendRequestDto>,
+    pub blocked: Vec<SavedFriendRequestDto>,
+}
+
+fn saved_friend_request_dir() -> Result<PathBuf, String> {
+    keystore::osl_config_dir().map_err(|e| format!("OSL: friend request dir: {e}"))
+}
+
+fn load_saved_friend_request_file_with_dir(
+    dir: &Path,
+) -> Result<crate::friend_request::FriendRequestFileState, String> {
+    crate::friend_request::load_friend_request_file_state(dir).map_err(|e| format!("OSL: {e}"))
+}
+
+fn save_saved_friend_request_file_with_dir(
+    dir: &Path,
+    file: &crate::friend_request::FriendRequestFileState,
+) -> Result<(), String> {
+    crate::friend_request::save_friend_request_file_state(dir, file)
+        .map_err(|e| format!("OSL: {e}"))
+}
+
+fn friend_request_fingerprint(
+    entry: &crate::friend_request::StoredFriendRequestFileEntry,
+) -> String {
+    let mut hash = Sha256::new();
+    for part in [
+        entry.request_id.as_str(),
+        entry.requester_id.as_str(),
+        entry.target_id.as_str(),
+        entry.scope_key.as_str(),
+    ] {
+        hash.update((part.len() as u64).to_le_bytes());
+        hash.update(part.as_bytes());
+    }
+    hex_lower(&hash.finalize())
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
+
+fn saved_friend_record_id(local_identity_id: &str, remote_identity_id: &str) -> String {
+    let mut hash = Sha256::new();
+    for part in [local_identity_id, remote_identity_id] {
+        hash.update((part.len() as u64).to_le_bytes());
+        hash.update(part.as_bytes());
+    }
+    format!("friend:{}", hex_lower(&hash.finalize()))
+}
+
+fn saved_friend_record_for_entry<'a>(
+    file: &'a crate::friend_request::FriendRequestFileState,
+    entry: &crate::friend_request::StoredFriendRequestFileEntry,
+) -> Option<&'a crate::friend_request::StoredFriendRecord> {
+    file.friends.iter().find(|friend| {
+        friend.local_identity_id == entry.requester_id
+            && friend.remote_identity_id == entry.target_id
+    })
+}
+
+fn saved_friend_request_dto(
+    file: &crate::friend_request::FriendRequestFileState,
+    entry: &crate::friend_request::StoredFriendRequestFileEntry,
+    state: crate::friend_request::StoredFriendState,
+    block_state: crate::friend_request::StoredFriendBlockState,
+) -> SavedFriendRequestDto {
+    let friend = saved_friend_record_for_entry(file, entry);
+    SavedFriendRequestDto {
+        request_id: entry.request_id.clone(),
+        requester_id: entry.requester_id.clone(),
+        target_id: entry.target_id.clone(),
+        scope_key: entry.scope_key.clone(),
+        state,
+        display_name: friend
+            .map(|record| record.display_name.clone())
+            .unwrap_or_default(),
+        block_state,
+        request_fingerprint: friend_request_fingerprint(entry),
+        received_at_ms: entry.received_at_ms,
+        expires_at_ms: entry.expires_at_ms,
+    }
+}
+
+fn update_saved_friend_record(
+    file: &mut crate::friend_request::FriendRequestFileState,
+    local_identity_id: &str,
+    remote_identity_id: &str,
+    display_name: Option<&str>,
+    state: crate::friend_request::StoredFriendState,
+    block_state: crate::friend_request::StoredFriendBlockState,
+) -> Result<(), String> {
+    let display_name = display_name.map(str::trim).filter(|name| !name.is_empty());
+    if let Some(record) = file.friends.iter_mut().find(|friend| {
+        friend.local_identity_id == local_identity_id
+            && friend.remote_identity_id == remote_identity_id
+    }) {
+        record.state = state;
+        record.block_state = block_state;
+        if let Some(display_name) = display_name {
+            record.display_name = display_name.to_string();
+        }
+        return Ok(());
+    }
+
+    file.friends
+        .push(crate::friend_request::StoredFriendRecord {
+            record_id: saved_friend_record_id(local_identity_id, remote_identity_id),
+            local_identity_id: local_identity_id.to_string(),
+            remote_identity_id: remote_identity_id.to_string(),
+            state,
+            display_name: display_name
+                .ok_or_else(|| "OSL: friend display name is missing".to_string())?
+                .to_string(),
+            block_state,
+        });
+    Ok(())
+}
+
+fn any_saved_request_has_id(
+    file: &crate::friend_request::FriendRequestFileState,
+    request_id: &str,
+) -> bool {
+    file.pending
+        .iter()
+        .chain(file.accepted.iter())
+        .chain(file.declined_or_revoked.iter())
+        .chain(file.blocked.iter())
+        .any(|request| request.request_id == request_id)
+}
+
+fn remove_saved_request_by_id(
+    requests: &mut Vec<crate::friend_request::StoredFriendRequestFileEntry>,
+    request_id: &str,
+) -> Option<crate::friend_request::StoredFriendRequestFileEntry> {
+    let index = requests
+        .iter()
+        .position(|request| request.request_id == request_id)?;
+    Some(requests.remove(index))
+}
+
+fn take_saved_friend_request(
+    file: &mut crate::friend_request::FriendRequestFileState,
+    request_id: &str,
+) -> Option<crate::friend_request::StoredFriendRequestFileEntry> {
+    remove_saved_request_by_id(&mut file.pending, request_id)
+        .or_else(|| remove_saved_request_by_id(&mut file.accepted, request_id))
+        .or_else(|| remove_saved_request_by_id(&mut file.declined_or_revoked, request_id))
+}
+
+pub fn cmd_osl_create_friend_request(
+    state: &AppState,
+    request_id: String,
+    requester_id: String,
+    target_id: String,
+    display_name: String,
+    scope_input: crate::scope::ScopeInput,
+) -> Result<SavedFriendRequestDto, String> {
+    record_activity_on_command_entry();
+    let _ = state;
+    let dir = saved_friend_request_dir()?;
+    let mut file = load_saved_friend_request_file_with_dir(&dir)?;
+
+    let request_id = request_id.trim();
+    let requester_id = requester_id.trim();
+    let target_id = target_id.trim();
+    let display_name = display_name.trim();
+    if request_id.is_empty()
+        || requester_id.is_empty()
+        || target_id.is_empty()
+        || display_name.is_empty()
+    {
+        return Err("OSL: friend request fields are missing".to_string());
+    }
+    if requester_id == target_id {
+        return Err("OSL: cannot request yourself".to_string());
+    }
+    if any_saved_request_has_id(&file, request_id) {
+        return Err("OSL: friend request already exists".to_string());
+    }
+
+    let scope: crate::scope::Scope = scope_input
+        .try_into()
+        .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
+    let scope_key = scope.storage_key();
+    if file.pending.iter().any(|request| {
+        request.requester_id == requester_id
+            && request.target_id == target_id
+            && request.scope_key == scope_key
+    }) {
+        return Err("OSL: friend request already exists".to_string());
+    }
+    if file.friends.iter().any(|friend| {
+        friend.local_identity_id == requester_id
+            && friend.remote_identity_id == target_id
+            && friend.block_state == crate::friend_request::StoredFriendBlockState::BlockedByLocal
+    }) {
+        return Err("OSL: friend is blocked".to_string());
+    }
+
+    let now_ms = now_unix_secs().max(0) as u64 * 1000;
+    let entry = crate::friend_request::StoredFriendRequestFileEntry {
+        request_id: request_id.to_string(),
+        requester_id: requester_id.to_string(),
+        target_id: target_id.to_string(),
+        scope_key,
+        received_at_ms: now_ms,
+        expires_at_ms: now_ms + SAVED_FRIEND_REQUEST_TTL_MS,
+    };
+    update_saved_friend_record(
+        &mut file,
+        requester_id,
+        target_id,
+        Some(display_name),
+        crate::friend_request::StoredFriendState::Pending,
+        crate::friend_request::StoredFriendBlockState::NotBlocked,
+    )?;
+    file.pending.push(entry.clone());
+    save_saved_friend_request_file_with_dir(&dir, &file)?;
+    Ok(saved_friend_request_dto(
+        &file,
+        &entry,
+        crate::friend_request::StoredFriendState::Pending,
+        crate::friend_request::StoredFriendBlockState::NotBlocked,
+    ))
+}
+
+pub fn cmd_osl_list_friend_requests(state: &AppState) -> Result<SavedFriendRequestListDto, String> {
+    record_activity_on_command_entry();
+    let _ = state;
+    let dir = saved_friend_request_dir()?;
+    let file = load_saved_friend_request_file_with_dir(&dir)?;
+    Ok(SavedFriendRequestListDto {
+        pending: file
+            .pending
+            .iter()
+            .map(|entry| {
+                saved_friend_request_dto(
+                    &file,
+                    entry,
+                    crate::friend_request::StoredFriendState::Pending,
+                    crate::friend_request::StoredFriendBlockState::NotBlocked,
+                )
+            })
+            .collect(),
+        accepted: file
+            .accepted
+            .iter()
+            .map(|entry| {
+                saved_friend_request_dto(
+                    &file,
+                    entry,
+                    crate::friend_request::StoredFriendState::Accepted,
+                    crate::friend_request::StoredFriendBlockState::NotBlocked,
+                )
+            })
+            .collect(),
+        declined: file
+            .declined_or_revoked
+            .iter()
+            .map(|entry| {
+                saved_friend_request_dto(
+                    &file,
+                    entry,
+                    crate::friend_request::StoredFriendState::Declined,
+                    crate::friend_request::StoredFriendBlockState::NotBlocked,
+                )
+            })
+            .collect(),
+        blocked: file
+            .blocked
+            .iter()
+            .map(|entry| {
+                saved_friend_request_dto(
+                    &file,
+                    entry,
+                    crate::friend_request::StoredFriendState::Declined,
+                    crate::friend_request::StoredFriendBlockState::BlockedByLocal,
+                )
+            })
+            .collect(),
+    })
+}
+
+pub fn cmd_osl_accept_saved_friend_request(
+    state: &AppState,
+    request_id: String,
+) -> Result<SavedFriendRequestDto, String> {
+    record_activity_on_command_entry();
+    let _ = state;
+    let dir = saved_friend_request_dir()?;
+    let mut file = load_saved_friend_request_file_with_dir(&dir)?;
+    let request_id = request_id.trim();
+    let entry = remove_saved_request_by_id(&mut file.pending, request_id)
+        .ok_or_else(|| "OSL: friend request is not pending".to_string())?;
+    update_saved_friend_record(
+        &mut file,
+        &entry.requester_id,
+        &entry.target_id,
+        None,
+        crate::friend_request::StoredFriendState::Accepted,
+        crate::friend_request::StoredFriendBlockState::NotBlocked,
+    )?;
+    file.accepted.push(entry.clone());
+    save_saved_friend_request_file_with_dir(&dir, &file)?;
+    Ok(saved_friend_request_dto(
+        &file,
+        &entry,
+        crate::friend_request::StoredFriendState::Accepted,
+        crate::friend_request::StoredFriendBlockState::NotBlocked,
+    ))
+}
+
+pub fn cmd_osl_decline_saved_friend_request(
+    state: &AppState,
+    request_id: String,
+) -> Result<SavedFriendRequestDto, String> {
+    record_activity_on_command_entry();
+    let _ = state;
+    let dir = saved_friend_request_dir()?;
+    let mut file = load_saved_friend_request_file_with_dir(&dir)?;
+    let request_id = request_id.trim();
+    let entry = remove_saved_request_by_id(&mut file.pending, request_id)
+        .ok_or_else(|| "OSL: friend request is not pending".to_string())?;
+    update_saved_friend_record(
+        &mut file,
+        &entry.requester_id,
+        &entry.target_id,
+        None,
+        crate::friend_request::StoredFriendState::Declined,
+        crate::friend_request::StoredFriendBlockState::NotBlocked,
+    )?;
+    file.declined_or_revoked.push(entry.clone());
+    save_saved_friend_request_file_with_dir(&dir, &file)?;
+    Ok(saved_friend_request_dto(
+        &file,
+        &entry,
+        crate::friend_request::StoredFriendState::Declined,
+        crate::friend_request::StoredFriendBlockState::NotBlocked,
+    ))
+}
+
+pub fn cmd_osl_block_saved_friend_request(
+    state: &AppState,
+    request_id: String,
+) -> Result<SavedFriendRequestDto, String> {
+    record_activity_on_command_entry();
+    let _ = state;
+    let dir = saved_friend_request_dir()?;
+    let mut file = load_saved_friend_request_file_with_dir(&dir)?;
+    let request_id = request_id.trim();
+    let entry = take_saved_friend_request(&mut file, request_id)
+        .ok_or_else(|| "OSL: friend request is not pending".to_string())?;
+    update_saved_friend_record(
+        &mut file,
+        &entry.requester_id,
+        &entry.target_id,
+        None,
+        crate::friend_request::StoredFriendState::Declined,
+        crate::friend_request::StoredFriendBlockState::BlockedByLocal,
+    )?;
+    file.blocked.push(entry.clone());
+    save_saved_friend_request_file_with_dir(&dir, &file)?;
+    Ok(saved_friend_request_dto(
+        &file,
+        &entry,
+        crate::friend_request::StoredFriendState::Declined,
+        crate::friend_request::StoredFriendBlockState::BlockedByLocal,
+    ))
+}
+
 /// Outcome for [`cmd_osl_decline_or_revoke_friend_request`].
 ///
 /// Deliberately carries no peer id, account id, storage key, handle or
@@ -18206,6 +18837,37 @@ pub fn cmd_osl_list_auto_whitelist_rule_choices() -> Result<Vec<String>, String>
             .map(|rule| rule.as_label().to_string())
             .collect(),
     )
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct AutoWhitelistRuleChoiceDto {
+    pub id: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct AutoWhitelistRuleDto {
+    pub app_kind: String,
+    pub choice: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct NewPlaceAutoWhitelistDto {
+    pub app_kind: String,
+    pub stable_id: String,
+    pub rule_choice: String,
+    pub result: String,
+    pub prompt: bool,
+}
+
+pub fn cmd_osl_get_auto_whitelist_rule_choices() -> Result<Vec<AutoWhitelistRuleChoiceDto>, String>
+{
+    record_activity_on_command_entry();
+    Ok(crate::auto_whitelist_rules::AutoWhitelistChoice::ALL
+        .into_iter()
+        .map(|choice| AutoWhitelistRuleChoiceDto {
+            id: choice.id().to_string(),
+            label: choice.label().to_string(),
+        })
+        .collect())
 }
 
 pub fn cmd_osl_save_auto_whitelist_rule(
@@ -18217,6 +18879,12 @@ pub fn cmd_osl_save_auto_whitelist_rule(
     record_activity_on_command_entry();
     let app_kind = crate::auto_whitelist_rules::normalize_app_kind(&app_kind)?;
     let rule = rule.parse::<crate::auto_whitelist_rules::AutoWhitelistRule>()?;
+    choice: String,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<AutoWhitelistRuleDto, String> {
+    record_activity_on_command_entry();
+    let app_kind = crate::auto_whitelist_rules::normalize_auto_whitelist_app_kind(&app_kind)?;
+    let choice = crate::auto_whitelist_rules::parse_auto_whitelist_choice(&choice)?;
     {
         let mut prefs = state
             .app_preferences
@@ -18348,6 +19016,142 @@ pub fn cmd_osl_direct_new_place(
             result: rule.as_label().to_string(),
         })
     }
+}
+
+        prefs.auto_whitelist_rules.insert(app_kind.clone(), choice);
+        if let Some(dir) = config_dir {
+            let path = dir.join("app_preferences.json");
+            crate::app_preferences::write_app_preferences(&path, &prefs)?;
+        }
+    }
+    Ok(AutoWhitelistRuleDto {
+        app_kind,
+        choice: choice.label().to_string(),
+    })
+}
+
+pub fn cmd_osl_read_auto_whitelist_rule(
+    state: &AppState,
+    app_kind: String,
+) -> Result<AutoWhitelistRuleDto, String> {
+    record_activity_on_command_entry();
+    let app_kind = crate::auto_whitelist_rules::normalize_auto_whitelist_app_kind(&app_kind)?;
+    let choice = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .auto_whitelist_rules
+        .get(&app_kind)
+        .copied()
+        .unwrap_or_default();
+    Ok(AutoWhitelistRuleDto {
+        app_kind,
+        choice: choice.label().to_string(),
+    })
+}
+
+pub fn cmd_osl_new_place(
+    state: &AppState,
+    place: crate::allowed_places::AllowedPlaceRecord,
+) -> Result<NewPlaceAutoWhitelistDto, String> {
+    record_activity_on_command_entry();
+    let app_kind = crate::auto_whitelist_rules::normalize_auto_whitelist_app_kind(&place.app)?;
+    validate_new_place_record(&place)?;
+    let choice = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .auto_whitelist_rules
+        .get(&app_kind)
+        .copied()
+        .unwrap_or_default();
+    match choice {
+        crate::auto_whitelist_rules::AutoWhitelistChoice::Never => Ok(NewPlaceAutoWhitelistDto {
+            app_kind,
+            stable_id: place.stable_id,
+            rule_choice: choice.label().to_string(),
+            result: "unlisted".to_string(),
+            prompt: false,
+        }),
+        crate::auto_whitelist_rules::AutoWhitelistChoice::OnlyIfAFriend => {
+            let Some(person_id) = new_place_person_id(&place) else {
+                return Ok(NewPlaceAutoWhitelistDto {
+                    app_kind,
+                    stable_id: place.stable_id,
+                    rule_choice: choice.label().to_string(),
+                    result: "skipped".to_string(),
+                    prompt: false,
+                });
+            };
+            let is_accepted_friend = state
+                .friend_ids
+                .lock()
+                .expect("friend_ids mutex poisoned")
+                .iter()
+                .any(|accepted| accepted == &person_id);
+            if !is_accepted_friend {
+                return Ok(NewPlaceAutoWhitelistDto {
+                    app_kind,
+                    stable_id: place.stable_id,
+                    rule_choice: choice.label().to_string(),
+                    result: "skipped".to_string(),
+                    prompt: false,
+                });
+            }
+            let dir =
+                keystore::osl_config_dir().map_err(|e| format!("OSL: allowed places dir: {e}"))?;
+            let stable_id = place.stable_id.clone();
+            crate::allowed_places::add_allowed_place_record(&dir, place)
+                .map_err(|e| format!("OSL: allowed place: {e}"))?;
+            Ok(NewPlaceAutoWhitelistDto {
+                app_kind,
+                stable_id,
+                rule_choice: choice.label().to_string(),
+                result: "allowed".to_string(),
+                prompt: false,
+            })
+        }
+        other => Err(format!(
+            "OSL: auto-whitelist rule '{}' is not implemented for new places",
+            other.label()
+        )),
+    }
+}
+
+fn new_place_person_id(place: &crate::allowed_places::AllowedPlaceRecord) -> Option<String> {
+    if place.kind != "direct_message" {
+        return None;
+    }
+    let expected_prefix = format!("{}:{}:{}:", place.app, place.account, place.kind);
+    place
+        .stable_id
+        .strip_prefix(&expected_prefix)
+        .filter(|person_id| !person_id.is_empty())
+        .map(str::to_owned)
+}
+
+fn validate_new_place_record(
+    place: &crate::allowed_places::AllowedPlaceRecord,
+) -> Result<(), String> {
+    fn valid_part(value: &str) -> bool {
+        !value.is_empty()
+            && value.len() <= 512
+            && !value.contains('\0')
+            && !value.chars().any(char::is_whitespace)
+    }
+
+    if !valid_part(&place.app)
+        || !valid_part(&place.account)
+        || !valid_part(&place.kind)
+        || !valid_part(&place.stable_id)
+    {
+        return Err("OSL: new place is invalid".to_string());
+    }
+    let expected_prefix = format!("{}:{}:{}:", place.app, place.account, place.kind);
+    if !place.stable_id.starts_with(&expected_prefix) {
+        return Err("OSL: new place stable id is invalid".to_string());
+    }
+    Ok(())
 }
 
 // ---- G3.3: auto-updater channel ----

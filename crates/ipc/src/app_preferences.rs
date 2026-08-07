@@ -29,6 +29,7 @@ use serde::{
     Deserialize,
     Serialize,
 };
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 use std::str::FromStr;
@@ -498,6 +499,7 @@ pub struct AppPreferences {
     pub privacy_level_rule_sets: HashMap<String, PrivacyLevelRuleSet>,
     #[serde(default)]
     pub verification_warning: VerificationWarningChoice,
+    pub auto_whitelist_rules: HashMap<String, crate::auto_whitelist_rules::AutoWhitelistChoice>,
 }
 
 impl Default for AppPreferences {

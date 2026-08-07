@@ -33,6 +33,13 @@ use std::path::{Path, PathBuf};
 /// One local place the user has explicitly allowed.
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+use rusqlite::{params, Connection};
+use std::path::{Path, PathBuf};
+use thiserror::Error;
+
+const DB_FILE: &str = "allowed_places.sqlite";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AllowedPlaceRecord {
     pub app: String,
     pub account: String,
@@ -112,6 +119,10 @@ impl AllowedPlaceRecord {
             account: account.to_owned(),
             kind: "direct_message".to_owned(),
             stable_id: format!("discord:{account}:direct_message:{conversation_id}"),
+            app: "discord".to_string(),
+            stable_id: format!("discord:{account}:direct_message:{recipient}"),
+            account,
+            kind: "direct_message".to_string(),
         }
     }
 }
@@ -126,6 +137,11 @@ pub enum AllowedPlaceStoreError {
 
     #[error("{0}")]
     Invalid(String),
+    #[error("filesystem: {0}")]
+    Fs(#[from] std::io::Error),
+
+    #[error("sqlite: {0}")]
+    Sqlite(#[from] rusqlite::Error),
 }
 
 pub type Result<T> = std::result::Result<T, AllowedPlaceStoreError>;
@@ -139,6 +155,7 @@ pub fn add_allowed_place_record(
     record: AllowedPlaceRecord,
 ) -> Result<AllowedPlaceRecord> {
     validate_record(&record)?;
+) -> Result<()> {
     std::fs::create_dir_all(app_data_dir.as_ref())?;
     let conn = Connection::open(allowed_places_db_path(app_data_dir))?;
     ensure_schema(&conn)?;
@@ -249,6 +266,10 @@ pub fn allowed_place_is_allowed(
 
 fn allowed_place_record_belongs_to_person(record: &AllowedPlaceRecord, person_id: &str) -> bool {
     record.stable_id == person_id || record.stable_id.rsplit(':').next() == Some(person_id)
+        "INSERT INTO allowed_places (app, account, kind, stable_id) VALUES (?1, ?2, ?3, ?4)",
+        params![record.app, record.account, record.kind, record.stable_id],
+    )?;
+    Ok(())
 }
 
 fn ensure_schema(conn: &Connection) -> Result<()> {

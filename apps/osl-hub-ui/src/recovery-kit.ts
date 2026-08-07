@@ -50,6 +50,8 @@ export interface RecoveryKitState {
   noRecoverySecretAcknowledged: boolean;
   /** A kit exists for this account that the owner has never confirmed saving. */
   kitUnsaved: boolean;
+  /** The owner continued after OSL had no recovery secret to show. */
+  noRecoverySecretAcknowledged?: boolean;
 }
 
 export type RecoveryKitMode =
@@ -141,6 +143,7 @@ export function initialRecoveryKitState(
     savedAcknowledged: false,
     noRecoverySecretAcknowledged: false,
     kitUnsaved,
+    noRecoverySecretAcknowledged: false,
   };
 }
 
@@ -280,6 +283,7 @@ export function recoveryKitReducer(
       return { state: { ...state, savedAcknowledged: action.acknowledged }, outcome: "none" };
     case "continue":
       if (recoveryKitView(state).mode === "unavailable") {
+      if (!state.secrets && !state.kitUnsaved) {
         return {
           state: { ...state, noRecoverySecretAcknowledged: true },
           outcome: "leave-recovery",
@@ -296,6 +300,7 @@ export function recoveryKitReducer(
           savedAcknowledged: false,
           noRecoverySecretAcknowledged: false,
           kitUnsaved: false,
+          noRecoverySecretAcknowledged: false,
         },
         outcome: "leave-recovery",
       };

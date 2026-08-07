@@ -8,6 +8,9 @@ use osl_privacy_hub::broker::{
     activate_owned_osl_chat_context, drain_osl_chat_text, load_osl_chat_history,
     prepare_osl_chat_text, prepare_peer_prose_text, HubBrokerState,
     NativeOverlayAcknowledgmentStatus, OpenedNativeOverlayTextBatch, OSL_RELAY_NOTICE_QUEUED,
+    activate_owned_osl_chat_context, drain_osl_chat_text, load_osl_chat_history,
+    prepare_osl_chat_text, prepare_peer_prose_text, HubBrokerState,
+    NativeOverlayAcknowledgmentStatus, OSL_RELAY_NOTICE_QUEUED,
 };
 use osl_privacy_hub::core_bridge::HubCoreState;
 use osl_privacy_hub::security::{
@@ -339,6 +342,11 @@ fn opened_plaintexts(batch: &OpenedNativeOverlayTextBatch, marker_prefix: &str) 
         .filter(|message| message.plaintext.contains(marker_prefix))
         .map(|message| message.plaintext.clone())
         .collect()
+fn install_message_store(core: &HubCoreState, dir: &Path, identity: &keystore::Identity) {
+    fs::create_dir_all(dir).expect("create isolated message store");
+    let store = store::MessageStore::open(dir, identity.x25519_secret.as_bytes())
+        .expect("open isolated message store");
+    *core.osl.message_store.lock().expect("message store lock") = Some(store);
 }
 
 fn serve_request(stream: &mut TcpStream, state: &Arc<Mutex<RelayState>>) {
@@ -1741,6 +1749,36 @@ fn task3784_racing_two_osl_chat_sends_keeps_order_and_private_cover_pairs() {
         bob_code.friend_code,
         Some("Bob task 3572 fixture".to_owned()),
         Some("Bob race fixture".to_owned()),
+#[test]
+fn task_1304_unprotected_osl_chat_drain_is_refused_without_adding_a_message() {
+    let relay = RelayServer::start();
+    let storage = TestStorage::new();
+    let relay_url = relay.base_url();
+    let alice_dir = storage.account("chat-sender", &relay_url);
+    let maple_dir = storage.account("chat-maple", &relay_url);
+
+    let alice_identity = keystore::generate_identity("chat-cedar".to_owned());
+    let maple_identity = keystore::generate_identity("chat-maple".to_owned());
+    let alice_id = alice_identity.user_id.clone();
+    let maple_id = maple_identity.user_id.clone();
+    relay.register_floor_identity(&alice_identity);
+    relay.register_floor_identity(&maple_identity);
+    let alice = core(alice_identity, &relay_url);
+    let maple = core(maple_identity.clone(), &relay_url);
+    let alice_security = HubSecurityState::default();
+    let maple_security = HubSecurityState::default();
+    let alice_broker = HubBrokerState::default();
+    let maple_broker = HubBrokerState::default();
+
+    let alice_code = export_friend_code(&alice).unwrap();
+    let maple_code = export_friend_code(&maple).unwrap();
+
+    TestStorage::activate(&alice_dir);
+    let maple_friend = add_friend_code(
+        &alice,
+        &alice_security,
+        maple_code.friend_code,
+        Some("chat-maple".to_owned()),
     )
     .unwrap();
     verify_friend_safety_number(
@@ -1751,6 +1789,11 @@ fn task3784_racing_two_osl_chat_sends_keeps_order_and_private_cover_pairs() {
     )
     .unwrap();
     let alice_binding = manual_peer_binding(&alice, bob_friend.person_id.clone()).unwrap();
+        maple_friend.person_id.clone(),
+        maple_friend.safety_number.clone(),
+    )
+    .unwrap();
+    let alice_binding = manual_peer_binding(&alice, maple_friend.person_id.clone()).unwrap();
     let alice_context =
         activate_owned_osl_chat_context(&alice_broker, &alice_id, alice_binding).unwrap();
     set_manual_peer_scope_permission(
@@ -1777,6 +1820,18 @@ fn task3784_racing_two_osl_chat_sends_keeps_order_and_private_cover_pairs() {
     verify_friend_safety_number(
         &bob,
         &bob_security,
+    TestStorage::activate(&maple_dir);
+    install_message_store(&maple, &maple_dir.join("messages"), &maple_identity);
+    let alice_friend = add_friend_code(
+        &maple,
+        &maple_security,
+        alice_code.friend_code,
+        Some("chat-cedar".to_owned()),
+    )
+    .unwrap();
+    verify_friend_safety_number(
+        &maple,
+        &maple_security,
         alice_friend.person_id.clone(),
         alice_friend.safety_number.clone(),
     )
@@ -1804,6 +1859,29 @@ fn task3784_racing_two_osl_chat_sends_keeps_order_and_private_cover_pairs() {
 
     TestStorage::activate(&alice_dir);
     prepare_osl_chat_text(
+    let maple_binding = manual_peer_binding(&maple, alice_friend.person_id.clone()).unwrap();
+    let maple_context =
+        activate_owned_osl_chat_context(&maple_broker, &maple_id, maple_binding).unwrap();
+    set_manual_peer_scope_permission(
+        &maple,
+        &maple_security,
+        "osl-chat",
+        "osl-main",
+        maple_context.person_id.clone(),
+        maple_context.scope.clone(),
+        true,
+    )
+    .unwrap();
+    set_scope_security(&maple_security, maple_context.scope.clone(), 3600, true).unwrap();
+
+    let before_history = load_osl_chat_history(&maple, &maple_broker).unwrap();
+    println!("TASK1304_READER=chat-maple");
+    println!("TASK1304_STORED_COUNT_BEFORE={}", before_history.len());
+    assert_eq!(before_history.len(), 0);
+
+    TestStorage::activate(&alice_dir);
+    let ai_carrier = osl_privacy_hub::ai_carrier::AiCarrierState::default();
+    let prepared = prepare_osl_chat_text(
         &alice,
         &alice_security,
         &alice_broker,
@@ -2079,6 +2157,72 @@ fn task3784_racing_two_osl_chat_sends_keeps_order_and_private_cover_pairs() {
         alice_after == bob_after
     );
 
+        "MAPLE-4172".to_owned(),
+        false,
+    )
+    .unwrap();
+    println!("TASK1304_SEND_BODY=MAPLE-4172");
+    println!("TASK1304_SEND_PROTECTED_MODE=yes");
+    println!(
+        "TASK1304_SEND_DELIVERED_TO_OSL_INBOX={}",
+        prepared.delivered_to_osl_inbox
+    );
+    assert!(prepared.person_to_person_e2ee);
+    assert!(!prepared.view_once);
+    assert!(prepared.delivered_to_osl_inbox);
+    assert_eq!(relay.pending_for(&maple_id), 1);
+
+    TestStorage::activate(&maple_dir);
+    let unprotected_refusal =
+        match drain_osl_chat_text(&maple, &maple_security, &maple_broker, false) {
+            Ok(_) => panic!("protected mode no must be refused"),
+            Err(error) => error,
+        };
+    println!("TASK1304_PROTECTED_MODE_NO_REFUSAL={unprotected_refusal}");
+    assert_eq!(unprotected_refusal, "OSL Chat refused unprotected mode");
+    assert_eq!(
+        load_osl_chat_history(&maple, &maple_broker).unwrap().len(),
+        0
+    );
+
+    let opened = drain_osl_chat_text(&maple, &maple_security, &maple_broker, true).unwrap();
+    assert_eq!(opened.messages.len(), 1);
+    assert_eq!(opened.messages[0].plaintext, "MAPLE-4172");
+    println!("TASK1304_READ_BODY={}", opened.messages[0].plaintext);
+    println!("TASK1304_READ_PROTECTED_MODE=yes");
+
+    let after_history = load_osl_chat_history(&maple, &maple_broker).unwrap();
+    println!("TASK1304_STORED_COUNT_AFTER_READ={}", after_history.len());
+    assert_eq!(after_history.len(), 1);
+    assert_eq!(after_history[0].plaintext, "MAPLE-4172");
+    println!(
+        "TASK1304_STORED_BODY_AFTER_READ={}",
+        after_history[0].plaintext
+    );
+
+    let second_unprotected_refusal =
+        match drain_osl_chat_text(&maple, &maple_security, &maple_broker, false) {
+            Ok(_) => panic!("protected mode no must stay refused"),
+            Err(error) => error,
+        };
+    println!("TASK1304_PROTECTED_MODE_NO_REFUSAL_AFTER_READ={second_unprotected_refusal}");
+    assert_eq!(
+        second_unprotected_refusal,
+        "OSL Chat refused unprotected mode"
+    );
+    let final_history = load_osl_chat_history(&maple, &maple_broker).unwrap();
+    println!(
+        "TASK1304_STORED_COUNT_AFTER_REFUSAL={}",
+        final_history.len()
+    );
+    assert_eq!(final_history.len(), 1);
+    assert_eq!(final_history[0].plaintext, "MAPLE-4172");
+    println!(
+        "TASK1304_STORED_BODY_AFTER_REFUSAL={}",
+        final_history[0].plaintext
+    );
+
+    *maple.osl.message_store.lock().expect("message store lock") = None;
     drop(relay);
 }
 

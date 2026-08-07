@@ -1490,6 +1490,7 @@ pub enum AutoScrubRunConsent {
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AutoScrubReviewedRunRequest {
+    pub run_id: String,
     pub service_id: ServiceKind,
     pub account_id: String,
     pub review_token: String,
@@ -1497,6 +1498,7 @@ pub struct AutoScrubReviewedRunRequest {
     pub reviewed_item_count: u32,
     pub pace_milliseconds: u32,
     pub consent: AutoScrubRunConsent,
+    pub risk_agreement: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -1640,7 +1642,7 @@ impl AutoScrubRunStore {
         }
         self.next_sequence = self.next_sequence.saturating_add(1);
         self.runs.push(AutoScrubRunSummary {
-            run_id: format!("autoscrub-run-{:04}", self.next_sequence),
+            run_id: request.run_id,
             service_id: request.service_id,
             account_id: request.account_id,
             phase: AutoScrubRunPhase::Running,
@@ -2028,7 +2030,8 @@ fn validate_service_connection_event(
 }
 
 fn validate_reviewed_run_request(request: &AutoScrubReviewedRunRequest) -> Result<(), String> {
-    if !valid_opaque(&request.account_id, MAX_ACCOUNT_ID_BYTES)
+    if !valid_opaque(&request.run_id, MAX_RUN_ID_LEN)
+        || !valid_opaque(&request.account_id, MAX_ACCOUNT_ID_BYTES)
         || !valid_opaque(&request.review_token, MAX_REVIEW_TOKEN_BYTES)
         || !valid_digest(&request.plan_digest)
         || request.reviewed_item_count == 0
@@ -2039,6 +2042,8 @@ fn validate_reviewed_run_request(request: &AutoScrubReviewedRunRequest) -> Resul
     }
     if request.pace_milliseconds < MIN_REVIEWED_RUN_PACE_MILLISECONDS {
         return Err("below minimum pace".to_owned());
+    if !request.risk_agreement {
+        return Err("AutoScrub reviewed run request is missing consent".to_owned());
     }
     Ok(())
 }
@@ -2862,6 +2867,7 @@ mod production_fleet_tests {
         reviewed_item_count: u32,
     ) -> AutoScrubReviewedRunRequest {
         AutoScrubReviewedRunRequest {
+            run_id: format!("run-{reviewed_item_count}"),
             service_id,
             account_id: account_id.to_owned(),
             review_token: format!("review-token-{account_id}-{reviewed_item_count}"),
@@ -2870,6 +2876,7 @@ mod production_fleet_tests {
             reviewed_item_count,
             pace_milliseconds: MIN_REVIEWED_RUN_PACE_MILLISECONDS,
             consent: AutoScrubRunConsent::ReviewedBatchOnly,
+            risk_agreement: true,
         }
     }
 
@@ -2925,11 +2932,11 @@ mod production_fleet_tests {
         assert_eq!(fleet_status(&free).unwrap_err(), PRO_REQUIRED);
 
         assert!(serde_json::from_str::<AutoScrubReviewedRunRequest>(
-            r#"{"serviceId":"discord","accountId":"acct-1","reviewToken":"review-1","planDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","reviewedItemCount":1,"consent":"reviewedBatchOnly","unattended":true}"#,
+            r#"{"runId":"run-1","serviceId":"discord","accountId":"acct-1","reviewToken":"review-1","planDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","reviewedItemCount":1,"consent":"reviewedBatchOnly","riskAgreement":true,"unattended":true}"#,
         )
         .is_err());
         assert!(serde_json::from_str::<AutoScrubReviewedRunRequest>(
-            r#"{"serviceId":"discord","accountId":"acct-1","reviewToken":"review-1","planDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","reviewedItemCount":1}"#,
+            r#"{"runId":"run-1","serviceId":"discord","accountId":"acct-1","reviewToken":"review-1","planDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","reviewedItemCount":1}"#,
         )
         .is_err());
     }
@@ -3280,6 +3287,64 @@ mod production_fleet_tests {
         );
         assert_eq!(after.open_run_count, 1);
         assert_eq!(after.runs[0].pace_milliseconds, 500);
+    fn task_1409_break_consent_bypass() {
+        let _guard = crate::global_keystore_test_lock();
+        reset_run_store_for_test();
+        let state = state_with_license(LicenseState::Paid, "ACTIVE");
+        let before = fleet_status(&state).expect("paid test state can read AutoScrub fleet");
+        println!(
+            "TASK1409_started-run-count-before={}",
+            before.open_run_count
+        );
+        assert_eq!(before.open_run_count, 0);
+
+        let yes_request = AutoScrubReviewedRunRequest {
+            run_id: "maple-run".to_owned(),
+            service_id: ServiceKind::Discord,
+            account_id: "discord-maple".to_owned(),
+            review_token: "review-token-maple".to_owned(),
+            plan_digest: "c".repeat(64),
+            reviewed_item_count: 1,
+            consent: AutoScrubRunConsent::ReviewedBatchOnly,
+            risk_agreement: true,
+        };
+        let after_yes = start_reviewed_run(&state, yes_request.clone())
+            .expect("risk agreement yes starts the reviewed Discord run");
+        assert_eq!(after_yes.open_run_count, 1);
+        assert_eq!(after_yes.runs.len(), 1);
+        assert_eq!(after_yes.runs[0].run_id, "maple-run");
+        assert_eq!(after_yes.runs[0].account_id, "discord-maple");
+        println!(
+            "TASK1409_after-run={} names {}",
+            after_yes.runs[0].run_id, after_yes.runs[0].account_id
+        );
+        println!(
+            "TASK1409_started-run-count-after-yes={}",
+            after_yes.open_run_count
+        );
+
+        let no_request = AutoScrubReviewedRunRequest {
+            risk_agreement: false,
+            ..yes_request
+        };
+        let refused = start_reviewed_run(&state, no_request)
+            .expect_err("risk agreement no must refuse as missing consent");
+        assert_eq!(refused, "AutoScrub reviewed run request is missing consent");
+        println!("TASK1409_agreement-no-refused=missing consent");
+
+        let after_no = fleet_status(&state).expect("paid test state can reread AutoScrub fleet");
+        assert_eq!(after_no.open_run_count, 1);
+        assert_eq!(after_no.runs.len(), 1);
+        assert_eq!(after_no.runs[0].run_id, "maple-run");
+        assert_eq!(after_no.runs[0].account_id, "discord-maple");
+        println!(
+            "TASK1409_after-refusal={} still names {}",
+            after_no.runs[0].run_id, after_no.runs[0].account_id
+        );
+        println!(
+            "TASK1409_started-run-count-after-no={}",
+            after_no.open_run_count
+        );
     }
 
     #[test]
@@ -3288,6 +3353,7 @@ mod production_fleet_tests {
         reset_run_store_for_test();
         let state = state_with_license(LicenseState::Paid, "ACTIVE");
         let request = AutoScrubReviewedRunRequest {
+            run_id: "debug-run".to_owned(),
             service_id: ServiceKind::Discord,
             account_id: "acct-secret-debug-regression".to_owned(),
             review_token: "review-token-secret-debug-regression".to_owned(),
@@ -3296,6 +3362,7 @@ mod production_fleet_tests {
             reviewed_item_count: 3,
             pace_milliseconds: MIN_REVIEWED_RUN_PACE_MILLISECONDS,
             consent: AutoScrubRunConsent::ReviewedBatchOnly,
+            risk_agreement: true,
         };
 
         let debug = format!(

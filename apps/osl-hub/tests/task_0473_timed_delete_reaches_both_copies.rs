@@ -109,6 +109,15 @@ fn task_0473_timed_delete_reaches_both_named_copies() {
         absent_b,
         "{} still holding marked message {marked_text} after expiry",
         copies[1].name
+    assert_eq!(after_a, 0, "copy A must have no marked text after expiry");
+    assert_eq!(after_b, 0, "copy B must have no marked text after expiry");
+    assert!(
+        absent_a,
+        "copy A marked message must be absent after expiry"
+    );
+    assert!(
+        absent_b,
+        "copy B marked message must be absent after expiry"
     );
 
     println!("TASK0473_EXPIRY_PASS_COUNT=1");

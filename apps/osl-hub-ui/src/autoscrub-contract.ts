@@ -91,6 +91,7 @@ export interface AutoScrubStatusProjection {
 }
 
 export interface AutoScrubReviewedRunRequest {
+  readonly runId: string;
   readonly serviceId: ServiceId;
   readonly accountId: string;
   readonly reviewToken: string;
@@ -98,6 +99,7 @@ export interface AutoScrubReviewedRunRequest {
   readonly reviewedItemCount: number;
   readonly paceMilliseconds: number;
   readonly consent: "reviewedBatchOnly";
+  readonly riskAgreement: true;
 }
 
 export type DeepReadonly<T> = T extends (...args: never[]) => unknown
@@ -232,6 +234,7 @@ function sha256Hex(value: unknown): value is string {
 function parseRun(raw: unknown): AutoScrubRunSummary {
   if (!exactRecord(raw, ["runId", "serviceId", "accountId", "phase", "reviewedItemCount", "remainingItemCount", "stopRequested", "mutationAllowed", "lastOutcome", "accountActions"])) {
   if (!exactRecord(raw, ["runId", "serviceId", "phase", "reviewedItemCount", "remainingItemCount", "paceMilliseconds", "stopRequested", "mutationAllowed", "lastOutcome"])) {
+  if (!exactRecord(raw, ["runId", "serviceId", "accountId", "phase", "reviewedItemCount", "remainingItemCount", "stopRequested", "mutationAllowed", "lastOutcome"])) {
     throw new Error("invalid AutoScrub run");
   }
   if (!boundedText(raw.runId, 80)
@@ -347,6 +350,8 @@ export function parseAutoScrubFleetStatus(raw: unknown): AutoScrubFleetStatus {
 
 export function parseAutoScrubReviewedRunRequest(raw: unknown): AutoScrubReviewedRunRequest {
   if (!exactRecord(raw, ["serviceId", "accountId", "reviewToken", "planDigest", "reviewedItemCount", "paceMilliseconds", "consent"])
+  if (!exactRecord(raw, ["runId", "serviceId", "accountId", "reviewToken", "planDigest", "reviewedItemCount", "consent", "riskAgreement"])
+    || !opaqueIdentifier(raw.runId, 64)
     || !serviceIds.includes(raw.serviceId as ServiceId)
     || !opaqueIdentifier(raw.accountId, 64)
     || !opaqueIdentifier(raw.reviewToken, 96)
@@ -356,9 +361,12 @@ export function parseAutoScrubReviewedRunRequest(raw: unknown): AutoScrubReviewe
     || !boundedCount(raw.paceMilliseconds, 86_400_000)
     || raw.paceMilliseconds < 500
     || raw.consent !== "reviewedBatchOnly") {
+    || raw.consent !== "reviewedBatchOnly"
+    || raw.riskAgreement !== true) {
     throw new Error("invalid AutoScrub reviewed run request");
   }
   return deepFreeze({
+    runId: raw.runId,
     serviceId: raw.serviceId,
     accountId: raw.accountId,
     reviewToken: raw.reviewToken,
@@ -366,6 +374,7 @@ export function parseAutoScrubReviewedRunRequest(raw: unknown): AutoScrubReviewe
     reviewedItemCount: raw.reviewedItemCount,
     paceMilliseconds: raw.paceMilliseconds,
     consent: "reviewedBatchOnly",
+    riskAgreement: true,
   } as AutoScrubReviewedRunRequest);
 }
 

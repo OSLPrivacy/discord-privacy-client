@@ -117,6 +117,16 @@ describe("T15-A7 the capture refusal is escapable", () => {
     expect(recoveryKitView(initialRecoveryKitState(null, false)).mode).toBe("unavailable");
   });
 
+  it("records Continue from the no-secret screen without accepting a reveal-required gate", () => {
+    const outstanding = recoveryKitReducer(initialRecoveryKitState(null, true), { kind: "continue" });
+    expect(outstanding.outcome).toBe("rejected");
+    expect(outstanding.state.noRecoverySecretAcknowledged).toBe(false);
+
+    const unavailable = recoveryKitReducer(initialRecoveryKitState(null, false), { kind: "continue" });
+    expect(unavailable.outcome).toBe("leave-recovery");
+    expect(unavailable.state.noRecoverySecretAcknowledged).toBe(true);
+  });
+
   it("puts the phrases back on screen after the backend re-reads them", () => {
     const revealed = recoveryKitReducer(initialRecoveryKitState(null, true), {
       kind: "revealed",

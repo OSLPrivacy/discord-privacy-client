@@ -5,6 +5,47 @@
 //! especially refusing a generation that the host no longer claims.
 
 use crate::adapters::*;
+use std::fmt;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WebPageControlRefusal {
+    MissingBody,
+    MissingSend,
+}
+
+impl fmt::Display for WebPageControlRefusal {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            WebPageControlRefusal::MissingBody => "missing Body",
+            WebPageControlRefusal::MissingSend => "missing Send",
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WebPageControls {
+    pub body_present: bool,
+    pub send_present: bool,
+}
+
+impl WebPageControls {
+    pub const fn complete() -> Self {
+        Self {
+            body_present: true,
+            send_present: true,
+        }
+    }
+
+    pub fn validate(self) -> Result<(), WebPageControlRefusal> {
+        if !self.body_present {
+            return Err(WebPageControlRefusal::MissingBody);
+        }
+        if !self.send_present {
+            return Err(WebPageControlRefusal::MissingSend);
+        }
+        Ok(())
+    }
+}
 
 /// GMX Mail target map. Kept as service-local data until a live GMX backend
 /// proves the fixed-origin controls against a signed-in account.
@@ -38,6 +79,13 @@ pub trait WebSurfaceBackend: Send + Sync {
         target: &SurfaceTarget,
     ) -> Result<SurfaceBinding, AdapterRefusal>;
     fn read_state(&self, binding: &SurfaceBinding) -> Result<SurfaceState, AdapterRefusal>;
+    fn page_controls(
+        &self,
+        _profile: &adapter_profile::ProfilePayload,
+        _binding: &SurfaceBinding,
+    ) -> WebPageControls {
+        WebPageControls::complete()
+    }
     fn destination(&self, binding: &SurfaceBinding) -> Result<DestinationIdentity, AdapterRefusal>;
     fn place(&self, binding: &SurfaceBinding, carrier: &Carrier) -> PlacementReceipt;
     fn commit(&self, binding: &SurfaceBinding, placed: &PlacementReceipt) -> SendReceipt;
@@ -170,7 +218,16 @@ impl<B: WebSurfaceBackend> SurfaceAdapter for WebSurfaceAdapter<B> {
         }
         match self.read_state(binding) {
             Ok(state) if !state.composer_is_password_field && state.focused && !state.occluded => {
-                self.backend.place(binding, carrier)
+                if self
+                    .backend
+                    .page_controls(&self.profile, binding)
+                    .validate()
+                    .is_err()
+                {
+                    Self::placement_refused()
+                } else {
+                    self.backend.place(binding, carrier)
+                }
             }
             _ => Self::placement_refused(),
         }

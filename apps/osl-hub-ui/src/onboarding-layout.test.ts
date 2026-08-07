@@ -801,8 +801,8 @@ describe("fresh-account continuation", () => {
 
     // These are the durable dependencies of the setup spine. New, independent
     // setup screens may be inserted without making this test a refactor tripwire.
-    expect(indexOf("privacy")).toBeLessThan(indexOf("defaults"));
-    expect(indexOf("defaults")).toBeLessThan(indexOf("tor"));
+    expect(indexOf("privacy")).toBeLessThan(indexOf("tor"));
+    expect(indexOf("tor")).toBeLessThan(indexOf("defaults"));
     expect(indexOf("tor")).toBeLessThan(indexOf("sending"));
     expect(indexOf("defaults")).toBeLessThan(indexOf("sending"));
     expect(indexOf("sending")).toBeLessThan(indexOf("cover"));

@@ -13,7 +13,9 @@
 //! 5. bulk_set re-whitelisting a previously-burned peer clears the
 //!    matching BurnedScope so future messages decrypt normally.
 
-use ipc::commands::{cmd_osl_bulk_set_whitelist, cmd_osl_bulk_unwhitelist_scope};
+use ipc::commands::{
+    cmd_osl_bulk_set_whitelist, cmd_osl_bulk_unwhitelist_scope, cmd_osl_get_scope_whitelist_summary,
+};
 use ipc::peer_map::{BurnedScope, WhitelistEntry};
 use ipc::scope::{Scope, ScopeInput};
 use ipc::state::AppState;
@@ -24,6 +26,7 @@ const HENRY_DID: &str = "900000000000000001";
 const ALICE_DID: &str = "1602770642930634812";
 const BOB_DID: &str = "1702770642930634812";
 const GC_ID: &str = "1234567890";
+const OTHER_GC_ID: &str = "2345678901";
 
 fn fresh_state() -> AppState {
     let state = AppState::new();
@@ -146,6 +149,80 @@ fn bulk_unwhitelist_removes_scope_and_stamps_burn() {
             .any(|b| matches!(b, BurnedScope::Gc { id, .. } if id == GC_ID));
         assert!(has_burn, "peer {did} should have a Gc BurnedScope stamp");
     }
+}
+
+#[test]
+fn bulk_unwhitelist_keeps_same_member_allowed_in_other_group() {
+    let state = fresh_state();
+    let first_group = Scope::gc(GC_ID);
+    let second_group = Scope::gc(OTHER_GC_ID);
+
+    let first_saved =
+        cmd_osl_bulk_set_whitelist(&state, si(&first_group), vec![HENRY_DID.to_string()]).unwrap();
+    let second_saved =
+        cmd_osl_bulk_set_whitelist(&state, si(&second_group), vec![HENRY_DID.to_string()]).unwrap();
+    let removed_from_first =
+        cmd_osl_bulk_unwhitelist_scope(&state, si(&first_group), vec![HENRY_DID.to_string()])
+            .unwrap();
+
+    let second_summary = cmd_osl_get_scope_whitelist_summary(
+        &state,
+        si(&second_group),
+        vec![LIAM_DID.to_string(), HENRY_DID.to_string()],
+        LIAM_DID.to_string(),
+    )
+    .unwrap();
+
+    let pm = state.peer_map.lock().unwrap();
+    let henry = pm.get(HENRY_DID).expect("peer entry survives");
+    let still_allowed_in_second = henry.outgoing_whitelists.iter().any(|w| {
+        matches!(
+            w,
+            WhitelistEntry::Gc {
+                id,
+                user_specific: false
+            } if id == OTHER_GC_ID
+        )
+    });
+    let removed_from_first_group = !henry.outgoing_whitelists.iter().any(|w| {
+        matches!(
+            w,
+            WhitelistEntry::Gc {
+                id,
+                user_specific: false
+            } if id == GC_ID
+        )
+    });
+    let remaining_gc_entries = henry
+        .outgoing_whitelists
+        .iter()
+        .filter(|w| matches!(w, WhitelistEntry::Gc { .. }))
+        .count();
+
+    println!("TASK0115 first_group_saved={first_saved}");
+    println!("TASK0115 second_group_saved={second_saved}");
+    println!("TASK0115 removed_from_first_group={removed_from_first}");
+    println!("TASK0115 removed_from_first_group_absent={removed_from_first_group}");
+    println!("TASK0115 still_allowed_in_second_group={still_allowed_in_second}");
+    println!("TASK0115 remaining_gc_entries={remaining_gc_entries}");
+    println!(
+        "TASK0115 second_group_summary_state={}",
+        second_summary.state
+    );
+    println!(
+        "TASK0115 second_group_whitelisted_count={}",
+        second_summary.whitelisted_count
+    );
+
+    assert_eq!(first_saved, 1);
+    assert_eq!(second_saved, 1);
+    assert_eq!(removed_from_first, 1);
+    assert!(removed_from_first_group);
+    assert!(still_allowed_in_second);
+    assert_eq!(remaining_gc_entries, 1);
+    assert_eq!(second_summary.state, "all");
+    assert_eq!(second_summary.total_members, 1);
+    assert_eq!(second_summary.whitelisted_count, 1);
 }
 
 #[test]

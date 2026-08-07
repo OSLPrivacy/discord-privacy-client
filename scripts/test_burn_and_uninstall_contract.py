@@ -152,6 +152,14 @@ class BurnAndUninstallContractTest(unittest.TestCase):
             self.assertTrue(marked[0]["locations"], f"{section['name']} marked item must list locations")
             self.assertTrue(marked[0]["source"], f"{section['name']} marked item must name source")
 
+    def test_uninstall_footprint_names_every_osl_write_place(self) -> None:
+        places = uninstall_places(load_uninstall_footprint_map())
+        self.assertEqual([place["name"] for place in places], list(EXPECTED_UNINSTALL_PLACE_NAMES))
+        self.assertEqual([place["count"] for place in places], [1] * len(EXPECTED_UNINSTALL_PLACE_NAMES))
+        for place in places:
+            self.assertTrue(place["locations"], f"{place['name']} must list concrete locations")
+            self.assertTrue(place["source"], f"{place['name']} must name the source")
+
 
 if __name__ == "__main__":
     if sys.argv[1:] == ["--print-uninstall-map"]:
