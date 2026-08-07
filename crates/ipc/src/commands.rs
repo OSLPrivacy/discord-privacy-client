@@ -24668,6 +24668,16 @@ fn guard_picture_cache_access(
     }
 }
 
+/// Read-only: may `person_id` open a cached picture right now?
+///
+/// Same guard the picture cache runs, so a caller cannot be told "allowed"
+/// by one rule and refused by another.
+pub fn cmd_osl_picture_access_allowed(state: &AppState, person_id: String) -> Result<bool, String> {
+    record_activity_on_command_entry();
+    validate_friend_request_person_id(&person_id)?;
+    Ok(guard_picture_cache_access(state, "image/png", Some(&person_id)).is_ok())
+}
+
 #[derive(Debug, Serialize, Clone, PartialEq, Eq)]
 pub struct YourSideBurnCommandDto {
     pub choice: String,
@@ -24809,12 +24819,12 @@ fn count_allowed_places_for_optional_dir(
 fn clear_allowed_places_for_optional_dir(
     allowed_place_dir: Option<&Path>,
     person_id: &str,
-) -> Result<(), String> {
-    if let Some(dir) = allowed_place_dir {
-        let _ = crate::allowed_places::remove_allowed_place_records_for_person(dir, person_id)
-            .map_err(|error| error.to_string())?;
+) -> Result<usize, String> {
+    match allowed_place_dir {
+        Some(dir) => crate::allowed_places::remove_allowed_place_records_for_person(dir, person_id)
+            .map_err(|error| error.to_string()),
+        None => Ok(0),
     }
-    Ok(())
 }
 
 pub fn cmd_osl_block_friend_request(
@@ -24847,7 +24857,7 @@ pub fn cmd_osl_block_friend_request(
         persist_peer_map_now(state);
     }
 
-    clear_allowed_places_for_optional_dir(allowed_place_dir.as_deref(), &peer_discord_id)?;
+    let _ = clear_allowed_places_for_optional_dir(allowed_place_dir.as_deref(), &peer_discord_id)?;
 
     let blocked_path = blocked_people_path(&dir);
     let mut blocked = load_blocked_people(&blocked_path)?;
@@ -24897,7 +24907,7 @@ pub fn cmd_osl_unblock_person(
     if grants_removed > 0 {
         persist_peer_map_now(state);
     }
-    clear_allowed_places_for_optional_dir(allowed_place_dir.as_deref(), &peer_discord_id)?;
+    let _ = clear_allowed_places_for_optional_dir(allowed_place_dir.as_deref(), &peer_discord_id)?;
 
     Ok(UnblockPersonResult {
         person_id: peer_discord_id.clone(),
@@ -24908,6 +24918,98 @@ pub fn cmd_osl_unblock_person(
             allowed_place_dir.as_deref(),
             &peer_discord_id,
         )?,
+    })
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoveFriendResult {
+    pub person_id: String,
+    pub removed_request_id: String,
+    pub accepted_friend_count: usize,
+    pub friendship_state: String,
+    pub grants_removed: usize,
+    pub allowed_places_removed: usize,
+    pub allowed_places: usize,
+    pub picture_access_allowed: bool,
+}
+
+fn saved_request_names_person(
+    entry: &crate::friend_request::StoredFriendRequestFileEntry,
+    person_id: &str,
+) -> bool {
+    entry.target_id == person_id || entry.requester_id == person_id
+}
+
+/// Drop one person from the friend-id snapshot the picture-cache guard reads,
+/// then report whether that person may still open a picture.
+///
+/// The snapshot lock is released before the guard runs: the guard takes the
+/// same lock.
+fn clear_friend_picture_access(state: &AppState, person_id: &str) -> bool {
+    {
+        let mut friends = state.friend_ids.lock().expect("friend_ids mutex poisoned");
+        friends.retain(|friend_id| friend_id != person_id);
+    }
+    guard_picture_cache_access(state, "image/png", Some(person_id)).is_ok()
+}
+
+/// Remove one accepted friend.
+///
+/// Named-person only: the friendship row, the allowed places that friendship
+/// created, and the picture access it granted are cleared for `person_id` and
+/// for nobody else. Absence is never treated as permission — a person who is
+/// not currently accepted is refused rather than silently "removed", so a
+/// mistyped id cannot read as a successful removal.
+pub fn cmd_osl_remove_friend(
+    state: &AppState,
+    person_id: String,
+    allowed_place_dir: Option<PathBuf>,
+) -> Result<RemoveFriendResult, String> {
+    record_activity_on_command_entry();
+    validate_friend_request_person_id(&person_id)?;
+
+    let dir = saved_friend_request_dir()?;
+    let mut file = load_saved_friend_request_file_with_dir(&dir)?;
+    let accepted_index = file
+        .accepted
+        .iter()
+        .position(|entry| saved_request_names_person(entry, &person_id))
+        .ok_or_else(|| "OSL: friend is not accepted".to_string())?;
+    let entry = file.accepted.remove(accepted_index);
+    update_saved_friend_record(
+        &mut file,
+        &entry.requester_id,
+        &entry.target_id,
+        None,
+        crate::friend_request::StoredFriendState::None,
+        crate::friend_request::StoredFriendBlockState::NotBlocked,
+        None,
+    )?;
+    file.declined_or_revoked.push(entry.clone());
+    save_saved_friend_request_file_with_dir(&dir, &file)?;
+
+    let grants_removed = clear_friendship_grants(state, &person_id);
+    if grants_removed > 0 {
+        persist_peer_map_now(state);
+    }
+
+    let allowed_places_removed =
+        clear_allowed_places_for_optional_dir(allowed_place_dir.as_deref(), &person_id)?;
+    let picture_access_allowed = clear_friend_picture_access(state, &person_id);
+
+    Ok(RemoveFriendResult {
+        removed_request_id: entry.request_id,
+        accepted_friend_count: file.accepted.len(),
+        friendship_state: friendship_state_with_dir(state, &dir, &person_id)?.to_owned(),
+        grants_removed,
+        allowed_places_removed,
+        allowed_places: count_allowed_places_for_optional_dir(
+            allowed_place_dir.as_deref(),
+            &person_id,
+        )?,
+        picture_access_allowed,
+        person_id,
     })
 }
 
