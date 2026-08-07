@@ -14,6 +14,7 @@ import {
   ONE_TIME_PRO_CURRENCY_REFUSAL,
 } from "../../src/lib/subscription-state.js";
 import { repairPaidOneTimeCheckoutClaimsWithoutCodes } from "../../src/lib/stripe-checkout-claims.js";
+import { generateLicenseKey } from "../../src/lib/license.js";
 
 function browserClaimToken(): string {
   const bytes = new Uint8Array(32);
@@ -32,9 +33,136 @@ async function insertPendingCheckoutClaim(sessionId: string, licenseHash: string
        created_at, expires_at, delivered_at
      ) VALUES (?, ?, 'public-key', 'ciphertext', ?, NULL, 'pending', ?, ?, NULL)`,
   ).bind(sessionId, `claim-${sessionId}`, licenseHash, now, now + 3600).run();
+async function paymentWriteCounts(): Promise<Record<string, number>> {
+  const tables = [
+    "stripe_event_claims",
+    "stripe_events",
+    "subscriptions",
+    "licenses",
+    "stripe_subscription_observations",
+    "stripe_checkout_claims",
+    "commerce_events",
+    "donation_events",
+    "payment_alert_outbox",
+  ];
+  const counts: Record<string, number> = {};
+  for (const table of tables) {
+    const row = await env.DB.prepare(`SELECT COUNT(*) AS count FROM ${table}`)
+      .first<{ count: number }>();
+    counts[table] = row?.count ?? 0;
+  }
+  return counts;
+}
+
+async function stripeEventMarkerCounts(eventId: string): Promise<{
+  completed: number;
+  claims: number;
+}> {
+  const row = await env.DB.prepare(
+    `SELECT
+       (SELECT COUNT(*) FROM stripe_events WHERE event_id = ?) AS completed,
+       (SELECT COUNT(*) FROM stripe_event_claims WHERE event_id = ?) AS claims`,
+  ).bind(eventId, eventId).first<{ completed: number; claims: number }>();
+  return {
+    completed: row?.completed ?? 0,
+    claims: row?.claims ?? 0,
+  };
 }
 
 describe("POST /v1/stripe/webhook signature", () => {
+  it("TASK 3189 accepts only Stripe-signed payment callbacks before writes", async () => {
+    const signedEventId = `evt_task3189_signed_${crypto.randomUUID().replace(/-/g, "")}a`;
+    const tamperedEventId = `${signedEventId.slice(0, -1)}b`;
+    const unsignedEventId = `evt_task3189_unsigned_${crypto.randomUUID().replace(/-/g, "")}`;
+    const signedBody = JSON.stringify({
+      id: signedEventId,
+      type: "ping.unhandled",
+      livemode: true,
+      created: Math.floor(Date.now() / 1000),
+      data: { object: {} },
+    });
+    const tamperedBody = signedBody.replace(signedEventId, tamperedEventId);
+    expect(tamperedBody.length).toBe(signedBody.length);
+    expect(
+      [...signedBody].filter((char, index) => char !== tamperedBody[index]),
+    ).toHaveLength(1);
+    const signature = await signStripeWebhook(signedBody);
+
+    const accepted = await SELF.fetch("http://test/v1/stripe/webhook", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "stripe-signature": signature,
+      },
+      body: signedBody,
+    });
+    const acceptedBody = (await accepted.json()) as { received: boolean; kind?: string };
+    expect(accepted.status).toBe(200);
+    expect(acceptedBody).toMatchObject({ received: true, kind: "noop" });
+    expect(await stripeEventMarkerCounts(signedEventId)).toEqual({
+      completed: 1,
+      claims: 1,
+    });
+
+    const afterAccepted = await paymentWriteCounts();
+    const tampered = await SELF.fetch("http://test/v1/stripe/webhook", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "stripe-signature": signature,
+      },
+      body: tamperedBody,
+    });
+    const tamperedBodyJson = (await tampered.json()) as { error?: string };
+    expect(tampered.status).toBe(401);
+    expect(tamperedBodyJson.error).toBe("bad-signature");
+    expect(await paymentWriteCounts()).toEqual(afterAccepted);
+    expect(await stripeEventMarkerCounts(tamperedEventId)).toEqual({
+      completed: 0,
+      claims: 0,
+    });
+
+    const unsignedBody = JSON.stringify({
+      id: unsignedEventId,
+      type: "ping.unhandled",
+      livemode: true,
+      created: Math.floor(Date.now() / 1000),
+      data: { object: {} },
+    });
+    const unsigned = await SELF.fetch("http://test/v1/stripe/webhook", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: unsignedBody,
+    });
+    const unsignedBodyJson = (await unsigned.json()) as { error?: string };
+    expect(unsigned.status).toBe(401);
+    expect(unsignedBodyJson.error).toBe("bad-signature");
+    expect(await paymentWriteCounts()).toEqual(afterAccepted);
+    expect(await stripeEventMarkerCounts(unsignedEventId)).toEqual({
+      completed: 0,
+      claims: 0,
+    });
+
+    console.log(
+      `TASK3189 signed_status=${accepted.status} signed_received=${acceptedBody.received} signed_kind=${acceptedBody.kind}`,
+    );
+    console.log(
+      `TASK3189 signed_event_completed=1 signed_event_claims=1`,
+    );
+    console.log(
+      `TASK3189 tampered_changed_characters=1 tampered_status=${tampered.status} tampered_error=${tamperedBodyJson.error}`,
+    );
+    console.log(
+      `TASK3189 tampered_event_completed=0 tampered_event_claims=0`,
+    );
+    console.log(
+      `TASK3189 unsigned_status=${unsigned.status} unsigned_error=${unsignedBodyJson.error}`,
+    );
+    console.log(
+      `TASK3189 unsigned_event_completed=0 unsigned_event_claims=0`,
+    );
+  });
+
   it("rejects a validly signed Stripe test mode event", async () => {
     const body = JSON.stringify({
       id: uniqueEventId(),
@@ -1304,5 +1432,106 @@ describe("POST /v1/stripe/webhook state machine", () => {
       status: "delivery_ready",
       encrypted_license: "ciphertext",
     });
+  });
+});
+
+describe("TASK 3199 refunded prepaid code enforcement", () => {
+  const licenseHmac = "osl-license-test-secret-v1";
+
+  async function buyOneTimeCode(label: string): Promise<{
+    plaintext: string;
+    paymentIntentId: string;
+    checkoutKind: string;
+  }> {
+    const { plaintext, hash } = await generateLicenseKey(licenseHmac);
+    const sessionId = `cs_task3199_${label}_${crypto.randomUUID().replace(/-/g, "")}`;
+    const paymentIntentId = `pi_task3199_${label}_${crypto.randomUUID().replace(/-/g, "")}`;
+    const now = Math.floor(Date.now() / 1000);
+    await env.DB.prepare(
+      `INSERT INTO stripe_checkout_claims (
+         session_id, claim_hash, delivery_public_key_spki,
+         encrypted_license, license_hash, subscription_id, status,
+         created_at, expires_at, delivered_at
+       ) VALUES (?, ?, 'public-key', 'ciphertext', ?, NULL, 'pending', ?, ?, NULL)`,
+    ).bind(sessionId, `claim-${sessionId}`, hash, now, now + 3600).run();
+
+    const checkout = await postSignedWebhook(SELF, {
+      id: uniqueEventId(`evt_task3199_checkout_${label}`),
+      type: "checkout.session.completed",
+      data: {
+        object: {
+          id: sessionId,
+          mode: "payment",
+          metadata: { osl_plan: "pro", osl_purchase: "one-time", osl_fulfillment: "instant-v1" },
+          payment_status: "paid",
+          payment_intent: paymentIntentId,
+          amount_total: 500,
+          currency: "usd",
+        },
+      },
+    });
+    expect(checkout.status).toBe(200);
+    const checkoutBody = await checkout.json() as { kind: string };
+    expect(checkoutBody.kind).toBe("applied");
+    return { plaintext, paymentIntentId, checkoutKind: checkoutBody.kind };
+  }
+
+  async function redeem(licenseKey: string): Promise<Record<string, unknown>> {
+    const response = await SELF.fetch("http://test/v1/license/redeem", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ license_key: licenseKey }),
+    });
+    expect(response.status).toBe(200);
+    return await response.json() as Record<string, unknown>;
+  }
+
+  it("refund message stops one redeemed code while another account's code still works", async () => {
+    const first = await buyOneTimeCode("refunded");
+    const second = await buyOneTimeCode("unrefunded");
+
+    const firstBeforeRefund = await redeem(first.plaintext);
+    expect(firstBeforeRefund.status).toBe("ACTIVE");
+
+    const refund = await postSignedWebhook(SELF, {
+      id: uniqueEventId("evt_task3199_refund"),
+      type: "charge.refunded",
+      data: {
+        object: {
+          id: `ch_task3199_${crypto.randomUUID().replace(/-/g, "")}`,
+          payment_intent: first.paymentIntentId,
+          amount: 500,
+          amount_refunded: 500,
+          currency: "usd",
+        },
+      },
+    });
+    expect(refund.status).toBe(200);
+    const refundBody = await refund.json() as { kind: string };
+    expect(refundBody.kind).toBe("applied");
+
+    const firstAfterRefund = await redeem(first.plaintext);
+    expect(firstAfterRefund).toMatchObject({
+      status: "REVOKED",
+      checksum_ok: true,
+      error: "this code was refunded",
+    });
+
+    const secondAfterRefund = await redeem(second.plaintext);
+    expect(secondAfterRefund.status).toBe("ACTIVE");
+
+    console.log(
+      "TASK3199 keyserver " +
+      JSON.stringify({
+        bought_codes: 2,
+        first_checkout_kind: first.checkoutKind,
+        second_checkout_kind: second.checkoutKind,
+        first_pro_before_refund: firstBeforeRefund.status,
+        refund_kind: refundBody.kind,
+        first_after_refund_status: firstAfterRefund.status,
+        first_after_refund_error: firstAfterRefund.error,
+        second_unrefunded_status: secondAfterRefund.status,
+      }),
+    );
   });
 });

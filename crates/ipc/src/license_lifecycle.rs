@@ -222,9 +222,15 @@ pub fn refresh_license_state_with_url(
             // cmd_osl_validate_license — see commands.rs.)
             let durable = resp.checksum_ok && resp.status != "UNKNOWN";
             if durable {
+                let cache_status = resp
+                    .error
+                    .as_ref()
+                    .filter(|_| resp.status == "REVOKED")
+                    .unwrap_or(&resp.status)
+                    .clone();
                 let updated = LicenseCacheInner {
                     license_plaintext: cache.license_plaintext.clone(),
-                    last_validated_status: resp.status.clone(),
+                    last_validated_status: cache_status.clone(),
                     redeemed_at: cache.redeemed_at,
                     expires_at: cache.expires_at,
                     current_period_end: resp.current_period_end,
@@ -237,7 +243,10 @@ pub fn refresh_license_state_with_url(
             }
             let dto = LicenseStateDto {
                 state: classify_state(&resp.status),
-                raw_status: resp.status,
+                raw_status: resp
+                    .error
+                    .filter(|_| resp.status == "REVOKED")
+                    .unwrap_or(resp.status),
                 current_period_end: resp.current_period_end,
                 // Only bump on a durable success — see above.
                 last_validated_at: if durable {

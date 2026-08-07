@@ -36,17 +36,27 @@ export type AutoscrubUnattendedRunResult =
 
 export type AutoScrubRunPhase = "reviewRequired" | "running" | "stopping" | "blocked" | "complete" | "failed";
 export type AutoScrubQuitGuardState = "notRequested" | "confirming" | "checking" | "estimated" | "stopped" | "unknown" | "refused";
+export type AutoScrubRunPhase = "reviewRequired" | "running" | "stopping" | "blocked" | "skipped" | "complete" | "failed";
+export type AutoScrubQuitGuardState = "notRequested" | "checking" | "estimated" | "stopped" | "unknown" | "refused";
 export type AutoScrubDisplayTone = "neutral" | "working" | "warning" | "blocked";
+export type AutoScrubRunActionKind = "openAccount" | "tryAgainAfterSignIn" | "skipThisAccount" | "stopAllScanning";
+
+export interface AutoScrubRunAction {
+  readonly action: AutoScrubRunActionKind;
+  readonly label: "Open account" | "Try again after sign-in" | "Skip this account" | "Stop all scanning";
+}
 
 export interface AutoScrubRunSummary {
   readonly runId: string;
   readonly serviceId: ServiceId;
+  readonly accountId: string;
   readonly phase: AutoScrubRunPhase;
   readonly reviewedItemCount: number;
   readonly remainingItemCount: number;
   readonly stopRequested: boolean;
   readonly mutationAllowed: false;
   readonly lastOutcome: "none" | "prepared" | "confirmed" | "held" | "unknown";
+  readonly accountActions: readonly AutoScrubRunAction[];
 }
 
 export interface AutoScrubQuitGuardEstimate {
@@ -68,6 +78,7 @@ export interface AutoScrubFleetStatus {
   readonly stopConfirmation: AutoScrubStopConfirmationState;
   readonly unattendedExecutionAllowed: false;
   readonly quitGuard: AutoScrubQuitGuardEstimate;
+  readonly fleetActions: readonly AutoScrubRunAction[];
   readonly runs: readonly AutoScrubRunSummary[];
 }
 
@@ -128,7 +139,16 @@ const serviceIds: readonly ServiceId[] = [
 ];
 const phases: readonly AutoScrubRunPhase[] = ["reviewRequired", "running", "stopping", "blocked", "complete", "failed"];
 const quitGuardStates: readonly AutoScrubQuitGuardState[] = ["notRequested", "confirming", "checking", "estimated", "stopped", "unknown", "refused"];
+const phases: readonly AutoScrubRunPhase[] = ["reviewRequired", "running", "stopping", "blocked", "skipped", "complete", "failed"];
+const quitGuardStates: readonly AutoScrubQuitGuardState[] = ["notRequested", "checking", "estimated", "stopped", "unknown", "refused"];
 const outcomes: readonly AutoScrubRunSummary["lastOutcome"][] = ["none", "prepared", "confirmed", "held", "unknown"];
+const MAX_RETAINED_FLEET_RUNS = 8;
+const runActions: Readonly<Record<AutoScrubRunActionKind, AutoScrubRunAction["label"]>> = {
+  openAccount: "Open account",
+  tryAgainAfterSignIn: "Try again after sign-in",
+  skipThisAccount: "Skip this account",
+  stopAllScanning: "Stop all scanning",
+};
 
 
 function exactRecord(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
@@ -208,29 +228,49 @@ function sha256Hex(value: unknown): value is string {
 }
 
 function parseRun(raw: unknown): AutoScrubRunSummary {
-  if (!exactRecord(raw, ["runId", "serviceId", "phase", "reviewedItemCount", "remainingItemCount", "stopRequested", "mutationAllowed", "lastOutcome"])) {
+  if (!exactRecord(raw, ["runId", "serviceId", "accountId", "phase", "reviewedItemCount", "remainingItemCount", "stopRequested", "mutationAllowed", "lastOutcome", "accountActions"])) {
     throw new Error("invalid AutoScrub run");
   }
   if (!boundedText(raw.runId, 80)
     || !serviceIds.includes(raw.serviceId as ServiceId)
+    || !opaqueIdentifier(raw.accountId, 64)
     || !phases.includes(raw.phase as AutoScrubRunPhase)
     || !boundedCount(raw.reviewedItemCount, 10_000)
     || !boundedCount(raw.remainingItemCount, 10_000)
+    || raw.remainingItemCount > raw.reviewedItemCount
     || typeof raw.stopRequested !== "boolean"
     || raw.mutationAllowed !== false
-    || !outcomes.includes(raw.lastOutcome as AutoScrubRunSummary["lastOutcome"])) {
+    || !outcomes.includes(raw.lastOutcome as AutoScrubRunSummary["lastOutcome"])
+    || !Array.isArray(raw.accountActions)
+    || raw.accountActions.length > 3) {
     throw new Error("invalid AutoScrub run");
   }
+  const accountActions = raw.accountActions.map(parseAction);
   return deepFreeze({
     runId: raw.runId,
     serviceId: raw.serviceId,
+    accountId: raw.accountId,
     phase: raw.phase,
     reviewedItemCount: raw.reviewedItemCount,
     remainingItemCount: raw.remainingItemCount,
     stopRequested: raw.stopRequested,
     mutationAllowed: false,
     lastOutcome: raw.lastOutcome,
+    accountActions,
   } as AutoScrubRunSummary);
+}
+
+function parseAction(raw: unknown): AutoScrubRunAction {
+  if (!exactRecord(raw, ["action", "label"])
+    || typeof raw.action !== "string"
+    || !(raw.action in runActions)
+    || raw.label !== runActions[raw.action as AutoScrubRunActionKind]) {
+    throw new Error("invalid AutoScrub run action");
+  }
+  return deepFreeze({
+    action: raw.action,
+    label: raw.label,
+  } as AutoScrubRunAction);
 }
 
 function parseQuitGuard(raw: unknown): AutoScrubQuitGuardEstimate {
@@ -265,18 +305,26 @@ function parseStopConfirmation(raw: unknown): AutoScrubStopConfirmationState {
 
 export function parseAutoScrubFleetStatus(raw: unknown): AutoScrubFleetStatus {
   if (!exactRecord(raw, ["contract", "openRunCount", "globalStopRequested", "stopConfirmation", "unattendedExecutionAllowed", "quitGuard", "runs"])
+  if (!exactRecord(raw, ["contract", "openRunCount", "globalStopRequested", "unattendedExecutionAllowed", "quitGuard", "fleetActions", "runs"])
     || raw.contract !== "autoscrubRunFleet.v1"
     || !boundedCount(raw.openRunCount, 2)
     || typeof raw.globalStopRequested !== "boolean"
     || raw.unattendedExecutionAllowed !== false
     || !Array.isArray(raw.runs)
-    || raw.runs.length !== raw.openRunCount) {
+    || raw.runs.length < raw.openRunCount
+    || raw.runs.length > MAX_RETAINED_FLEET_RUNS
+    || !Array.isArray(raw.fleetActions)
+    || raw.fleetActions.length > 1) {
     throw new Error("invalid AutoScrub fleet status");
   }
   const quitGuard = parseQuitGuard(raw.quitGuard);
   const stopConfirmation = parseStopConfirmation(raw.stopConfirmation);
+  const fleetActions = raw.fleetActions.map(parseAction);
   const runs = raw.runs.map(parseRun);
   if (new Set(runs.map((run) => run.runId)).size !== runs.length) {
+    throw new Error("invalid AutoScrub fleet status");
+  }
+  if (runs.filter((run) => ["reviewRequired", "running", "stopping", "blocked"].includes(run.phase)).length !== raw.openRunCount) {
     throw new Error("invalid AutoScrub fleet status");
   }
   return deepFreeze({
@@ -286,6 +334,7 @@ export function parseAutoScrubFleetStatus(raw: unknown): AutoScrubFleetStatus {
     stopConfirmation,
     unattendedExecutionAllowed: false,
     quitGuard,
+    fleetActions,
     runs,
   } as AutoScrubFleetStatus);
 }

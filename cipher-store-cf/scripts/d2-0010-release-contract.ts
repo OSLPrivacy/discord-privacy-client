@@ -217,13 +217,63 @@ export const D2_PROBE_FORMAT =
  * reason. See `MIGRATION_SEQUENCE_SKIPS` for the git evidence behind it and for
  * why renumbering 0017 was refused — what a live store applied cannot be
  * determined from this repository, only from that database's `d1_migrations`.
+ *
+ * MOVED AGAIN 2026-08-05 (TASK 0044), from
+ * fc5659bd985dce5884338509e08925a82d06ac7e6ca1c3315df4d686a5b60204.
+ * THE SET DID NOT CHANGE: 50 files before, 50 after, 0 added and 0 removed.
+ * `git diff --name-only` against the previous pin shows exactly two pinned
+ * source files changed:
+ *
+ *   src/lib/attachment-limits.ts  replaces the two standalone attachment-size
+ *                                 constants with one shared
+ *                                 `ATTACHMENT_TIER_LIMITS` record: Free is
+ *                                 25 MiB per file, Pro is 1 GiB per file, and
+ *                                 both tiers share 16 files per message. The
+ *                                 existing backend constants now derive from
+ *                                 that record: direct upload uses Free's
+ *                                 per-file limit, and sealed multipart upload
+ *                                 uses Pro's per-file limit. The part size
+ *                                 remains 8 MiB and `MAX_ATTACHMENT_PARTS`
+ *                                 remains derived from the sealed limit.
+ *   migrations/0004_attachment_capability_digests_and_quota.sql
+ *                                 moves the D1 `attachment_objects.size_bytes`
+ *                                 CHECK from 537,919,488 bytes to
+ *                                 1,073,741,824 bytes and moves
+ *                                 `attachment_parts.part_number` from 1..65 to
+ *                                 1..128. Without this, the Worker would
+ *                                 define Pro's 1 GiB per-file limit but D1
+ *                                 would reject its metadata before upload.
+ *
+ * The direct command and node test added for TASK 0044 live under `scripts/`
+ * and `test-node/`; like the rest of the tests, they are outside this release
+ * digest. They read the shared record above rather than duplicating the values.
+ *
+ * MOVED AGAIN 2026-08-06 (TASK 0045), from
+ * 9d658d6ce5c826772326b83ed7708ed232a64860cfc9b34e0777adcc6b7de845.
+ * THE SET DID NOT CHANGE: 50 files before, 50 after, 0 added and 0 removed.
+ * `git diff --name-only` against the previous pin shows exactly one pinned
+ * source file changed:
+ *
+ *   src/lib/attachment-limits.ts  adds `checkAttachmentFileForTier`, a shared
+ *                                 admission check that accepts an attachment
+ *                                 file only when both its byte size and
+ *                                 1-indexed file count fit the sending
+ *                                 person's tier from
+ *                                 `ATTACHMENT_TIER_LIMITS`. The existing
+ *                                 Free/Pro limit record and derived backend
+ *                                 byte constants are unchanged.
+ *
+ * The direct command and node test added for TASK 0045 live under `scripts/`
+ * and `test-node/`; like the rest of the tests, they are outside this release
+ * digest. They call the shared check above and print the required accept/reject
+ * decisions for 24 MB Free, 999 MB Pro, 26 MB Free, 1.1 GB Pro, and file 17.
  */
 export const D2_RELEASE_COMMIT =
   "5a2bad492dec2d90094d2c4a797124366d7dea32";
 export const D2_RELEASE_TREE =
   "18149f3dbb14bae687cea33a56f624171958c8cd";
 export const D2_RELEASE_SOURCE_SHA256 =
-  "fc5659bd985dce5884338509e08925a82d06ac7e6ca1c3315df4d686a5b60204";
+  "4921f719cb8b0bb9299aa6bbcdcea1ce1ab705060e7e3402b196886e4f191f7d";
 export const D2_MIGRATION_0010_SHA256 =
   "a545f989172c32c8f5f5c78754b4eda2f045778643cbb86c9eb81f22be2f6636";
 export const D2_DATABASE_ID = "be3d31f1-f6b4-4d6e-8ede-74514950b9e2";

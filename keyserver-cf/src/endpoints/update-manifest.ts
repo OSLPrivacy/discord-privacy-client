@@ -21,7 +21,7 @@ import { callerIp, checkRateLimit } from "../lib/rate-limit.js";
 /// The version currently hosted at installers.oslprivacy.com.
 /// Bump this (and add the matching .msi) when a new build ships;
 /// the client-side semver compare in Tauri does the rest.
-const PRODUCTION_VERSION = "0.0.1";
+export const PRODUCTION_VERSION = "0.0.1";
 const INSTALLER_URL =
   "https://installers.oslprivacy.com/osl-privacy-0.0.1.msi";
 const RELEASE_NOTES = "OSL Privacy 0.0.1 — beta build.";

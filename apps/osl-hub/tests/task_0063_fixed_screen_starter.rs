@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(unix)]
@@ -138,6 +139,33 @@ while true; do sleep 1; done
         .expect("starter script can be launched")
 }
 
+static DISPLAY_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+fn next_display() -> String {
+    let slot = DISPLAY_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let base = 120 + ((std::process::id() as usize + slot) % 80);
+    format!(":{base}")
+}
+
+fn run_input_audit(scratch: &Scratch, extra_env: &[(&str, &str)]) -> Output {
+    let root = repo_root();
+    let mut command = Command::new("bash");
+    command
+        .arg(root.join("scripts/qa/osl-fixed-screen-input-audit.sh"))
+        .env("OSL_INPUT_AUDIT_OUT", scratch.join("out"))
+        .env("OSL_INPUT_AUDIT_RUN_DIR", scratch.join("run"))
+        .env("OSL_FIXED_SCREEN_DISPLAY", next_display())
+        .env("OSL_INPUT_AUDIT_WAIT_SECONDS", "8")
+        .env("OSL_INPUT_AUDIT_LOADING_MS", "1600")
+        .env("OSL_INPUT_AUDIT_AFTER_MS", "1600");
+    for (key, value) in extra_env {
+        command.env(key, value);
+    }
+    command
+        .output()
+        .expect("input audit script can be launched")
+}
+
 #[test]
 fn fixed_screen_starter_saves_one_image_and_metadata_then_cleans_up() {
     let scratch = Scratch::new("task-0063-starter-green");
@@ -178,6 +206,87 @@ fn fixed_screen_starter_saves_one_image_and_metadata_then_cleans_up() {
         .expect("metadata json is written");
     assert!(metadata.contains(r#""schema": "osl-fixed-screen-starter-v1""#));
     assert!(metadata.contains(r#""captureEnabled": true"#));
+}
+
+#[test]
+fn fixed_screen_input_audit_reports_every_screen_and_lands_after_keys() {
+    let scratch = Scratch::new("task-3546-input-green");
+    let output = run_input_audit(&scratch, &[]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "input audit must pass; stdout={stdout}; stderr={stderr}"
+    );
+    assert!(
+        stdout.contains(
+            "TASK3546_SUMMARY screen_count=6 after_landed_count=6 early_absent_count=6 early_target_count=0 early_other_count=0 early_actions_started=0 status=ok"
+        ),
+        "input audit must print the exact finish-line counts: {stdout}"
+    );
+    for screen in [
+        "welcome",
+        "choose-protection",
+        "choose-apps",
+        "choose-send",
+        "review-defaults",
+        "secure-recovery",
+    ] {
+        assert!(
+            stdout.contains(&format!("TASK3546_SCREEN screen={screen} ")),
+            "input audit report must list {screen}: {stdout}"
+        );
+    }
+    let report = fs::read_to_string(scratch.join("out/input-audit-report.md"))
+        .expect("input audit report is written");
+    assert!(report.contains("- screen_count: 6"), "{report}");
+    assert!(report.contains("- after_landed_count: 6"), "{report}");
+    assert!(report.contains("- early_other_count: 0"), "{report}");
+    assert!(report.contains("- early_actions_started: 0"), "{report}");
+}
+
+#[test]
+fn fixed_screen_input_audit_fails_when_after_keys_are_not_sent() {
+    let scratch = Scratch::new("task-3546-input-red-after");
+    let output = run_input_audit(
+        &scratch,
+        &[
+            ("OSL_INPUT_AUDIT_SKIP_AFTER", "1"),
+            ("OSL_INPUT_AUDIT_AFTER_MS", "180"),
+        ],
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "skipping after-load input must fail; stdout={stdout}; stderr={stderr}"
+    );
+    assert!(
+        stdout.contains("after_landed_count=0")
+            && stdout.contains("screen_count=6")
+            && stdout.contains("status=fail"),
+        "a run where no after-load key reaches OSL cannot pass: {stdout}"
+    );
+}
+
+#[test]
+fn fixed_screen_input_audit_fails_when_early_keys_land_in_another_control() {
+    let scratch = Scratch::new("task-3546-input-red-early");
+    let output = run_input_audit(&scratch, &[("OSL_INPUT_AUDIT_EARLY_WRONG", "1")]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "early input in another control must fail; stdout={stdout}; stderr={stderr}"
+    );
+    assert!(
+        stdout.contains("early_other_count=6")
+            && stdout.contains("after_landed_count=6")
+            && stdout.contains("status=fail"),
+        "wrong early target must make the check red while after-load control remains proven: {stdout}"
+    );
 }
 
 #[test]

@@ -114,14 +114,12 @@ Discord's own interface through Windows accessibility — it focuses one of your
 message rows, opens that row's own menu, chooses Discord's own delete item and
 confirms in Discord's own dialog. It never moves your pointer.
 
-It cannot yet prove a row is yours, and you should not read it as if it can. The
-ownership test compares the visible author name at the start of the row against
-your own display name. A Discord display name is chosen by whoever holds the
-account, so a row written by an impersonator can pass that test. Discord's own row
-menu is not a reliable second gate either: an account with Manage Messages is
-offered Delete on other people's messages. Rows that fail the name test are
-reported as unsupported. Nothing is deleted today — see Status below — and this
-check has to be re-based on Discord's own message id before anything is.
+Row ownership proof is governed by
+`keyserver-cf/ROW-OWNERSHIP-PROOF-LADDER.json`. The strongest Discord proof
+compares the numbered account read from the row with the signed-in account's own
+number read separately from the account panel. A visible name by itself is below
+the marking floor: it may narrow a candidate set, but it may never mark a row as
+yours. Screen position and bubble colour are not evidence.
 
 Every run is `Scan → Preview → Confirm → Execute → Verify → Receipt`. You see
 exactly which rows will be attempted before anything happens, and the plan is

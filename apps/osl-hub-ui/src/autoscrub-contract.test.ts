@@ -31,15 +31,24 @@ const fleetStatus = {
     honestRemainingSecondsEstimate: null,
     reason: "No stop request is active.",
   },
+  fleetActions: [{
+    action: "stopAllScanning",
+    label: "Stop all scanning",
+  }],
   runs: [{
     runId: "run-001",
     serviceId: "discord",
+    accountId: "acct-discord-1",
     phase: "running",
     reviewedItemCount: 3,
     remainingItemCount: 2,
     stopRequested: false,
     mutationAllowed: false,
     lastOutcome: "prepared",
+    accountActions: [
+      { action: "openAccount", label: "Open account" },
+      { action: "skipThisAccount", label: "Skip this account" },
+    ],
   }],
 } as const;
 

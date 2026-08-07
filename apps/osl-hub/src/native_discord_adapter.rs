@@ -6134,6 +6134,28 @@ pub struct VisibleMessageRow {
     pub attribution: Option<NativeDiscordRowAttributionEvidence>,
 }
 
+/// Discord message ids selected for a chat burn from the currently open native
+/// chat. These are provider message ids for rows the signed-in account posted;
+/// peer rows and rows proven for any other scope are not representable here.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatBurnSenderMessageSelection {
+    pub scope_binding_sha256: String,
+    pub window_generation: u64,
+    pub sender_message_ids: Vec<String>,
+}
+
+/// Which provider identity Discord proved posted one visible native row.
+///
+/// This is not inferred from the protected wire. The native producer must
+/// classify the provider-owned poster identity against its independently
+/// verified self account and conversation participant identities.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NativeDiscordRowPoster {
+    SelfAccount,
+    PeerAccount,
+}
+
 /// Native producer evidence binding one visible Discord row to its provider
 /// message/poster identity and to the public carrier in that row.
 ///
@@ -6158,6 +6180,60 @@ pub fn native_row_attribution_scope_sha256(scope_binding: &str) -> String {
     stable_hash("discord-row-attribution-scope", scope_binding)
 }
 
+/// Select only the signed-in account's Discord message ids from the active
+/// chat's native row proof.
+///
+/// The display line is not consulted. Authority comes from the producer-owned
+/// attribution: same scope commitment, self poster, canonical Discord message id.
+pub fn chat_burn_sender_message_ids_from_rows(
+    rows: &[VisibleMessageRow],
+    scope_binding: &str,
+    window_generation: u64,
+) -> ChatBurnSenderMessageSelection {
+    let scope_binding_sha256 = native_row_attribution_scope_sha256(scope_binding);
+    let mut seen = std::collections::HashSet::with_capacity(rows.len());
+    let sender_message_ids = rows
+        .iter()
+        .filter_map(|row| row.attribution.as_ref())
+        .filter(|evidence| {
+            evidence.scope_binding_sha256 == scope_binding_sha256
+                && evidence.window_generation == window_generation
+                && evidence.poster == NativeDiscordRowPoster::SelfAccount
+                && canonical_discord_snowflake(&evidence.discord_message_id)
+        })
+        .filter_map(|evidence| {
+            seen.insert(evidence.discord_message_id.clone())
+                .then(|| evidence.discord_message_id.clone())
+        })
+        .collect();
+    ChatBurnSenderMessageSelection {
+        scope_binding_sha256,
+        window_generation,
+        sender_message_ids,
+    }
+}
+
+/// Read the active native Discord chat and select the signed-in account's
+/// provider message ids for burn-related follow-up.
+pub fn chat_burn_sender_message_ids(
+    host: &crate::native_window_host::NativeWindowHostState,
+    owner_osl_user_id: &str,
+    scope_binding: &str,
+    window_generation: u64,
+) -> Result<ChatBurnSenderMessageSelection, String> {
+    let rows = read_visible_message_rows(
+        host,
+        owner_osl_user_id,
+        scope_binding,
+        MAX_VISIBLE_CARRIER_ROWS,
+    )?;
+    Ok(chat_burn_sender_message_ids_from_rows(
+        &rows,
+        scope_binding,
+        window_generation,
+    ))
+}
+
 /// Domain-separated public-carrier commitment shared by producer and broker.
 pub fn native_row_attribution_carrier_sha256(carrier: &str) -> String {
     stable_hash("discord-row-attribution-carrier", carrier)
@@ -6168,9 +6244,7 @@ pub fn native_row_attribution_poster_sha256(provider_identity: &str) -> String {
     stable_hash("discord-row-attribution-poster", provider_identity)
 }
 
-#[cfg(any(test, target_os = "windows"))]
 const DISCORD_SNOWFLAKE_MIN_BYTES: usize = 15;
-#[cfg(any(test, target_os = "windows"))]
 const DISCORD_SNOWFLAKE_MAX_BYTES: usize = 22;
 #[cfg(any(test, target_os = "windows"))]
 const DISCORD_MESSAGE_CONTENT_AUTOMATION_ID_PREFIX: &str = "message-content-";
@@ -6180,7 +6254,6 @@ const DISCORD_AVATAR_URL_PREFIXES: [&str; 2] = [
     "https://media.discordapp.net/avatars/",
 ];
 
-#[cfg(any(test, target_os = "windows"))]
 fn canonical_discord_snowflake(value: &str) -> bool {
     (DISCORD_SNOWFLAKE_MIN_BYTES..=DISCORD_SNOWFLAKE_MAX_BYTES).contains(&value.len())
         && value.bytes().all(|byte| byte.is_ascii_digit())
@@ -27306,6 +27379,81 @@ mod tests {
         );
         assert_eq!(visible[0].line, OWN_CARRIER);
         assert_eq!(visible[1].line, PEER_CARRIER);
+    }
+
+    #[test]
+    fn task_0524_chat_burn_selection_returns_only_active_chat_sender_ids() {
+        const SELF: &str = "111111111111111111";
+        const PEER: &str = "222222222222222222";
+        const ACTIVE_SCOPE: &str = "chat-a-active-scope";
+        const OTHER_SCOPE: &str = "chat-b-open-elsewhere";
+        const ACTIVE_GENERATION: u64 = 41;
+        const OTHER_GENERATION: u64 = 42;
+
+        let evidence = |message_id: &str,
+                        poster_identity: &str,
+                        scope: &str,
+                        generation: u64,
+                        row_index: usize,
+                        seed: i32| {
+            let carrier = format!("provider carrier for task 0524 row {seed}");
+            native_row_attribution_from_provider(
+                provider_observation(message_id, poster_identity, SELF, &carrier, seed),
+                &[carrier],
+                scope,
+                generation,
+                row_index,
+            )
+            .expect("provider attribution fixture is valid")
+        };
+
+        let active_a1 = "333333333333333331";
+        let active_a2 = "333333333333333332";
+        let active_peer = "444444444444444441";
+        let other_chat_b = "555555555555555551";
+        let stale_a = "666666666666666661";
+        let rows = vec![
+            provider_visible_row(
+                evidence(active_a1, SELF, ACTIVE_SCOPE, ACTIVE_GENERATION, 0, 31),
+                "active chat A sender row 1",
+            ),
+            provider_visible_row(
+                evidence(active_peer, PEER, ACTIVE_SCOPE, ACTIVE_GENERATION, 1, 41),
+                "active chat A peer row",
+            ),
+            provider_visible_row(
+                evidence(other_chat_b, SELF, OTHER_SCOPE, ACTIVE_GENERATION, 0, 51),
+                "chat B sender row",
+            ),
+            provider_visible_row(
+                evidence(stale_a, SELF, ACTIVE_SCOPE, OTHER_GENERATION, 0, 61),
+                "stale chat A sender row",
+            ),
+            provider_visible_row(
+                evidence(active_a2, SELF, ACTIVE_SCOPE, ACTIVE_GENERATION, 2, 71),
+                "active chat A sender row 2",
+            ),
+        ];
+
+        let selection =
+            chat_burn_sender_message_ids_from_rows(&rows, ACTIVE_SCOPE, ACTIVE_GENERATION);
+        println!(
+            "TASK 0524 direct chat A sender ids: {}",
+            selection.sender_message_ids.join(",")
+        );
+        println!("TASK 0524 excluded chat B/stale ids: {other_chat_b},{stale_a},{active_peer}");
+
+        assert_eq!(
+            selection.sender_message_ids,
+            vec![active_a1.to_owned(), active_a2.to_owned()]
+        );
+        assert!(!selection
+            .sender_message_ids
+            .contains(&other_chat_b.to_owned()));
+        assert!(!selection.sender_message_ids.contains(&stale_a.to_owned()));
+        assert!(!selection
+            .sender_message_ids
+            .contains(&active_peer.to_owned()));
     }
 
     #[test]

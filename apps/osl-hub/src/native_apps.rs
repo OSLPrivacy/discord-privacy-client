@@ -823,6 +823,12 @@ fn native_app_support_status(id: NativeAppId) -> NativeAppSupportStatus {
     crate::claim_state::public_claim(claim_surface(id)).into()
 }
 
+fn native_app_support_status_for_claim(
+    claim: &crate::claim_state::SurfaceClaim,
+) -> NativeAppSupportStatus {
+    crate::claim_state::claim_for(claim).into()
+}
+
 fn native_app_protected_mode(id: NativeAppId) -> NativeAppProtectedMode {
     match id {
         NativeAppId::Discord => NativeAppProtectedMode::AssistOnly,
@@ -859,6 +865,16 @@ pub fn list_native_apps() -> Vec<NativeAppStatus> {
 fn list_native_apps_with_installer_probe(
     mut installer_available: impl FnMut() -> bool,
 ) -> Vec<NativeAppStatus> {
+    list_native_apps_with_claims_and_installer_probe(
+        |surface| *crate::claim_state::claim_of(surface),
+        || installer_available(),
+    )
+}
+
+fn list_native_apps_with_claims_and_installer_probe(
+    claim_of: impl Fn(crate::claim_state::Surface) -> crate::claim_state::SurfaceClaim,
+    mut installer_available: impl FnMut() -> bool,
+) -> Vec<NativeAppStatus> {
     let mut statuses: Vec<_> = NATIVE_APPS
         .iter()
         .map(|app| {
@@ -872,12 +888,12 @@ fn list_native_apps_with_installer_probe(
             } else {
                 NativeAppAvailability::Unavailable
             };
-            let claim = crate::claim_state::claim_of(claim_surface(app.id));
+            let claim = claim_of(claim_surface(app.id));
             NativeAppStatus {
                 id: app.id,
                 display_name: app.display_name,
                 availability,
-                support_status: native_app_support_status(app.id),
+                support_status: native_app_support_status_for_claim(&claim),
                 carrier_evidence: claim.carrier.slug(),
                 delivery_evidence: claim.delivery.slug(),
                 claim_blockers: claim
@@ -5716,6 +5732,70 @@ pub(crate) mod tests {
                 status.id
             );
         }
+    }
+
+    #[test]
+    fn changing_a_service_capability_record_changes_home_tile_label() {
+        use crate::claim_state::{
+            CarrierEvidence, ClaimBlocker, DeliveryEvidence, MatrixPosition, Surface, SurfaceClaim,
+        };
+
+        fn tile_label_for(claim: SurfaceClaim) -> String {
+            let statuses = list_native_apps_with_claims_and_installer_probe(
+                |surface| {
+                    if surface == Surface::Signal {
+                        claim
+                    } else {
+                        *crate::claim_state::claim_of(surface)
+                    }
+                },
+                || false,
+            );
+            let tile = statuses
+                .iter()
+                .find(|status| status.id == NativeAppId::Signal)
+                .expect("Signal tile data is present");
+            serde_json::to_value(tile).unwrap()["supportStatus"]
+                .as_str()
+                .expect("Home tile supportStatus is a string")
+                .to_owned()
+        }
+
+        let mut capability_record = *crate::claim_state::claim_of(Surface::Signal);
+        capability_record.carrier = CarrierEvidence::BuiltNeverProvenLive;
+        capability_record.delivery = DeliveryEvidence::NeverProvenLive;
+        capability_record.blockers = &[];
+        capability_record.matrix = MatrixPosition::NoRow;
+        capability_record.reason =
+            "0802 test row: a wired service with no live proof is experimental.";
+        let experimental_label = tile_label_for(capability_record);
+        println!(
+            "0802 Signal Home tile supportStatus after BuiltNeverProvenLive: {experimental_label}"
+        );
+        assert_eq!(experimental_label, "experimental");
+
+        capability_record.carrier = CarrierEvidence::NotBuilt;
+        capability_record.delivery = DeliveryEvidence::NotDeliverable;
+        capability_record.reason = "0802 test row: an unwired service is coming soon.";
+        let coming_soon_label = tile_label_for(capability_record);
+        println!("0802 Signal Home tile supportStatus after NotBuilt: {coming_soon_label}");
+        assert_eq!(coming_soon_label, "comingSoon");
+
+        capability_record.carrier = CarrierEvidence::ExternallyBlocked;
+        capability_record.reason =
+            "0802 test row: an externally blocked service is externally blocked.";
+        let externally_blocked_label = tile_label_for(capability_record);
+        println!(
+            "0802 Signal Home tile supportStatus after ExternallyBlocked: {externally_blocked_label}"
+        );
+        assert_eq!(externally_blocked_label, "externallyBlocked");
+
+        capability_record.blockers = &[ClaimBlocker::OpenSecurityFinding];
+        capability_record.reason =
+            "0802 test row: an extinguishing blocker removes the public claim.";
+        let no_claim_label = tile_label_for(capability_record);
+        println!("0802 Signal Home tile supportStatus after OpenSecurityFinding: {no_claim_label}");
+        assert_eq!(no_claim_label, "noClaim");
     }
 
     #[test]

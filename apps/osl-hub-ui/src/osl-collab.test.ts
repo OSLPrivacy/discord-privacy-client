@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { composeEnclavePost, parseEnclaveAudience, parseLanSession, parseLanSync, parseSharedDocument } from "./osl-collab";
+import { composeEnclavePost, createEnclaveServerContent, parseEnclaveAudience, parseLanSession, parseLanSync, parseSharedDocument, type EnclaveServerContentState } from "./osl-collab";
 const document = { kind: "document", title: "Plan", body: "Private", folder: "Team", tags: ["lan"], favorite: false };
 const enclaveAudience = { audienceId: "c".repeat(32), name: "Close friends", memberCount: 2, membershipVisibility: "visible", visibleMembers: [{ memberId: "1".repeat(32), name: "Maya", verified: true }, { memberId: "2".repeat(32), name: "Theo", verified: false }], consentGranted: true, boundToCurrentEnclave: true, postingAuthorized: true };
 describe("local-first collaboration IPC", () => {
@@ -55,5 +55,35 @@ describe("Enclave audience contract", () => {
     expect(composeEnclavePost({ ...enclaveAudience, memberCount: 3 }, "Dinner is at 7.")).toMatchObject({ status: "refused", reason: "membership-review" });
     expect(composeEnclavePost({ ...enclaveAudience, consentGranted: false }, "Dinner is at 7.")).toMatchObject({ status: "refused", reason: "consent", membershipReview: expect.objectContaining({ shownBeforePosting: true }) });
     expect(composeEnclavePost(enclaveAudience, " \n\t ")).toMatchObject({ status: "refused", reason: "draft", membershipReview: expect.objectContaining({ shownBeforePosting: true }) });
+  });
+
+  it("TASK 1319 refuses server content when only the author changes to a non-member", () => {
+    const ava = "a".repeat(32);
+    const cy = "c".repeat(32);
+    const state: EnclaveServerContentState = {
+      serverId: "5".repeat(32),
+      members: [{ memberId: ava, name: "Ava" }],
+      content: [],
+    };
+    const maplePost = { contentId: "maple-post", authorMemberId: ava, body: "MAPLE-4172" };
+
+    console.log(`TASK 1319 before server_content_count=${state.content.length}`);
+    expect(state.content).toHaveLength(0);
+
+    const avaCreate = createEnclaveServerContent(state, maplePost);
+    expect(avaCreate).toEqual({ status: "accepted", contentId: "maple-post", serverContentCount: 1 });
+    const stored = state.content.find((item) => item.contentId === "maple-post");
+    console.log(`TASK 1319 after_ava server_content_count=${state.content.length} maple-post=${stored?.body ?? ""}`);
+    expect(stored?.body).toBe("MAPLE-4172");
+    expect(state.content).toHaveLength(1);
+
+    const cyCreate = createEnclaveServerContent(state, { ...maplePost, authorMemberId: cy });
+    console.log(`TASK 1319 cy status=${cyCreate.status} reason=${cyCreate.status === "refused" ? cyCreate.reason : ""} member=Cy server_content_count=${state.content.length}`);
+    expect(cyCreate).toEqual({ status: "refused", reason: "not-server-member", memberId: cy, serverContentCount: 1 });
+
+    const retained = state.content.find((item) => item.contentId === "maple-post");
+    console.log(`TASK 1319 final server_content_count=${state.content.length} maple-post=${retained?.body ?? ""}`);
+    expect(retained?.body).toBe("MAPLE-4172");
+    expect(state.content).toHaveLength(1);
   });
 });

@@ -1453,6 +1453,10 @@ mod tests {
             destroy_local_key_mappings: true,
             clear_local_caches: true,
             forget_incoming_and_member_messages: false,
+            recipient_records: crate::burn_contract::RecipientRecordsBurnActionResult {
+                local_hide: false,
+                remote_removal: false,
+            },
             native_carrier_history: NativeCarrierHistoryEffect::Unchanged,
             screenshots_exports_and_external_copies: ExternalCopiesEffect::NotControllable,
             may_offer_separate_uninstall_after_completion: false,

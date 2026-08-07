@@ -544,6 +544,7 @@ export interface NativeDiscordOverlayBurnResult {
   channelsDestroyed: number;
   whitelistEntriesRemoved: number;
   localProtectedRowsDestroyed: number;
+  senderMessageIds: string[];
   remoteBlobsDeleted: number;
   remoteBlobDeletionsFailed: number;
   localCleanupComplete: boolean;
@@ -559,6 +560,8 @@ export async function burnNativeDiscordOverlayChat(): Promise<NativeDiscordOverl
     const record = value as Record<string, unknown>;
     const keys = ["rowsDestroyed", "channelsDestroyed", "whitelistEntriesRemoved", "localProtectedRowsDestroyed", "remoteBlobsDeleted", "remoteBlobDeletionsFailed"];
     if (keys.some((key) => !Number.isSafeInteger(record[key]) || Number(record[key]) < 0)
+      || !Array.isArray(record.senderMessageIds)
+      || record.senderMessageIds.some((id) => typeof id !== "string" || !/^[0-9]{15,22}$/u.test(id))
       || typeof record.localCleanupComplete !== "boolean"
       || typeof record.remoteCleanupComplete !== "boolean"
       || record.discordHistoryDeleted !== false || record.recipientCopiesDeleted !== false) return null;

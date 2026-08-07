@@ -165,6 +165,13 @@ impl TelegramWhitelistKind {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+impl Default for AutoWhitelistChoice {
+    fn default() -> Self {
+        Self::Never
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SignalWhitelistKind {
     DirectMessage,
     GroupChat,
@@ -189,6 +196,18 @@ impl SignalWhitelistKind {
             Self::Story => "story",
         }
     }
+
+    pub fn auto_rule_app_kind(self) -> &'static str {
+        match self {
+            Self::DirectMessage => "signal_direct_message",
+            Self::GroupChat => "signal_group_chat",
+            Self::Story => "signal_story",
+        }
+    }
+
+    pub fn allowed_place_kind(self) -> &'static str {
+        self.id()
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -200,11 +219,20 @@ pub enum MessengerWhitelistKind {
 
 impl MessengerWhitelistKind {
     pub const ALL: [Self; 2] = [Self::DirectMessage, Self::GroupChat];
+pub enum WhatsAppWhitelistKind {
+    DirectMessage,
+    GroupChat,
+    Channel,
+}
+
+impl WhatsAppWhitelistKind {
+    pub const ALL: [Self; 3] = [Self::DirectMessage, Self::GroupChat, Self::Channel];
 
     pub fn id(self) -> &'static str {
         match self {
             Self::DirectMessage => "direct_message",
             Self::GroupChat => "group_chat",
+            Self::Channel => "channel",
         }
     }
 
@@ -224,6 +252,33 @@ impl Default for AutoWhitelistChoice {
 
 pub const AUTO_WHITELIST_APP_KINDS: [&str; 5] =
     ["discord", "telegram", "signal", "whatsapp", "outlook"];
+            Self::Channel => "channel",
+        }
+    }
+
+    pub fn auto_rule_app_kind(self) -> &'static str {
+        match self {
+            Self::DirectMessage => "whatsapp:direct_message",
+            Self::GroupChat => "whatsapp:group_chat",
+            Self::Channel => "whatsapp:channel",
+        }
+    }
+
+    pub fn allowed_place_kind(self) -> &'static str {
+        self.id()
+    }
+}
+
+pub const AUTO_WHITELIST_APP_KINDS: [&str; 8] = [
+    "discord",
+    "telegram",
+    "signal",
+    "signal_direct_message",
+    "signal_group_chat",
+    "signal_story",
+    "whatsapp",
+    "outlook",
+];
 
 pub fn parse_auto_whitelist_choice(input: &str) -> Result<AutoWhitelistChoice, String> {
     let normalized = input.trim().to_ascii_lowercase().replace('-', "_");
@@ -334,6 +389,15 @@ pub fn normalize_auto_whitelist_app_kind(input: &str) -> Result<String, String> 
     }
 pub fn normalize_auto_whitelist_app_kind(input: &str) -> Result<String, String> {
     let normalized = input.trim().to_ascii_lowercase().replace('-', "_");
+pub fn normalize_auto_whitelist_app_kind(input: &str) -> Result<String, String> {
+    let normalized = input.trim().to_ascii_lowercase().replace('-', "_");
+    if let Some((app, kind)) = normalized.split_once(':') {
+        if app == "whatsapp" {
+            return Ok(parse_whatsapp_whitelist_kind(kind)?
+                .auto_rule_app_kind()
+                .to_owned());
+        }
+    }
     if AUTO_WHITELIST_APP_KINDS.contains(&normalized.as_str()) {
         Ok(normalized)
     } else {
@@ -396,4 +460,36 @@ fn normalize_place_kind(raw: &str) -> Result<String, String> {
         return Err("OSL: place_kind contains unsupported characters".to_string());
     }
     Ok(place_kind)
+}
+
+pub fn parse_signal_whitelist_kind(input: &str) -> Result<SignalWhitelistKind, String> {
+    let normalized = input
+        .trim()
+        .to_ascii_lowercase()
+        .replace('-', "_")
+        .replace(' ', "_");
+    SignalWhitelistKind::ALL
+        .into_iter()
+        .find(|kind| normalized == kind.id() || normalized == kind.name().replace(' ', "_"))
+        .ok_or_else(|| format!("OSL: unknown Signal whitelist kind '{input}'"))
+}
+
+pub fn parse_whatsapp_whitelist_kind(input: &str) -> Result<WhatsAppWhitelistKind, String> {
+    let normalized = input
+        .trim()
+        .to_ascii_lowercase()
+        .replace('-', "_")
+        .replace(' ', "_");
+    WhatsAppWhitelistKind::ALL
+        .into_iter()
+        .find(|kind| normalized == kind.id() || normalized == kind.name().replace(' ', "_"))
+        .ok_or_else(|| format!("OSL: unknown WhatsApp whitelist kind '{input}'"))
+}
+
+pub fn whatsapp_allowed_place_kind_for_rule_key(rule_key: &str) -> Option<&'static str> {
+    let rest = rule_key.strip_prefix("whatsapp:")?;
+    WhatsAppWhitelistKind::ALL
+        .into_iter()
+        .find(|kind| rest == kind.id())
+        .map(WhatsAppWhitelistKind::allowed_place_kind)
 }

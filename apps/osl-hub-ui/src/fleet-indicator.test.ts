@@ -18,6 +18,8 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@fontsource-variable/inter/wght.css", () => ({}));
+vi.mock("@fontsource-variable/onest/wght.css", () => ({}));
+vi.mock("@fontsource-variable/source-sans-3/wght.css", () => ({}));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
 vi.mock("@tauri-apps/api/event", () => ({ emitTo: mocks.emitTo, listen: mocks.listen }));
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => mocks.window }));
@@ -77,26 +79,40 @@ const openFleet = {
     honestRemainingSecondsEstimate: null,
     reason: "No stop request is active.",
   },
+  fleetActions: [{
+    action: "stopAllScanning",
+    label: "Stop all scanning",
+  }],
   runs: [
     {
       runId: "discord-reviewed-run",
       serviceId: "discord",
+      accountId: "acct-discord-1",
       phase: "running",
       reviewedItemCount: 4,
       remainingItemCount: 2,
       stopRequested: false,
       mutationAllowed: false,
       lastOutcome: "prepared",
+      accountActions: [
+        { action: "openAccount", label: "Open account" },
+        { action: "skipThisAccount", label: "Skip this account" },
+      ],
     },
     {
       runId: "signal-reviewed-run",
       serviceId: "signal",
+      accountId: "acct-signal-1",
       phase: "reviewRequired",
       reviewedItemCount: 1,
       remainingItemCount: 1,
       stopRequested: false,
       mutationAllowed: false,
       lastOutcome: "none",
+      accountActions: [
+        { action: "openAccount", label: "Open account" },
+        { action: "skipThisAccount", label: "Skip this account" },
+      ],
     },
   ],
 } satisfies AutoScrubFleetStatus;

@@ -1,0 +1,12 @@
+{
+  "captureEnabled": true,
+  "display": ":63",
+  "imageBytes": 7317,
+  "imagePath": "/home/liamw/osl-exec-g/evidence/task-0369-choose-protection/out/osl-fixed-screen.png",
+  "imageSha256": "8fdc426f1207fa1babe9a8418140f6c4bfecd71779d0f50c5b98267cede4666a",
+  "schema": "osl-fixed-screen-starter-v1",
+  "screen": "1440x900x24",
+  "windowHeight": 900,
+  "windowId": "4194305",
+  "windowWidth": 1440
+}

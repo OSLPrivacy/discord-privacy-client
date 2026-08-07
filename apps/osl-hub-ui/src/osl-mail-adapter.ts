@@ -11,6 +11,9 @@ export type OslMailTransit = "oslE2ee" | "externalSmtp";
 export type OslMailAddress = `${string}@oslprivacy.com`;
 export type OslMailUnreadCount = number;
 export type OslMailRetentionSeconds = number;
+export type OslMailSendChoice = "Send" | "Enter" | "Double Enter";
+
+export const OSL_MAIL_NAMED_SEND_REQUIRED = "named Send required";
 
 export const OSL_MAIL_STATUS_CONTRACT = {
   maximumUnreadCount: 100_000,
@@ -77,6 +80,10 @@ export interface OslMailSendReceipt {
   transit: OslMailTransit;
   receiptSha256: string;
 }
+
+export type OslMailSendChoiceResult =
+  | { outcome: "sent"; receipt: OslMailSendReceipt }
+  | { outcome: "refused"; reason: typeof OSL_MAIL_NAMED_SEND_REQUIRED | "send refused" };
 
 export interface OslMailBurnReceipt {
   address: string;
@@ -224,6 +231,18 @@ export async function sendOslMail(recipient: string, subject: string, body: stri
   if (!OSL_MAIL_ADDRESS.test(recipient) || !text(subject, 512, true) || !text(body, MAX_BODY_BYTES)) return null;
   const receipt = await call("osl_mail_send", { recipient, subject, body }, parseOslMailSendReceipt);
   return receipt?.transit === "oslE2ee" ? receipt : null;
+}
+
+export async function sendOslMailWithChoice(
+  choice: OslMailSendChoice,
+  recipient: string,
+  subject: string,
+  body: string,
+  sender: (recipient: string, subject: string, body: string) => Promise<OslMailSendReceipt | null> = sendOslMail,
+): Promise<OslMailSendChoiceResult> {
+  if (choice !== "Send") return { outcome: "refused", reason: OSL_MAIL_NAMED_SEND_REQUIRED };
+  const receipt = await sender(recipient, subject, body);
+  return receipt ? { outcome: "sent", receipt } : { outcome: "refused", reason: "send refused" };
 }
 
 export const burnOslMailbox = (addressValue: string, confirmation: string): Promise<OslMailBurnReceipt | null> => OSL_MAIL_ADDRESS.test(addressValue)

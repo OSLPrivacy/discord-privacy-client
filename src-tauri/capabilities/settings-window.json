@@ -25,6 +25,7 @@
     "allow-osl-change-main-password",
     "allow-osl-remove-main-password",
     "allow-osl-view-recovery-phrase",
+    "allow-osl-check-recovery-words",
     "allow-osl-view-identity-recovery-phrase",
     "allow-osl-recover-identity-from-phrase",
     "allow-osl-export-data",

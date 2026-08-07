@@ -51,6 +51,114 @@ pub trait LocalMessageStore {
     fn destroy_local(&mut self, blob_id: &str) -> Result<(), String>;
 }
 
+/// Production cipher-store plug for eager fetch.
+///
+/// This is only an adapter: all HTTP verbs, headers, routing policy, status
+/// handling, and token formatting remain owned by `ipc::CipherStoreClient`.
+pub struct CipherStoreClientTransport {
+    client: ipc::cipher_store_client::CipherStoreClient,
+}
+
+impl CipherStoreClientTransport {
+    pub fn new(client: ipc::cipher_store_client::CipherStoreClient) -> Self {
+        Self { client }
+    }
+
+    pub fn client(&self) -> &ipc::cipher_store_client::CipherStoreClient {
+        &self.client
+    }
+
+    pub fn into_client(self) -> ipc::cipher_store_client::CipherStoreClient {
+        self.client
+    }
+}
+
+fn fixed_capability(
+    label: &str,
+    capability: &[u8],
+) -> Result<[u8; ipc::cipher_store_client::FETCH_TOKEN_BYTES], String> {
+    capability.try_into().map_err(|_| {
+        format!(
+            "{label} must be exactly {} bytes",
+            ipc::cipher_store_client::FETCH_TOKEN_BYTES
+        )
+    })
+}
+
+impl CipherStoreTransport for CipherStoreClientTransport {
+    fn fetch(&mut self, blob_id: &str, fetch_cap: &[u8]) -> Result<Vec<u8>, String> {
+        let fetch_cap = fixed_capability("fetch capability", fetch_cap)?;
+        self.client
+            .fetch(blob_id, &fetch_cap)
+            .map_err(|error| error.to_string())
+    }
+
+    fn burn(&mut self, blob_id: &str, manage_cap: &[u8]) -> Result<(), String> {
+        let manage_cap = fixed_capability("manage capability", manage_cap)?;
+        self.client
+            .burn(blob_id, &manage_cap)
+            .map_err(|error| error.to_string())
+    }
+}
+
+/// Conversation metadata the message store needs but the fetch driver must not
+/// invent from a blob capability.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArrivalMessageContext {
+    pub channel_id: String,
+    pub sender_discord_id: String,
+    pub sender_osl_user_id: String,
+}
+
+/// Production local plug for eager fetch.
+///
+/// The fetched bytes are opened as the same UTF-8 message body shape the app's
+/// current plaintext persistence path stores, then written through
+/// `store::MessageStore::put`. Reading for display goes back through
+/// `MessageStore::get`, so this adapter does not grow a parallel opener.
+pub struct MessageStoreArrivalOpener<'a> {
+    store: &'a store::MessageStore,
+    context: ArrivalMessageContext,
+}
+
+impl<'a> MessageStoreArrivalOpener<'a> {
+    pub fn new(store: &'a store::MessageStore, context: ArrivalMessageContext) -> Self {
+        Self { store, context }
+    }
+
+    pub fn open_persisted(&self, blob_id: &str) -> Result<String, String> {
+        self.store
+            .get(blob_id)
+            .map_err(|error| error.to_string())?
+            .map(|message| message.plaintext)
+            .ok_or_else(|| "message was not persisted".to_owned())
+    }
+}
+
+impl LocalMessageStore for MessageStoreArrivalOpener<'_> {
+    fn decrypt_and_persist(&mut self, blob_id: &str, ciphertext: &[u8]) -> Result<(), String> {
+        let plaintext = std::str::from_utf8(ciphertext)
+            .map_err(|_| "fetched message is not UTF-8 plaintext".to_owned())?;
+        self.store
+            .put(&store::StoredMessage {
+                discord_message_id: blob_id.to_owned(),
+                channel_id: self.context.channel_id.clone(),
+                sender_discord_id: self.context.sender_discord_id.clone(),
+                sender_osl_user_id: self.context.sender_osl_user_id.clone(),
+                plaintext: plaintext.to_owned(),
+                decrypted_at: ipc::main_password::now_unix_secs_pub(),
+                burned: false,
+            })
+            .map_err(|error| error.to_string())
+    }
+
+    fn destroy_local(&mut self, blob_id: &str) -> Result<(), String> {
+        self.store
+            .mark_burned(blob_id)
+            .map_err(|error| error.to_string())
+    }
+}
+
 /// Eager receive and offline-burn coordinator.
 pub struct EagerFetchDriver<T, S> {
     transport: T,

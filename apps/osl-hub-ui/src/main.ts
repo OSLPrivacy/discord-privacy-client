@@ -138,6 +138,7 @@ import { checkHubForUpdates, installHubUpdate, openHubReleasesPage, openHubSourc
 import { createDiscordQaGeometryKeeper } from "./discord-qa-geometry";
 import { browserLogo, serviceLogo, providerLogo } from "./logos";
 import { activateLocalLoopbackContext, activateManualPeerContext, activateNativeManualPeerContext, activateOslChatContext, addOslFriend, addOslFriendByUsername, burnActiveHubContext, burnHubServiceAccount, captureProtectionEnforced, closeOslChatContext, copyHubFriendInvite, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubRevocationStatus, getHubServiceBurnReadiness, getOslUsernameStatus, isHubPlaintext, isNormalizedOslUsername, listHubIdentities, listHubPeople, listOslChatHistory, loadActiveContextSecurity, loadAppNotifications, loadBuildIntegrityStatus, loadFriendProfile, openOslChatText, openPeerProseText, peerIsVerified, prepareLocalProtectedText, prepareOslChatText, preparePeerProseText, recoverHubIdentitySlot, saveActiveContextSecurity, revokeActiveHubFriendScope, setActiveHubFriendPermission, setActiveHubFriendReach, setHubFriendNickname, setLocalProtectedSheetOpen, setNativeDiscordProtectedOverlayOpen, setNativeDiscordProtectedOverlayOpenForQa, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, viewHubRecoveryPhrase, type AppNotification, type BuildIntegrityStatus, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type LocalPrivacyScanResult, type ManualPeerContext, type PersistedLocalPrivacyScanResult } from "./adapters";
+import { activateLocalLoopbackContext, activateManualPeerContext, activateNativeManualPeerContext, activateOslChatContext, addOslFriend, addOslFriendByUsername, answerHubChatApprovalSuggestion, burnActiveHubContext, burnHubServiceAccount, captureProtectionEnforced, closeOslChatContext, copyHubFriendInvite, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubRevocationStatus, getHubServiceBurnReadiness, getOslUsernameStatus, isHubPlaintext, isNormalizedOslUsername, listHubIdentities, listHubPeople, listOslChatHistory, loadActiveContextSecurity, loadAppNotifications, loadFriendProfile, openOslChatText, openPeerProseText, peerIsVerified, prepareLocalProtectedText, prepareOslChatText, preparePeerProseText, recoverHubIdentitySlot, saveActiveContextSecurity, revokeActiveHubFriendScope, setActiveHubFriendPermission, setActiveHubFriendReach, setHubChatApprovalSuggestionChoice, setHubFriendNickname, setLocalProtectedSheetOpen, setNativeDiscordProtectedOverlayOpen, setNativeDiscordProtectedOverlayOpenForQa, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, viewHubRecoveryPhrase, type AppNotification, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type LocalPrivacyScanResult, type ManualPeerContext, type PersistedLocalPrivacyScanResult } from "./adapters";
 import { blankLocalProtectedModel, isLocalTtlSeconds, loadOrCreateLocalConversationId, localProtectedSheetMarkup, validLocalChatLabel, type LocalProtectedPane, type LocalProtectedSheetModel } from "./local-protected-sheet";
 import { blankPeerProtectedModel, boundedPeerProtectedDraft, peerProtectedDraftByteFeedback, peerProtectedSheetMarkup, type PeerProtectedPane, type PeerProtectedSheetModel } from "./peer-protected-sheet";
 import { peerIntegrityMarkup } from "./peer-integrity";
@@ -170,10 +171,12 @@ import { oslMailStage, type OslMailStage } from "./desktop-service-policy";
 import { webSurfaceLabel, type WebSurfaceCapability } from "./web-surface-label";
 import { homeProtectionState } from "./home-protection-state";
 import {
+  OSL_MAIL_NAMED_SEND_REQUIRED,
   burnOslMailbox,
   loadOslMailStatus,
   provisionOslMail,
-  sendOslMail,
+  sendOslMailWithChoice,
+  type OslMailSendChoice,
   type OslMailBurnReceipt,
   type OslMailDeleteReceipt,
   type OslMailRetrievedThread,
@@ -1143,6 +1146,10 @@ export function rnWirePolicyState(requested: boolean, buildEnabled = false): RnW
   return { requested, buildEnabled, effectiveEnabled: true, refusal: null };
 }
 
+export function readRnWirePolicyRequested(storage: Pick<Storage, "getItem"> = localStorage): boolean {
+  return storage.getItem(rnWirePolicyStorageKey) === "true";
+}
+
 export function rnWirePolicySettingsMarkup(state: RnWirePolicyState): string {
   const checked = state.effectiveEnabled ? "checked" : "";
   const disabled = state.buildEnabled ? "" : "disabled";
@@ -1431,7 +1438,7 @@ export async function loadUiPreferences(): Promise<void> {
   notificationSecurityActivity = localStorage.getItem(notificationSecurityStorageKey) !== "false";
   protectionPreset = loadProtectionPreset();
   oslMailNotifications = localStorage.getItem(oslMailNotificationsStorageKey) !== "false";
-  rnWirePolicyRequested = localStorage.getItem(rnWirePolicyStorageKey) === "true";
+  rnWirePolicyRequested = readRnWirePolicyRequested();
   await ensureOslChatSecureLocalStore();
   await loadOslChatSensitiveStateFromSecureStore();
   const notices = await loadMigratedOslChatNotifications(oslChatSecureStore, localStorage);
@@ -5072,7 +5079,7 @@ function oslChatContent(): string {
       handshakeConfirmed: oslChatHandshakeConfirmed(messages),
     };
   });
-  const approval = activeOslChatPersonId && activeOslChatContext && !activeOslChatContext.scopeApproved
+  const approval = activeOslChatPersonId && activeOslChatContext && !activeOslChatContext.scopeApproved && activeOslChatContext.suggestion === "offer_approval"
     ? `<div class="osl-chat-approval"><span><strong>Turn on this encrypted chat</strong><small>Approves only this OSL friend.</small></span><button class="button primary compact" id="osl-chat-approve" type="button" ${oslChatBusy ? "disabled" : ""}>Enable</button></div>`
     : "";
   const settingsPerson = oslChatSettingsPersonId ? hubPeople.find((person) => person.personId === oslChatSettingsPersonId) ?? null : null;
@@ -5275,17 +5282,23 @@ async function provisionOslMailFromProfile(): Promise<void> {
   if (route === "osl-mail") render();
 }
 
-async function sendOslMailForm(form: HTMLFormElement): Promise<void> {
+async function sendOslMailForm(form: HTMLFormElement, choice: OslMailSendChoice): Promise<void> {
   const recipient = form.querySelector<HTMLInputElement>("#osl-mail-to")?.value ?? "";
   const subject = form.querySelector<HTMLInputElement>("#osl-mail-subject")?.value ?? "";
   const body = form.querySelector<HTMLTextAreaElement>("#osl-mail-body")?.value ?? "";
+  if (choice !== "Send") {
+    oslMailError = OSL_MAIL_NAMED_SEND_REQUIRED;
+    render();
+    return;
+  }
   if (!recipient.endsWith("@oslprivacy.com")) {
     oslMailError = "External outbound mail is unavailable in v1";
     render();
     return;
   }
-  oslMailSendReceipt = await sendOslMail(recipient, subject, body);
-  oslMailError = oslMailSendReceipt ? null : "Send was refused";
+  const result = await sendOslMailWithChoice(choice, recipient, subject, body);
+  oslMailSendReceipt = result.outcome === "sent" ? result.receipt : null;
+  oslMailError = result.outcome === "sent" ? null : result.reason;
   if (route === "osl-mail") render();
 }
 
@@ -7691,7 +7704,11 @@ function bindWorkspace(): void {
   });
   document.querySelector<HTMLFormElement>("#osl-mail-compose-form")?.addEventListener("submit", (event) => {
     event.preventDefault();
-    void sendOslMailForm(event.currentTarget as HTMLFormElement);
+    void sendOslMailForm(event.currentTarget as HTMLFormElement, "Enter");
+  });
+  document.querySelector<HTMLButtonElement>("#osl-mail-send")?.addEventListener("click", (event) => {
+    const form = (event.currentTarget as HTMLButtonElement).form;
+    if (form) void sendOslMailForm(form, "Send");
   });
   document.querySelector<HTMLFormElement>("#osl-mail-burn-form")?.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -7936,7 +7953,7 @@ function bindWorkspace(): void {
     render();
   });
   document.querySelector<HTMLInputElement>("#notification-previews")?.addEventListener("change", (event) => { notificationPreviewContent = (event.currentTarget as HTMLInputElement).checked; localStorage.setItem(notificationPreviewStorageKey, String(notificationPreviewContent)); });
-  document.querySelector<HTMLInputElement>("#notification-scope-suggestions")?.addEventListener("change", (event) => { notificationScopeSuggestions = (event.currentTarget as HTMLInputElement).checked; localStorage.setItem(notificationScopeStorageKey, String(notificationScopeSuggestions)); });
+  document.querySelector<HTMLInputElement>("#notification-scope-suggestions")?.addEventListener("change", (event) => void setNotificationScopeSuggestions((event.currentTarget as HTMLInputElement).checked));
   document.querySelectorAll<HTMLInputElement>("[data-notification-app]").forEach((input) => input.addEventListener("change", () => { const id = input.dataset.notificationApp as ServiceId; notificationAppPreferences[id] = input.checked; localStorage.setItem(notificationAppsStorageKey, JSON.stringify(notificationAppPreferences)); }));
   document.querySelectorAll<HTMLButtonElement>("[data-osl-chat-unmute]").forEach((button) => button.addEventListener("click", () => {
     oslChatMutedPeople.delete(button.dataset.oslChatUnmute ?? "");
@@ -8528,6 +8545,29 @@ function mergePersistedOslChatNotifications(items: AppNotification[] | null): Ap
   const chat = (appNotifications ?? []).filter((item) => item.detail === "New encrypted message");
   const merged = [...chat, ...(items ?? [])];
   return merged.filter((item, index) => merged.findIndex((candidate) => candidate.id === item.id) === index).slice(0, 20);
+}
+
+async function refreshActiveOslChatApprovalSuggestion(): Promise<void> {
+  const context = activeOslChatContext;
+  if (!context || context.scopeApproved) return;
+  const answer = await answerHubChatApprovalSuggestion(context.contextToken, context.personId);
+  if (!answer || activeOslChatContext?.contextToken !== context.contextToken) return;
+  activeOslChatContext = {
+    ...activeOslChatContext,
+    suggestion: answer === "offer_approval" ? "offer_approval" : undefined,
+  };
+  render();
+}
+
+async function setNotificationScopeSuggestions(enabled: boolean): Promise<void> {
+  notificationScopeSuggestions = enabled;
+  localStorage.setItem(notificationScopeStorageKey, String(enabled));
+  const saved = await setHubChatApprovalSuggestionChoice(enabled);
+  if (saved) {
+    notificationScopeSuggestions = saved === "on";
+    localStorage.setItem(notificationScopeStorageKey, String(notificationScopeSuggestions));
+  }
+  await refreshActiveOslChatApprovalSuggestion();
 }
 
 function commitOslChatBatch(personId: string, batch: NativeDiscordOverlayOpenedBatch, background: boolean): void {
@@ -10300,6 +10340,9 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
         scopeApproved: patch.activeOslChatScopeApproved ?? true,
       }
     : null;
+  activeOslChatPersonId = null;
+  activeOslChatContext = null;
+  oslChatBusy = false;
   serviceAccountPickerOpen = false;
   friendsDialogOpen = false;
   homeEditMode = false;
@@ -10574,6 +10617,9 @@ export const __oslHubUiTest = {
   },
   openOslChatConversation(personId: string): Promise<void> {
     return openOslChat(personId);
+  },
+  setChatApprovalSuggestionChoice(enabled: boolean): Promise<void> {
+    return setNotificationScopeSuggestions(enabled);
   },
   /** Stand in for a live Discord-overlay / native-host protected context. */
   setForeignProtectedContextForTest(token: string | null): void {

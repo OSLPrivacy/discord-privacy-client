@@ -973,21 +973,6 @@ description = "Create one fresh one-use invite link for a locally labelled perso
 commands.allow = ["create_one_use_invite_link"]
 
 [[permission]]
-identifier = "allow-add-group-member-permission"
-description = "Save one bounded member permission for one local group or server in encrypted device-local state."
-commands.allow = ["add_group_member_permission"]
-
-[[permission]]
-identifier = "allow-remove-group-member-permission"
-description = "Remove one saved member permission from one local group or server in encrypted device-local state."
-commands.allow = ["remove_group_member_permission"]
-
-[[permission]]
-identifier = "allow-list-group-member-permissions"
-description = "List saved member permissions for one exact local group or server from encrypted device-local state."
-commands.allow = ["list_group_member_permissions"]
-
-[[permission]]
 identifier = "allow-add-allowed-place-record"
 description = "Save one bounded allowed-place record in encrypted device-local state."
 commands.allow = ["add_allowed_place_record"]
@@ -1021,4 +1006,39 @@ commands.allow = ["compare_allowed_place_direction_state"]
 identifier = "allow-list-whatsapp-whitelist-kinds"
 description = "List the static WhatsApp whitelist scope kinds supported by the local OSL UI."
 commands.allow = ["list_whatsapp_whitelist_kinds"]
+
+[[permission]]
+identifier = "allow-read-protected-email-open-message"
+description = "Allow only the trusted main OSL window to read the currently open email message body through the fixed website driver; it accepts no message body, credential, profile path, or provider token from the renderer."
+commands.allow = ["read_protected_email_open_message"]
+
+[[permission]]
+identifier = "allow-read-proton-mailbox-for-scrub"
+description = "Allow only the trusted main OSL window to read bounded Proton Mail folder and message summary fields for Scrub review; it accepts no message body, credential, profile path, or provider token from the renderer."
+commands.allow = ["read_proton_mailbox_for_scrub"]
+
+[[permission]]
+identifier = "allow-read-icloud-mailbox-for-scrub"
+description = "Allow only the trusted main OSL window to read bounded iCloud Mail folder and message summary fields for Scrub review; it accepts no message body, credential, profile path, or provider token from the renderer."
+commands.allow = ["read_icloud_mailbox_for_scrub"]
+
+[[permission]]
+identifier = "allow-read-icloud-mailbox-pages-for-scrub"
+description = "Allow only the trusted main OSL window to read iCloud Mail summaries through the shared one-page-at-a-time reader with bounded pause and stop handling."
+commands.allow = ["read_icloud_mailbox_pages_for_scrub"]
+
+[[permission]]
+identifier = "allow-read-protected-email-live-run-progress"
+description = "Allow only the trusted main OSL window to read bounded live progress counters from the currently open protected email page; it accepts no message body, credential, profile path, or provider token from the renderer."
+commands.allow = ["read_protected_email_live_run_progress"]
+
+[[permission]]
+identifier = "allow-request-autoscrub-run-action"
+description = "Apply one bounded AutoScrub run action from the trusted bundled UI; skip retains prior progress and grants no mutation authority."
+commands.allow = ["request_autoscrub_run_action"]
+
+[[permission]]
+identifier = "allow-check-hub-recovery-words"
+description = "Allow only the trusted main OSL window to verify selected 1-based password-recovery phrase words against their positions, after the owner's current main password is supplied and verified."
+commands.allow = ["check_hub_recovery_words"]
 

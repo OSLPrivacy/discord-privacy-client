@@ -797,6 +797,11 @@ pub struct LicenseValidateResponse {
     /// alongside the keyserver's state machine; the consuming
     /// layer (F2.2's `LicenseState`) does the mapping.
     pub status: String,
+    /// Optional human-facing refusal reason supplied by the keyserver for a
+    /// recognized but unusable code. For example, refunded prepaid codes keep
+    /// `status = "REVOKED"` while carrying a specific explanation.
+    #[serde(default)]
+    pub error: Option<String>,
     /// Unix seconds. `None` when the subscription is `PENDING` /
     /// `UNKNOWN`, or (legacy, pre-F2.0) when the keyserver hadn't
     /// stamped a period yet under the old Stripe API shape.
@@ -2899,6 +2904,7 @@ mod tests {
                 blob_version: 1,
                 single_use: false,
                 display_duration_seconds: None,
+                expiry_seconds: None,
                 expires_at: "2026-07-18T00:00:00.000Z".to_owned(),
             };
             let response =

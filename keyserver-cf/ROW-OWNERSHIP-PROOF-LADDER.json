@@ -1,0 +1,68 @@
+{
+  "format": "osl.row-ownership-proof-ladder.v1",
+  "lowest_allowed_evidence_kind": "stable_provider_account_id_cross_check",
+  "forbidden_bases": [
+    "screen_position",
+    "row_position",
+    "transcript_order",
+    "bubble_colour",
+    "bubble_color"
+  ],
+  "evidence": [
+    {
+      "rank": 1,
+      "id": "discord_row_account_number_matches_account_panel_number",
+      "strength": "strong",
+      "allowed_to_mark": true,
+      "example_app": "discord",
+      "basis": [
+        "row_account_number",
+        "signed_in_account_panel_account_number"
+      ],
+      "why": "Strongest: Discord gives a numbered account from the row and OSL compares it with the signed-in account's own number, read separately from the account panel."
+    },
+    {
+      "rank": 2,
+      "id": "stable_provider_account_id_cross_check",
+      "strength": "strong",
+      "allowed_to_mark": true,
+      "basis": [
+        "row_stable_provider_account_id",
+        "independent_signed_in_account_id"
+      ],
+      "why": "Strong: a stable provider account id on the row is checked against a separately observed signed-in account id, so a label alone cannot decide ownership."
+    },
+    {
+      "rank": 3,
+      "id": "provider_authenticated_row_owner_claim",
+      "strength": "weak",
+      "allowed_to_mark": false,
+      "basis": [
+        "authenticated_provider_row_owner_claim"
+      ],
+      "why": "Weak: an authenticated provider response may narrow candidates, but without an independent signed-in account reading it is one channel describing both sides."
+    },
+    {
+      "rank": 4,
+      "id": "signed_osl_challenge_claimant_binding",
+      "strength": "weak",
+      "allowed_to_mark": false,
+      "basis": [
+        "osl_identity_signature",
+        "issued_challenge"
+      ],
+      "why": "Weak: it proves a registered OSL identity answered a challenge for a claimed account, not that the provider row was written by the signed-in account."
+    },
+    {
+      "rank": 5,
+      "id": "account_name_or_display_handle",
+      "strength": "weak",
+      "allowed_to_mark": false,
+      "basis": [
+        "visible_name",
+        "display_handle"
+      ],
+      "why": "Weakest: a name on its own is weak and may only ever narrow an answer, never make one."
+    }
+  ]
+}

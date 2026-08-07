@@ -24,12 +24,18 @@
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use ipc::commands::{
-    cmd_osl_seal_attachment_with_cover_v2, cmd_osl_seal_attachment_with_cover_v3,
+    cmd_osl_get_tier_gate_status, cmd_osl_seal_attachment_with_cover_v2,
+    cmd_osl_seal_attachment_with_cover_v3, cmd_osl_validate_license_with_dir_and_url,
     OSL_TIER_BLOCKED_PREFIX,
 };
 use ipc::scope::{ScopeInput, ScopeKind};
 use ipc::AppState;
 use keystore::{LicenseState, LicenseStateDto};
+use std::io::{Read, Write};
+use std::net::TcpListener;
+use std::sync::mpsc;
+use std::thread;
+use tempfile::tempdir;
 
 const TIER_BLOCKED_PREFIX: &str = "OSL-TIER-BLOCKED:";
 
@@ -120,6 +126,57 @@ fn assert_gate_blocked_and_parse<T: std::fmt::Debug>(r: Result<T, String>) -> se
     serde_json::from_str(tail).unwrap_or_else(|e| panic!("JSON tail did not parse: {e}; raw={err}"))
 }
 
+fn one_shot_server(response: Vec<u8>) -> (u16, mpsc::Receiver<Vec<u8>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let mut buf = [0u8; 4096];
+        let mut acc = Vec::new();
+        let header_end = loop {
+            let n = stream.read(&mut buf).unwrap();
+            if n == 0 {
+                break acc.len();
+            }
+            acc.extend_from_slice(&buf[..n]);
+            if let Some(p) = acc.windows(4).position(|w| w == b"\r\n\r\n") {
+                break p;
+            }
+        };
+        let header_text = std::str::from_utf8(&acc[..header_end]).unwrap();
+        let content_length = header_text
+            .lines()
+            .find_map(|line| line.strip_prefix("Content-Length: "))
+            .and_then(|value| value.trim().parse::<usize>().ok())
+            .unwrap_or(0);
+        let mut body_so_far = acc[header_end + 4..].len();
+        while body_so_far < content_length {
+            let n = stream.read(&mut buf).unwrap();
+            if n == 0 {
+                break;
+            }
+            acc.extend_from_slice(&buf[..n]);
+            body_so_far += n;
+        }
+        let _ = tx.send(acc);
+        let _ = stream.write_all(&response);
+    });
+    (port, rx)
+}
+
+fn json_response(body: &str) -> Vec<u8> {
+    let mut response = Vec::new();
+    response.extend_from_slice(b"HTTP/1.1 200 OK\r\n");
+    response.extend_from_slice(format!("Content-Length: {}\r\n", body.len()).as_bytes());
+    response.extend_from_slice(b"Content-Type: application/json\r\n\r\n");
+    response.extend_from_slice(body.as_bytes());
+    response
+}
+
 // ---- Sanity ----
 
 #[test]
@@ -195,6 +252,49 @@ fn expired_license_attachment_send_blocked() {
         parsed.get("raw_license_state").and_then(|v| v.as_str()),
         Some("EXPIRED"),
         "raw_license_state surfaces the cache status for diagnostics: {parsed:?}"
+    );
+}
+
+#[test]
+fn task3199_refunded_code_reads_free_and_blocks_attachment_with_exact_reason() {
+    let state = AppState::new();
+    let dir = tempdir().unwrap();
+    let (port, request) = one_shot_server(json_response(
+        r#"{"status":"REVOKED","error":"this code was refunded","checksum_ok":true}"#,
+    ));
+
+    let activation = cmd_osl_validate_license_with_dir_and_url(
+        &state,
+        "OSL-2222-3333-4444-5555".to_string(),
+        dir.path(),
+        &format!("http://127.0.0.1:{port}"),
+    )
+    .expect("refunded code response is a successful keyserver round-trip");
+    assert_eq!(activation.status, "REVOKED");
+
+    let tier = cmd_osl_get_tier_gate_status(&state).expect("tier status should read");
+    assert!(!tier.is_paid, "account reads Free after refunded code");
+    assert_eq!(tier.raw_license_state, "this code was refunded");
+
+    let parsed = assert_gate_blocked_and_parse(call_seal_v3(&state));
+    assert_eq!(
+        parsed
+            .get("raw_license_state")
+            .and_then(|value| value.as_str()),
+        Some("this code was refunded")
+    );
+    assert_eq!(
+        parsed.get("feature").and_then(|value| value.as_str()),
+        Some("encrypted attachments")
+    );
+
+    let request = String::from_utf8(request.recv().unwrap()).unwrap();
+    assert!(request.starts_with("POST /v1/license/redeem HTTP/1.1\r\n"));
+    println!(
+        "TASK3199 ipc {{\"account_is_paid\":{},\"account_state\":\"Free\",\"refusal\":\"{}\",\"feature\":\"{}\"}}",
+        tier.is_paid,
+        parsed.get("raw_license_state").and_then(|value| value.as_str()).unwrap(),
+        parsed.get("feature").and_then(|value| value.as_str()).unwrap(),
     );
 }
 

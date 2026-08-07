@@ -23,6 +23,8 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
 vi.mock("@tauri-apps/api/event", () => ({ emitTo: mocks.emitTo, listen: mocks.listen }));
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: mocks.getCurrentWindow }));
 vi.mock("@fontsource-variable/inter/wght.css", () => ({}));
+vi.mock("@fontsource-variable/onest/wght.css", () => ({}));
+vi.mock("@fontsource-variable/source-sans-3/wght.css", () => ({}));
 vi.mock("./logos", () => ({
   browserLogo: (id: string) => `<span>${id}</span>`,
   providerLogo: (id: string) => `<span>${id}</span>`,
@@ -36,6 +38,7 @@ vi.mock("./preferences", async () => {
 import {
   keepScanningAfterAutoScrubStopRequest,
   loadAutoScrubRunFleetStatus,
+  requestAutoScrubRunAction,
   requestAutoScrubGlobalStop,
   startAutoScrubReviewedRun,
   stopAutoScrubNowAfterStopRequest,
@@ -56,26 +59,40 @@ const fleetStatus = {
     honestRemainingSecondsEstimate: null,
     reason: "No stop request is active.",
   },
+  fleetActions: [{
+    action: "stopAllScanning",
+    label: "Stop all scanning",
+  }],
   runs: [
     {
       runId: "run-001",
       serviceId: "discord",
+      accountId: "acct-discord-1",
       phase: "running",
       reviewedItemCount: 3,
       remainingItemCount: 2,
       stopRequested: false,
       mutationAllowed: false,
       lastOutcome: "prepared",
+      accountActions: [
+        { action: "openAccount", label: "Open account" },
+        { action: "skipThisAccount", label: "Skip this account" },
+      ],
     },
     {
       runId: "run-002",
       serviceId: "telegram",
+      accountId: "acct-telegram-1",
       phase: "reviewRequired",
       reviewedItemCount: 1,
       remainingItemCount: 0,
       stopRequested: false,
       mutationAllowed: false,
       lastOutcome: "held",
+      accountActions: [
+        { action: "openAccount", label: "Open account" },
+        { action: "skipThisAccount", label: "Skip this account" },
+      ],
     },
   ],
 } as const;
@@ -105,6 +122,12 @@ describe("AutoScrub unattended run production wiring", () => {
     expect(mocks.invoke).toHaveBeenNthCalledWith(2, "request_autoscrub_global_stop");
     expect(mocks.invoke).toHaveBeenNthCalledWith(3, "keep_scanning_after_autoscrub_stop_request");
     expect(mocks.invoke).toHaveBeenNthCalledWith(4, "stop_autoscrub_now_after_stop_request");
+    await expect(requestAutoScrubRunAction("run-001", "skipThisAccount")).resolves.toEqual(fleetStatus);
+    expect(mocks.invoke).toHaveBeenNthCalledWith(1, "get_autoscrub_run_fl");
+    expect(mocks.invoke).toHaveBeenNthCalledWith(2, "request_autoscrub_global_stop");
+    expect(mocks.invoke).toHaveBeenNthCalledWith(3, "request_autoscrub_run_action", {
+      request: { runId: "run-001", action: "skipThisAccount" },
+    });
   });
 
   it("starts only an explicitly reviewed batch and refuses absent consent before native invocation", async () => {

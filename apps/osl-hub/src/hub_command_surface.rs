@@ -42,6 +42,13 @@ use sha2::{Digest, Sha256};
 use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use std::sync::{Condvar, Mutex};
+use crate::website_driver::{
+    WebsiteDriver, WebsiteLiveRunProgress, WebsiteMailboxMessage, WebsiteNamedControl,
+    WebsitePageRequest, WebsiteTextPlacement,
+};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::{path::PathBuf, sync::Mutex, thread, time::Duration};
 
 pub fn build_review_ui_identity_binding_verifier(
     core: &HubCoreState,
@@ -99,6 +106,294 @@ impl ProtectedEmailReaderState {
     pub fn last_successful_read(&self) -> Option<&ProtectedEmailOpenMessageRead> {
         self.last_successful_read.as_ref()
     }
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProtonMailboxForScrubReadRequest {
+    pub page_url: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProtonMailboxForScrubMessage {
+    pub subject: String,
+    pub time: String,
+    pub sender: String,
+    pub owner_marker: String,
+    pub yours: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProtonMailboxForScrubRead {
+    pub folders: Vec<String>,
+    pub sent: Vec<ProtonMailboxForScrubMessage>,
+    pub inbox: Vec<ProtonMailboxForScrubMessage>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct IcloudMailboxForScrubReadRequest {
+    pub page_url: String,
+}
+
+pub type IcloudMailboxForScrubMessage = ProtonMailboxForScrubMessage;
+pub type IcloudMailboxForScrubRead = ProtonMailboxForScrubRead;
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct IcloudMailboxPagingReadRequest {
+    pub page_url: String,
+    pub folder_id: String,
+    pub set_pause_ms: u64,
+    pub stop_during_page: Option<usize>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub enum MailPagingStopReason {
+    EndOfPlace,
+    StopRequested,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IcloudMailboxPagingRead {
+    pub folder_id: String,
+    pub message_count: usize,
+    pub page_count: usize,
+    pub stop_reason: MailPagingStopReason,
+    pub set_pause_ms: u64,
+    pub action_names: Vec<String>,
+    pub inter_action_gaps_ms: Vec<u64>,
+    pub stop_requested_during_run: bool,
+    pub stop_requested_during_page: Option<usize>,
+    pub stopped_on_page_number: Option<usize>,
+    pub one_screen_scrolls: usize,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProtectedEmailLiveRunProgressRequest {
+    pub page_url: String,
+}
+
+const ORDINARY_SEND_PROGRESS_LABEL: &str = "ordinary send progress";
+const ORDINARY_SEND_PROGRESS_MAX_BYTES: u64 = 16 * 1024;
+const ORDINARY_SEND_STEPS: [&str; 5] = [
+    "private_save",
+    "service_acceptance",
+    "local_save",
+    "receiver_publish",
+    "final_confirmation",
+];
+const ORDINARY_SEND_LOCAL_SAVE_CONTROL: &str = "Save local";
+const ORDINARY_SEND_RECEIVER_PUBLISH_CONTROL: &str = "Publish to receiver";
+const ORDINARY_SEND_FINAL_CONFIRMATION_CONTROL: &str = "Confirm final";
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct OrdinarySendProgressRequest {
+    pub page_url: String,
+    pub draft_text: String,
+    pub progress_path: PathBuf,
+    pub max_steps: Option<usize>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrdinarySendProgressStep {
+    pub name: String,
+    pub completed: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrdinarySendProgress {
+    pub send_id: String,
+    pub steps: Vec<OrdinarySendProgressStep>,
+    pub final_confirmation: bool,
+}
+
+pub struct OrdinarySendProgressStore {
+    path: PathBuf,
+}
+
+impl OrdinarySendProgressStore {
+    pub fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+
+    pub fn load_or_new(&self, send_id: &str) -> Result<OrdinarySendProgress, String> {
+        let Some(bytes) = crate::atomic_file::read_recoverable_bounded(
+            &self.path,
+            ORDINARY_SEND_PROGRESS_MAX_BYTES,
+            ORDINARY_SEND_PROGRESS_LABEL,
+        )?
+        else {
+            return Ok(new_ordinary_send_progress(send_id));
+        };
+        let progress: OrdinarySendProgress =
+            serde_json::from_slice(&bytes).map_err(|_| "ordinary send progress is invalid")?;
+        if progress.send_id == send_id && progress.step_names() == ORDINARY_SEND_STEPS {
+            Ok(progress.with_derived_confirmation())
+        } else {
+            Ok(new_ordinary_send_progress(send_id))
+        }
+    }
+
+    fn save(&self, progress: &OrdinarySendProgress) -> Result<(), String> {
+        let bytes = serde_json::to_vec(&progress.clone().with_derived_confirmation())
+            .map_err(|_| "ordinary send progress could not be encoded")?;
+        crate::atomic_file::write_recoverable(&self.path, &bytes, ORDINARY_SEND_PROGRESS_LABEL)
+    }
+}
+
+impl OrdinarySendProgress {
+    pub fn completed_step_names(&self) -> Vec<&str> {
+        self.steps
+            .iter()
+            .filter(|step| step.completed)
+            .map(|step| step.name.as_str())
+            .collect()
+    }
+
+    fn step_names(&self) -> Vec<&str> {
+        self.steps.iter().map(|step| step.name.as_str()).collect()
+    }
+
+    fn with_derived_confirmation(mut self) -> Self {
+        self.final_confirmation = self.steps.len() == ORDINARY_SEND_STEPS.len()
+            && self.steps.iter().all(|step| step.completed);
+        self
+    }
+
+    fn mark_completed(&mut self, name: &str) {
+        if let Some(step) = self.steps.iter_mut().find(|step| step.name == name) {
+            step.completed = true;
+        }
+        self.final_confirmation = self.steps.iter().all(|step| step.completed);
+    }
+}
+
+pub fn ordinary_send_stable_id(page_url: &str, draft_text: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"ordinary-send-v1\0");
+    hasher.update(page_url.trim().as_bytes());
+    hasher.update(b"\0");
+    hasher.update(draft_text.as_bytes());
+    let digest = hasher.finalize();
+    format!("ordinary-send-v1-{}", hex_prefix(&digest, 12))
+}
+
+pub fn read_ordinary_send_progress(
+    request: &OrdinarySendProgressRequest,
+) -> Result<OrdinarySendProgress, String> {
+    let send_id = ordinary_send_stable_id(&request.page_url, &request.draft_text);
+    OrdinarySendProgressStore::new(request.progress_path.clone()).load_or_new(&send_id)
+}
+
+pub fn send_ordinary_message_with_progress<D>(
+    driver: &mut D,
+    request: OrdinarySendProgressRequest,
+) -> Result<OrdinarySendProgress, String>
+where
+    D: WebsiteDriver,
+{
+    if request.page_url.trim().is_empty() {
+        return Err("ordinary send requires an open service page".to_owned());
+    }
+    if request.draft_text.is_empty() {
+        return Err("ordinary send requires draft text".to_owned());
+    }
+
+    let send_id = ordinary_send_stable_id(&request.page_url, &request.draft_text);
+    let store = OrdinarySendProgressStore::new(request.progress_path.clone());
+    let mut progress = store.load_or_new(&send_id)?;
+    let page = driver
+        .find_page(WebsitePageRequest {
+            url: request.page_url,
+        })
+        .map_err(|error| error.to_string())?;
+    driver.read_page(&page).map_err(|error| error.to_string())?;
+    let max_steps = request.max_steps.unwrap_or(ORDINARY_SEND_STEPS.len());
+
+    for (index, step) in ORDINARY_SEND_STEPS.iter().enumerate() {
+        if index >= max_steps {
+            break;
+        }
+        if progress
+            .steps
+            .iter()
+            .any(|existing| existing.name == *step && existing.completed)
+        {
+            continue;
+        }
+        match *step {
+            "private_save" => {}
+            "service_acceptance" => driver
+                .place_text(WebsiteTextPlacement {
+                    page: page.clone(),
+                    text: request.draft_text.clone(),
+                })
+                .map_err(|error| error.to_string())?,
+            "local_save" => {
+                press_ordinary_send_control(driver, &page, ORDINARY_SEND_LOCAL_SAVE_CONTROL)?
+            }
+            "receiver_publish" => {
+                press_ordinary_send_control(driver, &page, ORDINARY_SEND_RECEIVER_PUBLISH_CONTROL)?
+            }
+            "final_confirmation" => press_ordinary_send_control(
+                driver,
+                &page,
+                ORDINARY_SEND_FINAL_CONFIRMATION_CONTROL,
+            )?,
+            _ => unreachable!("ordinary send step list is fixed"),
+        }
+        progress.mark_completed(step);
+        store.save(&progress)?;
+    }
+
+    Ok(progress.with_derived_confirmation())
+}
+
+fn new_ordinary_send_progress(send_id: &str) -> OrdinarySendProgress {
+    OrdinarySendProgress {
+        send_id: send_id.to_owned(),
+        steps: ORDINARY_SEND_STEPS
+            .iter()
+            .map(|name| OrdinarySendProgressStep {
+                name: (*name).to_owned(),
+                completed: false,
+            })
+            .collect(),
+        final_confirmation: false,
+    }
+}
+
+fn press_ordinary_send_control<D>(
+    driver: &mut D,
+    page: &crate::website_driver::WebsitePage,
+    name: &str,
+) -> Result<(), String>
+where
+    D: WebsiteDriver,
+{
+    driver
+        .press_named_control(WebsiteNamedControl {
+            page: page.clone(),
+            name: name.to_owned(),
+        })
+        .map_err(|error| error.to_string())
+}
+
+fn hex_prefix(bytes: &[u8], len: usize) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(len * 2);
+    for byte in bytes.iter().take(len) {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
 }
 
 pub fn read_protected_email_open_message_with_driver<D>(
@@ -178,6 +473,236 @@ pub fn continue_discord_scrub_after_risk_agreement_command(
     owner_user_id: &str,
 ) -> Result<DiscordScrubRiskAgreementRead, String> {
     state.continue_discord_scrub_after_risk_agreement(owner_user_id)
+
+    Ok(ProtectedEmailOpenMessageRead {
+        cover_message: selected.body,
+        conversation_identity: selected.conversation_identity,
+    })
+}
+
+pub fn read_proton_mailbox_for_scrub_with_driver<D>(
+    driver: &mut D,
+    request: ProtonMailboxForScrubReadRequest,
+) -> Result<ProtonMailboxForScrubRead, String>
+where
+    D: WebsiteDriver,
+{
+    if request.page_url.trim().is_empty() {
+        return Err("Proton mailbox reader requires an open service page".to_owned());
+    }
+
+    let page = driver
+        .find_page(WebsitePageRequest {
+            url: request.page_url,
+        })
+        .map_err(|error| error.to_string())?;
+    let mailbox = driver
+        .read_mailbox(&page)
+        .map_err(|error| error.to_string())?;
+
+    let sent = mailbox
+        .messages
+        .iter()
+        .filter(|message| mail_folder_eq(&message.folder, "Sent"))
+        .map(proton_message_from_website)
+        .collect();
+    let inbox = mailbox
+        .messages
+        .iter()
+        .filter(|message| mail_folder_eq(&message.folder, "Inbox"))
+        .map(proton_message_from_website)
+        .collect();
+
+    Ok(ProtonMailboxForScrubRead {
+        folders: mailbox.folders,
+        sent,
+        inbox,
+    })
+}
+
+pub fn read_icloud_mailbox_for_scrub_with_driver<D>(
+    driver: &mut D,
+    request: IcloudMailboxForScrubReadRequest,
+) -> Result<IcloudMailboxForScrubRead, String>
+where
+    D: WebsiteDriver,
+{
+    if request.page_url.trim().is_empty() {
+        return Err("iCloud mailbox reader requires an open service page".to_owned());
+    }
+
+    let page = driver
+        .find_page(WebsitePageRequest {
+            url: request.page_url,
+        })
+        .map_err(|error| error.to_string())?;
+    let mailbox = driver
+        .read_mailbox(&page)
+        .map_err(|error| error.to_string())?;
+
+    let sent = mailbox
+        .messages
+        .iter()
+        .filter(|message| mail_folder_eq(&message.folder, "Sent"))
+        .map(mail_message_from_website)
+        .collect();
+    let inbox = mailbox
+        .messages
+        .iter()
+        .filter(|message| mail_folder_eq(&message.folder, "Inbox"))
+        .map(mail_message_from_website)
+        .collect();
+
+    Ok(IcloudMailboxForScrubRead {
+        folders: mailbox.folders,
+        sent,
+        inbox,
+    })
+}
+
+pub fn read_icloud_mailbox_pages_for_scrub_with_driver<D>(
+    driver: &mut D,
+    request: IcloudMailboxPagingReadRequest,
+) -> Result<IcloudMailboxPagingRead, String>
+where
+    D: WebsiteDriver,
+{
+    if request.page_url.trim().is_empty() {
+        return Err("iCloud mailbox paging requires an open service page".to_owned());
+    }
+    if request.folder_id.trim().is_empty() {
+        return Err("iCloud mailbox paging requires a folder".to_owned());
+    }
+
+    let page = driver
+        .find_page(WebsitePageRequest {
+            url: request.page_url,
+        })
+        .map_err(|error| error.to_string())?;
+    let mut action_names = Vec::new();
+    let mut inter_action_gaps_ms = Vec::new();
+    let mut message_count = 0usize;
+    let mut page_count = 0usize;
+    let mut one_screen_scrolls = 0usize;
+
+    loop {
+        pace_shared_mail_action(
+            &action_names,
+            &mut inter_action_gaps_ms,
+            request.set_pause_ms,
+        );
+        action_names.push("open".to_owned());
+        let mailbox = driver
+            .read_mailbox(&page)
+            .map_err(|error| error.to_string())?;
+        page_count += 1;
+        message_count += mailbox
+            .messages
+            .iter()
+            .filter(|message| mail_folder_eq(&message.folder, &request.folder_id))
+            .count();
+
+        if request.stop_during_page == Some(page_count) {
+            return Ok(IcloudMailboxPagingRead {
+                folder_id: request.folder_id,
+                message_count,
+                page_count,
+                stop_reason: MailPagingStopReason::StopRequested,
+                set_pause_ms: request.set_pause_ms,
+                action_names,
+                inter_action_gaps_ms,
+                stop_requested_during_run: true,
+                stop_requested_during_page: Some(page_count),
+                stopped_on_page_number: Some(page_count),
+                one_screen_scrolls,
+            });
+        }
+
+        let controls = driver
+            .read_page(&page)
+            .map_err(|error| error.to_string())?
+            .controls;
+        if !controls.buttons.iter().any(|button| button == "Next page") {
+            return Ok(IcloudMailboxPagingRead {
+                folder_id: request.folder_id,
+                message_count,
+                page_count,
+                stop_reason: MailPagingStopReason::EndOfPlace,
+                set_pause_ms: request.set_pause_ms,
+                action_names,
+                inter_action_gaps_ms,
+                stop_requested_during_run: false,
+                stop_requested_during_page: request.stop_during_page,
+                stopped_on_page_number: None,
+                one_screen_scrolls,
+            });
+        }
+
+        pace_shared_mail_action(
+            &action_names,
+            &mut inter_action_gaps_ms,
+            request.set_pause_ms,
+        );
+        action_names.push("scroll".to_owned());
+        driver
+            .press_named_control(WebsiteNamedControl {
+                page: page.clone(),
+                name: "Next page".to_owned(),
+            })
+            .map_err(|error| error.to_string())?;
+        one_screen_scrolls += 1;
+    }
+}
+
+fn pace_shared_mail_action(
+    action_names: &[String],
+    inter_action_gaps_ms: &mut Vec<u64>,
+    set_pause_ms: u64,
+) {
+    if action_names.is_empty() {
+        return;
+    }
+    thread::sleep(Duration::from_millis(set_pause_ms));
+    inter_action_gaps_ms.push(set_pause_ms);
+}
+
+fn mail_folder_eq(actual: &str, expected: &str) -> bool {
+    actual.trim().eq_ignore_ascii_case(expected)
+}
+
+fn proton_message_from_website(message: &WebsiteMailboxMessage) -> ProtonMailboxForScrubMessage {
+    mail_message_from_website(message)
+}
+
+fn mail_message_from_website(message: &WebsiteMailboxMessage) -> ProtonMailboxForScrubMessage {
+    ProtonMailboxForScrubMessage {
+        subject: message.subject.clone(),
+        time: message.time.clone(),
+        sender: message.sender.clone(),
+        owner_marker: message.owner_marker.clone(),
+        yours: message.yours,
+    }
+}
+
+pub fn read_protected_email_live_run_progress_with_driver<D>(
+    driver: &mut D,
+    request: ProtectedEmailLiveRunProgressRequest,
+) -> Result<WebsiteLiveRunProgress, String>
+where
+    D: WebsiteDriver,
+{
+    if request.page_url.trim().is_empty() {
+        return Err("Protected email progress requires an open service page".to_owned());
+    }
+
+    let page = driver
+        .find_page(WebsitePageRequest {
+            url: request.page_url,
+        })
+        .map_err(|error| error.to_string())?;
+    driver
+        .read_live_run_progress(&page)
+        .map_err(|error| error.to_string())
 }
 
 pub fn require_review_ui_identity_binding_from_verifier(
@@ -736,6 +1261,24 @@ where
         return dry_run();
     }
     with_native_discord_product_send_authority(composer, scope_binding, layout, place)
+pub const ALLOWED_PLACE_CHECK_STAGE: &str = "allowed-place-check";
+pub const ALLOWED_PLACE_CONFIRMED_STAGE: &str = "allowed-place-confirmed";
+pub const INCOMING_READ_ACTION_STAGE: &str = "read";
+
+pub fn with_allowed_place_before_incoming_read<T, CheckAllowed, ReadIncoming>(
+    trace: &mut Vec<&'static str>,
+    check_allowed: CheckAllowed,
+    read_incoming: ReadIncoming,
+) -> Result<T, String>
+where
+    CheckAllowed: FnOnce() -> Result<String, String>,
+    ReadIncoming: FnOnce(String) -> Result<T, String>,
+{
+    trace.push(ALLOWED_PLACE_CHECK_STAGE);
+    let scope_binding = check_allowed()?;
+    trace.push(ALLOWED_PLACE_CONFIRMED_STAGE);
+    trace.push(INCOMING_READ_ACTION_STAGE);
+    read_incoming(scope_binding)
 }
 
 #[cfg(any(test, feature = "discord-qa-shell"))]
@@ -849,6 +1392,56 @@ pub struct DiscordHeadlessQaPoll {
     pub pending_view_once_count: usize,
     pub acknowledgment_count: usize,
     pub fetched: u32,
+}
+
+pub const OPEN_NATIVE_DISCORD_OVERLAY_TEXT_COMMAND: &str = "open_native_discord_overlay_text";
+pub const NATIVE_DISCORD_OVERLAY_TEXT_COMMAND_CALLER_LABEL: &str = "native-discord-overlay";
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeDiscordOverlayTextCommandResult<Opened> {
+    pub command_called: &'static str,
+    pub opened: Opened,
+}
+
+/// The production command flow behind `open_native_discord_overlay_text`.
+///
+/// `main.rs` supplies the Tauri state and receipt hooks; tests supply fixture
+/// closures that exercise the same ordering with the real broker drain.
+pub fn open_native_discord_overlay_text_command_flow<
+    Opened,
+    SnapshotContext,
+    Drain,
+    RecordPoll,
+    RecheckContext,
+    RecordOpened,
+>(
+    caller_label: &str,
+    snapshot_context: SnapshotContext,
+    drain: Drain,
+    record_poll: RecordPoll,
+    mut recheck_context: RecheckContext,
+    record_opened: RecordOpened,
+) -> Result<NativeDiscordOverlayTextCommandResult<Opened>, String>
+where
+    SnapshotContext: FnOnce() -> Result<(u64, ActiveServiceHost), String>,
+    Drain: FnOnce() -> Result<Opened, String>,
+    RecordPoll: FnOnce(Result<&Opened, &str>) -> Result<(), String>,
+    RecheckContext: FnMut(u64, &ActiveServiceHost) -> Result<(), String>,
+    RecordOpened: FnOnce(&Opened) -> Result<(), String>,
+{
+    if caller_label != NATIVE_DISCORD_OVERLAY_TEXT_COMMAND_CALLER_LABEL {
+        return Err("Only the trusted native Discord overlay may receive text".to_owned());
+    }
+    let (context_epoch, host) = snapshot_context()?;
+    let opened = drain();
+    record_poll(opened.as_ref().map_err(String::as_str))?;
+    let opened = opened?;
+    recheck_context(context_epoch, &host)?;
+    record_opened(&opened)?;
+    Ok(NativeDiscordOverlayTextCommandResult {
+        command_called: OPEN_NATIVE_DISCORD_OVERLAY_TEXT_COMMAND,
+        opened,
+    })
 }
 
 #[cfg(feature = "discord-qa-shell")]
@@ -1014,6 +1607,7 @@ macro_rules! hub_tauri_commands {
             execute_mass_cleanup_batch,
             get_autoscrub_run_fl,
             start_autoscrub_reviewed_run,
+            request_autoscrub_run_action,
             request_autoscrub_global_stop,
             keep_scanning_after_autoscrub_stop_request,
             stop_autoscrub_now_after_stop_request,
@@ -1026,6 +1620,7 @@ macro_rules! hub_tauri_commands {
             setup_hub_main_password,
             view_hub_recovery_phrase,
             reset_hub_main_password_after_recovery,
+            check_hub_recovery_words,
             get_hub_recovery_kit_unsaved,
             set_hub_recovery_kit_unsaved,
             lock_hub_session,
@@ -1065,6 +1660,11 @@ macro_rules! hub_tauri_commands {
             resize_default_browser_companion,
             focus_default_browser_companion,
             detach_default_browser_companion,
+            read_protected_email_open_message,
+            read_proton_mailbox_for_scrub,
+            read_icloud_mailbox_for_scrub,
+            read_icloud_mailbox_pages_for_scrub,
+            read_protected_email_live_run_progress,
             host_native_app_window,
             native_app_takeover_requires_consent,
             discord_marker_available,
@@ -1160,6 +1760,10 @@ macro_rules! hub_tauri_commands {
             verify_hub_friend_safety_number,
             remove_hub_friend,
             list_hub_people,
+            add_allowed_place_record,
+            remove_allowed_place_record,
+            list_allowed_place_records,
+            query_allowed_place_allowed,
             set_hub_friend_nickname,
             add_group_member_permission,
             remove_group_member_permission,
@@ -1627,6 +2231,11 @@ mod native_visible_row_qa_command_tests {
         recorded_executable_hash_matches_rebuild, require_native_discord_product_send_authority,
         story_photo_command_image_copies, story_photo_post_after_image_quality_check,
         with_native_discord_product_send_authority, ActiveServiceHost, PhotoPostImageInput,
+        canonical_native_visible_row_qa_build_hash, finish_native_visible_row_qa_request,
+        prepare_native_visible_row_qa_request, recorded_executable_hash_matches_rebuild,
+        require_native_discord_product_send_authority, with_allowed_place_before_incoming_read,
+        with_native_discord_product_send_authority, ActiveServiceHost, ALLOWED_PLACE_CHECK_STAGE,
+        ALLOWED_PLACE_CONFIRMED_STAGE, INCOMING_READ_ACTION_STAGE,
     };
     use crate::native_discord_adapter::{
         deidentify_prepared_visual_structure, DiscordCarrierLayout, DiscordCarrierPadding,
@@ -1900,6 +2509,78 @@ mod native_visible_row_qa_command_tests {
             out.push_str(&format!("{byte:02x}"));
         }
         out
+    fn task_0121_allowed_place_trace_records_one_read_action() {
+        let mut trace = Vec::new();
+        let read_reached = Cell::new(false);
+        let read_scope = with_allowed_place_before_incoming_read(
+            &mut trace,
+            || Ok("scope-binding-0121".to_owned()),
+            |scope_binding| {
+                read_reached.set(true);
+                Ok(scope_binding)
+            },
+        )
+        .expect("an allowed place reaches the incoming row read");
+        let read_actions = trace
+            .iter()
+            .filter(|stage| **stage == INCOMING_READ_ACTION_STAGE)
+            .count();
+
+        println!("task_0121_allowed_place_trace={}", trace.join(" -> "));
+        println!(
+            "task_0121_read_action action={} count={read_actions}",
+            INCOMING_READ_ACTION_STAGE
+        );
+
+        assert_eq!(
+            trace,
+            [
+                ALLOWED_PLACE_CHECK_STAGE,
+                ALLOWED_PLACE_CONFIRMED_STAGE,
+                INCOMING_READ_ACTION_STAGE,
+            ]
+        );
+        assert!(read_reached.get());
+        assert_eq!(read_scope, "scope-binding-0121");
+        assert_eq!(read_actions, 1);
+
+        let mut refused_trace = Vec::new();
+        let refused_read_reached = Cell::new(false);
+        let refused = with_allowed_place_before_incoming_read(
+            &mut refused_trace,
+            || Err("place not allowed".to_owned()),
+            |_| {
+                refused_read_reached.set(true);
+                Ok(())
+            },
+        );
+        match refused {
+            Err(error) => assert_eq!(error, "place not allowed"),
+            Ok(_) => panic!("an unallowed place must refuse before reading incoming rows"),
+        }
+        assert_eq!(refused_trace, [ALLOWED_PLACE_CHECK_STAGE]);
+        assert!(!refused_read_reached.get());
+
+        let source = include_str!("main.rs");
+        let command_start = source
+            .find("#[tauri::command]\nasync fn rehydrate_native_discord_overlay_history(")
+            .expect("native Discord rehydrate command remains present");
+        let command_tail = &source[command_start..];
+        let command_end = command_tail
+            .find("#[tauri::command]\nasync fn list_osl_chat_history(")
+            .expect("native Discord rehydrate command body remains bounded");
+        let command = &command_tail[..command_end];
+        let gate = command
+            .find("with_allowed_place_before_incoming_read(")
+            .expect("native Discord rehydrate command gates incoming row reads");
+        let allowed_place = command
+            .find("native_discord_allowed_place_scope_binding(&app)")
+            .expect("native Discord rehydrate command checks the allowed place");
+        let read = command
+            .find("read_visible_message_rows(")
+            .expect("native Discord rehydrate command reads incoming rows");
+        assert!(gate < allowed_place);
+        assert!(allowed_place < read);
     }
 
     #[cfg(feature = "discord-qa-shell")]
@@ -2987,17 +3668,27 @@ mod tauri_registration_surface_tests {
     #[test]
     fn view_hub_recovery_phrase_is_registered_and_granted() {
         let (handlers, permissions, capability) = registration_inputs();
-        assert_registered_and_granted(
-            &handlers,
-            &permissions,
-            &capability,
-            "view_hub_recovery_phrase",
-        );
         assert_each_registration_surface_is_required(
             &handlers,
             &permissions,
             &capability,
-            &["view_hub_recovery_phrase"],
+            &["view_hub_recovery_phrase", "check_hub_recovery_words"],
+        );
+    }
+
+    #[test]
+    fn allowed_place_commands_are_registered_and_acl_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &[
+                "add_allowed_place_record",
+                "remove_allowed_place_record",
+                "list_allowed_place_records",
+                "query_allowed_place_allowed",
+            ],
         );
     }
 
@@ -3103,6 +3794,23 @@ mod tauri_registration_surface_tests {
             &[
                 "get_hub_recovery_kit_unsaved",
                 "set_hub_recovery_kit_unsaved",
+            ],
+        );
+    }
+
+    #[test]
+    fn protected_email_open_message_reader_is_registered_and_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &[
+                "read_protected_email_open_message",
+                "read_proton_mailbox_for_scrub",
+                "read_icloud_mailbox_for_scrub",
+                "read_icloud_mailbox_pages_for_scrub",
+                "read_protected_email_live_run_progress",
             ],
         );
     }
@@ -4167,8 +4875,10 @@ mod tauri_registration_surface_tests {
     fn autoscrub_run_lifecycle_commands_are_registered_and_acl_granted() {
         let (handlers, permissions, capability) = registration_inputs();
         const AUTOSCRUB_RUN_LIFECYCLE_COMMANDS: [&str; 5] = [
+        const AUTOSCRUB_RUN_LIFECYCLE_COMMANDS: [&str; 4] = [
             "get_autoscrub_run_fl",
             "start_autoscrub_reviewed_run",
+            "request_autoscrub_run_action",
             "request_autoscrub_global_stop",
             "keep_scanning_after_autoscrub_stop_request",
             "stop_autoscrub_now_after_stop_request",

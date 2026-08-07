@@ -24,8 +24,14 @@ import { callerIp, checkRateLimit } from "../lib/rate-limit.js";
 interface ValidationLicenseRow {
   subscription_id: string;
   revoked_at: number | null;
+  revoked_reason: string | null;
   redeemed_at: number | null;
   expires_at: number | null;
+}
+
+function revokedMessage(reason: string | null): string | undefined {
+  if (reason === "manual") return "this code was refunded";
+  return undefined;
 }
 
 export async function handleLicenseValidate(
@@ -73,7 +79,7 @@ export async function handleLicenseValidate(
 
   const hash = await hashLicense(normalized);
   const license = await env.DB.prepare(
-    `SELECT subscription_id, revoked_at, redeemed_at, expires_at
+    `SELECT subscription_id, revoked_at, revoked_reason, redeemed_at, expires_at
        FROM licenses
       WHERE license_hash = ?`,
   ).bind(hash).first<ValidationLicenseRow>();
@@ -81,11 +87,13 @@ export async function handleLicenseValidate(
     return json({ status: "UNKNOWN", checksum_ok: true });
   }
   if (license.revoked_at !== null) {
+    const error = revokedMessage(license.revoked_reason);
     return json({
       status: "REVOKED",
       redeemed_at: license.redeemed_at,
       expires_at: license.expires_at,
       checksum_ok: true,
+      ...(error ? { error } : {}),
     });
   }
   const sub = await getSubscription(env.DB, license.subscription_id);

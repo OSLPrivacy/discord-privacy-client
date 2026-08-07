@@ -286,12 +286,13 @@ impl ScrubIndexState {
             ScrubIndexPhase::Complete => return Err("This Scrub import is complete".into()),
         }
 
-        let allowed: HashSet<_> = document.selections.iter().cloned().collect();
+        let allowed: HashSet<_> = document
+            .selections
+            .iter()
+            .map(|selection| selection.service_id.clone())
+            .collect();
         if request.messages.iter().any(|message| {
-            !allowed.contains(&ScrubAccountSelection {
-                service_id: message.service_id.clone(),
-                account_id: message.account_id.clone(),
-            })
+            !allowed.contains(&message.service_id)
         }) {
             return Err("A message does not belong to a selected Scrub account".into());
         }

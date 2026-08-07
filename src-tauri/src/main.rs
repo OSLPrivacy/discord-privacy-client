@@ -85,6 +85,9 @@ use ipc::commands::{
     RegisterResponse, ScopeEncryptionState, ScopeWhitelistSummary, StatusResponse,
     StegoDecodeResponse, StegoEncodeRequest, StegoEncodeResponse, StoredMessageDto,
     TheirSideBurnDto, TierGateStatusDto, WhitelistRowDto,
+    RecoveryWordRetypeCheckDto, RecoveryWordRetypeEntryDto, RegisterResponse, ScopeEncryptionState,
+    ScopeWhitelistSummary, StatusResponse, StegoDecodeResponse, StegoEncodeRequest,
+    StegoEncodeResponse, StoredMessageDto, TierGateStatusDto, WhitelistRowDto,
 };
 use ipc::scope::ScopeInput;
 use ipc::{AppState, IpcError, IpcResult};
@@ -1242,6 +1245,18 @@ async fn osl_view_recovery_phrase(current: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || cmd_osl_view_recovery_phrase(current))
         .await
         .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+#[tauri::command]
+async fn osl_check_recovery_words(
+    current: String,
+    entries: Vec<RecoveryWordRetypeEntryDto>,
+) -> Result<RecoveryWordRetypeCheckDto, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        ipc::commands::cmd_osl_check_recovery_words(current, entries)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
 }
 
 /// Device transfer: reveal this account's 12-word recovery phrase.
@@ -3363,6 +3378,7 @@ fn main() {
             osl_change_main_password,
             osl_remove_main_password,
             osl_view_recovery_phrase,
+            osl_check_recovery_words,
             osl_view_identity_recovery_phrase,
             osl_recover_identity_from_phrase,
             osl_switch_account,

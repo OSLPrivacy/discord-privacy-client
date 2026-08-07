@@ -14,6 +14,7 @@ use base64::Engine;
 use core::fmt;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+use serde::{Deserialize, Serialize};
 use std::{
     fs,
     io::{Read, Write},
@@ -141,6 +142,42 @@ pub struct WebsitePageText {
     pub controls: WebsitePageControls,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WebsiteSelectedEmail {
+    pub page: WebsitePage,
+    pub body: String,
+    pub conversation_identity: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WebsiteMailboxMessage {
+    pub folder: String,
+    pub subject: String,
+    pub time: String,
+    pub sender: String,
+    pub owner_marker: String,
+    pub yours: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WebsiteMailboxRead {
+    pub page: WebsitePage,
+    pub folders: Vec<String>,
+    pub messages: Vec<WebsiteMailboxMessage>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebsiteLiveRunProgress {
+    pub active_account: String,
+    pub current_place: String,
+    pub messages_checked: usize,
+    pub matches: usize,
+    pub scrolls: usize,
+    pub waits: usize,
+    pub changes: usize,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
 pub struct WebsitePageControls {
     pub editable_boxes: Vec<String>,
@@ -200,6 +237,19 @@ pub trait WebsiteDriver {
         &mut self,
         placement: WebsiteTextPlacement,
     ) -> Result<WebsitePlacementProof, WebsiteDriverError>;
+    fn read_selected_email(
+        &mut self,
+        page: &WebsitePage,
+    ) -> Result<WebsiteSelectedEmail, WebsiteDriverError>;
+    fn read_mailbox(
+        &mut self,
+        page: &WebsitePage,
+    ) -> Result<WebsiteMailboxRead, WebsiteDriverError>;
+    fn read_live_run_progress(
+        &mut self,
+        page: &WebsitePage,
+    ) -> Result<WebsiteLiveRunProgress, WebsiteDriverError>;
+    fn place_text(&mut self, placement: WebsiteTextPlacement) -> Result<(), WebsiteDriverError>;
     fn press_named_control(
         &mut self,
         control: WebsiteNamedControl,
@@ -318,6 +368,26 @@ struct BrowserTextPlacementResult {
     devtools_base: String,
     client: reqwest::blocking::Client,
     executable: PathBuf,
+struct BrowserSelectedEmailSnapshot {
+    body: String,
+    conversation_identity: String,
+}
+
+#[derive(Deserialize)]
+struct BrowserMailboxReadSnapshot {
+    folders: Vec<String>,
+    messages: Vec<BrowserMailboxMessageSnapshot>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BrowserMailboxMessageSnapshot {
+    folder: String,
+    subject: String,
+    time: String,
+    sender: String,
+    owner_marker: String,
+    yours: bool,
 }
 
 impl RealBrowserWebsiteDriver {
@@ -534,6 +604,107 @@ impl WebsiteDriver for RealBrowserWebsiteDriver {
             utf16_units: placement.text.encode_utf16().count(),
             placed_sha256: sha256_hex(placement.text.as_bytes()),
         })
+    fn read_selected_email(
+        &mut self,
+        page: &WebsitePage,
+    ) -> Result<WebsiteSelectedEmail, WebsiteDriverError> {
+        let target_id = page
+            .target_id
+            .as_ref()
+            .ok_or(WebsiteDriverError::ReadFailed)?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+
+        loop {
+            let target = self
+                .devtools_targets()?
+                .into_iter()
+                .find(|target| target.target_type == "page" && &target.id == target_id)
+                .ok_or(WebsiteDriverError::ReadFailed)?;
+
+            if !target.title.is_empty() {
+                let websocket_url = target
+                    .web_socket_debugger_url
+                    .ok_or(WebsiteDriverError::ReadFailed)?;
+                if let Ok(snapshot) = read_selected_email_snapshot(&websocket_url) {
+                    return Ok(WebsiteSelectedEmail {
+                        page: page.clone(),
+                        body: snapshot.body,
+                        conversation_identity: snapshot.conversation_identity,
+                    });
+                }
+            }
+
+            if std::time::Instant::now() >= deadline {
+                return Err(WebsiteDriverError::ReadFailed);
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    fn read_live_run_progress(
+        &mut self,
+        page: &WebsitePage,
+    ) -> Result<WebsiteLiveRunProgress, WebsiteDriverError> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+
+        loop {
+            if let Ok(websocket_url) = self.page_websocket_url(page) {
+                if let Ok(progress) = read_live_run_progress_snapshot(&websocket_url) {
+                    return Ok(progress);
+                }
+            }
+
+            if std::time::Instant::now() >= deadline {
+                return Err(WebsiteDriverError::ReadFailed);
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    fn read_mailbox(
+        &mut self,
+        page: &WebsitePage,
+    ) -> Result<WebsiteMailboxRead, WebsiteDriverError> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+
+        loop {
+            if let Ok(websocket_url) = self.page_websocket_url(page) {
+                if let Ok(snapshot) = read_mailbox_snapshot(&websocket_url) {
+                    return Ok(WebsiteMailboxRead {
+                        page: page.clone(),
+                        folders: snapshot.folders,
+                        messages: snapshot
+                            .messages
+                            .into_iter()
+                            .map(|message| WebsiteMailboxMessage {
+                                folder: message.folder,
+                                subject: message.subject,
+                                time: message.time,
+                                sender: message.sender,
+                                owner_marker: message.owner_marker,
+                                yours: message.yours,
+                            })
+                            .collect(),
+                    });
+                }
+            }
+
+            if std::time::Instant::now() >= deadline {
+                return Err(WebsiteDriverError::ReadFailed);
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    fn place_text(&mut self, placement: WebsiteTextPlacement) -> Result<(), WebsiteDriverError> {
+        let websocket_url = self.page_websocket_url(&placement.page)?;
+        let text =
+            serde_json::to_string(&placement.text).map_err(|_| WebsiteDriverError::ReadFailed)?;
+        let expression = PLACE_TEXT_EXPRESSION.replace("__OSL_TEXT__", &text);
+        match evaluate_target(&websocket_url, &expression)? {
+            serde_json::Value::Bool(true) => Ok(()),
+            _ => Err(WebsiteDriverError::TextPlacementFailed),
+        }
     }
 
     fn press_named_control(
@@ -602,6 +773,13 @@ impl WebsiteDriver for RealBrowserWebsiteDriver {
             thread::sleep(Duration::from_millis(50));
         }
         Err(WebsiteDriverError::PageUnavailable)
+        let name =
+            serde_json::to_string(&control.name).map_err(|_| WebsiteDriverError::ReadFailed)?;
+        let expression = CLICK_NAMED_CONTROL_EXPRESSION.replace("__OSL_CONTROL_NAME__", &name);
+        match evaluate_target(&websocket_url, &expression)? {
+            serde_json::Value::Bool(true) => Ok(()),
+            _ => Err(WebsiteDriverError::NamedControlNotFound),
+        }
     }
 }
 
@@ -811,6 +989,25 @@ fn press_named_button(
 
 fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
+fn read_selected_email_snapshot(
+    websocket_url: &str,
+) -> Result<BrowserSelectedEmailSnapshot, WebsiteDriverError> {
+    let value = evaluate_target(websocket_url, SELECTED_EMAIL_EXPRESSION)?;
+    serde_json::from_value(value).map_err(|_| WebsiteDriverError::ReadFailed)
+}
+
+fn read_live_run_progress_snapshot(
+    websocket_url: &str,
+) -> Result<WebsiteLiveRunProgress, WebsiteDriverError> {
+    let value = evaluate_target(websocket_url, LIVE_RUN_PROGRESS_EXPRESSION)?;
+    serde_json::from_value(value).map_err(|_| WebsiteDriverError::ReadFailed)
+}
+
+fn read_mailbox_snapshot(
+    websocket_url: &str,
+) -> Result<BrowserMailboxReadSnapshot, WebsiteDriverError> {
+    let value = evaluate_target(websocket_url, MAILBOX_READ_EXPRESSION)?;
+    serde_json::from_value(value).map_err(|_| WebsiteDriverError::ReadFailed)
 }
 
 fn evaluate_target(
@@ -1061,6 +1258,218 @@ const PAGE_SNAPSHOT_EXPRESSION: &str = r#"
 })()
 "#;
 
+const SELECTED_EMAIL_EXPRESSION: &str = r#"
+(() => {
+  const compact = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+  const visible = (element) => {
+    if (!element || element.hidden || element.getAttribute('aria-hidden') === 'true') return false;
+    const style = window.getComputedStyle(element);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+    return element.getClientRects().length > 0;
+  };
+  const firstVisible = (root, selector) => {
+    for (const element of root.querySelectorAll(selector)) {
+      if (visible(element)) return element;
+    }
+    return null;
+  };
+  const selected = firstVisible(document, [
+    '[data-osl-open-email="true"]',
+    '[data-osl-selected-email="true"]',
+    '[data-selected-email="true"]',
+    '[role="article"][aria-selected="true"]',
+    '[role="document"][aria-selected="true"]',
+    '[aria-current="true"][data-osl-email]'
+  ].join(', '));
+  if (!selected) return null;
+
+  const identityAttrs = [
+    'data-osl-thread-id',
+    'data-thread-id',
+    'data-osl-conversation-id',
+    'data-conversation-id',
+    'data-message-thread-id',
+    'data-email-thread-id'
+  ];
+  let conversationIdentity = '';
+  for (let current = selected; current && !conversationIdentity; current = current.parentElement) {
+    for (const attr of identityAttrs) {
+      conversationIdentity = compact(current.getAttribute(attr));
+      if (conversationIdentity) break;
+    }
+  }
+
+  const bodyElement =
+    firstVisible(selected, '[data-osl-email-body], [data-email-body], [data-message-body], [role="document"]') ||
+    selected;
+  const body = compact(bodyElement.innerText || bodyElement.textContent || '');
+  if (!body || !conversationIdentity) return null;
+  return {
+    body,
+    conversation_identity: conversationIdentity
+  };
+})()
+"#;
+
+const LIVE_RUN_PROGRESS_EXPRESSION: &str = r#"
+(() => {
+  const compact = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+  const root = document.querySelector('[data-osl-live-run-progress]');
+  if (!root) return null;
+  const valueFor = (name) => {
+    const fromRoot = root.getAttribute(`data-osl-${name}`);
+    if (fromRoot !== null) return fromRoot;
+    const element = document.querySelector(`[data-osl-${name}]`);
+    return element ? element.getAttribute(`data-osl-${name}`) : '';
+  };
+  const numberFor = (name) => {
+    const parsed = Number.parseInt(valueFor(name), 10);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+  };
+  return {
+    activeAccount: compact(valueFor('active-account')),
+    currentPlace: compact(valueFor('current-place')),
+    messagesChecked: numberFor('messages-checked'),
+    matches: numberFor('matches'),
+    scrolls: numberFor('scrolls'),
+    waits: numberFor('waits'),
+    changes: numberFor('changes')
+  };
+})()
+"#;
+
+const MAILBOX_READ_EXPRESSION: &str = r#"
+(() => {
+  const compact = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+  const visible = (element) => {
+    if (!element || element.hidden || element.getAttribute('aria-hidden') === 'true') return false;
+    const style = window.getComputedStyle(element);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+    return element.getClientRects().length > 0;
+  };
+  const attrOrChild = (root, attr, selector) => {
+    const direct = compact(root.getAttribute(attr));
+    if (direct) return direct;
+    const element = root.querySelector(selector);
+    if (!element) return '';
+    return compact(element.getAttribute(attr) || element.innerText || element.textContent);
+  };
+  const folders = [];
+  const seenFolders = new Set();
+  for (const element of document.querySelectorAll('[data-osl-mail-folder], [data-proton-folder]')) {
+    if (!visible(element)) continue;
+    const folder = compact(element.getAttribute('data-osl-mail-folder') || element.getAttribute('data-proton-folder') || element.innerText || element.textContent);
+    if (!folder || seenFolders.has(folder)) continue;
+    seenFolders.add(folder);
+    folders.push(folder);
+  }
+  const messages = [];
+  for (const row of document.querySelectorAll('[data-osl-mail-message], [data-proton-message-row]')) {
+    if (!visible(row)) continue;
+    const folder = attrOrChild(row, 'data-osl-folder', '[data-osl-mail-message-folder], [data-proton-message-folder]') ||
+      compact(row.getAttribute('data-proton-folder'));
+    const subject = attrOrChild(row, 'data-osl-subject', '[data-osl-mail-subject], [data-proton-subject]') ||
+      compact(row.getAttribute('data-proton-subject'));
+    const time = attrOrChild(row, 'data-osl-time', '[data-osl-mail-time], [data-proton-time], time') ||
+      compact(row.getAttribute('data-proton-time'));
+    const sender = attrOrChild(row, 'data-osl-sender', '[data-osl-mail-sender], [data-proton-sender]') ||
+      compact(row.getAttribute('data-proton-sender'));
+    const markerElement = row.querySelector('[data-osl-scrub-owner-marker], [data-proton-owner-marker]');
+    const ownerMarker = compact(row.getAttribute('data-osl-scrub-owner-marker') || row.getAttribute('data-proton-owner-marker') ||
+      (markerElement ? markerElement.getAttribute('data-osl-scrub-owner-marker') || markerElement.getAttribute('data-proton-owner-marker') || markerElement.innerText || markerElement.textContent : ''));
+    if (!folder || !subject || !time || !sender) continue;
+    messages.push({
+      folder,
+      subject,
+      time,
+      sender,
+      ownerMarker,
+      yours: /^(SCRUB-PR-MINE|SCRUB-IC-MINE)$/.test(ownerMarker)
+    });
+  }
+  if (!folders.length) return null;
+  return { folders, messages };
+})()
+"#;
+
+const PLACE_TEXT_EXPRESSION: &str = r#"
+(() => {
+  const text = __OSL_TEXT__;
+  const visible = (element) => {
+    if (!element || element.hidden || element.getAttribute('aria-hidden') === 'true') return false;
+    const style = window.getComputedStyle(element);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+    return element.getClientRects().length > 0;
+  };
+  const editable = (element) => {
+    if (element.disabled || element.readOnly) return false;
+    if (element.isContentEditable) return true;
+    const tag = element.tagName.toLowerCase();
+    if (tag === 'textarea') return true;
+    if (tag !== 'input') return element.getAttribute('role') === 'textbox' || element.getAttribute('role') === 'searchbox';
+    const type = (element.getAttribute('type') || 'text').toLowerCase();
+    return !['button', 'checkbox', 'color', 'file', 'hidden', 'image', 'radio', 'range', 'reset', 'submit'].includes(type);
+  };
+  const candidates = document.querySelectorAll('textarea, input, [contenteditable=""], [contenteditable="true"], [role="textbox"], [role="searchbox"]');
+  for (const element of candidates) {
+    if (!visible(element) || !editable(element)) continue;
+    element.focus();
+    if (element.isContentEditable) {
+      element.textContent = text;
+    } else {
+      element.value = text;
+    }
+    element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+    element.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  }
+  return false;
+})()
+"#;
+
+const CLICK_NAMED_CONTROL_EXPRESSION: &str = r#"
+(() => {
+  const expected = __OSL_CONTROL_NAME__;
+  const compact = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+  const visible = (element) => {
+    if (!element || element.hidden || element.getAttribute('aria-hidden') === 'true') return false;
+    const style = window.getComputedStyle(element);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+    return element.getClientRects().length > 0;
+  };
+  const labelledBy = (element) => compact(
+    (element.getAttribute('aria-labelledby') || '')
+      .split(/\s+/)
+      .map((id) => document.getElementById(id))
+      .filter(Boolean)
+      .map((label) => label.innerText || label.textContent || '')
+      .join(' ')
+  );
+  const controlName = (element) => {
+    const candidates = [
+      element.getAttribute('aria-label'),
+      labelledBy(element),
+      element.getAttribute('title'),
+      element.value,
+      element.innerText || element.textContent,
+      element.getAttribute('name'),
+      element.id
+    ];
+    for (const candidate of candidates) {
+      const name = compact(candidate);
+      if (name) return name;
+    }
+    return '';
+  };
+  for (const element of document.querySelectorAll('button, input[type="button"], input[type="submit"], input[type="reset"], [role="button"]')) {
+    if (!visible(element) || controlName(element) !== expected) continue;
+    element.click();
+    return true;
+  }
+  return false;
+})()
+"#;
+
 fn reserve_loopback_port() -> Result<u16, WebsiteDriverError> {
     TcpListener::bind("127.0.0.1:0")
         .and_then(|listener| listener.local_addr())
@@ -1189,6 +1598,55 @@ mod tests {
                 utf16_units: placement.text.encode_utf16().count(),
                 placed_sha256: sha256_hex(placement.text.as_bytes()),
             })
+        fn read_selected_email(
+            &mut self,
+            page: &WebsitePage,
+        ) -> Result<WebsiteSelectedEmail, WebsiteDriverError> {
+            Ok(WebsiteSelectedEmail {
+                page: page.clone(),
+                body: "selected email body".to_owned(),
+                conversation_identity: "stable-thread-identity".to_owned(),
+            })
+        }
+
+        fn read_live_run_progress(
+            &mut self,
+            _page: &WebsitePage,
+        ) -> Result<WebsiteLiveRunProgress, WebsiteDriverError> {
+            Ok(WebsiteLiveRunProgress {
+                active_account: "fixture@example.invalid".to_owned(),
+                current_place: "Inbox".to_owned(),
+                messages_checked: 1,
+                matches: 1,
+                scrolls: 0,
+                waits: 0,
+                changes: 1,
+            })
+        }
+
+        fn read_mailbox(
+            &mut self,
+            page: &WebsitePage,
+        ) -> Result<WebsiteMailboxRead, WebsiteDriverError> {
+            Ok(WebsiteMailboxRead {
+                page: page.clone(),
+                folders: vec!["Inbox".to_owned(), "Sent".to_owned()],
+                messages: vec![WebsiteMailboxMessage {
+                    folder: "Sent".to_owned(),
+                    subject: "fixture".to_owned(),
+                    time: "2026-08-06 09:00".to_owned(),
+                    sender: "fixture@example.invalid".to_owned(),
+                    owner_marker: "SCRUB-PR-MINE".to_owned(),
+                    yours: true,
+                }],
+            })
+        }
+
+        fn place_text(
+            &mut self,
+            _placement: WebsiteTextPlacement,
+        ) -> Result<(), WebsiteDriverError> {
+            Ok(())
         }
 
         fn press_named_control(

@@ -21,10 +21,14 @@ use osl_privacy_hub::broker::{
     drain_native_discord_overlay_text, drain_osl_chat_text, list_native_overlay_attachments,
     load_osl_chat_history, prepare_native_discord_overlay_text,
     prepare_osl_chat_text_with_route_clients, reveal_native_discord_overlay_view_once,
-    take_native_overlay_attachment, HubBrokerState,
+    take_native_overlay_attachment, HubBrokerState, OpenedNativeOverlayTextBatch,
 };
 use osl_privacy_hub::core_bridge::HubCoreState;
 use osl_privacy_hub::hub_command_surface::with_allowed_place_before_protected_message_path;
+use osl_privacy_hub::hub_command_surface::{
+    open_native_discord_overlay_text_command_flow,
+    NATIVE_DISCORD_OVERLAY_TEXT_COMMAND_CALLER_LABEL, OPEN_NATIVE_DISCORD_OVERLAY_TEXT_COMMAND,
+};
 use osl_privacy_hub::security::{
     add_friend_code, export_friend_code, list_friend_account_reach_choices, list_people,
     manual_peer_binding, set_friend_alias, set_friend_relationship,
@@ -33,8 +37,10 @@ use osl_privacy_hub::security::{
     FriendAccountReachAccount, FriendRelationship, HubSecurityState, FRIEND_BLOCKED_ERROR,
 };
 use osl_privacy_hub::service_host::ServiceHostState;
+use serde::Serialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::io::{Read, Write};
@@ -1058,6 +1064,151 @@ impl Peer {
 // ---------------------------------------------------------------------------
 // Tests.
 // ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Task3902RunRecord {
+    command_called: String,
+    private_messages_before: usize,
+    marked_private_messages_placed: usize,
+    private_messages_after: usize,
+    before_command_flow: Vec<&'static str>,
+    after_command_flow: Vec<&'static str>,
+}
+
+fn drive_open_native_discord_overlay_text_app_command(
+    peer: &Peer,
+) -> Result<(String, Vec<&'static str>, OpenedNativeOverlayTextBatch), String> {
+    peer.activate();
+    let active = peer
+        .host
+        .current()
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "fixture native Discord host is not active".to_owned())?;
+    let context_token = peer.broker.active_native_manual_context_token()?;
+    let events = RefCell::new(Vec::<&'static str>::new());
+
+    let result = open_native_discord_overlay_text_command_flow(
+        NATIVE_DISCORD_OVERLAY_TEXT_COMMAND_CALLER_LABEL,
+        || {
+            events.borrow_mut().push("context-before");
+            peer.broker.validate_active_host(&context_token, &active)?;
+            Ok((active.generation, active.clone()))
+        },
+        || {
+            events.borrow_mut().push("drain");
+            drain_native_discord_overlay_text(&peer.core, &peer.security, &peer.broker)
+        },
+        |opened| {
+            events.borrow_mut().push("poll-record");
+            opened.map(|_| ()).map_err(str::to_owned)
+        },
+        |context_epoch, expected_host| {
+            events.borrow_mut().push("context-after");
+            if context_epoch != expected_host.generation {
+                return Err("fixture native Discord context generation changed".to_owned());
+            }
+            let current = peer
+                .host
+                .current()
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| "fixture native Discord host is not active".to_owned())?;
+            if &current != expected_host {
+                return Err("fixture native Discord host changed during command".to_owned());
+            }
+            peer.broker
+                .validate_active_host(&context_token, expected_host)
+        },
+        |_opened| {
+            events.borrow_mut().push("opened-record");
+            Ok(())
+        },
+    )?;
+
+    Ok((
+        result.command_called.to_owned(),
+        events.into_inner(),
+        result.opened,
+    ))
+}
+
+#[test]
+fn task_3902_real_app_open_command_reads_marked_private_message_from_fixture_conversation() {
+    let _serial = fixture_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let relay = RelayServer::start();
+    let storage = TestStorage::new("task-3902-command");
+    let relay_url = relay.base_url();
+
+    let alice = Peer::new(&storage, "alice", &relay_url, "a3902001");
+    let bob = Peer::new(&storage, "bob", &relay_url, "b3902001");
+    alice.open_native_context_to(&bob.friend_code);
+    bob.open_native_context_to(&alice.friend_code);
+
+    let (before_command, before_flow, before) =
+        drive_open_native_discord_overlay_text_app_command(&bob)
+            .expect("fixture starts with an empty command-driven drain");
+    assert_eq!(before_command, OPEN_NATIVE_DISCORD_OVERLAY_TEXT_COMMAND);
+    let private_messages_before = before.messages.len();
+    assert_eq!(
+        private_messages_before, 0,
+        "fixture conversation must have zero private messages before placement"
+    );
+
+    const FIXTURE: &str = "task 3902 private fixture body";
+    alice.activate();
+    let prepared = prepare_native_discord_overlay_text(
+        &alice.core,
+        &alice.security,
+        &alice.broker,
+        &ai_carrier_fixture(),
+        FIXTURE.to_owned(),
+        false,
+    )
+    .expect("place one protected Discord private message in the fixture conversation");
+    let marked_private_messages_placed = usize::from(
+        prepared.prepared.person_to_person_e2ee
+            && prepared.prepared.delivered_to_osl_inbox
+            && prepared.flagtext.is_some(),
+    );
+    assert_eq!(
+        marked_private_messages_placed, 1,
+        "exactly one marked private message is placed"
+    );
+    assert_eq!(
+        relay.pending_for(&bob.identity_id),
+        1,
+        "the fixture relay has exactly one candidate private row after placement"
+    );
+
+    let (after_command, after_flow, after) =
+        drive_open_native_discord_overlay_text_app_command(&bob)
+            .expect("app command reads the placed private message");
+    assert_eq!(after_command, OPEN_NATIVE_DISCORD_OVERLAY_TEXT_COMMAND);
+    let private_messages_after = after.messages.len();
+    assert_eq!(
+        private_messages_after, 1,
+        "fixture conversation must have exactly one private message after the app command"
+    );
+    assert!(
+        after.messages[0].plaintext == FIXTURE,
+        "the app command reads back the exact placed private message"
+    );
+
+    let run_record = Task3902RunRecord {
+        command_called: after_command,
+        private_messages_before,
+        marked_private_messages_placed,
+        private_messages_after,
+        before_command_flow: before_flow,
+        after_command_flow: after_flow,
+    };
+    println!(
+        "task_3902_run_record={}",
+        serde_json::to_string(&run_record).expect("encode task 3902 run record")
+    );
+}
 
 /// P1: A commits an encrypted native-Discord protected message into B's live
 /// conversation without handing plaintext to the relay row or the public

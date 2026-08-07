@@ -116,6 +116,7 @@ use osl_privacy_hub::update_state_backup;
 use osl_privacy_hub::updates::{
     bounded_plain_notes, bounded_version, RELEASES_URL, SOURCE_REPOSITORY_URL,
 };
+use osl_privacy_hub::website_driver::RealBrowserWebsiteDriver;
 use osl_privacy_hub::whatsapp_accessibility::{
     WhatsAppAccessibilityState, WhatsAppVerificationReceipt, WhatsAppVerificationStatus,
     WhatsAppVisualBindingBeginReceipt, WhatsAppVisualBindingConfirmReceipt,
@@ -133,6 +134,13 @@ use tauri::{Emitter, Manager, State};
 use tauri_plugin_updater::UpdaterExt;
 #[cfg(feature = "whatsapp-qa-identity")]
 use zeroize::{Zeroize, Zeroizing};
+
+fn allowed_place_store_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    app.path()
+        .app_config_dir()
+        .map(|dir| dir.join("osl-core"))
+        .map_err(|error| format!("OSL allowed-place storage is unavailable: {error}"))
+}
 
 /// Diagnostics-only startup breadcrumb trace. TEMPORARY: added to bracket the
 /// exact point where a freshly built binary hangs during launch before any
@@ -217,6 +225,10 @@ use osl_privacy_hub::hub_command_surface::{
     get_scrub_account_permissions_command, require_native_discord_product_send_authority,
     require_review_ui_identity_binding_from_verifier, save_discord_scrub_consent_facts_command,
     save_scrub_account_permissions_command, service_kind_id,
+    open_native_discord_overlay_text_command_flow, read_icloud_mailbox_for_scrub_with_driver,
+    read_icloud_mailbox_pages_for_scrub_with_driver,
+    read_protected_email_live_run_progress_with_driver,
+    read_protected_email_open_message_with_driver, read_proton_mailbox_for_scrub_with_driver,
     require_native_discord_product_send_authority,
     require_review_ui_identity_binding_from_verifier, service_kind_id, service_terms_address,
     start_autoscrub_reviewed_run_after_review_ui_binding, start_autoscrub_reviewed_run_checked,
@@ -227,6 +239,13 @@ use osl_privacy_hub::hub_command_surface::{
     with_native_discord_product_send_authority_for_switches, BrowserFootprintConsentRequest,
     CheckedHost, DiscordGuidedDeletionPlanState, GuidedDeletionRunAuthorityInput,
     NativeDiscordProductSendAuthority,
+    start_autoscrub_reviewed_run_inner, with_allowed_place_before_incoming_read,
+    with_native_discord_product_send_authority, BrowserFootprintConsentRequest, CheckedHost,
+    DiscordGuidedDeletionPlanState, GuidedDeletionRunAuthorityInput, IcloudMailboxForScrubRead,
+    IcloudMailboxForScrubReadRequest, IcloudMailboxPagingRead, IcloudMailboxPagingReadRequest,
+    NativeDiscordProductSendAuthority, ProtectedEmailLiveRunProgressRequest,
+    ProtectedEmailOpenMessageRead, ProtectedEmailOpenMessageReadRequest, ProtonMailboxForScrubRead,
+    ProtonMailboxForScrubReadRequest,
 };
 use osl_privacy_hub::native_surface_capture;
 // The QA-evidence half of the surface is compiled only for the disposable QA
@@ -1460,6 +1479,14 @@ fn start_autoscrub_reviewed_run(
 }
 
 #[tauri::command]
+fn request_autoscrub_run_action(
+    state: State<'_, HubCoreState>,
+    request: autoscrub_run::AutoScrubRunActionRequest,
+) -> Result<AutoScrubFleetStatus, String> {
+    autoscrub_run::request_account_action(&state.osl, request)
+}
+
+#[tauri::command]
 fn request_autoscrub_global_stop(
     state: State<'_, HubCoreState>,
 ) -> Result<AutoScrubFleetStatus, String> {
@@ -1690,6 +1717,15 @@ async fn reset_hub_main_password_after_recovery(
     })
     .await
     .map_err(|_| "OSL password recovery worker failed".to_string())?
+async fn check_hub_recovery_words(
+    current: String,
+    entries: Vec<ipc::commands::RecoveryWordRetypeEntryDto>,
+) -> Result<ipc::commands::RecoveryWordRetypeCheckDto, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        ipc::commands::cmd_osl_check_recovery_words(current, entries)
+    })
+    .await
+    .map_err(|_| "OSL recovery word check worker failed".to_string())?
 }
 
 #[tauri::command]
@@ -2573,6 +2609,106 @@ async fn launch_firefox_service(
 }
 
 #[tauri::command]
+async fn read_protected_email_open_message(
+    caller: tauri::WebviewWindow,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    request: ProtectedEmailOpenMessageReadRequest,
+) -> Result<ProtectedEmailOpenMessageRead, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may read protected email".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    let _owner = active_unlocked_osl_user_id(&core)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut driver = RealBrowserWebsiteDriver::launch().map_err(|error| error.to_string())?;
+        read_protected_email_open_message_with_driver(&mut driver, request)
+    })
+    .await
+    .map_err(|_| "The protected email reader was interrupted".to_owned())?
+}
+
+#[tauri::command]
+async fn read_proton_mailbox_for_scrub(
+    caller: tauri::WebviewWindow,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    request: ProtonMailboxForScrubReadRequest,
+) -> Result<ProtonMailboxForScrubRead, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may read Proton mailbox summaries".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    let _owner = active_unlocked_osl_user_id(&core)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut driver = RealBrowserWebsiteDriver::launch().map_err(|error| error.to_string())?;
+        read_proton_mailbox_for_scrub_with_driver(&mut driver, request)
+    })
+    .await
+    .map_err(|_| "The Proton mailbox reader was interrupted".to_owned())?
+}
+
+#[tauri::command]
+async fn read_icloud_mailbox_for_scrub(
+    caller: tauri::WebviewWindow,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    request: IcloudMailboxForScrubReadRequest,
+) -> Result<IcloudMailboxForScrubRead, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may read iCloud mailbox summaries".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    let _owner = active_unlocked_osl_user_id(&core)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut driver = RealBrowserWebsiteDriver::launch().map_err(|error| error.to_string())?;
+        read_icloud_mailbox_for_scrub_with_driver(&mut driver, request)
+    })
+    .await
+    .map_err(|_| "The iCloud mailbox reader was interrupted".to_owned())?
+}
+
+#[tauri::command]
+async fn read_icloud_mailbox_pages_for_scrub(
+    caller: tauri::WebviewWindow,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    request: IcloudMailboxPagingReadRequest,
+) -> Result<IcloudMailboxPagingRead, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may read iCloud mailbox pages".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    let _owner = active_unlocked_osl_user_id(&core)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut driver = RealBrowserWebsiteDriver::launch().map_err(|error| error.to_string())?;
+        read_icloud_mailbox_pages_for_scrub_with_driver(&mut driver, request)
+    })
+    .await
+    .map_err(|_| "The iCloud mailbox page reader was interrupted".to_owned())?
+}
+
+#[tauri::command]
+async fn read_protected_email_live_run_progress(
+    caller: tauri::WebviewWindow,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    request: ProtectedEmailLiveRunProgressRequest,
+) -> Result<osl_privacy_hub::website_driver::WebsiteLiveRunProgress, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may read protected email progress".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    let _owner = active_unlocked_osl_user_id(&core)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut driver = RealBrowserWebsiteDriver::launch().map_err(|error| error.to_string())?;
+        read_protected_email_live_run_progress_with_driver(&mut driver, request)
+    })
+    .await
+    .map_err(|_| "The protected email progress reader was interrupted".to_owned())?
+}
+
+#[tauri::command]
 async fn get_default_browser_companion_status(
     core: State<'_, HubCoreState>,
     session: State<'_, HubAccountSessionState>,
@@ -3204,6 +3340,32 @@ fn native_discord_scope_binding(app: &tauri::AppHandle) -> Result<String, String
             let target = broker
                 .manual_burn_target(context_token)?
                 .ok_or_else(|| "The native Discord friend context is unavailable".to_owned())?;
+            serde_json::to_string(&(
+                target.service_id,
+                target.account_id,
+                target.person_id,
+                target.scope,
+            ))
+            .map_err(|_| "The native Discord friend context is unavailable".to_owned())
+        })
+}
+
+fn native_discord_allowed_place_scope_binding(app: &tauri::AppHandle) -> Result<String, String> {
+    let core = app.state::<HubCoreState>();
+    let broker = app.state::<HubBrokerState>();
+    app.state::<OverlaySessionState>()
+        .with_bootstrap_context(|context_token, host| {
+            broker.validate_active_host(context_token, host)?;
+            let target = broker
+                .manual_burn_target(context_token)?
+                .ok_or_else(|| "The native Discord friend context is unavailable".to_owned())?;
+            security::require_manual_peer_scope_approved(
+                &core,
+                &target.service_id,
+                &target.account_id,
+                target.person_id.clone(),
+                target.scope.clone(),
+            )?;
             serde_json::to_string(&(
                 target.service_id,
                 target.account_id,
@@ -4032,6 +4194,7 @@ async fn prepare_native_discord_overlay_text(
     session: State<'_, HubAccountSessionState>,
     plaintext: String,
     view_once: bool,
+    timer_picker: Option<security::TimerPickerStateDto>,
 ) -> Result<broker::PreparedNativeDiscordOverlayText, String> {
     if caller.label() != native_discord_overlay::OVERLAY_LABEL {
         return Err("Only the trusted native Discord overlay may protect text".to_owned());
@@ -4062,16 +4225,18 @@ async fn prepare_native_discord_overlay_text(
         let (context_epoch, host) = require_overlay_context_snapshot(&app)?;
         let scope_binding = native_discord_scope_binding(&app)?;
         let visual = deidentify_prepared_visual_structure(&plaintext);
-        let carrier = broker::prepare_native_discord_overlay_text_with_route_clients(
-            &app.state::<HubCoreState>(),
-            &app.state::<HubSecurityState>(),
-            &app.state::<HubBrokerState>(),
-            &app.state::<AiCarrierState>(),
-            plaintext,
-            view_once,
-            &store_client,
-            keyserver_client.as_ref(),
-        )?;
+        let carrier =
+            broker::prepare_native_discord_overlay_text_with_timer_picker_and_route_clients(
+                &app.state::<HubCoreState>(),
+                &app.state::<HubSecurityState>(),
+                &app.state::<HubBrokerState>(),
+                &app.state::<AiCarrierState>(),
+                plaintext,
+                view_once,
+                timer_picker,
+                &store_client,
+                keyserver_client.as_ref(),
+            )?;
         require_same_overlay_context(&app, context_epoch, &host)?;
         // Exactly one String: the composer remembers the cover it will type, and
         // the receipt echoes that same cover so the renderer can label the Discord
@@ -4128,6 +4293,7 @@ async fn send_native_discord_qa_atomic_text(
     session: State<'_, HubAccountSessionState>,
     plaintext: String,
     view_once: bool,
+    timer_picker: Option<security::TimerPickerStateDto>,
     mode: DiscordCarrierMode,
     chars_per_second: u16,
     layout: Option<DiscordCarrierLayout>,
@@ -4201,13 +4367,14 @@ async fn send_native_discord_qa_atomic_text(
         // copy has been committed. That matches the documented ordering — the
         // OSL inbox commit precedes any Discord contact — and a later carrier
         // refusal is reported as an honest OSL-only send below.
-        let carrier_prepared = match broker::prepare_native_discord_overlay_text(
+        let carrier_prepared = match broker::prepare_native_discord_overlay_text_with_timer_picker(
             &app.state::<HubCoreState>(),
             &app.state::<HubSecurityState>(),
             &app.state::<HubBrokerState>(),
             &app.state::<AiCarrierState>(),
             plaintext,
             view_once,
+            timer_picker,
         ) {
             Ok(prepared) => prepared,
             Err(error) => {
@@ -5018,18 +5185,30 @@ async fn rehydrate_native_discord_overlay_history(
                 rows: Vec::new(),
             });
         }
-        // The one leg that reaches Discord. It is refused outright whenever any
-        // other accessibility operation holds the single non-blocking gate, and
-        // that refusal is a bare `Err` with no label of its own -- so it needs one
-        // here or the whole read disappears without trace.
-        let rows = qa_named_rehydrate_refusal(
-            native_discord_overlay::REHYDRATE_READ_UNAVAILABLE,
-            osl_privacy_hub::native_discord_adapter::read_visible_message_rows(
-                &app.state::<NativeWindowHostState>(),
-                &owner,
-                &scope_binding,
-                MAX_VISIBLE_CARRIER_ROWS,
-            ),
+        let mut allowed_place_trace = Vec::new();
+        let rows = with_allowed_place_before_incoming_read(
+            &mut allowed_place_trace,
+            || native_discord_allowed_place_scope_binding(&app),
+            |allowed_scope_binding| {
+                if allowed_scope_binding != scope_binding {
+                    return Err(
+                        "The native Discord friend context changed before reading rows".to_owned(),
+                    );
+                }
+                // The one leg that reaches Discord. It is refused outright whenever any
+                // other accessibility operation holds the single non-blocking gate, and
+                // that refusal is a bare `Err` with no label of its own -- so it needs one
+                // here or the whole read disappears without trace.
+                qa_named_rehydrate_refusal(
+                    native_discord_overlay::REHYDRATE_READ_UNAVAILABLE,
+                    osl_privacy_hub::native_discord_adapter::read_visible_message_rows(
+                        &app.state::<NativeWindowHostState>(),
+                        &owner,
+                        &allowed_scope_binding,
+                        MAX_VISIBLE_CARRIER_ROWS,
+                    ),
+                )
+            },
         )?;
         qa_named_rehydrate_refusal(
             native_discord_overlay::REHYDRATE_CONTEXT_CHANGED,
@@ -5172,26 +5351,39 @@ async fn open_native_discord_overlay_text(
     caller: tauri::WebviewWindow,
     session: State<'_, HubAccountSessionState>,
 ) -> Result<OpenedNativeOverlayTextBatch, String> {
-    if caller.label() != native_discord_overlay::OVERLAY_LABEL {
+    let caller_label = caller.label().to_owned();
+    if caller_label != native_discord_overlay::OVERLAY_LABEL {
         return Err("Only the trusted native Discord overlay may receive text".to_owned());
     }
     let _session = session.transition.lock().await;
     tauri::async_runtime::spawn_blocking(move || {
-        let (context_epoch, host) = require_overlay_context_snapshot(&app)?;
-        let opened = broker::drain_native_discord_overlay_text(
-            &app.state::<HubCoreState>(),
-            &app.state::<HubSecurityState>(),
-            &app.state::<HubBrokerState>(),
-        );
-        #[cfg(feature = "discord-qa-shell")]
-        osl_privacy_hub::discord_qa_inbound_receipt::record_poll(
-            opened.as_ref().map_err(String::as_str),
+        let result = open_native_discord_overlay_text_command_flow(
+            &caller_label,
+            || require_overlay_context_snapshot(&app),
+            || {
+                broker::drain_native_discord_overlay_text(
+                    &app.state::<HubCoreState>(),
+                    &app.state::<HubSecurityState>(),
+                    &app.state::<HubBrokerState>(),
+                )
+            },
+            |opened| {
+                #[cfg(feature = "discord-qa-shell")]
+                osl_privacy_hub::discord_qa_inbound_receipt::record_poll(opened)?;
+                #[cfg(not(feature = "discord-qa-shell"))]
+                let _ = opened;
+                Ok(())
+            },
+            |context_epoch, host| require_same_overlay_context(&app, context_epoch, host),
+            |opened| {
+                #[cfg(feature = "discord-qa-shell")]
+                osl_privacy_hub::discord_qa_inbound_receipt::record(opened)?;
+                #[cfg(not(feature = "discord-qa-shell"))]
+                let _ = opened;
+                Ok(())
+            },
         )?;
-        let opened = opened?;
-        require_same_overlay_context(&app, context_epoch, &host)?;
-        #[cfg(feature = "discord-qa-shell")]
-        osl_privacy_hub::discord_qa_inbound_receipt::record(&opened)?;
-        Ok(opened)
+        Ok(result.opened)
     })
     .await
     .map_err(|error| format!("OSL native overlay worker failed: {error}"))?
@@ -5230,6 +5422,7 @@ async fn prepare_osl_chat_text(
     session: State<'_, HubAccountSessionState>,
     plaintext: String,
     view_once: bool,
+    timer_picker: Option<security::TimerPickerStateDto>,
 ) -> Result<PreparedNativeOverlayText, String> {
     if caller.label() != "main" {
         return Err("Only the trusted OSL window may send OSL Chats".to_owned());
@@ -5243,13 +5436,14 @@ async fn prepare_osl_chat_text(
             .map_err(|_| "OSL store transport is unavailable".to_owned())?;
         let store_client = route.cipher_store_client(&config_dir)?;
         let keyserver_client = route.tor_keyserver_client(&config_dir)?;
-        broker::prepare_osl_chat_text_with_route_clients(
+        broker::prepare_osl_chat_text_with_timer_picker_and_route_clients(
             &app.state::<HubCoreState>(),
             &app.state::<HubSecurityState>(),
             &app.state::<HubBrokerState>(),
             &app.state::<AiCarrierState>(),
             plaintext,
             view_once,
+            timer_picker,
             &store_client,
             keyserver_client.as_ref(),
         )
@@ -5615,6 +5809,7 @@ struct NativeDiscordOverlayBurnResult {
     channels_destroyed: usize,
     whitelist_entries_removed: usize,
     local_protected_rows_destroyed: usize,
+    sender_message_ids: Vec<String>,
     remote_blobs_deleted: usize,
     remote_blob_deletions_failed: usize,
     local_cleanup_complete: bool,
@@ -5634,6 +5829,7 @@ async fn burn_native_discord_overlay_chat(
     }
     let _session = session.transition.lock().await;
     let cover_scope = native_discord_scope_binding(&app)?;
+    let burn_scope_binding = cover_scope.clone();
     let burn_app = app.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         let (context_epoch, host) = require_overlay_context_snapshot(&burn_app)?;
@@ -5648,6 +5844,15 @@ async fn burn_native_discord_overlay_chat(
                 let manual = broker_state
                     .manual_burn_target(context_token)?
                     .ok_or_else(|| "The native Discord friend context is unavailable".to_owned())?;
+                let owner_osl_user_id = active_unlocked_osl_user_id(&core)?;
+                let sender_message_ids =
+                    osl_privacy_hub::native_discord_adapter::chat_burn_sender_message_ids(
+                        &burn_app.state::<NativeWindowHostState>(),
+                        &owner_osl_user_id,
+                        &burn_scope_binding,
+                        stored_host.generation,
+                    )?
+                    .sender_message_ids;
                 let scope_result = security::burn_manual_peer_scope(
                     &core,
                     &burn_app.state::<HubSecurityState>(),
@@ -5667,6 +5872,7 @@ async fn burn_native_discord_overlay_chat(
                     channels_destroyed: scope_result.channels_destroyed,
                     whitelist_entries_removed: scope_result.whitelist_entries_removed,
                     local_protected_rows_destroyed,
+                    sender_message_ids,
                     remote_blobs_deleted: scope_result.remote_blobs_deleted,
                     remote_blob_deletions_failed: scope_result.remote_blob_deletions_failed,
                     local_cleanup_complete: scope_result.local_cleanup_complete
@@ -6699,6 +6905,49 @@ async fn list_hub_people(
 }
 
 #[tauri::command]
+async fn add_allowed_place_record(
+    app: tauri::AppHandle,
+    session: State<'_, HubAccountSessionState>,
+    record: ipc::allowed_places::AllowedPlaceRecord,
+) -> Result<osl_privacy_hub::allowed_place_commands::AllowedPlaceCommandJson, String> {
+    let _session = session.transition.lock().await;
+    let store = allowed_place_store_dir(&app)?;
+    osl_privacy_hub::allowed_place_commands::add_allowed_place_json(&store, record)
+}
+
+#[tauri::command]
+async fn remove_allowed_place_record(
+    app: tauri::AppHandle,
+    session: State<'_, HubAccountSessionState>,
+    stable_id: String,
+) -> Result<osl_privacy_hub::allowed_place_commands::AllowedPlaceCommandJson, String> {
+    let _session = session.transition.lock().await;
+    let store = allowed_place_store_dir(&app)?;
+    osl_privacy_hub::allowed_place_commands::remove_allowed_place_json(&store, stable_id)
+}
+
+#[tauri::command]
+async fn list_allowed_place_records(
+    app: tauri::AppHandle,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<osl_privacy_hub::allowed_place_commands::AllowedPlaceCommandJson, String> {
+    let _session = session.transition.lock().await;
+    let store = allowed_place_store_dir(&app)?;
+    osl_privacy_hub::allowed_place_commands::list_allowed_places_json(&store)
+}
+
+#[tauri::command]
+async fn query_allowed_place_allowed(
+    app: tauri::AppHandle,
+    session: State<'_, HubAccountSessionState>,
+    query: ipc::allowed_places::AllowedPlaceQuery,
+) -> Result<osl_privacy_hub::allowed_place_commands::AllowedPlaceCommandJson, String> {
+    let _session = session.transition.lock().await;
+    let store = allowed_place_store_dir(&app)?;
+    osl_privacy_hub::allowed_place_commands::allowed_place_allowed_json(&store, query)
+}
+
+#[tauri::command]
 async fn set_hub_friend_nickname(
     core: State<'_, HubCoreState>,
     security_state: State<'_, HubSecurityState>,
@@ -7529,13 +7778,23 @@ async fn burn_active_hub_context(
                 return Err("OSL server burn choice requires an active server channel".to_owned());
             }
             security::burn_manual_peer_scope(
+            let is_osl_chat = manual.service_id == "osl-chat" && manual.account_id == "osl-main";
+            let mut result = security::burn_manual_peer_scope(
                 &core,
                 &app.state::<HubSecurityState>(),
                 &manual.service_id,
                 &manual.account_id,
                 &manual.person_id,
                 manual.scope,
-            )?
+            )?;
+            if is_osl_chat {
+                let chat_burn =
+                    broker::burn_active_osl_chat_both_sides(&core, &broker_state, &context_token)?;
+                result.rows_destroyed = result
+                    .rows_destroyed
+                    .saturating_add(chat_burn.rows_destroyed);
+            }
+            result
         } else {
             let scope_input = broker_state.scope_for_context(&context_token)?;
             let (scope_input, known_channel_ids) =
@@ -11414,6 +11673,7 @@ mod tauri_command_acl_tests {
         assert_registered_and_acl_granted(&[
             "get_autoscrub_run_fl",
             "start_autoscrub_reviewed_run",
+            "request_autoscrub_run_action",
             "request_autoscrub_global_stop",
             "keep_scanning_after_autoscrub_stop_request",
             "stop_autoscrub_now_after_stop_request",

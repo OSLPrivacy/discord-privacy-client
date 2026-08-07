@@ -333,6 +333,106 @@ pub struct OneUseInviteLink {
     pub use_limit: u8,
     pub expires_at: i64,
     pub consumed_at: Option<i64>,
+pub const TIMER_PICKER_MAX_DAYS: u32 = 30;
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimerPickerStateDto {
+    pub days: String,
+    pub hours: String,
+    pub minutes: String,
+    pub seconds: String,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimerPickerSendExpiryDto {
+    pub duration_seconds: u32,
+    pub expires_at: i64,
+}
+
+fn two_digit_timer_value(value: u32) -> String {
+    format!("{value:02}")
+}
+
+pub fn default_timer_picker_state() -> TimerPickerStateDto {
+    TimerPickerStateDto {
+        days: two_digit_timer_value(0),
+        hours: two_digit_timer_value(0),
+        minutes: two_digit_timer_value(0),
+        seconds: two_digit_timer_value(0),
+    }
+}
+
+pub fn timer_picker_state(
+    days: u32,
+    hours: u32,
+    minutes: u32,
+    seconds: u32,
+) -> Result<TimerPickerStateDto, String> {
+    if days > TIMER_PICKER_MAX_DAYS {
+        return Err("OSL timer picker days must be between 00 and 30".to_owned());
+    }
+    if hours > 23 {
+        return Err("OSL timer picker hours must be between 00 and 23".to_owned());
+    }
+    if minutes > 59 {
+        return Err("OSL timer picker minutes must be between 00 and 59".to_owned());
+    }
+    if seconds > 59 {
+        return Err("OSL timer picker seconds must be between 00 and 59".to_owned());
+    }
+    Ok(TimerPickerStateDto {
+        days: two_digit_timer_value(days),
+        hours: two_digit_timer_value(hours),
+        minutes: two_digit_timer_value(minutes),
+        seconds: two_digit_timer_value(seconds),
+    })
+}
+
+fn parse_timer_picker_part(raw: &str, label: &str, maximum: u32) -> Result<u32, String> {
+    if raw.len() != 2 || !raw.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(format!("OSL timer picker {label} must be two digits"));
+    }
+    let value = raw
+        .parse::<u32>()
+        .map_err(|_| format!("OSL timer picker {label} is invalid"))?;
+    if value > maximum {
+        return Err(format!(
+            "OSL timer picker {label} must be between 00 and {maximum:02}"
+        ));
+    }
+    Ok(value)
+}
+
+pub fn timer_picker_duration_seconds(state: &TimerPickerStateDto) -> Result<u32, String> {
+    let days = parse_timer_picker_part(&state.days, "days", TIMER_PICKER_MAX_DAYS)?;
+    let hours = parse_timer_picker_part(&state.hours, "hours", 23)?;
+    let minutes = parse_timer_picker_part(&state.minutes, "minutes", 59)?;
+    let seconds = parse_timer_picker_part(&state.seconds, "seconds", 59)?;
+    let total = days
+        .saturating_mul(86_400)
+        .saturating_add(hours.saturating_mul(3_600))
+        .saturating_add(minutes.saturating_mul(60))
+        .saturating_add(seconds);
+    if total == 0 {
+        return Err("OSL timer picker duration must be at least 01 second".to_owned());
+    }
+    Ok(total)
+}
+
+pub fn timer_picker_send_expiry_at(
+    state: &TimerPickerStateDto,
+    now: i64,
+) -> Result<TimerPickerSendExpiryDto, String> {
+    let duration_seconds = timer_picker_duration_seconds(state)?;
+    let expires_at = now
+        .checked_add(i64::from(duration_seconds))
+        .ok_or_else(|| "OSL timer picker expiry is too large".to_owned())?;
+    Ok(TimerPickerSendExpiryDto {
+        duration_seconds,
+        expires_at,
+    })
 }
 
 /// The minimum friend state needed to create a manual peer-messaging lease.
@@ -1366,6 +1466,34 @@ pub fn save_chat_approval_suggestion_choice(
     Ok(ChatApprovalSuggestionChoiceDto {
         choice: choice.as_str().to_owned(),
     })
+}
+
+/// Confirm that a local person row is an accepted, verified friend before a
+/// separate backend records account reach for that person.
+pub fn require_accepted_friend(core: &HubCoreState, person_id: &str) -> Result<(), String> {
+    require_unlocked()?;
+    validate_person_id(person_id)?;
+    let people = load_people_file(&config_dir()?)?;
+    let metadata = people
+        .people
+        .get(person_id)
+        .ok_or_else(|| "OSL friend is unknown".to_owned())?;
+    if !peer_is_verified(
+        people.version,
+        metadata.safety_number_verified,
+        metadata.pending_ed25519_public.is_some() || metadata.pending_key_bundle.is_some(),
+    ) {
+        return Err("OSL friend is not accepted".to_owned());
+    }
+    let peer = core
+        .osl
+        .peer_map
+        .lock()
+        .map_err(|_| "OSL peer state is unavailable".to_owned())?
+        .get(person_id)
+        .cloned()
+        .ok_or_else(|| "OSL friend key state is missing".to_owned())?;
+    validate_manual_peer_identity(person_id, metadata, &peer)
 }
 
 /// Set or clear a user-owned nickname for one friend. The nickname is written
@@ -5959,6 +6087,9 @@ fn write_encrypted_json_with_key<T: Serialize>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::friend_account_reach::FriendAccountReachState;
+    use crate::models::ServiceKind;
+    use crate::services::ServiceRegistryState;
 
     const TEST_FILE_KEY: [u8; 32] = [0x91; 32];
 
@@ -7244,6 +7375,77 @@ mod tests {
     }
 
     #[test]
+    fn task0704_chat_approval_suggestion_respects_choice_and_approval() {
+        let harness = FileBackedSecurityHarness::new("task0704");
+        let core = HubCoreState::default();
+        let security = HubSecurityState::default();
+        install_self_identity(&core);
+        let (person_id, metadata, peer) = test_friend(0x70);
+        write_people(harness.path(), &person_id, metadata);
+        install_peer_map(&core, harness.path(), &person_id, peer);
+        let scope = dm_scope_input(
+            manual_peer_scope_id("osl-chat", "osl-main", &person_id).expect("manual scope id"),
+        );
+
+        let saved_on =
+            save_chat_approval_suggestion_choice(&security, "on".to_owned()).expect("save on");
+        println!("TASK0704 saved_choice_on={}", saved_on.choice);
+        let unchecked_on = chat_approval_suggestion_for_manual_peer_scope(
+            &core,
+            "osl-chat",
+            "osl-main",
+            person_id.clone(),
+            scope.clone(),
+        )
+        .expect("answer unchecked chat with choice on");
+        println!(
+            "TASK0704 unchecked_chat_choice_on={}",
+            unchecked_on.suggestion
+        );
+        assert_eq!(saved_on.choice, "on");
+        assert_eq!(unchecked_on.suggestion, "offer_approval");
+
+        let saved_off =
+            save_chat_approval_suggestion_choice(&security, "off".to_owned()).expect("save off");
+        println!("TASK0704 saved_choice_off={}", saved_off.choice);
+        let unchecked_off = chat_approval_suggestion_for_manual_peer_scope(
+            &core,
+            "osl-chat",
+            "osl-main",
+            person_id.clone(),
+            scope.clone(),
+        )
+        .expect("answer unchecked chat with choice off");
+        println!(
+            "TASK0704 unchecked_chat_choice_off={}",
+            unchecked_off.suggestion
+        );
+        assert_eq!(saved_off.choice, "off");
+        assert_eq!(unchecked_off.suggestion, "no_suggestion");
+
+        save_chat_approval_suggestion_choice(&security, "on".to_owned()).expect("restore on");
+        set_manual_peer_scope_permission(
+            &core,
+            &security,
+            "osl-chat",
+            "osl-main",
+            person_id.clone(),
+            scope.clone(),
+            true,
+        )
+        .expect("approve chat");
+        let approved_on = chat_approval_suggestion_for_manual_peer_scope(
+            &core, "osl-chat", "osl-main", person_id, scope,
+        )
+        .expect("answer approved chat with choice on");
+        println!(
+            "TASK0704 approved_chat_choice_on={}",
+            approved_on.suggestion
+        );
+        assert_eq!(approved_on.suggestion, "no_suggestion");
+    }
+
+    #[test]
     fn manual_peer_scope_accepts_broker_dm_channel_binding() {
         let (person_id, _, _) = test_friend(6);
         let binding = test_manual_binding(person_id.clone());
@@ -7721,6 +7923,69 @@ mod tests {
         );
         assert!(friend_row.whitelisted_scopes[0].user_specific);
         assert!(!friend_row.reach_broadened);
+    }
+
+    #[test]
+    fn task_0239_per_friend_account_reach_direct_record_check_prints_owner_friend_account_allowed_state(
+    ) {
+        let harness = FileBackedSecurityHarness::new("task-0239-friend-account-reach");
+        let core = HubCoreState::default();
+        install_self_identity(&core);
+        let owner = active_user_id(&core).unwrap();
+        let (friend, metadata, peer) = test_friend(39);
+        write_people(harness.path(), &friend, metadata);
+        install_peer_map(&core, harness.path(), &friend, peer);
+
+        let registry =
+            ServiceRegistryState::load(harness.path().join("task-0239-service-registry.json"));
+        let account = registry
+            .create_for_owner(&owner, ServiceKind::Discord, "Owner Discord".to_owned())
+            .unwrap();
+        let reach_path = harness.path().join("task-0239-friend-account-reach.json");
+        FriendAccountReachState::load(reach_path.clone())
+            .set_choice(
+                &core,
+                &registry,
+                &owner,
+                &friend,
+                ServiceKind::Discord,
+                &account.id,
+                true,
+            )
+            .unwrap();
+
+        let stored = FriendAccountReachState::load(reach_path)
+            .record(
+                &core,
+                &registry,
+                &owner,
+                &friend,
+                ServiceKind::Discord,
+                &account.id,
+            )
+            .unwrap()
+            .expect("the per-friend account reach choice was stored");
+        assert_eq!(stored.owner_osl_user_id, owner);
+        assert_eq!(stored.friend_person_id, friend);
+        assert_eq!(stored.account_id, account.id);
+        assert!(stored.allowed);
+        assert!(FriendAccountReachState::load(
+            harness.path().join("task-0239-friend-account-reach.json")
+        )
+        .is_allowed(
+            &core,
+            &registry,
+            &stored.owner_osl_user_id,
+            &stored.friend_person_id,
+            ServiceKind::Discord,
+            &stored.account_id
+        )
+        .unwrap());
+
+        println!(
+            "TASK 0239 direct record check: owner={} friend={} account={} allowed={}",
+            stored.owner_osl_user_id, stored.friend_person_id, stored.account_id, stored.allowed
+        );
     }
 
     #[test]

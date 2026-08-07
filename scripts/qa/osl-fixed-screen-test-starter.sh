@@ -20,6 +20,9 @@ FAILURE_META_NAME="${OSL_FIXED_SCREEN_FAILURE_META_NAME:-osl-fixed-screen-failur
 IMAGE_PATH="$OUT_DIR/$IMAGE_NAME"
 META_PATH="$OUT_DIR/$META_NAME"
 FAILURE_META_PATH="$OUT_DIR/$FAILURE_META_NAME"
+
+IMAGE_PATH="$OUT_DIR/$IMAGE_NAME"
+META_PATH="$OUT_DIR/$META_NAME"
 XVFB_PID=""
 WM_PID=""
 APP_PID=""
@@ -147,6 +150,7 @@ if [ -z "$WINDOW_ID" ]; then
   record_failed_target "fixed-screen window not found" "$WINDOW_NAME"
   die "fixed-screen window not found: $WINDOW_NAME"
 fi
+[ -n "$WINDOW_ID" ] || die "fixed-screen window not found: $WINDOW_NAME"
 printf 'TASK0063_WINDOW id=%s title=%q\n' "$WINDOW_ID" "$WINDOW_NAME"
 
 XWININFO_OUT="$(DISPLAY="$DISPLAY_ID" xwininfo -id "$WINDOW_ID")"

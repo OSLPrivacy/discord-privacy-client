@@ -1,0 +1,1 @@
+import-im6.q16: no window with specified ID exists `4194307': Resource temporarily unavailable @ error/xwindow.c/XImportImage/4887.

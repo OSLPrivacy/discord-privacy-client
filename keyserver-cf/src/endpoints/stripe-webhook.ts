@@ -55,7 +55,7 @@ export async function handleStripeWebhook(
     secret: env.STRIPE_WEBHOOK_SECRET,
   });
   if (!verified) {
-    return unauthorized("invalid stripe signature");
+    return unauthorized("bad-signature");
   }
   const event = parseEvent(rawBody);
   if (!event) return badRequest("malformed event envelope");

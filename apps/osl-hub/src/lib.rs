@@ -5,6 +5,8 @@
 pub mod account_identity_authority;
 #[cfg(feature = "core")]
 pub mod account_recovery;
+#[cfg(feature = "core")]
+pub mod allowed_place_commands;
 pub mod adapter_profile_boot;
 pub mod adapters;
 #[cfg(feature = "core")]
@@ -85,6 +87,8 @@ pub mod execution_consent;
 pub mod external_overlay;
 pub(crate) mod firefox_migration_coordinator;
 pub mod front_window_grab;
+#[cfg(feature = "core")]
+pub mod friend_account_reach;
 pub mod hosted_audience;
 pub mod hosted_port;
 pub mod hosted_provider_recipe;
