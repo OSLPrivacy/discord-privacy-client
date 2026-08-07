@@ -73,6 +73,15 @@ function bannedPattern(banned: string): RegExp {
   return new RegExp(`\\b${escaped}\\b`, "iu");
 }
 
+/**
+ * Whole-word and case-sensitive: a required label is a word the user reads,
+ * not a substring. "Saved" on screen must not satisfy a required "Save".
+ */
+function requiredPattern(word: string): RegExp {
+  const escaped = word.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&").replace(/\s+/gu, "\\s+");
+  return new RegExp(`\\b${escaped}\\b`, "u");
+}
+
 export interface ScreenWordCheck {
   readonly title: string | null;
   readonly wordCount: number;
@@ -90,7 +99,7 @@ export function checkScreenWords(
   const title = pageTitle(markup);
   const text = visibleText(markup);
   const wordCount = visibleWords(markup).length;
-  const missingWords = expected.requiredWords.filter((word) => !text.includes(word));
+  const missingWords = expected.requiredWords.filter((word) => !requiredPattern(word).test(text));
   const bannedFound = bannedWords.filter((rule) => bannedPattern(rule.banned).test(text));
   const pass =
     title === expected.title && wordCount >= 12 && missingWords.length === 0 && bannedFound.length === 0;
