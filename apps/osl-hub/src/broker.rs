@@ -12633,6 +12633,555 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct Task3957ControlRow {
+        id: String,
+        sender_id: String,
+        recipient_id: String,
+        scope_id: String,
+        bundle_b64: String,
+        created_at: i64,
+    }
+
+    #[derive(Default)]
+    struct Task3957ServiceState {
+        blobs: BTreeMap<String, (Vec<u8>, String)>,
+        wrapped_keys: BTreeMap<String, serde_json::Value>,
+        rows: Vec<Task3957ControlRow>,
+        next_blob: u64,
+        next_row: u64,
+        withheld_row_index: Option<usize>,
+    }
+
+    struct Task3957Service {
+        base_url: String,
+        state: std::sync::Arc<std::sync::Mutex<Task3957ServiceState>>,
+        shutdown: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        server: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl Task3957Service {
+        fn spawn(floor_identity: &keystore::Identity) -> Self {
+            use std::io::{Read, Write};
+            use std::sync::atomic::{AtomicBool, Ordering};
+
+            let listener =
+                std::net::TcpListener::bind("127.0.0.1:0").expect("bind task 3957 service");
+            let address = listener.local_addr().expect("read task 3957 address");
+            let state = std::sync::Arc::new(std::sync::Mutex::new(Task3957ServiceState::default()));
+            let shutdown = std::sync::Arc::new(AtomicBool::new(false));
+            let server_state = std::sync::Arc::clone(&state);
+            let server_shutdown = std::sync::Arc::clone(&shutdown);
+            let floor_user_id = floor_identity.user_id.clone();
+            let floor_ed25519_public = floor_identity.ed25519_public.as_bytes().to_vec();
+
+            let server = std::thread::spawn(move || {
+                while !server_shutdown.load(Ordering::Acquire) {
+                    let Ok((mut stream, _)) = listener.accept() else {
+                        continue;
+                    };
+                    if server_shutdown.load(Ordering::Acquire) {
+                        break;
+                    }
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(5)))
+                        .expect("bound task 3957 request read time");
+                    let mut request = Vec::new();
+                    let mut chunk = [0u8; 4096];
+                    loop {
+                        let read = stream.read(&mut chunk).expect("read task 3957 request");
+                        if read == 0 {
+                            break;
+                        }
+                        request.extend_from_slice(&chunk[..read]);
+                        if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                            break;
+                        }
+                        assert!(request.len() <= 64 * 1024, "request headers stay bounded");
+                    }
+                    let Some(header_end) = request
+                        .windows(4)
+                        .position(|window| window == b"\r\n\r\n")
+                        .map(|index| index + 4)
+                    else {
+                        continue;
+                    };
+                    let header_text =
+                        String::from_utf8_lossy(&request[..header_end]).to_string();
+                    let request_line = header_text.lines().next().unwrap_or_default();
+                    let mut request_parts = request_line.split_whitespace();
+                    let method = request_parts.next().unwrap_or_default().to_owned();
+                    let target = request_parts.next().unwrap_or_default().to_owned();
+                    let content_length = header_text
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length").then(|| {
+                                value.trim().parse::<usize>().expect("valid content length")
+                            })
+                        })
+                        .unwrap_or(0);
+                    while request.len() < header_end.saturating_add(content_length) {
+                        let read = stream.read(&mut chunk).expect("read task 3957 body");
+                        assert!(read > 0, "request ended before its body");
+                        request.extend_from_slice(&chunk[..read]);
+                    }
+                    let body = request[header_end..header_end + content_length].to_vec();
+                    let fetch_token = header_text.lines().find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("x-osl-fetch-token")
+                            .then(|| value.trim().to_owned())
+                    });
+
+                    let mut state = server_state.lock().expect("task 3957 state lock");
+                    let response = if method == "GET" && target == "/v1/healthz" {
+                        serde_json::json!({
+                            "ok": true,
+                            "capabilities": {
+                                "control_inbox_sender_disposition": 1,
+                            },
+                        })
+                    } else if method == "GET"
+                        && target.starts_with("/v1/sender-filter-capability-floor/")
+                    {
+                        sender_filter_floor_response(
+                            &floor_user_id,
+                            &floor_ed25519_public,
+                            &target,
+                        )
+                    } else if method == "POST" && target == "/v1/blob" {
+                        state.next_blob = state.next_blob.saturating_add(1);
+                        let id = format!("{:016x}", state.next_blob);
+                        state.blobs.insert(
+                            id.clone(),
+                            (body, fetch_token.expect("blob upload carries fetch token")),
+                        );
+                        serde_json::json!({
+                            "id": id,
+                            "expires_at": 1_700_003_957i64,
+                        })
+                    } else if method == "GET" && target.starts_with("/v1/blob/") {
+                        let id = target.trim_start_matches("/v1/blob/");
+                        let requested_token = fetch_token.expect("blob fetch carries fetch token");
+                        let Some((blob, stored_token)) = state.blobs.get(id) else {
+                            write_http_bytes(&mut stream, 404, b"missing");
+                            continue;
+                        };
+                        assert_eq!(
+                            &requested_token, stored_token,
+                            "task 3957 fetch token must match the uploaded blob"
+                        );
+                        write_http_bytes(&mut stream, 200, blob);
+                        continue;
+                    } else if method == "POST" && target == "/v1/wrapped-keys" {
+                        let value: serde_json::Value =
+                            serde_json::from_slice(&body).expect("wrapped key JSON");
+                        let content_id = value["content_id"]
+                            .as_str()
+                            .expect("wrapped key content id")
+                            .to_owned();
+                        state.wrapped_keys.insert(content_id.clone(), value);
+                        serde_json::json!({ "content_id": content_id })
+                    } else if method == "GET" && target.starts_with("/v1/wrapped-keys/") {
+                        let content_id = target
+                            .trim_start_matches("/v1/wrapped-keys/")
+                            .split_once('?')
+                            .map(|(id, _)| id)
+                            .unwrap_or_default();
+                        let Some(value) = state.wrapped_keys.get(content_id) else {
+                            write_http_bytes(&mut stream, 404, b"missing");
+                            continue;
+                        };
+                        serde_json::json!({
+                            "content_id": value["content_id"].clone(),
+                            "content_type": value["content_type"].clone(),
+                            "system_message_kind": value["system_message_kind"].clone(),
+                            "sender_id": value["sender_id"].clone(),
+                            "recipient_id": value["recipient_id"].clone(),
+                            "session_version": value["session_version"].clone(),
+                            "share_index": value["share_index"].clone(),
+                            "wrapped_share_blob": value["wrapped_share_blob"].clone(),
+                            "blob_version": value["blob_version"].clone(),
+                            "single_use": value["single_use"].clone(),
+                            "display_duration_seconds": value["display_duration_seconds"].clone(),
+                            "expires_at": value["expires_at"].clone(),
+                            "created_at": "2023-11-14T22:13:20.000Z",
+                        })
+                    } else if method == "POST" && target == "/v1/control-inbox" {
+                        let value: serde_json::Value =
+                            serde_json::from_slice(&body).expect("control inbox JSON");
+                        state.next_row = state.next_row.saturating_add(1);
+                        let id = format!("task3957-row-{:02}", state.next_row);
+                        state.rows.push(Task3957ControlRow {
+                            id: id.clone(),
+                            sender_id: value["sender_id"]
+                                .as_str()
+                                .expect("control sender")
+                                .to_owned(),
+                            recipient_id: value["recipient_id"]
+                                .as_str()
+                                .expect("control recipient")
+                                .to_owned(),
+                            scope_id: value["scope_id"]
+                                .as_str()
+                                .expect("control scope")
+                                .to_owned(),
+                            bundle_b64: value["bundle_b64"]
+                                .as_str()
+                                .expect("control bundle")
+                                .to_owned(),
+                            created_at: 1_700_000_000,
+                        });
+                        serde_json::json!({
+                            "id": id,
+                            "expires_at": 1_700_003_957i64,
+                        })
+                    } else if method == "GET" && target.starts_with("/v1/control-inbox/") {
+                        let recipient = target
+                            .trim_start_matches("/v1/control-inbox/")
+                            .split_once('?')
+                            .map(|(id, _)| id)
+                            .unwrap_or_default();
+                        let sender = query_value(&target, "sender");
+                        let items = state
+                            .rows
+                            .iter()
+                            .enumerate()
+                            .filter(|(index, row)| {
+                                Some(*index) != state.withheld_row_index
+                                    && row.recipient_id == recipient
+                                    && row.sender_id == sender
+                            })
+                            .map(|(_, row)| {
+                                serde_json::json!({
+                                    "id": row.id,
+                                    "sender_id": row.sender_id,
+                                    "scope_id": row.scope_id,
+                                    "bundle_b64": row.bundle_b64,
+                                    "created_at": row.created_at,
+                                })
+                            })
+                            .collect::<Vec<_>>();
+                        let live = items.len();
+                        serde_json::json!({
+                            "items": items,
+                            "filtered_sender_id": sender,
+                            "filtered_sender_delivery": {
+                                "live": live,
+                                "retryable": 0,
+                                "quarantined": 0,
+                                "retired": 0,
+                            },
+                        })
+                    } else if method == "DELETE" && target.starts_with("/v1/control-inbox/") {
+                        let id = target.trim_start_matches("/v1/control-inbox/");
+                        state.rows.retain(|row| row.id != id);
+                        serde_json::json!({ "ok": true })
+                    } else {
+                        write_http_bytes(&mut stream, 404, b"missing");
+                        continue;
+                    };
+                    write_http_json(&mut stream, &response);
+                }
+            });
+
+            Self {
+                base_url: format!("http://{address}"),
+                state,
+                shutdown,
+                server: Some(server),
+            }
+        }
+
+        fn stop(&mut self) {
+            self.shutdown
+                .store(true, std::sync::atomic::Ordering::Release);
+            let _ = std::net::TcpStream::connect(
+                self.base_url
+                    .trim_start_matches("http://")
+                    .trim_start_matches("https://"),
+            );
+            if let Some(server) = self.server.take() {
+                server.join().expect("task 3957 service exits");
+            }
+        }
+    }
+
+    impl Drop for Task3957Service {
+        fn drop(&mut self) {
+            self.stop();
+        }
+    }
+
+    fn write_http_json(stream: &mut std::net::TcpStream, body: &serde_json::Value) {
+        let body = serde_json::to_vec(body).expect("serialize task 3957 JSON response");
+        write_http_bytes(stream, 200, &body);
+    }
+
+    fn write_http_bytes(stream: &mut std::net::TcpStream, status: u16, body: &[u8]) {
+        use std::io::Write;
+        let reason = match status {
+            200 => "OK",
+            404 => "Not Found",
+            _ => "Error",
+        };
+        let headers = format!(
+            "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        stream
+            .write_all(headers.as_bytes())
+            .and_then(|_| stream.write_all(body))
+            .expect("write task 3957 response");
+    }
+
+    fn task3957_export_friend_code(core: &HubCoreState, identity: &keystore::Identity) -> String {
+        *core.osl.identity.lock().unwrap() = Some(identity.clone());
+        security::export_friend_code(core)
+            .expect("export friend code")
+            .friend_code
+    }
+
+    fn task3957_add_verified_friend(
+        core: &HubCoreState,
+        security_state: &HubSecurityState,
+        self_identity: &keystore::Identity,
+        friend_code: String,
+    ) -> String {
+        *core.osl.identity.lock().unwrap() = Some(self_identity.clone());
+        let added = security::add_friend_code(core, security_state, friend_code, None)
+            .expect("add friend code");
+        security::verify_friend_safety_number(
+            core,
+            security_state,
+            added.person_id.clone(),
+            added.safety_number,
+        )
+        .expect("verify friend safety number");
+        added.person_id
+    }
+
+    fn task3957_approve_native_scope(
+        security_state: &HubSecurityState,
+        core: &HubCoreState,
+        person_id: &str,
+        account_id: &str,
+    ) {
+        security::set_friend_account_reach_choice(
+            security_state,
+            person_id.to_owned(),
+            "discord".to_owned(),
+            account_id.to_owned(),
+            true,
+        )
+        .expect("allow friend to reach the native account");
+        let scope_id = security::manual_peer_scope_id("discord", account_id, person_id)
+            .expect("native scope id");
+        security::set_manual_peer_scope_permission(
+            core,
+            security_state,
+            "discord",
+            account_id,
+            person_id.to_owned(),
+            ScopeInput {
+                kind: ScopeKind::Dm,
+                id: scope_id,
+                server_id: None,
+                channel_id: None,
+            },
+            true,
+        )
+        .expect("approve native scope");
+    }
+
+    #[test]
+    fn task_3957_long_native_message_has_no_cover_row_and_opens_only_when_all_pieces_arrive() {
+        let _serial = crate::global_keystore_test_lock();
+        let _globals = KeystoreGlobalsGuard;
+        let account_dir = std::env::temp_dir().join(format!(
+            "osl-hub-task3957-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&account_dir).expect("create task 3957 account dir");
+        keystore::set_base_dir_override(Some(account_dir.clone()));
+        keystore::set_active_account_dir(Some(account_dir.clone()));
+        ipc::main_password::set_file_storage_key(Some([0x57; 32]));
+
+        let core = HubCoreState::default();
+        let security_state = HubSecurityState::default();
+        let ai_carrier = crate::ai_carrier::AiCarrierState::default();
+        let alice = keystore::generate_identity("task3957-alice".to_owned());
+        let bob = keystore::generate_identity("task3957-bob".to_owned());
+        let alice_code = task3957_export_friend_code(&core, &alice);
+        let bob_code = task3957_export_friend_code(&core, &bob);
+        let bob_person_id =
+            task3957_add_verified_friend(&core, &security_state, &alice, bob_code);
+        let alice_person_id =
+            task3957_add_verified_friend(&core, &security_state, &bob, alice_code);
+        let alice_account_id = "native-discord-task3957-alice";
+        let bob_account_id = "native-discord-task3957-bob";
+        task3957_approve_native_scope(
+            &security_state,
+            &core,
+            &bob_person_id,
+            alice_account_id,
+        );
+        task3957_approve_native_scope(
+            &security_state,
+            &core,
+            &alice_person_id,
+            bob_account_id,
+        );
+        let alice_to_bob = ManualPeerBinding {
+            person_id: bob_person_id.clone(),
+            peer_osl_user_id: bob.user_id.clone(),
+            peer_x25519_public: *bob.x25519_public.as_bytes(),
+            peer_mlkem768_public: bob.mlkem_public_bytes,
+        };
+        let bob_to_alice = ManualPeerBinding {
+            person_id: alice_person_id.clone(),
+            peer_osl_user_id: alice.user_id.clone(),
+            peer_x25519_public: *alice.x25519_public.as_bytes(),
+            peer_mlkem768_public: alice.mlkem_public_bytes,
+        };
+
+        let mut service = Task3957Service::spawn(&bob);
+        std::fs::write(
+            account_dir.join("keyserver.json"),
+            serde_json::json!({
+                "base_url": service.base_url,
+                "cipher_store_url": service.base_url,
+            })
+            .to_string(),
+        )
+        .expect("write task 3957 local service config");
+        let keyserver_client =
+            keystore::KeyServerClient::new(&service.base_url).expect("task 3957 keyserver client");
+        let store_client = ipc::cipher_store_client::CipherStoreClient::new(&service.base_url)
+            .expect("task 3957 cipher-store client");
+        *core.osl.keyserver_slot() = Some(keyserver_client.clone());
+
+        let broker = HubBrokerState::default();
+        let alice_host = ActiveServiceHost {
+            service_id: "discord".to_owned(),
+            account_id: alice_account_id.to_owned(),
+            generation: 1,
+            owner_namespace: alice.user_id.clone(),
+        };
+        *core.osl.identity.lock().unwrap() = Some(alice.clone());
+        activate_owned_native_manual_peer_context(
+            &broker,
+            &alice.user_id,
+            &alice_host,
+            alice_to_bob,
+        )
+        .expect("activate Alice native context");
+
+        let long_text = format!(
+            "TASK3957-LONG-BEGIN\n{}\nTASK3957-LONG-END",
+            "exact-private-text-3957|".repeat((MAX_NATIVE_OVERLAY_CHUNK_BYTES * 3 + 512) / 24)
+        );
+        let pieces = split_native_overlay_text(&long_text).expect("task 3957 text splits");
+        let piece_count = pieces.len();
+        assert_eq!(piece_count, 4, "fixture must split into exactly four pieces");
+        let prepared = prepare_native_discord_overlay_text_with_route_clients(
+            &core,
+            &security_state,
+            &broker,
+            &ai_carrier,
+            long_text.clone(),
+            false,
+            None,
+            &store_client,
+            Some(&keyserver_client),
+        )
+        .expect("send long task 3957 message through the native service path");
+        let cover_rows = usize::from(prepared.flagtext.is_some());
+        let posted_rows = {
+            let state = service.state.lock().expect("task 3957 service state");
+            assert_eq!(state.blobs.len(), 4, "one cipher-store blob per piece");
+            assert_eq!(state.wrapped_keys.len(), 4, "one wrapped key per piece");
+            state
+                .rows
+                .iter()
+                .filter(|row| {
+                    row.sender_id == alice.user_id
+                        && row.recipient_id == bob.user_id
+                        && row.scope_id
+                            == native_overlay_relay_scope_id(
+                                &manual_dm_channel_binding(
+                                    "discord",
+                                    &alice.user_id,
+                                    &bob.user_id,
+                                )
+                                .unwrap(),
+                            )
+                            .unwrap()
+                })
+                .count()
+        };
+        assert_eq!(cover_rows, 0);
+        assert_eq!(posted_rows, 4);
+
+        let bob_host = ActiveServiceHost {
+            service_id: "discord".to_owned(),
+            account_id: bob_account_id.to_owned(),
+            generation: 2,
+            owner_namespace: bob.user_id.clone(),
+        };
+        *core.osl.identity.lock().unwrap() = Some(bob.clone());
+        activate_owned_native_manual_peer_context(
+            &broker,
+            &bob.user_id,
+            &bob_host,
+            bob_to_alice,
+        )
+        .expect("activate Bob native context");
+
+        {
+            let mut state = service.state.lock().expect("task 3957 service state");
+            state.withheld_row_index = Some(3);
+        }
+        let withheld = drain_native_discord_overlay_text(&core, &security_state, &broker)
+            .expect("withheld task 3957 drain runs");
+        let withheld_sentence = "No complete private message is available yet";
+        let partial_text = pieces.iter().take(3).cloned().collect::<String>();
+        assert_eq!(withheld.messages.len(), 0);
+        assert!(!withheld_sentence.contains(&partial_text));
+        println!("TASK3957 pieces={piece_count}");
+        println!("TASK3957 cover_rows={cover_rows}");
+        println!("TASK3957 posted_native_piece_rows={posted_rows}");
+        println!(
+            "TASK3957 withheld_opened_private_messages={} withheld_sentence=\"{}\" contains_three_quarters={}",
+            withheld.messages.len(),
+            withheld_sentence,
+            withheld_sentence.contains(&partial_text)
+        );
+
+        {
+            let mut state = service.state.lock().expect("task 3957 service state");
+            state.withheld_row_index = None;
+        }
+        let opened = drain_native_discord_overlay_text(&core, &security_state, &broker)
+            .expect("complete task 3957 drain runs");
+        assert_eq!(opened.messages.len(), 1);
+        assert_eq!(opened.messages[0].plaintext, long_text);
+        assert!(opened.messages[0].cover_pointer.is_none());
+        println!(
+            "TASK3957 opened_private_messages={} opened_exact_text={} opened_cover_pointer={}",
+            opened.messages.len(),
+            opened.messages[0].plaintext == long_text,
+            opened.messages[0].cover_pointer.is_some()
+        );
+
+        service.stop();
+        let _ = std::fs::remove_dir_all(account_dir);
+    }
+
     fn set_test_license(core: &HubCoreState, state: keystore::LicenseState, raw_status: &str) {
         *core.osl.license_state.lock().expect("license state lock") = keystore::LicenseStateDto {
             state,
