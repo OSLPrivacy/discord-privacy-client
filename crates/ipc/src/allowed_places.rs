@@ -921,6 +921,3 @@ pub fn allowed_place_summary(app_data_dir: impl AsRef<Path>) -> Result<AllowedPl
     })
 }
 
-
-
-
