@@ -51,6 +51,8 @@ export async function keepScanningAfterAutoScrubStopRequest(): Promise<AutoScrub
 export async function stopAutoScrubNowAfterStopRequest(): Promise<AutoScrubFleetStatus | null> {
   if (!isTauriRuntime()) return null;
   return parseAutoScrubFleetStatus(await invoke<unknown>("stop_autoscrub_now_after_stop_request"));
+}
+
 export async function requestAutoScrubRunAction(
   runId: string,
   action: AutoScrubRunActionKind,
