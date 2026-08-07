@@ -2798,6 +2798,47 @@ fn prepare_direct_manual_v3(
     encrypt_direct_manual_v3_payload(core, peer, ipc::wire_v2::MSG_TYPE_CONTENT, &payload)
 }
 
+#[derive(Clone)]
+struct DirectManualV3Recipient {
+    x25519_pub: crypto::x25519::PublicKey,
+    mlkem_pub: crypto::ml_kem_768::EncapsulationKey,
+}
+
+impl DirectManualV3Recipient {
+    fn from_identity(identity: &keystore::Identity) -> Self {
+        Self {
+            x25519_pub: identity.x25519_public,
+            mlkem_pub: identity.mlkem_encapsulation_key(),
+        }
+    }
+
+    fn from_binding(peer: &ManualPeerBinding) -> Self {
+        Self {
+            x25519_pub: crypto::x25519::PublicKey::from_bytes(peer.peer_x25519_public),
+            mlkem_pub: crypto::ml_kem_768::EncapsulationKey::from_bytes(
+                &peer.peer_mlkem768_public,
+            ),
+        }
+    }
+}
+
+fn direct_manual_v3_recipient_ceiling(payload_len: usize) -> usize {
+    ipc::wire_v2::max_v3_recipients_for_plaintext_len(payload_len)
+}
+
+fn enforce_direct_manual_v3_recipient_ceiling(
+    recipient_count: usize,
+    payload_len: usize,
+) -> Result<(), String> {
+    let ceiling = direct_manual_v3_recipient_ceiling(payload_len);
+    if recipient_count > ceiling {
+        return Err(format!(
+            "too many devices for one message: {recipient_count} devices requested, ceiling is {ceiling}"
+        ));
+    }
+    Ok(())
+}
+
 fn encrypt_direct_manual_v3_payload(
     core: &HubCoreState,
     peer: &ManualPeerBinding,
@@ -2811,19 +2852,36 @@ fn encrypt_direct_manual_v3_payload(
         .map_err(|_| "OSL identity state is unavailable".to_owned())?
         .clone()
         .ok_or_else(|| "OSL identity is not loaded".to_owned())?;
+    encrypt_direct_manual_v3_payload_for_recipients(
+        &identity,
+        peer,
+        &[
+            DirectManualV3Recipient::from_identity(&identity),
+            DirectManualV3Recipient::from_binding(peer),
+        ],
+        message_type,
+        payload,
+    )
+}
+
+fn encrypt_direct_manual_v3_payload_for_recipients(
+    identity: &keystore::Identity,
+    peer: &ManualPeerBinding,
+    recipients: &[DirectManualV3Recipient],
+    message_type: u8,
+    payload: &[u8],
+) -> Result<String, String> {
+    enforce_direct_manual_v3_recipient_ceiling(recipients.len(), payload.len())?;
     if constant_time_eq_32(identity.x25519_public.as_bytes(), &peer.peer_x25519_public) {
         return Err("OSL manual peer key matches the active identity".to_owned());
     }
-    let recipients = [
-        ipc::wire_v2::RecipientV3 {
-            x25519_pub: identity.x25519_public,
-            mlkem_pub: identity.mlkem_encapsulation_key(),
-        },
-        ipc::wire_v2::RecipientV3 {
-            x25519_pub: crypto::x25519::PublicKey::from_bytes(peer.peer_x25519_public),
-            mlkem_pub: crypto::ml_kem_768::EncapsulationKey::from_bytes(&peer.peer_mlkem768_public),
-        },
-    ];
+    let recipients: Vec<_> = recipients
+        .iter()
+        .map(|recipient| ipc::wire_v2::RecipientV3 {
+            x25519_pub: recipient.x25519_pub,
+            mlkem_pub: recipient.mlkem_pub.clone(),
+        })
+        .collect();
     ipc::wire_v2::encrypt_v3(
         &identity.x25519_secret,
         &identity.x25519_public,
@@ -6626,16 +6684,15 @@ fn begin_peer_attachment(
         crate::view_once_eligibility::require_view_once_attachment_eligibility(&mime_type)?;
     }
     let tier = active_attachment_account_tier(core)?;
-    if crate::attachment_limits::check_attachment_size(plaintext_size, tier).is_err() {
     if crate::attachment_limits::check_attachment_request(plaintext_size, 1, tier).is_err() {
+        return Err(ERROR.to_owned());
+    }
     let plaintext_limit = if osl_chat {
         crate::osl_chat_file_limits::current_osl_chat_file_size_limit(core).max_bytes
     } else {
         ipc::attachment_wire::MAX_STREAMED_ATTACHMENT_BYTES
     };
     if plaintext_size == 0 || plaintext_size > plaintext_limit {
-    let tier = active_attachment_account_tier(core);
-    if crate::attachment_limits::check_attachment_limits(tier, plaintext_size, 1).is_err() {
         return Err(ERROR.to_owned());
     }
     let ttl_seconds = security::scope_security(manual.scope.clone())
@@ -6687,12 +6744,6 @@ fn active_attachment_account_tier(
         }
         keystore::LicenseState::Free => crate::attachment_limits::AttachmentAccountTier::Free,
     })
-) -> crate::attachment_limits::AttachmentAccountTier {
-    if ipc::tier_gate::is_paid_equivalent(&core.osl) {
-        crate::attachment_limits::AttachmentAccountTier::Pro
-    } else {
-        crate::attachment_limits::AttachmentAccountTier::Free
-    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -7917,10 +7968,9 @@ enum PeerWireOrientation {
     PeerToSelf,
     /// Outbound. This identity wrote it to the verified peer.
     ///
-    /// Recoverable because OSL addresses every outbound peer message to TWO
-    /// recipient slots -- this identity's and the peer's -- when it builds the
-    /// wire, so the operator's own X25519/ML-KEM keys open their own sent
-    /// message. Nothing is stored in the clear to make this work.
+    /// Recoverable because OSL includes this identity in the v3 recipient slots
+    /// when it builds the wire, so the operator's own X25519/ML-KEM keys open
+    /// their own sent message. Nothing is stored in the clear to make this work.
     SelfToPeer,
 }
 
@@ -8742,20 +8792,14 @@ fn verify_inspected_manual_v3(
     peer_public: &[u8; 32],
     expected_sender: &[u8; 32],
 ) -> Result<(), ()> {
-    if inspected.recipient_hashes.len() != 2
-        || !constant_time_eq_32(&inspected.sender_ik, expected_sender)
+    if !constant_time_eq_32(&inspected.sender_ik, expected_sender)
         || constant_time_eq_32(self_public, peer_public)
     {
         return Err(());
     }
     let self_hash =
         ipc::wire_v2::pubkey_hash_prefix(&crypto::x25519::PublicKey::from_bytes(*self_public));
-    let peer_hash =
-        ipc::wire_v2::pubkey_hash_prefix(&crypto::x25519::PublicKey::from_bytes(*peer_public));
-    let first = inspected.recipient_hashes[0];
-    let second = inspected.recipient_hashes[1];
-    if !((first == self_hash && second == peer_hash) || (first == peer_hash && second == self_hash))
-    {
+    if !inspected.recipient_hashes.contains(&self_hash) {
         return Err(());
     }
     Ok(())
@@ -17373,7 +17417,7 @@ mod tests {
         .is_ok());
         let wrong_recipient = InspectedV3Content {
             sender_ik: selected_friend,
-            recipient_hashes: vec![self_hash, [0x99; 8]],
+            recipient_hashes: vec![friend_hash, [0x99; 8]],
         };
         assert!(verify_inspected_manual_v3(
             &wrong_recipient,
@@ -17392,7 +17436,7 @@ mod tests {
     }
 
     #[test]
-    fn direct_manual_v3_has_exact_self_peer_recipients_and_peer_opens_it() {
+    fn direct_manual_v3_has_self_peer_recipients_and_peer_opens_it() {
         let alice = keystore::generate_identity("osl-alice-direct".to_owned());
         let bob = keystore::generate_identity("osl-bob-direct".to_owned());
         let core = HubCoreState::default();
@@ -17543,7 +17587,7 @@ mod tests {
         )
         .unwrap();
 
-        // The attachment envelope uses the same exact two-recipient proof but
+        // The attachment envelope uses the same sender and self-slot proof but
         // a distinct authenticated message type. Its encrypted policy binds
         // the file bytes, key, peer identities, context, and view-once bit.
         *core.osl.identity.lock().unwrap() = Some(bob.clone());
