@@ -170,6 +170,10 @@ fn bounded_non_empty(value: String, field: &'static str) -> Result<String, Serve
 pub enum ServerPermission {
     Read,
     Send,
+    JoinVoice,
+    SpeakVoice,
+    MoveVoicePeople,
+    DisconnectVoicePeople,
     Invite,
     MakeChannels,
     RemoveMessages,
@@ -178,9 +182,13 @@ pub enum ServerPermission {
 }
 
 impl ServerPermission {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 11] = [
         Self::Read,
         Self::Send,
+        Self::JoinVoice,
+        Self::SpeakVoice,
+        Self::MoveVoicePeople,
+        Self::DisconnectVoicePeople,
         Self::Invite,
         Self::MakeChannels,
         Self::RemoveMessages,
@@ -192,6 +200,10 @@ impl ServerPermission {
         match self {
             Self::Read => "read",
             Self::Send => "send",
+            Self::JoinVoice => "join voice",
+            Self::SpeakVoice => "speak in voice",
+            Self::MoveVoicePeople => "move people in voice",
+            Self::DisconnectVoicePeople => "disconnect people from voice",
             Self::Invite => "invite",
             Self::MakeChannels => "make channels",
             Self::RemoveMessages => "remove messages",
@@ -233,9 +245,21 @@ impl ServerPermissionGrant {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct VoicePermissionAcceptance {
+    pub server_id: String,
+    pub room_id: String,
+    pub person_name: String,
+    pub permission: ServerPermission,
+    pub permission_name: String,
+    pub accepted: bool,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ServerPermissionStore {
     grants_by_server_person: BTreeMap<String, ServerPermissionGrant>,
+    timed_out_server_people: BTreeSet<String>,
 }
 
 impl ServerPermissionStore {
@@ -275,12 +299,97 @@ impl ServerPermissionStore {
             })
         }
     }
+
+    pub fn set_person_timed_out(
+        &mut self,
+        server_id: String,
+        person_name: String,
+    ) -> Result<bool, ServerMembershipError> {
+        let server_id = bounded_non_empty(server_id, "server_id")?;
+        let person_name = bounded_non_empty(person_name, "person_name")?;
+        Ok(self
+            .timed_out_server_people
+            .insert(grant_key(&server_id, &person_name)))
+    }
+
+    pub fn clear_person_timeout(
+        &mut self,
+        server_id: &str,
+        person_name: &str,
+    ) -> Result<bool, ServerMembershipError> {
+        let server_id = bounded_non_empty(server_id.to_owned(), "server_id")?;
+        let person_name = bounded_non_empty(person_name.to_owned(), "person_name")?;
+        Ok(self
+            .timed_out_server_people
+            .remove(&grant_key(&server_id, &person_name)))
+    }
+
+    pub fn accepts_voice_join(
+        &self,
+        server_id: String,
+        room_id: String,
+        person_name: String,
+    ) -> Result<VoicePermissionAcceptance, ServerPermissionError> {
+        self.accepts_voice_action(server_id, room_id, person_name, ServerPermission::JoinVoice)
+    }
+
+    pub fn accepts_voice_speak_packet(
+        &self,
+        server_id: String,
+        room_id: String,
+        person_name: String,
+    ) -> Result<VoicePermissionAcceptance, ServerPermissionError> {
+        self.accepts_voice_action(
+            server_id,
+            room_id,
+            person_name,
+            ServerPermission::SpeakVoice,
+        )
+    }
+
+    fn accepts_voice_action(
+        &self,
+        server_id: String,
+        room_id: String,
+        person_name: String,
+        permission: ServerPermission,
+    ) -> Result<VoicePermissionAcceptance, ServerPermissionError> {
+        let server_id =
+            bounded_non_empty(server_id, "server_id").map_err(ServerPermissionError::Membership)?;
+        let room_id =
+            bounded_non_empty(room_id, "room_id").map_err(ServerPermissionError::Membership)?;
+        let person_name = bounded_non_empty(person_name, "person_name")
+            .map_err(ServerPermissionError::Membership)?;
+        if self
+            .timed_out_server_people
+            .contains(&grant_key(&server_id, &person_name))
+        {
+            return Err(ServerPermissionError::TimedOut {
+                person_name,
+                permission,
+            });
+        }
+        self.require_person_permission(&server_id, &person_name, permission)?;
+        Ok(VoicePermissionAcceptance {
+            server_id,
+            room_id,
+            person_name,
+            permission,
+            permission_name: permission.name().to_owned(),
+            accepted: true,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ServerPermissionError {
     #[error("{0}")]
     Membership(ServerMembershipError),
+    #[error("OSL: {person_name} is timed out and cannot {permission}", permission = permission.name())]
+    TimedOut {
+        person_name: String,
+        permission: ServerPermission,
+    },
     #[error("OSL: {person_name} is not allowed to {permission}", permission = permission.name())]
     Refused {
         person_name: String,
