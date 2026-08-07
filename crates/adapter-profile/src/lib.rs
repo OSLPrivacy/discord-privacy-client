@@ -25,16 +25,18 @@ pub use defaults::{
     SIGNAL_DESKTOP_NATIVE_PRIMARY_WINDOW_CLASS, SIGNAL_DESKTOP_NATIVE_WINDOW_TITLE,
 };
 pub use defaults_web::{
-    capabilities_from_profile, icloud_web_control_targets, instagram_web_default_profile,
+    capabilities_from_profile, icloud_fake_page_fixture, icloud_web_control_targets,
+    instagram_web_default_profile,
     instagram_web_default_trusted_signing_key_b64, mail_com_web_mail_targets,
     messenger_web_default_profile, messenger_web_default_trusted_signing_key_b64,
     proton_web_control_targets, tuta_web_mail_targets, validate_icloud_web_control_targets,
     validate_mail_com_web_mail_targets, validate_yahoo_web_mail_targets,
     x_web_default_capability_profile, x_web_default_profile, x_web_default_trusted_signing_key_b64,
     yahoo_web_mail_targets, EmailWebControlStrategy, EmailWebControlTarget, MailComWebTarget,
-    MissingMailComWebTarget, MissingYahooWebTarget, TutaWebTarget, YahooFakePageCounts,
+    IcloudFakePageControl, IcloudFakePageFixture, IcloudFakePageSnapshot, MissingMailComWebTarget,
+    MissingYahooWebTarget, TutaWebTarget, YahooFakePageCounts,
     YahooFakePageFixture, YahooWebTarget, MAIL_COM_WEB_TARGET_NAMES, OSL_YAHOO_1249_COVER_MESSAGE,
-    YAHOO_FAKE_PAGE_CONTROL_NAMES, YAHOO_WEB_TARGET_NAMES,
+    ICLOUD_1274_MARKED_WORDS, YAHOO_FAKE_PAGE_CONTROL_NAMES, YAHOO_WEB_TARGET_NAMES,
 };
 pub use envelope::{
     canonical_profile_digest, EnvelopeError, SignedProfile, ADAPTER_PROFILE_ENVELOPE_DOMAIN,

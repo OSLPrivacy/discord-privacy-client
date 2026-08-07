@@ -267,6 +267,127 @@ const ICLOUD_WEB_CONTROL_TARGETS: &[EmailWebControlTarget] = &[
     },
 ];
 
+pub const ICLOUD_1274_MARKED_WORDS: &str = "OSL-ICLOUD-1274 cover message";
+
+const ICLOUD_FAKE_PAGE_CONTROL_NAMES: &[&str] = &["Place", "Read", "Send"];
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IcloudFakePageControl {
+    pub name: &'static str,
+    pub target_name: &'static str,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct IcloudFakePageSnapshot {
+    pub placed_message_count: usize,
+    pub sent_email_count: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IcloudFakePageFixture {
+    controls: Vec<IcloudFakePageControl>,
+    placed_messages: Vec<String>,
+    sent_email_count: usize,
+}
+
+impl IcloudFakePageFixture {
+    pub fn new(targets: &[EmailWebControlTarget]) -> Result<Self, String> {
+        validate_icloud_web_control_targets(targets)?;
+        for target_name in ["body", "reading pane", "Send"] {
+            if !targets
+                .iter()
+                .any(|target| target.required && target.name == target_name)
+            {
+                return Err(format!(
+                    "missing required iCloud fake page binding target: {target_name}"
+                ));
+            }
+        }
+
+        Ok(Self {
+            controls: vec![
+                IcloudFakePageControl {
+                    name: "Place",
+                    target_name: "body",
+                },
+                IcloudFakePageControl {
+                    name: "Read",
+                    target_name: "reading pane",
+                },
+                IcloudFakePageControl {
+                    name: "Send",
+                    target_name: "Send",
+                },
+            ],
+            placed_messages: Vec::new(),
+            sent_email_count: 0,
+        })
+    }
+
+    pub fn control_names(&self) -> Vec<&'static str> {
+        self.controls.iter().map(|control| control.name).collect()
+    }
+
+    pub fn snapshot(&self) -> IcloudFakePageSnapshot {
+        IcloudFakePageSnapshot {
+            placed_message_count: self.placed_messages.len(),
+            sent_email_count: self.sent_email_count,
+        }
+    }
+
+    pub fn place(&mut self) -> Result<&str, String> {
+        self.require_control("Place")?;
+        self.placed_messages
+            .push(ICLOUD_1274_MARKED_WORDS.to_owned());
+        Ok(self
+            .placed_messages
+            .last()
+            .expect("placed message was just pushed"))
+    }
+
+    pub fn read(&self) -> Result<&str, String> {
+        self.require_control("Read")?;
+        self.placed_messages
+            .last()
+            .map(String::as_str)
+            .ok_or_else(|| "iCloud fake page has no placed message to read".to_string())
+    }
+
+    pub fn send(&mut self) -> Result<usize, String> {
+        self.require_control("Send")?;
+        if self.placed_messages.is_empty() {
+            return Err("iCloud fake page has no placed message to send".to_string());
+        }
+        self.sent_email_count += 1;
+        Ok(self.sent_email_count)
+    }
+
+    pub fn remove_control(&mut self, name: &str) -> Result<(), String> {
+        if name == "Send" {
+            return Err("required iCloud fake page control cannot be removed: Send".to_string());
+        }
+        let before = self.controls.len();
+        self.controls.retain(|control| control.name != name);
+        if self.controls.len() == before {
+            return Err(format!("iCloud fake page control not found: {name}"));
+        }
+        Ok(())
+    }
+
+    fn require_control(&self, name: &str) -> Result<(), String> {
+        if self.controls.iter().any(|control| control.name == name) {
+            Ok(())
+        } else {
+            Err(format!("iCloud fake page control is missing: {name}"))
+        }
+    }
+}
+
+pub fn icloud_fake_page_fixture() -> IcloudFakePageFixture {
+    IcloudFakePageFixture::new(icloud_web_control_targets())
+        .expect("compiled-in iCloud fake page fixture must validate")
+}
+
 /// Reviewed target mapping for iCloud Mail's fixed official web origin.
 pub fn icloud_web_control_targets() -> &'static [EmailWebControlTarget] {
     ICLOUD_WEB_CONTROL_TARGETS
@@ -467,6 +588,84 @@ mod tests {
                 format!("missing required iCloud web control target: {missing_name}")
             );
         }
+    }
+
+    #[test]
+    fn task_1274_icloud_fake_page_controls_place_read_send() {
+        let mut fixture = icloud_fake_page_fixture();
+        let initial = fixture.snapshot();
+        let control_names = fixture.control_names();
+
+        println!(
+            "TASK1274 initial_sent_count={} controls={}",
+            initial.sent_email_count,
+            control_names.join("|")
+        );
+        assert_eq!(initial.sent_email_count, 0);
+        assert_eq!(initial.placed_message_count, 0);
+        assert_eq!(control_names, ICLOUD_FAKE_PAGE_CONTROL_NAMES);
+
+        let placed = fixture
+            .place()
+            .expect("Place control places cover text")
+            .to_owned();
+        assert_eq!(placed, ICLOUD_1274_MARKED_WORDS);
+        let after_place = fixture.snapshot();
+        println!(
+            "TASK1274 after_place placed_message_count={} marked_words={placed}",
+            after_place.placed_message_count
+        );
+        assert_eq!(after_place.placed_message_count, 1);
+        assert_eq!(after_place.sent_email_count, 0);
+
+        let read = fixture
+            .read()
+            .expect("Read control returns placed cover text");
+        println!("TASK1274 read_words={read}");
+        assert_eq!(read, ICLOUD_1274_MARKED_WORDS);
+
+        let before_send = fixture.snapshot();
+        let after_send_count = fixture.send().expect("Send control sends placed email");
+        let after_send = fixture.snapshot();
+        println!(
+            "TASK1274 send_count before={} after={}",
+            before_send.sent_email_count, after_send.sent_email_count
+        );
+        assert_eq!(before_send.sent_email_count, 0);
+        assert_eq!(after_send_count, 1);
+        assert_eq!(after_send.sent_email_count, 1);
+        assert_eq!(after_send.placed_message_count, 1);
+    }
+
+    #[test]
+    fn task_1274_icloud_fake_page_refuses_removing_send_without_count_changes() {
+        let mut fixture = icloud_fake_page_fixture();
+        fixture.place().expect("Place control places cover text");
+        fixture.send().expect("Send control sends placed email");
+        let before_remove = fixture.snapshot();
+
+        let refused = fixture
+            .remove_control("Send")
+            .expect_err("removing Send must be refused");
+        let after_remove = fixture.snapshot();
+
+        println!(
+            "TASK1274 remove_send_refused={refused} before_placed={} after_placed={} before_sent={} after_sent={} controls={}",
+            before_remove.placed_message_count,
+            after_remove.placed_message_count,
+            before_remove.sent_email_count,
+            after_remove.sent_email_count,
+            fixture.control_names().join("|")
+        );
+        assert_eq!(
+            refused,
+            "required iCloud fake page control cannot be removed: Send"
+        );
+        assert_eq!(before_remove.placed_message_count, 1);
+        assert_eq!(after_remove.placed_message_count, 1);
+        assert_eq!(before_remove.sent_email_count, 1);
+        assert_eq!(after_remove.sent_email_count, 1);
+        assert_eq!(fixture.control_names(), ICLOUD_FAKE_PAGE_CONTROL_NAMES);
     }
 
     #[test]
