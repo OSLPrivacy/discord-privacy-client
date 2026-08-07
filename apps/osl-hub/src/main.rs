@@ -4702,7 +4702,10 @@ fn native_discord_overlay_state(
         scope_approved,
         ttl_seconds: scope.ttl_seconds,
         decrypt_display_enabled: scope.decrypt_display_enabled,
-        view_once_enabled: true,
+        // TASK 0594: the overlay draws this control off for a Free account and
+        // says why, so it has to report the same answer 0590 enforces natively
+        // rather than a flat `true` the backend would then refuse.
+        view_once_enabled: ipc::tier_gate::check_view_once_message_creation_allowed(&core.osl).is_ok(),
         attachments_enabled: ipc::tier_gate::is_paid_equivalent(&core.osl),
         discord_marker_available: app.state::<NativeDiscordComposerState>().marker_available(),
         covertext_enabled: state.covertext_enabled(),

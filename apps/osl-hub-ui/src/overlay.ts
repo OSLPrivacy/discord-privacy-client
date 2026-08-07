@@ -10,6 +10,7 @@ import { CoarseTypingRate } from "./coarse-typing-rate";
 import { TwoStepBurnConfirmation } from "./two-step-burn";
 import { shouldPollDiscordOverlay } from "./discord-qa-receive-policy";
 import { recordDiscordQaSendStage } from "./discord-qa-send-stage";
+import { viewOnceControlState } from "./view-once-tier";
 import {
   createDiscordProtectedTranscript,
   type DiscordProtectedTranscriptRow,
@@ -47,6 +48,8 @@ const counter = requireElement<HTMLElement>("#draft-bytes");
 const friendLabel = requireElement<HTMLElement>("#friend-label");
 const ttl = requireElement<HTMLSelectElement>("#protected-ttl");
 const viewOnce = requireElement<HTMLInputElement>("#protected-view-once");
+const viewOnceControl = requireElement<HTMLElement>("[data-osl-view-once-control='protected-view-once']");
+const viewOnceReason = requireElement<HTMLElement>("#protected-view-once-reason");
 const sendMode = requireElement<HTMLSelectElement>("#protected-send-mode");
 const placementMode = requireElement<HTMLSelectElement>("#protected-placement-mode");
 const decryptDisplay = requireElement<HTMLInputElement>("#protected-decrypt-display");
@@ -1096,7 +1099,18 @@ function refreshControls(): void {
   placementMode.disabled = sendBusy || !overlayReady || !discordMarkerAvailable;
   ttl.disabled = sendBusy || securityBusy || !overlayReady;
   decryptDisplay.disabled = sendBusy || securityBusy || !overlayReady;
-  viewOnce.disabled = sendBusy || !overlayReady || !viewOnceEnabled;
+  // TASK 0594. `viewOnceEnabled` is the native tier answer for *creating* one
+  // (0590); everything else here is transient. Either way the control never
+  // goes off silently.
+  const viewOnceState = viewOnceControlState({
+    creationAllowed: viewOnceEnabled,
+    unavailable: sendBusy || !overlayReady,
+  });
+  viewOnce.disabled = viewOnceState.off;
+  viewOnceControl.dataset.oslViewOnceState = viewOnceState.off ? "off" : "on";
+  viewOnceControl.dataset.oslViewOnceOffReason = viewOnceState.reason;
+  viewOnceReason.textContent = viewOnceState.explanation;
+  viewOnceReason.hidden = viewOnceState.explanation === "";
 }
 
 function setBusy(busy: boolean): void {

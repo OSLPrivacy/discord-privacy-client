@@ -1,6 +1,7 @@
 import type { LocalLoopbackContext } from "./adapters";
 import { COVER_MESSAGE_BOX_RULE, PROTECTED_TEXT_BOX_RULE } from "./protected-box-shortcuts";
 import type { SendMode } from "./state";
+import { VIEW_ONCE_DISPLAY_TRUTH, viewOnceControlMarkup } from "./view-once-tier";
 
 export type LocalProtectedPane = "write" | "open";
 
@@ -11,6 +12,8 @@ export interface LocalProtectedSheetModel {
   pane: LocalProtectedPane;
   ttlSeconds: number;
   viewOnce: boolean;
+  /** TASK 0594. Pro on this device; creating a view once message needs it (0590). */
+  viewOnceCreationAllowed: boolean;
   decryptDisplayEnabled: boolean;
   busy: boolean;
   draft: string;
@@ -66,6 +69,7 @@ export function blankLocalProtectedModel(open = false): LocalProtectedSheetModel
     pane: "write",
     ttlSeconds: LOCAL_TTL_OPTIONS[0],
     viewOnce: false,
+    viewOnceCreationAllowed: false,
     decryptDisplayEnabled: true,
     busy: false,
     draft: "",
@@ -140,7 +144,14 @@ export function localProtectedSheetMarkup(model: LocalProtectedSheetModel, sendM
       <label for="local-protected-draft">Message</label>
       <textarea id="local-protected-draft" maxlength="1000" data-max-bytes="${maxCopyPayloadBytes}" data-osl-protected-box-rule="${PROTECTED_TEXT_BOX_RULE}" rows="5" autocomplete="off" spellcheck="true" aria-describedby="local-protected-draft-bytes" placeholder="Write privately">${escapeHtml(boundedDraft.value)}</textarea>
       <small id="local-protected-draft-bytes" class="local-draft-bytes" aria-live="polite">${draftLimitNotice}</small>
-      <div class="local-protected-options"><label><span>Opening authorization expires after</span><select id="local-protected-ttl">${ttlOptions}</select></label><label class="local-view-once"><span>View once</span><input id="local-protected-view-once" type="checkbox" ${model.viewOnce ? "checked" : ""}/><small>Display is bounded on cooperating OSL clients; cameras are outside OSL's control.</small></label></div>
+      <div class="local-protected-options"><label><span>Opening authorization expires after</span><select id="local-protected-ttl">${ttlOptions}</select></label>${viewOnceControlMarkup({
+        id: "local-protected-view-once",
+        layout: "compact",
+        className: "local-view-once",
+        checked: model.viewOnce,
+        creationAllowed: model.viewOnceCreationAllowed,
+        detail: VIEW_ONCE_DISPLAY_TRUTH,
+      })}</div>
       <small class="local-authorization-truth">After expiry, OSL refuses to open this text on this device.</small>
       <button class="local-primary" type="submit" ${model.busy ? "disabled" : ""}>${model.busy ? "Encrypting…" : primaryLabel}</button>
       <small class="local-send-truth">${escapeHtml(sendTruth)}</small>
