@@ -6626,16 +6626,27 @@ fn begin_peer_attachment(
         crate::view_once_eligibility::require_view_once_attachment_eligibility(&mime_type)?;
     }
     let tier = active_attachment_account_tier(core)?;
-    if crate::attachment_limits::check_attachment_size(plaintext_size, tier).is_err() {
-    if crate::attachment_limits::check_attachment_request(plaintext_size, 1, tier).is_err() {
+    if let Err(error) = crate::attachment_limits::check_attachment_request(plaintext_size, 1, tier)
+    {
+        if osl_chat
+            && matches!(tier, crate::attachment_limits::AttachmentAccountTier::Free)
+            && matches!(
+                error,
+                crate::attachment_limits::AttachmentLimitError::TooLarge { .. }
+            )
+        {
+            return Err(crate::attachment_limits::free_too_large_attachment_message(
+                plaintext_size,
+            ));
+        }
+        return Err(ERROR.to_owned());
+    }
     let plaintext_limit = if osl_chat {
         crate::osl_chat_file_limits::current_osl_chat_file_size_limit(core).max_bytes
     } else {
         ipc::attachment_wire::MAX_STREAMED_ATTACHMENT_BYTES
     };
     if plaintext_size == 0 || plaintext_size > plaintext_limit {
-    let tier = active_attachment_account_tier(core);
-    if crate::attachment_limits::check_attachment_limits(tier, plaintext_size, 1).is_err() {
         return Err(ERROR.to_owned());
     }
     let ttl_seconds = security::scope_security(manual.scope.clone())

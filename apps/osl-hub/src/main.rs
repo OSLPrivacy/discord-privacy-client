@@ -6350,7 +6350,6 @@ async fn select_osl_chat_attachment(
     if caller.label() != "main" {
         return Err("Only the trusted OSL window may choose OSL Chat attachments".to_owned());
     }
-    require_active_pro_entitlement(&app.state::<HubCoreState>())?;
     let _session = session.transition.lock().await;
     tauri::async_runtime::spawn_blocking(move || {
         native_attachment_transport::select_osl_chat_attachment(

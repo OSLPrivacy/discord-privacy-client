@@ -110,7 +110,6 @@ fn select_encrypt_upload_deliver_inner(
     overlay_context: Option<(u64, &ActiveServiceHost)>,
     view_once: bool,
 ) -> Result<Option<PreparedNativeOverlayAttachment>, String> {
-    require_active_pro(core)?;
     let parent_label = if overlay_context.is_some() {
         super::native_discord_overlay::OVERLAY_LABEL
     } else {

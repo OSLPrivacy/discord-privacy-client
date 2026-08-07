@@ -5218,7 +5218,6 @@ export function activityPrimaryAction(): void {
 }
 
 function oslChatContent(): string {
-  const pro = licenseState.access === "pro" || licenseState.access === "offlineGrace";
   const friends = hubPeople.map((person) => {
     const messages = oslChatMessages.get(person.personId) ?? [];
     const last = messages.at(-1);
@@ -5238,7 +5237,7 @@ function oslChatContent(): string {
     : "";
   const settingsPerson = oslChatSettingsPersonId ? hubPeople.find((person) => person.personId === oslChatSettingsPersonId) ?? null : null;
   const settings = settingsPerson ? oslChatFriendSettingsMarkup(settingsPerson) : "";
-  const attachments = activeOslChatContext?.scopeApproved && pro
+  const attachments = activeOslChatContext?.scopeApproved
     ? `<section class="osl-chat-attachments" aria-label="Encrypted attachments"><header><strong>Attachments</strong><button class="button compact" id="osl-chat-attach" type="button" ${oslChatBusy ? "disabled" : ""}>Choose file</button></header>${attachmentProgressMarkupForActiveChat()}${oslChatAttachments.length ? oslChatAttachments.map((item) => `<button class="setting-line" data-osl-chat-attachment="${escapeHtml(item.attachmentId)}" type="button" ${oslChatBusy ? "disabled" : ""}><span><strong>${escapeHtml(item.originalFilename)}</strong><small>${item.viewOnce ? "View once · " : ""}${item.plaintextSize.toLocaleString("en-US")} bytes</small></span>${statusTag("Open")}</button>`).join("") : `<p>No pending attachments.</p>`}<small>Images open in OSL's capture-resistant viewer. Other supported files open temporarily in their Windows viewer, which may allow capture.</small></section>`
     : "";
   const receipt = activeOslChatPersonId
@@ -9041,9 +9040,11 @@ async function sendOslChatAttachment(): Promise<void> {
   oslChatBusy = true;
   render();
   const result = await selectOslChatAttachment(oslChatViewOnce);
-  oslChatAttachments = await listOslChatAttachments() ?? oslChatAttachments;
+  if (result !== null && result !== "cancelled") {
+    oslChatAttachments = await listOslChatAttachments() ?? oslChatAttachments;
+  }
   oslChatBusy = false;
-  if (result === null) showToast("Encrypted attachment was not sent");
+  if (result === null) showToast(withBackendReason("Encrypted attachment was not sent", "select_osl_chat_attachment"));
   else if (result !== "cancelled") showToast("Encrypted attachment delivered");
   render();
 }
@@ -11133,6 +11134,14 @@ export const __oslHubUiTest = {
   renderWorkspaceContent(destination?: Route): string {
     if (destination) route = destination;
     return workspaceContent();
+  },
+  renderFreeOslChatAttachmentScreenForTest(): string {
+    applyOslHubUiTestState({ route: "osl-chat", coreReady: true, licenseAccess: "free" });
+    seedOslChatForBusyButtonAudit(true);
+    return oslChatContent();
+  },
+  chooseOslChatAttachmentForTest(): Promise<void> {
+    return sendOslChatAttachment();
   },
   homeTileIdsForTest(): string[] {
     return currentHomeTileIds();
