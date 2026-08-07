@@ -29,6 +29,39 @@ pub struct EnclavePermissionMigrationReport {
     pub existing_role_count: usize,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct EnclavePermissionResolveInput<'a> {
+    pub permission_name: &'a str,
+    pub key_present: bool,
+    pub relay_sanctioned: bool,
+    pub channel_allow_permission_names: &'a BTreeSet<String>,
+    pub channel_deny_permission_names: &'a BTreeSet<String>,
+    pub role_name: &'a str,
+    pub role_catalog: &'a EnclaveRoleCatalog,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum EnclavePermissionDecision {
+    Allowed,
+    Denied,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum EnclavePermissionDecisionRule {
+    Key,
+    Relay,
+    ChannelDeny,
+    ChannelAllow,
+    RoleGrants,
+    Off,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct EnclavePermissionResolution {
+    pub decision: EnclavePermissionDecision,
+    pub rule: EnclavePermissionDecisionRule,
+}
+
 pub fn new_enclave_role_catalog() -> EnclaveRoleCatalog {
     new_enclave_role_catalog_from_template_values(
         all_persisted_permission_names(),
@@ -79,6 +112,91 @@ pub fn persisted_permission_name_search(needles: &[&str]) -> Vec<&'static str> {
         .map(|permission| permission.persisted_name)
         .filter(|name| needles.iter().any(|needle| name == needle))
         .collect()
+}
+
+pub fn resolve_enclave_permission(
+    input: EnclavePermissionResolveInput<'_>,
+) -> EnclavePermissionResolution {
+    if !input.key_present || !all_persisted_permission_names().contains(input.permission_name) {
+        return EnclavePermissionResolution::denied(EnclavePermissionDecisionRule::Key);
+    }
+    if input.relay_sanctioned {
+        return EnclavePermissionResolution::denied(EnclavePermissionDecisionRule::Relay);
+    }
+
+    if input
+        .channel_deny_permission_names
+        .contains(input.permission_name)
+    {
+        return EnclavePermissionResolution::denied(EnclavePermissionDecisionRule::ChannelDeny);
+    }
+    if input
+        .channel_allow_permission_names
+        .contains(input.permission_name)
+    {
+        return EnclavePermissionResolution::allow_by(EnclavePermissionDecisionRule::ChannelAllow);
+    }
+
+    if input
+        .role_catalog
+        .role(input.role_name)
+        .is_some_and(|role| role.permission_is_ticked(input.permission_name))
+    {
+        return EnclavePermissionResolution::allow_by(EnclavePermissionDecisionRule::RoleGrants);
+    }
+
+    EnclavePermissionResolution::denied(EnclavePermissionDecisionRule::Off)
+}
+
+impl EnclavePermissionResolution {
+    fn allow_by(rule: EnclavePermissionDecisionRule) -> Self {
+        Self {
+            decision: EnclavePermissionDecision::Allowed,
+            rule,
+        }
+    }
+
+    fn denied(rule: EnclavePermissionDecisionRule) -> Self {
+        Self {
+            decision: EnclavePermissionDecision::Denied,
+            rule,
+        }
+    }
+
+    pub fn denied_by(&self) -> Option<&'static str> {
+        match (self.decision, self.rule) {
+            (EnclavePermissionDecision::Denied, EnclavePermissionDecisionRule::Key) => Some("KEY"),
+            (EnclavePermissionDecision::Denied, EnclavePermissionDecisionRule::Relay) => {
+                Some("RELAY")
+            }
+            (EnclavePermissionDecision::Denied, EnclavePermissionDecisionRule::ChannelDeny) => {
+                Some("CHANNEL_DENY")
+            }
+            (EnclavePermissionDecision::Denied, EnclavePermissionDecisionRule::Off) => Some("OFF"),
+            (EnclavePermissionDecision::Denied, EnclavePermissionDecisionRule::RoleGrants) => {
+                Some("ROLE_GRANTS")
+            }
+            (EnclavePermissionDecision::Denied, EnclavePermissionDecisionRule::ChannelAllow) => {
+                Some("CHANNEL_ALLOW")
+            }
+            (EnclavePermissionDecision::Allowed, _) => None,
+        }
+    }
+
+    pub fn decided_by(&self) -> &'static str {
+        match self.rule {
+            EnclavePermissionDecisionRule::Key => "KEY",
+            EnclavePermissionDecisionRule::Relay => "RELAY",
+            EnclavePermissionDecisionRule::ChannelDeny => "CHANNEL_DENY",
+            EnclavePermissionDecisionRule::ChannelAllow => "CHANNEL_ALLOW",
+            EnclavePermissionDecisionRule::RoleGrants => "ROLE_GRANTS",
+            EnclavePermissionDecisionRule::Off => "OFF",
+        }
+    }
+
+    pub fn allowed(&self) -> bool {
+        self.decision == EnclavePermissionDecision::Allowed
+    }
 }
 
 impl EnclaveRoleCatalog {
