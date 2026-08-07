@@ -342,6 +342,9 @@ pub enum AllowedPlaceStoreError {
 
     #[error("not allowed: {stable_id}")]
     NotAllowed { stable_id: String },
+
+    #[error("invalid stable ID: {stable_id}")]
+    InvalidStableId { stable_id: String },
 }
 
 pub type Result<T> = std::result::Result<T, AllowedPlaceStoreError>;
@@ -356,6 +359,8 @@ pub fn add_allowed_place_record(
 ) -> Result<AllowedPlaceRecord> {
     validate_record(&record)?;
 ) -> Result<()> {
+) -> Result<()> {
+    validate_allowed_place_stable_id(&record)?;
     std::fs::create_dir_all(app_data_dir.as_ref())?;
     let conn = Connection::open(allowed_places_db_path(app_data_dir))?;
     ensure_schema(&conn)?;
@@ -381,6 +386,7 @@ pub fn remove_allowed_place_record(
     stable_id: impl AsRef<str>,
 ) -> Result<bool> {
     validate_field(stable_id.as_ref(), "stable_id")?;
+    validate_stable_id_shape(stable_id.as_ref())?;
     std::fs::create_dir_all(app_data_dir.as_ref())?;
     let conn = Connection::open(allowed_places_db_path(app_data_dir))?;
     ensure_schema(&conn)?;
@@ -475,10 +481,34 @@ pub fn allowed_place_is_allowed(
 
 fn allowed_place_record_belongs_to_person(record: &AllowedPlaceRecord, person_id: &str) -> bool {
     record.stable_id == person_id || record.stable_id.rsplit(':').next() == Some(person_id)
+pub fn read_allowed_place_record(
+    app_data_dir: impl AsRef<Path>,
+    stable_id: impl AsRef<str>,
+) -> Result<Option<AllowedPlaceRecord>> {
+    validate_stable_id_shape(stable_id.as_ref())?;
+    std::fs::create_dir_all(app_data_dir.as_ref())?;
+    let conn = Connection::open(allowed_places_db_path(app_data_dir))?;
+    ensure_schema(&conn)?;
+    let mut stmt = conn
+        .prepare("SELECT app, account, kind, stable_id FROM allowed_places WHERE stable_id = ?1")?;
+    let mut rows = stmt.query(params![stable_id.as_ref()])?;
+    if let Some(row) = rows.next()? {
+        Ok(Some(AllowedPlaceRecord {
+            app: row.get(0)?,
+            account: row.get(1)?,
+            kind: row.get(2)?,
+            stable_id: row.get(3)?,
+        }))
+    } else {
+        Ok(None)
+    }
+}
+
 pub fn is_allowed_place_record(
     app_data_dir: impl AsRef<Path>,
     record: &AllowedPlaceRecord,
 ) -> Result<bool> {
+    validate_allowed_place_stable_id(record)?;
     std::fs::create_dir_all(app_data_dir.as_ref())?;
     let conn = Connection::open(allowed_places_db_path(app_data_dir))?;
     ensure_schema(&conn)?;
@@ -536,6 +566,38 @@ pub fn allowed_place_summary(app_data_dir: impl AsRef<Path>) -> Result<AllowedPl
         distinct_apps: distinct_apps.max(0) as usize,
         places: places.max(0) as usize,
     })
+fn validate_allowed_place_stable_id(record: &AllowedPlaceRecord) -> Result<()> {
+    validate_stable_id_shape(&record.stable_id)?;
+    let parts: Vec<_> = record.stable_id.split(':').collect();
+    if parts[0] == record.app && parts[1] == record.account && parts[2] == record.kind {
+        Ok(())
+    } else {
+        Err(AllowedPlaceStoreError::InvalidStableId {
+            stable_id: record.stable_id.clone(),
+        })
+    }
+}
+
+fn validate_stable_id_shape(stable_id: &str) -> Result<()> {
+    let mut parts = stable_id.split(':');
+    let valid = matches!(
+        (parts.next(), parts.next(), parts.next(), parts.next(), parts.next()),
+        (Some(app), Some(account), Some(kind), Some(place), None)
+            if app == "discord"
+                && !account.trim().is_empty()
+                && !kind.trim().is_empty()
+                && !place.trim().is_empty()
+                && account == account.trim()
+                && kind == kind.trim()
+                && place == place.trim()
+    );
+    if valid {
+        Ok(())
+    } else {
+        Err(AllowedPlaceStoreError::InvalidStableId {
+            stable_id: stable_id.to_string(),
+        })
+    }
 }
 
 fn ensure_schema(conn: &Connection) -> Result<()> {

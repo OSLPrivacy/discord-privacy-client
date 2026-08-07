@@ -31,6 +31,7 @@ use crate::preferences::{
     PreviewState, ScrubAccountPermissionInput, ScrubAccountPermissionRead,
 };
 use crate::runtime_switches::{ResolvedTestOnlyRunTimeSwitches, SAFE_SENDING_DRY_RUN_FOR_TEST};
+use crate::runtime_switches::SafeSending;
 use crate::scrub_erasure::{self, ComposedErasureRequest, ErasureRequestInput};
 use crate::server_records::{NamedServerRecord, NamedServerRegistryState};
 use crate::service_host::ActiveServiceHost;
@@ -50,6 +51,13 @@ use crate::website_driver::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{path::PathBuf, sync::Mutex, thread, time::Duration};
+use crate::website_driver::{
+    WebsiteDriver, WebsiteLiveRunProgress, WebsiteNamedControl, WebsitePageRequest,
+    WebsiteTextPlacement,
+};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::{path::PathBuf, sync::Mutex};
 
 pub fn build_review_ui_identity_binding_verifier(
     core: &HubCoreState,
@@ -205,6 +213,8 @@ pub struct OrdinarySendProgressRequest {
 pub struct OrdinarySendProgressStep {
     pub name: String,
     pub completed: bool,
+    #[serde(default)]
+    pub run_count: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -263,6 +273,11 @@ impl OrdinarySendProgress {
     }
 
     fn with_derived_confirmation(mut self) -> Self {
+        for step in &mut self.steps {
+            if step.completed && step.run_count == 0 {
+                step.run_count = 1;
+            }
+        }
         self.final_confirmation = self.steps.len() == ORDINARY_SEND_STEPS.len()
             && self.steps.iter().all(|step| step.completed);
         self
@@ -271,6 +286,10 @@ impl OrdinarySendProgress {
     fn mark_completed(&mut self, name: &str) {
         if let Some(step) = self.steps.iter_mut().find(|step| step.name == name) {
             step.completed = true;
+            if !step.completed {
+                step.completed = true;
+                step.run_count = step.run_count.saturating_add(1);
+            }
         }
         self.final_confirmation = self.steps.iter().all(|step| step.completed);
     }
@@ -365,6 +384,7 @@ fn new_ordinary_send_progress(send_id: &str) -> OrdinarySendProgress {
             .map(|name| OrdinarySendProgressStep {
                 name: (*name).to_owned(),
                 completed: false,
+                run_count: 0,
             })
             .collect(),
         final_confirmation: false,
@@ -1091,6 +1111,25 @@ pub fn require_native_discord_product_send_authority(
     scope_binding: &str,
     layout: Option<DiscordCarrierLayout>,
 ) -> Result<NativeDiscordProductSendAuthority, String> {
+    require_native_discord_product_send_authority_for_switch(
+        composer,
+        scope_binding,
+        layout,
+        SafeSending::LiveSendRequiresAuthority,
+    )
+}
+
+pub fn require_native_discord_product_send_authority_for_switch(
+    composer: &NativeDiscordComposerState,
+    scope_binding: &str,
+    layout: Option<DiscordCarrierLayout>,
+    safe_sending: SafeSending,
+) -> Result<NativeDiscordProductSendAuthority, String> {
+    if safe_sending == SafeSending::DryRunSendForTest {
+        return Ok(NativeDiscordProductSendAuthority {
+            carrier: "TASK0014 dry-run carrier".to_owned(),
+        });
+    }
     let plan = composer.take_prepared_carrier_plan(scope_binding, layout);
     if plan.decision != CarrierDecision::RowOverlay {
         return Err("The protected message is not ready to send; nothing was placed".to_owned());
@@ -1110,8 +1149,31 @@ pub fn with_native_discord_product_send_authority<T, Place>(
 where
     Place: FnOnce(NativeDiscordProductSendAuthority) -> Result<T, String>,
 {
-    let product_send_authority =
-        require_native_discord_product_send_authority(composer, scope_binding, layout)?;
+    with_native_discord_product_send_authority_for_switch(
+        composer,
+        scope_binding,
+        layout,
+        SafeSending::LiveSendRequiresAuthority,
+        place,
+    )
+}
+
+pub fn with_native_discord_product_send_authority_for_switch<T, Place>(
+    composer: &NativeDiscordComposerState,
+    scope_binding: &str,
+    layout: Option<DiscordCarrierLayout>,
+    safe_sending: SafeSending,
+    place: Place,
+) -> Result<T, String>
+where
+    Place: FnOnce(NativeDiscordProductSendAuthority) -> Result<T, String>,
+{
+    let product_send_authority = require_native_discord_product_send_authority_for_switch(
+        composer,
+        scope_binding,
+        layout,
+        safe_sending,
+    )?;
     place(product_send_authority)
 }
 
@@ -1605,6 +1667,16 @@ macro_rules! hub_tauri_commands {
             save_burn_review_state,
             get_burn_review_state,
             back_burn_review,
+            set_hub_app_notification_choice,
+            list_hub_app_notification_choices,
+            set_hub_look_choice,
+            get_hub_look_choice,
+            list_hub_look_choices,
+            set_hub_screenshot_protection,
+            save_onboarding_preferences,
+            save_scrub_setup,
+            save_burn_review_state,
+            get_burn_review_state,
             set_tor_preference,
             get_follow_active_app_choice,
             set_follow_active_app_choice,
@@ -1636,6 +1708,8 @@ macro_rules! hub_tauri_commands {
             osl_mail_get_status,
             osl_mail_provision,
             osl_mail_send,
+            osl_mail_plan_protected_forward,
+            osl_mail_forward_protected,
             osl_mail_burn,
             get_mass_cleanup_capabilities,
             discover_mass_cleanup_targets,
@@ -1656,6 +1730,7 @@ macro_rules! hub_tauri_commands {
             view_hub_recovery_phrase,
             reset_hub_main_password_after_recovery,
             check_hub_recovery_words,
+            check_hub_password_reset_phrase,
             get_hub_recovery_kit_unsaved,
             set_hub_recovery_kit_unsaved,
             lock_hub_session,
@@ -1812,6 +1887,13 @@ macro_rules! hub_tauri_commands {
             list_whatsapp_whitelist_kinds,
             get_hub_friend_future_account_auto_whitelist,
             set_hub_friend_future_account_auto_whitelist,
+            set_hub_app_notification_choice,
+            list_hub_app_notification_choices,
+            set_hub_look_choice,
+            get_hub_look_choice,
+            list_hub_look_choices,
+            set_hub_friend_account_reach_choice,
+            list_hub_friend_account_reach_choices,
             set_active_hub_friend_permission,
             set_active_hub_friend_reach,
             revoke_active_hub_friend_scope,
@@ -3784,6 +3866,58 @@ mod tauri_registration_surface_tests {
         );
     }
 
+    #[test]
+    fn check_hub_password_reset_phrase_is_registered_and_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_registered_and_granted(
+            &handlers,
+            &permissions,
+            &capability,
+            "check_hub_password_reset_phrase",
+        );
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &["check_hub_password_reset_phrase"],
+        );
+    }
+
+    #[test]
+    fn save_scrub_setup_is_registered_and_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_registered_and_granted(&handlers, &permissions, &capability, "save_scrub_setup");
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &["save_scrub_setup"],
+        );
+    }
+
+    #[test]
+    fn burn_review_state_commands_are_registered_and_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_registered_and_granted(
+            &handlers,
+            &permissions,
+            &capability,
+            "save_burn_review_state",
+        );
+        assert_registered_and_granted(
+            &handlers,
+            &permissions,
+            &capability,
+            "get_burn_review_state",
+        );
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &["save_burn_review_state", "get_burn_review_state"],
+        );
+    }
+
     /// D-108 — the missing construction site for the UI's `SecureLocalStore`.
     ///
     /// The store is implemented and unit-tested in `secure-local-store.ts` and
@@ -4010,6 +4144,32 @@ mod tauri_registration_surface_tests {
             &permissions,
             &capability,
             "emit_active_session_reset",
+        );
+    }
+
+    #[test]
+    fn osl_mail_protected_forward_commands_are_registered_and_granted() {
+        let (handlers, permissions, capability) = network_registration_inputs();
+        assert_registered_and_granted(
+            &handlers,
+            &permissions,
+            &capability,
+            "osl_mail_plan_protected_forward",
+        );
+        assert_registered_and_granted(
+            &handlers,
+            &permissions,
+            &capability,
+            "osl_mail_forward_protected",
+        );
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &[
+                "osl_mail_plan_protected_forward",
+                "osl_mail_forward_protected",
+            ],
         );
     }
 
@@ -4315,6 +4475,49 @@ mod tauri_registration_surface_tests {
                 "compare_allowed_place_direction_state",
                 "list_whatsapp_whitelist_kinds",
                 "create_one_use_invite_link",
+            ],
+        );
+    }
+
+    #[test]
+    fn friend_account_reach_choice_commands_are_registered_and_acl_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &[
+                "set_hub_friend_account_reach_choice",
+                "list_hub_friend_account_reach_choices",
+            ],
+        );
+    }
+
+    #[test]
+    fn app_notification_choice_commands_are_registered_and_acl_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &[
+                "set_hub_app_notification_choice",
+                "list_hub_app_notification_choices",
+            ],
+        );
+    }
+
+    #[test]
+    fn look_choice_commands_are_registered_and_acl_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &[
+                "set_hub_look_choice",
+                "get_hub_look_choice",
+                "list_hub_look_choices",
             ],
         );
     }

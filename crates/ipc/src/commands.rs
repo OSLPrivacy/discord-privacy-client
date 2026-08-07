@@ -17,6 +17,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 use store::{MessageStore, StoreError, StoredMessage};
 
@@ -45,6 +46,43 @@ impl ProtectedPlaceAction {
             Self::Scrub => "scrub",
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AllowedPlaceAction {
+    Read,
+    Prepare,
+    Place,
+    Scrub,
+}
+
+impl AllowedPlaceAction {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Prepare => "prepare",
+            Self::Place => "place",
+            Self::Scrub => "scrub",
+        }
+    }
+
+    fn item_name(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Prepare => "draft",
+            Self::Place => "sent item",
+            Self::Scrub => "Scrub item",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AllowedPlaceActionReceiptDto {
+    pub action: String,
+    pub item_name: String,
+    pub stable_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -130,6 +168,20 @@ pub fn cmd_osl_trace_allowed_place_protected_message_path(
         place.stable_id
     ));
     Ok(trace)
+}
+
+pub fn cmd_osl_run_allowed_place_action(
+    app_data_dir: PathBuf,
+    action: AllowedPlaceAction,
+    place: crate::allowed_places::AllowedPlaceRecord,
+) -> Result<AllowedPlaceActionReceiptDto, String> {
+    crate::allowed_places::require_allowed_place_record(&app_data_dir, &place)
+        .map_err(|e| format!("OSL: place not allowed: {e}"))?;
+    Ok(AllowedPlaceActionReceiptDto {
+        action: action.as_str().to_string(),
+        item_name: action.item_name().to_string(),
+        stable_id: place.stable_id,
+    })
 }
 
 pub fn compare_allowed_place_direction_state(
@@ -439,6 +491,8 @@ mod command_activity_tests {
         });
         assert_command_marks_activity("cmd_osl_reset_follow_active_app_choice", || {
             let _ = cmd_osl_reset_follow_active_app_choice(&state, None);
+        assert_command_marks_activity("cmd_osl_get_new_friend_defaults", || {
+            let _ = cmd_osl_get_new_friend_defaults(&state);
         });
         assert_command_marks_activity("cmd_osl_get_self_user_id", || {
             let _ = cmd_osl_get_self_user_id(&state);
@@ -16225,6 +16279,117 @@ mod account_transfer_tests {
     }
 
     #[test]
+    fn task_0458_second_device_package_restores_identity_key_and_marked_conversation() {
+        let _serial = crate::test_process_globals::serialize();
+        let _reset = FileKeyReset;
+        crate::main_password::set_file_storage_key(None);
+
+        const CONVERSATION_NAME: &str = "TASK0458-SECOND-DEVICE-CONVERSATION";
+        const MESSAGE_TEXT: &str = "TASK0458 disposable package restores this exact message text";
+        const MESSAGE_ID: &str = "task0458-message-0001";
+        const SENDER_OSL_USER_ID: &str = "task0458-sender-osl-user";
+        const DISPOSABLE_ACCOUNT: &str = "task0458-disposable-account";
+
+        let source_dir = TempDir::new().unwrap();
+        let restored_dir = TempDir::new().unwrap();
+        let entropy = [45; 16];
+        let phrase = bip39::Mnemonic::from_entropy_in(bip39::Language::English, &entropy)
+            .unwrap()
+            .to_string();
+
+        let source_state = state_with_entropy(entropy);
+        {
+            let mut identity = source_state.identity_slot();
+            identity.as_mut().unwrap().discord_snowflake = Some(DISPOSABLE_ACCOUNT.to_owned());
+        }
+        let original_identity = source_state.identity_slot().as_ref().unwrap().clone();
+        let original_ed25519 = STANDARD.encode(original_identity.ed25519_public.as_bytes());
+        let original_x25519_secret = *original_identity.x25519_secret.as_bytes();
+
+        let source_store =
+            MessageStore::open(&source_dir.path().join("store"), &original_x25519_secret).unwrap();
+        source_store
+            .put(&StoredMessage {
+                discord_message_id: MESSAGE_ID.to_owned(),
+                channel_id: CONVERSATION_NAME.to_owned(),
+                sender_discord_id: SENDER_OSL_USER_ID.to_owned(),
+                sender_osl_user_id: SENDER_OSL_USER_ID.to_owned(),
+                plaintext: MESSAGE_TEXT.to_owned(),
+                decrypted_at: 45,
+                burned: false,
+            })
+            .unwrap();
+        *source_state.message_store.lock().unwrap() = Some(source_store);
+
+        let package = cmd_osl_export_data_with_dir(&source_state, source_dir.path())
+            .expect("source device A creates disposable recovery package");
+
+        let restored_state = AppState::new();
+        let mut placeholder = keystore::generate_identity("task0458-placeholder".to_owned());
+        placeholder.discord_snowflake = Some(DISPOSABLE_ACCOUNT.to_owned());
+        restored_state.install_identity(placeholder);
+
+        cmd_osl_recover_account_from_export_with_dir(
+            &restored_state,
+            package.clone(),
+            phrase,
+            restored_dir.path(),
+        )
+        .expect("second device restores the disposable recovery package");
+
+        let restored_identity = restored_state.identity_slot().as_ref().unwrap().clone();
+        let restored_ed25519 = STANDARD.encode(restored_identity.ed25519_public.as_bytes());
+        assert_eq!(
+            restored_identity.ed25519_public.as_bytes(),
+            original_identity.ed25519_public.as_bytes(),
+            "restored identity key must exactly match original identity key"
+        );
+
+        let restored_store = MessageStore::open(
+            &restored_dir.path().join("store"),
+            restored_identity.x25519_secret.as_bytes(),
+        )
+        .expect("restored message store opens with restored identity key");
+        let restored_rows = restored_store
+            .list_by_channel(CONVERSATION_NAME, 10)
+            .expect("restored conversation is readable by its marked name");
+        assert_eq!(
+            restored_rows.len(),
+            1,
+            "restored marked conversation must contain exactly the exported message"
+        );
+        let restored_message = &restored_rows[0];
+        assert_eq!(restored_message.channel_id, CONVERSATION_NAME);
+        assert_eq!(restored_message.plaintext, MESSAGE_TEXT);
+
+        println!("TASK0458_SOURCE_DEVICE=test-device-A");
+        println!("TASK0458_DISPOSABLE_ACCOUNT={DISPOSABLE_ACCOUNT}");
+        println!("TASK0458_RECOVERY_PACKAGE_BYTES={}", package.len());
+        println!("TASK0458_ORIGINAL_IDENTITY_KEY={original_ed25519}");
+        println!("TASK0458_RESTORED_IDENTITY_KEY={restored_ed25519}");
+        println!(
+            "TASK0458_IDENTITY_KEY_EXACT_MATCH={}",
+            restored_identity.ed25519_public.as_bytes()
+                == original_identity.ed25519_public.as_bytes()
+        );
+        println!("TASK0458_ORIGINAL_CONVERSATION_NAME={CONVERSATION_NAME}");
+        println!(
+            "TASK0458_RESTORED_CONVERSATION_NAME={}",
+            restored_message.channel_id
+        );
+        println!("TASK0458_ORIGINAL_MESSAGE_TEXT={MESSAGE_TEXT}");
+        println!(
+            "TASK0458_RESTORED_MESSAGE_TEXT={}",
+            restored_message.plaintext
+        );
+        println!(
+            "TASK0458_CONVERSATION_EXACT_MATCH={}",
+            restored_message.channel_id == CONVERSATION_NAME
+                && restored_message.plaintext == MESSAGE_TEXT
+        );
+    }
+
+    #[test]
     fn production_store_opens_use_keystore_backed_anchor() {
         let _serial = crate::test_process_globals::serialize();
         let _reset = ProductionStoreOpenHookReset;
@@ -19690,6 +19855,28 @@ pub fn cmd_osl_home_protection_summary(
         apps,
         next_safe_step,
     })
+pub struct NewFriendDefaultsDto {
+    pub account_reach: String,
+    pub auto_whitelist: String,
+    pub verification_warnings: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct InstagramWhitelistKindDto {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct DiscordWhitelistKindDto {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct TelegramWhitelistKindDto {
+    pub id: String,
+    pub name: String,
 }
 
 pub fn cmd_osl_get_auto_whitelist_rule_choices() -> Result<Vec<AutoWhitelistRuleChoiceDto>, String>
@@ -19712,6 +19899,53 @@ pub fn cmd_osl_list_auto_whitelist_rule_choices() -> Result<Vec<String>, String>
             .map(|rule| rule.as_label().to_string())
             .collect(),
     )
+}
+
+pub fn cmd_osl_get_discord_whitelist_kinds() -> Result<Vec<DiscordWhitelistKindDto>, String> {
+    record_activity_on_command_entry();
+    Ok(crate::auto_whitelist_rules::DiscordWhitelistKind::ALL
+        .into_iter()
+        .map(|kind| DiscordWhitelistKindDto {
+            id: kind.id().to_string(),
+            name: kind.name().to_string(),
+        })
+        .collect())
+}
+
+pub fn cmd_osl_get_telegram_whitelist_kinds() -> Result<Vec<TelegramWhitelistKindDto>, String> {
+    record_activity_on_command_entry();
+    Ok(crate::auto_whitelist_rules::TelegramWhitelistKind::ALL
+        .into_iter()
+        .map(|kind| TelegramWhitelistKindDto {
+            id: kind.id().to_string(),
+            name: kind.name().to_string(),
+        })
+        .collect())
+}
+
+pub fn cmd_osl_get_instagram_whitelist_kinds() -> Result<Vec<InstagramWhitelistKindDto>, String> {
+    record_activity_on_command_entry();
+    Ok(crate::auto_whitelist_rules::InstagramWhitelistKind::ALL
+        .into_iter()
+        .map(|kind| InstagramWhitelistKindDto {
+            id: kind.id().to_string(),
+            name: kind.name().to_string(),
+        })
+        .collect())
+}
+
+pub fn cmd_osl_get_new_friend_defaults(state: &AppState) -> Result<NewFriendDefaultsDto, String> {
+    record_activity_on_command_entry();
+    let prefs = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned");
+    let defaults = prefs.new_friend_defaults;
+    Ok(NewFriendDefaultsDto {
+        account_reach: defaults.account_reach.id().to_string(),
+        auto_whitelist: defaults.auto_whitelist.label().to_string(),
+        verification_warnings: defaults.verification_warnings.id().to_string(),
+    })
 }
 
 pub fn cmd_osl_save_auto_whitelist_rule(
@@ -19781,6 +20015,27 @@ fn auto_whitelist_allowed_place(app_kind: &str) -> Option<AutoWhitelistAllowedPl
         AutoWhitelistAllowedPlaceDto {
             app: "whatsapp".to_owned(),
             kind: kind.to_owned(),
+fn auto_whitelist_allowed_place(app_kind: &str) -> Option<AutoWhitelistAllowedPlaceDto> {
+    if let Some(kind) =
+        crate::auto_whitelist_rules::discord_allowed_place_kind_for_rule_key(app_kind)
+    {
+        return Some(AutoWhitelistAllowedPlaceDto {
+            app: "discord".to_string(),
+            kind: kind.to_string(),
+        });
+    }
+    if let Some(kind) =
+        crate::auto_whitelist_rules::messenger_allowed_place_kind_for_rule_key(app_kind)
+    {
+        return Some(AutoWhitelistAllowedPlaceDto {
+            app: "messenger".to_string(),
+            kind: kind.to_string(),
+        });
+    }
+    crate::auto_whitelist_rules::telegram_allowed_place_kind_for_rule_key(app_kind).map(|kind| {
+        AutoWhitelistAllowedPlaceDto {
+            app: "telegram".to_string(),
+            kind: kind.to_string(),
         }
     })
 }
@@ -21991,6 +22246,582 @@ pub fn cmd_osl_check_for_updates(
             }
         }
     }
+}
+
+/// Canonical public update feed for direct site checks. This is the same
+/// `hub-latest` release feed the website distribution contract names as the
+/// source of truth for version and artifact identity.
+pub const DEFAULT_OSL_SITE_UPDATE_MANIFEST_URL: &str =
+    "https://github.com/OSLPrivacy/discord-privacy-client/releases/download/hub-latest/latest.json";
+
+const UPDATE_SITE_HTTP_TIMEOUT: Duration = Duration::from_secs(10);
+const UPDATE_SITE_MAX_BODY_BYTES: usize = 128 * 1024;
+const UPDATE_SITE_MAX_ARTIFACT_BYTES: u64 = 512 * 1024 * 1024;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum SiteUpdateCheckResult {
+    UpdateAvailable {
+        version: String,
+        download_address: String,
+        expected_fingerprint: String,
+    },
+    UpToDate {
+        message: String,
+    },
+    Error {
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct SiteUpdateInstallRequest {
+    pub version: String,
+    pub download_address: String,
+    pub expected_fingerprint: String,
+    pub install_path: PathBuf,
+    pub installed_version_path: PathBuf,
+    pub staging_dir: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum SiteUpdateInstallResult {
+    Installed {
+        version: String,
+        fingerprint: String,
+        downloaded_file_count_during: usize,
+        downloaded_file_count_after: usize,
+    },
+    Refused {
+        message: String,
+        version: String,
+        fingerprint: String,
+        downloaded_file_count_during: usize,
+        downloaded_file_count_after: usize,
+    },
+    Error {
+        message: String,
+        version: String,
+        fingerprint: String,
+        downloaded_file_count_during: usize,
+        downloaded_file_count_after: usize,
+    },
+}
+
+impl SiteUpdateCheckResult {
+    pub fn direct_command_output(&self) -> String {
+        match self {
+            SiteUpdateCheckResult::UpdateAvailable {
+                version,
+                download_address,
+                expected_fingerprint,
+            } => format!(
+                "version={version}\ndownload_address={download_address}\nexpected_fingerprint={expected_fingerprint}"
+            ),
+            SiteUpdateCheckResult::UpToDate { message } => message.clone(),
+            SiteUpdateCheckResult::Error { message } => format!("error: {message}"),
+        }
+    }
+}
+
+impl SiteUpdateInstallResult {
+    pub fn direct_command_output(&self) -> String {
+        match self {
+            SiteUpdateInstallResult::Installed {
+                version,
+                fingerprint,
+                downloaded_file_count_during,
+                downloaded_file_count_after,
+            } => format!(
+                "installed\nversion={version}\nfingerprint={fingerprint}\ndownloaded_file_count_during={downloaded_file_count_during}\ndownloaded_file_count_after={downloaded_file_count_after}"
+            ),
+            SiteUpdateInstallResult::Refused {
+                message,
+                version,
+                fingerprint,
+                downloaded_file_count_during,
+                downloaded_file_count_after,
+            } => format!(
+                "refused: {message}\nversion={version}\nfingerprint={fingerprint}\ndownloaded_file_count_during={downloaded_file_count_during}\ndownloaded_file_count_after={downloaded_file_count_after}"
+            ),
+            SiteUpdateInstallResult::Error {
+                message,
+                version,
+                fingerprint,
+                downloaded_file_count_during,
+                downloaded_file_count_after,
+            } => format!(
+                "error: {message}\nversion={version}\nfingerprint={fingerprint}\ndownloaded_file_count_during={downloaded_file_count_during}\ndownloaded_file_count_after={downloaded_file_count_after}"
+            ),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ParsedSemver {
+    major: u64,
+    minor: u64,
+    patch: u64,
+}
+
+fn parse_update_semver(input: &str) -> Result<ParsedSemver, String> {
+    let cleaned = input.strip_prefix('v').unwrap_or(input);
+    let core = cleaned
+        .split(['-', '+'])
+        .next()
+        .ok_or_else(|| "version is invalid".to_owned())?;
+    let mut parts = core.split('.');
+    let major = parts
+        .next()
+        .and_then(|part| part.parse::<u64>().ok())
+        .ok_or_else(|| "version must be semantic MAJOR.MINOR.PATCH".to_owned())?;
+    let minor = parts
+        .next()
+        .and_then(|part| part.parse::<u64>().ok())
+        .ok_or_else(|| "version must be semantic MAJOR.MINOR.PATCH".to_owned())?;
+    let patch = parts
+        .next()
+        .and_then(|part| part.parse::<u64>().ok())
+        .ok_or_else(|| "version must be semantic MAJOR.MINOR.PATCH".to_owned())?;
+    if parts.next().is_some() {
+        return Err("version must be semantic MAJOR.MINOR.PATCH".to_owned());
+    }
+    Ok(ParsedSemver {
+        major,
+        minor,
+        patch,
+    })
+}
+
+fn compare_update_versions(a: ParsedSemver, b: ParsedSemver) -> std::cmp::Ordering {
+    (a.major, a.minor, a.patch).cmp(&(b.major, b.minor, b.patch))
+}
+
+fn json_string<'a>(value: &'a serde_json::Value, names: &[&str]) -> Option<&'a str> {
+    names.iter().find_map(|name| value.get(*name)?.as_str())
+}
+
+fn normalize_update_fingerprint(input: &str) -> Option<String> {
+    let trimmed = input.trim();
+    let candidate = trimmed
+        .strip_prefix("sha256:")
+        .or_else(|| trimmed.strip_prefix("sha-256:"))
+        .or_else(|| trimmed.strip_prefix("SHA256:"))
+        .or_else(|| trimmed.strip_prefix("SHA-256:"))
+        .unwrap_or(trimmed)
+        .trim();
+    if candidate.len() == 64 && candidate.bytes().all(|b| b.is_ascii_hexdigit()) {
+        Some(format!("sha256:{}", candidate.to_ascii_lowercase()))
+    } else {
+        None
+    }
+}
+
+fn bytes_sha256_fingerprint(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    let mut hex = String::with_capacity(64);
+    for byte in digest {
+        use std::fmt::Write as _;
+        let _ = write!(&mut hex, "{byte:02x}");
+    }
+    format!("sha256:{hex}")
+}
+
+fn file_sha256_fingerprint(path: &Path) -> Result<String, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("installed file cannot be read: {e}"))?;
+    Ok(bytes_sha256_fingerprint(&bytes))
+}
+
+fn installed_site_update_identity(
+    install_path: &Path,
+    installed_version_path: &Path,
+) -> (String, String) {
+    let version = std::fs::read_to_string(installed_version_path)
+        .map(|value| value.trim().to_owned())
+        .unwrap_or_else(|_| "unknown".to_owned());
+    let fingerprint =
+        file_sha256_fingerprint(install_path).unwrap_or_else(|_| "sha256:unavailable".to_owned());
+    (version, fingerprint)
+}
+
+fn downloaded_file_count(staging_dir: &Path) -> usize {
+    std::fs::read_dir(staging_dir)
+        .ok()
+        .into_iter()
+        .flat_map(|entries| entries.filter_map(Result::ok))
+        .filter(|entry| {
+            entry
+                .file_type()
+                .map(|kind| kind.is_file())
+                .unwrap_or(false)
+        })
+        .count()
+}
+
+fn cleanup_downloaded_stage(stage_path: &Path) {
+    if stage_path.exists() {
+        let _ = std::fs::remove_file(stage_path);
+    }
+}
+
+pub fn cmd_osl_install_site_update(request: SiteUpdateInstallRequest) -> SiteUpdateInstallResult {
+    record_activity_on_command_entry();
+    let (current_version, current_fingerprint) =
+        installed_site_update_identity(&request.install_path, &request.installed_version_path);
+    let mut downloaded_file_count_during = downloaded_file_count(&request.staging_dir);
+
+    let expected = match normalize_update_fingerprint(&request.expected_fingerprint) {
+        Some(expected) => expected,
+        None => {
+            return SiteUpdateInstallResult::Error {
+                message: "expected fingerprint is invalid".to_owned(),
+                version: current_version,
+                fingerprint: current_fingerprint,
+                downloaded_file_count_during,
+                downloaded_file_count_after: downloaded_file_count(&request.staging_dir),
+            }
+        }
+    };
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(UPDATE_SITE_HTTP_TIMEOUT)
+        .build()
+    {
+        Ok(client) => client,
+        Err(e) => {
+            return SiteUpdateInstallResult::Error {
+                message: format!("update HTTP client could not start: {e}"),
+                version: current_version,
+                fingerprint: current_fingerprint,
+                downloaded_file_count_during,
+                downloaded_file_count_after: downloaded_file_count(&request.staging_dir),
+            }
+        }
+    };
+    if let Err(e) = std::fs::create_dir_all(&request.staging_dir) {
+        return SiteUpdateInstallResult::Error {
+            message: format!("update staging directory cannot be created: {e}"),
+            version: current_version,
+            fingerprint: current_fingerprint,
+            downloaded_file_count_during,
+            downloaded_file_count_after: downloaded_file_count(&request.staging_dir),
+        };
+    }
+
+    let stage_path = request.staging_dir.join("site-update.download");
+    cleanup_downloaded_stage(&stage_path);
+    let body = match client
+        .get(&request.download_address)
+        .send()
+        .map_err(|e| format!("update file cannot be reached: {e}"))
+        .and_then(|response| {
+            if !response.status().is_success() {
+                return Err(format!("update file returned HTTP {}", response.status()));
+            }
+            if response
+                .content_length()
+                .is_some_and(|len| len > UPDATE_SITE_MAX_ARTIFACT_BYTES)
+            {
+                return Err("update file is too large".to_owned());
+            }
+            response
+                .bytes()
+                .map_err(|e| format!("update file could not be read: {e}"))
+        }) {
+        Ok(body) => body,
+        Err(message) => {
+            return SiteUpdateInstallResult::Error {
+                message,
+                version: current_version,
+                fingerprint: current_fingerprint,
+                downloaded_file_count_during,
+                downloaded_file_count_after: downloaded_file_count(&request.staging_dir),
+            }
+        }
+    };
+    if u64::try_from(body.len()).unwrap_or(u64::MAX) > UPDATE_SITE_MAX_ARTIFACT_BYTES {
+        return SiteUpdateInstallResult::Error {
+            message: "update file is too large".to_owned(),
+            version: current_version,
+            fingerprint: current_fingerprint,
+            downloaded_file_count_during,
+            downloaded_file_count_after: downloaded_file_count(&request.staging_dir),
+        };
+    }
+    if let Err(e) = std::fs::write(&stage_path, &body) {
+        return SiteUpdateInstallResult::Error {
+            message: format!("update file cannot be staged: {e}"),
+            version: current_version,
+            fingerprint: current_fingerprint,
+            downloaded_file_count_during,
+            downloaded_file_count_after: downloaded_file_count(&request.staging_dir),
+        };
+    }
+    downloaded_file_count_during = downloaded_file_count(&request.staging_dir);
+
+    let actual = bytes_sha256_fingerprint(&body);
+    if actual != expected {
+        cleanup_downloaded_stage(&stage_path);
+        let downloaded_file_count_after = downloaded_file_count(&request.staging_dir);
+        let (version, fingerprint) =
+            installed_site_update_identity(&request.install_path, &request.installed_version_path);
+        return SiteUpdateInstallResult::Refused {
+            message: format!("fingerprint mismatch: expected {expected} actual {actual}"),
+            version,
+            fingerprint,
+            downloaded_file_count_during,
+            downloaded_file_count_after,
+        };
+    }
+
+    if let Some(parent) = request.install_path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            cleanup_downloaded_stage(&stage_path);
+            return SiteUpdateInstallResult::Error {
+                message: format!("install directory cannot be created: {e}"),
+                version: current_version,
+                fingerprint: current_fingerprint,
+                downloaded_file_count_during,
+                downloaded_file_count_after: downloaded_file_count(&request.staging_dir),
+            };
+        }
+    }
+    if let Some(parent) = request.installed_version_path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            cleanup_downloaded_stage(&stage_path);
+            return SiteUpdateInstallResult::Error {
+                message: format!("installed version directory cannot be created: {e}"),
+                version: current_version,
+                fingerprint: current_fingerprint,
+                downloaded_file_count_during,
+                downloaded_file_count_after: downloaded_file_count(&request.staging_dir),
+            };
+        }
+    }
+    if let Err(e) = std::fs::copy(&stage_path, &request.install_path) {
+        cleanup_downloaded_stage(&stage_path);
+        return SiteUpdateInstallResult::Error {
+            message: format!("update file cannot be installed: {e}"),
+            version: current_version,
+            fingerprint: current_fingerprint,
+            downloaded_file_count_during,
+            downloaded_file_count_after: downloaded_file_count(&request.staging_dir),
+        };
+    }
+    cleanup_downloaded_stage(&stage_path);
+    if let Err(e) = std::fs::write(&request.installed_version_path, request.version.as_bytes()) {
+        return SiteUpdateInstallResult::Error {
+            message: format!("installed version cannot be recorded: {e}"),
+            version: current_version,
+            fingerprint: current_fingerprint,
+            downloaded_file_count_during,
+            downloaded_file_count_after: downloaded_file_count(&request.staging_dir),
+        };
+    }
+    let downloaded_file_count_after = downloaded_file_count(&request.staging_dir);
+    let (version, fingerprint) =
+        installed_site_update_identity(&request.install_path, &request.installed_version_path);
+    SiteUpdateInstallResult::Installed {
+        version,
+        fingerprint,
+        downloaded_file_count_during,
+        downloaded_file_count_after,
+    }
+}
+
+fn platform_entry<'a>(
+    manifest: &'a serde_json::Value,
+    target: &str,
+    arch: &str,
+) -> Option<&'a serde_json::Value> {
+    let platforms = manifest.get("platforms")?.as_object()?;
+    let requested = format!("{target}-{arch}");
+    platforms
+        .get(&requested)
+        .or_else(|| platforms.get("windows-x86_64"))
+        .or_else(|| platforms.values().next())
+}
+
+fn update_download_address(
+    manifest: &serde_json::Value,
+    platform: Option<&serde_json::Value>,
+) -> Result<String, String> {
+    platform
+        .and_then(|entry| json_string(entry, &["url", "download_url", "downloadAddress"]))
+        .or_else(|| json_string(manifest, &["url", "download_url", "downloadAddress"]))
+        .map(str::to_owned)
+        .ok_or_else(|| "update manifest carries no download address".to_owned())
+}
+
+fn update_fingerprint_from_manifest(
+    manifest: &serde_json::Value,
+    platform: Option<&serde_json::Value>,
+) -> Option<String> {
+    platform
+        .and_then(|entry| {
+            json_string(
+                entry,
+                &[
+                    "expected_fingerprint",
+                    "expectedFingerprint",
+                    "fingerprint",
+                    "sha256",
+                    "sha256_hex",
+                ],
+            )
+        })
+        .or_else(|| {
+            json_string(
+                manifest,
+                &[
+                    "expected_fingerprint",
+                    "expectedFingerprint",
+                    "fingerprint",
+                    "sha256",
+                    "sha256_hex",
+                ],
+            )
+        })
+        .and_then(normalize_update_fingerprint)
+}
+
+fn fetch_bounded_text(
+    client: &reqwest::blocking::Client,
+    url: &str,
+) -> Result<Option<String>, String> {
+    let response = client
+        .get(url)
+        .send()
+        .map_err(|e| format!("site cannot be reached: {e}"))?;
+    if response.status() == reqwest::StatusCode::NO_CONTENT {
+        return Ok(None);
+    }
+    if !response.status().is_success() {
+        return Err(format!("site returned HTTP {}", response.status()));
+    }
+    if response
+        .content_length()
+        .is_some_and(|len| len > u64::try_from(UPDATE_SITE_MAX_BODY_BYTES).unwrap_or(u64::MAX))
+    {
+        return Err("site response is too large".to_owned());
+    }
+    let bytes = response
+        .bytes()
+        .map_err(|e| format!("site response could not be read: {e}"))?;
+    if bytes.len() > UPDATE_SITE_MAX_BODY_BYTES {
+        return Err("site response is too large".to_owned());
+    }
+    String::from_utf8(bytes.to_vec())
+        .map(Some)
+        .map_err(|_| "site response is not UTF-8".to_owned())
+}
+
+fn checksum_url_for_manifest(manifest_url: &str) -> Result<String, String> {
+    let base = reqwest::Url::parse(manifest_url)
+        .map_err(|e| format!("update manifest URL is invalid: {e}"))?;
+    base.join("SHA256SUMS.txt")
+        .map(|url| url.to_string())
+        .map_err(|e| format!("checksum URL is invalid: {e}"))
+}
+
+fn asset_name_from_download_address(download_address: &str) -> Result<String, String> {
+    let parsed = reqwest::Url::parse(download_address)
+        .map_err(|e| format!("download address is invalid: {e}"))?;
+    parsed
+        .path_segments()
+        .and_then(|mut segments| segments.next_back())
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| "download address has no asset name".to_owned())
+}
+
+fn checksum_for_asset(checksums: &str, asset: &str) -> Option<String> {
+    checksums.lines().find_map(|line| {
+        let mut parts = line.split_whitespace();
+        let digest = parts.next()?;
+        let name = parts.next()?.trim_start_matches('*');
+        if parts.next().is_some() || name != asset {
+            return None;
+        }
+        normalize_update_fingerprint(digest)
+    })
+}
+
+fn update_fingerprint_from_checksums(
+    client: &reqwest::blocking::Client,
+    manifest_url: &str,
+    download_address: &str,
+) -> Result<String, String> {
+    let checksums_url = checksum_url_for_manifest(manifest_url)?;
+    let asset = asset_name_from_download_address(download_address)?;
+    let Some(checksums) = fetch_bounded_text(client, &checksums_url)? else {
+        return Err("checksum list returned no content".to_owned());
+    };
+    checksum_for_asset(&checksums, &asset)
+        .ok_or_else(|| format!("SHA256SUMS.txt has no valid entry for {asset}"))
+}
+
+pub fn cmd_osl_check_site_for_update(
+    current_version: String,
+    manifest_url: String,
+    target: String,
+    arch: String,
+) -> SiteUpdateCheckResult {
+    record_activity_on_command_entry();
+    match check_site_for_update(current_version, manifest_url, target, arch) {
+        Ok(result) => result,
+        Err(message) => {
+            tracing::warn!(
+                target: "osl::updater",
+                %message,
+                "[OSL updater] direct site check failed"
+            );
+            SiteUpdateCheckResult::Error { message }
+        }
+    }
+}
+
+fn check_site_for_update(
+    current_version: String,
+    manifest_url: String,
+    target: String,
+    arch: String,
+) -> Result<SiteUpdateCheckResult, String> {
+    let current = parse_update_semver(&current_version)?;
+    let client = reqwest::blocking::Client::builder()
+        .timeout(UPDATE_SITE_HTTP_TIMEOUT)
+        .build()
+        .map_err(|e| format!("update HTTP client could not start: {e}"))?;
+
+    let Some(body) = fetch_bounded_text(&client, &manifest_url)? else {
+        return Ok(SiteUpdateCheckResult::UpToDate {
+            message: "you are up to date".to_owned(),
+        });
+    };
+    let manifest: serde_json::Value =
+        serde_json::from_str(&body).map_err(|e| format!("site returned invalid JSON: {e}"))?;
+    let version = json_string(&manifest, &["version"])
+        .ok_or_else(|| "update manifest carries no version".to_owned())?
+        .to_owned();
+    let offered = parse_update_semver(&version)?;
+    if compare_update_versions(current, offered) != std::cmp::Ordering::Less {
+        return Ok(SiteUpdateCheckResult::UpToDate {
+            message: "you are up to date".to_owned(),
+        });
+    }
+
+    let platform = platform_entry(&manifest, &target, &arch);
+    let download_address = update_download_address(&manifest, platform)?;
+    let expected_fingerprint = update_fingerprint_from_manifest(&manifest, platform).map_or_else(
+        || update_fingerprint_from_checksums(&client, &manifest_url, &download_address),
+        Ok,
+    )?;
+
+    Ok(SiteUpdateCheckResult::UpdateAvailable {
+        version,
+        download_address,
+        expected_fingerprint,
+    })
 }
 
 /// G3.3: JS-facing result of an install attempt. The *success* path

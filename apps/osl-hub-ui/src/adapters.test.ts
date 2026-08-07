@@ -546,8 +546,10 @@ describe("optional OSL Privacy adapters", () => {
     const readiness = { burnId, manifestDigest: "b".repeat(64), indexedScopes: 3, coverageComplete: true, loginProfileUntouched: true, nativeHistoryUntouched: true };
     expect(parseHubServiceBurnReadiness(readiness)?.coverageComplete).toBe(true);
     expect(parseHubServiceBurnReadiness({ ...readiness, coverageComplete: "yes" })).toBeNull();
-    const result = { burnId, scopesBurned: 3, rowsDestroyed: 4, whitelistEntriesRemoved: 2, remoteBlobsDeleted: 1, remoteBlobDeletionsFailed: 0, localCleanupComplete: true, remoteCleanupComplete: true, loginProfileUntouched: true, nativeHistoryUntouched: true };
+    const result = { burnId, currentAccountId: "current-account", selectedTotal: 6, scopesBurned: 3, rowsDestroyed: 4, whitelistEntriesRemoved: 2, remoteBlobsDeleted: 1, remoteBlobDeletionsFailed: 0, localCleanupComplete: true, remoteCleanupComplete: true, loginProfileUntouched: true, nativeHistoryUntouched: true };
     expect(parseHubServiceBurnResult(result)?.loginProfileUntouched).toBe(true);
+    expect(parseHubServiceBurnResult(result)?.currentAccountId).toBe("current-account");
+    expect(parseHubServiceBurnResult(result)?.selectedTotal).toBe(6);
     expect(parseHubServiceBurnResult({ ...result, loginProfileUntouched: false })).toBeNull();
   });
 
@@ -756,7 +758,7 @@ describe("optional OSL Privacy adapters", () => {
     const burnId = "a".repeat(64);
     const readiness = { burnId, manifestDigest: "b".repeat(64), indexedScopes: 3, coverageComplete: true, loginProfileUntouched: true, nativeHistoryUntouched: true };
     expect(parseHubServiceBurnReadiness({ ...readiness, nativeHistoryUntouched: false })).toBeNull();
-    const result = { burnId, scopesBurned: 3, rowsDestroyed: 4, whitelistEntriesRemoved: 2, remoteBlobsDeleted: 1, remoteBlobDeletionsFailed: 0, localCleanupComplete: true, remoteCleanupComplete: true, loginProfileUntouched: true, nativeHistoryUntouched: true };
+    const result = { burnId, currentAccountId: "current-account", selectedTotal: 6, scopesBurned: 3, rowsDestroyed: 4, whitelistEntriesRemoved: 2, remoteBlobsDeleted: 1, remoteBlobDeletionsFailed: 0, localCleanupComplete: true, remoteCleanupComplete: true, loginProfileUntouched: true, nativeHistoryUntouched: true };
     expect(parseHubServiceBurnResult({ ...result, nativeHistoryUntouched: false })).toBeNull();
     expect(parseHubServiceBurnResult({ ...result, nativeHistoryUntouched: "verified" })).toBeNull();
   });

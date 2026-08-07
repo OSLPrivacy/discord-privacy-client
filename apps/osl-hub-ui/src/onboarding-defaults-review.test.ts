@@ -9,6 +9,48 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
 vi.mock("@tauri-apps/api/event", () => ({ emitTo: mocks.emitTo, listen: mocks.listen }));
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: mocks.getCurrentWindow }));
 
+class FakeElement {
+  className = "";
+  dataset: Record<string, string> = {};
+  role = "";
+  textContent = "";
+  value = "";
+  checked = false;
+  innerHTML = "";
+  classList = { add: vi.fn() };
+  private listeners = new Map<string, Array<(event: { currentTarget: FakeElement; preventDefault: () => void }) => void>>();
+
+  addEventListener(type: string, listener: (event: { currentTarget: FakeElement; preventDefault: () => void }) => void): void {
+    this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]);
+  }
+
+  dispatch(type: string): void {
+    for (const listener of this.listeners.get(type) ?? []) {
+      listener({ currentTarget: this, preventDefault: vi.fn() });
+    }
+  }
+
+  append(): void {}
+  focus(): void {}
+  querySelector(): null { return null; }
+  querySelectorAll(): unknown[] { return []; }
+  remove(): void {}
+}
+
+function installControlDom(selectors: Record<string, FakeElement>): void {
+  vi.stubGlobal("document", {
+    querySelector: vi.fn((selector: string) => selectors[selector] ?? null),
+    querySelectorAll: vi.fn(() => []),
+    createElement: vi.fn(() => new FakeElement()),
+    getElementById: vi.fn(() => null),
+    documentElement: new FakeElement(),
+    body: new FakeElement(),
+    activeElement: null,
+    addEventListener: vi.fn(),
+    visibilityState: "visible",
+  });
+}
+
 // D-251: `src/main.ts` is ~10k lines, and importing it costs seconds. This file
 // used to do that inside the body of the one `it()` that needs the live module,
 // where vitest's default 5,000 ms `testTimeout` applies, so most of that test's
@@ -25,7 +67,11 @@ let ui: typeof import("./main");
 
 beforeAll(async () => {
   vi.stubGlobal("localStorage", { getItem: () => null, setItem: () => undefined, removeItem: () => undefined });
-  vi.stubGlobal("document", { querySelector: vi.fn(() => null), createElement: vi.fn(() => ({})), documentElement: { classList: { add: vi.fn() }, dataset: {} }, addEventListener: vi.fn(), visibilityState: "visible" });
+  vi.stubGlobal("HTMLElement", FakeElement);
+  vi.stubGlobal("HTMLInputElement", FakeElement);
+  vi.stubGlobal("HTMLTextAreaElement", FakeElement);
+  vi.stubGlobal("HTMLSelectElement", FakeElement);
+  installControlDom({});
   vi.stubGlobal("window", { addEventListener: vi.fn(), matchMedia: vi.fn(() => ({ matches: false, addEventListener: vi.fn() })), setTimeout, confirm: vi.fn(() => false) });
   vi.stubGlobal("requestAnimationFrame", () => 1);
   vi.stubGlobal("cancelAnimationFrame", () => undefined);
@@ -114,5 +160,34 @@ describe("review defaults onboarding", () => {
     expect(reviewDefaultsOnboardingContent()).toContain('id="continue-defaults-review"');
     expect(sendingSetupContent()).toContain('data-send-mode="manual"');
     expect(sendingSetupContent()).toContain('id="finish-onboarding"');
+  });
+
+  it("blocks Continue when the defaults record is missing, then Back returns to protection level", () => {
+    const continueButton = new FakeElement();
+    const backButton = new FakeElement();
+    installControlDom({
+      "#continue-defaults-review": continueButton,
+      "#onboarding-back": backButton,
+    });
+
+    ui.__oslHubUiTest.reset({ route: "onboarding", onboardingRoute: "defaults" });
+    ui.__oslHubUiTest.setDeleteChoicesForTest(null);
+
+    expect(ui.reviewDefaultsOnboardingContent()).toContain('id="defaults-record-missing"');
+    ui.__oslHubUiTest.bindOnboarding();
+
+    continueButton.dispatch("click");
+    const afterContinue = ui.__oslHubUiTest.snapshot().onboardingRoute;
+    expect(afterContinue).toBe("defaults");
+
+    backButton.dispatch("click");
+    const afterBack = ui.__oslHubUiTest.snapshot().onboardingRoute;
+    expect(afterBack).toBe("privacy");
+
+    console.log(`TASK0342_MISSING_DEFAULTS_RECORD=missing`);
+    console.log(`TASK0342_CONTINUE_ROUTE_AFTER_MISSING_DEFAULTS=${afterContinue}`);
+    console.log(`TASK0342_CONTINUE_BLOCKED=${afterContinue === "defaults"}`);
+    console.log(`TASK0342_BACK_ROUTE_AFTER_MISSING_DEFAULTS=${afterBack}`);
+    console.log(`TASK0342_PROTECTION_LEVEL_ROUTE=${afterBack}`);
   });
 });

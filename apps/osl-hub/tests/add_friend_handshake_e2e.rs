@@ -592,6 +592,14 @@ fn two_fresh_installs_reach_encrypted_messaging_only_after_a_symmetric_handshake
         true,
     )
     .expect("alice approves the chat with bob");
+    osl_privacy_hub::security::set_friend_account_reach_choice(
+        &alice.security,
+        alice_context.person_id.clone(),
+        "osl-chat".to_owned(),
+        "osl-main".to_owned(),
+        true,
+    )
+    .expect("alice ticks OSL Chat account reach for bob");
     assert!(
         osl_privacy_hub::security::manual_peer_scope_approved(
             &alice.core,
@@ -686,6 +694,14 @@ fn two_fresh_installs_reach_encrypted_messaging_only_after_a_symmetric_handshake
         true,
     )
     .expect("bob approves the chat with alice");
+    osl_privacy_hub::security::set_friend_account_reach_choice(
+        &bob.security,
+        bob_context.person_id.clone(),
+        "osl-chat".to_owned(),
+        "osl-main".to_owned(),
+        true,
+    )
+    .expect("bob ticks OSL Chat account reach for alice");
     osl_privacy_hub::security::set_scope_security(
         &bob.security,
         bob_context.scope.clone(),

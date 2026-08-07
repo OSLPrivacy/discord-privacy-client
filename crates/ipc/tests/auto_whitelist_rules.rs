@@ -1,6 +1,8 @@
 use ipc::commands::{
     cmd_osl_get_auto_whitelist_rule_choices, cmd_osl_read_auto_whitelist_rule,
     cmd_osl_get_auto_whitelist_rule_choices, cmd_osl_new_place, cmd_osl_read_auto_whitelist_rule,
+    cmd_osl_get_auto_whitelist_rule_choices, cmd_osl_get_discord_whitelist_kinds,
+    cmd_osl_get_telegram_whitelist_kinds, cmd_osl_read_auto_whitelist_rule,
     cmd_osl_save_auto_whitelist_rule,
 };
 use ipc::state::AppState;
@@ -74,4 +76,287 @@ fn direct_new_place_command_returns_unlisted_with_no_prompt_when_rule_is_never()
     );
     assert_eq!(result.result, "unlisted");
     assert!(!result.prompt);
+fn discord_kinds_command_returns_exactly_five_named_kinds() {
+    let kinds = cmd_osl_get_discord_whitelist_kinds().unwrap();
+    let ids: Vec<String> = kinds.iter().map(|kind| kind.id.clone()).collect();
+    let names: Vec<String> = kinds.iter().map(|kind| kind.name.clone()).collect();
+
+    println!("discord whitelist kinds count: {}", kinds.len());
+    println!("discord whitelist kinds: {}", names.join(", "));
+
+    assert_eq!(kinds.len(), 5);
+    assert_eq!(
+        ids,
+        vec![
+            "direct_message",
+            "group_chat",
+            "server",
+            "server_channel",
+            "thread"
+        ]
+    );
+    assert_eq!(
+        names,
+        vec![
+            "direct message",
+            "group chat",
+            "server",
+            "server channel",
+            "thread"
+        ]
+    );
+}
+
+#[test]
+fn five_discord_kind_rule_lookups_return_independently_saved_choices() {
+    let state = AppState::new();
+    let saved = [
+        ("discord:direct_message", "always"),
+        ("discord:group_chat", "ask me"),
+        ("discord:server", "only if a friend"),
+        ("discord:server_channel", "never"),
+        ("discord:thread", "always"),
+    ];
+
+    for (rule_key, choice) in saved {
+        cmd_osl_save_auto_whitelist_rule(&state, rule_key.to_string(), choice.to_string(), None)
+            .unwrap();
+    }
+
+    let lookups: Vec<_> = saved
+        .iter()
+        .map(|(rule_key, _)| {
+            cmd_osl_read_auto_whitelist_rule(&state, (*rule_key).to_string()).unwrap()
+        })
+        .collect();
+    let proof: Vec<String> = lookups
+        .iter()
+        .map(|rule| {
+            let place = rule
+                .allowed_place
+                .as_ref()
+                .expect("Discord kind rule carries allowed-place record");
+            format!(
+                "{}={} allowed_place={}:{}",
+                rule.app_kind, rule.choice, place.app, place.kind
+            )
+        })
+        .collect();
+
+    println!(
+        "discord kind direct lookup count={} {}",
+        lookups.len(),
+        proof.join(" | ")
+    );
+
+    assert_eq!(lookups.len(), 5);
+    assert_eq!(lookups[0].app_kind, "discord:direct_message");
+    assert_eq!(lookups[0].choice, "always");
+    assert_eq!(
+        lookups[0]
+            .allowed_place
+            .as_ref()
+            .map(|place| place.kind.as_str()),
+        Some("direct_message")
+    );
+    assert_eq!(lookups[1].app_kind, "discord:group_chat");
+    assert_eq!(lookups[1].choice, "ask me");
+    assert_eq!(
+        lookups[1]
+            .allowed_place
+            .as_ref()
+            .map(|place| place.kind.as_str()),
+        Some("group_chat")
+    );
+    assert_eq!(lookups[2].app_kind, "discord:server");
+    assert_eq!(lookups[2].choice, "only if a friend");
+    assert_eq!(
+        lookups[2]
+            .allowed_place
+            .as_ref()
+            .map(|place| place.kind.as_str()),
+        Some("server")
+    );
+    assert_eq!(lookups[3].app_kind, "discord:server_channel");
+    assert_eq!(lookups[3].choice, "never");
+    assert_eq!(
+        lookups[3]
+            .allowed_place
+            .as_ref()
+            .map(|place| place.kind.as_str()),
+        Some("server_channel")
+    );
+    assert_eq!(lookups[4].app_kind, "discord:thread");
+    assert_eq!(lookups[4].choice, "always");
+    assert_eq!(
+        lookups[4]
+            .allowed_place
+            .as_ref()
+            .map(|place| place.kind.as_str()),
+        Some("thread")
+    );
+}
+
+#[test]
+fn two_messenger_kind_rule_lookups_return_independently_saved_choices() {
+    let state = AppState::new();
+    let saved = [
+        ("messenger:direct_message", "always"),
+        ("messenger:group_chat", "ask me"),
+    ];
+
+    for (rule_key, choice) in saved {
+        cmd_osl_save_auto_whitelist_rule(&state, rule_key.to_string(), choice.to_string(), None)
+            .unwrap();
+    }
+
+    let lookups: Vec<_> = saved
+        .iter()
+        .map(|(rule_key, _)| {
+            cmd_osl_read_auto_whitelist_rule(&state, (*rule_key).to_string()).unwrap()
+        })
+        .collect();
+    let proof: Vec<String> = lookups
+        .iter()
+        .map(|rule| {
+            let place = rule
+                .allowed_place
+                .as_ref()
+                .expect("Messenger kind rule carries allowed-place record");
+            format!(
+                "{}={} allowed_place={}:{}",
+                rule.app_kind, rule.choice, place.app, place.kind
+            )
+        })
+        .collect();
+
+    println!(
+        "messenger kind direct lookup count={} {}",
+        lookups.len(),
+        proof.join(" | ")
+    );
+
+    assert_eq!(lookups.len(), 2);
+    assert_eq!(lookups[0].app_kind, "messenger:direct_message");
+    assert_eq!(lookups[0].choice, "always");
+    assert_eq!(
+        lookups[0]
+            .allowed_place
+            .as_ref()
+            .map(|place| (place.app.as_str(), place.kind.as_str())),
+        Some(("messenger", "direct_message"))
+    );
+    assert_eq!(lookups[1].app_kind, "messenger:group_chat");
+    assert_eq!(lookups[1].choice, "ask me");
+    assert_eq!(
+        lookups[1]
+            .allowed_place
+            .as_ref()
+            .map(|place| (place.app.as_str(), place.kind.as_str())),
+        Some(("messenger", "group_chat"))
+    );
+    assert_ne!(lookups[0].choice, lookups[1].choice);
+}
+
+#[test]
+fn task3740_telegram_kind_list_has_exactly_six_and_all_resolve_allowed_place() {
+    let state = AppState::new();
+    let kinds = cmd_osl_get_telegram_whitelist_kinds().unwrap();
+    let ids: Vec<String> = kinds.iter().map(|kind| kind.id.clone()).collect();
+    let names: Vec<String> = kinds.iter().map(|kind| kind.name.clone()).collect();
+
+    println!("telegram whitelist kind count={}", kinds.len());
+    println!("telegram whitelist kinds={}", ids.join(","));
+    println!("telegram whitelist kind names={}", names.join(","));
+
+    assert_eq!(kinds.len(), 6);
+    assert_eq!(
+        ids,
+        vec![
+            "direct_message",
+            "group_chat",
+            "channel",
+            "public_post",
+            "supergroup",
+            "saved_messages"
+        ]
+    );
+
+    let lookups: Vec<_> = ids
+        .iter()
+        .map(|id| {
+            cmd_osl_read_auto_whitelist_rule(&state, format!("telegram:{id}"))
+                .expect("telegram kind should normalize")
+        })
+        .collect();
+    let allowed: Vec<String> = lookups
+        .iter()
+        .map(|rule| {
+            let place = rule
+                .allowed_place
+                .as_ref()
+                .expect("Telegram kind rule carries allowed-place record");
+            format!("{}:{}", place.app, place.kind)
+        })
+        .collect();
+
+    println!("telegram allowed-place count={}", allowed.len());
+    println!("telegram allowed-place answers={}", allowed.join(","));
+
+    assert_eq!(allowed.len(), 6);
+    assert_eq!(
+        allowed,
+        vec![
+            "telegram:direct_message",
+            "telegram:group_chat",
+            "telegram:channel",
+            "telegram:public_post",
+            "telegram:supergroup",
+            "telegram:saved_messages"
+        ]
+    );
+}
+
+#[test]
+fn task3740_1027_and_1028_are_allowed_and_story_is_refused_by_name() {
+    let state = AppState::new();
+    let task1027 = cmd_osl_read_auto_whitelist_rule(&state, "telegram:supergroup".to_string())
+        .expect("task 1027 supergroup should be allowed");
+    let task1028 = cmd_osl_read_auto_whitelist_rule(&state, "telegram:saved_messages".to_string())
+        .expect("task 1028 saved messages should be allowed");
+    let story = cmd_osl_read_auto_whitelist_rule(&state, "telegram:story".to_string()).unwrap_err();
+
+    println!(
+        "task1027 against telegram kind list={}",
+        task1027
+            .allowed_place
+            .as_ref()
+            .map(|place| format!("allowed:{}:{}", place.app, place.kind))
+            .unwrap_or_else(|| "refusal".to_string())
+    );
+    println!(
+        "task1028 against telegram kind list={}",
+        task1028
+            .allowed_place
+            .as_ref()
+            .map(|place| format!("allowed:{}:{}", place.app, place.kind))
+            .unwrap_or_else(|| "refusal".to_string())
+    );
+    println!("story against telegram kind list=refusal error={story}");
+
+    assert_eq!(
+        task1027
+            .allowed_place
+            .as_ref()
+            .map(|place| (place.app.as_str(), place.kind.as_str())),
+        Some(("telegram", "supergroup"))
+    );
+    assert_eq!(
+        task1028
+            .allowed_place
+            .as_ref()
+            .map(|place| (place.app.as_str(), place.kind.as_str())),
+        Some(("telegram", "saved_messages"))
+    );
+    assert!(story.contains("story"), "{story}");
 }

@@ -455,8 +455,9 @@ let coverInsertion: CoverInsertionChoice | null = initialCoverInsertionChoice();
 // nothing reads them at send time yet.
 let beforeSendChecks: BeforeSendChecks = initialBeforeSendChecks();
 // What OSL is allowed to delete on this device. Both start off; nothing is
-// deleted unless it is turned on here.
-let deleteChoices: DeleteChoices = initialDeleteChoices();
+// deleted unless it is turned on here. If this record is ever missing, the
+// review step fails closed instead of advancing on implied defaults.
+let deleteChoices: DeleteChoices | null = initialDeleteChoices();
 let forwardSecrecyOnboarding: ForwardSecrecyOnboardingState = initialForwardSecrecyOnboardingState();
 let forwardSecrecyMode: "protectPast" | "keepGroupDelivery" = "keepGroupDelivery";
 // A cache only. The authority is encrypted account state in the native hub;
@@ -2044,7 +2045,7 @@ function signinPlusIcon(): string {
 
 /**
  * The bare entry screen: mark, one action, one way out. Sign in and Create
- * account are the SAME screen — Liam's ruling, 2026-08-06, which overrides the
+ * account are the SAME screen -- Liam's ruling, 2026-08-06, which overrides the
  * handoff's suggestion that the two keep different corner radii. Only the
  * label, the icon and where the button goes differ, so they are arguments
  * rather than two copies that drift apart.
@@ -2061,16 +2062,21 @@ function entryScreenContent(label: string, icon: string, route: OnboardingRoute)
 }
 
 function welcomeOnboardingContent(): string {
-  const partialIdentity = core.readiness.identityLoaded && core.readiness.bootstrapStatus === "setupRequired";
   const returning = core.readiness.bootstrapStatus === "passwordRequired" || core.readiness.passwordGateRequired;
 
-  // Both entry screens are the same component. The heading, the explainer, the
-  // divider and the "add another identity in Settings" footnote were all removed
-  // by the 2026-08-06 redesign and must not come back. `Ghost-white.svg` carries
-  // its own #080c0d field, which is why the window behind it is that exact value
-  // -- any other and the mark reads as a tile sitting on the app.
   if (returning) return entryScreenContent("Sign in", signinLockIcon(), "unlock");
-  return entryScreenContent(partialIdentity ? "Finish setup" : "Create account", signinPlusIcon(), "create");
+
+  return `<section class="signin-card signin-lock-screen welcome-choice-screen" aria-labelledby="route-heading">
+    <h1 id="route-heading" tabindex="-1">Welcome</h1>
+    <div class="signin-lock-column welcome-choice-column">
+      <img class="signin-ghost-mark" src="${oslGhostMarkUrl}" alt="" width="148" height="148"/>
+      <div class="welcome-choice-actions" aria-label="Welcome actions">
+        <button class="signin-unlock" data-onboarding="create" type="button"><span class="signin-unlock-label">Create</span>${signinPlusIcon()}</button>
+        <button class="signin-unlock" data-onboarding="import" type="button"><span class="signin-unlock-label">Restore</span>${signinArrowIcon()}</button>
+        <button class="signin-unlock" data-onboarding="unlock" type="button"><span class="signin-unlock-label">Unlock</span>${signinLockIcon()}</button>
+      </div>
+    </div>
+  </section>`;
 }
 
 function proSetupContent(): string {
@@ -2995,7 +3001,11 @@ export function sendingSetupContent(): string {
  * person can reason about.
  */
 export function reviewDefaultsOnboardingContent(): string {
-  return onboardingDeleteMarkup(deleteChoices);
+  const missing = deleteChoices === null;
+  const warning = missing
+    ? `<p class="del-quiet" id="defaults-record-missing" role="alert">Review defaults could not be loaded. Choose what OSL may delete before continuing.</p>`
+    : "";
+  return onboardingDeleteMarkup(deleteChoices ?? initialDeleteChoices()).replace("</section>", `${warning}</section>`);
 }
 
 function coverDraftSetupContent(): string {
@@ -3370,7 +3380,14 @@ function bindOnboarding(): void {
     onboardingRoute = "cover";
     render();
   });
-  document.querySelector("#continue-defaults-review")?.addEventListener("click", () => { onboardingRoute = "tor"; render(); });
+  document.querySelector("#continue-defaults-review")?.addEventListener("click", () => {
+    if (deleteChoices === null) {
+      showToast("Review defaults could not be loaded. Nothing changed.");
+      return;
+    }
+    onboardingRoute = "tor";
+    render();
+  });
   document.querySelectorAll<HTMLInputElement>('input[name="tor-route"]').forEach((input) => input.addEventListener("change", () => {
     if (input.checked && (input.value === "tor" || input.value === "direct")) {
       torOnboarding = chooseTorRoute(torOnboarding, input.value);
@@ -3410,11 +3427,11 @@ function bindOnboarding(): void {
     }
   }));
   document.querySelector<HTMLInputElement>("#delete-drafts")?.addEventListener("change", (event) => {
-    deleteChoices = { ...deleteChoices, deleteDrafts: (event.currentTarget as HTMLInputElement).checked };
+    deleteChoices = { ...(deleteChoices ?? initialDeleteChoices()), deleteDrafts: (event.currentTarget as HTMLInputElement).checked };
     render();
   });
   document.querySelector<HTMLInputElement>("#delete-old-messages")?.addEventListener("change", (event) => {
-    deleteChoices = { ...deleteChoices, deleteOldMessages: (event.currentTarget as HTMLInputElement).checked };
+    deleteChoices = { ...(deleteChoices ?? initialDeleteChoices()), deleteOldMessages: (event.currentTarget as HTMLInputElement).checked };
     render();
   });
   document.querySelector<HTMLInputElement>("#warn-unprotected")?.addEventListener("change", (event) => {
@@ -5735,6 +5752,13 @@ export function privacyDestinationContent(): string {
   ] as const;
   const policyCards = policyGroups.map(([name, detail, state]) => `<article class="privacy-policy-card">${statusTag(state)}<h3>${name}</h3><p>${detail}</p></article>`).join("");
   const toolRows = tools.map(([name, detail], index) => `<article class="setting-line privacy-tool-row"><span><strong>${name}</strong><small>${detail}</small></span>${statusTag(index === 0 ? "Available" : proActive ? "Pro planned" : "Pro")}</article>`).join("");
+  const privacyDisclosures = [
+    ["Scrub reading", "Scrub reads only the files, exports, and account views you choose for review; it does not read other apps or accounts."],
+    ["Result text storage and removal", "Result text is kept only in the local encrypted Scrub index and is removed when you clear results or cancel the import."],
+    ["Payment details", "OSL never stores your payment details or payment method."],
+    ["Payment company data", "The payment company may receive checkout, billing, fraud, tax, and support data needed to process payment."],
+  ] as const;
+  const disclosureRows = privacyDisclosures.map(([name, detail]) => `<div class="setting-line"><span><strong>${name}</strong><small>${detail}</small></span></div>`).join("");
   const cleanupState = proActive ? "Manual queue planned" : "Pro manual queue";
   const protectionReview = privacyProtectionReviewOpen
     ? `<section class="privacy-review-card" data-privacy-protection-review><div><span class="privacy-local-mark">PROTECTION REVIEW</span><h2>Review or change protection</h2><p>Check the Balanced policy, app exceptions, cleanup limits, and local warning choices before OSL changes anything.</p></div><button class="button compact" data-route="settings" data-settings="scrub" type="button">Open detailed review</button></section>`
@@ -5754,7 +5778,7 @@ export function privacyDestinationContent(): string {
     },
   };
   const activePreset = presetCopy[protectionPreset];
-  return `<main class="content-viewport privacy-destination" aria-labelledby="route-heading"><header class="destination-header"><div><p class="eyebrow">Privacy</p><h1 id="route-heading" tabindex="-1">Privacy</h1><p>Review what OSL will do before it changes anything.</p></div><button class="button primary" data-privacy-primary-action data-route="${primary.route}" data-review-target="${primary.reviewTarget}" type="button">Review or change protection</button></header>${protectionReview}<section class="privacy-preset-panel" aria-labelledby="privacy-preset-title"><div><span class="privacy-local-mark">ACTIVE PRESET</span><h2 id="privacy-preset-title">${activePreset.title}</h2><p>${activePreset.detail}</p></div><button class="button compact" data-change-protection-preset type="button">Change preset</button></section><section class="privacy-policy-stack" id="privacy-protection-review" aria-labelledby="privacy-policy-title"><header><div><h2 id="privacy-policy-title">Global policy</h2><p>Inherited from ${activePreset.title} until you make an exception.</p></div>${statusTag("Deletion off")}</header><p class="privacy-policy-path">${activePreset.title} preset / app / account / conversation exception</p><div class="privacy-policy-grid">${policyCards}</div></section>${publicPostGuardCarrierPreviewMarkup()}<section class="privacy-review-card manual-scrub-card"><div><span class="privacy-local-mark">FREE · THIS DEVICE ONLY</span><h2>Recommended action</h2><h3>Review an export</h3><p>Choose a TXT, CSV, or JSON message export. OSL suggests items; you decide what to review. Nothing is deleted by this build.</p></div>${scanActions}</section>${scrubCategoryChooserMarkup(true)}${privacyScanResultsMarkup()}<section class="settings-list privacy-tools" aria-labelledby="privacy-tools-title"><header><h2 id="privacy-tools-title">Solo privacy tools</h2><p>Useful even when nobody else uses OSL.</p></header>${toolRows}</section><section class="settings-list privacy-limits" aria-labelledby="privacy-limits-title"><header><h2 id="privacy-limits-title">Proof and limits</h2><p>OSL refuses actions it cannot verify.</p></header><div class="setting-line"><span><strong>Cleanup</strong><small>${cleanupState}; every batch must be scanned, shown, previewed, confirmed, executed, and checked.</small></span>${statusTag("No auto delete")}</div><div class="setting-line"><span><strong>Service messages</strong><small>Apps, people, exports, backups, and opened copies may retain content.</small></span>${statusTag("Limit shown")}</div><div class="setting-line"><span><strong>Window protection</strong><small>Applied to OSL's own window when available. Cameras, malware, and modified recipients can still capture content.</small></span>${statusTag(screenshotProtectionEnabled ? "Active" : "Unavailable")}</div></section></main>`;
+  return `<main class="content-viewport privacy-destination" aria-labelledby="route-heading"><header class="destination-header"><div><p class="eyebrow">Privacy</p><h1 id="route-heading" tabindex="-1">Privacy</h1><p>Review what OSL will do before it changes anything.</p></div><button class="button primary" data-privacy-primary-action data-route="${primary.route}" data-review-target="${primary.reviewTarget}" type="button">Review or change protection</button></header>${protectionReview}<section class="privacy-preset-panel" aria-labelledby="privacy-preset-title"><div><span class="privacy-local-mark">ACTIVE PRESET</span><h2 id="privacy-preset-title">${activePreset.title}</h2><p>${activePreset.detail}</p></div><button class="button compact" data-change-protection-preset type="button">Change preset</button></section><section class="privacy-policy-stack" id="privacy-protection-review" aria-labelledby="privacy-policy-title"><header><div><h2 id="privacy-policy-title">Global policy</h2><p>Inherited from ${activePreset.title} until you make an exception.</p></div>${statusTag("Deletion off")}</header><p class="privacy-policy-path">${activePreset.title} preset / app / account / conversation exception</p><div class="privacy-policy-grid">${policyCards}</div></section>${publicPostGuardCarrierPreviewMarkup()}<section class="privacy-review-card manual-scrub-card"><div><span class="privacy-local-mark">FREE · THIS DEVICE ONLY</span><h2>Recommended action</h2><h3>Review an export</h3><p>Choose a TXT, CSV, or JSON message export. OSL suggests items; you decide what to review. Nothing is deleted by this build.</p></div>${scanActions}</section>${scrubCategoryChooserMarkup(true)}${privacyScanResultsMarkup()}<section class="settings-list privacy-tools" aria-labelledby="privacy-tools-title"><header><h2 id="privacy-tools-title">Solo privacy tools</h2><p>Useful even when nobody else uses OSL.</p></header>${toolRows}</section><section class="settings-list privacy-disclosures" aria-labelledby="privacy-disclosures-title"><header><h2 id="privacy-disclosures-title">Data handling</h2><p>What this page depends on and what stays outside OSL.</p></header>${disclosureRows}</section><section class="settings-list privacy-limits" aria-labelledby="privacy-limits-title"><header><h2 id="privacy-limits-title">Proof and limits</h2><p>OSL refuses actions it cannot verify.</p></header><div class="setting-line"><span><strong>Cleanup</strong><small>${cleanupState}; every batch must be scanned, shown, previewed, confirmed, executed, and checked.</small></span>${statusTag("No auto delete")}</div><div class="setting-line"><span><strong>Service messages</strong><small>Apps, people, exports, backups, and opened copies may retain content.</small></span>${statusTag("Limit shown")}</div><div class="setting-line"><span><strong>Window protection</strong><small>Applied to OSL's own window when available. Cameras, malware, and modified recipients can still capture content.</small></span>${statusTag(screenshotProtectionEnabled ? "Active" : "Unavailable")}</div></section></main>`;
 }
 
 function massCleanupActionLabel(action: string): string {
@@ -10328,6 +10352,7 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   setup = { ...defaultSetup, ...patch.setup };
   silentVisibleMode = patch.silentVisibleMode ?? null;
   coverInsertion = patch.coverInsertion ?? initialCoverInsertionChoice();
+  deleteChoices = initialDeleteChoices();
   settingsSection = "account";
   activeService = null;
   activeHomeAppId = null;
@@ -10560,6 +10585,8 @@ export const __oslHubUiTest = {
   setBrowserFootprintForTest(hydration: BrowserFootprintHydration): void {
     browserFootprintOwner = core.readiness.activeOslUserId;
     applyNativeBrowserFootprint(hydration);
+  setDeleteChoicesForTest(choices: DeleteChoices | null): void {
+    deleteChoices = choices;
   },
   /** D80: binds the real unlock form handler against a caller-supplied DOM so
    * the credential path can be driven end to end rather than string-matched. */

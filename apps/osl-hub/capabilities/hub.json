@@ -217,6 +217,13 @@
     "allow-create-hub-named-server",
     "allow-list-hub-named-servers",
     "allow-get-hub-friend-future-account-auto-whitelist",
-    "allow-set-hub-friend-future-account-auto-whitelist"
+    "allow-set-hub-friend-future-account-auto-whitelist",
+    "allow-set-hub-look-choice",
+    "allow-get-hub-look-choice",
+    "allow-list-hub-look-choices",
+    "allow-save-scrub-setup",
+    "allow-check-hub-password-reset-phrase",
+    "allow-set-hub-friend-account-reach-choice",
+    "allow-list-hub-friend-account-reach-choices"
   ]
 }

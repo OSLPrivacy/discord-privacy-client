@@ -3,6 +3,10 @@
 #[cfg(feature = "whatsapp-qa-identity")]
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use osl_privacy_hub::account_burn_selection::{
+    select_account_burn_selection, AccountBurnSelection,
+};
 use osl_privacy_hub::account_recovery;
 use osl_privacy_hub::ai_carrier::{
     ai_carrier_status_for, set_ai_carrier_preview_enabled_for, AiCarrierState,
@@ -31,6 +35,7 @@ use osl_privacy_hub::build_integrity::{
 use osl_privacy_hub::build_integrity::{check_current, BuildIntegrity};
 use osl_privacy_hub::burn_review_state::{
     BurnReviewBackResult, BurnReviewSelection, BurnReviewState,
+    BurnReviewState, BurnReviewStateCommand, BurnReviewStateSummary,
 };
 use osl_privacy_hub::chat_capture_protection::{
     ChatCaptureProtectionState, ConsentTransition, EffectiveCaptureProtection,
@@ -87,6 +92,7 @@ use osl_privacy_hub::osl_mail::{self, OslMailState, OslMailStatus};
 use osl_privacy_hub::osl_profile::{self, HubProfileDto, HubProfileInput, OwnerProfilePictureDto};
 use osl_privacy_hub::password_lifecycle::{
     self, HubIdentityCreationOwnerSignoff, HubIdentitySetupResult, HubMainPasswordSetupResult,
+    HubPasswordResetPhraseCheck,
 };
 use osl_privacy_hub::peer_attachment_io;
 use osl_privacy_hub::preferences::{
@@ -101,6 +107,7 @@ use osl_privacy_hub::scrub_index::{
     ScrubIndexChunkRequest, ScrubIndexInitializeRequest, ScrubIndexManifest, ScrubIndexState,
     ScrubIndexStatus,
 };
+use osl_privacy_hub::scrub_setup_store::{ScrubSetupCommand, ScrubSetupState, ScrubSetupSummary};
 use osl_privacy_hub::security::{
     self, AddFriendResult, AllowedPlaceDirectionState, AllowedPlaceQuery, AllowedPlaceRecord,
     FriendCodeExport, GroupMemberPermissionRecord, HubRevocationStatusDto, HubScopeBurnResult,
@@ -111,6 +118,9 @@ use osl_privacy_hub::security::{
     self, AddFriendResult, FriendCodeExport, FriendFutureAccountAutoWhitelistDto,
     HubRevocationStatusDto, HubScopeBurnResult, HubSecurityState, PersonDto, RemoveFriendResult,
     ScopeSecurityDto,
+    self, AddFriendResult, AppNotificationChoiceRecord, FriendAccountReachChoiceRecord,
+    FriendCodeExport, GroupMemberPermissionRecord, HubRevocationStatusDto, HubScopeBurnResult,
+    HubSecurityState, LookChoiceRecord, PersonDto, RemoveFriendResult, ScopeSecurityDto,
 };
 use osl_privacy_hub::security_credentials::{self, HubPasswordRoleStatus};
 use osl_privacy_hub::server_records::{NamedServerRecord, NamedServerRegistryState};
@@ -255,6 +265,9 @@ use osl_privacy_hub::hub_command_surface::{
     NativeDiscordProductSendAuthority, ProtectedEmailLiveRunProgressRequest,
     ProtectedEmailOpenMessageRead, ProtectedEmailOpenMessageReadRequest, ProtonMailboxForScrubRead,
     ProtonMailboxForScrubReadRequest,
+    with_native_discord_product_send_authority_for_switch, BrowserFootprintConsentRequest,
+    CheckedHost, DiscordGuidedDeletionPlanState, GuidedDeletionRunAuthorityInput,
+    NativeDiscordProductSendAuthority,
 };
 use osl_privacy_hub::native_surface_capture;
 // The QA-evidence half of the surface is compiled only for the disposable QA
@@ -758,6 +771,19 @@ fn save_burn_review_state(
     hide_other_people: bool,
 ) -> Result<BurnReviewSelection, String> {
     state.save_command(selected_scope, selected_chat, hide_other_people)
+fn save_scrub_setup(
+    state: State<'_, ScrubSetupState>,
+    command: ScrubSetupCommand,
+) -> Result<ScrubSetupSummary, String> {
+    state.save_command(command)
+}
+
+#[tauri::command]
+fn save_burn_review_state(
+    state: State<'_, BurnReviewState>,
+    command: BurnReviewStateCommand,
+) -> Result<BurnReviewStateSummary, String> {
+    state.save_command(command)
 }
 
 #[tauri::command]
@@ -770,6 +796,8 @@ fn get_burn_review_state(
 #[tauri::command]
 fn back_burn_review(state: State<'_, BurnReviewState>) -> Result<BurnReviewBackResult, String> {
     state.back_command()
+) -> Result<BurnReviewStateSummary, String> {
+    state.summary()
 }
 
 /// Persist the explicit connection route selected during onboarding.
@@ -1473,6 +1501,39 @@ async fn osl_mail_send(
 }
 
 #[tauri::command]
+async fn osl_mail_plan_protected_forward(
+    caller: tauri::WebviewWindow,
+    session: State<'_, HubAccountSessionState>,
+    recipients: Vec<String>,
+) -> Result<osl_mail::OslMailForwardPlan, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may plan OSL Mail forwarding".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || osl_mail::plan_protected_forward(recipients))
+        .await
+        .map_err(|_| "OSL Mail forward planning worker failed".to_owned())?
+}
+
+#[tauri::command]
+async fn osl_mail_forward_protected(
+    caller: tauri::WebviewWindow,
+    session: State<'_, HubAccountSessionState>,
+    recipients: Vec<String>,
+    confirmation: Option<String>,
+) -> Result<osl_mail::OslMailForwardResult, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may forward protected OSL Mail".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        osl_mail::forward_protected(recipients, confirmation)
+    })
+    .await
+    .map_err(|_| "OSL Mail protected forward worker failed".to_owned())?
+}
+
+#[tauri::command]
 async fn osl_mail_burn(
     app: tauri::AppHandle,
     caller: tauri::WebviewWindow,
@@ -1788,6 +1849,16 @@ async fn check_hub_recovery_words(
     })
     .await
     .map_err(|_| "OSL recovery word check worker failed".to_string())?
+async fn check_hub_password_reset_phrase(
+    app: tauri::AppHandle,
+    phrase: String,
+) -> Result<HubPasswordResetPhraseCheck, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<HubCoreState>();
+        password_lifecycle::check_password_reset_phrase(&state, phrase)
+    })
+    .await
+    .map_err(|_| "OSL password reset phrase worker failed".to_string())?
 }
 
 #[tauri::command]
@@ -2098,6 +2169,7 @@ fn set_hub_notifications_enabled(
 #[tauri::command]
 async fn list_hub_app_notifications(
     core: State<'_, HubCoreState>,
+    security_state: State<'_, HubSecurityState>,
     state: State<'_, HubNotificationState>,
     session: State<'_, HubAccountSessionState>,
 ) -> Result<Vec<HubAppNotification>, String> {
@@ -2109,20 +2181,71 @@ async fn list_hub_app_notifications(
     {
         return Err("OSL notifications require explicit local opt-in".to_owned());
     }
-    let people = security::list_people(&core)?;
-    Ok(people
+    Ok(
+        security::connected_app_notice_records_for_pending_key_changes(
+            &core,
+            &security_state,
+            "osl-hub".to_owned(),
+        )?
         .into_iter()
-        .filter(|person| person.pending_key_change)
-        .take(20)
-        .map(|person| HubAppNotification {
-            id: format!("key-change-{}", person.person_id),
-            title: "Friend encryption key changed".to_owned(),
-            detail:
-                "Verify the new safety number outside this chat before allowing encrypted messages."
-                    .to_owned(),
-            created_at: "Pending verification".to_owned(),
+        .map(|notice| HubAppNotification {
+            id: notice.id,
+            title: notice.title,
+            detail: notice.detail,
+            created_at: notice.created_at,
         })
-        .collect())
+        .collect(),
+    )
+}
+
+#[tauri::command]
+async fn set_hub_app_notification_choice(
+    security_state: State<'_, HubSecurityState>,
+    session: State<'_, HubAccountSessionState>,
+    app_id: String,
+    enabled: bool,
+) -> Result<AppNotificationChoiceRecord, String> {
+    let _session = session.transition.lock().await;
+    security::set_app_notification_choice(&security_state, app_id, enabled)
+}
+
+#[tauri::command]
+async fn list_hub_app_notification_choices(
+    security_state: State<'_, HubSecurityState>,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<Vec<AppNotificationChoiceRecord>, String> {
+    let _session = session.transition.lock().await;
+    security::list_app_notification_choices(&security_state)
+}
+
+#[tauri::command]
+async fn set_hub_look_choice(
+    security_state: State<'_, HubSecurityState>,
+    session: State<'_, HubAccountSessionState>,
+    name: String,
+    value: String,
+) -> Result<LookChoiceRecord, String> {
+    let _session = session.transition.lock().await;
+    security::set_look_choice(&security_state, name, value)
+}
+
+#[tauri::command]
+async fn get_hub_look_choice(
+    security_state: State<'_, HubSecurityState>,
+    session: State<'_, HubAccountSessionState>,
+    name: String,
+) -> Result<Option<String>, String> {
+    let _session = session.transition.lock().await;
+    security::look_choice_value(&security_state, name)
+}
+
+#[tauri::command]
+async fn list_hub_look_choices(
+    security_state: State<'_, HubSecurityState>,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<Vec<LookChoiceRecord>, String> {
+    let _session = session.transition.lock().await;
+    security::list_look_choices(&security_state)
 }
 
 #[tauri::command]
@@ -3835,9 +3958,11 @@ fn send_native_discord_overlay_carrier(
     let runtime_switches = app.state::<HubCoreState>().runtime_switches();
     with_native_discord_product_send_authority_for_switches(
         &runtime_switches,
+    with_native_discord_product_send_authority_for_switch(
         &composer,
         &scope_binding,
         layout,
+        app.state::<HubCoreState>().startup_switches().safe_sending,
         |product_send_authority| {
             let overlay_state = app.state::<OverlaySessionState>();
             let carrier_placement = overlay_state.begin_carrier_placement()?;
@@ -7121,6 +7246,21 @@ async fn compare_allowed_place_direction_state(
         kind,
         first_account,
         second_account,
+async fn set_hub_friend_account_reach_choice(
+    security_state: State<'_, HubSecurityState>,
+    session: State<'_, HubAccountSessionState>,
+    person_id: String,
+    service_id: String,
+    account_id: String,
+    broadened: bool,
+) -> Result<FriendAccountReachChoiceRecord, String> {
+    let _session = session.transition.lock().await;
+    security::set_friend_account_reach_choice(
+        &security_state,
+        person_id,
+        service_id,
+        account_id,
+        broadened,
     )
 }
 
@@ -7144,6 +7284,13 @@ async fn set_hub_friend_future_account_auto_whitelist(
 ) -> Result<FriendFutureAccountAutoWhitelistDto, String> {
     let _session = session.transition.lock().await;
     security::set_friend_future_account_auto_whitelist(&security_state, person_id, enabled)
+async fn list_hub_friend_account_reach_choices(
+    security_state: State<'_, HubSecurityState>,
+    session: State<'_, HubAccountSessionState>,
+    person_id: String,
+) -> Result<Vec<FriendAccountReachChoiceRecord>, String> {
+    let _session = session.transition.lock().await;
+    security::list_friend_account_reach_choices(&security_state, person_id)
 }
 
 #[tauri::command]
@@ -7638,6 +7785,8 @@ struct HubServiceBurnReadiness {
 #[serde(rename_all = "camelCase")]
 struct HubServiceBurnResult {
     burn_id: String,
+    current_account_id: String,
+    selected_total: usize,
     scopes_burned: usize,
     rows_destroyed: usize,
     whitelist_entries_removed: usize,
@@ -7660,6 +7809,39 @@ fn require_owned_service_account(
         .ok_or_else(|| "unknown service".to_owned())?;
     registry.require_owned(&owner, kind, account_id)?;
     Ok(owner)
+}
+
+fn load_current_account_burn_selection(
+    owner_osl_user_id: &str,
+    account_id: &str,
+) -> Result<AccountBurnSelection, String> {
+    let db_path = keystore::osl_config_dir()
+        .map_err(|_| "OSL account storage is unavailable".to_owned())?
+        .join("store")
+        .join("messages.sqlite");
+    if !db_path.exists() {
+        return Ok(AccountBurnSelection::empty(account_id));
+    }
+    let conn = rusqlite::Connection::open_with_flags(
+        &db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|error| format!("OSL account burn selection could not open local index: {error}"))?;
+    let has_selection_table: bool = conn
+        .query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'table' AND name = 'provider_sender_messages'
+            )",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("OSL account burn selection index is unreadable: {error}"))?;
+    if !has_selection_table {
+        return Ok(AccountBurnSelection::empty(account_id));
+    }
+    select_account_burn_selection(&conn, owner_osl_user_id, account_id)
+        .map_err(|error| format!("OSL account burn selection failed: {error}"))
 }
 
 #[tauri::command]
@@ -7700,6 +7882,7 @@ async fn burn_hub_service_account(
         let registry = app.state::<ServiceRegistryState>();
         let index = app.state::<ServiceScopeIndexState>();
         let owner = require_owned_service_account(&core, &registry, &service_id, &account_id)?;
+        let account_selection = load_current_account_burn_selection(&owner, &account_id)?;
         let preview = index.preview_complete_manifest(&owner, &service_id, &account_id)?;
         if confirmed_burn_id != bytes_hex(&preview.burn_id) {
             return Err(
@@ -7710,7 +7893,7 @@ async fn burn_hub_service_account(
         if manifest.burn_id != preview.burn_id {
             return Err("The service burn scope changed before it could be frozen".to_owned());
         }
-        burn_indexed_service_manifest(&app, &index, &manifest)
+        burn_indexed_service_manifest(&app, &index, &manifest, &account_selection)
     })
     .await
     .map_err(|_| "OSL service burn worker failed".to_owned())?
@@ -7774,6 +7957,7 @@ fn burn_indexed_service_manifest(
     app: &tauri::AppHandle,
     index: &ServiceScopeIndexState,
     manifest: &ImmutableServiceBurnManifest,
+    account_selection: &AccountBurnSelection,
 ) -> Result<HubServiceBurnResult, String> {
     let mut scopes_burned = 0usize;
     let mut rows_destroyed = 0usize;
@@ -7797,7 +7981,7 @@ fn burn_indexed_service_manifest(
                 indexed.scope.clone(),
                 indexed.canonical_channel_ids.clone(),
                 true,
-                Vec::new(),
+                account_selection.selected_message_ids.clone(),
             )?
         };
         broker::burn_indexed_local_protected_binding(
@@ -7818,6 +8002,8 @@ fn burn_indexed_service_manifest(
     app.state::<HubBrokerState>().clear()?;
     Ok(HubServiceBurnResult {
         burn_id: bytes_hex(&manifest.burn_id),
+        current_account_id: account_selection.current_account_id.clone(),
+        selected_total: account_selection.selected_total(),
         scopes_burned,
         rows_destroyed,
         whitelist_entries_removed,
@@ -10647,6 +10833,11 @@ fn main() {
             });
         }
     });
+    let startup_switches =
+        osl_privacy_hub::runtime_switches::read_startup_test_only_runtime_switches()
+            .unwrap_or_else(|error| {
+                panic!("OSL test-only runtime switches refused startup: {error}")
+            });
     startup_breadcrumb("setup_before"); // STARTUP-TRACE
     let builder = builder.setup(move |app| {
         startup_breadcrumb("setup_enter"); // STARTUP-TRACE
@@ -10726,6 +10917,10 @@ fn main() {
         app.manage(PreviewState::load(
             config_dir.join("preview-preferences.json"),
         ));
+        app.manage(ScrubSetupState::load(config_dir.join("scrub-setup.json")));
+        app.manage(BurnReviewState::load(
+            config_dir.join("burn-review-state.json"),
+        ));
         startup_breadcrumb("setup_step_14_preview_state_managed"); // STARTUP-TRACE
         app.manage(BurnReviewState::load(
             config_dir.join("burn-review-state.json"),
@@ -10751,6 +10946,7 @@ fn main() {
         let core = HubCoreState::bootstrap_from_disk_with_runtime_switches(
             startup_runtime_switches.clone(),
         );
+        let core = HubCoreState::bootstrap_from_disk_with_startup_switches(startup_switches);
         startup_breadcrumb("setup_step_18_hub_core_bootstrap_after"); // STARTUP-TRACE
         #[cfg(feature = "discord-qa-shell")]
         startup_breadcrumb("setup_step_19_qa_disposable_identity_before"); // STARTUP-TRACE

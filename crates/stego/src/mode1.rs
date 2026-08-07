@@ -262,6 +262,37 @@ pub const TOKEN_PAYLOAD_BITS: u32 = (TOKEN_ID_BYTES as u32 + TOKEN_MAC_BYTES as 
 /// Domain separator for the HMAC over the carrier seed.
 pub const TOKEN_MAC_DOMAIN: &[u8] = b"discord-privacy-client/mode1-token/v1";
 
+/// New compact cover handle width for the first shared-key shrink layer.
+///
+/// The cover carries this 64-bit handle plus a 16-bit keyed detector. The
+/// secret seed/pointer is derived by the paired parties from their shared key
+/// and this handle, so it is not present in the public cover text.
+pub const SHRUNK_TOKEN_ID_BYTES: usize = 8;
+
+/// Receiver-side detector for the compact shared-key cover handle.
+pub const SHRUNK_TOKEN_TAG_BYTES: usize = 2;
+
+/// Total bits carried by the compact token (`handle || detect_tag`).
+pub const SHRUNK_TOKEN_PAYLOAD_BITS: u32 =
+    (SHRUNK_TOKEN_ID_BYTES as u32 + SHRUNK_TOKEN_TAG_BYTES as u32) * 8;
+
+/// Domain separator for the compact shared-key cover token.
+pub const SHRUNK_TOKEN_MAC_DOMAIN: &[u8] = b"osl/mode1-token/shrunk/v1";
+
+/// Saved cover-message version emitted before the shared-key shrink. The cover
+/// carries the full 20-byte seed.
+pub const OLD_COVER_MESSAGE_VERSION: u8 = 1;
+
+/// Saved cover-message version emitted after the shared-key shrink. The cover
+/// carries only an 8-byte handle; callers derive the seed from shared state.
+pub const NEW_COVER_MESSAGE_VERSION: u8 = 2;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CoverMessageToken {
+    OldSeed([u8; TOKEN_ID_BYTES]),
+    SharedKeyHandle([u8; SHRUNK_TOKEN_ID_BYTES]),
+}
+
 type HmacSha256 = Hmac<Sha256>;
 
 /// The 32-bit detection tag a receiver checks to tell an OSL prose token from
@@ -278,8 +309,36 @@ pub fn compute_token_tag(mac_key: &[u8], id: &[u8; TOKEN_ID_BYTES]) -> [u8; TOKE
     tag
 }
 
+/// Compute the compact cover detector. A wrong shared key must fail here
+/// before the receiver learns even the 64-bit handle.
+pub fn compute_shrunk_token_tag(
+    mac_key: &[u8],
+    id: &[u8; SHRUNK_TOKEN_ID_BYTES],
+) -> [u8; SHRUNK_TOKEN_TAG_BYTES] {
+    let mut mac = HmacSha256::new_from_slice(mac_key).expect("HMAC accepts any key length");
+    mac.update(SHRUNK_TOKEN_MAC_DOMAIN);
+    mac.update(id);
+    let full = mac.finalize().into_bytes();
+    let mut tag = [0u8; SHRUNK_TOKEN_TAG_BYTES];
+    tag.copy_from_slice(&full[..SHRUNK_TOKEN_TAG_BYTES]);
+    tag
+}
+
 fn token_payload_bits(id: &[u8; TOKEN_ID_BYTES], tag: &[u8; TOKEN_MAC_BYTES]) -> Vec<bool> {
     let mut bits = Vec::with_capacity(TOKEN_PAYLOAD_BITS as usize);
+    for &b in id.iter().chain(tag.iter()) {
+        for i in (0..8).rev() {
+            bits.push((b >> i) & 1 == 1);
+        }
+    }
+    bits
+}
+
+fn shrunk_token_payload_bits(
+    id: &[u8; SHRUNK_TOKEN_ID_BYTES],
+    tag: &[u8; SHRUNK_TOKEN_TAG_BYTES],
+) -> Vec<bool> {
+    let mut bits = Vec::with_capacity(SHRUNK_TOKEN_PAYLOAD_BITS as usize);
     for &b in id.iter().chain(tag.iter()) {
         for i in (0..8).rev() {
             bits.push((b >> i) & 1 == 1);
@@ -317,6 +376,16 @@ pub fn encode_token(
     crate::bigram::render_words(&words)
 }
 
+/// Encode the compact shared-key cover handle. The handle is the only
+/// non-secret input carried by the public cover; the seed/pointer is derived
+/// outside this layer from the paired shared key and this handle.
+pub fn encode_shrunk_token(mac_key: &[u8], id: &[u8; SHRUNK_TOKEN_ID_BYTES]) -> String {
+    let tag = compute_shrunk_token_tag(mac_key, id);
+    let bits = shrunk_token_payload_bits(id, &tag);
+    let words = crate::bigram::arithmetic_decode_bits(&bits, SHRUNK_TOKEN_PAYLOAD_BITS);
+    crate::bigram::render_words(&words)
+}
+
 /// Try to decode a Discord message as an OSL prose-token. Returns the
 /// 160-bit carrier seed iff the recovered detection tag verifies under
 /// `mac_key`.
@@ -343,6 +412,80 @@ pub fn decode_token(
         return Some(id);
     }
     decode_token_template(cipher, mac_key, msg)
+}
+
+/// Decode a compact shared-key cover token.
+///
+/// Returns `None` for ordinary chat, malformed covers and covers checked with
+/// the wrong shared key. It deliberately does not expose a partially decoded
+/// handle before the keyed detector verifies.
+pub fn decode_shrunk_token(mac_key: &[u8], msg: &str) -> Option<[u8; SHRUNK_TOKEN_ID_BYTES]> {
+    let words = crate::bigram::parse_words(msg)?;
+    let bits = crate::bigram::arithmetic_encode_words(&words, SHRUNK_TOKEN_PAYLOAD_BITS);
+    if bits.len() < SHRUNK_TOKEN_PAYLOAD_BITS as usize {
+        return None;
+    }
+
+    let mut id = [0u8; SHRUNK_TOKEN_ID_BYTES];
+    for (byte_i, slot) in id.iter_mut().enumerate() {
+        let mut v = 0u8;
+        for bit_i in 0..8 {
+            v = (v << 1) | bits[byte_i * 8 + bit_i] as u8;
+        }
+        *slot = v;
+    }
+
+    let mut tag = [0u8; SHRUNK_TOKEN_TAG_BYTES];
+    for (byte_i, slot) in tag.iter_mut().enumerate() {
+        let mut v = 0u8;
+        let base = (SHRUNK_TOKEN_ID_BYTES + byte_i) * 8;
+        for bit_i in 0..8 {
+            v = (v << 1) | bits[base + bit_i] as u8;
+        }
+        *slot = v;
+    }
+
+    let expected = compute_shrunk_token_tag(mac_key, &id);
+    if !constant_time_eq_shrunk_token(&tag, &expected) {
+        return None;
+    }
+
+    let canonical_bits = shrunk_token_payload_bits(&id, &expected);
+    let canonical_words =
+        crate::bigram::arithmetic_decode_bits(&canonical_bits, SHRUNK_TOKEN_PAYLOAD_BITS);
+    if words != canonical_words {
+        return None;
+    }
+    Some(id)
+}
+
+/// Decode a saved cover message whose envelope already names the cover version.
+///
+/// This is the compatibility boundary for task 0072: old saved rows keep using
+/// the 20-byte seed reader, while new rows use the compact shared-key handle.
+/// Unknown versions are refused explicitly instead of being treated as ordinary
+/// chat.
+pub fn decode_cover_message_token(
+    cipher: &ConversationCipher,
+    mac_key: &[u8],
+    version: u8,
+    msg: &str,
+) -> Result<CoverMessageToken> {
+    match version {
+        OLD_COVER_MESSAGE_VERSION => decode_token(cipher, mac_key, msg)
+            .map(CoverMessageToken::OldSeed)
+            .ok_or(Error::CoverMessageDecode {
+                version,
+                kind: "old cover message",
+            }),
+        NEW_COVER_MESSAGE_VERSION => decode_shrunk_token(mac_key, msg)
+            .map(CoverMessageToken::SharedKeyHandle)
+            .ok_or(Error::CoverMessageDecode {
+                version,
+                kind: "new cover message",
+            }),
+        other => Err(Error::UnknownCoverMessageVersion(other)),
+    }
 }
 
 /// Bigram-codec decode path. Parses the message into vocab indices,
@@ -474,6 +617,17 @@ fn decode_token_template(
 fn constant_time_eq_token(a: &[u8; TOKEN_MAC_BYTES], b: &[u8; TOKEN_MAC_BYTES]) -> bool {
     let mut diff = 0u8;
     for i in 0..TOKEN_MAC_BYTES {
+        diff |= a[i] ^ b[i];
+    }
+    diff == 0
+}
+
+fn constant_time_eq_shrunk_token(
+    a: &[u8; SHRUNK_TOKEN_TAG_BYTES],
+    b: &[u8; SHRUNK_TOKEN_TAG_BYTES],
+) -> bool {
+    let mut diff = 0u8;
+    for i in 0..SHRUNK_TOKEN_TAG_BYTES {
         diff |= a[i] ^ b[i];
     }
     diff == 0

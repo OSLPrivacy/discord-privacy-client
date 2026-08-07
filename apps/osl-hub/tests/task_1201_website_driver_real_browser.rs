@@ -15,6 +15,16 @@ use osl_privacy_hub::{
     website_driver::{
         RealBrowserWebsiteDriver, WebsiteDriver, WebsiteLiveRunProgress, WebsiteNamedControl,
         WebsitePageRequest,
+use osl_privacy_hub::{
+    hub_command_surface::{
+        read_ordinary_send_progress, read_protected_email_open_message_with_driver,
+        send_ordinary_message_with_progress, OrdinarySendProgress, OrdinarySendProgressRequest,
+        ProtectedEmailOpenMessageReadRequest,
+    },
+    website_driver::{
+        RealBrowserWebsiteDriver, WebsiteDriver, WebsiteDriverError, WebsiteLiveRunProgress,
+        WebsiteNamedControl, WebsitePage, WebsitePageControls, WebsitePageRequest, WebsitePageText,
+        WebsiteSelectedEmail, WebsiteTextPlacement,
     },
 };
 use std::{
@@ -23,6 +33,7 @@ use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
+        Arc, Mutex,
     },
     thread,
     time::Duration,
@@ -963,6 +974,227 @@ fn task_3603_direct_interrupted_send_saves_one_id_and_five_step_progress() {
     );
 }
 
+#[test]
+fn task_3604_restarts_retry_only_unfinished_ordinary_send_steps() {
+    let directory = tempfile::tempdir().expect("task 3604 progress directory");
+    let progress_path = directory.path().join("ordinary-send-progress.json");
+    let events = Arc::new(Mutex::new(Vec::<String>::new()));
+    let mut send_ids = Vec::new();
+    let mut success_before_receiver_publish = 0usize;
+    let mut success_before_final_confirmation = 0usize;
+    let mut success_first_seen_after_step = None::<String>;
+    let mut finished = None::<OrdinarySendProgress>;
+
+    for stop_after in 1..=TASK_3603_STEPS.len() {
+        let mut driver = CountingOrdinarySendDriver::new(Arc::clone(&events));
+        let progress = send_ordinary_message_with_progress(
+            &mut driver,
+            OrdinarySendProgressRequest {
+                page_url: "https://ordinary-send.example.invalid/thread".to_owned(),
+                draft_text: TASK_3603_DRAFT.to_owned(),
+                progress_path: progress_path.clone(),
+                max_steps: Some(stop_after),
+            },
+        )
+        .expect("ordinary send restart run records progress");
+        assert_task_3603_shape(&progress, stop_after == TASK_3603_STEPS.len());
+        assert_completed_steps(&progress, &TASK_3603_STEPS[..stop_after]);
+
+        let restarted = read_ordinary_send_progress(&OrdinarySendProgressRequest {
+            page_url: "https://ordinary-send.example.invalid/thread".to_owned(),
+            draft_text: TASK_3603_DRAFT.to_owned(),
+            progress_path: progress_path.clone(),
+            max_steps: None,
+        })
+        .expect("restart reads ordinary-send progress");
+        assert_eq!(restarted, progress);
+
+        let receiver_published = step_completed(&progress, "receiver_publish");
+        if progress.final_confirmation && !receiver_published {
+            success_before_receiver_publish += 1;
+        }
+        if progress.final_confirmation && !step_completed(&progress, "final_confirmation") {
+            success_before_final_confirmation += 1;
+        }
+        if progress.final_confirmation && success_first_seen_after_step.is_none() {
+            success_first_seen_after_step = progress
+                .completed_step_names()
+                .last()
+                .map(|s| (*s).to_owned());
+        }
+
+        println!(
+            "TASK3604 stop_after={} restart_send_id={} completed={} success={} receiver_publish_completed={}",
+            stop_after,
+            restarted.send_id,
+            restarted.completed_step_names().len(),
+            restarted.final_confirmation,
+            receiver_published
+        );
+        send_ids.push(restarted.send_id.clone());
+        finished = Some(restarted);
+    }
+
+    let finished = finished.expect("finished progress exists");
+    let unique_send_ids = send_ids
+        .iter()
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
+    let events = events.lock().expect("counting driver events lock").clone();
+    assert_eq!(unique_send_ids, 1);
+    assert_eq!(
+        events,
+        [
+            "service_acceptance",
+            "local_save",
+            "receiver_publish",
+            "final_confirmation"
+        ]
+    );
+    for step in &finished.steps {
+        assert_eq!(step.run_count, 1, "{} must run exactly once", step.name);
+    }
+    assert_eq!(success_before_receiver_publish, 0);
+    assert_eq!(success_before_final_confirmation, 0);
+    assert_eq!(
+        success_first_seen_after_step.as_deref(),
+        Some("final_confirmation")
+    );
+
+    println!("TASK3604 stop_restart_count={}", TASK_3603_STEPS.len());
+    println!("TASK3604 unique_send_id_count={unique_send_ids}");
+    println!("TASK3604 send_id={}", finished.send_id);
+    for step in &finished.steps {
+        println!(
+            "TASK3604 step={} completed={} run_count={}",
+            step.name, step.completed, step.run_count
+        );
+    }
+    println!("TASK3604 driver_event_count={}", events.len());
+    for event in &events {
+        println!("TASK3604 driver_event={event}");
+    }
+    println!("TASK3604 success_before_receiver_publish_count={success_before_receiver_publish}");
+    println!(
+        "TASK3604 success_before_final_confirmation_count={success_before_final_confirmation}"
+    );
+    println!(
+        "TASK3604 success_first_seen_after_step={}",
+        success_first_seen_after_step.expect("success appears after final confirmation")
+    );
+    println!(
+        "TASK3604 success_appears_only_after_receiver_publish_finishes={}",
+        step_completed(&finished, "receiver_publish")
+    );
+}
+
+#[test]
+fn task_3605_crash_after_every_ordinary_send_step_keeps_receiver_marks_once() {
+    let directory = tempfile::tempdir().expect("task 3605 progress directory");
+    let receiver = Arc::new(Mutex::new(Vec::<ReceiverMark>::new()));
+    let control_mark = "TASK3605_CONTROL_MARK".to_owned();
+    let control_before = receiver_count(&receiver);
+    let control_progress_path = directory.path().join("ordinary-send-control.json");
+    let control_progress = run_task_3605_marked_send(
+        Arc::clone(&receiver),
+        control_mark.clone(),
+        &control_progress_path,
+        None,
+    )
+    .expect("control ordinary send completes");
+    let control_after = receiver_count(&receiver);
+    assert_eq!(control_before, 0);
+    assert_eq!(control_after, 1);
+    assert_eq!(receiver_mark_count(&receiver, &control_mark), 1);
+    assert!(receiver_marks_complete(&receiver));
+    assert!(control_progress.final_confirmation);
+
+    println!(
+        "TASK3605 control receiver_before={} receiver_after={} mark={} mark_count={} success={}",
+        control_before,
+        control_after,
+        control_mark,
+        receiver_mark_count(&receiver, &control_mark),
+        control_progress.final_confirmation
+    );
+
+    let mut crash_success_count = 0usize;
+    let mut crash_readable_mark_count = 0usize;
+    let mut crash_invariant_count = 0usize;
+
+    for (index, step) in TASK_3603_STEPS.iter().enumerate() {
+        let mark = format!("TASK3605_MARK_{}", step.to_ascii_uppercase());
+        let progress_path = directory
+            .path()
+            .join(format!("ordinary-send-crash-{step}.json"));
+        let before_crash_total = receiver_count(&receiver);
+        let after_crash = run_task_3605_marked_send(
+            Arc::clone(&receiver),
+            mark.clone(),
+            &progress_path,
+            Some(index + 1),
+        )
+        .expect("ordinary send crash run saves bounded progress");
+        assert_completed_steps(&after_crash, &TASK_3603_STEPS[..=index]);
+
+        let after_crash_total = receiver_count(&receiver);
+        let after_crash_mark_count = receiver_mark_count(&receiver, &mark);
+        let added_once = after_crash_mark_count == 1 && after_crash_total == before_crash_total + 1;
+        let unchanged = after_crash_mark_count == 0 && after_crash_total == before_crash_total;
+        assert!(
+            added_once || unchanged,
+            "crash after {step} must either add its mark once or leave receiver count unchanged"
+        );
+        assert!(receiver_marks_complete(&receiver));
+        crash_invariant_count += 1;
+
+        let after_retry =
+            run_task_3605_marked_send(Arc::clone(&receiver), mark.clone(), &progress_path, None)
+                .expect("ordinary send retry completes after restart");
+        assert_task_3603_shape(&after_retry, true);
+        assert_completed_steps(&after_retry, &TASK_3603_STEPS);
+        assert_eq!(receiver_mark_count(&receiver, &mark), 1);
+        assert!(receiver_marks_complete(&receiver));
+        if after_retry.final_confirmation {
+            crash_success_count += 1;
+        }
+        crash_readable_mark_count += receiver_mark_count(&receiver, &mark);
+
+        println!(
+            "TASK3605 crash_step={} mark={} before_total={} after_crash_total={} after_crash_mark_count={} added_once={} unchanged={} after_retry_total={} final_mark_count={} readable_complete={} success={}",
+            step,
+            mark,
+            before_crash_total,
+            after_crash_total,
+            after_crash_mark_count,
+            added_once,
+            unchanged,
+            receiver_count(&receiver),
+            receiver_mark_count(&receiver, &mark),
+            receiver_marks_complete(&receiver),
+            after_retry.final_confirmation
+        );
+    }
+
+    let total_success_count =
+        crash_success_count + usize::from(control_progress.final_confirmation);
+    let total_readable_mark_count = receiver_count(&receiver);
+    assert_eq!(crash_invariant_count, TASK_3603_STEPS.len());
+    assert_eq!(crash_success_count, crash_readable_mark_count);
+    assert_eq!(total_success_count, total_readable_mark_count);
+    assert!(receiver_marks_complete(&receiver));
+
+    println!("TASK3605 crash_step_count={crash_invariant_count}");
+    println!("TASK3605 crash_success_count={crash_success_count}");
+    println!("TASK3605 crash_readable_mark_count={crash_readable_mark_count}");
+    println!("TASK3605 total_success_count={total_success_count}");
+    println!("TASK3605 total_readable_mark_count={total_readable_mark_count}");
+    println!(
+        "TASK3605 every_readable_mark_complete={}",
+        receiver_marks_complete(&receiver)
+    );
+}
+
 struct LocalTestPage {
     listener_addr: String,
     running: Arc<AtomicBool>,
@@ -1031,6 +1263,189 @@ fn task_3072_icloud_fixture_body() -> String {
     )
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ReceiverMark {
+    mark: String,
+    complete: bool,
+}
+
+struct CountingOrdinarySendDriver {
+    events: Arc<Mutex<Vec<String>>>,
+}
+
+impl CountingOrdinarySendDriver {
+    fn new(events: Arc<Mutex<Vec<String>>>) -> Self {
+        Self { events }
+    }
+
+    fn record(&self, event: &str) {
+        self.events
+            .lock()
+            .expect("counting driver events lock")
+            .push(event.to_owned());
+    }
+}
+
+impl WebsiteDriver for CountingOrdinarySendDriver {
+    fn find_page(
+        &mut self,
+        request: WebsitePageRequest,
+    ) -> Result<WebsitePage, WebsiteDriverError> {
+        Ok(WebsitePage::synthetic(request.url))
+    }
+
+    fn read_page(&mut self, page: &WebsitePage) -> Result<WebsitePageText, WebsiteDriverError> {
+        Ok(WebsitePageText {
+            page: page.clone(),
+            title: TASK_3603_TITLE.to_owned(),
+            text: "ordinary send counting fixture".to_owned(),
+            controls: WebsitePageControls::default(),
+        })
+    }
+
+    fn read_selected_email(
+        &mut self,
+        _page: &WebsitePage,
+    ) -> Result<WebsiteSelectedEmail, WebsiteDriverError> {
+        Err(WebsiteDriverError::ReadFailed)
+    }
+
+    fn read_live_run_progress(
+        &mut self,
+        _page: &WebsitePage,
+    ) -> Result<WebsiteLiveRunProgress, WebsiteDriverError> {
+        Err(WebsiteDriverError::ReadFailed)
+    }
+
+    fn place_text(&mut self, placement: WebsiteTextPlacement) -> Result<(), WebsiteDriverError> {
+        assert_eq!(placement.text, TASK_3603_DRAFT);
+        self.record("service_acceptance");
+        Ok(())
+    }
+
+    fn press_named_control(
+        &mut self,
+        control: WebsiteNamedControl,
+    ) -> Result<(), WebsiteDriverError> {
+        let event = match control.name.as_str() {
+            "Save local" => "local_save",
+            "Publish to receiver" => "receiver_publish",
+            "Confirm final" => "final_confirmation",
+            _ => return Err(WebsiteDriverError::NamedControlNotFound),
+        };
+        self.record(event);
+        Ok(())
+    }
+}
+
+struct MarkingOrdinarySendDriver {
+    receiver: Arc<Mutex<Vec<ReceiverMark>>>,
+    mark: String,
+}
+
+impl MarkingOrdinarySendDriver {
+    fn new(receiver: Arc<Mutex<Vec<ReceiverMark>>>, mark: String) -> Self {
+        Self { receiver, mark }
+    }
+}
+
+impl WebsiteDriver for MarkingOrdinarySendDriver {
+    fn find_page(
+        &mut self,
+        request: WebsitePageRequest,
+    ) -> Result<WebsitePage, WebsiteDriverError> {
+        Ok(WebsitePage::synthetic(request.url))
+    }
+
+    fn read_page(&mut self, page: &WebsitePage) -> Result<WebsitePageText, WebsiteDriverError> {
+        Ok(WebsitePageText {
+            page: page.clone(),
+            title: TASK_3603_TITLE.to_owned(),
+            text: "ordinary send crash fixture".to_owned(),
+            controls: WebsitePageControls::default(),
+        })
+    }
+
+    fn read_selected_email(
+        &mut self,
+        _page: &WebsitePage,
+    ) -> Result<WebsiteSelectedEmail, WebsiteDriverError> {
+        Err(WebsiteDriverError::ReadFailed)
+    }
+
+    fn read_live_run_progress(
+        &mut self,
+        _page: &WebsitePage,
+    ) -> Result<WebsiteLiveRunProgress, WebsiteDriverError> {
+        Err(WebsiteDriverError::ReadFailed)
+    }
+
+    fn place_text(&mut self, placement: WebsiteTextPlacement) -> Result<(), WebsiteDriverError> {
+        assert_eq!(placement.text, self.mark);
+        Ok(())
+    }
+
+    fn press_named_control(
+        &mut self,
+        control: WebsiteNamedControl,
+    ) -> Result<(), WebsiteDriverError> {
+        match control.name.as_str() {
+            "Save local" => Ok(()),
+            "Publish to receiver" => {
+                self.receiver
+                    .lock()
+                    .expect("task 3605 receiver lock")
+                    .push(ReceiverMark {
+                        mark: self.mark.clone(),
+                        complete: true,
+                    });
+                Ok(())
+            }
+            "Confirm final" => Ok(()),
+            _ => Err(WebsiteDriverError::NamedControlNotFound),
+        }
+    }
+}
+
+fn run_task_3605_marked_send(
+    receiver: Arc<Mutex<Vec<ReceiverMark>>>,
+    mark: String,
+    progress_path: &std::path::Path,
+    max_steps: Option<usize>,
+) -> Result<OrdinarySendProgress, String> {
+    let mut driver = MarkingOrdinarySendDriver::new(receiver, mark.clone());
+    send_ordinary_message_with_progress(
+        &mut driver,
+        OrdinarySendProgressRequest {
+            page_url: "https://ordinary-send.example.invalid/task-3605".to_owned(),
+            draft_text: mark,
+            progress_path: progress_path.to_path_buf(),
+            max_steps,
+        },
+    )
+}
+
+fn receiver_count(receiver: &Arc<Mutex<Vec<ReceiverMark>>>) -> usize {
+    receiver.lock().expect("task 3605 receiver lock").len()
+}
+
+fn receiver_mark_count(receiver: &Arc<Mutex<Vec<ReceiverMark>>>, mark: &str) -> usize {
+    receiver
+        .lock()
+        .expect("task 3605 receiver lock")
+        .iter()
+        .filter(|entry| entry.mark == mark)
+        .count()
+}
+
+fn receiver_marks_complete(receiver: &Arc<Mutex<Vec<ReceiverMark>>>) -> bool {
+    receiver
+        .lock()
+        .expect("task 3605 receiver lock")
+        .iter()
+        .all(|entry| entry.complete)
+}
+
 fn run_task_3603_send(
     server: &LocalTestPage,
     progress_path: &std::path::Path,
@@ -1070,6 +1485,13 @@ fn assert_task_3603_shape(progress: &OrdinarySendProgress, final_confirmation: b
 
 fn assert_completed_steps(progress: &OrdinarySendProgress, expected: &[&str]) {
     assert_eq!(progress.completed_step_names(), expected);
+}
+
+fn step_completed(progress: &OrdinarySendProgress, name: &str) -> bool {
+    progress
+        .steps
+        .iter()
+        .any(|step| step.name == name && step.completed)
 }
 
 fn print_task_3603_progress(stage: &str, progress: &OrdinarySendProgress) {

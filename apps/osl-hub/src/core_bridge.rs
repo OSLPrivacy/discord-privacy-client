@@ -18,6 +18,7 @@ use crate::runtime_switches::{
 
 pub struct HubCoreState {
     pub osl: Arc<AppState>,
+    startup_switches: crate::runtime_switches::ResolvedTestOnlyRunTimeSwitches,
     bootstrap_attempted: bool,
     runtime_switches: ResolvedTestOnlyRunTimeSwitches,
     /// Serialises trusted identity/password transitions so Create, Import,
@@ -29,6 +30,7 @@ impl Default for HubCoreState {
     fn default() -> Self {
         Self {
             osl: production_osl_state(),
+            startup_switches: crate::runtime_switches::ResolvedTestOnlyRunTimeSwitches::default(),
             bootstrap_attempted: false,
             runtime_switches: ResolvedTestOnlyRunTimeSwitches::default(),
             lifecycle_lock: Mutex::new(()),
@@ -41,6 +43,12 @@ impl HubCoreState {
     pub(crate) fn new_for_test(osl: AppState) -> Self {
         Self {
             osl: Arc::new(osl),
+    pub fn with_startup_switches(
+        startup_switches: crate::runtime_switches::ResolvedTestOnlyRunTimeSwitches,
+    ) -> Self {
+        Self {
+            osl: production_osl_state(),
+            startup_switches,
             bootstrap_attempted: false,
             lifecycle_lock: Mutex::new(()),
         }
@@ -57,9 +65,17 @@ impl HubCoreState {
 
     pub fn bootstrap_from_disk_with_runtime_switches(
         runtime_switches: ResolvedTestOnlyRunTimeSwitches,
+        Self::bootstrap_from_disk_with_startup_switches(
+            crate::runtime_switches::ResolvedTestOnlyRunTimeSwitches::default(),
+        )
+    }
+
+    pub fn bootstrap_from_disk_with_startup_switches(
+        startup_switches: crate::runtime_switches::ResolvedTestOnlyRunTimeSwitches,
     ) -> Self {
         let state = Self {
             osl: production_osl_state(),
+            startup_switches,
             bootstrap_attempted: true,
             runtime_switches,
             lifecycle_lock: Mutex::new(()),
@@ -87,6 +103,8 @@ impl HubCoreState {
 
     pub fn runtime_switches(&self) -> ResolvedTestOnlyRunTimeSwitches {
         self.runtime_switches.clone()
+    pub fn startup_switches(&self) -> crate::runtime_switches::ResolvedTestOnlyRunTimeSwitches {
+        self.startup_switches
     }
 
     pub fn register_after_local_bootstrap(&self) {
@@ -272,6 +290,13 @@ pub fn readiness(state: &HubCoreState) -> CoreReadiness {
             .unwrap_or(true)
     } else {
         false
+    let password_gate_required = match state.startup_switches.password_screen_access {
+        crate::runtime_switches::PasswordScreenAccess::SkipPasswordScreenForTest => false,
+        crate::runtime_switches::PasswordScreenAccess::RequirePasswordScreen => {
+            ipc::commands::cmd_osl_password_status()
+                .map(|value| value.is_set)
+                .unwrap_or(true)
+        }
     };
     // D-207: NOT `get_file_storage_key().is_some()`. A device-bound fallback
     // key minted behind the user's back put 32 bytes in that slot, made this
@@ -304,6 +329,9 @@ pub fn readiness(state: &HubCoreState) -> CoreReadiness {
     let bootstrap_status = if password_screen_skipped_for_test
     // is bypassed by this process-start switch set.
     let bootstrap_status = if password_screen_skipped
+    let skips_password_screen = state.startup_switches.password_screen_access
+        == crate::runtime_switches::PasswordScreenAccess::SkipPasswordScreenForTest;
+    let bootstrap_status = if skips_password_screen
         && state.bootstrap_attempted
         && status.identity_loaded
         && unlocked
@@ -323,6 +351,7 @@ pub fn readiness(state: &HubCoreState) -> CoreReadiness {
             // to setupRequired.
             password_gate_required || password_screen_skipped_for_test,
             password_gate_required || password_screen_skipped,
+            password_gate_required || skips_password_screen,
             unlocked,
             status.keyserver_initialised,
             state.osl.cloud_registration_state() == ipc::state::CloudRegistrationState::Registered,

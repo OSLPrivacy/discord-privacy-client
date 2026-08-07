@@ -5,6 +5,9 @@
 -- must set all of them; the Worker then requires an x-osl-delete-grant whose
 -- typed record names the same message, owner, and burn scope before it will
 -- evaluate the manage capability.
+-- Server-held authorization metadata for destructive stored-copy burns.
+-- The bearer delete grant is only accepted when it matches the copy's locally
+-- owned message, owner, and burn scope recorded at upload.
 
 ALTER TABLE blob_capability_index
   ADD COLUMN delete_message TEXT;
@@ -45,3 +48,4 @@ ALTER TABLE blob_capability_index
     length(burn_scope) BETWEEN 1 AND 256
     AND burn_scope NOT GLOB '*[^A-Za-z0-9._:@/-]*'
   ));
+  ON blob_capability_index(delete_owner, burn_scope);

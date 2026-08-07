@@ -417,14 +417,15 @@ pub const SURFACE_CLAIMS: &[SurfaceClaim] = &[
     SurfaceClaim {
         surface: Surface::OutlookDesktop,
         // `carry_seam(Outlook) == CarrySeam::NoCarryPath`, and
-        // `adapter_source(Outlook) == None`: no adapter module exists, so no
-        // receipt can even be bound.
+        // `adapter_source(Outlook) == None`: no carry adapter module exists,
+        // so no live carry receipt can even be bound. The read-only desktop
+        // control driver is not a send path.
         carrier: CarrierEvidence::NotBuilt,
         delivery: DeliveryEvidence::NotDeliverable,
         blockers: &[],
         matrix: MatrixPosition::NoCapabilityClaim,
         authority: "native_apps.rs carry_seam -> NoCarryPath; support-matrix osl_mail_public",
-        reason: "No Outlook desktop carrier is wired. There is no adapter to prove and nothing is sent through Outlook today.",
+        reason: "No Outlook desktop carrier is wired. There is no carry adapter to prove and nothing is sent through Outlook today.",
     },
     // ---- Email carriers on the web ----------------------------------------
     // Nine rows, one shape: a browser companion opens the provider and no

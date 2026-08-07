@@ -103,6 +103,19 @@ pub struct OslMailForwardReceipt {
     pub deliveries: Vec<OslMailForwardDelivery>,
 }
 
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OslMailForwardResult {
+    pub status: &'static str,
+    pub forwarded: bool,
+    pub osl_recipients: Vec<String>,
+    pub no_osl_warnings: Vec<String>,
+    pub warning: Option<String>,
+    pub required_confirmation: Option<String>,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct MailCapabilities {
@@ -289,6 +302,70 @@ pub fn send(
         receipt_sha256: sha256_hex(
             format!("{own_address}\n{accepted_at}\n{}", unsigned["request_id"]).as_bytes(),
         ),
+    })
+}
+
+/// Classify the operator's requested forward recipients before protected
+/// content is released into any outbound path.
+pub fn plan_protected_forward(recipients: Vec<String>) -> Result<OslMailForwardPlan, String> {
+    if recipients.is_empty() || recipients.len() > 64 {
+        return Err("OSL Mail forward recipients are required".to_owned());
+    }
+
+    let mut osl_recipients = Vec::new();
+    let mut no_osl_warnings = Vec::new();
+    for recipient in recipients {
+        let normalized = normalize_forward_recipient(&recipient)?;
+        let target = if valid_osl_address(&normalized) {
+            &mut osl_recipients
+        } else {
+            &mut no_osl_warnings
+        };
+        if !target.contains(&normalized) {
+            target.push(normalized);
+        }
+    }
+
+    if osl_recipients.is_empty() && no_osl_warnings.is_empty() {
+        return Err("OSL Mail forward recipients are required".to_owned());
+    }
+
+    Ok(OslMailForwardPlan {
+        osl_recipients,
+        no_osl_warnings,
+    })
+}
+
+/// Direct protected-forward gate.  A no-OSL recipient cannot receive protected
+/// content until the caller supplies the exact warning confirmation produced
+/// from the normalized recipient list.
+pub fn forward_protected(
+    recipients: Vec<String>,
+    confirmation: Option<String>,
+) -> Result<OslMailForwardResult, String> {
+    let plan = plan_protected_forward(recipients)?;
+
+    if !plan.no_osl_warnings.is_empty() {
+        let required_confirmation = protected_forward_confirmation(&plan.no_osl_warnings);
+        if confirmation.as_deref().map(str::trim) != Some(required_confirmation.as_str()) {
+            return Ok(OslMailForwardResult {
+                status: "warning_stopped",
+                forwarded: false,
+                osl_recipients: plan.osl_recipients,
+                no_osl_warnings: plan.no_osl_warnings,
+                warning: Some(protected_forward_warning(&required_confirmation)),
+                required_confirmation: Some(required_confirmation),
+            });
+        }
+    }
+
+    Ok(OslMailForwardResult {
+        status: "forward_allowed",
+        forwarded: true,
+        osl_recipients: plan.osl_recipients,
+        no_osl_warnings: plan.no_osl_warnings,
+        warning: None,
+        required_confirmation: None,
     })
 }
 
@@ -496,11 +573,31 @@ fn normalize_forward_recipients(recipients: Vec<String>) -> Result<Vec<String>, 
     }
     if normalized.is_empty() {
         return Err("OSL Mail protected forward needs at least one recipient".to_owned());
+fn protected_forward_confirmation(no_osl_recipients: &[String]) -> String {
+    format!("CONFIRM NO-OSL FORWARD: {}", no_osl_recipients.join(","))
+}
+
+fn protected_forward_warning(required_confirmation: &str) -> String {
+    format!(
+        "Protected OSL Mail forward includes recipients without OSL. Enter `{required_confirmation}` to continue."
+    )
+}
+
+fn normalize_forward_recipient(recipient: &str) -> Result<String, String> {
+    let normalized = recipient.trim().to_ascii_lowercase();
+    if normalized.len() > 254
+        || normalized.chars().any(|character| {
+            character.is_control() || matches!(character, '<' | '>' | '"' | ',' | ';')
+        })
+        || !valid_forward_email_address(&normalized)
+    {
+        return Err("OSL Mail forward recipient is invalid".to_owned());
     }
     Ok(normalized)
 }
 
 fn valid_forward_address(address: &str) -> bool {
+fn valid_forward_email_address(address: &str) -> bool {
     let Some((local, domain)) = address.split_once('@') else {
         return false;
     };
@@ -520,6 +617,41 @@ fn no_osl_forward_confirmation(no_osl_recipients: &[String]) -> String {
         "{NO_OSL_FORWARD_CONFIRMATION_PREFIX}{}",
         no_osl_recipients.join(",")
     )
+        && local.len() <= 64
+        && !domain.is_empty()
+        && domain.len() <= 253
+        && local.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(
+                    byte,
+                    b'.' | b'_'
+                        | b'%'
+                        | b'+'
+                        | b'-'
+                        | b'!'
+                        | b'#'
+                        | b'$'
+                        | b'&'
+                        | b'\''
+                        | b'*'
+                        | b'/'
+                        | b'='
+                        | b'?'
+                        | b'^'
+                        | b'`'
+                        | b'{'
+                        | b'|'
+                        | b'}'
+                        | b'~'
+                )
+        })
+        && domain.split('.').all(|label| {
+            !label.is_empty()
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        })
+        && domain.contains('.')
 }
 
 fn active_identity(core: &HubCoreState) -> Result<keystore::Identity, String> {
@@ -646,6 +778,8 @@ mod tests {
     use super::{
         no_osl_forward_confirmation, pointer_envelope, signed_message, status_from_address,
         visible_subject_protection_warning, BurnResponse, BORING_PROTECTED_SUBJECT,
+        forward_protected, plan_protected_forward, pointer_envelope, signed_message,
+        status_from_address, BurnResponse,
     };
     use serde_json::{Map, Value};
 
@@ -794,6 +928,73 @@ mod tests {
         assert_eq!(no_osl_protected_file_records, 0);
         assert!(!format!("{no_osl_delivery:?}").contains(&protected_text));
         assert!(!format!("{no_osl_delivery:?}").contains(&protected_file));
+    fn task1294_direct_forward_plan_returns_osl_and_no_osl_recipient_lists() {
+        let plan = plan_protected_forward(vec![
+            "alice@oslprivacy.com".to_owned(),
+            "external@example.com".to_owned(),
+            "BOB@OSLPRIVACY.COM".to_owned(),
+            "client@company.test".to_owned(),
+            "alice@oslprivacy.com".to_owned(),
+        ])
+        .expect("forward recipients are classified before protected content moves");
+
+        assert_eq!(
+            plan.osl_recipients,
+            ["alice@oslprivacy.com", "bob@oslprivacy.com"]
+        );
+        assert_eq!(
+            plan.no_osl_warnings,
+            ["external@example.com", "client@company.test"]
+        );
+        println!(
+            "TASK1294 protected_forward osl_recipients={} no_osl_warnings={}",
+            plan.osl_recipients.join(","),
+            plan.no_osl_warnings.join(",")
+        );
+    }
+
+    #[test]
+    fn task1295_direct_forward_stops_at_warning_until_confirmation() {
+        let recipients = vec![
+            "alice@oslprivacy.com".to_owned(),
+            "external@example.com".to_owned(),
+            "client@company.test".to_owned(),
+        ];
+
+        let stopped = forward_protected(recipients.clone(), None)
+            .expect("direct protected forward command should return a warning state");
+        assert_eq!(stopped.status, "warning_stopped");
+        assert!(!stopped.forwarded);
+        assert_eq!(
+            stopped.no_osl_warnings,
+            ["external@example.com", "client@company.test"]
+        );
+        assert_eq!(
+            stopped.required_confirmation.as_deref(),
+            Some("CONFIRM NO-OSL FORWARD: external@example.com,client@company.test")
+        );
+        assert!(stopped
+            .warning
+            .as_deref()
+            .unwrap_or_default()
+            .contains("recipients without OSL"));
+
+        let allowed = forward_protected(recipients, stopped.required_confirmation.clone())
+            .expect("exact warning confirmation should release the direct forward command");
+        assert_eq!(allowed.status, "forward_allowed");
+        assert!(allowed.forwarded);
+        assert_eq!(
+            allowed.no_osl_warnings,
+            ["external@example.com", "client@company.test"]
+        );
+
+        println!(
+            "TASK1295 protected_forward without_confirmation={} required_confirmation={} with_confirmation={} no_osl_warnings={}",
+            stopped.status,
+            stopped.required_confirmation.unwrap(),
+            allowed.status,
+            allowed.no_osl_warnings.join(",")
+        );
     }
 
     #[test]

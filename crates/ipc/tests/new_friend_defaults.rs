@@ -28,6 +28,8 @@ fn use_temp_config_dir(dir: &std::path::Path) -> ConfigDirGuard {
     ipc::main_password::set_file_storage_key(None);
     ConfigDirGuard
 }
+use ipc::commands::cmd_osl_get_new_friend_defaults;
+use ipc::state::AppState;
 
 #[test]
 fn direct_defaults_query_returns_all_three_new_friend_values() {
@@ -45,6 +47,11 @@ fn direct_defaults_query_returns_all_three_new_friend_values() {
     println!(
         "TASK0247 new_friend_defaults.verification_warnings={}",
         defaults.verification_warnings
+    let defaults = cmd_osl_get_new_friend_defaults(&state).unwrap();
+
+    println!(
+        "new-friend defaults account_reach={} auto_whitelist={} verification_warnings={}",
+        defaults.account_reach, defaults.auto_whitelist, defaults.verification_warnings
     );
 
     assert_eq!(defaults.account_reach, "approved_chats_only");
@@ -221,4 +228,6 @@ fn task_0251_invalid_warning_choice_refuses_and_preserves_default_record() {
     assert_eq!(warning_after_bad, "never");
     assert_eq!(marker_after_bad, "MINT-0251");
     assert_eq!(changed.verification_warnings, "disabled");
+}
+    assert_eq!(defaults.verification_warnings, "enabled");
 }

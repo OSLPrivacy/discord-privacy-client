@@ -39,6 +39,7 @@ export interface StoredProtectedMessageGrantInput {
   message: string;
   readKey: string;
   sender: string;
+  recipient?: string;
   scope: string;
 }
 
@@ -197,6 +198,9 @@ export function countUsableSenderDeleteGrants(value: unknown): number {
   return count;
   readKeys: [MessageReadKeyRecord];
   senderDeleteGrants: [DeleteGrantRecord];
+  readKeys: [MessageReadKeyRecord];
+  senderDeleteGrants: [DeleteGrantRecord];
+  recipientDeleteGrants: [DeleteGrantRecord];
 }
 
 export type DeleteGrantParseResult =
@@ -310,6 +314,15 @@ export function parseMessageReadKeyRecord(input: string | unknown): MessageReadK
   };
 }
 
+function deleteGrant(message: string, owner: string, scope: string): DeleteGrantParseResult {
+  return parseDeleteGrantRecord({
+    record: DELETE_GRANT_RECORD,
+    message,
+    owner,
+    scope,
+  });
+}
+
 export function createStoredProtectedMessageGrants(
   input: StoredProtectedMessageGrantInput,
 ): StoredProtectedMessageGrantCreationResult {
@@ -329,6 +342,15 @@ export function createStoredProtectedMessageGrants(
   };
   const parsedDeleteGrant = parseDeleteGrantRecord(senderDeleteGrant);
   if (!parsedDeleteGrant.ok) return { ok: false, code: "malformed_delete_grant" };
+  const parsedSenderDeleteGrant = deleteGrant(input.message, input.sender, input.scope);
+  if (!parsedSenderDeleteGrant.ok) return { ok: false, code: "malformed_delete_grant" };
+
+  const parsedRecipientDeleteGrant = deleteGrant(
+    input.message,
+    input.recipient ?? input.sender,
+    input.scope,
+  );
+  if (!parsedRecipientDeleteGrant.ok) return { ok: false, code: "malformed_delete_grant" };
 
   return {
     ok: true,
@@ -336,6 +358,8 @@ export function createStoredProtectedMessageGrants(
       message: input.message,
       readKeys: [parsedReadKey.key],
       senderDeleteGrants: [parsedDeleteGrant.grant],
+      senderDeleteGrants: [parsedSenderDeleteGrant.grant],
+      recipientDeleteGrants: [parsedRecipientDeleteGrant.grant],
     },
   };
 }

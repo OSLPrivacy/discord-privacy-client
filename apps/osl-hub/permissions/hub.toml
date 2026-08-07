@@ -1092,3 +1092,58 @@ identifier = "allow-set-hub-friend-future-account-auto-whitelist"
 description = "Set one friend's encrypted local preference for automatically allowing accounts added later."
 commands.allow = ["set_hub_friend_future_account_auto_whitelist"]
 
+[[permission]]
+identifier = "allow-osl-mail-plan-protected-forward"
+description = "Classify requested protected-forward recipients into OSL recipients and no-OSL warnings before forwarding."
+commands.allow = ["osl_mail_plan_protected_forward"]
+
+[[permission]]
+identifier = "allow-osl-mail-forward-protected"
+description = "Forward protected OSL Mail only after any no-OSL recipient warning has been explicitly confirmed."
+commands.allow = ["osl_mail_forward_protected"]
+
+[[permission]]
+identifier = "allow-set-hub-app-notification-choice"
+description = "Persist whether one local app is allowed to create OSL activity notifications on this device."
+commands.allow = ["set_hub_app_notification_choice"]
+
+[[permission]]
+identifier = "allow-list-hub-app-notification-choices"
+description = "List the saved per-app OSL activity notification choices for this device."
+commands.allow = ["list_hub_app_notification_choices"]
+
+[[permission]]
+identifier = "allow-set-hub-look-choice"
+description = "Persist one bounded local OSL visual look choice for this device."
+commands.allow = ["set_hub_look_choice"]
+
+[[permission]]
+identifier = "allow-get-hub-look-choice"
+description = "Read one saved bounded local OSL visual look choice for this device."
+commands.allow = ["get_hub_look_choice"]
+
+[[permission]]
+identifier = "allow-list-hub-look-choices"
+description = "List the saved bounded local OSL visual look choices for this device."
+commands.allow = ["list_hub_look_choices"]
+
+[[permission]]
+identifier = "allow-save-scrub-setup"
+description = "Save the local Scrub setup account count, automatic schedule, and notice setting selected during trusted setup."
+commands.allow = ["save_scrub_setup"]
+
+[[permission]]
+identifier = "allow-check-hub-password-reset-phrase"
+description = "Check a password-recovery phrase from the trusted bundled OSL Privacy UI and return only an approved/refused reset verdict plus the opaque token required by the password-change step."
+commands.allow = ["check_hub_password_reset_phrase"]
+
+[[permission]]
+identifier = "allow-set-hub-friend-account-reach-choice"
+description = "Save one verified friend's reach choice for one exact local service account in encrypted device-local state."
+commands.allow = ["set_hub_friend_account_reach_choice"]
+
+[[permission]]
+identifier = "allow-list-hub-friend-account-reach-choices"
+description = "List one verified friend's saved reach choices across local service accounts from encrypted device-local state."
+commands.allow = ["list_hub_friend_account_reach_choices"]
+

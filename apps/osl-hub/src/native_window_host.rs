@@ -79,9 +79,17 @@ const WHATSAPP_PRIMARY_WINDOW_CLASS: &str = "WinUIDesktopWin32WindowClass";
 #[cfg(any(target_os = "windows", test))]
 const WHATSAPP_PRIMARY_WINDOW_TITLE: &str = "WhatsApp";
 #[cfg(any(target_os = "windows", test))]
-const OUTLOOK_CLASSIC_PRIMARY_WINDOW_CLASS: &str = "rctrl_renwnd32";
+const OUTLOOK_CLASSIC_PRIMARY_WINDOW_CLASS: &str =
+    crate::native_outlook_adapter::OUTLOOK_CLASSIC_PRIMARY_WINDOW_CLASS;
 #[cfg(any(target_os = "windows", test))]
-const OUTLOOK_NEW_PRIMARY_WINDOW_CLASS: &str = "WinUIDesktopWin32WindowClass";
+const OUTLOOK_NEW_PRIMARY_WINDOW_CLASS: &str =
+    crate::native_outlook_adapter::OUTLOOK_NEW_PRIMARY_WINDOW_CLASS;
+
+#[cfg(any(target_os = "windows", test))]
+fn outlook_desktop_control_targets(
+) -> &'static [crate::native_outlook_adapter::OutlookDesktopControlTarget] {
+    crate::native_outlook_adapter::outlook_desktop_control_targets()
+}
 // The containment gates below are necessary but not sufficient evidence that
 // each Electron/client build preserves interaction and compositing semantics.
 // Flip only after exact Windows builds pass the dedicated compatibility suite.
@@ -9979,6 +9987,34 @@ mod tests {
             fixed_secondary_launch(NativeAppId::Outlook),
             FixedSecondaryLaunch::Unsupported
         );
+    }
+
+    #[test]
+    fn outlook_desktop_mapping_lists_all_six_named_targets() {
+        let names = outlook_desktop_control_targets()
+            .iter()
+            .map(|target| target.name)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            names,
+            vec![
+                "ribbon New Mail",
+                "body",
+                "Send",
+                "reading pane",
+                "folders",
+                "conversation view",
+            ]
+        );
+        assert!(outlook_desktop_control_targets()
+            .iter()
+            .all(|target| !target.scope.is_empty()
+                && !target.control_type.is_empty()
+                && !target.ui_names.is_empty()));
+
+        println!("outlook desktop target count={}", names.len());
+        println!("outlook desktop targets={}", names.join(","));
     }
 
     #[test]

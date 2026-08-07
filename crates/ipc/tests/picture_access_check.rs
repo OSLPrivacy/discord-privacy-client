@@ -97,6 +97,14 @@ fn rose_0235_picture_cache_refuses_after_relationship_changes_to_blocked() {
     println!("accepted image fingerprint={accepted_fingerprint}");
     println!("accepted image bytes={accepted_bytes}");
     println!("stored picture count after accepted={after_accepted_count}");
+    assert_eq!(
+        accepted_fingerprint, IMAGE_FINGERPRINT,
+        "TASK0235 missing IMG-0235: accepted image fingerprint={accepted_fingerprint:?} bytes={accepted_bytes}"
+    );
+    assert!(
+        accepted_bytes > 0,
+        "TASK0235 missing IMG-0235: accepted image bytes={accepted_bytes}"
+    );
 
     cmd_osl_set_friend_ids(&state, Vec::new()).expect("relationship changed to blocked");
     let (blocked_result, blocked_bytes) = request_picture(&state);

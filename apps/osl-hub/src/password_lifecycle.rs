@@ -157,6 +157,14 @@ pub struct HubMainPasswordSetupResult {
     pub readiness: HubPasswordReadiness,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HubPasswordResetPhraseCheck {
+    pub status: &'static str,
+    pub recovery_token: Option<String>,
+    pub lockout_status: ipc::main_password::LockoutStatusDto,
+}
+
 pub fn readiness(state: &HubCoreState) -> HubPasswordReadiness {
     let identity_loaded = state
         .osl
@@ -167,8 +175,9 @@ pub fn readiness(state: &HubCoreState) -> HubPasswordReadiness {
     let Ok(password_status) = ipc::commands::cmd_osl_password_status() else {
         return unavailable_readiness(identity_loaded);
     };
-    let qa_device_gate =
-        cfg!(feature = "discord-qa-shell") && ipc::main_password::get_file_storage_key().is_some();
+    let qa_device_gate = state.startup_switches().password_screen_access
+        == crate::runtime_switches::PasswordScreenAccess::SkipPasswordScreenForTest
+        && ipc::main_password::get_file_storage_key().is_some();
     let unlocked = qa_device_gate
         || !password_status.is_set
         || ipc::main_password::get_file_storage_key().is_some();
@@ -414,6 +423,10 @@ pub fn reset_main_password_after_recovery(
     ipc::main_password::validate_new_password(&new_password).map_err(|_| {
         "OSL main password must contain 6 to 128 printable keyboard characters".to_owned()
     })?;
+pub fn check_password_reset_phrase(
+    state: &HubCoreState,
+    phrase: String,
+) -> Result<HubPasswordResetPhraseCheck, String> {
     let _lifecycle = state
         .lifecycle_lock
         .lock()
@@ -421,6 +434,24 @@ pub fn reset_main_password_after_recovery(
     let token = ipc::commands::cmd_osl_verify_recovery_phrase(&state.osl, recovery_phrase)?;
     ipc::commands::cmd_osl_set_main_password_after_recovery(&state.osl, new_password, token)?;
     Ok(readiness(state))
+    check_password_reset_phrase_using(&state.osl, phrase)
+}
+
+fn check_password_reset_phrase_using(
+    state: &AppState,
+    phrase: String,
+) -> Result<HubPasswordResetPhraseCheck, String> {
+    let recovery_token = ipc::commands::cmd_osl_verify_recovery_phrase(state, phrase).ok();
+    let lockout_status = ipc::commands::cmd_osl_lockout_status()?;
+    Ok(HubPasswordResetPhraseCheck {
+        status: if recovery_token.is_some() {
+            "approved"
+        } else {
+            "refused"
+        },
+        recovery_token,
+        lockout_status,
+    })
 }
 
 /// Verify a locally-entered duress PIN and, only on the burn-password role,
@@ -942,6 +973,43 @@ mod tests {
 
         ipc::main_password::set_file_storage_key(None);
         let _ = std::fs::remove_dir_all(dir);
+    fn password_reset_phrase_check_approves_exact_phrase_and_refuses_one_changed_word() {
+        let _guard = crate::global_keystore_test_lock();
+        let _reset = KeystoreGlobalReset;
+        let core_dir = temp_dir("password-reset-phrase-check");
+        std::fs::create_dir_all(&core_dir).unwrap();
+        keystore::set_base_dir_override(Some(core_dir.clone()));
+        keystore::set_active_account_dir(None);
+        let state = HubCoreState::default();
+
+        let phrase =
+            ipc::commands::cmd_osl_set_main_password("aB3!z9-reset-source".to_owned()).unwrap();
+        ipc::main_password::set_file_storage_key(None);
+
+        let approved = check_password_reset_phrase_using(&state.osl, phrase.clone()).unwrap();
+        println!("valid phrase status={}", approved.status);
+        assert_eq!(approved.status, "approved");
+        assert!(
+            approved
+                .recovery_token
+                .as_deref()
+                .is_some_and(|token| !token.is_empty()),
+            "approved phrase must issue the token needed before a password change"
+        );
+
+        let mut changed_words: Vec<&str> = phrase.split_whitespace().collect();
+        changed_words[0] = if changed_words[0] == "abandon" {
+            "ability"
+        } else {
+            "abandon"
+        };
+        let refused =
+            check_password_reset_phrase_using(&state.osl, changed_words.join(" ")).unwrap();
+        println!("one changed word status={}", refused.status);
+        assert_eq!(refused.status, "refused");
+        assert!(refused.recovery_token.is_none());
+
+        let _ = std::fs::remove_dir_all(core_dir);
     }
 
     #[test]

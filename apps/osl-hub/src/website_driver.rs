@@ -15,6 +15,9 @@ use base64::Engine;
 use core::fmt;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+
+use base64::Engine;
+use core::fmt;
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -107,6 +110,16 @@ pub struct WebsiteSelectedEmail {
     pub body: String,
     pub conversation_identity: String,
     target_id: Option<String>,
+    target_id: Option<String>,
+}
+
+impl WebsitePage {
+    pub fn synthetic(url: String) -> Self {
+        Self {
+            url,
+            target_id: None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

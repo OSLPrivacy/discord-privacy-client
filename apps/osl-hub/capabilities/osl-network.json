@@ -10,6 +10,8 @@
     "allow-osl-mail-get-status",
     "allow-osl-mail-provision",
     "allow-osl-mail-send",
+    "allow-osl-mail-plan-protected-forward",
+    "allow-osl-mail-forward-protected",
     "allow-osl-mail-burn",
     "allow-emit-active-session-reset",
     "allow-add-hub-friend-by-username"

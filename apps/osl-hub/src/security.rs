@@ -236,6 +236,10 @@ pub struct ScopeSecurityDto {
 pub struct WhatsAppWhitelistKind {
     pub id: String,
     pub name: String,
+pub struct GroupMemberPermissionRecord {
+    pub group_id: String,
+    pub member_id: String,
+    pub allowed: bool,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
@@ -276,6 +280,9 @@ pub struct FriendAccountReachBulkResult {
     pub person_id: String,
     pub accounts: Vec<FriendAccountReachRecord>,
     pub changed_count: usize,
+pub struct AppNotificationChoiceRecord {
+    pub app_id: String,
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
@@ -465,6 +472,17 @@ pub fn timer_picker_send_expiry_at(
         duration_seconds,
         expires_at,
     })
+pub struct LookChoiceRecord {
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct AppNotificationNoticeRecord {
+    pub id: String,
+    pub title: String,
+    pub detail: String,
+    pub created_at: String,
 }
 
 /// The minimum friend state needed to create a manual peer-messaging lease.
@@ -925,6 +943,23 @@ pub struct ChatApprovalSuggestionChoiceDto {
 #[serde(rename_all = "camelCase")]
 pub struct ChatApprovalSuggestionAnswer {
     pub suggestion: String,
+    /// Friend reach choices scoped to one local service account. The legacy
+    /// peer-map `broadened` bit is person-wide; this ledger records the account
+    /// selection independently so two local accounts can make different reach
+    /// choices for the same verified friend.
+    #[serde(default)]
+    friend_account_reach_choices:
+        BTreeMap<String, BTreeMap<String, FriendAccountReachChoiceRecord>>,
+    /// Per-app local notification choices. A missing app-specific choice is
+    /// fail-closed for notice creation; callers must persist the app's explicit
+    /// opt-in before any notice for that app is made.
+    #[serde(default)]
+    app_notification_choices: BTreeMap<String, bool>,
+    /// Device-local visual look choices keyed by the only names the product
+    /// understands. Missing is not a stored choice; unknown names are refused
+    /// before mutation so typos cannot become durable settings.
+    #[serde(default)]
+    look_choices: BTreeMap<String, String>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -1779,6 +1814,17 @@ fn set_hub_friend_account_reach_bulk(
         return Err("OSL friend account reach requires at least one owned account".to_owned());
     }
     validate_friend_account_reach_accounts(&accounts)?;
+pub fn set_friend_account_reach_choice(
+    security: &HubSecurityState,
+    person_id: String,
+    service_id: String,
+    account_id: String,
+    broadened: bool,
+) -> Result<FriendAccountReachChoiceRecord, String> {
+    require_unlocked()?;
+    validate_person_id(&person_id)?;
+    validate_account_reach_component(&service_id, "OSL service identifier is invalid")?;
+    validate_account_reach_component(&account_id, "OSL account identifier is invalid")?;
     let _transition = security
         .transition
         .lock()
@@ -1996,6 +2042,24 @@ pub fn set_protected_friend_profile_picture(
     prefs
         .protected_friend_profile_pictures
         .insert(owner_osl_user_id, record.clone());
+    ensure_friend_exists(&dir, &person_id)?;
+    let path = dir.join(SECURITY_PREFS_FILE);
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
+    prefs.version = 2;
+    let record = FriendAccountReachChoiceRecord {
+        person_id: person_id.clone(),
+        service_id: service_id.clone(),
+        account_id: account_id.clone(),
+        broadened,
+    };
+    prefs
+        .friend_account_reach_choices
+        .entry(person_id)
+        .or_default()
+        .insert(
+            account_reach_storage_key(&service_id, &account_id),
+            record.clone(),
+        );
     write_encrypted_json(&path, &prefs)?;
     Ok(record)
 }
@@ -2033,6 +2097,29 @@ pub fn add_allowed_place_record(
         .transition
         .lock()
         .map_err(|_| "OSL allowed-place state is unavailable".to_owned())?;
+pub fn list_friend_account_reach_choices(
+    _security: &HubSecurityState,
+    person_id: String,
+) -> Result<Vec<FriendAccountReachChoiceRecord>, String> {
+    require_unlocked()?;
+    validate_person_id(&person_id)?;
+    let dir = config_dir()?;
+    ensure_friend_exists(&dir, &person_id)?;
+    let prefs = load_encrypted_json::<SecurityPreferences>(&dir.join(SECURITY_PREFS_FILE))?;
+    Ok(friend_account_reach_choice_records(&prefs, &person_id))
+}
+
+pub fn set_app_notification_choice(
+    security: &HubSecurityState,
+    app_id: String,
+    enabled: bool,
+) -> Result<AppNotificationChoiceRecord, String> {
+    require_unlocked()?;
+    validate_app_notification_id(&app_id)?;
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL app notification state is unavailable".to_owned())?;
     let path = config_dir()?.join(SECURITY_PREFS_FILE);
     let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
     prefs.version = 2;
@@ -2235,6 +2322,87 @@ pub fn apply_future_account_auto_whitelist(
         write_encrypted_json(&path, &prefs)?;
     }
     Ok(applied)
+        .app_notification_choices
+        .insert(app_id.clone(), enabled);
+    write_encrypted_json(&path, &prefs)?;
+    Ok(AppNotificationChoiceRecord { app_id, enabled })
+}
+
+pub fn list_app_notification_choices(
+    _security: &HubSecurityState,
+) -> Result<Vec<AppNotificationChoiceRecord>, String> {
+    require_unlocked()?;
+    let prefs = load_security_preferences()?;
+    Ok(app_notification_choice_records(&prefs))
+}
+
+pub fn set_look_choice(
+    security: &HubSecurityState,
+    name: String,
+    value: String,
+) -> Result<LookChoiceRecord, String> {
+    require_unlocked()?;
+    validate_look_choice_name(&name)?;
+    validate_look_choice_value(&value)?;
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL look choice state is unavailable".to_owned())?;
+    let path = config_dir()?.join(SECURITY_PREFS_FILE);
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
+    prefs.version = 2;
+    prefs.look_choices.insert(name.clone(), value.clone());
+    write_encrypted_json(&path, &prefs)?;
+    Ok(LookChoiceRecord { name, value })
+}
+
+pub fn look_choice_value(
+    _security: &HubSecurityState,
+    name: String,
+) -> Result<Option<String>, String> {
+    require_unlocked()?;
+    validate_look_choice_name(&name)?;
+    let prefs = load_security_preferences()?;
+    Ok(prefs.look_choices.get(&name).cloned())
+}
+
+pub fn list_look_choices(_security: &HubSecurityState) -> Result<Vec<LookChoiceRecord>, String> {
+    require_unlocked()?;
+    let prefs = load_security_preferences()?;
+    Ok(look_choice_records(&prefs))
+}
+
+pub fn app_notification_enabled_before_notice(
+    _security: &HubSecurityState,
+    app_id: String,
+) -> Result<bool, String> {
+    require_unlocked()?;
+    validate_app_notification_id(&app_id)?;
+    let prefs = load_security_preferences()?;
+    Ok(app_notification_choice_enabled(&prefs, &app_id))
+}
+
+pub fn connected_app_notice_records_for_pending_key_changes(
+    core: &HubCoreState,
+    security: &HubSecurityState,
+    app_id: String,
+) -> Result<Vec<AppNotificationNoticeRecord>, String> {
+    if !app_notification_enabled_before_notice(security, app_id)? {
+        return Ok(Vec::new());
+    }
+    Ok(list_people(core)?
+        .into_iter()
+        .filter(|person| person.pending_key_change)
+        .take(20)
+        .map(|person| AppNotificationNoticeRecord {
+            id: format!("key-change-{}", person.person_id),
+            title: "Friend encryption key changed".to_owned(),
+            detail:
+                "Verify the new safety number outside this chat before allowing encrypted messages."
+                    .to_owned(),
+            created_at: "Pending verification".to_owned(),
+        })
+        .collect())
 }
 
 /// Grant or revoke one friend's approval for exactly one scope.
@@ -5461,6 +5629,48 @@ fn normalise_invite_recipient_label(value: &str) -> Result<String, String> {
         return Err("OSL invite recipient label is invalid".to_owned());
     }
     Ok(trimmed.to_owned())
+fn friend_account_reach_choice_records(
+    prefs: &SecurityPreferences,
+    person_id: &str,
+) -> Vec<FriendAccountReachChoiceRecord> {
+    prefs
+        .friend_account_reach_choices
+        .get(person_id)
+        .into_iter()
+        .flat_map(|accounts| accounts.values().cloned())
+        .collect()
+}
+
+fn app_notification_choice_records(
+    prefs: &SecurityPreferences,
+) -> Vec<AppNotificationChoiceRecord> {
+    prefs
+        .app_notification_choices
+        .iter()
+        .map(|(app_id, enabled)| AppNotificationChoiceRecord {
+            app_id: app_id.clone(),
+            enabled: *enabled,
+        })
+        .collect()
+}
+
+fn app_notification_choice_enabled(prefs: &SecurityPreferences, app_id: &str) -> bool {
+    prefs
+        .app_notification_choices
+        .get(app_id)
+        .copied()
+        .unwrap_or(false)
+}
+
+fn look_choice_records(prefs: &SecurityPreferences) -> Vec<LookChoiceRecord> {
+    prefs
+        .look_choices
+        .iter()
+        .map(|(name, value)| LookChoiceRecord {
+            name: name.clone(),
+            value: value.clone(),
+        })
+        .collect()
 }
 
 fn manual_approved_scopes_for_person(
@@ -5526,6 +5736,15 @@ fn friend_future_account_auto_whitelist_dto(
         person_id: person_id.to_owned(),
         enabled,
         result: if enabled { "on" } else { "off" },
+fn account_reach_storage_key(service_id: &str, account_id: &str) -> String {
+    format!("{service_id}:{account_id}")
+}
+
+fn ensure_friend_exists(dir: &Path, person_id: &str) -> Result<(), String> {
+    if load_people_file(dir)?.people.contains_key(person_id) {
+        Ok(())
+    } else {
+        Err("OSL friend is unknown".to_owned())
     }
 }
 
@@ -5673,6 +5892,7 @@ fn validate_group_member_permission_id(value: &str, message: &str) -> Result<(),
 }
 
 fn validate_profile_picture_owner(value: &str) -> Result<(), String> {
+fn validate_account_reach_component(value: &str, message: &str) -> Result<(), String> {
     if value.is_empty()
         || value.len() > 128
         || value
@@ -5680,6 +5900,7 @@ fn validate_profile_picture_owner(value: &str) -> Result<(), String> {
             .any(|byte| !byte.is_ascii_alphanumeric() && !matches!(byte, b'-' | b'_'))
     {
         return Err("OSL profile-picture owner identity is invalid".to_owned());
+        return Err(message.to_owned());
     }
     Ok(())
 }
@@ -5698,6 +5919,36 @@ fn protected_friend_profile_picture_image(
             })
         })
         .transpose()
+fn validate_app_notification_id(value: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > 64
+        || value
+            .bytes()
+            .any(|byte| !byte.is_ascii_alphanumeric() && !matches!(byte, b'-' | b'_'))
+    {
+        return Err("OSL app notification identifier is invalid".to_owned());
+    }
+    Ok(())
+}
+
+fn validate_look_choice_name(value: &str) -> Result<(), String> {
+    if !matches!(
+        value,
+        "theme" | "named-look" | "accent" | "corners" | "glow" | "text" | "spacing" | "see-through"
+    ) {
+        return Err("OSL look choice name is invalid".to_owned());
+    }
+    Ok(())
+}
+
+fn validate_look_choice_value(value: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > 128
+        || value.chars().any(|character| character.is_control())
+    {
+        return Err("OSL look choice value is invalid".to_owned());
+    }
+    Ok(())
 }
 
 fn validate_manual_peer_scope_component(value: &str) -> Result<(), String> {
@@ -7001,6 +7252,263 @@ mod tests {
         assert_eq!(compare_json["firstToSecondAllowed"], true);
         assert_eq!(compare_json["secondToFirstAllowed"], true);
         assert_eq!(remove_json, true);
+    fn direct_friend_account_reach_commands_list_two_account_choices_for_same_friend() {
+        let harness = FileBackedSecurityHarness::new("friend-account-reach-commands");
+        let security = HubSecurityState::default();
+        let (person_id, metadata, _peer) = test_friend(240);
+        write_people(harness.path(), &person_id, metadata);
+
+        let first = set_friend_account_reach_choice(
+            &security,
+            person_id.clone(),
+            "discord".to_owned(),
+            "account-0240-a".to_owned(),
+            true,
+        )
+        .unwrap();
+        let second = set_friend_account_reach_choice(
+            &security,
+            person_id.clone(),
+            "discord".to_owned(),
+            "account-0240-b".to_owned(),
+            false,
+        )
+        .unwrap();
+        assert!(first.broadened);
+        assert!(!second.broadened);
+
+        let records = list_friend_account_reach_choices(&security, person_id.clone()).unwrap();
+        let account_choices = records
+            .iter()
+            .map(|record| format!("{}={}", record.account_id, record.broadened))
+            .collect::<Vec<_>>()
+            .join(",");
+        println!(
+            "friend_account_reach_choices person_id={} account_count={} account_choices={}",
+            person_id,
+            records.len(),
+            account_choices
+        );
+        assert_eq!(records.len(), 2);
+        assert!(records.iter().all(|record| record.person_id == person_id));
+        assert_eq!(records[0].account_id, "account-0240-a");
+        assert!(records[0].broadened);
+        assert_eq!(records[1].account_id, "account-0240-b");
+        assert!(!records[1].broadened);
+    }
+
+    #[test]
+    fn direct_action_trace_is_active_only_for_ticked_friend_account_reach() {
+        let harness = FileBackedSecurityHarness::new("friend-account-silence-direct-action");
+        let core = HubCoreState::default();
+        let security = HubSecurityState::default();
+        let (person_id, metadata, peer) = test_friend(241);
+        install_self_identity(&core);
+        write_people(harness.path(), &person_id, metadata);
+        install_peer_map(&core, harness.path(), &person_id, peer);
+
+        let ticked_account = "account-0241-ticked";
+        let unticked_account = "account-0241-unticked";
+        for account_id in [ticked_account, unticked_account] {
+            let scope_id = manual_peer_scope_id("discord", account_id, &person_id).unwrap();
+            set_manual_peer_scope_permission(
+                &core,
+                &security,
+                "discord",
+                account_id,
+                person_id.clone(),
+                dm_scope_input(scope_id),
+                true,
+            )
+            .unwrap();
+        }
+        set_friend_account_reach_choice(
+            &security,
+            person_id.clone(),
+            "discord".to_owned(),
+            ticked_account.to_owned(),
+            true,
+        )
+        .unwrap();
+        set_friend_account_reach_choice(
+            &security,
+            person_id.clone(),
+            "discord".to_owned(),
+            unticked_account.to_owned(),
+            false,
+        )
+        .unwrap();
+
+        let ticked_scope =
+            dm_scope_input(manual_peer_scope_id("discord", ticked_account, &person_id).unwrap());
+        let unticked_scope =
+            dm_scope_input(manual_peer_scope_id("discord", unticked_account, &person_id).unwrap());
+        let ticked_trace = if require_manual_peer_scope_approved(
+            &core,
+            "discord",
+            ticked_account,
+            person_id.clone(),
+            ticked_scope,
+        )
+        .is_ok()
+        {
+            "active"
+        } else {
+            "skipped"
+        };
+        let unticked_trace = if require_manual_peer_scope_approved(
+            &core,
+            "discord",
+            unticked_account,
+            person_id.clone(),
+            unticked_scope,
+        )
+        .is_ok()
+        {
+            "active"
+        } else {
+            "skipped"
+        };
+
+        println!(
+            "direct_action_trace ticked_account={} unticked_account={}",
+            ticked_trace, unticked_trace
+        );
+        assert_eq!(ticked_trace, "active");
+        assert_eq!(unticked_trace, "skipped");
+    }
+
+    #[test]
+    fn direct_app_notification_lookups_return_enabled_for_one_app_and_disabled_for_another() {
+        let _harness = FileBackedSecurityHarness::new("app-notification-choices");
+        let security = HubSecurityState::default();
+
+        let discord = set_app_notification_choice(&security, "discord".to_owned(), true).unwrap();
+        let telegram =
+            set_app_notification_choice(&security, "telegram".to_owned(), false).unwrap();
+        assert!(discord.enabled);
+        assert!(!telegram.enabled);
+
+        let discord_lookup =
+            app_notification_enabled_before_notice(&security, "discord".to_owned()).unwrap();
+        let telegram_lookup =
+            app_notification_enabled_before_notice(&security, "telegram".to_owned()).unwrap();
+        println!(
+            "app_notification_direct_lookups discord={} telegram={}",
+            discord_lookup, telegram_lookup
+        );
+        assert!(discord_lookup);
+        assert!(!telegram_lookup);
+
+        let choices = list_app_notification_choices(&security).unwrap();
+        assert_eq!(choices.len(), 2);
+        assert_eq!(choices[0].app_id, "discord");
+        assert!(choices[0].enabled);
+        assert_eq!(choices[1].app_id, "telegram");
+        assert!(!choices[1].enabled);
+    }
+
+    #[test]
+    fn saved_look_choices_survive_restart_and_unknown_ninth_name_is_refused() {
+        let _harness = FileBackedSecurityHarness::new("look-choices-0768");
+        let security = HubSecurityState::default();
+        let saved = [
+            ("theme", "theme-0768-obsidian"),
+            ("named-look", "named-look-0768-signal"),
+            ("accent", "accent-0768-cyan"),
+            ("corners", "corners-0768-square"),
+            ("glow", "glow-0768-high"),
+            ("text", "text-0768-large"),
+            ("spacing", "spacing-0768-roomy"),
+            ("see-through", "see-through-0768-on"),
+        ];
+
+        for (name, value) in saved {
+            let record = set_look_choice(&security, name.to_owned(), value.to_owned()).unwrap();
+            assert_eq!(record.name, name);
+            assert_eq!(record.value, value);
+        }
+
+        let restarted_security = HubSecurityState::default();
+        let direct_reads = saved
+            .into_iter()
+            .map(|(name, expected)| {
+                let actual = look_choice_value(&restarted_security, name.to_owned())
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(actual, expected);
+                format!("{name}={actual}")
+            })
+            .collect::<Vec<_>>();
+
+        let unknown_refusal = set_look_choice(
+            &restarted_security,
+            "outline".to_owned(),
+            "outline-0768-unknown".to_owned(),
+        )
+        .unwrap_err();
+        let after_refusal = list_look_choices(&restarted_security).unwrap();
+
+        println!(
+            "look_choice_restart_reads count={} {} unknown_ninth_refused={} stored_after_refusal={}",
+            direct_reads.len(),
+            direct_reads.join(" "),
+            unknown_refusal,
+            after_refusal.len()
+        );
+        assert_eq!(direct_reads.len(), 8);
+        assert_eq!(after_refusal.len(), 8);
+        assert_eq!(unknown_refusal, "OSL look choice name is invalid");
+        assert!(look_choice_value(&restarted_security, "outline".to_owned()).is_err());
+    }
+
+    #[test]
+    fn connected_app_notice_creation_uses_per_app_notification_lookup() {
+        let harness = FileBackedSecurityHarness::new("app-notification-notice-creation");
+        let core = HubCoreState::default();
+        let security = HubSecurityState::default();
+        install_self_identity(&core);
+        let (person_id, mut metadata, peer) = test_friend(9);
+        metadata.pending_key_bundle = Some(FriendCodeUnsigned {
+            version: FRIEND_CODE_VERSION,
+            osl_user_id: metadata.osl_user_id.clone(),
+            x25519_public: STANDARD.encode([19; X25519_PUBLIC_BYTES]),
+            ed25519_public: metadata.ed25519_public.clone(),
+            mlkem768_public: STANDARD.encode([29; MLKEM768_PUBLIC_BYTES]),
+            ratchet_initial_public: None,
+        });
+        write_people(harness.path(), &person_id, metadata);
+        install_peer_map(&core, harness.path(), &person_id, peer);
+
+        set_app_notification_choice(&security, "disabled-app".to_owned(), false).unwrap();
+        set_app_notification_choice(&security, "enabled-app".to_owned(), true).unwrap();
+
+        let disabled = connected_app_notice_records_for_pending_key_changes(
+            &core,
+            &security,
+            "disabled-app".to_owned(),
+        )
+        .unwrap();
+        let enabled = connected_app_notice_records_for_pending_key_changes(
+            &core,
+            &security,
+            "enabled-app".to_owned(),
+        )
+        .unwrap();
+        println!(
+            "connected_app_notice_records disabled_app={} enabled_app={} enabled_notice_id={}",
+            disabled.len(),
+            enabled.len(),
+            enabled
+                .first()
+                .map(|record| record.id.as_str())
+                .unwrap_or("none")
+        );
+
+        assert!(disabled.is_empty());
+        assert_eq!(enabled.len(), 1);
+        assert_eq!(enabled[0].id, format!("key-change-{person_id}"));
+        assert_eq!(enabled[0].title, "Friend encryption key changed");
     }
 
     fn fresh_test_dir(label: &str) -> std::path::PathBuf {
@@ -8034,6 +8542,15 @@ mod tests {
             "Approve encryption for this friend before continuing",
             "IPC adoption alone must not bypass the hub's friend-attributed scoped grant"
         );
+
+        set_friend_account_reach_choice(
+            &security,
+            added.person_id.clone(),
+            "osl-chat".to_owned(),
+            "osl-main".to_owned(),
+            true,
+        )
+        .expect("direct action also requires an explicit account reach choice");
 
         let mut wrong_binding = binding.clone();
         wrong_binding.peer_x25519_public[0] ^= 1;
@@ -9793,6 +10310,14 @@ mod tests {
             true,
         )
         .unwrap();
+        set_friend_account_reach_choice(
+            &security,
+            person_id.clone(),
+            "osl-chat".to_owned(),
+            "osl-main".to_owned(),
+            true,
+        )
+        .unwrap();
         assert!(manual_peer_scope_approved(
             &core,
             "osl-chat",
@@ -10162,6 +10687,14 @@ mod tests {
         )
         .unwrap();
         apply_scoped_trust_grant(&security, &binding_b, &grant_b).unwrap();
+        set_friend_account_reach_choice(
+            &security,
+            person_b.clone(),
+            "osl-chat".to_owned(),
+            "osl-main".to_owned(),
+            true,
+        )
+        .unwrap();
 
         let terminal_burn = "dm:terminal-burn".to_owned();
         let mut prefs: SecurityPreferences =

@@ -124,6 +124,11 @@ fn tour_reset_clears_state() {
 /// the version field bumped on next mutation.
 #[test]
 fn writes_stamp_current_version() {
+/// Version bump: writing through any of the app-preference commands stamps
+/// the current schema version on disk. Legacy v1 files keep their stego_mode but get
+/// the version field bumped on next mutation.
+#[test]
+fn writes_stamp_current_app_preferences_version() {
     use ipc::app_preferences::APP_PREFERENCES_VERSION;
     use ipc::main_password::set_file_storage_key;
     let _g = KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());

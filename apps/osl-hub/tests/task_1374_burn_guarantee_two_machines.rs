@@ -10,6 +10,7 @@ use osl_privacy_hub::broker::{
 use osl_privacy_hub::core_bridge::HubCoreState;
 
 const PASSWORD: &str = "task-1374-burn-guarantee-password";
+const DISABLE_BURN_REMOVAL_ON: &str = "TASK1374_DISABLE_BURN_REMOVAL_ON";
 
 #[test]
 fn task_1374_burn_guarantee_on_two_machines() {
@@ -73,11 +74,40 @@ fn run() -> Result<(), String> {
     assert!(first_reopened.marked_content_absent);
     assert_eq!(second_reopened.count, 0);
     assert!(second_reopened.marked_content_absent);
+    let mut failure = None;
+    if !first_read.exact_mark {
+        failure = Some("machine-1 did not first show the exact mark".to_owned());
+    } else if first_read.count != 1 {
+        failure = Some(format!("machine-1 first count was {}", first_read.count));
+    } else if !second_read.exact_mark {
+        failure = Some("machine-2 did not first show the exact mark".to_owned());
+    } else if second_read.count != 1 {
+        failure = Some(format!("machine-2 first count was {}", second_read.count));
+    } else if first_reopened.count != 0 || !first_reopened.marked_content_absent {
+        println!("TASK1374_STILL_HOLDING_MARKED_CONTENT=machine-1");
+        failure = Some("machine-1 still holding the marked content".to_owned());
+    } else if second_reopened.count != 0 || !second_reopened.marked_content_absent {
+        println!("TASK1374_STILL_HOLDING_MARKED_CONTENT=machine-2");
+        failure = Some("machine-2 still holding the marked content".to_owned());
+    } else if first_burn_deleted != 1 {
+        failure = Some(format!(
+            "machine-1 burn deleted {first_burn_deleted} marked rows"
+        ));
+    } else if second_burn_deleted != 1 {
+        failure = Some(format!(
+            "machine-2 burn deleted {second_burn_deleted} marked rows"
+        ));
+    }
 
     first.cleanup();
     second.cleanup();
     reset_process();
     Ok(())
+
+    match failure {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
 }
 
 #[derive(Clone)]
@@ -226,6 +256,24 @@ fn burn_both_sides_once(first: &Machine, second: &Machine) -> Result<(usize, usi
         broker::burn_local_protected_context(&core, &broker, &token)?
     };
     Ok((first_deleted, second_deleted))
+}
+
+    let first_deleted = burn_on_machine(first)?;
+    let second_deleted = burn_on_machine(second)?;
+    Ok((first_deleted, second_deleted))
+}
+
+fn burn_on_machine(machine: &Machine) -> Result<usize, String> {
+    if std::env::var(DISABLE_BURN_REMOVAL_ON)
+        .ok()
+        .as_deref()
+        == Some(machine.name)
+    {
+        println!("TASK1374_BURN_REMOVAL_DISABLED_ON={}", machine.name);
+        return Ok(0);
+    }
+    let (core, broker, token) = machine.open_app(30)?;
+    broker::burn_local_protected_context(&core, &broker, &token)
 }
 
 fn configure_process(root: &std::path::Path) -> Result<(), String> {

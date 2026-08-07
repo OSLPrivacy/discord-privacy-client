@@ -2353,6 +2353,19 @@ fn burn_uploaded_prose_blob(
     }
 }
 
+fn require_view_once_create_allowed(core: &HubCoreState, view_once: bool) -> Result<(), String> {
+    if !view_once {
+        return Ok(());
+    }
+    ipc::tier_gate::check_view_once_create_allowed(&core.osl).map_err(|error| {
+        format!(
+            "OSL-TIER-BLOCKED:{}",
+            serde_json::to_string(&error)
+                .unwrap_or_else(|_| "{\"kind\":\"paid_feature_required\"}".to_owned())
+        )
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn prepare_peer_prose_text_inner_with_chunk(
     core: &HubCoreState,
@@ -2366,6 +2379,7 @@ fn prepare_peer_prose_text_inner_with_chunk(
     store_client: Option<&ipc::cipher_store_client::CipherStoreClient>,
     send_order: Option<AuthenticatedSenderOrder>,
 ) -> Result<PreparedPeerProseEnvelope, String> {
+    require_view_once_create_allowed(core, view_once)?;
     let manual = broker.manual_peer_for(context_token)?;
     security::require_person_not_blocked(&manual.person_id)?;
     let verified = security::require_manual_peer_scope_approved(
@@ -4574,6 +4588,7 @@ fn prepare_peer_inbox_text_with_route_clients(
     store_client: Option<&ipc::cipher_store_client::CipherStoreClient>,
     keyserver_client: Option<&keystore::KeyServerClient>,
 ) -> Result<PreparedNativeOverlayCarrier, String> {
+    require_view_once_create_allowed(core, view_once)?;
     #[cfg(feature = "discord-qa-shell")]
     let is_fixed_discord_qa_probe = plaintext == "OSL Discord QA probe" && !view_once;
     #[cfg(feature = "discord-qa-shell")]
@@ -12090,6 +12105,141 @@ mod tests {
             chunk_count: None,
             whole_sha256: None,
         }
+    }
+
+    fn install_license(core: &HubCoreState, state: keystore::LicenseState, raw_status: &str) {
+        *core.osl.license_state.lock().expect("license state lock") = keystore::LicenseStateDto {
+            state,
+            raw_status: raw_status.to_owned(),
+            current_period_end: matches!(
+                state,
+                keystore::LicenseState::Paid | keystore::LicenseState::PaidOfflineGrace
+            )
+            .then_some(9_999_999_999),
+            last_validated_at: Some(1_700_000_000),
+        };
+    }
+
+    fn manual_pair_for_service(service_id: &str, label: &str) -> NativeManualPair {
+        let mut pair = native_manual_pair(label);
+        let conversation_id =
+            manual_dm_channel_binding(service_id, &pair.alice.user_id, &pair.bob.user_id).unwrap();
+        pair.alice_manual.service_id = service_id.to_owned();
+        pair.alice_manual.account_id = if service_id == "osl-chat" {
+            "osl-main".to_owned()
+        } else {
+            format!("{service_id}-alice")
+        };
+        pair.alice_manual.scope.id = format!("{label}-{service_id}-alice-scope");
+        pair.alice_manual.scope.channel_id = Some(conversation_id.clone());
+        pair.alice_context.service_id = service_id.to_owned();
+        pair.alice_context.account_id = pair.alice_manual.account_id.clone();
+        pair.alice_context.conversation_id = conversation_id.clone();
+
+        pair.bob_manual.service_id = service_id.to_owned();
+        pair.bob_manual.account_id = if service_id == "osl-chat" {
+            "osl-main".to_owned()
+        } else {
+            format!("{service_id}-bob")
+        };
+        pair.bob_manual.scope.id = format!("{label}-{service_id}-bob-scope");
+        pair.bob_manual.scope.channel_id = Some(conversation_id.clone());
+        pair.bob_context.service_id = service_id.to_owned();
+        pair.bob_context.account_id = pair.bob_manual.account_id.clone();
+        pair.bob_context.conversation_id = conversation_id;
+        pair
+    }
+
+    #[test]
+    fn task_0593_view_once_create_is_pro_only_and_free_open_stays_allowed_on_current_surfaces() {
+        const SURFACES: &[(&str, &str)] = &[
+            ("discord", "Discord"),
+            ("signal", "Signal"),
+            ("whatsapp", "WhatsApp"),
+            ("telegram", "Telegram"),
+            ("osl-chat", "OSL Chats"),
+        ];
+        const CUT_SURFACES: &[&str] = &["instagram", "snapchat", "x", "messenger"];
+        let mut named_results = 0usize;
+
+        for (service_id, display_name) in SURFACES {
+            let pair = manual_pair_for_service(service_id, &format!("task0593-{service_id}"));
+            let words = format!("TASK0593 {display_name} view-once exact words");
+            install_license(&pair.core, keystore::LicenseState::Paid, "ACTIVE");
+            *pair.core.osl.identity.lock().unwrap() = Some(pair.alice.clone());
+            require_view_once_create_allowed(&pair.core, true)
+                .expect("paid sender may create view-once");
+            let wire = prepare_direct_manual_v3(
+                &pair.core,
+                &pair.alice_binding,
+                &pair.alice_manual,
+                &pair.alice_context,
+                words.clone(),
+                PeerProtectionPolicy {
+                    view_once: true,
+                    require_capture_protection: true,
+                    created_at: 1_700_000_000,
+                    expires_at: 1_700_003_600,
+                    send_order: None,
+                },
+                format!("peer-{:032x}", named_results + 1),
+                None,
+            )
+            .expect("paid sender creates one view-once message");
+            println!(
+                "TASK0593_RESULT_PRO_CREATE surface={service_id} name={display_name} view_once=true words={words}"
+            );
+            named_results += 1;
+
+            install_license(&pair.core, keystore::LicenseState::Free, "Unconfigured");
+            *pair.core.osl.identity.lock().unwrap() = Some(pair.bob.clone());
+            let refusal = require_view_once_create_allowed(&pair.core, true)
+                .expect_err("free sender must be refused before create");
+            assert!(
+                refusal.contains("OSL-TIER-BLOCKED:")
+                    && refusal.contains("paid_feature_required")
+                    && refusal.contains("view-once messages"),
+                "{refusal}"
+            );
+            println!(
+                "TASK0593_RESULT_FREE_CREATE_REFUSED surface={service_id} name={display_name} refusal={refusal}"
+            );
+            named_results += 1;
+
+            let opened = decrypt_direct_manual_v3(
+                &pair.core,
+                &pair.bob_binding,
+                ManualWireSender::Peer,
+                &wire,
+            )
+            .expect("free recipient opens the paid view-once wire");
+            validate_peer_protected_payload(
+                &opened,
+                &pair.bob_manual,
+                &pair.bob_context,
+                1_700_000_001,
+            )
+            .expect("free recipient validates the paid view-once payload");
+            assert_eq!(opened.plaintext, words);
+            assert!(opened.view_once);
+            println!(
+                "TASK0593_RESULT_FREE_OPEN surface={service_id} name={display_name} view_once=true words={}",
+                opened.plaintext
+            );
+            named_results += 1;
+        }
+
+        println!("TASK0593_CURRENT_CHAT_SURFACES={}", SURFACES.len() - 1);
+        println!("TASK0593_CURRENT_NAMED_RESULTS={named_results}");
+        println!("TASK0593_REQUESTED_NAMED_RESULTS=24");
+        for cut in CUT_SURFACES {
+            assert!(
+                service_manifest(cut).is_err(),
+                "cut surface {cut} must not be silently counted as a chat app"
+            );
+            println!("TASK0593_CUT_SURFACE surface={cut} reason=owner-ruling-2026-08-05");
+        }
+        assert_eq!(named_results, 15);
     }
 
     #[test]

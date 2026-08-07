@@ -1,6 +1,7 @@
 // Single source of truth for which attachment formats the trusted picker may
 // offer, derived from what the receiving viewer can decode. Needs `ipc` and
 // `peer_attachment_io`, so it lives behind `core` like they do.
+pub mod account_burn_selection;
 #[cfg(feature = "core")]
 pub mod account_identity_authority;
 #[cfg(feature = "core")]
@@ -115,6 +116,7 @@ pub mod native_apps;
 pub mod native_attachment_jobs;
 pub mod native_attachment_jobs_bridge;
 pub mod native_discord_adapter;
+pub mod native_outlook_adapter;
 pub mod native_signal_adapter;
 pub mod native_telegram_adapter;
 pub mod native_whatsapp_adapter;
@@ -143,8 +145,12 @@ pub mod scrub_hosted {
     pub mod checkpoint;
     pub mod friction;
     pub mod ordering;
+    pub mod place_scope;
+    pub mod proton_mail;
+    pub mod reader;
     pub mod verify_surface;
     pub mod x_web;
+    pub mod yahoo_mail;
 }
 pub mod messenger_whitelist_kinds;
 #[cfg(feature = "core")]
@@ -156,6 +162,7 @@ pub mod rn_attribution;
 #[cfg(feature = "core")]
 pub mod rn_recovery;
 pub mod scrub_hosted_port;
+pub mod scrub_setup_store;
 /// **Binding Ledger 9, the seam ledger.** Adapters declared vs adapters with a
 /// live carry receipt, ratcheted in both directions against
 /// `carry-receipts/seam-ledger-baseline.json`. Test-only because its inputs --
@@ -200,6 +207,7 @@ pub mod placement;
 
 #[cfg(feature = "core")]
 pub mod broker;
+pub mod chat_app_timer_policy;
 pub mod chat_capture_protection;
 /// **The claim state.** What OSL may publicly say about each ruled surface, and
 /// why — the owner gate `PLAN.md` r4-5 calls "the claim-state gap". Not behind a
@@ -280,6 +288,8 @@ pub mod native_surface_capture;
 #[cfg(feature = "core")]
 pub mod hub_command_surface;
 pub mod imap_verify;
+#[cfg(feature = "core")]
+pub mod runtime_switches;
 pub mod scrub_imap;
 #[cfg(feature = "core")]
 pub mod scrub_index;

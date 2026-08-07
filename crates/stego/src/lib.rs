@@ -39,9 +39,12 @@ pub use mode0::{
     decode_mode0, encode_mode0, is_mode0, MODE0_MAX_RAW_LEN, MODE0_PREFIX, MODE0_PREFIX_BYTES,
 };
 pub use mode1::{
-    compute_token_tag, decode_mode1, decode_token, encode_mode1, encode_token, is_mode1,
-    ConversationCipher, DETECT_TAG_BYTES, MODE1_MAX_RAW_LEN, MODE1_PREFIX, PERMUTATION_DOMAIN,
-    TOKEN_ID_BYTES, TOKEN_MAC_BYTES, TOKEN_MAC_DOMAIN, TOKEN_PAYLOAD_BITS,
+    compute_shrunk_token_tag, compute_token_tag, decode_cover_message_token, decode_mode1,
+    decode_shrunk_token, decode_token, encode_mode1, encode_shrunk_token, encode_token, is_mode1,
+    ConversationCipher, CoverMessageToken, DETECT_TAG_BYTES, MODE1_MAX_RAW_LEN, MODE1_PREFIX,
+    NEW_COVER_MESSAGE_VERSION, OLD_COVER_MESSAGE_VERSION, PERMUTATION_DOMAIN,
+    SHRUNK_TOKEN_ID_BYTES, SHRUNK_TOKEN_MAC_DOMAIN, SHRUNK_TOKEN_PAYLOAD_BITS,
+    SHRUNK_TOKEN_TAG_BYTES, TOKEN_ID_BYTES, TOKEN_MAC_BYTES, TOKEN_MAC_DOMAIN, TOKEN_PAYLOAD_BITS,
 };
 pub use mode1_templates::{
     SlotKind, BITS_PER_SENTENCE, SLOT_BITS, TEMPLATES_LEN, TEMPLATE_BITS, TOTAL_SLOTS,

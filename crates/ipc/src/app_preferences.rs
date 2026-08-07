@@ -28,6 +28,11 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::collections::BTreeMap;
+//! 0247 added `new_friend_defaults`. Missing fields load to the
+//! fail-closed defaults used for newly added friends.
+
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::Path;
 use std::str::FromStr;
 use std::path::Path;
@@ -569,6 +574,7 @@ pub fn parse_idle_lock_time_choice(input: &str) -> Result<IdleLockTimeChoice, St
 
 /// Default account reach for a friend who is newly accepted.
 /// Default reach granted to a newly added friend.
+/// Default reach granted when a new friend is added.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum NewFriendAccountReach {
@@ -604,6 +610,12 @@ impl FollowActiveAppChoice {
         match self {
             Self::On => "on",
             Self::Off => "off",
+}
+
+impl NewFriendAccountReach {
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::ApprovedChatsOnly => "approved_chats_only",
         }
     }
 }
@@ -635,6 +647,7 @@ impl FromStr for NewFriendAccountReach {
 }
 
 /// Whether new-friend verification warnings are shown by default.
+/// Default verification-warning posture for a newly added friend.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum NewFriendVerificationWarnings {
@@ -659,6 +672,12 @@ impl NewFriendVerificationWarnings {
             Self::Always => "always",
             Self::OnlyForNewPeople => "only for new people",
             Self::Never => "never",
+}
+
+impl NewFriendVerificationWarnings {
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Enabled => "enabled",
         }
     }
 }
@@ -693,6 +712,15 @@ impl FromStr for NewFriendVerificationWarnings {
             cover_writing: default_cover_writing(),
         }
     }
+/// Saved defaults applied by friend-onboarding flows.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NewFriendDefaults {
+    #[serde(default)]
+    pub account_reach: NewFriendAccountReach,
+    #[serde(default)]
+    pub auto_whitelist: crate::auto_whitelist_rules::AutoWhitelistChoice,
+    #[serde(default)]
+    pub verification_warnings: NewFriendVerificationWarnings,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -797,6 +825,10 @@ impl Default for AppPreferences {
 
 pub const APP_PREFERENCES_VERSION: u32 = 4;
 pub const APP_PREFERENCES_VERSION: u32 = 5;
+    pub new_friend_defaults: NewFriendDefaults,
+}
+
+pub const APP_PREFERENCES_VERSION: u32 = 3;
 
 pub fn load_app_preferences(path: &Path) -> AppPreferences {
     let Ok(blob) = std::fs::read(path) else {
