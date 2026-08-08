@@ -17054,3 +17054,20 @@ code {
 .osl-chat-blocked-panel strong { color: var(--warn); }
 .osl-chat-blocked-panel p { margin: 7px 0 14px; color: var(--muted); font: 13px/1.45 var(--font-prose); }
 @media (max-width: 760px) { .osl-chats-view { grid-template-columns: 250px minmax(0, 1fr); } .osl-chat-friends { grid-template-rows: 58px auto auto minmax(0, 1fr) 56px; } .osl-chat-friends > header { min-height: 58px; padding: 0 12px; } .osl-chat-search, .osl-chat-filter-tabs { margin-left: 12px; margin-right: 12px; padding-left: 0; padding-right: 0; } .osl-chat-message-list { padding: 20px 16px; } .osl-chat-composer { padding: 10px 16px 14px; } }
+
+/* TASK 4858 — what a role can actually do, and the plain reason for every no. */
+.osl-role-ability { min-width: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); }
+.osl-role-ability-header { padding: 18px 24px 14px; border-bottom: 1px solid var(--line); display: grid; gap: 4px; }
+.osl-role-ability-header h2 { margin: 0; font-size: 15px; font-weight: 600; }
+.osl-role-ability-scope { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.osl-role-ability-counts { margin: 6px 0 0; display: flex; gap: 10px; font-size: 11px; letter-spacing: .04em; text-transform: uppercase; }
+.osl-role-ability-count-allowed { padding: 3px 8px; border: 1px solid var(--line); color: var(--text); }
+.osl-role-ability-count-denied { padding: 3px 8px; border: 1px solid var(--line); color: var(--muted); }
+.osl-role-ability-rows { margin: 0; padding: 12px 24px 24px; list-style: none; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+.osl-role-ability-row { padding: 10px 12px; border: 1px solid var(--line); background: var(--panel); display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 12px; }
+.osl-role-ability-permission { min-width: 0; overflow-wrap: anywhere; font-size: 13px; font-weight: 600; }
+.osl-role-ability-state { grid-column: 2; grid-row: 1; align-self: start; font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+.osl-role-ability-state[data-state="allowed"] { color: var(--text); }
+.osl-role-ability-note { grid-column: 1 / -1; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.osl-role-ability-reason { grid-column: 1 / -1; margin: 0; font-size: 12px; line-height: 1.5; }
+.osl-role-ability-detail { grid-column: 1 / -1; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
