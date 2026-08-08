@@ -1285,6 +1285,64 @@ export async function addOslFriendByUsername(username: string, alias = ""): Prom
   } catch (error) { recordBackendFailure("add_hub_friend_by_username", error, [trimmed]); return null; }
 }
 
+export interface HubPendingFriendRequest {
+  peerDiscordId: string;
+  scopeStorageKey: string;
+  createdAtUnixSeconds: number;
+}
+
+export interface HubFriendRequestByOslName {
+  requestId: string;
+  recipientName: string;
+  peerOslUserId: string;
+  pending: HubPendingFriendRequest;
+}
+
+/**
+ * Mirrors the backend's own `valid_public_osl_name`: a name that fails this
+ * is refused before a request is ever built, not after a round trip.
+ */
+export function isValidPublicOslName(value: unknown): value is string {
+  if (typeof value !== "string" || value.length === 0 || value.length > 64) return false;
+  return !/[^\x21-\x7e]|[/\\]/u.test(value);
+}
+
+function parseHubPendingFriendRequest(raw: unknown): HubPendingFriendRequest | null {
+  if (!isRecord(raw) || !exact(raw, ["peerDiscordId", "scopeStorageKey", "createdAtUnixSeconds"])) return null;
+  if (!safePlaintext(raw.peerDiscordId, 180) || !safePlaintext(raw.scopeStorageKey, 512)) return null;
+  if (!Number.isSafeInteger(raw.createdAtUnixSeconds) || Number(raw.createdAtUnixSeconds) < 0) return null;
+  return raw as unknown as HubPendingFriendRequest;
+}
+
+export function parseHubFriendRequestByOslName(raw: unknown): HubFriendRequestByOslName | null {
+  if (!isRecord(raw) || !exact(raw, ["requestId", "recipientName", "peerOslUserId", "pending"])) return null;
+  if (!safe(raw.requestId, 128) || !safe(raw.recipientName, 64) || !safePlaintext(raw.peerOslUserId, 180)) return null;
+  const pending = parseHubPendingFriendRequest(raw.pending);
+  if (!pending) return null;
+  return { requestId: raw.requestId, recipientName: raw.recipientName, peerOslUserId: raw.peerOslUserId, pending };
+}
+
+/**
+ * Creates one pending friend request for an exact known public OSL name.
+ * Fails closed to null for an invalid name, an offline backend, or an
+ * unknown name -- the caller cannot tell these apart from the return value
+ * alone, which is deliberate: the backend's refusal reason is not a secret,
+ * but this adapter's job is only "did a pending request now exist", same as
+ * every other fail-closed adapter above.
+ */
+export async function createOslFriendRequestByOslName(recipientName: string): Promise<HubFriendRequestByOslName | null> {
+  if (!isTauriRuntime() || !isValidPublicOslName(recipientName)) return null;
+  const requestId = crypto.randomUUID();
+  try {
+    const parsed = parseHubFriendRequestByOslName(
+      await invoke<unknown>("create_friend_request_by_osl_name", { recipientName, requestId }),
+    );
+    return checkedBackendResponse("create_friend_request_by_osl_name",
+      parsed?.requestId === requestId && parsed.recipientName === recipientName ? parsed : null,
+      "the OSL name friend request result did not match the expected shape");
+  } catch (error) { recordBackendFailure("create_friend_request_by_osl_name", error, [recipientName]); return null; }
+}
+
 export function parseOslProfile(raw: unknown): OslProfile | null {
   if (!isRecord(raw) || !exact(raw, ["displayName", "usernameCandidate", "avatar", "accentColor", "bannerColor", "frame", "effect", "status"])) return null;
   if (!boundedProfileText(raw.displayName, 64, 192, false)
