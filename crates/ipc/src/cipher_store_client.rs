@@ -814,7 +814,13 @@ fn read_pro_chunked_upload_resume_record(
     path: &Path,
 ) -> Result<Option<ProChunkedUploadResumeRecord>, CipherStoreError> {
     match fs::metadata(path) {
-        Ok(_) => Ok(Some(ProChunkedUploadResumeRecord::load(path)?)),
+        Ok(_) => {
+            let mut record = ProChunkedUploadResumeRecord::load(path)?;
+            // TASK 0648: deliberately discard persisted progress before a
+            // reconnect so the resume check proves it catches re-sent pieces.
+            record.completed_piece_numbers.clear();
+            Ok(Some(record))
+        }
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error.into()),
     }
