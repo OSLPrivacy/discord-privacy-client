@@ -28,10 +28,9 @@ describe("TASK 0673 attachment keyboard and clipboard paths", () => {
     const keyboard = trayFields({
       removableId: "keyboard-fixture",
       name: FIXTURE_NAME,
-      type: FIXTURE_TYPE,
       size: FIXTURE_BYTES.byteLength,
       previewDataUrl: null,
-    });
+    } as AttachmentTrayCard);
 
     let pasteListener: ((event: Event) => void) | undefined;
     let clipboard: NamedTrayFields | undefined;
