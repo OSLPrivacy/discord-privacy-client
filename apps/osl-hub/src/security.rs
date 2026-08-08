@@ -3094,6 +3094,12 @@ pub fn apply_scoped_trust_grant(
         .lock()
         .map_err(|_| "OSL manual peer settings are unavailable".to_owned())?;
     let dir = config_dir()?;
+    let people = load_people_file(&dir)?;
+    let metadata = people
+        .people
+        .get(grant.person_id())
+        .ok_or_else(|| "OSL friend is unknown".to_owned())?;
+    ensure_friend_can_be_enabled(metadata, people.version)?;
     let path = dir.join(SECURITY_PREFS_FILE);
     let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
     if prefs.burned_manual_scopes.contains(grant.storage_key()) {

@@ -6105,8 +6105,17 @@ export function oslChatSenderReceiptMarkup(messages: readonly OslChatMessage[]):
 function oslChatFriendSettingsMarkup(person: HubPerson): string {
   const isActive = activeOslChatPersonId === person.personId;
   const approved = isActive && activeOslChatContext?.scopeApproved === true;
+  const verified = peerIsVerified(person);
   const notificationSettings = readOslChatNotificationSettings(localStorage, person.personId);
-  return `<dialog class="friends-dialog osl-chat-settings-dialog" id="osl-chat-settings-dialog" aria-labelledby="osl-chat-settings-title"><div class="friends-dialog-card"><header><div><span>Encrypted chat</span><h2 id="osl-chat-settings-title">${escapeHtml(person.alias ?? "Verified friend")}</h2></div><button class="icon-button" id="osl-chat-settings-close" type="button" aria-label="Close chat settings">×</button></header><div class="settings-list">${peerIntegrityMarkup("unknown")}${oslChatNotificationSettingsMarkup(notificationSettings)}<div class="setting-line"><span><strong>Chat permission</strong><small>${approved ? "This friend may exchange encrypted OSL messages with you." : "Open this friend to configure its exact chat permission."}</small></span>${isActive ? `<button class="button compact ${approved ? "danger" : "primary"}" id="osl-chat-permission-toggle" type="button" ${oslChatBusy ? "disabled" : ""}>${approved ? "Revoke" : "Enable"}</button>` : `<button class="button compact" data-osl-chat-open="${escapeHtml(person.personId)}" type="button">Open chat</button>`}</div></div></div></dialog>`;
+  const permissionDetail = !verified
+    ? "Not verified. Verify the new safety number before changing this whitelist."
+    : approved
+      ? "This friend may exchange encrypted OSL messages with you."
+      : "Open this friend to configure its exact chat permission.";
+  const permissionControl = isActive
+    ? `<button class="button compact ${approved ? "danger" : "primary"}" id="osl-chat-permission-toggle" type="button" ${oslChatBusy || !verified ? 'disabled aria-disabled="true"' : ""}>${approved ? "Revoke" : "Enable"}</button>`
+    : `<button class="button compact" data-osl-chat-open="${escapeHtml(person.personId)}" type="button" ${verified ? "" : 'disabled aria-disabled="true"'}>Open chat</button>`;
+  return `<dialog class="friends-dialog osl-chat-settings-dialog" id="osl-chat-settings-dialog" aria-labelledby="osl-chat-settings-title"><div class="friends-dialog-card"><header><div><span>Encrypted chat</span><h2 id="osl-chat-settings-title">${escapeHtml(person.alias ?? "Verified friend")}</h2></div><button class="icon-button" id="osl-chat-settings-close" type="button" aria-label="Close chat settings">×</button></header><div class="settings-list">${peerIntegrityMarkup("unknown")}${oslChatNotificationSettingsMarkup(notificationSettings)}<div class="setting-line osl-chat-permission-row${verified ? "" : " is-not-verified"}" data-osl-chat-whitelist-state="${verified ? "available" : "not-verified"}" ${verified ? "" : 'aria-disabled="true"'}><span><strong>Chat permission</strong><small>${permissionDetail}</small></span>${permissionControl}</div></div></div></dialog>`;
 }
 
 function oslServersContent(): string {
@@ -10459,6 +10468,12 @@ const oslChatDelivery = createOslChatDeliveryRuntime(oslChatDeliveryHost);
 async function toggleOslChatPermission(): Promise<void> {
   const context = activeOslChatContext;
   if (!context || oslChatBusy || oslChatSettingsPersonId !== context.personId) return;
+  const person = hubPeople.find((candidate) => candidate.personId === context.personId);
+  if (!person || !peerIsVerified(person)) {
+    showToast(person?.pendingKeyChange ? OSL_CHAT_KEY_CHANGED_REFUSAL_REASON : "Verify this friend before changing the chat whitelist.");
+    render();
+    return;
+  }
   const next = !context.scopeApproved;
   oslChatBusy = true;
   render();
@@ -10479,6 +10494,12 @@ async function toggleOslChatPermission(): Promise<void> {
 async function approveOslChat(): Promise<void> {
   const context = activeOslChatContext;
   if (!context || oslChatBusy || context.scopeApproved) return;
+  const person = hubPeople.find((candidate) => candidate.personId === context.personId);
+  if (!person || !peerIsVerified(person)) {
+    showToast(person?.pendingKeyChange ? OSL_CHAT_KEY_CHANGED_REFUSAL_REASON : "Verify this friend before changing the chat whitelist.");
+    render();
+    return;
+  }
   const epoch = oslChatOperationEpoch;
   oslChatBusy = true;
   render();
@@ -10572,8 +10593,8 @@ async function toggleOslChatReaction(messageId: string, emoji: string, mine: boo
 
 async function sendOslChatAttachment(): Promise<void> {
   const person = hubPeople.find((candidate) => candidate.personId === activeOslChatPersonId);
-  if (person?.pendingKeyChange) {
-    showToast(OSL_CHAT_KEY_CHANGED_REFUSAL_REASON);
+  if (!person || !peerIsVerified(person)) {
+    showToast(person?.pendingKeyChange ? OSL_CHAT_KEY_CHANGED_REFUSAL_REASON : "Sending is blocked until you verify this friend.");
     render();
     return;
   }
@@ -10599,9 +10620,13 @@ async function openPendingOslChatAttachment(attachmentId: string): Promise<void>
   render();
 }
 
-async function sendOslChat(event: SubmitEvent): Promise<void> {
-  event.preventDefault();
+export const OSL_CHAT_SEND_ROUTES = ["enter", "send-button", "send-later", "queued-draft"] as const;
+export type OslChatSendRoute = (typeof OSL_CHAT_SEND_ROUTES)[number];
+const oslChatSendRouteAttempts = new Map<OslChatSendRoute, number>();
+
+async function sendOslChatFromRoute(route: OslChatSendRoute): Promise<void> {
   escapeAuditSendAttempts += 1;
+  oslChatSendRouteAttempts.set(route, (oslChatSendRouteAttempts.get(route) ?? 0) + 1);
   const context = activeOslChatContext;
   const personId = activeOslChatPersonId;
   const draft = oslChatDraft;
@@ -10649,6 +10674,13 @@ async function sendOslChat(event: SubmitEvent): Promise<void> {
   oslChatViewOnce = false;
   oslChatBusy = false;
   render();
+}
+
+async function sendOslChat(event: SubmitEvent): Promise<void> {
+  event.preventDefault();
+  const submitter = event.submitter as HTMLElement | null;
+  const route: OslChatSendRoute = submitter?.dataset.oslChatSendRoute === "send-button" ? "send-button" : "enter";
+  await sendOslChatFromRoute(route);
 }
 
 function resetOslChatUiState(clearMessages: boolean): void {
@@ -12299,6 +12331,7 @@ function applyTestCoreState(ready: boolean, storageMethod: string | null, bootst
 }
 
 function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
+  oslChatSendRouteAttempts.clear();
   route = patch.route ?? "home";
   onboardingRoute = patch.onboardingRoute ?? "welcome";
   onboardingComplete = patch.onboardingComplete ?? false;
@@ -12861,6 +12894,50 @@ export const __oslHubUiTest = {
   renderWorkspaceContent(destination?: Route): string {
     if (destination) route = destination;
     return workspaceContent();
+  },
+  setOslChatForTest(personId: string, draft: string, scopeApproved = true): void {
+    const person = hubPeople.find((candidate) => candidate.personId === personId);
+    if (!person) throw new Error(`Unknown test chat person: ${personId}`);
+    route = "osl-chat";
+    activeOslChatPersonId = personId;
+    oslChatSettingsPersonId = personId;
+    activeOslChatContext = {
+      contextToken: `test-context-${personId}`,
+      serviceId: "osl-chat",
+      accountId: "local",
+      personId,
+      peerOslUserId: person.oslUserId,
+      scopeApproved,
+    };
+    oslChatBusy = false;
+    setOslChatDraft(draft);
+  },
+  renderOslChatForTest(): string {
+    route = "osl-chat";
+    return oslChatContent();
+  },
+  sendOslChatForTest(route: OslChatSendRoute = "enter"): Promise<void> {
+    return sendOslChatFromRoute(route);
+  },
+  sendOslChatAttachmentForTest(): Promise<void> {
+    return sendOslChatAttachment();
+  },
+  async verifyHubPersonAndRefreshForTest(personId: string, safetyNumber: string): Promise<boolean> {
+    const verified = await verifyHubPerson(personId, safetyNumber);
+    if (verified) hubPeople = await listHubPeople() ?? hubPeople;
+    return verified;
+  },
+  renderOslChatSettingsForTest(personId: string): string {
+    const person = hubPeople.find((candidate) => candidate.personId === personId);
+    if (!person) throw new Error(`Unknown test chat person: ${personId}`);
+    oslChatSettingsPersonId = personId;
+    return oslChatFriendSettingsMarkup(person);
+  },
+  toggleOslChatPermissionForTest(): Promise<void> {
+    return toggleOslChatPermission();
+  },
+  oslChatSendRouteAttemptsForTest(): Record<OslChatSendRoute, number> {
+    return Object.fromEntries(OSL_CHAT_SEND_ROUTES.map((route) => [route, oslChatSendRouteAttempts.get(route) ?? 0])) as Record<OslChatSendRoute, number>;
   },
   pasteOslChatClipboardImage(event: ClipboardEvent): Promise<void> {
     return pasteOslChatClipboardImage(event);

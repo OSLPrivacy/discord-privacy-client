@@ -17164,6 +17164,8 @@ code {
 .osl-chat-friend.is-key-changed { border-color: var(--warn); }
 .osl-chat-friend.is-key-changed .osl-chat-friend-copy strong,
 .osl-chat-key-changed-banner { color: var(--warn); }
+.osl-chat-permission-row.is-not-verified { color: var(--subtle); opacity: 0.68; }
+.osl-chat-permission-row.is-not-verified { color: var(--subtle); opacity: 0.68; }
 .osl-chat-friend-preview { max-width: 190px; margin-top: 3px; color: var(--muted); font-family: var(--font-prose); font-size: 11px; }
 .osl-chat-friend-end { align-self: start; display: grid; justify-items: end; gap: 5px; color: var(--subtle); font: 10px var(--font-mono); }
 .osl-chat-friend-end:empty { display: none; }
