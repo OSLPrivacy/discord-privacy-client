@@ -19137,6 +19137,21 @@ pub struct AllowedPlaceSearchResultDto {
     pub stable_id: String,
     pub place_name: String,
     pub person_name: String,
+    /// TASK 0868 — whether this place is allowed right now, so the Whitelisting
+    /// screen can draw the row's tick from the store instead of guessing.
+    pub allowed: bool,
+}
+
+fn allowed_place_search_result(row: crate::allowed_places::AllowedPlaceRow) -> AllowedPlaceSearchResultDto {
+    AllowedPlaceSearchResultDto {
+        app: row.record.app,
+        account: row.record.account,
+        kind: row.record.kind,
+        stable_id: row.record.stable_id,
+        place_name: row.record.place_name,
+        person_name: row.record.person_name,
+        allowed: row.allowed,
+    }
 }
 
 pub fn cmd_osl_search_allowed_places(
@@ -19144,19 +19159,51 @@ pub fn cmd_osl_search_allowed_places(
     query: String,
 ) -> Result<Vec<AllowedPlaceSearchResultDto>, String> {
     record_activity_on_command_entry();
-    let results = crate::allowed_places::search_allowed_place_records(&app_data_dir, &query)
+    let results = crate::allowed_places::search_allowed_place_rows(&app_data_dir, &query)
         .map_err(|error| format!("OSL: {error}"))?
         .into_iter()
-        .map(|place| AllowedPlaceSearchResultDto {
-            app: place.app,
-            account: place.account,
-            kind: place.kind,
-            stable_id: place.stable_id,
-            place_name: place.place_name,
-            person_name: place.person_name,
-        })
+        .map(allowed_place_search_result)
         .collect();
     Ok(results)
+}
+
+/// TASK 0868 — every place the Whitelisting screen lists, allowed or not.
+///
+/// The screen's rows and its search have to come from the same store, or the
+/// search answers a question about rows the screen is not showing and "Select
+/// all" acts on ids that are not on screen.
+pub fn cmd_osl_list_allowed_places(
+    app_data_dir: PathBuf,
+) -> Result<Vec<AllowedPlaceSearchResultDto>, String> {
+    record_activity_on_command_entry();
+    let results = crate::allowed_places::list_allowed_place_rows(&app_data_dir)
+        .map_err(|error| format!("OSL: {error}"))?
+        .into_iter()
+        .map(allowed_place_search_result)
+        .collect();
+    Ok(results)
+}
+
+/// TASK 0868 — write one row's tick back to the store.
+///
+/// Returns the stable ids that were actually changed, so a Save that could not
+/// find a row says so instead of reporting a write it did not do.
+pub fn cmd_osl_set_allowed_places_allowed(
+    app_data_dir: PathBuf,
+    stable_ids: Vec<String>,
+    allowed: bool,
+) -> Result<Vec<String>, String> {
+    record_activity_on_command_entry();
+    let mut written = Vec::new();
+    for stable_id in stable_ids {
+        let changed =
+            crate::allowed_places::set_allowed_place_allowed(&app_data_dir, &stable_id, allowed)
+                .map_err(|error| format!("OSL: {error}"))?;
+        if changed {
+            written.push(stable_id);
+        }
+    }
+    Ok(written)
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -22561,6 +22608,7 @@ fn update_saved_friend_record(
                 .to_string(),
             block_state,
             choices: accepted_choices.unwrap_or_default(),
+            picture: None,
         });
     Ok(())
 }
@@ -22797,6 +22845,201 @@ pub fn cmd_osl_query_friends_tabs(state: &AppState) -> Result<SavedFriendsTabsQu
         blocked,
     })
 }
+
+
+// =====================================================================
+// TASK 0828 - Home "OSL Friends" panel rows.
+//
+// One row per accepted saved friend, carrying the three things the panel
+// draws: the username saved with that friend, the picture they permitted us
+// to show (or a coloured initial when no picture is permitted), and the saved
+// friend identifier the row is routed by.
+//
+// The picture rule is the one gate 0237 connected: a picture is only ever
+// carried for a person who is an accepted friend *and* who is on the permitted
+// list `AppState::friend_ids` — the same list `guard_picture_cache_access`
+// checks before any image is handed over. Everybody else — pending, declined,
+// blocked, or simply not permitted — gets the initial, and a person who is not
+// an accepted friend produces no row at all, so neither their identifier nor
+// any picture stored against them is in the answer.
+// =====================================================================
+
+/// Palette for the coloured first-letter circle a row falls back to.
+const HOME_FRIEND_INITIAL_COLOURS: [&str; 8] = [
+    "#2563eb", "#7c3aed", "#db2777", "#dc2626", "#ea580c", "#ca8a04", "#16a34a", "#0d9488",
+];
+
+/// A picture that was permitted and is being shown.
+pub const HOME_FRIEND_PICTURE_PRESENT: &str = "image-present";
+/// No permitted picture: the row draws its coloured initial instead.
+pub const HOME_FRIEND_PICTURE_ABSENT: &str = "image-absent";
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HomeFriendRowDto {
+    /// The saved friend identifier (`StoredFriendRecord::record_id`) this row
+    /// is routed by.
+    pub friend_id: String,
+    /// The friend's own identity id, for the friend page this row opens.
+    pub osl_user_id: String,
+    /// The username saved with this friend.
+    pub username: String,
+    /// Only ever `Some` for a permitted picture.
+    pub picture: Option<String>,
+    pub picture_status: String,
+    /// Shown when no picture is permitted.
+    pub initial: String,
+    pub initial_colour: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HomeFriendsPanelDto {
+    pub rows: Vec<HomeFriendRowDto>,
+    pub friend_count: usize,
+    /// How many of the rows carry a permitted picture.
+    pub picture_count: usize,
+}
+
+fn home_friend_is_shown(record: &crate::friend_request::StoredFriendRecord) -> bool {
+    record.state == crate::friend_request::StoredFriendState::Accepted
+        && record.block_state == crate::friend_request::StoredFriendBlockState::NotBlocked
+}
+
+fn home_friend_initial(username: &str) -> String {
+    username
+        .trim()
+        .chars()
+        .find(|character| !character.is_control() && !character.is_whitespace())
+        .unwrap_or('O')
+        .to_uppercase()
+        .collect()
+}
+
+fn home_friend_initial_colour(record_id: &str, remote_identity_id: &str) -> String {
+    let mut hash = Sha256::new();
+    hash.update(b"OSL-HOME-FRIEND-ROW-INITIAL-v1");
+    for part in [record_id, remote_identity_id] {
+        hash.update((part.len() as u64).to_le_bytes());
+        hash.update(part.as_bytes());
+    }
+    let digest = hash.finalize();
+    let index = usize::from(digest[0]) % HOME_FRIEND_INITIAL_COLOURS.len();
+    HOME_FRIEND_INITIAL_COLOURS[index].to_string()
+}
+
+fn home_friend_row(
+    record: &crate::friend_request::StoredFriendRecord,
+    permitted_ids: &std::collections::HashSet<String>,
+) -> HomeFriendRowDto {
+    // The picture leaves the store only for an accepted friend who is also on
+    // the permitted list. Anything else keeps `picture: None`.
+    let picture =
+        if home_friend_is_shown(record) && permitted_ids.contains(&record.remote_identity_id) {
+            record.picture.clone()
+        } else {
+            None
+        };
+    let picture_status = if picture.is_some() {
+        HOME_FRIEND_PICTURE_PRESENT
+    } else {
+        HOME_FRIEND_PICTURE_ABSENT
+    }
+    .to_string();
+    HomeFriendRowDto {
+        friend_id: record.record_id.clone(),
+        osl_user_id: record.remote_identity_id.clone(),
+        username: record.display_name.trim().to_string(),
+        picture,
+        picture_status,
+        initial: home_friend_initial(&record.display_name),
+        initial_colour: home_friend_initial_colour(&record.record_id, &record.remote_identity_id),
+    }
+}
+
+fn home_friend_permitted_ids(state: &AppState) -> std::collections::HashSet<String> {
+    state
+        .friend_ids
+        .lock()
+        .expect("friend_ids mutex poisoned")
+        .iter()
+        .cloned()
+        .collect()
+}
+
+/// Read the Home "OSL Friends" panel rows straight from saved state.
+pub fn cmd_osl_read_home_friend_rows(state: &AppState) -> Result<HomeFriendsPanelDto, String> {
+    record_activity_on_command_entry();
+    let dir = saved_friend_request_dir()?;
+    let file = load_saved_friend_request_file_with_dir(&dir)?;
+    let permitted_ids = home_friend_permitted_ids(state);
+    let mut rows = file
+        .friends
+        .iter()
+        .filter(|record| home_friend_is_shown(record))
+        .map(|record| home_friend_row(record, &permitted_ids))
+        .collect::<Vec<_>>();
+    rows.sort_by(|left, right| {
+        left.username
+            .cmp(&right.username)
+            .then_with(|| left.friend_id.cmp(&right.friend_id))
+    });
+    let picture_count = rows.iter().filter(|row| row.picture.is_some()).count();
+    Ok(HomeFriendsPanelDto {
+        friend_count: rows.len(),
+        picture_count,
+        rows,
+    })
+}
+
+/// Save (or clear, with `None`) the picture one accepted friend permitted for
+/// their Home row. A person who is not an accepted friend is refused by name;
+/// nothing is written for them.
+pub fn cmd_osl_save_home_friend_picture(
+    state: &AppState,
+    local_identity_id: String,
+    remote_identity_id: String,
+    picture: Option<String>,
+) -> Result<HomeFriendRowDto, String> {
+    record_activity_on_command_entry();
+    let local_identity_id = local_identity_id.trim().to_string();
+    let remote_identity_id = remote_identity_id.trim().to_string();
+    if local_identity_id.is_empty() || remote_identity_id.is_empty() {
+        return Err("OSL: friend picture fields are missing".to_string());
+    }
+    let picture = match picture {
+        Some(picture) => {
+            let picture = picture.trim().to_string();
+            if !picture.starts_with(crate::friend_request::FRIEND_PICTURE_PREFIX)
+                || picture.len() == crate::friend_request::FRIEND_PICTURE_PREFIX.len()
+                || picture.len() > crate::friend_request::MAX_FRIEND_PICTURE_BYTES
+            {
+                return Err("OSL: friend picture is not an inline image".to_string());
+            }
+            Some(picture)
+        }
+        None => None,
+    };
+
+    let dir = saved_friend_request_dir()?;
+    let mut file = load_saved_friend_request_file_with_dir(&dir)?;
+    let record = file
+        .friends
+        .iter_mut()
+        .find(|friend| {
+            friend.local_identity_id == local_identity_id
+                && friend.remote_identity_id == remote_identity_id
+        })
+        .ok_or_else(|| "OSL: friend is unknown".to_string())?;
+    if !home_friend_is_shown(record) {
+        return Err("OSL: friend picture is not permitted".to_string());
+    }
+    record.picture = picture;
+    let row = home_friend_row(record, &home_friend_permitted_ids(state));
+    save_saved_friend_request_file_with_dir(&dir, &file)?;
+    Ok(row)
+}
+
 
 pub fn cmd_osl_accept_saved_friend_request(
     state: &AppState,

@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { isTauriRuntime } from "./preferences";
+import type { HomeFriendRow } from "./osl-friends-panel-routing";
 // Every adapter below still fails closed. The backend's own refusal message is
 // no longer thrown away with the exception: it is recorded, sanitized and
 // unchanged, so a developer can see why a command was refused instead of
@@ -1044,6 +1045,27 @@ export function parseHubPerson(raw: unknown): HubPerson | null {
   const whitelistedScopes = raw.whitelistedScopes.map(parseHubPersonWhitelistScope);
   if (!whitelistedScopes.every((scope): scope is HubPersonWhitelistScope => scope !== null)) return null;
   return { ...raw, whitelistedScopes } as unknown as HubPerson;
+}
+
+export function parseHomeFriendRow(raw: unknown): HomeFriendRow | null {
+  if (!isRecord(raw) || !exact(raw, ["friendId", "oslUserId", "username", "picture", "pictureStatus", "initial", "initialColour"])) return null;
+  if (!safePlaintext(raw.friendId, 180) || !safePlaintext(raw.oslUserId, 180) || !safe(raw.username, 80)) return null;
+  if (!(raw.picture === null || safe(raw.picture, 2_800_000))) return null;
+  if (!["image-present", "image-absent"].includes(String(raw.pictureStatus))) return null;
+  if (!safePlaintext(raw.initial, 8) || !validHexColor(raw.initialColour)) return null;
+  return raw as unknown as HomeFriendRow;
+}
+
+export async function listHomeFriendRows(): Promise<HomeFriendRow[] | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    const raw = await invoke<unknown>("osl_read_home_friend_rows");
+    if (!isRecord(raw) || !Array.isArray(raw.rows) || raw.rows.length > 1_024) return null;
+    const rows = raw.rows.map(parseHomeFriendRow);
+    return checkedBackendResponse("osl_read_home_friend_rows",
+      rows.every((row): row is HomeFriendRow => row !== null) ? rows : null,
+      "a Home friend row did not match the expected shape");
+  } catch (error) { recordBackendFailure("osl_read_home_friend_rows", error); return null; }
 }
 
 export function isNormalizedOslUsername(value: unknown): value is string {

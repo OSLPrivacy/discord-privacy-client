@@ -25,6 +25,13 @@ const FRIEND_REQUEST_STATE_VERSION: u32 = 1;
 const FRIEND_REQUEST_STATE_NAMESPACE: &str = "friend-request-state";
 const FRIEND_REQUEST_STATE_KEY: &str = "main-password-v1";
 const MAX_FRIEND_DISPLAY_NAME_BYTES: usize = 128;
+/// Upper bound on a saved friend picture. The picture is a data URL held in
+/// the encrypted friend file, so it is bounded the same way the display name
+/// is rather than left to whatever a peer sends.
+pub const MAX_FRIEND_PICTURE_BYTES: usize = 256 * 1024;
+/// The only prefix a saved friend picture may carry. Nothing that is not an
+/// inline image is stored, so a row can never be pointed at a remote URL.
+pub const FRIEND_PICTURE_PREFIX: &str = "data:image/";
 
 /// Errors that can reject a friend-request operation.
 ///
@@ -376,6 +383,11 @@ pub struct StoredFriendRecord {
     pub block_state: StoredFriendBlockState,
     #[serde(default)]
     pub choices: BTreeMap<String, String>,
+    /// The picture this friend permitted us to show on their row, as a
+    /// `data:image/...` URL. Absent for every person who is not an accepted
+    /// friend; a row with no picture falls back to a coloured initial.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub picture: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -591,6 +603,14 @@ fn validate_stored_friend_record(friend: &StoredFriendRecord) -> Result<(), Frie
         || display_name.len() > MAX_FRIEND_DISPLAY_NAME_BYTES
     {
         return Err(FriendRequestError::InvalidRequest);
+    }
+    if let Some(picture) = friend.picture.as_deref() {
+        if !picture.starts_with(FRIEND_PICTURE_PREFIX)
+            || picture.len() > MAX_FRIEND_PICTURE_BYTES
+            || picture.len() == FRIEND_PICTURE_PREFIX.len()
+        {
+            return Err(FriendRequestError::InvalidRequest);
+        }
     }
     for (name, choice) in &friend.choices {
         crate::app_preferences::parse_behaviour_choice_name(name)
@@ -815,6 +835,7 @@ mod tests {
             display_name: format!("Friend {label}"),
             block_state: StoredFriendBlockState::NotBlocked,
             choices: BTreeMap::new(),
+            picture: None,
         }
     }
 

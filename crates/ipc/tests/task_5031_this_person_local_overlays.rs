@@ -54,6 +54,7 @@ fn seed_friend_record(dir: &Path, local_id: &str, remote_id: &str, display_name:
         display_name: display_name.to_owned(),
         block_state: StoredFriendBlockState::NotBlocked,
         choices: BTreeMap::new(),
+        picture: None,
     });
     save_friend_request_file_state(dir, &state).expect("seed friend record");
 }

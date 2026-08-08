@@ -38,6 +38,14 @@ import { onboardingSendingMarkup } from "./onboarding-sending";
 import { continuePasswordSetup } from "./password-setup-continue";
 import { renderRecoveryStatesSettings } from "./recovery-states";
 import { continueFromProOnboarding, previousOnboardingRoute } from "./onboarding-sequence";
+import {
+  oslFriendsPanelMarkup,
+  resolveOslFriendsPanelRoute,
+  FRIEND_ROW_ATTRIBUTE as OSL_FRIEND_ROW_ATTRIBUTE,
+  BACK_ATTRIBUTE as OSL_FRIENDS_BACK_ATTRIBUTE,
+  OSL_FRIEND_PAGE_ROUTE,
+  type HomeFriendRow,
+} from "./osl-friends-panel-routing";
 import { componentPickerScreen } from "./component-picker";
 import { componentManagerFromOnboarding } from "./component-manager";
 import { autoScrubConsentPrompt, decideAutoScrubInstall } from "./component-consent";
@@ -144,7 +152,7 @@ import {
 import { checkHubForUpdates, installHubUpdate, openHubReleasesPage, openHubSourceRepository, type UpdateStatus } from "./updates";
 import { createDiscordQaGeometryKeeper } from "./discord-qa-geometry";
 import { browserLogo, serviceLogo, providerLogo } from "./logos";
-import { activateLocalLoopbackContext, activateManualPeerContext, activateNativeManualPeerContext, activateOslChatContext, addOslChatReaction, addOslFriend, addOslFriendByUsername, answerHubChatApprovalSuggestion, burnActiveHubContext, burnHubServiceAccount, captureProtectionEnforced, closeOslChatContext, copyHubFriendInvite, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubRevocationStatus, getHubServiceBurnReadiness, getOslUsernameStatus, isHubPlaintext, isNormalizedOslUsername, listHubIdentities, listHubPeople, listOslChatHistory, loadActiveContextSecurity, loadAppNotifications, loadBuildIntegrityStatus, loadFriendProfile, loadHubRecoveryKitUnsaved, loadInstalledBuildChatWarningStatus, openOslChatText, openPeerProseText, peerIsVerified, prepareLocalProtectedText, prepareOslChatText, preparePeerProseText, recoverHubIdentitySlot, removeOslChatReaction, revokeActiveHubFriendScope, saveActiveContextSecurity, setActiveHubFriendPermission, setActiveHubFriendReach, setHubChatApprovalSuggestionChoice, setHubFriendNickname, setHubRecoveryKitUnsaved, setLocalProtectedSheetOpen, setNativeDiscordProtectedOverlayOpen, setNativeDiscordProtectedOverlayOpenForQa, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, viewHubRecoveryPhrase, type AppNotification, type BuildIntegrityStatus, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type InstalledBuildChatWarning, type LocalPrivacyScanResult, type ManualPeerContext, type PersistedLocalPrivacyScanResult } from "./adapters";
+import { activateLocalLoopbackContext, activateManualPeerContext, activateNativeManualPeerContext, activateOslChatContext, addOslChatReaction, addOslFriend, addOslFriendByUsername, answerHubChatApprovalSuggestion, burnActiveHubContext, burnHubServiceAccount, captureProtectionEnforced, closeOslChatContext, copyHubFriendInvite, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubRevocationStatus, getHubServiceBurnReadiness, getOslUsernameStatus, isHubPlaintext, isNormalizedOslUsername, listHomeFriendRows, listHubIdentities, listHubPeople, listOslChatHistory, loadActiveContextSecurity, loadAppNotifications, loadBuildIntegrityStatus, loadFriendProfile, loadHubRecoveryKitUnsaved, loadInstalledBuildChatWarningStatus, openOslChatText, openPeerProseText, peerIsVerified, prepareLocalProtectedText, prepareOslChatText, preparePeerProseText, recoverHubIdentitySlot, removeOslChatReaction, revokeActiveHubFriendScope, saveActiveContextSecurity, setActiveHubFriendPermission, setActiveHubFriendReach, setHubChatApprovalSuggestionChoice, setHubFriendNickname, setHubRecoveryKitUnsaved, setLocalProtectedSheetOpen, setNativeDiscordProtectedOverlayOpen, setNativeDiscordProtectedOverlayOpenForQa, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, viewHubRecoveryPhrase, type AppNotification, type BuildIntegrityStatus, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type InstalledBuildChatWarning, type LocalPrivacyScanResult, type ManualPeerContext, type PersistedLocalPrivacyScanResult } from "./adapters";
 import { blankLocalProtectedModel, isLocalTtlSeconds, loadOrCreateLocalConversationId, localProtectedSheetMarkup, validLocalChatLabel, type LocalProtectedPane, type LocalProtectedSheetModel } from "./local-protected-sheet";
 import { blankPeerProtectedModel, boundedPeerProtectedDraft, peerProtectedDraftByteFeedback, peerProtectedSheetMarkup, type PeerProtectedPane, type PeerProtectedSheetModel } from "./peer-protected-sheet";
 import { peerIntegrityMarkup } from "./peer-integrity";
@@ -228,8 +236,10 @@ import {
 import type { SecureLocalStore } from "./secure-local-store";
 import { createOslChatSecureLocalStore } from "./osl-chat-secure-store";
 import { NEW_FRIEND_DEFAULT_GROUPS, initialNewFriendDefaults, newFriendDefaultsMarkup, type NewFriendDefaultChoices } from "./new-friend-defaults";
+import { whitelistingClearAll, whitelistingQuery, whitelistingReset, whitelistingScreenMarkup, whitelistingSearchAnswered, whitelistingSearchFailed, whitelistingSelectAll, whitelistingSetSearch, whitelistingToggleConversation, type WhitelistingScreenState } from "./whitelisting-screen";
+import { allowedPlaceSearchIds, searchAllowedPlaces } from "./whitelisting-search";
 
-export type Route = "onboarding" | "home" | "inbox" | "people" | "privacy" | "activity" | "connections" | "service" | "settings" | "mullvad" | "osl-chat" | "osl-mail" | "osl-servers" | "signal-qa";
+export type Route = "onboarding" | "home" | "inbox" | "people" | "privacy" | "activity" | "connections" | "service" | "settings" | "mullvad" | "osl-chat" | "osl-mail" | "osl-servers" | "osl-friend" | "signal-qa";
 
 /**
  * The colour a status chip is allowed to claim, resolved from the word printed
@@ -320,7 +330,7 @@ const NATIVE_DISCORD_COMPOSER_UNREACHABLE_REASONS = ["zorder-band", "keyboard-fo
 type NativeDiscordComposerUnreachableReason = (typeof NATIVE_DISCORD_COMPOSER_UNREACHABLE_REASONS)[number];
 type OnboardingRoute = "pro" | "welcome" | "create" | "import" | "unlock" | "keylost" | "account-recovery" | "recovery" | "mullvad" | "sending" | "defaults" | "tor" | "forward-secrecy" | "cover" | "silent-visible" | "passwords" | "burnpass" | "privacy" | "tutorial" | "detected" | "install" | "apps" | "browser" | "decoy";
 type OnboardingRoute = "pro" | "welcome" | "create" | "import" | "unlock" | "keylost" | "account-recovery" | "recovery" | "mullvad" | "sending" | "defaults" | "tor" | "forward-secrecy" | "cover" | "visibility" | "passwords" | "burnpass" | "privacy" | "tutorial" | "detected" | "install" | "apps" | "browser" | "decoy";
-type SettingsSection = "account" | "apps" | "friends" | "scrub" | "cleanup" | "notifications" | "appearance" | "about";
+type SettingsSection = "account" | "apps" | "friends" | "whitelisting" | "scrub" | "cleanup" | "notifications" | "appearance" | "about";
 type SavedAccountMode = "ask" | "use" | "clean";
 type BurnScope = "chat" | "app" | "account";
 type BurnResult = {
@@ -672,6 +682,8 @@ let newIdentityRecoveryPhrase: string | null = null;
 const recoveryCaptureGate = new RecoveryCaptureGate();
 const RECOVERY_PROTECTION_REFUSAL = "OSL cannot show recovery secrets because Windows capture resistance is not proven for this window";
 let hubPeople: HubPerson[] = [];
+let homeFriendRows: HomeFriendRow[] = [];
+let activeOslFriend: { friendId: string; oslUserId: string; username: string } | null = null;
 let activeOslChatPersonId: string | null = null;
 let activeOslChatContext: ManualPeerContext | null = null;
 let oslChatDraft = "";
@@ -4064,6 +4076,7 @@ function bindPasswordForm(): void {
           void refreshIdentitySlots(true);
           void loadFriendProfile().then((profile) => { friendCode = profile?.friendCode ?? null; friendDisplayId = profile?.oslUserId ?? null; if (route === "home") render(); });
           void listHubPeople().then((people) => { hubPeople = people ?? []; if (route === "home") render(); });
+          void listHomeFriendRows().then((rows) => { homeFriendRows = rows ?? []; if (route === "home") render(); });
         }
         else {
           route = "onboarding";
@@ -4838,6 +4851,12 @@ function homeDestinationContent(): string {
   return `<section class="home-protection-summary" aria-labelledby="route-heading" data-home-destination="protection-status"><h1 id="route-heading" tabindex="-1">Home</h1><div class="setting-line home-overall-state" data-home-protection-state="${deviceProtected ? "protected" : "needs-attention"}"><span><strong>${deviceProtected ? "Protected" : "Needs attention"}</strong><small>${escapeHtml(coreReady ? protection.detail : coreReadinessLabel(core.readiness))}</small></span>${recommendedAction}</div>${attention}<div class="settings-list home-protection-facts" aria-label="Protection status"><div class="setting-line"><span><strong>Connected apps</strong><small>${connectedAppsDetail}</small></span>${statusTag(connectedAppsState.label, connectedAppsState.statusTone === "ok" ? "ok" : "")}</div><div class="setting-line"><span><strong>Trusted people</strong><small>${verifiedFriends.toLocaleString("en-US")} verified${pendingFriendReviews ? `, ${pendingFriendReviews.toLocaleString("en-US")} need review` : ""}</small></span><button class="button compact" data-open-friends type="button">${pendingFriendReviews ? "Review" : "Manage"}</button></div><div class="setting-line"><span><strong>Recent protection</strong><small>${escapeHtml(activityDetail)}</small></span>${activityAction}</div></div></section>`;
 }
 
+function oslFriendPageContent(): string {
+  const friend = activeOslFriend;
+  const row = friend ? homeFriendRows.find((candidate) => candidate.friendId === friend.friendId) ?? null : null;
+  return `<main class="content-viewport osl-friend-page" id="route-heading" tabindex="-1"><header class="osl-friend-page-header"><button class="text-button" type="button" data-route="home">Back</button><h1>${escapeHtml(friend?.username ?? "Friend")}</h1></header>${row ? `<div class="osl-friend-page-summary"><p>OSL ID: ${escapeHtml(row.oslUserId)}</p></div>` : `<div class="empty-state"><strong>This friend could not be found</strong></div>`}</main>`;
+}
+
 function workspaceContent(): string {
   if (route === "mullvad") return `<main class="content-viewport host-viewport native-host-open" id="route-heading" tabindex="-1" aria-label="Your existing Mullvad window is open inside OSL"><span class="sr-only">Mullvad remains a separate foreign application. OSL does not read its account or VPN state.</span></main>`;
   if (route === "inbox") return inboxDestinationContent();
@@ -4848,6 +4867,7 @@ function workspaceContent(): string {
   if (route === "osl-chat") return oslChatContent();
   if (route === "osl-mail") return oslMailContent();
   if (route === "osl-servers") return oslServersContent();
+  if (route === "osl-friend") return oslFriendPageContent();
   if (route === "settings") return settingsContent();
   if (route === "service" && activeService) return serviceContent();
   const launchableHomeApps = homeAppsFromServices(services).filter((app) => app.visibility === "launch");
@@ -4910,7 +4930,7 @@ function workspaceContent(): string {
   const activeIdentity = hubIdentities.find((identity) => identity.active);
   const profileName = activeIdentity?.label?.trim() || "OSL Profile";
   const profileInitial = profileName.slice(0, 1).toLocaleUpperCase();
-  return `<main id="home-navigation" class="content-viewport home-dashboard ${homeEditMode ? "editing" : ""}"><section class="home-primary">${homeDestinationContent()}<section class="home-apps" aria-labelledby="route-heading"><div class="home-app-groups">${oslSection}${socialTiles ? `<section class="home-app-section"><header><h2>Social</h2>${organizeButton("social apps")}</header><div class="app-grid" aria-label="Social apps">${socialTiles}</div></section>` : ""}${emailTiles ? `<section class="home-app-section"><header><h2>Email</h2>${organizeButton("email apps")}</header><div class="app-grid" aria-label="Email apps">${emailTiles}</div></section>` : ""}</div></section></section><button class="home-profile-dock in-dom-tooltip-anchor" data-route="settings" data-profile-settings type="button" aria-label="Open your OSL profile"><span aria-hidden="true">${escapeHtml(profileInitial)}</span><strong>${escapeHtml(profileName)}</strong>${inDomTooltipMarkup(profileName)}</button></main>`;
+  return `<main id="home-navigation" class="content-viewport home-dashboard ${homeEditMode ? "editing" : ""}"><section class="home-primary">${homeDestinationContent()}${oslFriendsPanelMarkup(homeFriendRows)}<section class="home-apps" aria-labelledby="route-heading"><div class="home-app-groups">${oslSection}${socialTiles ? `<section class="home-app-section"><header><h2>Social</h2>${organizeButton("social apps")}</header><div class="app-grid" aria-label="Social apps">${socialTiles}</div></section>` : ""}${emailTiles ? `<section class="home-app-section"><header><h2>Email</h2>${organizeButton("email apps")}</header><div class="app-grid" aria-label="Email apps">${emailTiles}</div></section>` : ""}</div></section></section><button class="home-profile-dock in-dom-tooltip-anchor" data-route="settings" data-profile-settings type="button" aria-label="Open your OSL profile"><span aria-hidden="true">${escapeHtml(profileInitial)}</span><strong>${escapeHtml(profileName)}</strong>${inDomTooltipMarkup(profileName)}</button></main>`;
 }
 
 function parsedEnclaveAudiences(records: unknown[]): EnclaveAudience[] {
@@ -5844,7 +5864,7 @@ function serviceGuideContent(service: LinkedService, step: ServiceGuideStep): st
 }
 
 function settingsContent(): string {
-  const items: Array<[SettingsSection, string]> = [["account", "Account"], ["apps", "Apps"], ["friends", "Friends"], ["scrub", "Scrub"], ["cleanup", "Cleanup"], ["notifications", "Notifications"], ["appearance", "Appearance"], ["about", "About"]];
+  const items: Array<[SettingsSection, string]> = [["account", "Account"], ["apps", "Apps"], ["friends", "Friends"], ["whitelisting", "Whitelisting"], ["scrub", "Scrub"], ["cleanup", "Cleanup"], ["notifications", "Notifications"], ["appearance", "Appearance"], ["about", "About"]];
   // These buttons pick a section WITHIN Settings, so they are not `page`.
   // Settings itself is the page, and the primary sidebar already marks it
   // `aria-current="page"`; marking a section button the same way put two
@@ -5858,6 +5878,7 @@ function settingsSectionContent(): string {
   if (settingsSection === "account") return `${identitySettingsContent()}${settingsDivider()}${passwordSecuritySettingsContent()}${accountAdvancedSettingsContent()}${renderRecoveryStatesSettings()}`;
   if (settingsSection === "apps") return `${serviceAccountsSettingsContent()}${optionalComponentsSettingsContent()}${sendingSettingsContent()}`;
   if (settingsSection === "friends") return newFriendDefaultsMarkup(newFriendDefaultChoices, savedNewFriendDefaults);
+  if (settingsSection === "whitelisting") return whitelistingSettingsContent();
   if (settingsSection === "scrub") return privacySettingsContent();
   if (settingsSection === "cleanup") return massCleanupSettingsContent();
   if (settingsSection === "notifications") return notificationSettingsContent();
@@ -7817,6 +7838,22 @@ function bindWorkspace(): void {
   bindSavedAccountControls();
   document.querySelectorAll<HTMLButtonElement>("[data-osl-chat-open]").forEach((button) => button.addEventListener("click", () => {
     void openOslChat(button.dataset.oslChatOpen ?? "");
+  }));
+  document.querySelectorAll<HTMLButtonElement>(`[${OSL_FRIEND_ROW_ATTRIBUTE}]`).forEach((button) => button.addEventListener("click", () => {
+    const friendId = button.getAttribute(OSL_FRIEND_ROW_ATTRIBUTE) ?? "";
+    const result = resolveOslFriendsPanelRoute({ control: "friend-row", friendId }, homeFriendRows);
+    if (result.route?.name === OSL_FRIEND_PAGE_ROUTE) {
+      activeOslFriend = { friendId: result.route.friendId, oslUserId: result.route.oslUserId, username: result.route.username };
+      route = "osl-friend";
+      render();
+    } else if (result.refusal) {
+      recordBackendFailure("osl_friends_panel_route", new Error(result.refusal));
+    }
+  }));
+  document.querySelectorAll<HTMLButtonElement>(`[${OSL_FRIENDS_BACK_ATTRIBUTE}]`).forEach((button) => button.addEventListener("click", () => {
+    activeOslFriend = null;
+    route = "home";
+    render();
   }));
   document.querySelectorAll<HTMLButtonElement>("[data-osl-chat-settings]").forEach((button) => button.addEventListener("click", () => {
     oslChatSettingsPersonId = button.dataset.oslChatSettings ?? null;
@@ -9867,6 +9904,7 @@ function startReadyWorkspaceLoads(): void {
   void getOslUsernameStatus("osl").catch(() => null);
   void loadFriendProfile().then((profile) => { friendCode = profile?.friendCode ?? null; friendDisplayId = profile?.oslUserId ?? null; if (route === "home") renderWhenIdle(); });
   void listHubPeople().then((people) => { hubPeople = people ?? []; if (route === "home") renderWhenIdle(); });
+  void listHomeFriendRows().then((rows) => { homeFriendRows = rows ?? []; if (route === "home") renderWhenIdle(); });
   if (notificationsEnabled) void setNotificationsEnabled(true).then(async (enabled) => {
     appNotifications = enabled ? mergePersistedOslChatNotifications(await loadAppNotifications()) : null;
     if (route === "home") renderWhenIdle();
@@ -10655,6 +10693,7 @@ type OslHubUiTestStatePatch = {
   services?: LinkedService[];
   servicesChecked?: boolean;
   hubPeople?: Array<Partial<HubPerson> & { personId: string }>;
+  homeFriendRows?: HomeFriendRow[];
   notificationsEnabled?: boolean;
   notificationPreviewContent?: boolean;
   appNotifications?: AppNotification[];
@@ -10772,6 +10811,7 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   services = patch.services ?? [];
   linkedServicesChecked = patch.servicesChecked ?? patch.services !== undefined;
   hubPeople = (patch.hubPeople ?? []).map(testHubPerson);
+  homeFriendRows = patch.homeFriendRows ?? [];
   oslChatDraft = patch.oslChatDraft ?? "";
   hubIdentities = patch.hubIdentities ?? [];
   hubIdentitiesLoad = patch.hubIdentitiesLoad ?? (patch.hubIdentities ? "loaded" : "pending");
@@ -11199,6 +11239,9 @@ export const __oslHubUiTest = {
   renderRouteShell(destination: Route): string {
     route = destination;
     return destination === "onboarding" ? onboardingShellMarkup() : workspaceShellMarkup();
+  },
+  currentRouteForTest(): Route {
+    return route;
   },
   paintOnboardingRouteForTest(destination: OnboardingRoute): void {
     route = "onboarding";

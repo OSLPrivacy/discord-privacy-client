@@ -56,6 +56,7 @@ fn friend_record() -> StoredFriendRecord {
         display_name: "Pine 0226".to_string(),
         block_state: StoredFriendBlockState::NotBlocked,
         choices: Default::default(),
+        picture: None,
     }
 }
 

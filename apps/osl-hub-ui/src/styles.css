@@ -5231,6 +5231,8 @@ code {
 .osl-chat-friend-open:disabled { cursor: default; opacity: .58; }
 .osl-chat-avatar { width: 38px; height: 38px; border: 1px solid color-mix(in srgb, var(--brand) 35%, var(--line)); display: grid; place-items: center; background: color-mix(in srgb, var(--brand) 8%, var(--panel)); color: var(--brand); font-size: 11px; font-weight: 700; letter-spacing: .03em; }
 .osl-chat-avatar.is-thread { width: 36px; height: 36px; }
+.friend-picture { width: 38px; height: 38px; border: 1px solid color-mix(in srgb, var(--brand) 35%, var(--line)); border-radius: var(--radius); display: block; object-fit: cover; }
+.friend-picture-fallback { width: 38px; height: 38px; border: 1px solid color-mix(in srgb, var(--brand) 35%, var(--line)); border-radius: var(--radius); display: grid; place-items: center; color: white; font-size: 14px; font-weight: 700; letter-spacing: .05em; }
 .osl-chat-friend-copy,
 .osl-chat-friend-copy strong,
 .osl-chat-friend-preview { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -7733,3 +7735,40 @@ code {
   color: var(--text-muted);
   cursor: not-allowed;
 }
+
+/* TASK 0832 - Home "OSL Friends" panel: usernames, permitted pictures or
+   coloured initials, and the page link each row opens. */
+.osl-friends-panel { margin-top: 24px; }
+.osl-friends-panel h2 { margin: 0 0 12px; font-size: 20px; }
+.osl-friend-row { margin-bottom: 8px; }
+.osl-friend-open {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  max-width: 320px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  font-size: 14px;
+}
+.osl-friend-picture,
+.osl-friend-initial {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  object-fit: cover;
+}
+.osl-friend-initial {
+  display: grid;
+  place-items: center;
+  color: #fff;
+  font-weight: 700;
+  font-size: 13px;
+}
+.osl-friend-name { font-weight: 600; }
