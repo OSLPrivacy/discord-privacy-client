@@ -152,6 +152,10 @@ pub mod pro_context_cover;
 // Pure decision boundary: no store handle, no tauri, so it stays ungated and
 // is checkable without the desktop build.
 pub mod pro_marked_deletion;
+// TASK 1451: records the per-message outcome of an accepted deletion (1449).
+// Also a pure decision boundary: given attempt results, it never opens a
+// locator or a store handle itself.
+pub mod pro_marked_deletion_outcomes;
 pub mod proprietary_module_boundary;
 pub mod proprietary_module_lifecycle;
 pub mod scrub_erasure;
