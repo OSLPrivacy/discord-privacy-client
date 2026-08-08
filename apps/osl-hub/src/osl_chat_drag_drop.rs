@@ -15,6 +15,10 @@ use serde::Serialize;
 pub const OSL_CHAT_DROP_FOLDER_REFUSAL: &str =
     "The dropped OSL Chat attachment is a folder, and folders are not allowed";
 
+/// A single outbound OSL Chat message may carry at most this many files.
+/// Keep this at the tray boundary so every intake route shares the rule.
+pub const MAX_OSL_CHAT_TRAY_FILES: usize = 16;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OslChatTrayAttachment {
@@ -59,15 +63,65 @@ impl OslChatAttachmentTray {
         I: IntoIterator<Item = P>,
         P: AsRef<Path>,
     {
-        let mut accepted = Vec::new();
-        for path in dropped_files {
+        self.accept_files(
+            dropped_files,
+            "Drop at least one file into the OSL Chats attachment tray",
+        )
+    }
+
+    /// Add files returned by the trusted file picker.
+    pub fn accept_picked_files<I, P>(
+        &mut self,
+        picked_files: I,
+    ) -> Result<OslChatDropIntakeReceipt, String>
+    where
+        I: IntoIterator<Item = P>,
+        P: AsRef<Path>,
+    {
+        self.accept_files(
+            picked_files,
+            "Choose at least one file for the OSL Chats attachment tray",
+        )
+    }
+
+    /// Add the file staged from a clipboard image. Clipboard images become a
+    /// local temporary file before this boundary; they must not bypass its
+    /// per-message count check.
+    pub fn accept_clipboard_image_file(
+        &mut self,
+        clipboard_image_file: impl AsRef<Path>,
+    ) -> Result<OslChatDropIntakeReceipt, String> {
+        self.accept_files(
+            [clipboard_image_file],
+            "Paste an image into the OSL Chats attachment tray",
+        )
+    }
+
+    fn accept_files<I, P>(
+        &mut self,
+        files: I,
+        empty_message: &str,
+    ) -> Result<OslChatDropIntakeReceipt, String>
+    where
+        I: IntoIterator<Item = P>,
+        P: AsRef<Path>,
+    {
+        let files = files.into_iter().collect::<Vec<_>>();
+        if files.is_empty() {
+            return Err(empty_message.to_owned());
+        }
+        let requested_count = files.len();
+        let resulting_count = self.attachments.len().saturating_add(requested_count);
+        if resulting_count > MAX_OSL_CHAT_TRAY_FILES {
+            return Err(tray_file_limit_rejection());
+        }
+
+        let mut accepted = Vec::with_capacity(requested_count);
+        for path in files {
             accepted.push(tray_attachment(
                 self.attachments.len() + accepted.len(),
                 path.as_ref(),
             )?);
-        }
-        if accepted.is_empty() {
-            return Err("Drop at least one file into the OSL Chats attachment tray".to_owned());
         }
 
         let accepted_filenames = accepted
@@ -88,6 +142,10 @@ impl OslChatAttachmentTray {
             accepted_fingerprints,
         })
     }
+}
+
+fn tray_file_limit_rejection() -> String {
+    format!("An OSL Chat attachment tray can contain at most {MAX_OSL_CHAT_TRAY_FILES} files")
 }
 
 fn tray_attachment(index: usize, path: &Path) -> Result<OslChatTrayAttachment, String> {
@@ -163,7 +221,7 @@ pub fn tray_fingerprint(original_filename: &str, path: &Path) -> Result<String, 
 
 #[cfg(test)]
 mod tests {
-    use super::OslChatAttachmentTray;
+    use super::{OslChatAttachmentTray, MAX_OSL_CHAT_TRAY_FILES};
 
     #[test]
     fn task_1335_drop_adds_two_files_and_creates_zero_messages() {
@@ -187,5 +245,55 @@ mod tests {
         assert_eq!(receipt.tray_file_count, 2);
         assert_eq!(tray.messages_created(), 0);
         assert_eq!(receipt.messages_created, 0);
+    }
+
+    #[test]
+    fn task_0618_picker_drop_and_clipboard_refuse_the_same_seventeenth_file() {
+        const REQUIRED_LIMIT: usize = 16;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let paths = (1..=REQUIRED_LIMIT + 1)
+            .map(|number| {
+                let path = temp.path().join(format!("task-0618-{number}.png"));
+                std::fs::write(&path, b"fixture").expect("write fixture");
+                path
+            })
+            .collect::<Vec<_>>();
+
+        let mut picker_tray = OslChatAttachmentTray::default();
+        let mut drop_tray = OslChatAttachmentTray::default();
+        let mut clipboard_tray = OslChatAttachmentTray::default();
+        for path in paths.iter().take(REQUIRED_LIMIT) {
+            picker_tray
+                .accept_picked_files([path.as_path()])
+                .expect("picker accepts the first sixteen files");
+            drop_tray
+                .accept_dropped_files([path.as_path()])
+                .expect("drop accepts the first sixteen files");
+            clipboard_tray
+                .accept_clipboard_image_file(path)
+                .expect("clipboard accepts the first sixteen files");
+        }
+
+        let picker_error = picker_tray
+            .accept_picked_files([paths[REQUIRED_LIMIT].as_path()])
+            .expect_err("picker must refuse the seventeenth file");
+        let drop_error = drop_tray
+            .accept_dropped_files([paths[REQUIRED_LIMIT].as_path()])
+            .expect_err("drop must refuse the seventeenth file");
+        let clipboard_error = clipboard_tray
+            .accept_clipboard_image_file(&paths[REQUIRED_LIMIT])
+            .expect_err("clipboard must refuse the seventeenth file");
+        let expected = "An OSL Chat attachment tray can contain at most 16 files";
+
+        println!(
+            "TASK0618 picker_adds=16 drop_adds=16 clipboard_image_adds=16 picker_add17={picker_error:?} drop_add17={drop_error:?} clipboard_add17={clipboard_error:?}"
+        );
+        assert_eq!(MAX_OSL_CHAT_TRAY_FILES, REQUIRED_LIMIT);
+        assert_eq!(picker_error, expected);
+        assert_eq!(drop_error, expected);
+        assert_eq!(clipboard_error, expected);
+        assert_eq!(picker_tray.attachments().len(), REQUIRED_LIMIT);
+        assert_eq!(drop_tray.attachments().len(), REQUIRED_LIMIT);
+        assert_eq!(clipboard_tray.attachments().len(), REQUIRED_LIMIT);
     }
 }
