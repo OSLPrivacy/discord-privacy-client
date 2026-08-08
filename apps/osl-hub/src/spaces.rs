@@ -540,6 +540,25 @@ impl CustomRoleStore {
         self.document.roles.get(id)
     }
 
+    /// Roles a member may choose for themselves.  Ordering is the owner's
+    /// saved order, with the role id as a deterministic tie-breaker.
+    pub fn self_assignable_roles(&self) -> Vec<CustomRoleRecord> {
+        let mut roles: Vec<_> = self
+            .document
+            .roles
+            .values()
+            .filter(|role| role.properties.self_assignable)
+            .cloned()
+            .collect();
+        roles.sort_by(|left, right| {
+            left.properties
+                .order
+                .cmp(&right.properties.order)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        roles
+    }
+
     pub fn add_template(
         &mut self,
         name: impl Into<String>,
@@ -567,6 +586,42 @@ impl CustomRoleStore {
             .entry(member_id.into())
             .or_default()
             .insert(role_id.to_owned())
+    }
+
+    /// Immediately take a role from the member-facing picker.  This boundary
+    /// deliberately refuses every non-self-assignable role, including roles
+    /// that an owner can otherwise grant.
+    pub fn take_self_assignable_role(&mut self, member_id: impl Into<String>, role_id: &str) -> bool {
+        if !self
+            .document
+            .roles
+            .get(role_id)
+            .is_some_and(|role| role.properties.self_assignable)
+        {
+            return false;
+        }
+        self.document
+            .member_roles
+            .entry(member_id.into())
+            .or_default()
+            .insert(role_id.to_owned())
+    }
+
+    /// Immediately drop a role from the member-facing picker.  A member may
+    /// only drop a role that remains eligible for the picker.
+    pub fn drop_self_assignable_role(&mut self, member_id: &str, role_id: &str) -> bool {
+        if !self
+            .document
+            .roles
+            .get(role_id)
+            .is_some_and(|role| role.properties.self_assignable)
+        {
+            return false;
+        }
+        self.document
+            .member_roles
+            .get_mut(member_id)
+            .is_some_and(|roles| roles.remove(role_id))
     }
 
     pub fn role_ids_for_member(&self, member_id: &str) -> Vec<String> {
