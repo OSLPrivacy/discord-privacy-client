@@ -13,6 +13,7 @@ use crate::models::{
     DemoConnectionState, EmailProvider, LinkedAccountDemo, LinkedServiceDemo, ServiceCategory,
     ServiceKind, ServiceLaunchState,
 };
+use crate::shared_conversation_scroll::{SharedConversationScrollablePlace, SharedPlaceMessage};
 
 const REGISTRY_VERSION: u8 = 3;
 const MAX_REGISTRY_BYTES: u64 = 64 * 1024;
@@ -297,6 +298,138 @@ impl InstagramBrowserMachine {
     ) -> Self {
         self.messages = messages.into_iter().collect();
         self
+    }
+
+    /// Create a bounded, one-screen-at-a-time reader for one direct message.
+    ///
+    /// Browser rows are sorted into their provider timestamp order before the
+    /// first screen is exposed.  The returned place deliberately owns only
+    /// read-only copies of those rows, so scrolling never changes the browser
+    /// fixture or a signed-in browser surface.
+    pub fn direct_message_page_place(
+        &self,
+        place_id: &str,
+        page_size: usize,
+    ) -> Result<InstagramDirectMessagePagePlace, String> {
+        validate_conversation_message_place_id(place_id)?;
+        if page_size == 0 {
+            return Err("Instagram message page size must be at least one".to_owned());
+        }
+        let place = self
+            .places
+            .iter()
+            .find(|place| place.place_id == place_id)
+            .ok_or_else(|| "Instagram direct message place not found".to_owned())?;
+        if place.kind != InstagramBrowserPlaceKind::DirectMessage {
+            return Err("Instagram place is not a direct message".to_owned());
+        }
+
+        let mut messages = self
+            .messages
+            .iter()
+            .filter(|message| message.place_id == place_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        for message in &messages {
+            validate_instagram_browser_message(message)?;
+        }
+        messages.sort_by(|left, right| {
+            left.time
+                .cmp(&right.time)
+                .then_with(|| left.message_id.cmp(&right.message_id))
+        });
+
+        Ok(InstagramDirectMessagePagePlace {
+            place: place.clone(),
+            messages,
+            current_page: 0,
+            page_size,
+            one_screen_scrolls: 0,
+            stop_when_reading_page: None,
+            stop_request_callback: None,
+        })
+    }
+}
+
+/// A read-only Instagram direct-message viewport for the shared paged reader.
+pub struct InstagramDirectMessagePagePlace {
+    place: InstagramBrowserPlace,
+    messages: Vec<InstagramBrowserMessage>,
+    current_page: usize,
+    page_size: usize,
+    one_screen_scrolls: usize,
+    stop_when_reading_page: Option<usize>,
+    stop_request_callback: Option<Box<dyn Fn() -> Result<(), String>>>,
+}
+
+impl std::fmt::Debug for InstagramDirectMessagePagePlace {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InstagramDirectMessagePagePlace")
+            .field("place", &self.place)
+            .field("message_count", &self.messages.len())
+            .field("current_page", &self.current_page)
+            .field("page_size", &self.page_size)
+            .field("one_screen_scrolls", &self.one_screen_scrolls)
+            .field("stop_when_reading_page", &self.stop_when_reading_page)
+            .finish()
+    }
+}
+
+impl InstagramDirectMessagePagePlace {
+    pub fn place(&self) -> &InstagramBrowserPlace {
+        &self.place
+    }
+
+    pub fn message_count(&self) -> usize {
+        self.messages.len()
+    }
+
+    pub fn current_page_number(&self) -> usize {
+        self.current_page.saturating_add(1)
+    }
+
+    pub fn one_screen_scroll_count(&self) -> usize {
+        self.one_screen_scrolls
+    }
+
+    /// Arrange for a stop request while a specified visible page is read.
+    /// The caller's gate observes that request after the page is fully read,
+    /// preventing a half-page result or a scroll into the following page.
+    pub fn request_stop_when_reading_page(
+        &mut self,
+        page_number: usize,
+        callback: impl Fn() -> Result<(), String> + 'static,
+    ) {
+        self.stop_when_reading_page = Some(page_number);
+        self.stop_request_callback = Some(Box::new(callback));
+    }
+}
+
+impl SharedConversationScrollablePlace for InstagramDirectMessagePagePlace {
+    fn read_current_screen(&self) -> Result<Vec<SharedPlaceMessage>, String> {
+        if self.stop_when_reading_page == Some(self.current_page_number()) {
+            if let Some(callback) = &self.stop_request_callback {
+                callback()?;
+            }
+        }
+        let start = self.current_page.saturating_mul(self.page_size);
+        let end = start
+            .saturating_add(self.page_size)
+            .min(self.messages.len());
+        Ok(self.messages[start..end]
+            .iter()
+            .map(|message| SharedPlaceMessage::new(&message.message_id, &message.text))
+            .collect())
+    }
+
+    fn scroll_one_screen(&mut self) -> Result<bool, String> {
+        let next_start = (self.current_page + 1).saturating_mul(self.page_size);
+        if next_start >= self.messages.len() {
+            return Ok(false);
+        }
+        self.current_page += 1;
+        self.one_screen_scrolls += 1;
+        Ok(true)
     }
 }
 
