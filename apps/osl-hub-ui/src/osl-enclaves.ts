@@ -1,5 +1,6 @@
 import { oslEnclaveStateMarkup, type OslEnclaveState } from "./osl-enclaves-view";
 import { oslEnclavesFiveRegionSurface } from "./osl-enclaves-surface";
+import { serverMemberPermissionsMarkup } from "./server-channel-sidebar";
 
 /**
  * The Enclaves surface is intentionally independent of the application shell.
@@ -21,5 +22,9 @@ export interface OslEnclavesSurfaceModel {
  * About subpage rather than being the whole screen.
  */
 export function oslEnclavesSurfaceMarkup({ state = {}, statusTag, roleEditorMarkup = "" }: OslEnclavesSurfaceModel): string {
-  return oslEnclavesFiveRegionSurface({ stateNotices: oslEnclaveStateMarkup(state), statusTag, roleEditorMarkup });
+  return oslEnclavesFiveRegionSurface({
+    stateNotices: oslEnclaveStateMarkup(state),
+    statusTag,
+    roleEditorMarkup: `${serverMemberPermissionsMarkup()}${roleEditorMarkup}`,
+  });
 }

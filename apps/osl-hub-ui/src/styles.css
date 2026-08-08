@@ -10601,7 +10601,7 @@ code {
 
 .osl-chat-page-header > :last-child { justify-self: end; }
 
-.server-channel-sidebar { display: grid; grid-template-columns: 56px minmax(0, 1fr); min-height: 236px; margin: 20px 0; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--panel); }
+.server-channel-sidebar { display: grid; grid-template-columns: 56px minmax(0, 1fr) minmax(220px, .8fr); min-height: 236px; margin: 20px 0; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--panel); }
 .server-list { padding: 10px 8px; background: var(--panel-2); border-right: 1px solid var(--line); }
 .server-list ul, .channel-list { margin: 0; padding: 0; list-style: none; }
 .server-list li + li { margin-top: 9px; }
@@ -10612,6 +10612,22 @@ code {
 .channel-list { display: grid; gap: 3px; }
 .enclave-channel-button { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 8px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font: inherit; text-align: left; cursor: pointer; }
 .enclave-channel-button:hover, .enclave-channel-button:focus-visible { background: var(--panel-2); color: var(--text); outline: none; }
+.enclave-channel-button.is-selected { background: var(--brand-wash); color: var(--text); font-weight: 650; }
+.enclave-member-panel { min-width: 0; padding: 15px 14px; border-left: 1px solid var(--line); background: var(--bg); }
+.enclave-member-panel header { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+.enclave-member-panel h2, .enclave-member-panel p { margin: 0; }
+.enclave-member-panel h2 { font-size: 14px; }
+.enclave-member-panel header p { margin-top: 3px; color: var(--muted); font-size: 12px; }
+.enclave-member-list { display: grid; gap: 7px; margin: 0; padding: 0; list-style: none; }
+.enclave-member-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; }
+.enclave-member-row strong, .enclave-member-row small { display: block; }
+.enclave-member-row small, .enclave-member-actions { color: var(--muted); font-size: 12px; }
+.enclave-member-actions { margin: 4px 0 0; }
+.enclave-member-actions span { color: var(--text); font-weight: 600; }
+.enclave-invite-button, .enclave-member-control { border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--text); font: inherit; cursor: pointer; }
+.enclave-invite-button { padding: 5px 8px; }
+.enclave-member-control { flex: 0 0 auto; padding: 4px 6px; font-size: 12px; }
+.enclave-invite-button:hover, .enclave-member-control:hover { border-color: var(--brand); background: var(--brand-wash); }
 .osl-chat-approval { min-height: 48px; padding: 8px 12px; border: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 
 
@@ -10911,9 +10927,17 @@ code {
 .osl-chat-view-once:has(input:focus-visible),
 .osl-chat-send:focus-visible { outline: 2px solid var(--brand); outline-offset: -2px; }
 
-
-
-
+@media (max-width: 760px) {
+  .osl-chat-page { padding: 8px; }
+  .server-channel-sidebar { grid-template-columns: 56px minmax(0, 1fr); }
+  .enclave-member-panel { grid-column: 1 / -1; border-top: 1px solid var(--line); border-left: 0; }
+  .osl-chats-view { grid-template-columns: 1fr; grid-template-rows: auto minmax(320px, 1fr); }
+  .osl-chat-friends { max-height: 176px; border-right: 0; border-bottom: 1px solid var(--line); }
+  .osl-chat-friends > header { min-height: 44px; padding: 0 12px; }
+  .osl-chat-message-list { padding: 16px 12px; }
+  .osl-chat-message { width: min(88%, 660px); }
+  .osl-chat-composer { padding: 8px; }
+}
 
 /* The decision above is about corners, and these elements have none: they are
    discs, not rounded rectangles. Written flat, `*` won on `!important` at equal
