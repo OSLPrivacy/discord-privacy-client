@@ -20,6 +20,7 @@
 
 pub mod bigram;
 mod image_hidden;
+pub mod layer_controls;
 pub mod line_shape;
 pub mod misspell;
 mod mode0;
@@ -32,6 +33,10 @@ pub use image_hidden::{
     decode_png_hidden_pointer, decode_png_hidden_pointer_bytes, encode_png_hidden_pointer_bytes,
     encode_png_hidden_pointer_copy, ImageHiddenPointer, IMAGE_HIDDEN_CHECK_MARK_BYTES,
     IMAGE_HIDDEN_POINTER_BYTES,
+};
+pub use layer_controls::{
+    decode_layered_cover, encode_layered_cover, CoverLayerSettings, LayerControlError,
+    LayerStrength, LayeredCoverInput,
 };
 pub use line_shape::{
     encode_mode1_shaped, encode_token_shaped, rendered_rows, rows_for_hard_lines, shape_cover,
