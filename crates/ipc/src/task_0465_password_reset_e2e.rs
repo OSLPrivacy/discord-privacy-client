@@ -131,12 +131,28 @@ fn task0465_password_reset_end_to_end_preserves_identity() {
         .expect("TASK0465 direct reset command installs new password");
 
     set_file_storage_key(None);
-    let old_error = cmd_osl_verify_main_password(fixture.old_password)
-        .expect_err("TASK0465 old password must fail after reset");
+    let old_result = cmd_osl_verify_main_password(fixture.old_password);
     set_file_storage_key(None);
-    cmd_osl_verify_main_password(fixture.new_password)
-        .expect("TASK0465 new password must succeed after reset");
-    let new_password_installed_key = get_file_storage_key().is_some();
+    let new_result = cmd_osl_verify_main_password(fixture.new_password);
+    let new_password_installed_key = new_result.is_ok() && get_file_storage_key().is_some();
+
+    let old_password_result = if old_result.is_ok() {
+        "unlocked"
+    } else {
+        "failed"
+    };
+    let new_password_result = if new_result.is_ok() {
+        "unlocked"
+    } else {
+        "failed"
+    };
+    println!(
+        "TASK0465_PASSWORD_RESULTS old_password={old_password_result} new_password={new_password_result}"
+    );
+
+    let old_error =
+        old_result.expect_err("TASK0465 old password must fail after reset; both passwords unlock");
+    new_result.expect("TASK0465 new password must succeed after reset");
 
     let fingerprint_after = {
         let guard = state.identity.lock().expect("TASK0465 identity lock");
