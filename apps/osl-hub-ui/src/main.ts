@@ -221,6 +221,7 @@ import { burnFeatureClaimsMarkup } from "./feature-claims";
 import { burnRevocationReceipt, type BurnRevocationReceipt } from "./burn-revocation-receipt";
 import { senderReceiptStatus } from "./receipt-status";
 import { attachmentProgressMarkup, parseAttachmentProgressEvent, type AttachmentProgressEvent } from "./attachment-progress";
+import { attachmentPickerLimitMarkup } from "./attachment-picker-limit";
 import { destructStatusMarkup, type ServerDestructStatus } from "./destruct-status";
 import { offlineCapabilityStatus, type OfflineUnavailableCapability, type OslConnectionState } from "./offline-capability-status";
 import type { NativeDiscordOverlayOpenedBatch } from "./overlay-state";
@@ -2148,7 +2149,7 @@ function chooseAppsOnboardingContent(): string {
     ? `<div class="onboarding-app-grid onboarding-app-choices" role="group" aria-label="${label}">${items.map((app) => {
       const available = app.launchState === "available";
       const selected = available && selectedOnboardingApps.has(app.id);
-      const action = available ? `data-onboarding-app-choice="${app.id}" aria-pressed="${selected}"` : `disabled aria-disabled="true"`;
+      const action = available ? `data-onboarding-app-choice="${app.id}" aria-pressed="${selected}"` : `data-onboarding-app-not-built="${app.id}"`;
       return `<button type="button" class="onboarding-app ${selected ? "selected" : ""} ${available ? "" : "unavailable"}" ${action}><span class="app-logo-plate">${homeAppLogo(app)}</span><span><strong>${escapeHtml(app.displayName)}</strong>${available ? "" : "<small>Coming soon</small>"}</span></button>`;
     }).join("")}</div>`
     : `<p class="saved-account-truth">None</p>`;
@@ -3369,6 +3370,11 @@ function bindOnboarding(): void {
     localStorage.setItem(selectedOnboardingAppsStorageKey, JSON.stringify([...selectedOnboardingApps]));
     onboardingConnectAppId = null;
     render();
+  }));
+  document.querySelectorAll<HTMLButtonElement>("[data-onboarding-app-not-built]").forEach((button) => button.addEventListener("click", () => {
+    const appId = button.dataset.onboardingAppNotBuilt as HomeAppId;
+    const app = homeAppsFromServices(services).find((a) => a.id === appId);
+    if (app) showToast(`${app.displayName} isn't built yet`);
   }));
   document.querySelector<HTMLButtonElement>("#continue-app-choice")?.addEventListener("click", async () => {
     // D-190: `ensureNativeCatalogForAppChoice` sets `nativeCatalogRefusal` on every
@@ -5220,7 +5226,6 @@ export function activityPrimaryAction(): void {
 }
 
 function oslChatContent(): string {
-  const pro = licenseState.access === "pro" || licenseState.access === "offlineGrace";
   const friends = hubPeople.map((person) => {
     const messages = oslChatMessages.get(person.personId) ?? [];
     const last = messages.at(-1);
@@ -5240,8 +5245,8 @@ function oslChatContent(): string {
     : "";
   const settingsPerson = oslChatSettingsPersonId ? hubPeople.find((person) => person.personId === oslChatSettingsPersonId) ?? null : null;
   const settings = settingsPerson ? oslChatFriendSettingsMarkup(settingsPerson) : "";
-  const attachments = activeOslChatContext?.scopeApproved && pro
-    ? `<section class="osl-chat-attachments" aria-label="Encrypted attachments"><header><strong>Attachments</strong><button class="button compact" id="osl-chat-attach" type="button" ${oslChatBusy ? "disabled" : ""}>Choose file</button></header>${attachmentProgressMarkupForActiveChat()}${oslChatAttachments.length ? oslChatAttachments.map((item) => `<button class="setting-line" data-osl-chat-attachment="${escapeHtml(item.attachmentId)}" type="button" ${oslChatBusy ? "disabled" : ""}><span><strong>${escapeHtml(item.originalFilename)}</strong><small>${item.viewOnce ? "View once · " : ""}${item.plaintextSize.toLocaleString("en-US")} bytes</small></span>${statusTag("Open")}</button>`).join("") : `<p>No pending attachments.</p>`}<small>Images open in OSL's capture-resistant viewer. Other supported files open temporarily in their Windows viewer, which may allow capture.</small></section>`
+  const attachments = activeOslChatContext?.scopeApproved
+    ? `<section class="osl-chat-attachments" aria-label="Encrypted attachments"><header><strong>Attachments</strong><button class="button compact" id="osl-chat-attach" type="button" ${oslChatBusy ? "disabled" : ""}>Choose file</button></header>${attachmentPickerLimitMarkup(licenseState.access)}${attachmentProgressMarkupForActiveChat()}${oslChatAttachments.length ? oslChatAttachments.map((item) => `<button class="setting-line" data-osl-chat-attachment="${escapeHtml(item.attachmentId)}" type="button" ${oslChatBusy ? "disabled" : ""}><span><strong>${escapeHtml(item.originalFilename)}</strong><small>${item.viewOnce ? "View once · " : ""}${item.plaintextSize.toLocaleString("en-US")} bytes</small></span>${statusTag("Open")}</button>`).join("") : `<p>No pending attachments.</p>`}<small>Images open in OSL's capture-resistant viewer. Other supported files open temporarily in their Windows viewer, which may allow capture.</small></section>`
     : "";
   const receipt = activeOslChatPersonId
     ? oslChatSenderReceiptMarkup(oslChatMessages.get(activeOslChatPersonId) ?? [])

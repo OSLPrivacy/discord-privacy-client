@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { isTauriRuntime } from "./preferences";
 
-export type ServiceId = "discord" | "telegram" | "email" | "signal" | "whatsapp";
+export type ServiceId = "discord" | "telegram" | "email" | "signal" | "whatsapp" | "x" | "instagram" | "messenger";
 export type ConnectionState = "demoLinked" | "notLinked";
 export type EmailProvider = "gmail" | "outlook" | "proton" | "tuta" | "yahoo" | "aol" | "gmx" | "maildotcom" | "icloud";
 export type ServiceCategory = "consumer" | "enterprise";
@@ -414,8 +414,11 @@ const homeAppDefinitions: readonly HomeAppDefinition[] = [
   // not just the native-account setup branch. Keep the specs visible for
   // roadmap signaling, but only Discord can present as a working integration.
   homeApp("telegram", "Telegram", "telegram", null, "launch", "comingSoon"),
+  homeApp("instagram", "Instagram", "instagram", null, "launch", "comingSoon"),
   homeApp("signal", "Signal", "signal", null, "launch", "comingSoon"),
   homeApp("whatsapp", "WhatsApp", "whatsapp", null, "launch", "comingSoon"),
+  homeApp("x", "X", "x", null, "launch", "comingSoon"),
+  homeApp("messenger", "Messenger", "messenger", null, "launch", "comingSoon"),
   homeApp("gmail", "Gmail", "email", "gmail", "launch", "comingSoon"),
   homeApp("outlook", "Outlook", "email", "outlook", "launch", "comingSoon"),
   homeApp("proton", "Proton Mail", "email", "proton", "launch", "comingSoon"),
