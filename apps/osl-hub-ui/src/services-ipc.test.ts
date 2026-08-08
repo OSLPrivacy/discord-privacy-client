@@ -52,7 +52,7 @@ import {
 
 const discordApp: HomeAppCatalogEntry = {
   id: "discord", displayName: "Discord", serviceId: "discord", provider: null,
-  visibility: "launch", section: "social", launchState: "available", unavailableReason: null, linked: false,
+  visibility: "launch", section: "social", launchState: "available", unavailableReason: null, generatedLabel: "Ready", linked: false,
   accountCount: 0, setupEligible: true,
 };
 
@@ -91,7 +91,7 @@ describe("embedded service IPC", () => {
   it("resumes one exact configured profile and never accepts a path-like id", async () => {
     const services = [{
       id: "discord", displayName: "Discord", sidebarGlyph: "DC", sidebarOrder: 1,
-      category: "consumer", launchState: "available", supportsNativePreview: true,
+      category: "consumer", launchState: "available", generatedLabel: "Ready", supportsNativePreview: true,
       supportsProtectedPreview: false,
       accounts: [{ id: "acct-a", label: "A", displayHandle: "Sign in", state: "notLinked", provider: null }],
     }] as LinkedService[];
@@ -104,7 +104,7 @@ describe("embedded service IPC", () => {
   it("opens the exact locally selected profile when more than one exists", async () => {
     const services = [{
       id: "discord", displayName: "Discord", sidebarGlyph: "DC", sidebarOrder: 1,
-      category: "consumer", launchState: "available", supportsNativePreview: true,
+      category: "consumer", launchState: "available", generatedLabel: "Ready", supportsNativePreview: true,
       supportsProtectedPreview: false,
       accounts: [
         { id: "acct-a", label: "Personal", displayHandle: "Sign in", state: "notLinked", provider: null },

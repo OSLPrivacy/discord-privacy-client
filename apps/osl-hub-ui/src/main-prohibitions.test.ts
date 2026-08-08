@@ -22,6 +22,7 @@ function linkedServiceFixture(): unknown[] {
     sidebarOrder,
     category: "consumer",
     launchState: "available",
+    generatedLabel: id === "email" ? "Opens the app" : id === "signal" || id === "whatsapp" ? "Reading only" : "Ready",
     supportsNativePreview: true,
     supportsProtectedPreview: true,
     accounts: [],

@@ -729,6 +729,9 @@ pub struct LinkedServiceDemo {
     pub sidebar_order: u8,
     pub category: ServiceCategory,
     pub launch_state: ServiceLaunchState,
+    /// Present-tense Home caption generated from this service's capability
+    /// facts. The renderer must not infer a roadmap promise from launch state.
+    pub generated_label: String,
     pub supports_native_preview: bool,
     pub supports_protected_preview: bool,
     pub accounts: Vec<LinkedAccountDemo>,

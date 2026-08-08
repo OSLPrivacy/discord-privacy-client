@@ -1430,23 +1430,29 @@ fn account_dto(account: &AccountRecord) -> LinkedAccountDemo {
 fn service_registry(accounts: &[AccountRecord], owner_osl_user_id: &str) -> Vec<LinkedServiceDemo> {
     service_descriptors()
         .into_iter()
-        .map(|descriptor| LinkedServiceDemo {
-            id: descriptor.id,
-            display_name: descriptor.display_name.to_string(),
-            sidebar_glyph: descriptor.sidebar_glyph.to_string(),
-            sidebar_order: descriptor.sidebar_order,
-            category: descriptor.category,
-            launch_state: descriptor.launch_state,
-            supports_native_preview: descriptor.launch_state == ServiceLaunchState::Available,
-            supports_protected_preview: descriptor.launch_state == ServiceLaunchState::Available,
-            accounts: accounts
-                .iter()
-                .filter(|account| {
-                    account.service_id == descriptor.id
-                        && account.owner_osl_user_id.as_deref() == Some(owner_osl_user_id)
-                })
-                .map(account_dto)
-                .collect(),
+        .map(|descriptor| {
+            let capability_facts = service_capability_facts_for_kind(descriptor.id)
+                .expect("every linked-service descriptor has capability facts");
+            LinkedServiceDemo {
+                id: descriptor.id,
+                display_name: descriptor.display_name.to_string(),
+                sidebar_glyph: descriptor.sidebar_glyph.to_string(),
+                sidebar_order: descriptor.sidebar_order,
+                category: descriptor.category,
+                launch_state: descriptor.launch_state,
+                generated_label: generated_tile_label(capability_facts).to_owned(),
+                supports_native_preview: descriptor.launch_state == ServiceLaunchState::Available,
+                supports_protected_preview: descriptor.launch_state
+                    == ServiceLaunchState::Available,
+                accounts: accounts
+                    .iter()
+                    .filter(|account| {
+                        account.service_id == descriptor.id
+                            && account.owner_osl_user_id.as_deref() == Some(owner_osl_user_id)
+                    })
+                    .map(account_dto)
+                    .collect(),
+            }
         })
         .collect()
 }

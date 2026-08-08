@@ -75,6 +75,7 @@ import {
   loadDetectedBrowserFootprint,
   loadDefaultBrowserCompanionStatus,
   homeAppsFromServices,
+  generatedCapabilityLabel,
   hostBrowserCompanion,
   hostNativeAppWindow,
   hostMullvadWindow,
@@ -5204,12 +5205,12 @@ function workspaceContent(): string {
     ? launchableHomeApps.filter((app) => app.launchState === "available" && rememberedHomeApps.has(app.id))
     : launchableHomeApps.filter((app) => app.launchState === "available");
   const homeApps = [...selectedHomeApps, ...roadmapHomeApps.filter((app) => !selectedHomeApps.some((selected) => selected.id === app.id))];
-  const modules = [
-    { id: "osl-chats", name: "OSL Chats", available: true },
-    { id: "osl-mail", name: "OSL Mail", available: false },
-    { id: "osl-notes", name: "OSL Notes", available: false },
-    { id: "scrub", name: "Scrub", available: true },
-  ] as const;
+  const modules = ([
+    { id: "osl-chats", name: "OSL Chats", available: true, capabilityFacts: { placing: true, reading: true, opening: true, realTwoPersonProtectedMessaging: true } },
+    { id: "osl-mail", name: "OSL Mail", available: false, capabilityFacts: { placing: false, reading: false, opening: false, realTwoPersonProtectedMessaging: false } },
+    { id: "osl-notes", name: "OSL Notes", available: false, capabilityFacts: { placing: false, reading: false, opening: false, realTwoPersonProtectedMessaging: false } },
+    { id: "scrub", name: "Scrub", available: true, capabilityFacts: { placing: false, reading: false, opening: true, realTwoPersonProtectedMessaging: false } },
+  ] as const).map((module) => ({ ...module, generatedLabel: generatedCapabilityLabel(module.capabilityFacts) }));
   const byId = new Map(homeApps.map((app) => [app.id, app]));
   const moduleById = new Map(modules.map((module) => [module.id, module]));
   const defaultIds = [...homeApps.map((app) => app.id), ...modules.map((module) => module.id)];
@@ -5224,13 +5225,9 @@ function workspaceContent(): string {
     if (hidden && !homeEditMode) return "";
     const controls = homeEditMode ? `<span class="tile-edit-controls"><button class="tile-remove" type="button" data-tile-toggle="${escapeHtml(id)}" aria-label="${hidden ? "Show" : "Remove"} ${escapeHtml(id)}">${hidden ? "+" : "−"}</button><span class="tile-keyboard-controls"><button type="button" data-tile-move="${escapeHtml(id)}:-1" ${index === 0 ? "disabled" : ""} aria-label="Move before">←</button><button type="button" data-tile-move="${escapeHtml(id)}:1" ${index === orderedIds.length - 1 ? "disabled" : ""} aria-label="Move after">→</button></span></span>` : "";
     const module = moduleById.get(id as typeof modules[number]["id"]);
-    if (module) {
-      const moduleState = module.available ? "Ready" : "Unavailable";
-      return `<article class="app-tile home-module ${module.available ? "" : "module-unavailable"} ${hidden ? "tile-hidden" : ""}" data-tile-id="${module.id}" draggable="${homeEditMode}" data-module-kind="${module.id}"><button class="in-dom-tooltip-anchor" type="button" data-home-module="${module.id}" ${module.available ? "" : "disabled"} aria-label="${escapeHtml(`${module.name}, ${moduleState}`)}"><span class="app-logo-plate osl-module-logo" aria-hidden="true">${homeModuleIcon(module.id)}</span><span class="app-tile-copy"><strong>${module.name}</strong><small>${moduleState}</small></span>${inDomTooltipMarkup(`${module.name} · ${moduleState}`)}</button>${controls}</article>`;
-    }
+    if (module) return `<article class="app-tile home-module ${module.available ? "" : "module-unavailable"} ${hidden ? "tile-hidden" : ""}" data-tile-id="${module.id}" draggable="${homeEditMode}" data-module-kind="${module.id}"><button class="in-dom-tooltip-anchor" type="button" data-home-module="${module.id}" ${module.available ? "" : "disabled"} aria-label="${escapeHtml(`${module.name}, ${module.generatedLabel}`)}"><span class="app-logo-plate osl-module-logo" aria-hidden="true">${homeModuleIcon(module.id)}</span><span class="app-tile-copy"><strong>${module.name}</strong><small data-generated-capability-label>${module.generatedLabel}</small></span>${inDomTooltipMarkup(`${module.name} · ${module.generatedLabel}`)}</button>${controls}</article>`;
     const app = byId.get(id as HomeAppId);
     if (!app) return "";
-    const state = app.linked ? "OSL profile ready" : app.launchState === "available" ? "Set up" : "Unavailable";
     const pending = appLaunchPendingId === app.id;
     const available = app.launchState === "available";
     const disabled = !available || Boolean(appLaunchPendingId);
@@ -5244,7 +5241,8 @@ function workspaceContent(): string {
     const caption = nativeAppTileLabel(claim?.supportStatus ?? null);
     const unavailableReason = app.unavailableReason ?? claim?.claimNote ?? "This service is unavailable.";
     const unavailableTitle = available ? "" : ` title="${escapeHtml(unavailableReason)}"`;
-    return `<article class="app-tile ${available ? "" : "app-unavailable"} ${hidden ? "tile-hidden" : ""} ${pending ? "pending" : ""}" data-tile-id="${app.id}" draggable="${homeEditMode}" data-service-kind="${app.serviceId ?? "none"}" data-launch-state="${app.launchState}" data-claim-status="${claim ? claim.supportStatus : "unavailable"}" aria-disabled="${available ? "false" : "true"}"><button id="home-app-${app.id}" type="button" ${available ? `data-home-app="${app.id}"` : ""} aria-label="${escapeHtml(`${app.displayName}, ${pending ? "Opening" : state}`)}"${unavailableTitle} ${disabled ? "disabled" : ""}><span class="app-logo-plate">${homeAppLogo(app)}</span><span class="app-tile-copy"><strong>${escapeHtml(app.displayName)}</strong>${pending ? "<small>Opening…</small>" : available ? "" : `<small>${escapeHtml(caption)}</small>`}</span></button>${controls}</article>`;
+    const shownLabel = claim ? caption : app.generatedLabel;
+    return `<article class="app-tile ${available ? "" : "app-unavailable"} ${hidden ? "tile-hidden" : ""} ${pending ? "pending" : ""}" data-tile-id="${app.id}" draggable="${homeEditMode}" data-service-kind="${app.serviceId ?? "none"}" data-launch-state="${app.launchState}" data-generated-capability="${escapeHtml(app.generatedLabel)}" data-claim-status="${claim ? claim.supportStatus : "unavailable"}" aria-disabled="${available ? "false" : "true"}"><button id="home-app-${app.id}" type="button" ${available ? `data-home-app="${app.id}"` : ""} aria-label="${escapeHtml(`${app.displayName}, ${pending ? "Opening" : shownLabel}`)}"${unavailableTitle} ${disabled ? "disabled" : ""}><span class="app-logo-plate">${homeAppLogo(app)}</span><span class="app-tile-copy"><strong>${escapeHtml(app.displayName)}</strong><small data-generated-capability-label>${escapeHtml(pending ? "Opening" : shownLabel)}</small></span></button>${controls}</article>`;
   };
   const socialIds = new Set(homeApps.filter((app) => app.provider === null).map((app) => app.id));
   const emailIds = new Set(homeApps.filter((app) => app.provider !== null).map((app) => app.id));
@@ -12157,6 +12155,7 @@ export const __oslHubUiTest = {
           sidebarOrder: 0,
           category: "consumer",
           launchState: "available",
+          generatedLabel: "Not started",
           supportsNativePreview: true,
           supportsProtectedPreview: true,
           accounts: [],
