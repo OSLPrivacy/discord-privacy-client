@@ -324,6 +324,7 @@ pub mod scrub_index;
 pub mod scrub_receipt;
 #[cfg(feature = "core")]
 pub mod security;
+pub mod setting_groups;
 #[cfg(feature = "core")]
 pub mod security_credentials;
 pub mod sensitive_warning;

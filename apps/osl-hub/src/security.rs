@@ -1605,7 +1605,6 @@ pub fn list_look_choices(_security: &HubSecurityState) -> Result<Vec<LookChoiceR
         .collect())
 }
 
->>>>>>> 019c47cdb (TASK 0796 reset every safe setting)
 pub fn list_group_member_permissions(
     _security: &HubSecurityState,
 ) -> Result<Vec<GroupMemberPermissionRecord>, String> {
