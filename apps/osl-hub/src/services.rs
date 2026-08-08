@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::account_identity_authority::AccountServiceIdentityAuthority;
 use crate::core_bridge::HubCoreState;
+use crate::messenger_place_reader::{MessengerBrowserConversation, MessengerPlaceKind};
 use crate::models::{
     DemoConnectionState, EmailProvider, LinkedAccountDemo, LinkedServiceDemo, ServiceCategory,
     ServiceKind, ServiceLaunchState,
@@ -97,10 +98,10 @@ impl ConversationPlaceKind {
         match self {
             Self::DirectMessage => "direct_message",
             Self::Group => "group",
-            Self::GroupChat => "group_chat",
+      Self::GroupChat => "group_chat",
             Self::NoteToSelf => "note_to_self",
-            Self::Community => "community",
-            Self::BroadcastList => "broadcast_list",
+      Self::Community => "community",
+      Self::BroadcastList => "broadcast_list",
             Self::Channel => "channel",
             Self::Thread => "thread",
             Self::PublicPost => "public_post",
@@ -158,17 +159,20 @@ impl ConversationPlaceCandidate {
         }
     }
 
-    pub fn group_chat(id: impl Into<String>, label: impl Into<String>) -> Self {
+  pub fn group_chat(id: impl Into<String>, label: impl Into<String>) -> Self {
         Self {
             place_id: id.into(),
             label: label.into(),
             place_kind: ConversationPlaceKind::GroupChat,
             server: None,
             channel: None,
-        }
-    }
+      }
+  }
 
-    pub fn community(id: impl Into<String>, label: impl Into<String>) -> Self {
+  /// Messenger communities are a first-class conversation surface, not a
+    /// channel with an invented server parent.  Keeping the kind distinct
+  /// lets the scrub picker faithfully tell users what the browser showed.
+  pub fn community(id: impl Into<String>, label: impl Into<String>) -> Self {
         Self {
             place_id: id.into(),
             label: label.into(),
@@ -178,7 +182,7 @@ impl ConversationPlaceCandidate {
         }
     }
 
-    pub fn broadcast_list(id: impl Into<String>, label: impl Into<String>) -> Self {
+  pub fn broadcast_list(id: impl Into<String>, label: impl Into<String>) -> Self {
         Self {
             place_id: id.into(),
             label: label.into(),
@@ -205,10 +209,10 @@ impl ConversationPlaceCandidate {
             place_kind: ConversationPlaceKind::Comment,
             server: None,
             channel: None,
-        }
-    }
+      }
+  }
 
-    pub fn channel(
+  pub fn channel(
         id: impl Into<String>,
         label: impl Into<String>,
         server: ConversationPlaceParent,
@@ -1739,7 +1743,34 @@ pub fn read_instagram_shared_messages(
             .cmp(&right.time)
             .then_with(|| left.message_id.cmp(&right.message_id))
     });
-    Ok(messages)
+  Ok(messages)
+}
+
+/// Fill the shared conversation reader with the reviewed rows observed on a
+/// Messenger browser surface.  The acknowledgement gate stays in
+/// [`read_shared_conversation_places`], so an unticked Messenger account
+/// returns no places before its browser observations are disclosed.
+pub fn read_messenger_conversation_places(
+    owner_osl_user_id: &str,
+    account_id: &str,
+    browser_rows: impl IntoIterator<Item = MessengerBrowserConversation>,
+) -> Result<Vec<SharedConversationPlace>, String> {
+    read_shared_conversation_places(
+        owner_osl_user_id,
+        "messenger",
+        account_id,
+        browser_rows.into_iter().map(|row| match row.kind {
+            MessengerPlaceKind::DirectChat => {
+                ConversationPlaceCandidate::direct_message(row.conversation_id, row.label)
+            }
+            MessengerPlaceKind::GroupChat => {
+                ConversationPlaceCandidate::group(row.conversation_id, row.label)
+            }
+            MessengerPlaceKind::Community => {
+                ConversationPlaceCandidate::community(row.conversation_id, row.label)
+            }
+        }),
+  )
 }
 
 pub fn read_shared_mailbox_folders(
@@ -2035,15 +2066,15 @@ fn validate_conversation_place(place: &ConversationPlaceCandidate) -> Result<(),
     match place.place_kind {
         ConversationPlaceKind::DirectMessage
         | ConversationPlaceKind::Group
-        | ConversationPlaceKind::GroupChat
+      | ConversationPlaceKind::GroupChat
         | ConversationPlaceKind::NoteToSelf
         | ConversationPlaceKind::Community
         | ConversationPlaceKind::BroadcastList
         | ConversationPlaceKind::PublicPost
         | ConversationPlaceKind::Comment => Ok(()),
         // A server parent is present for Discord-like channels, but Telegram
-        // broadcast channels are first-class places without that hierarchy.
-        ConversationPlaceKind::Channel => Ok(()),
+      // broadcast channels are first-class places without that hierarchy.
+      ConversationPlaceKind::Channel => Ok(()),
         ConversationPlaceKind::Thread => {
             if place.channel.is_some() {
                 Ok(())

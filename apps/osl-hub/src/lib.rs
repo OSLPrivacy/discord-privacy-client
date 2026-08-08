@@ -176,6 +176,10 @@ pub mod messenger_whitelist_kinds;
 /// It is gated before it consumes any browser rows.
 pub mod whatsapp_message_deleter;
 pub mod whatsapp_message_reader;
+/// Messenger's browser-observation adapter for the shared scrub-place reader.
+/// It remains independent of the browser driver so a caller can pass only the
+/// reviewed conversation rows it already observed.
+pub mod messenger_place_reader;
 pub mod model_pack_install;
 pub mod models;
 pub mod mullvad_window_host;
