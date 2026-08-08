@@ -141,6 +141,8 @@ pub mod landing_oracle;
 /// `desktop`: the reveal rule is what decides whether the app is visible at all,
 /// so it is testable in every build that can compile this crate.
 pub mod main_window_reveal;
+#[cfg(feature = "core")]
+pub mod look_window;
 #[cfg(not(task3982_focused))]
 pub mod messenger_whitelist_kinds;
 pub mod model_pack_install;

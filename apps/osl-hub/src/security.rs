@@ -296,6 +296,13 @@ pub struct OneUseInviteLink {
     pub consumed_at: Option<i64>,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LookChoiceRecord {
+    pub name: String,
+    pub value: String,
+}
+
 /// The minimum friend state needed to create a manual peer-messaging lease.
 /// Key material stays in the original core; callers receive only stable local
 /// and public identity identifiers.
@@ -702,6 +709,9 @@ struct SecurityPreferences {
     /// there is deliberately no OSL-name field to infer or later bind.
     #[serde(default)]
     one_use_invite_links: BTreeMap<String, OneUseInviteLink>,
+    /// Device-local visual choices. Unknown names are refused before mutation.
+    #[serde(default)]
+    look_choices: BTreeMap<String, String>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -1650,6 +1660,42 @@ pub fn list_allowed_place_records(
     let prefs =
         load_encrypted_json::<SecurityPreferences>(&config_dir()?.join(SECURITY_PREFS_FILE))?;
     Ok(prefs.allowed_places.values().cloned().collect())
+}
+
+pub fn set_look_choice(
+    security: &HubSecurityState,
+    name: String,
+    value: String,
+) -> Result<LookChoiceRecord, String> {
+    require_unlocked()?;
+    validate_look_choice_name(&name)?;
+    validate_look_choice_value(&value)?;
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL look choice state is unavailable".to_owned())?;
+    let path = config_dir()?.join(SECURITY_PREFS_FILE);
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
+    prefs.version = 2;
+    prefs.look_choices.insert(name.clone(), value.clone());
+    write_encrypted_json(&path, &prefs)?;
+    Ok(LookChoiceRecord { name, value })
+}
+
+pub fn look_choice_value(
+    _security: &HubSecurityState,
+    name: String,
+) -> Result<Option<String>, String> {
+    require_unlocked()?;
+    validate_look_choice_name(&name)?;
+    let prefs = load_security_preferences()?;
+    Ok(prefs.look_choices.get(&name).cloned())
+}
+
+pub fn list_look_choices(_security: &HubSecurityState) -> Result<Vec<LookChoiceRecord>, String> {
+    require_unlocked()?;
+    let prefs = load_security_preferences()?;
+    Ok(look_choice_records(&prefs))
 }
 
 pub fn compare_allowed_place_direction_state(
@@ -4630,6 +4676,17 @@ fn one_use_invite_link_records(prefs: &SecurityPreferences) -> Vec<OneUseInviteL
     prefs.one_use_invite_links.values().cloned().collect()
 }
 
+fn look_choice_records(prefs: &SecurityPreferences) -> Vec<LookChoiceRecord> {
+    prefs
+        .look_choices
+        .iter()
+        .map(|(name, value)| LookChoiceRecord {
+            name: name.clone(),
+            value: value.clone(),
+        })
+        .collect()
+}
+
 fn validate_allowed_place_record(record: &AllowedPlaceRecord) -> Result<(), String> {
     validate_allowed_place_id(&record.app, "OSL allowed-place app is invalid")?;
     validate_allowed_place_id(&record.account, "OSL allowed-place account is invalid")?;
@@ -4664,6 +4721,26 @@ fn validate_allowed_place_id(value: &str, message: &str) -> Result<(), String> {
         || value.chars().any(char::is_whitespace)
     {
         return Err(message.to_owned());
+    }
+    Ok(())
+}
+
+fn validate_look_choice_name(value: &str) -> Result<(), String> {
+    if !matches!(
+        value,
+        "theme" | "named-look" | "accent" | "corners" | "glow" | "text" | "spacing" | "see-through"
+    ) {
+        return Err("OSL look choice name is invalid".to_owned());
+    }
+    Ok(())
+}
+
+fn validate_look_choice_value(value: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > 128
+        || value.chars().any(|character| character.is_control())
+    {
+        return Err("OSL look choice value is invalid".to_owned());
     }
     Ok(())
 }
@@ -6089,6 +6166,50 @@ mod tests {
         assert_eq!(compare_json["firstToSecondAllowed"], true);
         assert_eq!(compare_json["secondToFirstAllowed"], true);
         assert_eq!(remove_json, true);
+    }
+
+    #[test]
+    fn task_0770_each_extreme_saved_look_matches_its_computed_window_style() {
+        let _harness = FileBackedSecurityHarness::new("look-window-0770");
+        let security = HubSecurityState::default();
+        let saved = [
+            ("theme", "theme-0770-absolute-midnight"),
+            ("named-look", "named-look-0770-maximum-contrast"),
+            ("accent", "accent-0770-neon-cyan"),
+            ("corners", "corners-0770-fully-square"),
+            ("glow", "glow-0770-maximum"),
+            ("text", "text-0770-largest"),
+            ("spacing", "spacing-0770-widest"),
+            ("see-through", "see-through-0770-on"),
+        ];
+
+        for (name, value) in saved {
+            set_look_choice(&security, name.to_owned(), value.to_owned()).unwrap();
+        }
+
+        let mut window = crate::look_window::LinuxTestWindow::default();
+        let changed = crate::look_window::apply_saved_look_choices(&security, &mut window).unwrap();
+        assert_eq!(changed, 8);
+        assert_eq!(window.computed_style_values.len(), 8);
+
+        for ((name, property), (_, saved_value)) in crate::look_window::LOOK_STYLE_BINDINGS.iter().zip(saved) {
+            let computed_value = window.computed_style_values.get(*property).unwrap();
+            println!("TASK0770 saved.{name}={saved_value} computed.{property}={computed_value}");
+            assert_eq!(computed_value, saved_value, "saved {name} must directly set {property}");
+        }
+        crate::look_window::saved_values_match_computed(&saved, &window.computed_style_values)
+            .expect("all eight saved values must match their computed window styles");
+
+        let mut throwaway_saved = saved;
+        throwaway_saved[0].1 = "theme-0770-throwaway-mismatch";
+        let mutation_refusal = crate::look_window::saved_values_match_computed(
+            &throwaway_saved,
+            &window.computed_style_values,
+        )
+        .unwrap_err();
+        println!("TASK0770 throwaway_saved_value_mutation_refused={mutation_refusal}");
+        assert!(mutation_refusal.contains("theme-0770-throwaway-mismatch"));
+        println!("TASK0770 matching_saved_and_computed_values={changed}");
     }
 
     fn fresh_test_dir(label: &str) -> std::path::PathBuf {
