@@ -2424,6 +2424,10 @@ function persistCombinedHomeChoices(): void {
     if (!available.has(appId)) selectedOnboardingApps.delete(appId);
   }
   localStorage.setItem(selectedOnboardingAppsStorageKey, JSON.stringify([...selectedOnboardingApps]));
+  // Setup ends on this path. Keep the app route, detected accounts, and their
+  // opening choices in the same durable checkpoint rather than depending on
+  // an earlier control click having happened to write each one.
+  persistSavedAccountPreferences();
 }
 
 function selectedNativeApps(): NativeApp[] {
@@ -13150,6 +13154,12 @@ export const __oslHubUiTest = {
     route = "onboarding";
     onboardingRoute = "detected";
     return detectedAppsContent();
+  },
+  finishSetupChoicesForTest(): void {
+    persistCombinedHomeChoices();
+  },
+  savedAccountModeForTest(): SavedAccountMode {
+    return savedAccountMode;
   },
   setDeleteChoicesForTest(choices: DeleteChoices | null): void {
     deleteChoices = choices;
