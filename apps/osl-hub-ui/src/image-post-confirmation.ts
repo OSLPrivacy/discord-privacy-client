@@ -122,3 +122,52 @@ export function passingQualityImagePostFixture(): ImagePostFixture {
     qualityPassed: true,
   };
 }
+
+/** Prepared-copy gate used by the provider-facing asynchronous post path. */
+export interface PreparedImageCopy {
+  readonly imageCopyId: string;
+}
+
+export type ImageQualityCheckResult =
+  | { readonly passed: true }
+  | { readonly passed: false; readonly reason: string };
+
+export interface ImagePostConfirmationFixture {
+  readonly originalImageId: string;
+  readonly preparedCopy: PreparedImageCopy;
+  readonly quality: ImageQualityCheckResult;
+  readonly confirmed: boolean;
+}
+
+export const IMAGE_POST_AWAITING_CONFIRMATION_REASON = "OSL_IMAGE_POST_AWAITING_CONFIRMATION";
+
+/**
+ * Mirrors the backend ordering: quality must pass before an explicit operator
+ * confirmation can select the prepared copy. The private original is never
+ * returned from this gate.
+ */
+export function imagePostConfirmationState(
+  fixture: ImagePostConfirmationFixture,
+):
+  | { readonly disabled: true; readonly reason: string }
+  | { readonly disabled: false; readonly selectedCopyId: string } {
+  if (!fixture.quality.passed) {
+    return { disabled: true, reason: fixture.quality.reason };
+  }
+  if (!fixture.confirmed) {
+    return { disabled: true, reason: IMAGE_POST_AWAITING_CONFIRMATION_REASON };
+  }
+  return { disabled: false, selectedCopyId: fixture.preparedCopy.imageCopyId };
+}
+
+/** Send only the prepared copy after the provider-facing gate enables it. */
+export async function confirmAndSendPreparedImageCopy<T>(
+  fixture: ImagePostConfirmationFixture,
+  send: (imageCopyId: string) => Promise<T>,
+): Promise<T> {
+  const state = imagePostConfirmationState(fixture);
+  if (state.disabled) {
+    throw new Error(`OSL image post refused: ${state.reason}`);
+  }
+  return send(state.selectedCopyId);
+}
