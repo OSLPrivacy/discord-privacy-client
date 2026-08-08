@@ -571,6 +571,58 @@ describe("D80 unlock screen renders one credential input", () => {
     expect(snapshot.onboardingRoute).toBe("welcome");
   }, 15_000);
 
+  it("TASK0337 records exact burn and refuses a near-match without changing the disposable account", async () => {
+    const savedAccountKey = "osl-saved-native-apps-v1";
+    const savedBurnPassword = "burn-0337-password";
+    const nearMatch = "burn-0337-passw0rd";
+    const harness = buildUnlockHarness();
+    harness.storage.set(savedAccountKey, JSON.stringify(["disposable-0337"]));
+    const { __oslHubUiTest } = await loadUi(harness);
+    __oslHubUiTest.reset({
+      route: "onboarding",
+      onboardingRoute: "unlock",
+      onboardingComplete: true,
+      coreReady: false,
+      bootstrapStatus: "passwordRequired",
+    });
+    __oslHubUiTest.bindUnlockForm();
+
+    let burnRequests = 0;
+    let burnConfirmationOpen = false;
+    mocks.invoke.mockImplementation(async (command: string, args?: unknown) => {
+      if (command !== "unlock_hub_password_gate") throw new Error(`unexpected TASK0337 command: ${command}`);
+      const password = (args as { password: string }).password;
+      if (password === savedBurnPassword) {
+        burnRequests += 1;
+        const result = gateResult("burned", { burn: verifiedBurnReport }) as { burn: unknown };
+        burnConfirmationOpen = result.burn !== null;
+        return result;
+      }
+      return gateResult("wrong", { attemptsUsed: 1 });
+    });
+
+    harness.password.value = nearMatch;
+    harness.submitButton.disabled = false;
+    await harness.submit();
+    const afterNearMatch = __oslHubUiTest.snapshot();
+    const accountsAfterNearMatch = JSON.parse(harness.storage.get(savedAccountKey) ?? "[]").length;
+    expect(afterNearMatch).toMatchObject({ route: "onboarding", onboardingRoute: "unlock" });
+    expect(harness.error.textContent).toBe("Password not recognized.");
+    expect(accountsAfterNearMatch).toBe(1);
+    expect(burnRequests).toBe(0);
+    expect(burnConfirmationOpen).toBe(false);
+    console.log(`TASK0337_NEAR_MATCH password=${nearMatch} refused=true disposable_accounts=${accountsAfterNearMatch} burn_requests=${burnRequests} page=${afterNearMatch.onboardingRoute}`);
+
+    harness.password.value = savedBurnPassword;
+    harness.submitButton.disabled = false;
+    await harness.submit();
+    const afterExact = __oslHubUiTest.snapshot();
+    expect(burnRequests).toBe(1);
+    expect(burnConfirmationOpen).toBe(true);
+    expect(afterExact).toMatchObject({ route: "onboarding", onboardingRoute: "welcome" });
+    console.log(`TASK0337_BURN password=${savedBurnPassword} burn_requests=${burnRequests} burn_confirmation=opened cleanup_landing=${afterExact.onboardingRoute}`);
+  }, 30_000);
+
   it("still fires the duress path, and the stealth path, from the same one input", async () => {
     for (const [outcome, expectedRoute] of [["duress", "welcome"], ["decoy", "decoy"]] as const) {
       const harness = buildUnlockHarness();

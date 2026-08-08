@@ -27,6 +27,7 @@ import {
 import { isTauriRuntime, loadOnboardingPreferences, saveOnboardingPreferences } from "./preferences";
 import { chooseForwardSecrecyMode, initialForwardSecrecyOnboardingState, onboardingForwardSecrecyMarkup, type ForwardSecrecyOnboardingState } from "./onboarding-forward-secrecy";
 import { onboardingPasswordRoleContent as passwordRoleContent } from "./password-roles";
+import { backOnboardingPasswordRole, canSetOnboardingPasswordRole, continueOnboardingPasswordRole, skipOnboardingPasswordRole, togglePasswordVisibility, type OnboardingPasswordRoleValues } from "./onboarding-password-role";
 import { chooseTorRoute, initialTorOnboardingState, onboardingTorMarkup, type TorOnboardingState } from "./onboarding-tor";
 import { chooseCoverInsertion, initialCoverInsertionChoice, onboardingCoverMarkup, type CoverInsertionChoice } from "./onboarding-cover";
 import { continueButton } from "./onboarding-controls";
@@ -3248,7 +3249,12 @@ function bindOnboarding(): void {
       render();
       return;
     }
-    onboardingRoute = previousSetupRoute(onboardingRoute);
+    const previous = onboardingRoute === "passwords"
+      ? backOnboardingPasswordRole("stealth").route
+      : onboardingRoute === "burnpass"
+        ? backOnboardingPasswordRole("burn").route
+        : previousSetupRoute(onboardingRoute);
+    onboardingRoute = previous as OnboardingRoute;
     render();
     if (onboardingRoute === "browser") void refreshBrowserImportReadiness();
     if (onboardingRoute === "mullvad") void refreshMullvadSetup();
@@ -3352,11 +3358,12 @@ function bindOnboarding(): void {
     if (onboardingRoute === "mullvad") void refreshMullvadSetup();
   }));
   document.querySelectorAll<HTMLButtonElement>("button[data-skip-onboarding-password-role]").forEach((button) => button.addEventListener("click", () => {
+    const role = onboardingRoute === "passwords" ? "stealth" : "burn";
+    const outcome = skipOnboardingPasswordRole(role);
     const next = button.dataset.skipOnboardingPasswordRole as OnboardingRoute;
+    if (outcome.route !== next) return;
     onboardingRoute = next;
     render();
-    if (next === "browser") void refreshBrowserImportReadiness();
-    if (next === "mullvad") void refreshMullvadSetup();
   }));
   document.querySelector("#continue-onboarding-privacy")?.addEventListener("click", () => { onboardingRoute = "defaults"; render(); });
   document.querySelector<HTMLInputElement>("#window-capture-enabled")?.addEventListener("change", async (event) => {
@@ -3457,35 +3464,49 @@ function bindOnboardingPasswordRole(): void {
   const current = form.elements.namedItem("current") as HTMLInputElement;
   const alternate = form.elements.namedItem("alternate") as HTMLInputElement;
   const confirm = form.elements.namedItem("confirm") as HTMLInputElement;
+  const burnConfirmation = form.elements.namedItem("burnConfirmation") as HTMLInputElement | null;
   // The submit sits in the step's shared action row outside the form card and
   // is bound to it by the form-owner attribute, so it is not in the form's own
   // subtree.
   const submit = document.querySelector<HTMLButtonElement>("[data-onboarding-role-submit]")
     ?? form.querySelector<HTMLButtonElement>('button[type="submit"]');
   const error = form.querySelector<HTMLElement>("[data-onboarding-role-error]");
+  const values = (): OnboardingPasswordRoleValues => ({
+    current: current.value,
+    alternate: alternate.value,
+    confirm: confirm.value,
+    burnConfirmation: burnConfirmation?.value ?? "",
+  });
   const validate = (): void => {
     if (!submit || !error) return;
-    submit.disabled = !isValidMainPassword(current.value) || !isValidNewMainPassword(alternate.value) || alternate.value !== confirm.value || alternate.value === current.value;
+    submit.disabled = !canSetOnboardingPasswordRole(role, values());
     error.textContent = "";
   };
   current.addEventListener("input", validate);
   alternate.addEventListener("input", validate);
   confirm.addEventListener("input", validate);
+  burnConfirmation?.addEventListener("input", validate);
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    if (!submit || submit.disabled || !error) return;
+    if (!submit || !error) return;
+    const submitted = values();
+    if (!canSetOnboardingPasswordRole(role, submitted)) {
+      validate();
+      return;
+    }
     submit.disabled = true;
-    const currentSecret = current.value;
-    const alternateSecret = alternate.value;
     current.value = "";
     alternate.value = "";
     confirm.value = "";
+    if (burnConfirmation) burnConfirmation.value = "";
     try {
-      passwordRoleStatus = await setHubAlternatePassword(role, currentSecret, alternateSecret);
-      onboardingRoute = form.dataset.onboardingPasswordNext as OnboardingRoute;
+      const outcome = await continueOnboardingPasswordRole(role, submitted, setHubAlternatePassword);
+      if (!outcome.accepted || !outcome.status) return;
+      passwordRoleStatus = outcome.status;
+      const next = form.dataset.onboardingPasswordNext as OnboardingRoute;
+      if (outcome.route !== next) return;
+      onboardingRoute = next;
       render();
-      if (onboardingRoute === "browser") void refreshBrowserImportReadiness();
-      if (onboardingRoute === "mullvad") void refreshMullvadSetup();
     } catch (failure) {
       error.textContent = localActionError(failure, "Password was not changed");
       submit.disabled = false;
@@ -3498,11 +3519,11 @@ function bindPasswordVisibility(): void {
   document.querySelectorAll<HTMLButtonElement>("[data-password-toggle]").forEach((button) => button.addEventListener("click", () => {
     const input = document.getElementById(button.dataset.passwordToggle ?? "");
     if (!(input instanceof HTMLInputElement) || (input.type !== "password" && input.type !== "text")) return;
-    const show = input.type === "password";
-    input.type = show ? "text" : "password";
-    button.innerHTML = passwordEyeIcon(show);
-    button.setAttribute("aria-label", `${show ? "Hide" : "Show"} password`);
-    button.setAttribute("aria-pressed", String(show));
+    const next = togglePasswordVisibility(input.type);
+    input.type = next.type;
+    button.innerHTML = passwordEyeIcon(next.visible);
+    button.setAttribute("aria-label", next.label);
+    button.setAttribute("aria-pressed", String(next.visible));
   }));
 }
 
