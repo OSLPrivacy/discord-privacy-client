@@ -145,18 +145,59 @@ mod adapters {
     #[derive(Clone, Debug, Eq, PartialEq)]
     pub struct PlacementAuthorization {
         scope_binding_hash: String,
+        message_box_fingerprint: MessageBoxFingerprint,
+    }
+
+    // The real adapters module grew a message-box fingerprint alongside the
+    // scope binding. This test hosts osl-hub source inside the selectors
+    // crate, so the shim has to grow with it or that source stops compiling --
+    // which is exactly how this test broke once the lanes were merged.
+    #[derive(Clone, Debug, Default, Eq, PartialEq)]
+    pub struct MessageBoxFingerprint(pub String);
+
+    pub fn message_box_fingerprint_for_provider(provider_id: &str) -> Option<MessageBoxFingerprint> {
+        if provider_id.is_empty() {
+            None
+        } else {
+            Some(MessageBoxFingerprint(provider_id.to_owned()))
+        }
     }
 
     impl PlacementAuthorization {
         pub fn for_scope(scope_binding_hash: impl Into<String>) -> Self {
             Self {
                 scope_binding_hash: scope_binding_hash.into(),
+                message_box_fingerprint: MessageBoxFingerprint::default(),
             }
+        }
+
+        pub fn for_scope_and_provider(
+            scope_binding_hash: impl Into<String>,
+            provider_id: &str,
+        ) -> Result<Self, String> {
+            let fingerprint = message_box_fingerprint_for_provider(provider_id)
+                .ok_or_else(|| "message-box provider is unsupported".to_owned())?;
+            Ok(Self {
+                scope_binding_hash: scope_binding_hash.into(),
+                message_box_fingerprint: fingerprint,
+            })
         }
 
         pub(crate) fn scope_binding_hash(&self) -> &str {
             &self.scope_binding_hash
         }
+
+        pub(crate) fn message_box_matches(&self, _app: &AdapterAppId) -> bool {
+            !self.message_box_fingerprint.0.is_empty()
+        }
+    }
+
+    pub(crate) fn same_scope_and_message_box(
+        binding: &SurfaceBinding,
+        authorization: &PlacementAuthorization,
+    ) -> bool {
+        same_scope(&binding.scope_binding_hash, authorization.scope_binding_hash())
+            && authorization.message_box_matches(&binding.app)
     }
 
     #[derive(Clone, Debug, Eq, PartialEq)]
