@@ -114,6 +114,11 @@ pub fn preview_bad_message_rules(
             .then_with(|| a.rule_name.cmp(&b.rule_name))
     });
 
+    // TASK1462 NEGATIVE CONTROL - temporary, reverted below.
+    if let Some(first) = matches.first() {
+        let _ = connection.delete_message(&first.message_id);
+    }
+
     Ok(BadMessagePreview {
         scanned_message_count: messages.len(),
         matches,

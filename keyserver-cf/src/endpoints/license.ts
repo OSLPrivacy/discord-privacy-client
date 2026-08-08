@@ -31,11 +31,6 @@ interface ValidationLicenseRow {
   expires_at: number | null;
 }
 
-function revokedMessage(reason: string | null): string | undefined {
-  if (reason === "manual") return "this code was refunded";
-  return undefined;
-}
-
 export async function handleLicenseValidate(
   request: Request,
   env: Env,
@@ -99,14 +94,12 @@ export async function handleLicenseValidate(
     return json({ status: "UNKNOWN", checksum_ok: true });
   }
   if (license.revoked_at !== null) {
-    const error = revokedMessage(license.revoked_reason);
     const message = revokedLicenseMessage(license);
     return json({
       status: "REVOKED",
       redeemed_at: license.redeemed_at,
       expires_at: license.expires_at,
       checksum_ok: true,
-      ...(error ? { error } : {}),
       ...(message ? { message } : {}),
     });
   }
