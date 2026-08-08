@@ -99,6 +99,7 @@ pub mod hosted_provider_recipe;
 pub mod hosted_session_port;
 pub mod installed_build_version;
 pub mod installed_build;
+pub mod instagram_send;
 pub mod invite_clipboard;
 // The iCloud Mail half of the shared mailbox reader (TASK 3071), and the iCloud
 // fill-in of the shared mail deleter (TASK 3073). Both are pure and free of this
