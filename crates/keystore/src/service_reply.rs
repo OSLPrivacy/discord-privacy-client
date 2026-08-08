@@ -135,6 +135,60 @@ impl ValidatedServiceReply {
     }
 }
 
+/// Stateful boundary for direct message-service calls.
+///
+/// The counters deliberately live on the same object as the operations that
+/// consume a reply. This makes it impossible for a caller to record a send as
+/// successful, or to receive private read content, without first passing the
+/// complete [`validate_service_reply`] contract.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct DirectServiceReplyCalls {
+    successful_send_count: usize,
+    successful_read_count: usize,
+}
+
+impl DirectServiceReplyCalls {
+    pub const fn new() -> Self {
+        Self {
+            successful_send_count: 0,
+            successful_read_count: 0,
+        }
+    }
+
+    pub const fn successful_send_count(&self) -> usize {
+        self.successful_send_count
+    }
+
+    pub const fn successful_read_count(&self) -> usize {
+        self.successful_read_count
+    }
+
+    /// Accept a direct send as successful only after its reply is valid.
+    pub fn direct_send(
+        &mut self,
+        reply: ServiceReply<'_>,
+        expected: &ServiceReplyExpectation,
+    ) -> Result<ValidatedServiceReply, ServiceReplyRefusal> {
+        let validated = validate_service_reply(reply, expected)?;
+        self.successful_send_count += 1;
+        Ok(validated)
+    }
+
+    /// Release private content from a direct read only after its reply is
+    /// valid. On refusal, `private_content` is dropped inside this call and is
+    /// never returned to the caller.
+    pub fn direct_read<T>(
+        &mut self,
+        reply: ServiceReply<'_>,
+        expected: &ServiceReplyExpectation,
+        private_content: T,
+    ) -> Result<T, ServiceReplyRefusal> {
+        validate_service_reply(reply, expected)?;
+        self.successful_read_count += 1;
+        Ok(private_content)
+    }
+}
+
 /// Check every part of a JSON service reply before returning any usable field.
 pub fn validate_service_reply(
     reply: ServiceReply<'_>,
