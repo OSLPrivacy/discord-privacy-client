@@ -1,0 +1,23 @@
+{
+  "attempt_duration_limit_ms": 30000.0,
+  "rapid_submission_count": 8,
+  "burn_password": "Burn-password-3236-Qwerty",
+  "non_exact_attempts": [
+    {
+      "label": "pasted_non_exact",
+      "password": "Burn-password-3236-Qwerty "
+    },
+    {
+      "label": "autofilled_non_exact",
+      "password": "Burn-password-3236-Qwerty-old"
+    },
+    {
+      "label": "wrong_layout_non_exact",
+      "password": "Xgpb[laoo,rpe[3236[',.pyf"
+    },
+    {
+      "label": "look_alike_non_exact",
+      "password": "Burn-pаssword-3236-Qwerty"
+    }
+  ]
+}
