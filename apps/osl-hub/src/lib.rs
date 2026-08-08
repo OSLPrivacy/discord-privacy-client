@@ -417,6 +417,7 @@ pub mod x_whitelist;
 /// Expiring and burn-side commands for X content whose published authorship is
 /// the currently signed-in account.
 pub mod x_owned_content_commands;
+pub mod x_public_cover;
 /// Hermetic records for the direct X active-window discovery command.
 pub mod x_window_composer;
 
