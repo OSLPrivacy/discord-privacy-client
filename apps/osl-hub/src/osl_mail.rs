@@ -6,33 +6,23 @@
 //! mailbox is local state established only after a signed provision response
 //! succeeds.
 
-use base64::{engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD}, Engine as _};
-use serde::{
-    Deserialize,
-    Serialize,
-};
-use serde_json::{
-    Map,
-    Value,
-};
-use sha2::{
-    Digest,
-    Sha256,
-};
 use crate::claim_state::{
-    CarrierEvidence,
-    DeliveryEvidence,
-    PublicClaim,
-    Surface,
-    claim_of,
-    public_claim,
+    claim_of, public_claim, CarrierEvidence, DeliveryEvidence, PublicClaim, Surface,
 };
 use crate::core_bridge::HubCoreState;
+use base64::{
+    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+    Engine as _,
+};
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 const MAIL_DOMAIN: &str = "oslprivacy.com";
 const RETENTION_SECONDS: u32 = 7 * 24 * 60 * 60;
+const EMPTY_UNREAD_COUNT: u32 = 0;
 /// Whether the user-facing OSL Mail client may present as usable.
 ///
 /// **Derived, not written.** This was the literal `false` that D-221 called out
@@ -115,16 +105,26 @@ struct BurnResponse {
     address_tombstoned: bool,
 }
 
+#[derive(Deserialize)]
+struct MailListResponse {
+    unread_count: u32,
+}
+
 pub fn get_status(core: &HubCoreState, state: &OslMailState) -> Result<OslMailStatus, String> {
     let identity = active_identity(core)?;
-    ensure_capabilities(&mail_base_url()?)?;
+    let base_url = mail_base_url()?;
+    ensure_capabilities(&base_url)?;
     let address = state
         .addresses
         .lock()
         .map_err(|_| "OSL Mail state is unavailable".to_owned())?
         .get(&identity.user_id)
         .cloned();
-    Ok(status_from_address(address))
+    let unread_count = match address.as_ref() {
+        Some(_) => unread_count(&base_url, &identity)?,
+        None => EMPTY_UNREAD_COUNT,
+    };
+    Ok(status_from_address(address, unread_count))
 }
 
 pub fn provision(
@@ -180,7 +180,10 @@ pub fn provision(
         .lock()
         .map_err(|_| "OSL Mail state is unavailable".to_owned())?
         .insert(identity.user_id.clone(), provisioned.address.clone());
-    Ok(status_from_address(Some(provisioned.address)))
+    Ok(status_from_address(
+        Some(provisioned.address),
+        EMPTY_UNREAD_COUNT,
+    ))
 }
 
 /// Send only a pointer envelope to the relay.  The user-authored subject and
@@ -421,13 +424,46 @@ fn ensure_capabilities(base_url: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn status_from_address(address: Option<String>) -> OslMailStatus {
+fn unread_count(base_url: &str, identity: &keystore::Identity) -> Result<u32, String> {
+    let mut unsigned = Map::new();
+    // The count comes from the mailbox's one durable `opened_at IS NULL`
+    // decision. A single list row is enough because the server returns the
+    // whole count separately, bounded by the mailbox's 500-message limit.
+    unsigned.insert("limit".to_owned(), Value::from(1));
+    unsigned.insert("timestamp_ms".to_owned(), Value::from(now_millis()?));
+    unsigned.insert("request_id".to_owned(), Value::String(request_id()));
+    unsigned.insert(
+        "user_id".to_owned(),
+        Value::String(identity.user_id.clone()),
+    );
+    let message = signed_message("LIST", &unsigned)?;
+    unsigned.insert(
+        "signature_b64".to_owned(),
+        Value::String(
+            STANDARD.encode(crypto::ed25519::sign(&identity.ed25519_secret, &message).as_bytes()),
+        ),
+    );
+    let response = http_client()?
+        .post(format!("{base_url}/v1/mail/list"))
+        .json(&unsigned)
+        .send()
+        .map_err(|_| "OSL Mail unread count is unavailable".to_owned())?;
+    if !response.status().is_success() {
+        return Err("OSL Mail unread count was refused".to_owned());
+    }
+    let listed: MailListResponse = response
+        .json()
+        .map_err(|_| "OSL Mail unread count response was malformed".to_owned())?;
+    Ok(listed.unread_count)
+}
+
+fn status_from_address(address: Option<String>, unread_count: u32) -> OslMailStatus {
     let provisioned = address.is_some();
     OslMailStatus {
         available: osl_mail_desktop_bridge_available(),
         provisioned,
         address,
-        unread_count: 0,
+        unread_count,
         retention_seconds: RETENTION_SECONDS,
     }
 }
@@ -490,21 +526,29 @@ fn canonical_json(value: &Value) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{pointer_envelope, signed_message, status_from_address, BurnResponse};
+    use super::{
+        pointer_envelope, signed_message, status_from_address, BurnResponse, EMPTY_UNREAD_COUNT,
+    };
     use serde_json::{Map, Value};
 
     #[test]
     fn unprovisioned_identity_has_a_valid_empty_mailbox_status() {
         assert_eq!(
-            status_from_address(None),
+            status_from_address(None, EMPTY_UNREAD_COUNT),
             super::OslMailStatus {
                 available: false,
                 provisioned: false,
                 address: None,
-                unread_count: 0,
+                unread_count: EMPTY_UNREAD_COUNT,
                 retention_seconds: 604_800,
             }
         );
+    }
+
+    #[test]
+    fn status_returns_the_mailbox_unread_count_instead_of_a_fixed_value() {
+        let status = status_from_address(Some("member@oslprivacy.com".to_owned()), 4);
+        assert_eq!(status.unread_count, 4);
     }
 
     /// D-221. The flag is the claim state's answer, so OSL Mail cannot present
