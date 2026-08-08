@@ -41,6 +41,15 @@ import { firstTimedDeleteWarningMarkup, initialDeleteChoices, onboardingDeleteMa
 import { onboardingSendingMarkup } from "./onboarding-sending";
 import { continuePasswordSetup } from "./password-setup-continue";
 import { renderRecoveryStatesSettings } from "./recovery-states";
+import {
+  initialCleanDeviceRestoreState,
+  refuseRestore,
+  renderCleanDeviceRestoreStatus,
+  restoreCheckFromFailure,
+  restoreProgress,
+  type CleanDeviceRestoreState,
+  type RestoreCheck,
+} from "./clean-device-restore";
 import { continueFromProOnboarding, previousOnboardingRoute } from "./onboarding-sequence";
 import { componentPickerScreen } from "./component-picker";
 import { componentManagerFromOnboarding } from "./component-manager";
@@ -476,6 +485,7 @@ function handleOnboardingRouteAction(rawRoute: unknown): boolean {
     return false;
   }
   onboardingRoute = onboardingRouteForBuild(rawRoute);
+  if (onboardingRoute === "import") cleanDeviceRestoreState = initialCleanDeviceRestoreState;
   // Arriving at recovery always starts at the phrase step: a half-finished
   // flow, or a token from a previous attempt, must never be inherited.
   if (onboardingRoute === "account-recovery") resetAccountRecovery();
@@ -658,6 +668,7 @@ let timer = "72h";
 let toastTimer: number | undefined;
 let updateStatus: UpdateStatus = { state: "unavailable" };
 let recoveryBundle: { userId: string; identityPhrase: string | null; passwordPhrase: string } | null = null;
+let cleanDeviceRestoreState: CleanDeviceRestoreState = initialCleanDeviceRestoreState;
 let recoverySavedAcknowledged = false;
 let recoveryNoSecretAcknowledged = false;
 // T15-A7: the owner typed the acknowledgement and asked to see the kit even
@@ -2165,7 +2176,11 @@ function onboardingContent(): string {
       : recoveryScreenMarkup(accountRecoveryFlow);
   }
   if (onboardingRoute === "import") return importIdentityForm();
-  if (onboardingRoute === "recovery") return recoveryContent();
+  if (onboardingRoute === "recovery") {
+    return cleanDeviceRestoreState.phase === "account-ready"
+      ? restoredAccountReadyContent()
+      : recoveryContent();
+  }
   if (onboardingRoute === "identity-choice") return identityChoiceMarkup(identityChoiceError);
   if (onboardingRoute === "private-link") return privateContactLinkMarkup({
     busy: privateContactLinkBusy,
@@ -3002,15 +3017,25 @@ function importIdentityForm(): string {
     <h1 id="route-heading" tabindex="-1" class="stealth-title restore-title">Restore your account</h1>
     <form class="password-form stealth-form" id="identity-import-form" novalidate>
       <span class="restore-label-row"><label for="identity-recovery-phrase">Recovery phrase</label><em>stays on this device</em></span>
-      <textarea class="restore-phrase" id="identity-recovery-phrase" rows="3" autocomplete="off" autocapitalize="none" spellcheck="false" required aria-describedby="import-error"></textarea>
+      <textarea class="restore-phrase" id="identity-recovery-phrase" rows="3" autocomplete="off" autocapitalize="none" spellcheck="false" required aria-describedby="import-error restore-journey-status"></textarea>
       <span class="restore-label-row"><label for="import-password">New password</label><em>6 minimum · 12+ suggested</em></span>
       <div class="password-input-row"><input id="import-password" type="password" minlength="6" maxlength="128" autocomplete="new-password" required/>${eye("import-password", "Show password")}</div>
       <span class="restore-label-row"><label for="import-password-confirm">Confirm password</label></span>
       <div class="password-input-row"><input id="import-password-confirm" type="password" minlength="6" maxlength="128" autocomplete="new-password" required/>${eye("import-password-confirm", "Show password")}</div>
-      <p class="unlock-error" id="import-error" role="alert"></p>
+      <p class="unlock-error" id="import-error" aria-live="polite"></p>
+      <div id="restore-journey-status" aria-live="polite" aria-atomic="true">${renderCleanDeviceRestoreStatus(cleanDeviceRestoreState)}</div>
       <button class="stealth-submit restore-submit" id="identity-import-submit" type="submit" disabled><span>Restore</span>${signinArrowIcon()}</button>
     </form>
     <div class="setup-footer onboarding-actions stealth-links restore-links"><button class="text-button" type="button" data-onboarding="welcome">← Back</button></div>
+  </section>`;
+}
+
+function restoredAccountReadyContent(): string {
+  return `<section class="stealth-screen restore-screen restored-account-ready" aria-labelledby="route-heading">
+    <h1 id="route-heading" tabindex="-1" class="stealth-title restore-title">Account ready</h1>
+    <p class="restore-ready-lead">Your account passed every restore check and is protected on this device.</p>
+    ${renderCleanDeviceRestoreStatus(cleanDeviceRestoreState)}
+    <button class="stealth-submit restore-submit" data-onboarding="${identityChoiceOrProRoute()}" type="button"><span>Continue setup</span>${signinArrowIcon()}</button>
   </section>`;
 }
 
@@ -4579,12 +4604,37 @@ function bindImportForm(): void {
   const confirm = document.querySelector<HTMLInputElement>("#import-password-confirm");
   const submit = document.querySelector<HTMLButtonElement>("#identity-import-submit");
   const error = document.querySelector<HTMLElement>("#import-error");
+  const journey = document.querySelector<HTMLElement>("#restore-journey-status");
   if (!form || !phrase || !password || !confirm || !submit || !error) return;
   const canSubmit = (): boolean =>
     isRecoveryPhrase(phrase.value)
     && isValidNewMainPassword(password.value)
     && password.value === confirm.value;
+  const showState = (state: CleanDeviceRestoreState): void => {
+    cleanDeviceRestoreState = state;
+    if (journey) journey.innerHTML = renderCleanDeviceRestoreStatus(state);
+    const busy = !["restore", "refused", "account-ready"].includes(state.phase);
+    form.setAttribute("aria-busy", busy ? "true" : "false");
+    phrase.disabled = busy;
+    password.disabled = busy;
+    confirm.disabled = busy;
+    submit.disabled = busy || state.phase === "account-ready";
+    const label = submit.firstElementChild as HTMLElement | null;
+    if (label) label.textContent = state.phase === "account-ready" ? "Account ready" : busy ? "Restoring…" : "Restore";
+  };
+  const fallbackCheck = (): RestoreCheck => cleanDeviceRestoreState.phase === "protecting-account"
+    ? "account-protection"
+    : cleanDeviceRestoreState.phase === "confirming-ready"
+      ? "account-readiness"
+      : "recovery-package-integrity";
+  const refuse = (check: RestoreCheck): void => {
+    error.textContent = "";
+    showState(refuseRestore(check));
+    submit.disabled = !canSubmit();
+    phrase.focus();
+  };
   const validate = (): void => {
+    if (cleanDeviceRestoreState.phase === "refused") showState(initialCleanDeviceRestoreState);
     submit.disabled = !canSubmit();
     error.textContent = "";
   };
@@ -4593,10 +4643,10 @@ function bindImportForm(): void {
   confirm.addEventListener("input", validate);
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    // A disabled button is presentation, not an authorization check: callers
-    // can dispatch submit directly or mutate the DOM before doing so.
+    // Disabled is presentation rather than authorization. A synthetic submit
+    // or altered DOM still runs this check and receives one named refusal.
     if (!canSubmit()) {
-      submit.disabled = true;
+      refuse("recovery-phrase-format");
       return;
     }
     let phraseSecret = phrase.value;
@@ -4604,14 +4654,20 @@ function bindImportForm(): void {
     phrase.value = "";
     password.value = "";
     confirm.value = "";
-    submit.disabled = true;
+    showState(restoreProgress("checking-input"));
     try {
+      showState(restoreProgress("verifying-package"));
       const identity = await importHubOslIdentityPhrase(phraseSecret);
       identityStorageMethod = identity.storageMethod;
       phraseSecret = "";
+      showState(restoreProgress("protecting-account"));
       const passwordResult = await setupHubMainPassword(passwordSecret);
       passwordSecret = "";
+      showState(restoreProgress("confirming-ready"));
       core = await loadCoreIntegration();
+      if (core.readiness.bootstrapStatus !== "ready" || !core.readiness.unlocked) {
+        throw new Error("[restore-check:account-readiness]");
+      }
       services = await loadLinkedServices().catch(() => services);
       recoveryBundle = { userId: identity.userId, identityPhrase: null, passwordPhrase: passwordResult.passwordRecoveryPhrase };
       recoverySavedAcknowledged = false;
@@ -4621,6 +4677,7 @@ function bindImportForm(): void {
       // password are already on disk, so a failed reminder write is a warning,
       // not a failed recovery.
       const recoveryKitReminderPersisted = await persistRecoveryKitUnsaved(true);
+      showState(restoreProgress("account-ready"));
       onboardingRoute = "recovery";
       await proveRecoveryCaptureProtection();
       render();
@@ -4630,16 +4687,13 @@ function bindImportForm(): void {
       passwordSecret = "";
       const refreshedCore = await withNativeDeadline(loadCoreIntegration(), "Check recovered account", bootPreferenceDeadlineMs).catch(() => null);
       if (!refreshedCore) {
-        error.textContent = "OSL could not verify the recovered account. Try again.";
-        submit.disabled = false;
-        phrase.focus();
+        refuse(restoreCheckFromFailure(failure, fallbackCheck()));
         return;
       }
       core = refreshedCore;
       if (core.readiness.bootstrapStatus === "ready" && core.readiness.unlocked) {
-        resetOnboardingBranch();
-        onboardingRoute = identityChoiceOrProRoute();
-        showToast("Account recovered. Continue setup.");
+        showState(restoreProgress("account-ready"));
+        onboardingRoute = "recovery";
         render();
         return;
       }
@@ -4649,11 +4703,7 @@ function bindImportForm(): void {
         render();
         return;
       }
-      error.textContent = core.readiness.bootstrapStatus === "setupRequired" && core.readiness.identityLoaded
-        ? "Account recovered. Create its password to continue."
-        : localActionError(failure, "Recovery was rejected or secure storage is unavailable.");
-      submit.disabled = false;
-      phrase.focus();
+      refuse(restoreCheckFromFailure(failure, fallbackCheck()));
     }
   });
 }
@@ -11852,6 +11902,7 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   recoverySavedAcknowledged = false;
   recoveryShownWithoutProtection = false;
   void recoveryKitUnsavedFlag.set(patch.recoveryKitUnsaved ?? false);
+  cleanDeviceRestoreState = initialCleanDeviceRestoreState;
   oslMailNotifications = patch.oslMailNotifications ?? (localStorage.getItem(oslMailNotificationsStorageKey) !== "false");
   oslMailThreadSyncUnavailable = false;
   oslMailThreads = [];
@@ -12424,6 +12475,9 @@ export const __oslHubUiTest = {
   },
   backQuickTour(): QuickTourControlResult {
     return backQuickTour();
+  },
+  cleanDeviceRestoreSnapshot(): CleanDeviceRestoreState {
+    return { ...cleanDeviceRestoreState };
   },
   bindWorkspace(): void {
     bindWorkspace();

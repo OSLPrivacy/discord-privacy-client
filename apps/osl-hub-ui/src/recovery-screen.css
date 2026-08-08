@@ -141,6 +141,76 @@
 
 .recovery-screen .recovery-continue-button { margin: 22px 0 0; }
 
+/* Restore status contains fixed check names only. Recovery input is never
+   repeated or interpolated into this live region. */
+.restore-journey {
+  margin: 2px 0 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--osl-setup-line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--osl-setup-card) 82%, transparent);
+  text-align: left;
+}
+
+.restore-journey ol {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.restore-journey li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--osl-setup-quiet);
+  font: 500 13px/1.3 "Source Sans 3 Variable", "Source Sans 3", var(--font-ui);
+}
+
+.restore-journey li > span {
+  display: grid;
+  flex: 0 0 20px;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  border: 1px solid var(--osl-setup-line);
+  border-radius: 50%;
+  font-size: 11px;
+}
+
+.restore-journey li[data-step-state="active"] { color: var(--osl-setup-text); }
+.restore-journey li[data-step-state="active"] > span { border-color: var(--osl-setup-accent); color: var(--osl-setup-accent); }
+.restore-journey li[data-step-state="complete"] { color: var(--osl-setup-second); }
+.restore-journey li[data-step-state="complete"] > span { border-color: #3dd68c; color: #3dd68c; }
+
+.restore-refusal,
+.restore-ready {
+  display: grid;
+  gap: 2px;
+  margin: 12px 0 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--osl-setup-line);
+  font: 14px/1.35 "Source Sans 3 Variable", "Source Sans 3", var(--font-ui);
+}
+
+.restore-refusal { color: var(--danger); }
+.restore-ready { color: #3dd68c; }
+.restore-refusal span,
+.restore-ready span { color: var(--osl-setup-second); }
+
+.restored-account-ready .restore-ready-lead {
+  margin: -12px 0 18px;
+  color: var(--osl-setup-second);
+}
+
+.restored-account-ready .restore-submit { margin-top: 22px; }
+
+@media (max-width: 32rem) {
+  .restore-journey ol { grid-template-columns: 1fr; }
+}
+
 /* Held back rather than greyed out: the button is legible, obviously not ready,
    and says nothing about being broken. `:not(:hover)` matters -- pinning the
    colours unconditionally out-specifies the shared hover rule and kills it. */
