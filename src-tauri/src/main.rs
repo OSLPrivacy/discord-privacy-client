@@ -33,6 +33,7 @@ mod bootstrap;
 mod information_architecture;
 mod injection;
 mod screenshot;
+mod windows_startup;
 
 use information_architecture::get_information_architecture_destinations;
 use ipc::commands::{
@@ -2968,7 +2969,8 @@ async fn osl_get_start_with_windows_choice(app: tauri::AppHandle) -> Result<Stri
     .map_err(|e| format!("OSL: join error: {e}"))?
 }
 
-/// Save the on/off choice for starting OSL when Windows starts.
+/// Save the on/off choice for starting OSL when Windows starts and immediately
+/// synchronize OSL's one Windows logon entry.
 #[tauri::command]
 async fn osl_save_start_with_windows_choice(
     app: tauri::AppHandle,
@@ -2978,7 +2980,13 @@ async fn osl_save_start_with_windows_choice(
     tauri::async_runtime::spawn_blocking(move || {
         let state = app_handle.state::<AppState>();
         let dir = keystore::osl_config_dir().ok();
-        ipc::commands::cmd_osl_save_start_with_windows_choice(state.inner(), choice, dir)
+        let parsed_choice: ipc::app_preferences::StartWithWindowsChoice = choice.parse()?;
+        windows_startup::sync(parsed_choice)?;
+        ipc::commands::cmd_osl_save_start_with_windows_choice(
+            state.inner(),
+            parsed_choice.as_value().to_owned(),
+            dir,
+        )
     })
     .await
     .map_err(|e| format!("OSL: join error: {e}"))?
