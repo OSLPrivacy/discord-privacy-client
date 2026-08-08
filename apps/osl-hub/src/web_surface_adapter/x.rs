@@ -141,6 +141,16 @@ pub struct XFoundBrowserPlaceComposer {
     pub composer: String,
 }
 
+/// A named control returned by the focused X browser surface.
+///
+/// The name is the driver-facing identifier.  The label is only a human
+/// readable description of the one control that was found.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct XNamedControl {
+    pub name: String,
+    pub label: String,
+}
+
 /// The only platform-specific seam used by the X adapter.
 ///
 /// Implementors must obtain an isolated-VM attestation before either write
@@ -154,6 +164,16 @@ pub trait XSurfaceDriver: Send + Sync {
     /// Find the focused browser surface before the normal X selector walk.
     /// Implementations must return only the fixed X messages origin.
     fn active_browser_surface(&self) -> Result<XActiveBrowserSurface, AdapterRefusal> {
+        Err(AdapterRefusal::PlatformUnsupported)
+    }
+
+    /// Ask the focused X surface for the exact named controls requested by the
+    /// caller.  A driver must refuse unknown names rather than treating them as
+    /// generic browser controls.
+    fn named_controls(
+        &self,
+        _names: &[&str],
+    ) -> Result<Vec<XNamedControl>, AdapterRefusal> {
         Err(AdapterRefusal::PlatformUnsupported)
     }
 
@@ -201,6 +221,30 @@ impl<D: XSurfaceDriver> XWebBackend<D> {
             place_kind: surface.place_kind,
             composer: surface.composer,
         })
+    }
+
+    /// Read only the explicitly requested controls from the X driver.
+    ///
+    /// The backend rejects a driver result whose identifier was not requested,
+    /// so a story-only control cannot be substituted for a reviewed composer.
+    pub fn find_named_controls(
+        &self,
+        names: &[&str],
+    ) -> Result<Vec<XNamedControl>, AdapterRefusal> {
+        if names.is_empty() || names.iter().any(|name| name.trim().is_empty()) {
+            return Err(AdapterRefusal::WindowGone);
+        }
+        let controls = self.driver.named_controls(names)?;
+        if controls.is_empty()
+            || controls.iter().any(|control| {
+                control.name.trim().is_empty()
+                    || control.label.trim().is_empty()
+                    || !names.iter().any(|name| *name == control.name)
+            })
+        {
+            return Err(AdapterRefusal::WindowGone);
+        }
+        Ok(controls)
     }
 
     fn destination_from(snapshot: XSurfaceSnapshot) -> DestinationIdentity {
