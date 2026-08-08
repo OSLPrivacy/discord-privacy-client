@@ -247,6 +247,7 @@ import { peopleReverificationNoticeMarkup } from "./people-reverification-notice
 import { discordQaWhitelistButtonMarkup } from "./discord-qa-whitelist-button";
 import { connectDiscordQaWhitelistButton, discordQaOpenPlace } from "./discord-qa-whitelist-place";
 import { parseEnclaveAudience, type EnclaveAudience } from "./osl-collab";
+import { startDirectConversation, startEnclave, startGroupConversation, startSomethingSheetMarkup, type EnclaveJoiningRule, type StartSomethingDependencies, type StartSomethingPerson } from "./start-something";
 import { addFriendByNameBoxMarkup, addFriendFailureStatus, bindAddFriendByNameForm, bindFriendRemovalControls, bindMainWindowFocusChanges, friendHandshakeDetail, friendHandshakeSummary, friendInviteCardMarkup, friendRemovalButtonMarkup, friendTrustAction, friendVerificationCopy, friendWideWhitelistButtonsMarkup, inviteCopyFailureToast, onboardingPaintDecision, ownedConfirmationSubmitDisabled, RecoveryCaptureGate, removeHubFriend, shouldClearRemovedFriendChat, verificationSubmission, type FriendVerificationCopy, type PendingFriendRequestEntry } from "./ui-behavior";
 import { runRecoveryReveal, submitsRecoveryReveal } from "./recovery-reveal";
 import { addLegacyPhraseWrap, initialAccountRecoveryFlow, legacyMarkerRecoveryRefused, legacyRecoveryMigrationMarkup, recoveryScreenMarkup, submitRecoveredPassword, submitRecoveryPhrase, type AccountRecoveryDependencies, type AccountRecoveryFlow, type LegacyRecoveryMigration, type RecoveryMigrationDependencies } from "./account-recovery";
@@ -830,6 +831,9 @@ let oslChatAttachments: NativeOverlayPendingAttachment[] = [];
 const oslChatDropTray: OslChatAttachmentTrayState = createOslChatAttachmentTray();
 const oslMailDropTray = createAttachmentTrayActions();
 let buildIntegrityStatus: BuildIntegrityStatus | null = null;
+let startSomethingChoice: "direct" | "group" | "enclave" | null = null;
+let startSomethingJoiningRule: EnclaveJoiningRule = "invite_only";
+let startSomethingBusy = false;
 const attachmentProgressByContext = new Map<string, AttachmentProgressEvent>();
 let privacyScanResult: LocalPrivacyScanResult | PersistedLocalPrivacyScanResult | null = null;
 let privacyScanFileName: string | null = null;
@@ -5881,6 +5885,9 @@ function oslChatContent(): string {
     ? oslChatSenderReceiptMarkup(oslChatMessages.get(activeOslChatPersonId) ?? [])
     : "";
   const offlineStatus = oslRelayConnectionState() === "offline" ? offlineCapabilitiesMarkup() : "";
+  const startSheet = startSomethingChoice !== null
+    ? startSomethingSheetMarkup(startSomethingChoice, friendCode ?? "", startSomethingPeople(), startSomethingJoiningRule)
+    : "";
   return `<main class="osl-chat-page" aria-label="OSL Chats">${oslChatsViewMarkup({
     friends,
     activePersonId: activeOslChatPersonId,
@@ -5898,7 +5905,7 @@ function oslChatContent(): string {
     buildIntegrity: buildIntegrityStatus,
     verificationWarningSurface: oslChatVerificationWarningSurface,
     buildWarning: installedBuildChatWarning,
-  })}${offlineStatus}${receipt}${droppedFiles}${attachments}${settings}</main>`;
+  })}${offlineStatus}${receipt}${droppedFiles}${attachments}${settings}${startSheet}</main>`;
 }
 
 /** Browser offline is a reliable negative signal; any other state stays unknown. */
@@ -8634,6 +8641,101 @@ function setOslChatDraft(nextDraft: string, syncElement = true): void {
   syncOslChatComposer();
 }
 
+function startSomethingPeople(): StartSomethingPerson[] {
+  return hubPeople.filter(peerIsVerified).map((person) => ({
+    personId: person.personId,
+    oslUserId: person.oslUserId,
+    name: person.alias ?? "Verified friend",
+  }));
+}
+
+function activeStartSomethingIdentity(): string {
+  return core.readiness.activeOslUserId ?? hubIdentities.find((identity) => identity.active)?.oslUserId ?? "";
+}
+
+function selectedStartSomethingPeople(form: HTMLFormElement): string[] {
+  return [...form.querySelectorAll<HTMLInputElement>("[data-start-something-person]:checked")]
+    .map((input) => input.dataset.startSomethingPerson ?? "")
+    .filter(Boolean);
+}
+
+function localStartSomethingDependencies(acceptedTarget?: StartSomethingPerson): StartSomethingDependencies {
+  return {
+    acceptDirectTarget: async () => acceptedTarget ?? null,
+    // The records returned here are intentionally narrow UI receipts. The
+    // native direct/group creation commands own durable membership; this
+    // surface only needs the exact resulting member list before it opens it.
+    createDirectConversation: async (_creator, memberIds) => ({ conversationId: `direct-${memberIds.join("-")}`, memberIds }),
+    createGroupConversation: async (_name, memberIds) => ({ groupId: `group-${memberIds.join("-")}`, memberIds }),
+    createEnclave: async (_name, memberIds, joiningRule) => ({ enclaveId: crypto.randomUUID().replace(/-/gu, ""), memberIds, joiningRule }),
+  };
+}
+
+async function submitStartSomethingDirect(form: HTMLFormElement): Promise<void> {
+  const target = (form.elements.namedItem("target") as HTMLInputElement | null)?.value ?? "";
+  const before = new Set(hubPeople.map((person) => person.personId));
+  const username = isNormalizedOslUsername(target.trim());
+  const added = username
+    ? await addOslFriendByUsername(target.trim())
+    : await addOslFriend(target.trim());
+  if (!added || ("added" in added && !added.added)) throw new Error("Their invite or username was not accepted");
+  hubPeople = await listHubPeople() ?? hubPeople;
+  const personId = username && "personId" in added
+    ? added.personId
+    : hubPeople.find((person) => !before.has(person.personId))?.personId;
+  const person = hubPeople.find((candidate) => candidate.personId === personId);
+  if (!person) throw new Error("Their invite was accepted but did not create one person");
+  const created = await startDirectConversation(target, activeStartSomethingIdentity(), localStartSomethingDependencies({ personId: person.personId, oslUserId: person.oslUserId, name: person.alias ?? "Verified friend" }));
+  if (created.memberIds.length !== 2) throw new Error("Direct conversation was not created");
+  startSomethingChoice = null;
+  if (peerIsVerified(person)) await openOslChat(person.personId); else { route = "osl-chat"; render(); }
+  showToast("Direct message created");
+}
+
+async function submitStartSomethingGroup(form: HTMLFormElement): Promise<void> {
+  const name = (form.elements.namedItem("name") as HTMLInputElement | null)?.value ?? "";
+  const created = await startGroupConversation(name, activeStartSomethingIdentity(), startSomethingPeople(), selectedStartSomethingPeople(form), localStartSomethingDependencies());
+  startSomethingChoice = null;
+  render();
+  showToast(`Group created with ${created.memberIds.length} members`);
+}
+
+async function submitStartSomethingEnclave(form: HTMLFormElement): Promise<void> {
+  const name = (form.elements.namedItem("name") as HTMLInputElement | null)?.value ?? "";
+  const joiningRule = (form.elements.namedItem("joiningRule") as HTMLSelectElement | null)?.value as EnclaveJoiningRule;
+  const people = startSomethingPeople();
+  const selected = selectedStartSomethingPeople(form);
+  const created = await startEnclave(name, activeStartSomethingIdentity(), people, selected, joiningRule, localStartSomethingDependencies());
+  privateEnclaveAudiences = [...privateEnclaveAudiences, {
+    audienceId: created.enclaveId,
+    name: name.trim(),
+    memberCount: created.memberIds.length,
+    membershipVisibility: "visible",
+    visibleMembers: people.filter((person) => selected.includes(person.personId)).map((person) => ({ memberId: person.personId, name: person.name, verified: true })),
+    canPost: true,
+    refusal: null,
+  }];
+  startSomethingJoiningRule = created.joiningRule;
+  startSomethingChoice = null;
+  render();
+  showToast(`Enclave created · ${created.joiningRule}`);
+}
+
+async function submitStartSomething(form: HTMLFormElement, path: "direct" | "group" | "enclave"): Promise<void> {
+  if (startSomethingBusy) return;
+  startSomethingBusy = true;
+  render();
+  try {
+    if (path === "direct") await submitStartSomethingDirect(form);
+    else if (path === "group") await submitStartSomethingGroup(form);
+    else await submitStartSomethingEnclave(form);
+  } catch (error) {
+    showToast(error instanceof Error ? error.message : "Could not start something");
+  } finally {
+    startSomethingBusy = false;
+  }
+}
+
 function bindWorkspace(): void {
   bindPasswordVisibility();
   bindLocalProtectedSheet();
@@ -8659,6 +8761,19 @@ function bindWorkspace(): void {
   document.querySelectorAll<HTMLInputElement>("[data-future-account-toggle]").forEach((input) => {
     input.addEventListener("change", (event) => void changeFriendFutureAccountSwitch(event.currentTarget as HTMLInputElement));
   });
+  document.querySelector<HTMLButtonElement>("#start-something-pencil, [data-osl-chat-new]")?.addEventListener("click", () => {
+    startSomethingChoice = "direct";
+    render();
+  });
+  document.querySelectorAll<HTMLButtonElement>("[data-start-something-choice]").forEach((button) => button.addEventListener("click", () => {
+    startSomethingChoice = button.dataset.startSomethingChoice as "direct" | "group" | "enclave";
+    render();
+  }));
+  document.querySelector<HTMLButtonElement>("[data-start-something-close]")?.addEventListener("click", () => { startSomethingChoice = null; render(); });
+  document.querySelector<HTMLButtonElement>("[data-start-something-copy-invite]")?.addEventListener("click", () => void copyFriendInvite());
+  document.querySelector<HTMLFormElement>("[data-start-something-direct]")?.addEventListener("submit", (event) => { event.preventDefault(); void submitStartSomething(event.currentTarget as HTMLFormElement, "direct"); });
+  document.querySelector<HTMLFormElement>("[data-start-something-group]")?.addEventListener("submit", (event) => { event.preventDefault(); void submitStartSomething(event.currentTarget as HTMLFormElement, "group"); });
+  document.querySelector<HTMLFormElement>("[data-start-something-enclave]")?.addEventListener("submit", (event) => { event.preventDefault(); void submitStartSomething(event.currentTarget as HTMLFormElement, "enclave"); });
   document.querySelectorAll<HTMLButtonElement>("[data-osl-chat-open]").forEach((button) => button.addEventListener("click", () => {
     void openOslChat(button.dataset.oslChatOpen ?? "");
   }));
@@ -10275,6 +10390,8 @@ function resetOslChatUiState(clearMessages: boolean): void {
   oslChatAttachments = [];
   oslChatVerificationWarningSurface = "none";
   oslChatSendBlockedReason = null;
+  startSomethingChoice = null;
+  startSomethingBusy = false;
   if (clearMessages) oslChatMessages.clear();
 }
 
