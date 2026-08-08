@@ -5,12 +5,112 @@
 //! are partitioned by UTC day, so a read after midnight naturally returns zero
 //! until new activity is recorded.
 
-use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
+use std::fmt;
 use std::path::Path;
 use thiserror::Error;
 
 const DATABASE_FILE: &str = "person_usage.sqlite";
 const SECONDS_PER_DAY: i64 = 86_400;
+const MIB: u64 = 1024 * 1024;
+const GIB: u64 = 1024 * MIB;
+
+/// The four usage ceilings checked before an upload may accept bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UsageCeilings {
+    pub stored_bytes: u64,
+    pub bytes_sent_today: u64,
+    pub bytes_fetched_today: u64,
+    pub messages_sent_today: u64,
+}
+
+impl UsageCeilings {
+    /// Free limits approved in task 0575. Storage units follow the existing
+    /// attachment code's binary-byte convention (MiB/GiB).
+    pub const FREE: Self = Self {
+        stored_bytes: GIB,
+        bytes_sent_today: 250 * MIB,
+        bytes_fetched_today: 250 * MIB,
+        messages_sent_today: 200,
+    };
+
+    /// Pro limits approved in task 0575.
+    pub const PRO: Self = Self {
+        stored_bytes: 150 * GIB,
+        bytes_sent_today: 5 * GIB,
+        bytes_fetched_today: 5 * GIB,
+        messages_sent_today: 5_000,
+    };
+}
+
+/// A stable, user-facing name for the counter that stopped an upload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UsageCeiling {
+    StoredBytes,
+    BytesSentToday,
+    BytesFetchedToday,
+    MessagesSentToday,
+}
+
+impl fmt::Display for UsageCeiling {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::StoredBytes => "stored bytes ceiling",
+            Self::BytesSentToday => "bytes sent today ceiling",
+            Self::BytesFetchedToday => "bytes fetched today ceiling",
+            Self::MessagesSentToday => "messages sent today ceiling",
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UploadRefusal {
+    pub person_id: String,
+    pub ceiling: UsageCeiling,
+    pub current: u64,
+    pub limit: u64,
+}
+
+impl fmt::Display for UploadRefusal {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "upload for person {} refused: {} reached (current {}, limit {})",
+            self.person_id, self.ceiling, self.current, self.limit
+        )
+    }
+}
+
+/// Failure from the upload-start boundary. `Refused` and `Counter` happen
+/// before the upload callback can accept a byte.
+#[derive(Debug)]
+pub enum UploadStartError<E> {
+    Refused(UploadRefusal),
+    Counter(UsageCounterError),
+    Upload(E),
+}
+
+impl<E: fmt::Display> fmt::Display for UploadStartError<E> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Refused(refusal) => refusal.fmt(formatter),
+            Self::Counter(error) => error.fmt(formatter),
+            Self::Upload(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl<E> From<UsageCounterError> for UploadStartError<E> {
+    fn from(error: UsageCounterError) -> Self {
+        Self::Counter(error)
+    }
+}
+
+impl<E> From<rusqlite::Error> for UploadStartError<E> {
+    fn from(error: rusqlite::Error) -> Self {
+        Self::Counter(UsageCounterError::Storage(error))
+    }
+}
 
 #[derive(Debug, Error)]
 pub enum UsageCounterError {
@@ -119,6 +219,104 @@ impl UsageCounterStore {
                 0
             },
         })
+    }
+
+    /// Check all four counters and, only if they are below their ceilings,
+    /// invoke the operation that accepts the upload bytes.
+    ///
+    /// The immediate transaction serializes admission across store handles,
+    /// so two uploads cannot both spend the same last byte. A refused upload
+    /// never invokes `upload`; a failed upload rolls the reservation back.
+    /// Successful uploads atomically add the file to stored bytes and add its
+    /// length to today's sent-byte counter. Message and fetched-byte accounting
+    /// remain owned by their actual send/fetch completion paths.
+    pub fn with_upload_admission<T, E>(
+        &mut self,
+        person_id: &str,
+        file_id: &str,
+        byte_len: u64,
+        ceilings: UsageCeilings,
+        unix_seconds: i64,
+        upload: impl FnOnce() -> std::result::Result<T, E>,
+    ) -> std::result::Result<T, UploadStartError<E>> {
+        validate_id(person_id, "person id")?;
+        validate_id(file_id, "file id")?;
+        let byte_len_i64 = as_i64(byte_len)?;
+        let day = utc_day(unix_seconds)?;
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        ensure_person(&tx, person_id)?;
+        let usage = read_at_tx(&tx, person_id, day)?;
+        let old: Option<i64> = tx
+            .query_row(
+                "SELECT byte_len FROM stored_files WHERE person_id = ?1 AND file_id = ?2",
+                params![person_id, file_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let old_byte_len = as_u64(old.unwrap_or(0))?;
+        let projected_stored = usage
+            .stored_bytes
+            .checked_sub(old_byte_len)
+            .and_then(|value| value.checked_add(byte_len));
+
+        if projected_stored.is_none_or(|next| next > ceilings.stored_bytes) {
+            return Err(UploadStartError::Refused(UploadRefusal {
+                person_id: person_id.to_owned(),
+                ceiling: UsageCeiling::StoredBytes,
+                current: usage.stored_bytes,
+                limit: ceilings.stored_bytes,
+            }));
+        }
+        if usage
+            .bytes_sent_today
+            .checked_add(byte_len)
+            .is_none_or(|next| next > ceilings.bytes_sent_today)
+        {
+            return Err(UploadStartError::Refused(UploadRefusal {
+                person_id: person_id.to_owned(),
+                ceiling: UsageCeiling::BytesSentToday,
+                current: usage.bytes_sent_today,
+                limit: ceilings.bytes_sent_today,
+            }));
+        }
+        if usage.bytes_fetched_today >= ceilings.bytes_fetched_today {
+            return Err(UploadStartError::Refused(UploadRefusal {
+                person_id: person_id.to_owned(),
+                ceiling: UsageCeiling::BytesFetchedToday,
+                current: usage.bytes_fetched_today,
+                limit: ceilings.bytes_fetched_today,
+            }));
+        }
+        if usage.messages_sent_today >= ceilings.messages_sent_today {
+            return Err(UploadStartError::Refused(UploadRefusal {
+                person_id: person_id.to_owned(),
+                ceiling: UsageCeiling::MessagesSentToday,
+                current: usage.messages_sent_today,
+                limit: ceilings.messages_sent_today,
+            }));
+        }
+
+        let uploaded = upload().map_err(UploadStartError::Upload)?;
+        let next_stored = projected_stored.ok_or(UsageCounterError::Overflow)?;
+        let next_sent = usage
+            .bytes_sent_today
+            .checked_add(byte_len)
+            .ok_or(UsageCounterError::Overflow)?;
+        tx.execute(
+            "INSERT INTO stored_files (person_id, file_id, byte_len) VALUES (?1, ?2, ?3)
+             ON CONFLICT(person_id, file_id) DO UPDATE SET byte_len = excluded.byte_len",
+            params![person_id, file_id, byte_len_i64],
+        )?;
+        tx.execute(
+            "UPDATE person_usage
+                SET stored_bytes = ?2, sent_day = ?3, bytes_sent = ?4
+              WHERE person_id = ?1",
+            params![person_id, as_i64(next_stored)?, day, as_i64(next_sent)?],
+        )?;
+        tx.commit()?;
+        Ok(uploaded)
     }
 
     /// Record that `file_id` is now held for the person. Replacing the same
@@ -245,6 +443,52 @@ fn ensure_person(tx: &Transaction<'_>, person_id: &str) -> Result<()> {
         params![person_id],
     )?;
     Ok(())
+}
+
+fn read_at_tx(tx: &Transaction<'_>, person_id: &str, day: i64) -> Result<PersonUsageCounters> {
+    let (stored, sent_day, sent, fetched_day, fetched, messages_day, messages): (
+        i64,
+        Option<i64>,
+        i64,
+        Option<i64>,
+        i64,
+        Option<i64>,
+        i64,
+    ) = tx.query_row(
+        "SELECT stored_bytes, sent_day, bytes_sent, fetched_day, bytes_fetched,
+                messages_day, messages_sent
+           FROM person_usage WHERE person_id = ?1",
+        params![person_id],
+        |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+                row.get(6)?,
+            ))
+        },
+    )?;
+    Ok(PersonUsageCounters {
+        stored_bytes: as_u64(stored)?,
+        bytes_sent_today: if sent_day == Some(day) {
+            as_u64(sent)?
+        } else {
+            0
+        },
+        bytes_fetched_today: if fetched_day == Some(day) {
+            as_u64(fetched)?
+        } else {
+            0
+        },
+        messages_sent_today: if messages_day == Some(day) {
+            as_u64(messages)?
+        } else {
+            0
+        },
+    })
 }
 
 fn validate_id(value: &str, label: &'static str) -> Result<()> {
