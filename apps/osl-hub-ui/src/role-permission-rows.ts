@@ -348,6 +348,83 @@ export function checkRolePermissionScreenDump(dump: string): RolePermissionScree
   return { roleName, rows, tags, sentences, sentenceCounts, legendSentences };
 }
 
+export interface KeyEnforcementReport {
+  roleName: string;
+  rows: number;
+  /** KEY-tagged rows in TASK 4851's catalogue. */
+  catalogueKeyRows: number;
+  /** KEY-tagged rows on screen showing the exact KEY words. */
+  keyRowsShowing: number;
+  /** RELAY or TRUST rows on screen showing the KEY words. Has to be 0. */
+  nonKeyRowsShowingKey: number;
+}
+
+/**
+ * TASK 5000 - the KEY words, checked on their own.
+ *
+ * KEY means cryptographic, unbypassable, and PRODUCT.txt fixes the copy for it:
+ * "Not a rule. They do not have the key." This refuses a screen dump where any
+ * KEY-tagged row does not show that exact sentence, where the number of KEY
+ * rows showing it is not the number of KEY rows in the catalogue, or where a
+ * single RELAY or TRUST row shows it. Rows are matched to the catalogue in
+ * catalogue order, the same way the screen check matches them.
+ */
+export function checkKeyEnforcementWords(dump: string): KeyEnforcementReport {
+  const problems: string[] = [];
+  const keySentence = ENFORCEMENT_SENTENCES.KEY;
+  const lines = dump.split("\n").map((line) => line.trim()).filter((line) => line !== "");
+  const roleName = lines.find((line) => line.startsWith("role: "))?.slice(6) ?? "";
+  const rowLines = lines
+    .filter((line) => line.startsWith("row: "))
+    .map((line) => {
+      const parts = line.slice(5).split("|").map((part) => part.trim());
+      return { words: parts[0] ?? "", tag: parts[1] ?? "", sentence: parts.slice(2).join(" | ").trim() };
+    });
+
+  const catalogueKeyRows = ROLE_PERMISSION_ROWS.filter((row) => row.tag === "KEY").length;
+  let keyRowsShowing = 0;
+  let nonKeyRowsShowingKey = 0;
+
+  for (const [index, catalogueRow] of ROLE_PERMISSION_ROWS.entries()) {
+    const shown = rowLines[index];
+    if (shown === undefined) {
+      if (catalogueRow.tag === "KEY") problems.push(`KEY row missing from screen: ${catalogueRow.words}`);
+      continue;
+    }
+    if (shown.words !== catalogueRow.words) {
+      problems.push(`permission row out of catalogue order: expected ${catalogueRow.words}, found "${shown.words}"`);
+      continue;
+    }
+    if (catalogueRow.tag === "KEY") {
+      if (shown.tag !== "KEY") {
+        problems.push(`catalogue KEY row carries the wrong tag on screen: ${catalogueRow.words} found \`${shown.tag}\``);
+        continue;
+      }
+      if (shown.sentence === keySentence) {
+        keyRowsShowing += 1;
+      } else {
+        problems.push(`KEY row does not show the KEY words: ${catalogueRow.words} shows "${shown.sentence}"`);
+      }
+    } else if (shown.sentence === keySentence) {
+      nonKeyRowsShowingKey += 1;
+      problems.push(`${catalogueRow.tag} row shows the KEY words: ${catalogueRow.words}`);
+    }
+  }
+
+  if (keyRowsShowing !== catalogueKeyRows) {
+    problems.push(`expected ${catalogueKeyRows} KEY rows showing "${keySentence}", found ${keyRowsShowing}`);
+  }
+  if (nonKeyRowsShowingKey !== 0) {
+    problems.push(`${nonKeyRowsShowingKey} RELAY or TRUST rows show the KEY words`);
+  }
+
+  if (problems.length > 0) {
+    throw new Error(`KEY enforcement words check failed: ${problems.join("; ")}`);
+  }
+
+  return { roleName, rows: rowLines.length, catalogueKeyRows, keyRowsShowing, nonKeyRowsShowingKey };
+}
+
 export interface RolePermissionScreenHandle {
   state(): RolePermissionScreenState;
   dump(): string;
