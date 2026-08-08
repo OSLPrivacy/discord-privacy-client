@@ -320,20 +320,82 @@ impl TorPreferenceState {
     }
 }
 
-pub fn tor_sidecar_config_from_env(config_dir: &Path) -> Option<TorSidecarConfig> {
-    let program =
-        std::env::var_os("OSL_ARTI_PROXY_PATH").or_else(|| std::env::var_os("OSL_ARTI_PROXY"))?;
+/// Locate the signed OSL Tor sidecar, preferring the explicit developer
+/// override and otherwise using the exact binary packaged beside the app.
+pub fn tor_sidecar_config_from_env_or_bundle(config_dir: &Path) -> Option<TorSidecarConfig> {
+    if let Some(program) =
+        std::env::var_os("OSL_ARTI_PROXY_PATH").or_else(|| std::env::var_os("OSL_ARTI_PROXY"))
+    {
+        let mut config = default_tor_sidecar_config(program, config_dir, "tor-sidecar");
+        if let Ok(args) = std::env::var("OSL_ARTI_PROXY_ARGS") {
+            config.args = args
+                .split_whitespace()
+                .filter(|part| !part.is_empty())
+                .map(str::to_owned)
+                .collect();
+        }
+        return Some(config);
+    }
+    bundled_tor_sidecar_config_from_executable(&std::env::current_exe().ok()?, config_dir)
+}
+
+/// Build the production sidecar configuration from a known packaged app path.
+pub fn bundled_tor_sidecar_config_from_executable(
+    application_executable: &Path,
+    config_dir: &Path,
+) -> Option<TorSidecarConfig> {
+    let package_dir = application_executable.parent()?;
+    Some(default_tor_sidecar_config(
+        package_dir.join(bundled_sidecar_name()),
+        config_dir,
+        "tor-sidecar",
+    ))
+}
+
+/// Compatibility name retained for focused packaging tests from the earlier
+/// Arti-proxy implementation.
+pub fn bundled_arti_proxy_config_from_executable(
+    application_executable: &Path,
+    config_dir: &Path,
+) -> Option<TorSidecarConfig> {
+    let package_dir = application_executable.parent()?;
+    Some(default_tor_sidecar_config(
+        package_dir.join(bundled_sidecar_name()),
+        config_dir,
+        "arti",
+    ))
+}
+
+fn default_tor_sidecar_config(
+    program: impl Into<PathBuf>,
+    config_dir: &Path,
+    data_directory: &str,
+) -> TorSidecarConfig {
     let mut config = TorSidecarConfig::new(program);
-    let tor_data = config_dir.join("tor-sidecar");
+    let tor_data = config_dir.join(data_directory);
     config.args = vec![
         "--dial-mode".to_owned(),
         "tor".to_owned(),
+        "--listen".to_owned(),
+        DEFAULT_BUNDLED_SOCKS_LISTEN.to_owned(),
         "--state-dir".to_owned(),
         tor_data.join("state").to_string_lossy().into_owned(),
         "--cache-dir".to_owned(),
         tor_data.join("cache").to_string_lossy().into_owned(),
     ];
-    Some(config)
+    config
+}
+
+const DEFAULT_BUNDLED_SOCKS_LISTEN: &str = "127.0.0.1:9150";
+
+#[cfg(target_os = "windows")]
+const fn bundled_sidecar_name() -> &'static str {
+    "osl-tor-sidecar.exe"
+}
+
+#[cfg(not(target_os = "windows"))]
+const fn bundled_sidecar_name() -> &'static str {
+    "osl-tor-sidecar"
 }
 
 fn start_tor_client(config: TorSidecarConfig) -> Result<TorClientFactory, String> {

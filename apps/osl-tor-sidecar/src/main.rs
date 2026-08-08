@@ -111,6 +111,7 @@ async fn run(config: Config, sink: Arc<StatusSink>) -> i32 {
 }
 
 /// Resolves when the process is asked to stop (SIGINT or SIGTERM).
+#[cfg(unix)]
 async fn shutdown_signal() {
     use tokio::signal::unix::{signal, SignalKind};
     let mut term = match signal(SignalKind::terminate()) {
@@ -125,6 +126,13 @@ async fn shutdown_signal() {
         _ = tokio::signal::ctrl_c() => {}
         _ = term.recv() => {}
     }
+}
+
+/// Windows has no Unix SIGTERM stream. Ctrl-C is the normal console shutdown
+/// signal and lets the packaged sidecar exit cleanly there.
+#[cfg(not(unix))]
+async fn shutdown_signal() {
+    let _ = tokio::signal::ctrl_c().await;
 }
 
 /// Serve one accepted SOCKS connection start to finish. Every exit path

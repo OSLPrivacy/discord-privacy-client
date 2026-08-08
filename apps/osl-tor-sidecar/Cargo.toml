@@ -17,7 +17,10 @@ name = "osl-tor-sidecar"
 path = "src/main.rs"
 
 [dependencies]
-arti-client = { version = "0.45", default-features = false, features = ["tokio", "rustls"] }
+# `static-sqlite` builds Arti's directory cache against its bundled SQLite.
+# That keeps both the Linux package build and the WSL -> Windows cross-build
+# independent of a system libsqlite3 development package.
+arti-client = { version = "0.45", default-features = false, features = ["tokio", "rustls", "static-sqlite"] }
 tor-socksproto = "0.45"
 # Only for naming the runtime type in TorClient<PreferredRuntime>; the
 # tokio/rustls features are enabled through arti-client's own deps.

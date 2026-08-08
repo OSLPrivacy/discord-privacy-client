@@ -15,6 +15,7 @@ Cargo.lock.bak
 # Tauri
 src-tauri/target/
 src-tauri/gen/
+apps/osl-hub/binaries/
 
 # Node
 # No trailing slash, deliberately. `node_modules/` matches a DIRECTORY only, so

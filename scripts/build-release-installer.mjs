@@ -123,6 +123,7 @@ export async function buildReleaseInstaller(options) {
   // script additionally typechecks every colocated test fixture, which is not
   // part of the installer payload and can be changed by unrelated test lanes.
   await run("npm", ["exec", "--", "vite", "build"], { cwd: join(root, "apps/osl-hub-ui") });
+  await run("node", ["scripts/stage-tor-sidecar.mjs", "--target", "x86_64-pc-windows-msvc", "--release"], { cwd: root });
   await run("npm", TAURI_BUILD_ARGS, { cwd: join(root, "apps/osl-hub") });
 
   const bundles = await listExeFiles(bundleDir);
