@@ -12212,6 +12212,13 @@ code {
    "Notifications", "Settings", "Profile"), so content-driven width is bounded;
    the one arbitrary-length string in the bar, the operator's profile name,
    deliberately rides in the tooltip instead of the label. */
+.home-command-word {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 620;
+  line-height: 1;
+  white-space: nowrap;
+}
 .home-command-icon {
   position: relative;
   height: 44px;
