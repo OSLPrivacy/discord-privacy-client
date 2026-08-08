@@ -1,0 +1,37 @@
+{
+  "generatedLabelRecords": [
+    {
+      "tileId": "osl-chats",
+      "name": "OSL Chats",
+      "capabilityFacts": {
+        "placing": true,
+        "reading": true,
+        "opening": true,
+        "realTwoPersonProtectedMessaging": true
+      },
+      "generatedLabel": "Ready"
+    },
+    {
+      "tileId": "discord",
+      "name": "Discord",
+      "capabilityFacts": {
+        "placing": true,
+        "reading": false,
+        "opening": true,
+        "realTwoPersonProtectedMessaging": false
+      },
+      "generatedLabel": "Placing only"
+    },
+    {
+      "tileId": "scrub",
+      "name": "Scrub (opening-only service)",
+      "capabilityFacts": {
+        "placing": false,
+        "reading": false,
+        "opening": true,
+        "realTwoPersonProtectedMessaging": false
+      },
+      "generatedLabel": "Opens the app"
+    }
+  ]
+}

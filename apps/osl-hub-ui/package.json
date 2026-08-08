@@ -21,6 +21,7 @@
     "screenshot:pro-code": "node screenshots/capture-pro-code.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run && node --test screenshots/*.test.mjs",
+    "test:task-0806": "vitest run src/task-0806-generated-label-proof.test.ts",
     "test:node": "node --test screenshots/*.test.mjs",
     "screenshot:all": "node screenshots/capture-all-routes.mjs"
   },
