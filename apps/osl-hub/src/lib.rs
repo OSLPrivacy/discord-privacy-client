@@ -210,6 +210,7 @@ pub mod shared_conversation_scroll;
 #[cfg(not(task3982_focused))]
 pub mod tor_pref;
 pub mod scrub_hosted {
+    pub mod aol_mail_deleter;
     #[cfg(not(task3982_focused))]
     pub mod checkpoint;
     #[cfg(not(task3982_focused))]
