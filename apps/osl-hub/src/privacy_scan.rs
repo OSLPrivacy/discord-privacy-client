@@ -6,7 +6,6 @@
 //! those inputs encrypted and deterministically reproduce findings from disk.
 
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashSet};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use crate::attachment_scan::{
@@ -141,6 +140,10 @@ impl From<MessageOwnerCheckError> for FoundMessageRecordError {
                 Self::MissingSignedInAccountSender
             }
             MessageOwnerCheckError::InvalidSender => Self::InvalidField,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OrdinaryAttachmentSetItem {
     pub display_name: String,
@@ -249,6 +252,10 @@ pub struct SavedReviewMatch {
     pub place: String,
     pub date: String,
     pub time: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct EmailProtectionCheckDisplay {
     pub message_locator: String,
     pub reply_recipients: Vec<String>,
@@ -269,6 +276,10 @@ pub enum EmailBurnScope {
 pub struct ReviewResultAccountGroup {
     pub account_id: String,
     pub matches: Vec<SavedReviewMatch>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct EmailBurnTargetListDisplay {
     pub scope: EmailBurnScope,
     pub identity: String,
@@ -296,6 +307,10 @@ impl ProtectedEmailReplyAction {
 pub struct ReviewResultStoreOutput {
     pub groups: Vec<ReviewResultAccountGroup>,
     pub total_matches: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProtectedEmailReplyDraft {
     pub draft_id: String,
     pub message_locator: String,
@@ -909,6 +924,8 @@ fn normalized_sender(
         return Err(MessageOwnerCheckError::InvalidSender);
     }
     Ok(sender)
+}
+
 fn valid_email_burn_identity(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= MAX_EMAIL_BURN_ID_BYTES

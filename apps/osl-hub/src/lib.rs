@@ -145,10 +145,19 @@ pub mod owner_presence;
 pub mod peer_attachment_io;
 #[cfg(feature = "desktop")]
 pub mod preferences;
-#[cfg(feature = "desktop")]
+// No tauri/platform dependency (only `attachment_scan` + serde + std), so it
+// is gated on `core` rather than `desktop`: TASK 3010 needs it reachable
+// without pulling in the desktop-only build (which, at the time of TASK
+// 3010, cannot compile -- see the note on `shared_marked_deletion_record`).
+#[cfg(feature = "core")]
 pub mod privacy_scan;
 #[cfg(feature = "core")]
 pub mod pro_context_cover;
+// TASK 3009: the shared marked-message deleter every service adapter fills
+// in. Joins the shared owner check in `privacy_scan`, so it is gated the
+// same way (`core`, not `desktop` -- see the note on `privacy_scan` above).
+#[cfg(feature = "core")]
+pub mod shared_marked_message_deleter;
 // Pure decision boundary: no store handle, no tauri, so it stays ungated and
 // is checkable without the desktop build.
 pub mod pro_marked_deletion;
@@ -157,6 +166,11 @@ pub mod pro_marked_deletion;
 // locator or a store handle itself.
 pub mod pro_marked_deletion_outcomes;
 pub mod proprietary_module_boundary;
+// TASK 3010: runs the shared deleter (TASK 3009) and files every row's
+// result with the TASK 1451 outcome record. Depends on privacy_scan through
+// the shared deleter, so it is gated the same way (`core`).
+#[cfg(feature = "core")]
+pub mod shared_marked_deletion_record;
 pub mod proprietary_module_lifecycle;
 pub mod scrub_erasure;
 pub mod scrub_erasure_queue;
