@@ -6031,7 +6031,6 @@ export function activityPrimaryAction(): void {
 }
 
 function oslChatContent(): string {
-  const pro = licenseState.access === "pro" || licenseState.access === "offlineGrace";
   const friends = hubPeople.map((person) => {
     const messages = oslChatMessages.get(person.personId) ?? [];
     const last = messages.at(-1);
