@@ -2560,6 +2560,10 @@ pub fn burn_wipe_all(dir: &Path) -> Result<(), String> {
 }
 
 #[cfg(test)]
+#[path = "../tests/task_3232_password_side_channel.rs"]
+mod task_3232_password_side_channel;
+
+#[cfg(test)]
 mod password_policy_tests {
     use super::*;
 
