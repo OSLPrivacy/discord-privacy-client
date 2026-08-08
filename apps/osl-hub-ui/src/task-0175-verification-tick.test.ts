@@ -65,3 +65,41 @@ describe("TASK 0175 verification tick", () => {
     expect(oslVerificationTickMarkup(true)).toContain('data-osl-verification-tick="visible"');
   });
 });
+
+function conversationFixture(directionState: AllowedPlaceDirectionStateModel | null): PeerProtectedSheetModel {
+  const model = blankPeerProtectedModel(true);
+  model.context = {
+    contextToken: "ctx-task-0175",
+    serviceId: "discord",
+    accountId: "900000000000000175",
+    personId: "person-ada",
+    peerOslUserId: "osl-user-ada",
+    scopeApproved: true,
+  };
+  model.personId = "person-ada";
+  model.displayName = "Ada Lovelace";
+  model.directionState = directionState;
+  return model;
+}
+
+// Paired fixtures: the same conversation with the same person, differing only
+// in the compared whitelist directions the backend reported.
+const oneWayDirectionState: AllowedPlaceDirectionStateModel = {
+  state: "one-way",
+  verificationState: "hidden",
+  savedDirections: 1,
+  firstToSecond: true,
+  secondToFirst: false,
+};
+
+function tickCount(markup: string): number {
+  return [...markup.matchAll(/data-verification-tick="two-way"/gu)].length;
+}
+
+const twoWayDirectionState: AllowedPlaceDirectionStateModel = {
+  state: "two-way",
+  verificationState: "visible",
+  savedDirections: 2,
+  firstToSecond: true,
+  secondToFirst: true,
+};

@@ -16,6 +16,7 @@ import {
   type HubRevocationStatus,
   type HubScopeBurnOutcome,
 } from "./burn-revocation-receipt";
+import type { ServiceId } from "./services";
 
 export type { HubRevocationStatus, HubScopeBurnOutcome };
 

@@ -12041,3 +12041,52 @@ function whitelistRosterGroupId(): string | null {
   const groupId = `group-${context.serviceId}-${context.accountId}`.replace(/[^A-Za-z0-9_-]/g, "-");
   return groupId.length <= 128 ? groupId : null;
 }
+
+// Per-friend "Auto-whitelist new accounts" state. TASK 0267 draws the switch;
+// TASK 0268 fills this from the Hub command and writes changes back.
+const friendFutureAccountAutoWhitelist = new Map<string, boolean>();
+
+export const homeTopBarControlIds: readonly HomeTopBarControlId[] = ["logo", "friends", "notifications", "settings", "profile"];
+
+/** The word each control paints beside its mark. Never abbreviated -- the label is the control. */
+export const homeTopBarControlLabels: Readonly<Record<HomeTopBarControlId, string>> = {
+  logo: "Home",
+  friends: "Friends",
+  notifications: "Notifications",
+  settings: "Settings",
+  profile: "Profile",
+};
+
+/**
+ * One Notifications choice: its name, the sentence behind it, and its current
+ * state written out in words next to the tick. The word matters -- a bare
+ * checkbox does not survive a screenshot review, and TASK 0725 asks that people
+ * can tell what will interrupt them.
+ */
+function notificationChoiceRow(choice: string, inputAttributes: string, title: string, explanation: string, on: boolean): string {
+  const state = on ? "On" : "Off";
+  return `<label class="setting-line interactive notification-choice" data-notification-choice="${choice}" data-choice-state="${on ? "on" : "off"}"><span><strong>${title}</strong><small>${explanation}</small></span><span class="notification-choice-state"><span class="choice-state-word" aria-label="${title}: ${state}">${state}</span><input ${inputAttributes} type="checkbox" ${on ? "checked" : ""}/></span></label>`;
+}
+
+const notificationMuteStorageKey = "osl-hub-notification-mute-v1";
+
+async function pasteOslChatClipboardImage(event: ClipboardEvent): Promise<void> {
+  if (!activeOslChatContext?.scopeApproved || oslChatBusy) return;
+  const items = event.clipboardData?.items;
+  if (!items) return;
+  const imageItem = [...items].find((item) => item.kind === "file" && item.type.startsWith("image/"));
+  if (!imageItem) return;
+  const file = imageItem.getAsFile();
+  if (!file) return;
+  event.preventDefault();
+  const card = await acceptOslChatClipboardImageAttachment(file.type, new Uint8Array(await file.arrayBuffer()));
+  if (!card) { showToast("Pasted image could not be attached"); return; }
+  attachmentProgressByContext.set(card.contextId, card);
+  render();
+}
+
+/** Save the quiet switch. Recording is untouched; only the bell goes quiet. */
+function setNotificationsMuted(muted: boolean): void {
+  notificationsMuted = muted;
+  localStorage.setItem(notificationMuteStorageKey, String(muted));
+}

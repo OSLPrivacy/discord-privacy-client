@@ -28,6 +28,7 @@ import {
   parseNativeDiscordCarrierRowBinding,
   type NativeDiscordCarrierRowBinding,
 } from "./discord-carrier-row-binding";
+import { parseAttachmentProgressEvent, type AttachmentProgressEvent } from "./attachment-progress";
 
 /**
  * The adapter ABI is shared by native and web surfaces.  The concrete DTO
@@ -644,4 +645,15 @@ export async function openOslChatAttachment(attachmentId: string): Promise<Nativ
   if (!/^[A-Za-z0-9_-]{8,128}$/u.test(attachmentId)) return null;
   try { return parseNativeOverlayOpenedAttachment(await invoke<unknown>("open_osl_chat_attachment", { attachmentId })); }
   catch (error) { recordBackendFailure("open_osl_chat_attachment", error); return null; }
+}
+
+export async function acceptOslChatClipboardImageAttachment(mediaType: string, imageBytes: Uint8Array): Promise<AttachmentProgressEvent | null> {
+  if (typeof mediaType !== "string" || !mediaType.startsWith("image/") || imageBytes.length === 0) return null;
+  try {
+    const value = await invoke<unknown>("accept_osl_chat_clipboard_image_attachment", {
+      mediaType,
+      imageBytes: Array.from(imageBytes),
+    });
+    return parseAttachmentProgressEvent(value);
+  } catch (error) { recordBackendFailure("accept_osl_chat_clipboard_image_attachment", error); return null; }
 }

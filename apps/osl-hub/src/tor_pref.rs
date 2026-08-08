@@ -4,6 +4,7 @@
 //! a Tor choice with no ready tunnel is a refusal, never permission to use a
 //! direct client.
 
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -98,15 +99,19 @@ impl AuthorizedStoreRoute {
 
 #[derive(Clone)]
 struct TorClientFactory {
+    /// The loopback address the sidecar reported for its SOCKS listener;
+    /// `None` only for test factories that inject a ready client directly.
+    socks_addr: Option<SocketAddr>,
     store_client: Arc<dyn Fn() -> Result<Client, String> + Send + Sync>,
 }
 
 impl TorClientFactory {
-    fn new<F>(store_client: F) -> Self
+    fn new<F>(socks_addr: Option<SocketAddr>, store_client: F) -> Self
     where
         F: Fn() -> Result<Client, String> + Send + Sync + 'static,
     {
         Self {
+            socks_addr,
             store_client: Arc::new(store_client),
         }
     }
@@ -170,8 +175,19 @@ impl TorPreferenceState {
             path,
             preference: Mutex::new(preference),
             tor_config: None,
-            tor_client: Mutex::new(Some(TorClientFactory::new(factory))),
+            tor_client: Mutex::new(Some(TorClientFactory::new(None, factory))),
         }
+    }
+
+    /// The SOCKS address of the tunnel the hub currently holds, exactly as
+    /// the sidecar reported it on its status channel. `None` while no
+    /// sidecar-owned tunnel is up; the hub has no other source for a port.
+    pub fn tor_socks_addr(&self) -> Result<Option<SocketAddr>, String> {
+        let tor_client = self
+            .tor_client
+            .lock()
+            .map_err(|_| "OSL Tor transport state is unavailable".to_owned())?;
+        Ok(tor_client.as_ref().and_then(|factory| factory.socks_addr))
     }
 
     pub fn preference(&self) -> Result<Option<TorPreference>, String> {
@@ -309,7 +325,8 @@ pub fn arti_proxy_config_from_env() -> Option<ArtiProxyConfig> {
 fn start_tor_client(config: ArtiProxyConfig) -> Result<TorClientFactory, String> {
     let transport =
         Arc::new(TorTransport::start(config).map_err(|_| "OSL Tor transport is unavailable")?);
-    Ok(TorClientFactory::new(move || {
+    let socks_addr = transport.socks_addr();
+    Ok(TorClientFactory::new(Some(socks_addr), move || {
         transport
             .store_client()
             .map_err(|_| "OSL Tor transport is unavailable".to_owned())

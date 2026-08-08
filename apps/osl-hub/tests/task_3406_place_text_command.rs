@@ -64,3 +64,29 @@ fn task_3407_command_compares_accessibility_readback_character_by_character() {
     assert!(TASK_3406.contains("did-not-match first_differing_character_position={position}"));
     assert!(TASK_3406.contains("return ReadbackComparison::DidNotMatch"));
 }
+
+fn task_3415_adds_no_telegram_only_placing_code_to_the_shared_job() {
+    let production = TASK_3406
+        .split("#[cfg(test)]")
+        .next()
+        .unwrap_or(TASK_3406)
+        .to_ascii_lowercase();
+    assert!(
+        !production.contains("telegram"),
+        "the shared 3406 placing job must stay provider-neutral; pass --app Telegram at runtime"
+    );
+}
+
+fn task_3415_shared_job_accepts_native_uia_roots_before_chromium_fallback() {
+    assert!(TASK_3406.contains("fn accessibility_root"));
+    assert!(TASK_3406.contains("ElementFromHandle"));
+    assert!(TASK_3406.contains("\"uia_native\""));
+    assert!(TASK_3406.contains("wake_electron_accessibility"));
+    assert!(TASK_3406.contains("\"msaa_client_after_wake\""));
+}
+
+fn task_3415_shared_job_checks_empty_before_and_exact_mark_after() {
+    assert!(TASK_3406.contains("before_readback={before_readback:?}"));
+    assert!(TASK_3406.contains("verify_marked_placement(&before_readback, &readback, &args.text)"));
+    assert!(TASK_3406.contains("readback did not equal placed mark"));
+}

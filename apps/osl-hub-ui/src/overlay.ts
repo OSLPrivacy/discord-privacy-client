@@ -2427,3 +2427,7 @@ void listen<boolean>(OVERLAY_SESSION_EVENT, ({ payload }) => {
 });
 
 void initializeOverlay();
+
+const viewOnceControl = requireElement<HTMLElement>("[data-osl-view-once-control='protected-view-once']");
+
+const viewOnceReason = requireElement<HTMLElement>("#protected-view-once-reason");

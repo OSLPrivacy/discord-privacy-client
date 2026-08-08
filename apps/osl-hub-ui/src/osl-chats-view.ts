@@ -1,4 +1,5 @@
 import type { VerificationWarningSurface } from "./verification-warning";
+import { viewOnceControlMarkup } from "./view-once-tier";
 
 // Matches the enforced OSL Chat logical-message limit in broker.rs.
 export const OSL_CHAT_MAX_DRAFT_BYTES = 1024 * 1024;
@@ -180,6 +181,12 @@ export interface OslChatsViewModel {
   draft: string;
   busy: boolean;
   viewOnce?: boolean;
+  /**
+   * TASK 0594. Whether this account may *create* a view once message (Pro, per
+   * 0590). Absent means Free: the composer control is drawn off and says why.
+   * Opening one is never gated by this -- that path is free (0591).
+   */
+  viewOnceCreationAllowed?: boolean;
   homeLogoUrl?: string;
   /**
    * Remote attachment copies OSL asked the relay to delete and could NOT
@@ -190,7 +197,6 @@ export interface OslChatsViewModel {
    */
   deletionUnconfirmed?: number;
   buildIntegrity?: OslChatBuildIntegrityStatus | null;
-  verificationWarningSurface?: VerificationWarningSurface;
   buildWarning?: OslChatBuildWarning | null;
 }
 
@@ -472,7 +478,20 @@ function activeThread(model: OslChatsViewModel, friend: OslChatFriend): string {
     ${deletionUnconfirmedRow(model.deletionUnconfirmed ?? 0)}
     <form class="osl-chat-composer" data-osl-chat-compose="${escapeHtml(friend.personId)}">
       <label for="osl-chat-draft">Message</label>
-      <div class="osl-chat-composer-bar"><label class="osl-chat-view-once" title="View once"><input id="osl-chat-view-once" type="checkbox" ${model.viewOnce ? "checked" : ""} ${model.busy ? "disabled" : ""}/>${onceIcon}<span><strong>View once</strong><small>Kept out of OSL history. OSL asks for the sent copy to be deleted once it is opened, and says here when it cannot confirm that.</small></span></label><textarea id="osl-chat-draft" rows="1" placeholder="Message ${escapeHtml(friend.nickname)}" autocomplete="off" spellcheck="true" aria-describedby="osl-chat-draft-count osl-chat-readiness">${escapeHtml(model.draft)}</textarea><button class="osl-chat-send" type="submit" aria-label="${model.busy ? "Sending" : "Send"}" data-osl-chat-peer-state="${peerState}" data-osl-chat-send-context="${mutualReady && !model.busy ? "1" : "0"}" ${canSend ? "" : "disabled"}>${sendIcon}<span>${model.busy ? "Sending…" : "Send"}</span></button></div>
+      <div class="osl-chat-composer-bar">${viewOnceControlMarkup({
+        id: "osl-chat-view-once",
+        layout: "composer",
+        className: "osl-chat-view-once",
+        title: "View once",
+        checked: model.viewOnce === true,
+        creationAllowed: model.viewOnceCreationAllowed === true,
+        // Deliberately not disabled while busy: this is a preference for the
+        // *next* send, not an action, and the in-flight send already captured
+        // its value. An off state here would need a reason nobody needs to
+        // read, and the Send button is the real in-flight guard.
+        iconMarkup: onceIcon,
+        detail: "Kept out of OSL history. OSL asks for the sent copy to be deleted once it is opened, and says here when it cannot confirm that.",
+      })}<textarea id="osl-chat-draft" rows="1" placeholder="Message ${escapeHtml(friend.nickname)}" autocomplete="off" spellcheck="true" aria-describedby="osl-chat-draft-count osl-chat-readiness">${escapeHtml(model.draft)}</textarea><button class="osl-chat-send" type="submit" aria-label="${model.busy ? "Sending" : "Send"}" data-osl-chat-peer-state="${peerState}" data-osl-chat-send-context="${mutualReady && !model.busy ? "1" : "0"}" ${canSend ? "" : "disabled"}>${sendIcon}<span>${model.busy ? "Sending…" : "Send"}</span></button></div>
       <div class="osl-chat-composer-meta"><span id="osl-chat-readiness" class="osl-chat-readiness">${readiness}</span><output id="osl-chat-draft-count" class="osl-chat-byte-count${withinLimit ? "" : " is-over"}">${bytes.toLocaleString("en-US")} / ${OSL_CHAT_MAX_DRAFT_BYTES.toLocaleString("en-US")}</output></div>
     </form>
   </section>`;

@@ -1,0 +1,93 @@
+/* ---------------------------------------------------------------------------
+   Verification warning screen.
+
+   Same tokens as the rest of the product. The four choices are a single
+   column rather than a grid: they are ordered from most reminders to none,
+   and a grid loses that ordering the moment it wraps.
+   --------------------------------------------------------------------------- */
+.verification-warning-screen {
+  width: 620px;
+  max-width: 100%;
+  margin: 0 auto;
+  display: grid;
+  gap: 18px;
+  text-align: left;
+}
+
+.verification-warning-screen .vw-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: -.01em;
+  color: var(--text);
+}
+
+.verification-warning-screen .vw-lead {
+  margin: -8px 0 0;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--muted);
+}
+
+.verification-warning-screen .vw-choices {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.verification-warning-screen .vw-choice {
+  display: block;
+  padding: 13px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  cursor: pointer;
+  transition: border-color var(--motion-fast) var(--ease-out), background var(--motion-fast) var(--ease-out);
+}
+
+.verification-warning-screen .vw-choice:hover { border-color: var(--line-strong); background: var(--panel-2); }
+
+.verification-warning-screen .vw-choice.selected {
+  border-color: var(--brand);
+  background: var(--brand-wash);
+}
+
+.verification-warning-screen .vw-choice-head {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  font-size: 15px;
+  color: var(--text);
+}
+
+/* The ring is always drawn; only the dot appears when the card is chosen. */
+.verification-warning-screen .osl-radio-ring { stroke: var(--line-strong); }
+.verification-warning-screen .osl-radio-dot { fill: transparent; }
+.verification-warning-screen .selected .osl-radio-ring { stroke: var(--brand); }
+.verification-warning-screen .selected .osl-radio-dot { fill: var(--brand); }
+
+.verification-warning-screen .vw-effect {
+  margin: 0;
+  padding: 14px 16px;
+  border-left: 2px solid var(--brand);
+  background: var(--panel-2);
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--text);
+}
+
+.verification-warning-screen .vw-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.verification-warning-screen .vw-status {
+  margin: -8px 0 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.verification-warning-screen .vw-status[data-saved="false"] { color: var(--warn); }

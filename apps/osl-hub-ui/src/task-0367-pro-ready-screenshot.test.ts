@@ -243,7 +243,7 @@ describe("TASK 0367 Pro ready screenshot", () => {
 
     let ws: WebSocket | undefined;
     try {
-      const connection = await connectToChrome(chrome);
+      const connection = await connectToChrome(chrome as unknown as Parameters<typeof connectToChrome>[0]);
       ws = connection.ws;
       const { cdp } = connection;
       const { targetId } = await cdp.send<{ targetId: string }>("Target.createTarget", { url: "about:blank" });

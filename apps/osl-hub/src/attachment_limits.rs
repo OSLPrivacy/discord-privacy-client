@@ -23,6 +23,10 @@ impl AttachmentAccountTier {
         }
     }
 
+    pub const fn max_bytes_per_file(self) -> u64 {
+        self.max_attachment_bytes()
+    }
+
     pub const fn label(self) -> &'static str {
         match self {
             Self::Free => "Free",
@@ -136,6 +140,7 @@ mod tests {
 
     #[test]
     fn task0051_checks_attachment_limits_directly() {
+        const MIB: u64 = 1024 * 1024;
         let cases = [
             ("24 MB", AttachmentAccountTier::Free, 24 * MIB, 1, "accept"),
             ("26 MB", AttachmentAccountTier::Free, 26 * MIB, 1, "reject"),

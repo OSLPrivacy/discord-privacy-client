@@ -1117,3 +1117,17 @@ fn printable_char(value: Option<char>) -> String {
         None => "<end>".to_owned(),
     }
 }
+
+fn verify_marked_placement(before: &str, after: &str, mark: &str) -> Result<(), String> {
+    if !before.trim().is_empty() {
+        return Err(format!(
+            "composer was not empty before placement: {before:?}"
+        ));
+    }
+    if after != mark {
+        return Err(format!(
+            "readback did not equal placed mark {mark:?}: {after:?}"
+        ));
+    }
+    Ok(())
+}

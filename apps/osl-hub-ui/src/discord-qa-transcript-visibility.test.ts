@@ -107,7 +107,7 @@ describe("Discord QA transcript visibility (the green eye)", () => {
     // claiming success.
     expect(visibilityToggle).toContain('discordQaTranscriptVisibilityOutcome = "failed"');
     expect(visibilityToggle.match(/discordQaTranscriptVisibilityOutcome = "failed"/gu) ?? [])
-      .toHaveLength(3);
+      .toHaveLength(2);
     expect(visibilityToggle).toContain("Transcript visibility failed closed");
   });
 
@@ -130,11 +130,10 @@ describe("Discord QA transcript visibility (the green eye)", () => {
     // The eye reads the display surface's own presence and never the lock, so
     // every notify/outcome branch turns on the surface flag alone.
     expect(visibilityToggle).not.toContain("nativeDiscordProtectionActive");
-    expect(visibilityToggle).toContain('=== "1"\n    && transcriptSurfaceLive');
-    expect(visibilityToggle).toContain('VITE_OSL_DISCORD_QA_SHELL === "1" && transcriptSurfaceLive');
-    expect(visibilityToggle).toContain(
-      'if (transcriptSurfaceLive && import.meta.env.VITE_OSL_DISCORD_QA_SHELL !== "1")',
-    );
+    expect(visibilityToggle).not.toContain("discordQaShell");
+    expect(visibilityToggle).not.toContain("VITE_OSL_DISCORD_QA_SHELL");
+    expect(visibilityToggle).toContain("const transcriptNotified = transcriptSurfaceLive");
+    expect(visibilityToggle).toContain("PROTECTED_DISPLAY_VISIBILITY_CHANGED_EVENT,\n      requested,");
     // The surface flag is its own lifecycle: opened with protection, cleared
     // only by a real overlay close or a context teardown — never by the lock.
     expect(source).toContain("let nativeDiscordOverlaySurfacePresent = false;");
@@ -187,7 +186,7 @@ describe("Discord QA transcript visibility (the green eye)", () => {
     // A rejected notify or save rolls the mode back and re-notifies the layer.
     expect(visibilityToggle).toContain("peerProtectedSheet.decryptDisplayEnabled = previous");
     expect(visibilityToggle).toContain("PROTECTED_DISPLAY_VISIBILITY_CHANGED_EVENT,\n        previous,");
-    expect(visibilityToggle).toContain("|| !qaImmediate");
+    expect(visibilityToggle).toContain("|| !transcriptNotified");
     // The stored policy, never the cache, decides what the header keeps.
     expect(visibilityToggle).toContain("peerProtectedSheet.ttlSeconds = saved.ttlSeconds");
     expect(visibilityToggle).toContain("peerProtectedSheet.decryptDisplayEnabled = saved.decryptDisplayEnabled");

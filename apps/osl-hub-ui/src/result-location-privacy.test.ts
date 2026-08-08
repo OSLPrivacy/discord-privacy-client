@@ -29,6 +29,7 @@ function searchResult(overrides: Partial<LocalPrivacyFinding> = {}): LocalPrivac
     findings: [finding(overrides)],
     messagesScanned: 1,
     messagesRejected: 0,
+    emailProtectionChecks: [],
     truncated: false,
     analysisLocation: "this_device_only",
     persisted: false,

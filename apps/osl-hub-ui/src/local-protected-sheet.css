@@ -88,6 +88,10 @@
 .local-view-once { min-width: 0; justify-items: start; }
 .local-view-once input { width: 22px; min-height: 22px; }
 .local-view-once small { max-width: 180px; line-height: 1.35; }
+/* TASK 0594: the reason the control is off, next to the control. */
+.view-once-tier-note { color: var(--text); font-weight: 600; }
+[data-osl-view-once-state="off"] { opacity: .72; }
+[data-osl-view-once-state="off"] .view-once-tier-note { opacity: 1; }
 .local-capsule-result { margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--line-soft); }
 .local-capsule-result small { color: var(--muted); text-align: center; }
 .local-send-truth { color: var(--muted); font-size: 11px; line-height: 1.4; text-align: center; }
