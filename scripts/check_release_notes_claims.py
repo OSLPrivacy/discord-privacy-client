@@ -9,9 +9,9 @@ import sys
 from pathlib import Path
 
 try:
-    from scripts.extract_changelog_section import ChangelogError, extract_release_notes
+    from scripts.extract_changelog_section import ChangelogError, DEFAULT_SCOPE_NOTE, release_body
 except ModuleNotFoundError:  # Direct `python scripts/check_release_notes_claims.py` invocation.
-    from extract_changelog_section import ChangelogError, extract_release_notes
+    from extract_changelog_section import ChangelogError, DEFAULT_SCOPE_NOTE, release_body
 
 
 SECTION_D = re.compile(r"^## D · NOT ELIGIBLE\b.*$", re.MULTILINE)
@@ -83,13 +83,18 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tag", required=True, help="Release tag, for example hub-v0.1.0")
     parser.add_argument("--changelog", type=Path, default=Path("CHANGELOG.md"))
+    parser.add_argument("--scope-note", type=Path, default=DEFAULT_SCOPE_NOTE)
     parser.add_argument(
         "--allowlist", type=Path, default=Path("docs/design/osl-public-claim-allowlist.md")
     )
     args = parser.parse_args()
 
     try:
-        notes = extract_release_notes(args.changelog.read_text(encoding="utf-8"), args.tag)
+        notes = release_body(
+            args.changelog.read_text(encoding="utf-8"),
+            args.tag,
+            args.scope_note.read_text(encoding="utf-8"),
+        )
         violations = find_banned_phrases(
             notes, parse_banned_phrases(args.allowlist.read_text(encoding="utf-8"))
         )

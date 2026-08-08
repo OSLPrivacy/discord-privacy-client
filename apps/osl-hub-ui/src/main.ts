@@ -307,6 +307,7 @@ import {
   type OslChatNotificationSwitch,
 } from "./osl-chat-notification-settings";
 import { PublicNamePageController } from "./public-name-page";
+import { releaseScopeExclusion } from "./release-scope-exclusions";
 
 export type Route = "onboarding" | "home" | "arrange-tiles" | "inbox" | "people" | "privacy" | "scrub" | "activity" | "connections" | "service" | "settings" | "mullvad" | "osl-chat" | "osl-mail" | "osl-mail-status" | "osl-notes-status" | "osl-servers" | "signal-qa";
 
@@ -5657,12 +5658,14 @@ function workspaceContent(): string {
   const homeApps = [...selectedHomeApps, ...roadmapHomeApps.filter((app) => !selectedHomeApps.some((selected) => selected.id === app.id))]
     .sort((left, right) => (designSocialOrder.get(left.displayName) ?? Number.MAX_SAFE_INTEGER)
       - (designSocialOrder.get(right.displayName) ?? Number.MAX_SAFE_INTEGER));
-  const modules = ([
-    { id: "osl-chats", name: "OSL Chats", available: true, capabilityFacts: { placing: true, reading: true, opening: true, realTwoPersonProtectedMessaging: true } },
-    { id: "osl-mail", name: "OSL Mail", available: false, capabilityFacts: { placing: false, reading: false, opening: false, realTwoPersonProtectedMessaging: false } },
-    { id: "osl-notes", name: "OSL Notes", available: false, capabilityFacts: { placing: false, reading: false, opening: false, realTwoPersonProtectedMessaging: false } },
-    { id: "scrub", name: "Scrub", available: true, capabilityFacts: { placing: false, reading: false, opening: true, realTwoPersonProtectedMessaging: false } },
-  ] as const).map((module) => ({ ...module, generatedLabel: generatedCapabilityLabel(module.capabilityFacts) }));
+  const mailExclusion = releaseScopeExclusion("osl-mail");
+  const notesExclusion = releaseScopeExclusion("osl-notes");
+  const modules = [
+    { id: "osl-chats", name: "OSL Chats", available: true, generatedLabel: generatedCapabilityLabel({ placing: true, reading: true, opening: true, realTwoPersonProtectedMessaging: true }) },
+    { id: "osl-mail", name: "OSL Mail", available: false, generatedLabel: mailExclusion.tile_label ?? "" },
+    { id: "osl-notes", name: "OSL Notes", available: false, generatedLabel: notesExclusion.tile_label ?? "" },
+    { id: "scrub", name: "Scrub", available: true, generatedLabel: generatedCapabilityLabel({ placing: false, reading: false, opening: true, realTwoPersonProtectedMessaging: false }) },
+  ] as const;
   const byId = new Map(homeApps.map((app) => [app.id, app]));
   const moduleById = new Map(modules.map((module) => [module.id, module]));
   const defaultIds = [...homeApps.map((app) => app.id), ...modules.map((module) => module.id)];

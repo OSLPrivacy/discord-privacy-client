@@ -25,7 +25,9 @@ GitHub web-release, a manually uploaded installer, or a hand-written
 Choose a SemVer version without a leading `v`. Change that exact value in all
 three files listed above, then add a non-empty `## [<version>] - YYYY-MM-DD`
 section to `CHANGELOG.md`. The release workflow uses that section as the
-user-visible release notes and refuses a missing or empty section.
+user-visible release notes, appends the dated owner rulings from
+`release-scope-exclusions.md`, and refuses a missing or empty section or an
+invalid ruling note.
 
 Run the ordinary review and release checks for the commit. The hosted candidate
 workflow runs the frontend, core-library, Windows identity-lifecycle,
