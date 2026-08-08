@@ -355,6 +355,8 @@ pub mod whatsapp_qa_host;
 #[cfg(not(task3982_focused))]
 pub mod whatsapp_qa_pairing;
 pub mod whatsapp_qa_transport;
+/// Preparation-only handlers for the five X protected send choices.
+pub mod x_send;
 #[cfg(not(task3982_focused))]
 pub mod x_whitelist;
 
