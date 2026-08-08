@@ -182,6 +182,10 @@ pub struct GroupMemberPermissionRecord {
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct LookChoiceRecord { pub name: String, pub value: String }
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FriendAccountReachAccount {
     pub service_id: String,
     pub account_id: String,
@@ -1406,6 +1410,27 @@ pub fn remove_group_member_permission(
         write_encrypted_json(&path, &prefs)?;
     }
     Ok(removed)
+}
+
+/// Persist one of the eight bounded visual choices. The value remains opaque to
+/// storage; the window binding applies it to the matching style property.
+pub fn set_look_choice(security: &HubSecurityState, name: String, value: String) -> Result<LookChoiceRecord, String> {
+    require_unlocked()?;
+    validate_look_choice_name(&name)?;
+    validate_look_choice_value(&value)?;
+    let _transition = security.transition.lock().map_err(|_| "OSL look choice state is unavailable".to_owned())?;
+    let path = config_dir()?.join(SECURITY_PREFS_FILE);
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
+    prefs.version = 2;
+    prefs.look_choices.insert(name.clone(), value.clone());
+    write_encrypted_json(&path, &prefs)?;
+    Ok(LookChoiceRecord { name, value })
+}
+
+pub fn look_choice_value(_security: &HubSecurityState, name: String) -> Result<Option<String>, String> {
+    require_unlocked()?;
+    validate_look_choice_name(&name)?;
+    Ok(load_security_preferences()?.look_choices.get(&name).cloned())
 }
 
 pub fn list_group_member_permissions(
@@ -5181,6 +5206,20 @@ fn validate_person_id(value: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_look_choice_name(value: &str) -> Result<(), String> {
+    if !matches!(value, "theme" | "named-look" | "accent" | "corners" | "glow" | "text" | "spacing" | "see-through") {
+        return Err("OSL look choice name is invalid".to_owned());
+    }
+    Ok(())
+}
+
+fn validate_look_choice_value(value: &str) -> Result<(), String> {
+    if value.is_empty() || value.len() > 128 || value.chars().any(char::is_control) {
+        return Err("OSL look choice value is invalid".to_owned());
+    }
+    Ok(())
+}
+
 fn validate_group_member_permission_id(value: &str, message: &str) -> Result<(), String> {
     if value.is_empty()
         || value.len() > 128
@@ -5778,6 +5817,27 @@ mod tests {
             keystore::set_active_account_dir(self.previous_active_account_dir.clone());
             ipc::main_password::set_file_storage_key(self.previous_file_key);
             let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    #[test]
+    fn linux_test_window_changes_all_eight_style_values_from_direct_saved_settings() {
+        let _harness = FileBackedSecurityHarness::new("look-window-0769");
+        let security = HubSecurityState::default();
+        let saved = [
+            ("theme", "theme-0769-midnight"), ("named-look", "named-look-0769-quiet"),
+            ("accent", "accent-0769-teal"), ("corners", "corners-0769-soft"),
+            ("glow", "glow-0769-low"), ("text", "text-0769-readable"),
+            ("spacing", "spacing-0769-open"), ("see-through", "see-through-0769-off"),
+        ];
+        for (name, value) in saved { set_look_choice(&security, name.to_owned(), value.to_owned()).unwrap(); }
+        let mut window = crate::look_window::LinuxTestWindow::default();
+        let changed = crate::look_window::apply_saved_look_choices(&HubSecurityState::default(), &mut window).unwrap();
+        println!("TASK0769 linux_test_window_direct_saved_settings style_values_changed={} style_values={}", changed, window.style_values.len());
+        assert_eq!(changed, 8);
+        assert_eq!(window.style_values.len(), 8);
+        for ((_, property), (_, value)) in crate::look_window::LOOK_STYLE_BINDINGS.iter().zip(saved) {
+            assert_eq!(window.style_values.get(*property), Some(&value.to_owned()));
         }
     }
 
