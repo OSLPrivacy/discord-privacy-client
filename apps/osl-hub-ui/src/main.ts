@@ -35,7 +35,7 @@ import { chooseSilentVisibleMode, onboardingSilentVisibleMarkup, type SilentVisi
 import { onboardingCaptureVisibilityMarkup } from "./onboarding-capture-visibility";
 import { continueButton } from "./onboarding-controls";
 import { CLEAN_FILES_CHOICES, initialBeforeSendChecks, onboardingBeforeSendMarkup, type BeforeSendChecks, type CleanFilesChoice } from "./onboarding-before-send";
-import { initialDeleteChoices, onboardingDeleteMarkup, type DeleteChoices } from "./onboarding-delete";
+import { firstTimedDeleteWarningMarkup, initialDeleteChoices, onboardingDeleteMarkup, timedDeleteContinueAllowed, type DeleteChoices } from "./onboarding-delete";
 import { onboardingSendingMarkup } from "./onboarding-sending";
 import { continuePasswordSetup } from "./password-setup-continue";
 import { renderRecoveryStatesSettings } from "./recovery-states";
@@ -532,6 +532,9 @@ let beforeSendChecks: BeforeSendChecks = initialBeforeSendChecks();
 // deleted unless it is turned on here. If this record is ever missing, the
 // review step fails closed instead of advancing on implied defaults.
 let deleteChoices: DeleteChoices | null = initialDeleteChoices();
+// In-memory and false on every launch: the warning is the boundary before the
+// first timed delete, not a preference silently inherited from WebView storage.
+let timedDeleteWarningAgreed = false;
 let forwardSecrecyOnboarding: ForwardSecrecyOnboardingState = initialForwardSecrecyOnboardingState();
 let forwardSecrecyMode: "protectPast" | "keepGroupDelivery" = "keepGroupDelivery";
 // A cache only. The authority is encrypted account state in the native hub;
@@ -3202,11 +3205,13 @@ export function sendingSetupContent(): string {
  * person can reason about.
  */
 export function reviewDefaultsOnboardingContent(): string {
-  const missing = deleteChoices === null;
-  const warning = missing
-    ? `<p class="del-quiet" id="defaults-record-missing" role="alert">Review defaults could not be loaded. Choose what OSL may delete before continuing.</p>`
-    : "";
-  return onboardingDeleteMarkup(deleteChoices ?? initialDeleteChoices()).replace("</section>", `${warning}</section>`);
+  if (deleteChoices === null) {
+    const warning = `<p class="del-quiet" id="defaults-record-missing" role="alert">Review defaults could not be loaded. Choose what OSL may delete before continuing.</p>`;
+    return onboardingDeleteMarkup(initialDeleteChoices()).replace("</section>", `${warning}</section>`);
+  }
+  return deleteChoices.deleteOldMessages
+    ? firstTimedDeleteWarningMarkup(timedDeleteWarningAgreed)
+    : onboardingDeleteMarkup(deleteChoices);
 }
 
 function coverDraftSetupContent(): string {
@@ -3697,6 +3702,7 @@ function bindOnboarding(): void {
       showToast("Review defaults could not be loaded. Nothing changed.");
       return;
     }
+    if (!timedDeleteContinueAllowed(deleteChoices, timedDeleteWarningAgreed)) return;
     onboardingRoute = "sending";
     render();
   });
@@ -3745,6 +3751,16 @@ function bindOnboarding(): void {
   });
   document.querySelector<HTMLInputElement>("#delete-old-messages")?.addEventListener("change", (event) => {
     deleteChoices = { ...(deleteChoices ?? initialDeleteChoices()), deleteOldMessages: (event.currentTarget as HTMLInputElement).checked };
+    timedDeleteWarningAgreed = false;
+    render();
+  });
+  document.querySelector<HTMLInputElement>("#timed-delete-warning-agreement")?.addEventListener("change", (event) => {
+    timedDeleteWarningAgreed = (event.currentTarget as HTMLInputElement).checked;
+    render();
+  });
+  document.querySelector<HTMLButtonElement>("#timed-delete-warning-not-now")?.addEventListener("click", () => {
+    deleteChoices = { ...(deleteChoices ?? initialDeleteChoices()), deleteOldMessages: false };
+    timedDeleteWarningAgreed = false;
     render();
   });
   document.querySelector<HTMLInputElement>("#warn-unprotected")?.addEventListener("change", (event) => {

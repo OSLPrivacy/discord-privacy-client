@@ -1,0 +1,13 @@
+checked 2026-08-08
+claim supported: a delete-for-everyone operation commonly leaves a visible deleted-message mark
+
+WhatsApp's official Business Platform payload reference maps a deleted message to the WhatsApp Mobile note "This message was deleted":
+https://www.postman.com/meta/whatsapp-business-platform/folder/tduohwq/webhook-payload-reference
+
+Signal Desktop's official English locale contains the recipient-facing deleted-message notification strings used by its delete-for-everyone UI:
+https://github.com/signalapp/Signal-Desktop/blob/main/_locales/en/messages.json
+
+Messenger Help says downloaded chat history continues to show that messages were deleted even though it omits their contents:
+https://www.facebook.com/help/messenger-app/194400311449172/
+
+scope note: the exact wording and placement vary by app; the warning deliberately says "most apps" rather than promising that every app uses the same mark

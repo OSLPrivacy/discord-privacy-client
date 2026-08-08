@@ -1,0 +1,13 @@
+checked 2026-08-08
+claim supported: timed delete acts on the other person's visible copy through the messaging app's own delete-for-everyone operation
+
+Signal Support names the in-app operation "Delete for everyone" and describes it as a best-effort delete on every device in that chat:
+https://support.signal.org/hc/en-us/articles/360050426432-Delete-for-everyone
+
+Telegram's official FAQ says its in-app delete can delete a one-to-one message "for both sides":
+https://telegram.org/faq#q-can-i-delete-my-messages
+
+Messenger Help distinguishes "Delete for you" from the app's "Delete for everyone" and says the latter makes the message no longer visible on other people's chat screens:
+https://www.facebook.com/help/messenger-app/194400311449172/
+
+scope note: this supports removal from the other person's app screen, not removal of screenshots, notification history, exports, backups, reports, or any other copy outside that app operation
