@@ -249,6 +249,7 @@ import { accentChoices, appearanceSettingsMarkup, avatarChoices, backgroundChoic
 import { applyLookState, defaultLookState, loadLookState, lookScreenMarkup, lookStorageKey, saveLookState, type LookMode, type LookState } from "./look-screen";
 import { inDomTooltipMarkup } from "./in-dom-tooltip";
 import { coverWritingControlsMarkup } from "./cover-writing-controls";
+import { pressAiCovertextButton } from "./ai-covertext-button";
 import { applyOslChatDraftToElement, applyOslChatReactionToggle, firstPartyOslSurfaceContract, OSL_CHAT_KEY_CHANGED_REFUSAL_REASON, OSL_CHAT_MAX_DRAFT_BYTES, oslChatDraftBytes, oslChatHandshakeConfirmed, oslChatsViewMarkup, senderReceiptStateFor, submitsOslChatDraft, type OslChatMessage } from "./osl-chats-view";
 import { createOslChatDeliveryRuntime, mergeOslChatTimeline, oslChatHistoryMessages, oslChatOpenRefusalMessage, pruneExpiredOslChatMessages, receivedOslChatBatchMessage, type OslChatDeliveryHost } from "./osl-chat-runtime";
 import { attachChatProfileAppearanceModal } from "./chat-profile-appearance-modal";
@@ -270,7 +271,7 @@ import { RECOVERY_SHOW_ANYWAY_ACKNOWLEDGEMENT, recoveryKitReducer, recoveryKitSe
 import { applyRecoveryWordRetypeResult, everyRecoveryWordAnswered, initialRecoveryWordCheckState, recoveryWordCheckContinueDisabled, recoveryWordCheckMarkup, recoveryWordRetypeRequest, setRecoveryWordCheckAnswer, type RecoveryWordCheckState } from "./recovery-word-check";
 import { resumeOnboardingRoute } from "./onboarding-resume";
 import { createRecoveryKitUnsavedFlag } from "./recovery-kit-flag";
-import { loadHubRecoveryKitUnsaved, setHubRecoveryKitUnsaved } from "./adapters";
+import { loadAiCarrierStatus, loadHubRecoveryKitUnsaved, setHubRecoveryKitUnsaved } from "./adapters";
 import { burnFeatureClaimsMarkup } from "./feature-claims";
 import { removeEverythingScreenMarkup } from "./remove-everything-screen";
 import { burnRevocationReceipt, type BurnRevocationReceipt } from "./burn-revocation-receipt";
@@ -985,6 +986,7 @@ let nativeDiscordCovertextEnabled = false;
 // The verified pack is bundled and materialized during Rust startup. The
 // command still re-checks readiness before it accepts the selection.
 let nativeDiscordAiCovertextSelected = false;
+let nativeDiscordAiModelReady = false;
 const oslChatPreviewStorageKey = "osl-chat-previews-visible-v1";
 const oslChatMutedStorageKey = "osl-chat-muted-people-v1";
 const oslChatUnreadStorageKey = "osl-chat-unread-v1";
@@ -5234,7 +5236,7 @@ function nativeDiscordHeaderControls(): string {
   // the box around it. Four controls is four answers to "is this protected right
   // now"; the blueprint says one. The other three and their handlers are gone.
   if (!discordQaShell) {
-    return `<div class="native-discord-header-controls" aria-label="Discord privacy controls">${composerUnreachableNotice}<button class="header-protection-control burn in-dom-tooltip-anchor" data-open-burn="chat" type="button" ${inactive}>Burn${inDomTooltipMarkup("Burn this local OSL chat")}</button>${coverWritingControlsMarkup("discord", { covertextEnabled: nativeDiscordCovertextEnabled, aiAvailable: true, aiSelected: nativeDiscordAiCovertextSelected, covertextId: "native-discord-covertext", aiCovertextId: "native-discord-ai-covertext" })}${transcriptNotice}${transcriptVisibilityControl}</div>`;
+    return `<div class="native-discord-header-controls" aria-label="Discord privacy controls">${composerUnreachableNotice}<button class="header-protection-control burn in-dom-tooltip-anchor" data-open-burn="chat" type="button" ${inactive}>Burn${inDomTooltipMarkup("Burn this local OSL chat")}</button>${coverWritingControlsMarkup("discord", { covertextEnabled: nativeDiscordCovertextEnabled, aiAvailable: nativeDiscordAiModelReady, aiSelected: nativeDiscordAiCovertextSelected, covertextId: "native-discord-covertext", aiCovertextId: "native-discord-ai-covertext" })}${transcriptNotice}${transcriptVisibilityControl}</div>`;
   }
   return `<div class="native-discord-header-controls discord-qa-header-controls" aria-label="Discord QA privacy controls"><div class="discord-qa-header-left"><button class="discord-qa-control danger icon-only in-dom-tooltip-anchor" data-open-burn="account" type="button" aria-label="Account Burn">${accountBurnIcon}${inDomTooltipMarkup("Open Account Burn confirmation")}</button></div><button class="discord-qa-control danger icon-only discord-qa-discord-burn in-dom-tooltip-anchor" data-open-burn="app" type="button" aria-label="Discord Burn">${discordBurnIcon}${inDomTooltipMarkup("Open Discord Burn confirmation")}</button><div class="discord-qa-header-right">${rowProofControl}<div class="discord-qa-whitelist" role="group" aria-label="Connected verified peer whitelist"><button class="in-dom-tooltip-anchor" id="discord-qa-whitelist-roster" type="button" aria-haspopup="dialog" aria-expanded="${whitelistRosterOpen}" ${discordQaHeaderBusy ? "disabled" : ""}>Whitelist${inDomTooltipMarkup("Review who is whitelisted and where")}</button>${discordQaWhitelistButtonMarkup({ scopeApproved, protectionActive: nativeDiscordProtectionActive, verifiedPeer: Boolean(verifiedPeer), busy: whitelistBusy })}</div><button class="discord-qa-control danger icon-only chat-burn in-dom-tooltip-anchor" data-open-burn="chat" type="button" ${inactive} aria-label="Chat Burn">${flame}${inDomTooltipMarkup("Open Chat Burn confirmation")}</button>${composerUnreachableNotice}${composerRefusalNotice}${transcriptNotice}${transcriptVisibilityControl}${composerControl}${whitelistWarningNotice}</div></div>`;
 }
@@ -8626,6 +8628,35 @@ async function preparePeerProtectedDraft(event: SubmitEvent): Promise<void> {
   render();
 }
 
+async function pressNativeDiscordAiCovertext(): Promise<void> {
+  const context = peerProtectedSheet.context;
+  const draft = document.querySelector<HTMLTextAreaElement>("#peer-protected-draft");
+  const plaintext = boundedPeerProtectedDraft(draft?.value ?? peerProtectedSheet.draft);
+  peerProtectedSheet.draft = plaintext;
+  const outcome = await pressAiCovertextButton({
+    modelPackPresent: async () => {
+      const status = await loadAiCarrierStatus();
+      nativeDiscordAiModelReady = status?.localModelReady === true;
+      return nativeDiscordAiModelReady;
+    },
+    writeCoverMessage: async () => {
+      if (!context?.scopeApproved || !isHubPlaintext(plaintext)) return null;
+      const prepared = await preparePeerProseText(context.contextToken, plaintext, peerProtectedSheet.viewOnce);
+      return prepared?.coverText ?? null;
+    },
+  });
+  if (outcome.kind === "refused") {
+    showToast(outcome.reason);
+  } else if (outcome.kind === "write-failed") {
+    showToast("AI Covertext could not write a cover message");
+  } else {
+    peerProtectedSheet.coverText = outcome.coverMessage;
+    peerProtectedSheet.receipt = { direction: "sent", state: "prepared" };
+    peerProtectedSheet.status = "AI cover message is ready. Your private draft stays here until you send.";
+  }
+  render();
+}
+
 async function openPeerProtectedText(event: SubmitEvent): Promise<void> {
   event.preventDefault();
   const context = peerProtectedSheet.context;
@@ -9497,7 +9528,11 @@ function bindWorkspace(): void {
   });
   document.querySelector<HTMLButtonElement>("#native-discord-ai-covertext")?.addEventListener("click", () => {
     const requested = !nativeDiscordAiCovertextSelected;
-    void invoke<{ localModelReady: boolean; aiCovertextSelected: boolean }>("set_ai_covertext_selected", { selected: requested }).then((status) => {
+    void loadAiCarrierStatus().then((readiness) => {
+      nativeDiscordAiModelReady = readiness?.localModelReady === true;
+      if (requested && !nativeDiscordAiModelReady) throw new Error("model pack unavailable");
+      return invoke<{ localModelReady: boolean; aiCovertextSelected: boolean }>("set_ai_covertext_selected", { selected: requested });
+    }).then((status) => {
       nativeDiscordAiCovertextSelected = status.localModelReady && status.aiCovertextSelected;
       render();
       showToast(nativeDiscordAiCovertextSelected ? "AI Covertext will write the next cover on this device" : "Covertext will use the built-in writer");
@@ -13961,6 +13996,11 @@ if (!runningUnderVitest && !skipAutoBootstrap) {
     });
     window.addEventListener("error", (event) => { event.preventDefault(); containBackgroundFailure(); });
     window.addEventListener(unhandledRejectionEventType, handleUnhandledRejection);
+    void loadAiCarrierStatus().then((status) => {
+      nativeDiscordAiModelReady = status?.localModelReady === true;
+      nativeDiscordAiCovertextSelected = status?.aiCovertextSelected === true;
+      render();
+    });
     void bootstrap();
     scheduleOslChatBackgroundSync(1_000);
   }

@@ -10061,10 +10061,14 @@ fn spawn_lifecycle_tick(app: tauri::AppHandle, local_data_dir: std::path::PathBu
     ]);
 */
 
+struct AiCarrierModelPackRoot(std::path::PathBuf);
+
 #[tauri::command]
 fn ai_carrier_status(
     state: tauri::State<'_, AiCarrierState>,
+    model_pack_root: tauri::State<'_, AiCarrierModelPackRoot>,
 ) -> osl_privacy_hub::ai_carrier::AiCarrierStatus {
+    let _ = state.refresh_bundled_local_model(&model_pack_root.0);
     ai_carrier_status_for(&state)
 }
 
@@ -10606,7 +10610,9 @@ fn main() {
         app.manage(LocalCoverState::default());
         startup_breadcrumb("setup_step_31_local_cover_state_managed"); // STARTUP-TRACE
         let ai_carrier = AiCarrierState::default();
-        let _ = ai_carrier.ensure_bundled_local_model(&config_dir.join("cover-model"));
+        let ai_model_pack_root = config_dir.join("cover-model");
+        let _ = ai_carrier.ensure_bundled_local_model(&ai_model_pack_root);
+        app.manage(AiCarrierModelPackRoot(ai_model_pack_root));
         app.manage(ai_carrier);
         app.manage(ChatCaptureProtectionState::default());
         // Evaluate the bundled signed manifest once per launch, before the UI

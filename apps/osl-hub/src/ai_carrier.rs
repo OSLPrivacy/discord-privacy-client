@@ -4,8 +4,8 @@
 //! bundled UI can only learn whether local AI selection is currently ready.
 
 use crate::bundled_model_pack::{
-    ensure_bundled_model_pack, BundledCoverWriter, BundledModelPackError, BundledModelPackStatus,
-    CoverShapeConstraints,
+    bundled_model_pack_path, ensure_bundled_model_pack, verified_status, BundledCoverWriter,
+    BundledModelPackError, BundledModelPackStatus, CoverShapeConstraints,
 };
 use cover_ai::fallback::{select_carrier, CarrierCapabilities, CarrierDecision};
 use serde::Serialize;
@@ -101,6 +101,30 @@ impl AiCarrierState {
             .generate_cover_entropy(shape)
             .map(|entropy| Some(entropy.into_bytes()))
             .map_err(|_| "The local AI cover writer could not produce a cover".to_owned())
+    }
+
+    /// Recheck an already-installed pack without recreating a missing file.
+    /// Button presses use this path so uninstalling the pack takes effect on
+    /// the next press and can never silently reinstall itself around refusal.
+    pub fn refresh_bundled_local_model(
+        &self,
+        install_root: &Path,
+    ) -> Result<BundledModelPackStatus, BundledModelPackError> {
+        match verified_status(&bundled_model_pack_path(install_root)) {
+            Ok(status) => {
+                let writer = BundledCoverWriter::load(&status.artifact_path)?;
+                *self
+                    .local_writer
+                    .lock()
+                    .map_err(|_| BundledModelPackError::InvalidModelFile)? = Some(writer);
+                self.set_local_model_ready(true);
+                Ok(status)
+            }
+            Err(error) => {
+                self.set_local_model_ready(false);
+                Err(error)
+            }
+        }
     }
 
     /// Enable or revoke carrier preview for one opaque conversation scope.

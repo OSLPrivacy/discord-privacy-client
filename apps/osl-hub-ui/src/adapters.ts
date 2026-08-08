@@ -104,6 +104,12 @@ export interface PreparedPeerProseText {
   personToPersonE2ee: true;
   viewOnce: boolean;
 }
+export interface AiCarrierStatus {
+  localModelReady: boolean;
+  wordBankFallback: boolean;
+  cloudConsentGranted: boolean;
+  cloudCreditBalance: number | null;
+}
 export interface OpenedPeerProseText {
   plaintext: string;
   contextVerified: true;
@@ -726,6 +732,26 @@ export async function preparePeerProseText(
       })),
       "the prepared message did not match the expected shape");
   } catch (error) { recordBackendFailure("prepare_peer_prose_text", error, [plaintext]); return null; }
+}
+
+/** Read-only readiness for the verified on-device cover model. */
+export async function loadAiCarrierStatus(): Promise<AiCarrierStatus | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    const value = await invoke<unknown>("ai_carrier_status");
+    if (!isRecord(value)
+      || typeof value.localModelReady !== "boolean"
+      || typeof value.wordBankFallback !== "boolean"
+      || typeof value.cloudConsentGranted !== "boolean"
+      || !(value.cloudCreditBalance === null
+        || (typeof value.cloudCreditBalance === "number" && Number.isSafeInteger(value.cloudCreditBalance)))) {
+      return checkedBackendResponse("ai_carrier_status", null, "the local model status did not match the expected shape");
+    }
+    return value as unknown as AiCarrierStatus;
+  } catch (error) {
+    recordBackendFailure("ai_carrier_status", error);
+    return null;
+  }
 }
 
 export async function openPeerProseText(

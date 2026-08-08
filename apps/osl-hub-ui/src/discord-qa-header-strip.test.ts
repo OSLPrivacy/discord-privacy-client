@@ -34,7 +34,7 @@ describe("Discord QA header strip", () => {
     expect(production).toContain('coverWritingControlsMarkup("discord"');
     expect(production).toContain('covertextId: "native-discord-covertext"');
     expect(production).toContain('aiCovertextId: "native-discord-ai-covertext"');
-    expect(production).toContain("aiAvailable: true");
+    expect(production).toContain("aiAvailable: nativeDiscordAiModelReady");
     expect(coverControls).toContain("<button${covertextId}");
     expect(coverControls).toContain("<button${aiCovertextId}");
     expect(production).not.toContain("discord-qa-control");

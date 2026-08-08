@@ -64,7 +64,7 @@ describe("native Discord protected overlay routing", () => {
     expect(source).toContain('coverWritingControlsMarkup("discord"');
     expect(source).toContain('covertextId: "native-discord-covertext"');
     expect(source).toContain('aiCovertextId: "native-discord-ai-covertext"');
-    expect(source).toContain("aiAvailable: true");
+    expect(source).toContain("aiAvailable: nativeDiscordAiModelReady");
     expect(coverControls).toContain("<button${covertextId}");
     expect(coverControls).toContain("<button${aiCovertextId}");
     expect(coverControls).toContain("Model pack needed");
