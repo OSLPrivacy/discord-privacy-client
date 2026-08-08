@@ -38,10 +38,10 @@ pub mod proof_challenge;
 pub mod recipients;
 mod recoverable_file;
 pub mod sealer;
-/// Validates response bytes before service operations consume reply fields.
-pub mod service_reply;
 mod sender_filter_rollout;
 pub mod sensitive_memory;
+/// Validates response bytes before service operations consume reply fields.
+pub mod service_reply;
 pub mod signed_get;
 pub mod storage;
 pub mod unregister;
