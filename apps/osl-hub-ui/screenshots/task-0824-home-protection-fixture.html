@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <title>Home protection panel</title>
+  </head>
+  <body>
+    <main class="content-viewport home-dashboard">
+      <section class="home-primary">
+        <section class="home-protection-summary" aria-labelledby="route-heading" data-home-destination="protection-status">
+          <h1 id="route-heading" tabindex="-1">Home</h1>
+          <div class="setting-line home-overall-state" data-home-protection-state="protected">
+            <span><strong>Protected</strong><small>Device protection confirmed.</small></span>
+            <button class="button primary compact" type="button">Open OSL Chat</button>
+          </div>
+          <div class="settings-list home-protection-facts" aria-label="Protection status">
+            <div class="setting-line"><span><strong>Connected apps</strong><small>2 of 2 ready</small></span><span class="status-tag ok">Ready</span></div>
+            <div class="setting-line"><span><strong>Trusted people</strong><small>2 verified</small></span><button class="button compact" type="button">Manage</button></div>
+            <div class="setting-line"><span><strong>Recent protection</strong><small>New local OSL activity</small></span><button class="button compact" type="button">Review</button></div>
+          </div>
+        </section>
+      </section>
+    </main>
+  </body>
+</html>
