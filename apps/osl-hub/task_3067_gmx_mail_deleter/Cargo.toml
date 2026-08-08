@@ -1,0 +1,24 @@
+[package]
+name = "task-3067-gmx-mail-deleter"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# A standalone per-task command crate, the pattern `task_3406_place_text/`
+# established and TASK 3045 reused for the shared mail deleter. It does not copy
+# GMX's fill-in or the shared deleter: `src/main.rs` compiles
+# `../src/gmx_mail_deleter.rs`, `../src/shared_mail_deleter.rs`,
+# `../src/mail_owner_check.rs` and `../src/row_who_wrote_it.rs` straight out of
+# `apps/osl-hub/src/`, by path.
+#
+# It exists because the `osl-hub` lib does not parse on this branch:
+# `src/adapters/signal.rs` has an unclosed delimiter at line 799 that predates
+# this task (it is in the committed tree, untouched by TASK 3067), and the
+# crate's default features pull `cover-ai/local-model` -> `llama-cpp-sys-2`,
+# whose bindgen build script needs a libclang this box does not have. This crate
+# is what lets GMX's deleter be run and checked today, against the same bytes
+# the lib will build once that damage is repaired.
+[dependencies]
+serde = { version = "=1.0.228", features = ["derive"] }
+
+[workspace]

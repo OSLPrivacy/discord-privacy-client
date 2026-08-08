@@ -120,6 +120,8 @@ pub mod execution_consent;
 pub mod external_overlay;
 #[cfg(not(task3982_focused))]
 pub(crate) mod firefox_migration_coordinator;
+/// GMX Mail's fill-in of the shared mail deleter (TASK 3067).
+pub mod gmx_mail_deleter;
 #[cfg(feature = "core")]
 #[cfg(not(task3982_focused))]
 pub mod friend_account_reach;
