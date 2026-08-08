@@ -195,7 +195,7 @@ import { parseEnclaveAudience, type EnclaveAudience } from "./osl-collab";
 import { addFriendFailureStatus, bindFriendRemovalControls, bindMainWindowFocusChanges, friendHandshakeDetail, friendHandshakeSummary, friendInviteCardMarkup, friendRemovalButtonMarkup, friendTrustAction, friendVerificationCopy, inviteCopyFailureToast, onboardingPaintDecision, ownedConfirmationSubmitDisabled, RecoveryCaptureGate, removeHubFriend, shouldClearRemovedFriendChat, verificationSubmission, type FriendVerificationCopy } from "./ui-behavior";
 import { runRecoveryReveal, submitsRecoveryReveal } from "./recovery-reveal";
 import { addLegacyPhraseWrap, initialAccountRecoveryFlow, legacyMarkerRecoveryRefused, legacyRecoveryMigrationMarkup, recoveryScreenMarkup, submitRecoveredPassword, submitRecoveryPhrase, type AccountRecoveryDependencies, type AccountRecoveryFlow, type LegacyRecoveryMigration, type RecoveryMigrationDependencies } from "./account-recovery";
-import { RECOVERY_SHOW_ANYWAY_ACKNOWLEDGEMENT, recoveryKitReducer, recoveryKitSecretCardsMarkup, recoveryKitView, visibleRecoverySecrets, type RecoveryKitAction, type RecoveryKitState, type RecoveryKitView } from "./recovery-kit";
+import { RECOVERY_SHOW_ANYWAY_ACKNOWLEDGEMENT, acknowledgementAccepted, recoveryKitReducer, recoveryKitSecretCardsMarkup, recoveryKitView, visibleRecoverySecrets, type RecoveryKitAction, type RecoveryKitSecrets, type RecoveryKitState, type RecoveryKitView } from "./recovery-kit";
 import { applyRecoveryWordRetypeResult, everyRecoveryWordAnswered, initialRecoveryWordCheckState, recoveryWordCheckContinueDisabled, recoveryWordCheckMarkup, recoveryWordRetypeRequest, setRecoveryWordCheckAnswer, type RecoveryWordCheckState } from "./recovery-word-check";
 import { resumeOnboardingRoute } from "./onboarding-resume";
 import { createRecoveryKitUnsavedFlag } from "./recovery-kit-flag";
@@ -2807,7 +2807,7 @@ function recoveryExitsMarkup(view: RecoveryKitView): string {
       return `<button class="button" id="retry-recovery-protection" type="button">${escapeHtml(exit.label)}</button>`;
     }
     if (exit.id === "show-anyway") {
-      return `<div class="recovery-show-anyway"><label for="recovery-show-anyway-ack">${escapeHtml(view.acknowledgementPrompt ?? "")}</label><input id="recovery-show-anyway-ack" type="text" maxlength="32" autocomplete="off" autocapitalize="none" spellcheck="false"/><button class="button primary" id="recovery-show-anyway" type="button">${escapeHtml(exit.label)}</button></div>`;
+      return `<div class="recovery-show-anyway"><label for="recovery-show-anyway-ack">${escapeHtml(view.acknowledgementPrompt ?? "")}</label><input id="recovery-show-anyway-ack" type="text" maxlength="32" autocomplete="off" autocapitalize="none" spellcheck="false"/><button class="button primary" id="recovery-show-anyway" type="button" disabled aria-disabled="true">${escapeHtml(exit.label)}</button></div>`;
     }
     if (exit.id === "remind-me-later") {
       return `<button class="button" id="recovery-remind-later" type="button">${escapeHtml(exit.label)}</button>`;
@@ -3175,8 +3175,19 @@ function bindOnboarding(): void {
     render();
   });
   // T15-A7: the two exits that make the refusal escapable.
-  document.querySelector<HTMLButtonElement>("#recovery-show-anyway")?.addEventListener("click", () => {
-    const typed = document.querySelector<HTMLInputElement>("#recovery-show-anyway-ack")?.value ?? "";
+  const recoveryShowAnywayAcknowledgement = document.querySelector<HTMLInputElement>("#recovery-show-anyway-ack");
+  const recoveryShowAnyway = document.querySelector<HTMLButtonElement>("#recovery-show-anyway");
+  const syncRecoveryShowAnyway = (): void => {
+    if (!recoveryShowAnyway) return;
+    const disabled = !acknowledgementAccepted(recoveryShowAnywayAcknowledgement?.value ?? "");
+    recoveryShowAnyway.disabled = disabled;
+    if (disabled) recoveryShowAnyway.setAttribute("aria-disabled", "true");
+    else recoveryShowAnyway.removeAttribute("aria-disabled");
+  };
+  recoveryShowAnywayAcknowledgement?.addEventListener("input", syncRecoveryShowAnyway);
+  syncRecoveryShowAnyway();
+  recoveryShowAnyway?.addEventListener("click", () => {
+    const typed = recoveryShowAnywayAcknowledgement?.value ?? "";
     if (applyRecoveryKitAction({ kind: "show-anyway", acknowledgement: typed }) === "rejected") {
       showToast(`Type “${RECOVERY_SHOW_ANYWAY_ACKNOWLEDGEMENT}” exactly to see your recovery kit without proven capture resistance`);
       return;
@@ -10229,6 +10240,9 @@ type OslHubUiTestStatePatch = {
   hubIdentitiesLoad?: IdentityListLoad;
   bootstrapStatus?: BootstrapStatus;
   enclaveAudienceRecords?: unknown[];
+  /** Seed the one-shot recovery material so focused UI tests can drive the
+   * real warning controls without creating an account first. */
+  recoveryBundle?: RecoveryKitSecrets | null;
 };
 
 function testHubPerson(person: Partial<HubPerson> & { personId: string }): HubPerson {
@@ -10304,6 +10318,11 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   hubIdentitiesLoad = patch.hubIdentitiesLoad ?? (patch.hubIdentities ? "loaded" : "pending");
   identityListRefreshInFlight = false;
   privateEnclaveAudiences = parsedEnclaveAudiences(patch.enclaveAudienceRecords ?? []);
+  recoveryBundle = patch.recoveryBundle ?? null;
+  recoverySavedAcknowledged = false;
+  recoveryNoSecretAcknowledged = false;
+  recoveryShownWithoutProtection = false;
+  recoveryCaptureGate.invalidate();
   notificationsEnabled = patch.notificationsEnabled ?? false;
   notificationPreviewContent = patch.notificationPreviewContent ?? true;
   appNotifications = patch.appNotifications ?? [];
