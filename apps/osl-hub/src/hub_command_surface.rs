@@ -2008,7 +2008,6 @@ mod tauri_registration_surface_tests {
             &["reset_hub_main_password_after_recovery"],
         );
     }
-
     /// TASK 0311 — choosing no public name must reach the one-use private-link
     /// primitive through the shipping webview. Handler registration alone is
     /// insufficient: Tauri rejects the call unless both ACL surfaces agree.

@@ -3685,7 +3685,6 @@ function chooseAppsFromQuickTour(): QuickTourControlResult {
   onboardingTourStep += 1;
   return quickTourControlResult("Choose apps", true);
 }
-
 function rememberIdentityDiscoveryChoice(choice: IdentityDiscoveryChoice): void {
   identityDiscoveryChoice = choice;
   localStorage.setItem(identityDiscoveryChoiceStorageKey, choice);
@@ -3804,7 +3803,6 @@ function bindRecoveryWordCheck(): void {
     render();
   });
 }
-
 function bindOnboarding(): void {
   document.querySelectorAll<HTMLButtonElement>("[data-onboarding]").forEach((button) => button.addEventListener("click", () => {
     handleOnboardingRouteAction(button.dataset.onboarding);
