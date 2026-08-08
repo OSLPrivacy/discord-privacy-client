@@ -6,6 +6,15 @@
 //! narrow and read-only: bind a real top-level Outlook window and read its
 //! title through Win32.
 
+use crate::native_outlook_desktop_mail_delete::{
+    OutlookDesktopMailRow, OutlookDesktopMailTrashSurface,
+};
+use crate::services::{
+    open_shared_mailbox_message, read_shared_mailbox_folders, read_shared_mailbox_messages,
+    MailboxFolderCandidate, MailboxMessageCandidate, MailboxReaderSnapshot, SharedMailboxFolder,
+    SharedMailboxMessage, SharedMailboxMessageSummary,
+};
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct OutlookDesktopControlTarget {
     pub name: &'static str,
@@ -289,12 +298,9 @@ mod tests {
 //
 // The mailbox reader is deliberately local and read-only. It adapts Outlook
 // desktop message facts into the shared mailbox reader contract used by Scrub.
-
-use crate::services::{
-    open_shared_mailbox_message, read_shared_mailbox_folders, read_shared_mailbox_messages,
-    MailboxFolderCandidate, MailboxMessageCandidate, MailboxReaderSnapshot, SharedMailboxFolder,
-    SharedMailboxMessage, SharedMailboxMessageSummary,
-};
+// The deleting half is `crate::native_outlook_desktop_mail_delete` (TASK 3055);
+// `outlook_desktop_trash_surface_from_mailbox` below is the bridge, so one
+// seeded Outlook desktop mailbox feeds the reader and the deleter alike.
 
 pub const OUTLOOK_DESKTOP_MAIL_READER_ID: &str = "outlook-desktop-shared-mailbox-reader";
 pub const OUTLOOK_DESKTOP_SERVICE_ID: &str = "outlook";
@@ -368,6 +374,25 @@ impl OutlookDesktopMailbox {
     }
 }
 
+/// Carries all mailbox rows, including existing Deleted Items rows, into the
+/// Outlook desktop fill-in of the shared mail deleter.
+pub fn outlook_desktop_trash_surface_from_mailbox(
+    mailbox: &OutlookDesktopMailbox,
+) -> Result<OutlookDesktopMailTrashSurface, String> {
+    let mut rows = Vec::new();
+    for folder in mailbox.read_folders()? {
+        for summary in mailbox.read_messages(&folder.folder_id)? {
+            rows.push(OutlookDesktopMailRow::new(
+                summary.folder_id,
+                summary.message_id,
+                summary.subject,
+                summary.sender,
+            ));
+        }
+    }
+    Ok(OutlookDesktopMailTrashSurface::new(rows))
+}
+
 pub fn seeded_outlook_desktop_scrub_mailbox() -> OutlookDesktopMailbox {
     OutlookDesktopMailbox::new(
         OUTLOOK_DESKTOP_SEEDED_OWNER,
@@ -425,7 +450,6 @@ pub fn seeded_outlook_desktop_scrub_mailbox() -> OutlookDesktopMailbox {
         ),
     )
 }
-
 pub const OUTLOOK_DESKTOP_TASK_1286_MARKER: &str = "OSL-OUTLOOK-DESKTOP-1286";
 pub const OUTLOOK_DESKTOP_TASK_1286_COVER_WORDS: &str = "OSL-OUTLOOK-DESKTOP-1286 cover message";
 

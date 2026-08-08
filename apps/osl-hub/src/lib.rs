@@ -168,6 +168,10 @@ pub mod native_attachment_jobs_bridge;
 pub mod native_discord_adapter;
 #[cfg(not(task3982_focused))]
 pub mod native_outlook_adapter;
+// TASK 3055: the Outlook desktop app's fill-in of gate 3045's shared mail
+// deleter. Gated with the reader it bridges to.
+#[cfg(feature = "core")]
+pub mod native_outlook_desktop_mail_delete;
 pub mod native_signal_adapter;
 pub mod signal_place_reader;
 pub mod signal_surface_finder;
