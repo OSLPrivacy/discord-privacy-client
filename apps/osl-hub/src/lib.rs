@@ -227,6 +227,11 @@ pub mod scrub_hosted {
     #[cfg(not(task3982_focused))]
     pub mod yahoo_mail;
 }
+// The catalogue-wide Ready label (TASK 4265). Dependency-free on purpose: the
+// release check runs it directly, so a service that is restored but empty
+// cannot be labelled Ready even in a build where the rest of the crate is
+// unavailable.
+pub mod release_ready_labels;
 #[cfg(feature = "core")]
 #[cfg(not(task3982_focused))]
 pub mod remove_everything;
