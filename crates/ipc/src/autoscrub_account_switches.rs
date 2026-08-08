@@ -482,7 +482,6 @@ impl AutoScrubAccountSwitchSurface {
     pub fn schedules(&self) -> &[AutoScrubSchedule] {
         self.pro.schedules()
     }
-
     /// Every saved on-record.
     pub fn records(&self) -> &[AutoScrubAccountRecord] {
         &self.records
