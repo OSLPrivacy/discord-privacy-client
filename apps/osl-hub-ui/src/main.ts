@@ -240,6 +240,7 @@ import { initializeThemePreference, themeStorageKey, type ThemeChoice } from "./
 import { defaultWindowSoundsSettings, loadWindowSoundsSettings, saveWindowSoundsSettings, windowSoundsSettingsMarkup, type WindowPosition, type WindowSoundsSettings } from "./window-sounds-settings";
 import { accentChoices, appearanceSettingsMarkup, avatarChoices, backgroundChoices, loadAppearancePreferences, resetAppearancePreferences, saveAppearancePreferences, windowPositionChoices, type AppearancePreferences } from "./appearance-preferences";
 import { inDomTooltipMarkup } from "./in-dom-tooltip";
+import { coverWritingControlsMarkup } from "./cover-writing-controls";
 import { applyOslChatDraftToElement, firstPartyOslSurfaceContract, OSL_CHAT_MAX_DRAFT_BYTES, oslChatDraftBytes, oslChatHandshakeConfirmed, oslChatsViewMarkup, senderReceiptStateFor, submitsOslChatDraft, type OslChatMessage } from "./osl-chats-view";
 import { createOslChatDeliveryRuntime, mergeOslChatTimeline, oslChatHistoryMessages, oslChatOpenRefusalMessage, pruneExpiredOslChatMessages, receivedOslChatBatchMessage, type OslChatDeliveryHost } from "./osl-chat-runtime";
 import { peopleReverificationNoticeMarkup } from "./people-reverification-notice";
@@ -4951,7 +4952,7 @@ function nativeDiscordHeaderControls(): string {
   const composerUnreachableNotice = nativeDiscordComposerUnreachableNotice();
   if (!discordQaShell) {
     const inactive = nativeDiscordProtectionActive ? "" : "disabled";
-    return `<div class="native-discord-header-controls" aria-label="Discord privacy controls">${composerUnreachableNotice}<button class="header-protection-control burn in-dom-tooltip-anchor" data-open-burn="chat" type="button" ${inactive}>Burn${inDomTooltipMarkup("Burn this local OSL chat")}</button><button class="header-protection-control in-dom-tooltip-anchor ${nativeDiscordCovertextEnabled ? "active" : ""}" id="native-discord-covertext" type="button" aria-pressed="${nativeDiscordCovertextEnabled}">Covertext${inDomTooltipMarkup(nativeDiscordCovertextEnabled ? "Covertext is on" : "Covertext is off")}</button><button class="header-protection-control in-dom-tooltip-anchor" id="native-discord-ai-covertext" type="button" disabled>AI Covertext <small>Model pack needed</small>${inDomTooltipMarkup("Requires a verified local model pack; no cloud AI is used")}</button></div>`;
+    return `<div class="native-discord-header-controls" aria-label="Discord privacy controls">${composerUnreachableNotice}<button class="header-protection-control burn in-dom-tooltip-anchor" data-open-burn="chat" type="button" ${inactive}>Burn${inDomTooltipMarkup("Burn this local OSL chat")}</button>${coverWritingControlsMarkup("discord", { covertextEnabled: nativeDiscordCovertextEnabled, covertextId: "native-discord-covertext", aiCovertextId: "native-discord-ai-covertext" })}</div>`;
   }
   const context = peerProtectedSheet.context;
   const verifiedPeer = context

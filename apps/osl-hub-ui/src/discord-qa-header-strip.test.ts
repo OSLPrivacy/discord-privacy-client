@@ -27,9 +27,15 @@ describe("Discord QA header strip", () => {
       controls.indexOf("const context ="),
     );
     expect(production).toContain('data-open-burn="chat"');
-    expect(production).toContain('id="native-discord-covertext"');
-    expect(production).toContain('id="native-discord-ai-covertext"');
+    expect(production).toContain('coverWritingControlsMarkup("discord"');
+    expect(production).toContain('covertextId: "native-discord-covertext"');
+    expect(production).toContain('aiCovertextId: "native-discord-ai-covertext"');
     expect(production).not.toContain("discord-qa-control");
+    // Transcript visibility remains QA-only; the shipping branch shares only
+    // the two cover-writing buttons with the other composer surfaces.
+    expect(production).not.toContain("${transcriptVisibilityControl}");
+    expect(controls.match(/\$\{transcriptVisibilityControl\}/gu)?.length).toBe(1);
+    expect(controls.match(/id="discord-qa-transcript-visibility"/gu)?.length).toBe(1);
     expect(controls).toContain('data-open-burn="account"');
     expect(controls).toContain('data-open-burn="app"');
     expect(controls).toContain('aria-label="Account Burn"');

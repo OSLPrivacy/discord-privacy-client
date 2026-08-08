@@ -60,10 +60,12 @@ describe("native Discord protected overlay routing", () => {
     const styles = readFileSync(fileURLToPath(new URL("./styles.css", import.meta.url)), "utf8");
     expect(source).toContain('class="native-discord-header-controls"');
     expect(source).toContain('data-open-burn="chat"');
-    expect(source).toContain('id="native-discord-covertext"');
-    expect(source).toContain('id="native-discord-ai-covertext"');
-    expect(source).toContain("Model pack needed");
-    expect(source).toContain("no cloud AI is used");
+    expect(source).toContain('coverWritingControlsMarkup("discord"');
+    expect(source).toContain('covertextId: "native-discord-covertext"');
+    expect(source).toContain('aiCovertextId: "native-discord-ai-covertext"');
+    const controls = readFileSync(fileURLToPath(new URL("./cover-writing-controls.ts", import.meta.url)), "utf8");
+    expect(controls).toContain("Model pack needed");
+    expect(controls).toContain("no cloud AI is used");
     expect(styles).toContain(".native-discord-header-controls");
     expect(overlay).not.toContain('id="ai-covertext-mode"');
     expect(overlay).toContain('class="overlay-runtime-controls" hidden');
