@@ -140,10 +140,13 @@ pub mod invite_clipboard;
 /// verdict is testable in every build that can compile this crate.
 #[cfg(not(task3982_focused))]
 pub mod landing_oracle;
+/// TASK 3044's mail owner check, in its own module so the shared mail deleter
+/// can reach it without dragging `service_connections`' mail-website plumbing
+/// in. Re-exported from `service_connections`, so every path there still reads.
+pub mod mail_owner_check;
 /// When the hidden main window may be shown. Pure, and deliberately not behind
 /// `desktop`: the reveal rule is what decides whether the app is visible at all,
 /// so it is testable in every build that can compile this crate.
-pub mod mail_owner_check;
 pub mod main_window_reveal;
 #[cfg(feature = "core")]
 pub mod look_window;
@@ -217,6 +220,7 @@ pub mod scrub_hosted {
     pub mod place_scope;
     #[cfg(not(task3982_focused))]
     pub mod proton_mail;
+    pub mod proton_mail_deleter;
     pub mod reader;
     pub mod verify_surface;
     pub mod x_web;

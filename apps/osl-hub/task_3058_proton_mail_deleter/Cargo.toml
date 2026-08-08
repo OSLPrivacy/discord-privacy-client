@@ -1,0 +1,22 @@
+[package]
+name = "task-3058-proton-mail-deleter"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# A standalone per-task command crate, the pattern `task_3406_place_text/` set
+# and `task_3045_shared_mail_deleter/` used for the shared mail deleter itself.
+# It copies nothing: `src/main.rs` compiles the real
+# `../src/scrub_hosted/proton_mail_deleter.rs`, `../src/shared_mail_deleter.rs`,
+# `../src/mail_owner_check.rs` and `../src/row_who_wrote_it.rs` by path, so the
+# run and the checks are against the same bytes the lib will build.
+#
+# It exists because the `osl-hub` lib does not compile on this branch, and did
+# not before this task: `src/lib.rs` declares `pub mod service_connections;`
+# twice, and `src/services.rs` defines `MailboxFolderCandidate`,
+# `SharedMailboxMessageSummary` and `read_shared_mailbox_messages` twice, all of
+# it merge damage present at HEAD before any file here was touched.
+[dependencies]
+serde = { version = "=1.0.228", features = ["derive"] }
+
+[workspace]
