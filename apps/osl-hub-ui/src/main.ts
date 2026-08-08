@@ -6829,10 +6829,10 @@ export function privacyDestinationContent(): string {
   const policyCards = policyGroups.map(([name, detail, state]) => `<article class="privacy-policy-card">${statusTag(state)}<h3>${name}</h3><p>${detail}</p></article>`).join("");
   const toolRows = tools.map(([name, detail], index) => `<article class="setting-line privacy-tool-row"><span><strong>${name}</strong><small>${detail}</small></span>${statusTag(index === 0 ? "Available" : proActive ? "Pro planned" : "Pro")}</article>`).join("");
   const privacyDisclosures = [
-    ["Scrub reading", "Scrub reads only the files, exports, and account views you choose for review; it does not read other apps or accounts."],
-    ["Result text storage and removal", "Result text is kept only in the local encrypted Scrub index and is removed when you clear results or cancel the import."],
-    ["Payment details", "OSL never stores your payment details or payment method."],
-    ["Payment company data", "The payment company may receive checkout, billing, fraud, tax, and support data needed to process payment."],
+    ["What Scrub reads", "Scrub reads only the files, exports, and account views you choose for review. It does not read your other apps or accounts."],
+    ["What happens to result text", "Result text is kept only in the encrypted Scrub index on this device, and it is removed when you clear results or cancel the import."],
+    ["Card details", "OSL does not store card details. You type your card on the payment company's own checkout page, so it never reaches OSL."],
+    ["What the payment company gets", "The payment company may receive checkout, billing, fraud, tax, and support data it needs to take the payment."],
   ] as const;
   const disclosureRows = privacyDisclosures.map(([name, detail]) => `<div class="setting-line"><span><strong>${name}</strong><small>${detail}</small></span></div>`).join("");
   const cleanupState = proActive ? "Manual queue planned" : "Pro manual queue";
