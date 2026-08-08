@@ -492,6 +492,10 @@ pub enum CipherStoreError {
         default: &'static str,
         build: &'static str,
     },
+    /// The local owner explicitly stopped a multipart upload before another
+    /// part or completion request could be sent.
+    #[error("attachment upload cancelled")]
+    UploadCancelled,
 }
 
 const MAX_BLOB_BYTES: usize = 64 * 1024;
@@ -634,14 +638,22 @@ pub struct ProChunkedUploadReport {
     pub completed_file: ProChunkedUploadFile,
 }
 
-/// The live, local-only counters for one active Pro attachment upload.
+/// The live, local-only counters and cancellation switch for one Pro upload.
 ///
-/// The handle is deliberately shared: the upload runs on a worker thread while
-/// the native command that owns it can query the same values without waiting
-/// for a multipart receipt.  Values are plaintext-free byte counts only.
+/// A caller keeps this handle while its worker is uploading.  Cancelling is
+/// cooperative at part boundaries: a receipt already accepted by the store is
+/// never rolled back, while no later part or completion request is started.
 #[derive(Clone, Default)]
 pub struct ProChunkedUploadProgress {
-    inner: Arc<Mutex<ProChunkedUploadProgressSnapshot>>,
+    inner: Arc<Mutex<ProChunkedUploadProgressState>>,
+}
+
+#[derive(Default)]
+struct ProChunkedUploadProgressState {
+    snapshot: ProChunkedUploadProgressSnapshot,
+    active_uploads: u32,
+    unfinished_local_parts: u32,
+    cancelled: bool,
 }
 
 /// A point-in-time view of a Pro attachment upload.
@@ -649,52 +661,96 @@ pub struct ProChunkedUploadProgress {
 pub struct ProChunkedUploadProgressSnapshot {
     pub uploaded_bytes: u64,
     pub total_bytes: u64,
-    /// Bytes represented by completed source pieces.  It intentionally tracks
+    /// Bytes represented by completed source pieces. It intentionally tracks
     /// the same byte total as `uploaded_bytes`, allowing callers to reconcile
-    /// the per-piece accounting without exposing file contents.
+    /// per-piece accounting without exposing file contents.
     pub completed_pieces: u64,
 }
 
 impl ProChunkedUploadProgress {
-    /// Return the current counters without waiting for the network upload.
+    /// Return the current byte counters without waiting for the worker.
     pub fn query(&self) -> ProChunkedUploadProgressSnapshot {
-        *self.inner.lock().expect("upload progress mutex poisoned")
+        self.inner
+            .lock()
+            .expect("upload progress mutex poisoned")
+            .snapshot
     }
 
-    /// Clear a terminal or cancelled upload so it cannot be mistaken for an
-    /// active transfer by a subsequent query.
+    /// Number of uploads currently owned by this handle (zero or one).
+    pub fn active_upload_count(&self) -> u32 {
+        self.inner
+            .lock()
+            .expect("upload progress mutex poisoned")
+            .active_uploads
+    }
+
+    /// Number of completed pieces represented by the durable local resume
+    /// record. It is zero after terminal completion or cancellation.
+    pub fn unfinished_local_part_count(&self) -> u32 {
+        self.inner
+            .lock()
+            .expect("upload progress mutex poisoned")
+            .unfinished_local_parts
+    }
+
+    /// Request cancellation. The active worker observes this before opening
+    /// the next part and before completing the multipart session.
+    pub fn cancel(&self) -> bool {
+        let mut state = self.inner.lock().expect("upload progress mutex poisoned");
+        if state.active_uploads == 0 {
+            return false;
+        }
+        state.cancelled = true;
+        true
+    }
+
+    /// Clear a terminal upload so it cannot be mistaken for an active one.
     pub fn clear(&self) {
         *self.inner.lock().expect("upload progress mutex poisoned") =
-            ProChunkedUploadProgressSnapshot::default();
+            ProChunkedUploadProgressState::default();
     }
 
     fn begin(&self, total_bytes: u64) {
         *self.inner.lock().expect("upload progress mutex poisoned") =
-            ProChunkedUploadProgressSnapshot {
-                uploaded_bytes: 0,
-                total_bytes,
-                completed_pieces: 0,
+            ProChunkedUploadProgressState {
+                snapshot: ProChunkedUploadProgressSnapshot {
+                    uploaded_bytes: 0,
+                    total_bytes,
+                    completed_pieces: 0,
+                },
+                active_uploads: 1,
+                unfinished_local_parts: 0,
+                cancelled: false,
             };
     }
 
     fn wrote_piece(&self, size: u64) {
-        let mut snapshot = self.inner.lock().expect("upload progress mutex poisoned");
-        snapshot.uploaded_bytes = snapshot.uploaded_bytes.saturating_add(size);
-        snapshot.completed_pieces = snapshot.completed_pieces.saturating_add(size);
+        let mut state = self.inner.lock().expect("upload progress mutex poisoned");
+        state.snapshot.uploaded_bytes = state.snapshot.uploaded_bytes.saturating_add(size);
+        state.snapshot.completed_pieces = state.snapshot.completed_pieces.saturating_add(size);
+    }
+
+    fn set_unfinished_local_parts(&self, count: usize) {
+        self.inner
+            .lock()
+            .expect("upload progress mutex poisoned")
+            .unfinished_local_parts = u32::try_from(count).unwrap_or(u32::MAX);
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.inner.lock().expect("upload progress mutex poisoned").cancelled
     }
 }
 
 /// Local registry of uploads which have started but have not reached a
-/// terminal multipart result.  It carries only byte counters, so a native
-/// progress query never needs to retain a filename or any attachment data.
+/// terminal multipart result. It carries only byte counters, so a native
+/// progress query never needs to retain a filename or attachment data.
 #[derive(Clone, Default)]
 pub struct ActiveProChunkedUploadProgress {
     inner: Arc<Mutex<Vec<ProChunkedUploadProgress>>>,
 }
 
 impl ActiveProChunkedUploadProgress {
-    /// Start tracking `progress` as an active upload.  Starting the counters
-    /// here makes the entry observable before the first HTTP request returns.
     pub fn begin(&self, progress: &ProChunkedUploadProgress, total_bytes: u64) {
         progress.begin(total_bytes);
         self.inner
@@ -703,7 +759,6 @@ impl ActiveProChunkedUploadProgress {
             .push(progress.clone());
     }
 
-    /// Snapshot every upload which is still active.
     pub fn query(&self) -> Vec<ProChunkedUploadProgressSnapshot> {
         self.inner
             .lock()
@@ -713,7 +768,6 @@ impl ActiveProChunkedUploadProgress {
             .collect()
     }
 
-    /// Remove a completed, cancelled, or failed upload from the active list.
     pub fn finish(&self, progress: &ProChunkedUploadProgress) {
         self.inner
             .lock()
@@ -771,6 +825,12 @@ struct ExactPartReader<R> {
 
 impl<R: Read> Read for ExactPartReader<R> {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if self.progress.as_ref().is_some_and(ProChunkedUploadProgress::is_cancelled) {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "attachment upload cancelled",
+            ));
+        }
         if self.remaining == 0 || buffer.is_empty() {
             return Ok(0);
         }
@@ -1337,6 +1397,56 @@ impl CipherStoreClient {
         result.map(|report| (report, final_snapshot))
     }
 
+    /// Resume a Pro upload with live progress and a safe local cancel action.
+    ///
+    /// Cancellation removes the durable checkpoint containing unfinished local
+    /// part receipts, but never deletes an already-completed store object.
+    pub fn upload_attachment_file_pro_chunked_with_resume_record_and_progress(
+        &self,
+        mut sealed: File,
+        ttl_seconds: u32,
+        fetch_token: &[u8; FETCH_TOKEN_BYTES],
+        resume_record_path: impl AsRef<Path>,
+        progress: &ProChunkedUploadProgress,
+    ) -> Result<ProChunkedUploadReport, CipherStoreError> {
+        if !is_valid_ttl(ttl_seconds) {
+            return Err(CipherStoreError::BadTtl(ttl_seconds));
+        }
+        let length = sealed.metadata()?.len();
+        if length == 0 || length > MAX_SEALED_ATTACHMENT_BYTES {
+            return Err(CipherStoreError::BlobTooLarge {
+                got: usize::try_from(length).unwrap_or(usize::MAX),
+                max: MAX_SEALED_ATTACHMENT_BYTES as usize,
+            });
+        }
+        sealed.seek(SeekFrom::Start(0))?;
+        let path = resume_record_path.as_ref();
+        progress.begin(length);
+        let mut result = self.upload_attachment_multipart(
+            sealed,
+            length,
+            ttl_seconds,
+            fetch_token,
+            Some(path),
+            Some(progress.clone()),
+        );
+        // A cancellation can arrive while reqwest is draining the current
+        // request body.  Normalize that transport interruption to the same
+        // local outcome as a boundary cancellation.
+        if result.is_err() && progress.is_cancelled() {
+            result = Err(CipherStoreError::UploadCancelled);
+        }
+        if matches!(&result, Err(CipherStoreError::UploadCancelled)) {
+            match fs::remove_file(path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        progress.clear();
+        result
+    }
+
     fn upload_attachment_multipart(
         &self,
         sealed: File,
@@ -1346,6 +1456,9 @@ impl CipherStoreClient {
         resume_record_path: Option<&Path>,
         progress: Option<ProChunkedUploadProgress>,
     ) -> Result<ProChunkedUploadReport, CipherStoreError> {
+        if progress.as_ref().is_some_and(ProChunkedUploadProgress::is_cancelled) {
+            return Err(CipherStoreError::UploadCancelled);
+        }
         let token = hex_lower(fetch_token);
         let checkpoint = match resume_record_path {
             Some(path) => read_pro_chunked_upload_resume_record(path)?,
@@ -1373,6 +1486,9 @@ impl CipherStoreClient {
                             "multipart resume record has invalid completed pieces".to_owned(),
                         ));
                     }
+                }
+                if let Some(progress) = &progress {
+                    progress.set_unfinished_local_parts(record.completed_piece_numbers.len());
                 }
                 (record.upload_id, None, plan, record.completed_piece_numbers)
             }
@@ -1414,6 +1530,9 @@ impl CipherStoreClient {
         let result = (|| {
             let mut finished_pieces = Vec::with_capacity(plan.len());
             for (part_number, offset, part_length) in plan {
+                if progress.as_ref().is_some_and(ProChunkedUploadProgress::is_cancelled) {
+                    return Err(CipherStoreError::UploadCancelled);
+                }
                 if completed_piece_numbers.contains(&part_number) {
                     continue;
                 }
@@ -1454,7 +1573,18 @@ impl CipherStoreClient {
                         completed_piece_numbers: completed_piece_numbers.clone(),
                     }
                     .save(path)?;
+                    if let Some(progress) = &progress {
+                        progress.set_unfinished_local_parts(completed_piece_numbers.len());
+                        // The native Cancel command runs on another thread.
+                        // Give it a short boundary before constructing the
+                        // next request, so a receipt cannot race it into a
+                        // new part after its local checkpoint is visible.
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
                 }
+            }
+            if progress.as_ref().is_some_and(ProChunkedUploadProgress::is_cancelled) {
+                return Err(CipherStoreError::UploadCancelled);
             }
             if sealed.metadata()?.len() != length {
                 return Err(CipherStoreError::Io(io::Error::new(
@@ -2362,5 +2492,32 @@ mod tests {
         );
         println!("TASK4911 tor_stall bytes_moving=0 stall_seconds=180 result=TorAttachmentStalled");
         println!("TASK4911 direct_attachment_timeout_seconds=120");
+    }
+
+    #[test]
+    fn task_0649_throttled_37_byte_upload_reports_and_clears_live_progress() {
+        let progress = ProChunkedUploadProgress::default();
+        progress.begin(37);
+        let mut throttled_piece = ExactPartReader {
+            inner: io::Cursor::new(vec![0x49; 37]),
+            remaining: 37,
+            progress: Some(progress.clone()),
+        };
+        let mut wire_buffer = [0_u8; 17];
+        assert_eq!(throttled_piece.read(&mut wire_buffer).unwrap(), 17);
+
+        let live = progress.query();
+        assert!(live.uploaded_bytes > 0 && live.uploaded_bytes < 37);
+        assert_eq!(live.total_bytes, 37);
+        assert_eq!(live.completed_pieces, live.uploaded_bytes);
+        println!(
+            "TASK0649 live uploaded_bytes={} total_bytes={} completed_pieces={}",
+            live.uploaded_bytes, live.total_bytes, live.completed_pieces
+        );
+
+        progress.clear();
+        let cleared = progress.query();
+        assert_eq!(cleared.uploaded_bytes, 0);
+        println!("TASK0649 cleared uploaded_bytes={}", cleared.uploaded_bytes);
     }
 }
