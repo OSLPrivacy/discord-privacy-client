@@ -1,3 +1,8 @@
+/**
+ * The direct, first-party OSL composers that accept an image pasted from the
+ * desktop clipboard.  Keep this list beside the registration code so a newly
+ * added composer cannot silently miss the intake path.
+ */
 export const OSL_CLIPBOARD_IMAGE_COMPOSER_VIEWS = [
   { viewId: "osl-chat", composerSelector: "#osl-chat-draft" },
   { viewId: "osl-mail", composerSelector: "#osl-mail-body" },
@@ -5,6 +10,7 @@ export const OSL_CLIPBOARD_IMAGE_COMPOSER_VIEWS = [
 
 export type OslClipboardImageComposerView = typeof OSL_CLIPBOARD_IMAGE_COMPOSER_VIEWS[number];
 
+/** A deliberately direct list for capability checks and release evidence. */
 export function directClipboardImageComposerViews(): readonly OslClipboardImageComposerView[] {
   return OSL_CLIPBOARD_IMAGE_COMPOSER_VIEWS;
 }
@@ -25,6 +31,7 @@ function base64(bytes: ArrayBuffer): string {
   return btoa(text);
 }
 
+/** Register the same image-only paste intake on every first-party composer. */
 export function registerClipboardImagePasting(
   find: (selector: string) => PasteTarget | null,
   intake: (view: OslClipboardImageComposerView, imageBytesB64: string, mimeType: "image/png" | "image/jpeg") => Promise<void>,
