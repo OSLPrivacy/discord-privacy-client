@@ -223,6 +223,7 @@ import { burnRevocationReceipt, type BurnRevocationReceipt } from "./burn-revoca
 import { senderReceiptStatus } from "./receipt-status";
 import { parseAttachmentProgressEvent, type AttachmentProgressEvent } from "./attachment-progress";
 import { attachOslChatComposerDragAndDrop, createOslChatAttachmentTray, type OslChatAttachmentTrayState } from "./chat-attachment-drop";
+import { initialBurnReviewScreenState, type BurnReviewScreenState } from "./burn-review-screen";
 import { destructStatusMarkup, type ServerDestructStatus } from "./destruct-status";
 import { offlineCapabilityStatus, type OfflineUnavailableCapability, type OslConnectionState } from "./offline-capability-status";
 import type { NativeDiscordOverlayOpenedBatch } from "./overlay-state";
@@ -812,6 +813,8 @@ let burnBusy = false;
 let burnResult: BurnResult | null = null;
 let serviceBurnReadiness: HubServiceBurnReadiness | null = null;
 let serviceBurnReadinessBusy = false;
+let burnReviewScreenOpen = false;
+let burnReviewScreenState: BurnReviewScreenState = initialBurnReviewScreenState();
 let ownedConfirmation: OwnedConfirmation | null = null;
 let ownedConfirmationBusy = false;
 let ownedConfirmationError = "";

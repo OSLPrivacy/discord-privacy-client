@@ -1,0 +1,213 @@
+import { createHash } from "node:crypto";
+import { existsSync, globSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { describe, expect, it } from "vitest";
+import { burnReviewScreenMarkup, initialBurnReviewScreenState, selectBurnReviewSide, toggleBurnReviewHideOtherPeople } from "./burn-review-screen";
+
+const WINDOW_SIZE = { width: 520, height: 640 } as const;
+const SCREENSHOT_PATH = path.resolve("screenshots/task-0541-burn-review.png");
+const TEST_BUDGET_MS = 60_000;
+
+class CDPClient {
+  private nextId = 1;
+  private pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
+  private listeners = new Map<string, Set<(params: unknown, sessionId?: string) => void>>();
+
+  constructor(private readonly ws: WebSocket) {
+    ws.addEventListener("message", (event) => this.onMessage(event));
+  }
+
+  private onMessage(event: MessageEvent): void {
+    const message = JSON.parse(String(event.data));
+    if (message.id !== undefined) {
+      const pending = this.pending.get(message.id);
+      if (!pending) return;
+      this.pending.delete(message.id);
+      if (message.error) pending.reject(new Error(message.error.message));
+      else pending.resolve(message.result);
+      return;
+    }
+    if (!message.method) return;
+    const listeners = this.listeners.get(message.method);
+    if (listeners) for (const listener of listeners) listener(message.params, message.sessionId);
+  }
+
+  send<T = any>(method: string, params: Record<string, unknown> = {}, sessionId?: string): Promise<T> {
+    const id = this.nextId++;
+    return new Promise((resolve, reject) => {
+      this.pending.set(id, { resolve: resolve as (value: unknown) => void, reject });
+      const payload: Record<string, unknown> = { id, method, params };
+      if (sessionId) payload.sessionId = sessionId;
+      this.ws.send(JSON.stringify(payload));
+    });
+  }
+
+  once(method: string, predicate: (params: unknown, sessionId?: string) => boolean = () => true): Promise<unknown> {
+    return new Promise((resolve) => {
+      const off = this.listeners.get(method) ?? new Set();
+      this.listeners.set(method, off);
+      const listener = (params: unknown, sessionId?: string) => {
+        if (!predicate(params, sessionId)) return;
+        off.delete(listener);
+        resolve(params);
+      };
+      off.add(listener);
+    });
+  }
+}
+
+function locateChrome(): string {
+  const candidates = [
+    process.env.OSL_CHROME,
+    "/usr/bin/google-chrome",
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+    ...globSync(`${os.homedir()}/.cache/ms-playwright/chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell`).sort().reverse(),
+    ...globSync(`${os.homedir()}/.cache/ms-playwright/chromium-*/chrome-linux*/chrome`).sort().reverse(),
+  ].filter(Boolean) as string[];
+  const chrome = candidates.find((candidate) => existsSync(candidate));
+  if (!chrome) throw new Error("no Chrome/Chromium binary found; set OSL_CHROME");
+  return chrome;
+}
+
+async function connectToChrome(chromeChild: ChildProcessWithoutNullStreams): Promise<{ cdp: CDPClient; ws: WebSocket }> {
+  let buffer = "";
+  const wsUrl = await new Promise<string>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("timed out waiting for Chrome CDP")), 15_000);
+    chromeChild.stderr.on("data", (chunk) => {
+      buffer += chunk.toString("utf8");
+      const match = buffer.match(/DevTools listening on (ws:\/\/\S+)/);
+      if (!match) return;
+      clearTimeout(timer);
+      resolve(match[1]);
+    });
+    chromeChild.once("exit", (code) => {
+      clearTimeout(timer);
+      reject(new Error(`Chrome exited before CDP was ready (${code})`));
+    });
+  });
+  const cdpPort = new URL(wsUrl).port;
+  const versionInfo = await fetch(`http://127.0.0.1:${cdpPort}/json/version`).then((response) => response.json());
+  const ws = new WebSocket(versionInfo.webSocketDebuggerUrl || wsUrl);
+  await new Promise<void>((resolve, reject) => {
+    ws.addEventListener("open", () => resolve());
+    ws.addEventListener("error", () => reject(new Error("WebSocket connection failed")));
+  });
+  return { cdp: new CDPClient(ws), ws };
+}
+
+function screenshotHtml(markup: string): string {
+  const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"/><title>TASK 0541 Burn review</title><style>${styles.replaceAll("</style", "<\\/style")}</style><style>html,body,#app{width:100%;height:100%;margin:0;background:#080c0d;overflow:hidden}</style></head><body><div id="app">${markup}</div></body></html>`;
+}
+
+function sha256(buffer: Buffer): string {
+  return createHash("sha256").update(buffer).digest("hex");
+}
+
+function pngFacts(buffer: Buffer): { width: number; height: number; bytes: number; sha256: string } {
+  expect(buffer.subarray(0, 8).toString("hex")).toBe("89504e470d0a1a0a");
+  expect(buffer.subarray(12, 16).toString("ascii")).toBe("IHDR");
+  return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20), bytes: buffer.length, sha256: sha256(buffer) };
+}
+
+describe("TASK 0541 Burn review screen screenshot", () => {
+  it("renders your side, their side, both sides, hide-other-people, and BACK together", async () => {
+    let state = initialBurnReviewScreenState();
+    state = selectBurnReviewSide(state, "both_sides");
+    state = toggleBurnReviewHideOtherPeople(state);
+    state = toggleBurnReviewHideOtherPeople(state);
+
+    const markup = burnReviewScreenMarkup(state);
+    expect(markup).toContain(">Your side<");
+    expect(markup).toContain(">Their side<");
+    expect(markup).toContain(">Both sides<");
+    expect(markup).toContain(">Hide other people<");
+    expect(markup).toContain(">BACK</button>");
+
+    const chrome = spawn(locateChrome(), [
+      "--headless=new",
+      "--remote-debugging-port=0",
+      "--no-sandbox",
+      "--disable-gpu",
+      "--force-device-scale-factor=1",
+      "about:blank",
+    ], { stdio: ["ignore", "ignore", "pipe"] });
+
+    let ws: WebSocket | undefined;
+    try {
+      const connection = await connectToChrome(chrome);
+      ws = connection.ws;
+      const { cdp } = connection;
+      const { targetId } = await cdp.send<{ targetId: string }>("Target.createTarget", { url: "about:blank" });
+      const { sessionId } = await cdp.send<{ sessionId: string }>("Target.attachToTarget", { targetId, flatten: true });
+      await cdp.send("Page.enable", {}, sessionId);
+      await cdp.send("Runtime.enable", {}, sessionId);
+      await cdp.send("Accessibility.enable", {}, sessionId);
+      await cdp.send("Emulation.setDeviceMetricsOverride", { width: WINDOW_SIZE.width, height: WINDOW_SIZE.height, deviceScaleFactor: 1, mobile: false }, sessionId);
+      const loaded = cdp.once("Page.loadEventFired", (_params, sid) => sid === sessionId);
+      await cdp.send("Page.navigate", { url: "about:blank" }, sessionId);
+      await loaded;
+      await cdp.send("Runtime.evaluate", { expression: `document.open();document.write(${JSON.stringify(screenshotHtml(markup))});document.close();` }, sessionId);
+      await new Promise((resolve) => setTimeout(resolve, 250));
+
+      const ax = await cdp.send<{ nodes: Array<{ role?: { value?: string }; name?: { value?: string } }> }>("Accessibility.getFullAXTree", {}, sessionId);
+      const treeText = ax.nodes.map((node) => `${node.role?.value ?? ""}:${node.name?.value ?? ""}`).join("\n");
+      expect(treeText).toContain("button:Your side");
+      expect(treeText).toContain("button:Their side");
+      expect(treeText).toContain("button:Both sides");
+      expect(treeText).toContain("Hide other people");
+      expect(treeText).toContain("button:BACK");
+
+      const boxes = await cdp.send<{ result: { value: Record<string, { x: number; y: number; width: number; height: number }> } }>("Runtime.evaluate", {
+        expression: `(() => {
+          function box(selector) {
+            const rect = document.querySelector(selector).getBoundingClientRect();
+            return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+          }
+          return {
+            yourSide: box('[data-burn-review-side="your_side"]'),
+            theirSide: box('[data-burn-review-side="their_side"]'),
+            bothSides: box('[data-burn-review-side="both_sides"]'),
+            hideOtherPeople: box('#burn-review-hide-other-people'),
+            back: box('#burn-review-back'),
+          };
+        })()`,
+        returnByValue: true,
+      }, sessionId);
+      for (const [name, box] of Object.entries(boxes.result.value)) {
+        expect(box.width, `${name} width`).toBeGreaterThan(8);
+        expect(box.height, `${name} height`).toBeGreaterThan(8);
+      }
+
+      const capture = await cdp.send<{ data: string }>("Page.captureScreenshot", {
+        format: "png",
+        fromSurface: true,
+        clip: { x: 0, y: 0, width: WINDOW_SIZE.width, height: WINDOW_SIZE.height, scale: 1 },
+      }, sessionId);
+      const bytes = Buffer.from(capture.data, "base64");
+      mkdirSync(path.dirname(SCREENSHOT_PATH), { recursive: true });
+      writeFileSync(SCREENSHOT_PATH, bytes);
+      const facts = pngFacts(bytes);
+      expect(facts.width).toBe(WINDOW_SIZE.width);
+      expect(facts.height).toBe(WINDOW_SIZE.height);
+      expect(facts.bytes).toBeGreaterThan(3_000);
+
+      console.log(`TASK0541_WINDOW_SIZE=${WINDOW_SIZE.width}x${WINDOW_SIZE.height}`);
+      console.log(`TASK0541_SCREEN_TREE=button:Your side|button:Their side|button:Both sides|checkbox:Hide other people|button:BACK`);
+      console.log(`TASK0541_IMAGE_PATH=${path.relative(process.cwd(), SCREENSHOT_PATH)}`);
+      console.log(`TASK0541_PNG_DIMENSIONS=${facts.width}x${facts.height}`);
+      console.log(`TASK0541_PNG_BYTES=${facts.bytes}`);
+      console.log(`TASK0541_PNG_SHA256=${facts.sha256}`);
+      for (const [name, box] of Object.entries(boxes.result.value)) {
+        console.log(`TASK0541_BOX_${name}=${Math.round(box.x)},${Math.round(box.y)},${Math.round(box.width)},${Math.round(box.height)}`);
+      }
+      await cdp.send("Target.closeTarget", { targetId }).catch(() => undefined);
+    } finally {
+      if (ws) ws.close();
+      chrome.kill("SIGTERM");
+    }
+  }, TEST_BUDGET_MS);
+});

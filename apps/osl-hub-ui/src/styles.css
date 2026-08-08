@@ -126,8 +126,12 @@
 .timer-overlay-error {
   display: block;
   min-height: 1.2em;
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--danger, #ef4444);
+  border-radius: var(--radius);
   color: var(--danger, #f66);
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .timer-overlay-save {
@@ -140,10 +144,10 @@
   font-weight: 600;
   cursor: pointer;
 }
-
-
-
-
+.timer-overlay-actions {
+  display: flex;
+  justify-content: flex-end;
+}
 
 .attachment-progress {
   display: grid;
@@ -7746,9 +7750,18 @@ code {
   .burn-scope-card { min-height: 92px; }
 }
 
+.burn-review-screen {
+  padding: 22px;
+  display: grid;
+  gap: 16px;
+  background: var(--panel);
+  color: var(--text);
+}
 
-
-
+.burn-review-screen h1 { margin: 0; }
+.burn-review-sides .burn-review-side.selected { border-left: 3px solid var(--danger); }
+.burn-review-hide-other-people { margin: 0; }
+.burn-review-actions { display: flex; justify-content: flex-start; }
 
 .toast {
   position: fixed;
