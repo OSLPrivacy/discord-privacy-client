@@ -48,7 +48,7 @@ class FakeRoot {
 function controls() {
   const discord = new FakeControl("discord:current-session");
   const telegram = new FakeControl("telegram:current-session");
-  const autoScrub = new FakeControl("", true);
+  const autoScrub = new FakeControl("", false);
   const daily = new FakeControl("daily");
   const weekly = new FakeControl("weekly", true);
   const monthly = new FakeControl("monthly");
@@ -99,15 +99,23 @@ describe("TASK 0321 Scrub setup controls", () => {
     ui.telegram.checked = true;
     await ui.telegram.dispatch("change");
     expect(ui.scanNow.disabled).toBe(false);
-    expect(ui.continueButton.disabled).toBe(false);
+    expect(ui.continueButton.disabled).toBe(true);
 
+    scanNow.mockReturnValue([
+      { accountId: "discord:current-session", result: "Discord result" },
+      { accountId: "telegram:current-session", result: "Telegram result" },
+    ]);
     await ui.scanNow.dispatch("click");
+    await Promise.resolve();
     expect(scanNow).toHaveBeenCalledWith(["discord:current-session", "telegram:current-session"]);
 
+    ui.autoScrub.checked = true;
+    await ui.autoScrub.dispatch("change");
+    expect(ui.continueButton.disabled).toBe(false);
+    expect(ui.weekly.disabled).toBe(false);
     ui.autoScrub.checked = false;
     await ui.autoScrub.dispatch("change");
     expect(ui.continueButton.disabled).toBe(true);
-    expect(ui.weekly.disabled).toBe(true);
     ui.autoScrub.checked = true;
     await ui.autoScrub.dispatch("change");
 
@@ -155,7 +163,7 @@ describe("TASK 0321 Scrub setup controls", () => {
     mocks.invoke.mockResolvedValue({ accountCount: 0, automaticSchedule: null, noticeSetting: null });
 
     bindScrubSetupControls(ui.root as unknown as ParentNode, draft, {
-      onScanNow: vi.fn(),
+      onScanNow: vi.fn().mockReturnValue([]),
       onContinue: vi.fn(),
       onNotNow: (summary) => skipped.push(summary),
       onBack: vi.fn(),
@@ -185,7 +193,7 @@ describe("TASK 0321 Scrub setup controls", () => {
     const errors = vi.fn();
     mocks.invoke.mockResolvedValue({ accountCount: 1, automaticSchedule: "weekly", noticeSetting: "before_scan" });
     bindScrubSetupControls(ui.root as unknown as ParentNode, draft, {
-      onScanNow: vi.fn(),
+      onScanNow: vi.fn().mockReturnValue([]),
       onContinue: continued,
       onNotNow: vi.fn(),
       onBack: vi.fn(),
@@ -193,6 +201,8 @@ describe("TASK 0321 Scrub setup controls", () => {
     });
     await ui.discord.dispatch("change");
     await ui.telegram.dispatch("change");
+    ui.autoScrub.checked = true;
+    await ui.autoScrub.dispatch("change");
     await ui.continueButton.dispatch("click");
 
     expect(continued).not.toHaveBeenCalled();
