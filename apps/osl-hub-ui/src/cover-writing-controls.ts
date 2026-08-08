@@ -1,5 +1,6 @@
 import { escapeHtml } from "./services";
 import { inDomTooltipMarkup } from "./in-dom-tooltip";
+import type { MessageCoverWriting } from "./message-defaults";
 
 /** Every service composer and public-story/post composer uses this one control. */
 export const COVER_WRITING_VIEWS = [
@@ -7,13 +8,20 @@ export const COVER_WRITING_VIEWS = [
 ] as const;
 
 export type CoverWritingView = (typeof COVER_WRITING_VIEWS)[number];
+export type CoverWritingChoice = "covertext" | "ai-covertext";
 export const COVER_WRITING_LABELS = ["Covertext", "AI Covertext"] as const;
 export const COVER_WRITING_SHAPES_BEFORE = 2;
 export const COVER_WRITING_SHAPES_NOW = 1;
 export const MODEL_PACK_NEEDED = "Model pack needed";
 export const NO_CLOUD_AI_USED = "no cloud AI is used";
 
+/** Translate the persisted writer choice once for every composer surface. */
+export function savedCoverWritingChoice(writing: MessageCoverWriting): CoverWritingChoice {
+  return writing === "ai_covertext" ? "ai-covertext" : "covertext";
+}
+
 export interface CoverWritingControlsOptions {
+  readonly savedWriting?: MessageCoverWriting;
   readonly covertextEnabled?: boolean;
   readonly aiAvailable?: boolean;
   readonly aiSelected?: boolean;
@@ -30,9 +38,10 @@ export function coverWritingControlsMarkup(
   view: CoverWritingView,
   options: CoverWritingControlsOptions = {},
 ): string {
+  const savedChoice = options.savedWriting === undefined ? null : savedCoverWritingChoice(options.savedWriting);
   const covertextEnabled = options.covertextEnabled ?? true;
-  const aiAvailable = options.aiAvailable ?? false;
-  const aiSelected = options.aiSelected ?? false;
+  const aiAvailable = options.aiAvailable ?? savedChoice === "ai-covertext";
+  const aiSelected = options.aiSelected ?? savedChoice === "ai-covertext";
   const [covertextLabel, aiCovertextLabel] = COVER_WRITING_LABELS;
   const covertextTitle = covertextEnabled ? `${covertextLabel} is on` : `${covertextLabel} is off`;
   const aiTitle = aiAvailable
