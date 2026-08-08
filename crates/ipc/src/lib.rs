@@ -112,6 +112,12 @@ pub mod scope_blobs_file;
 // already merged here) live on other lanes / this lane respectively, and
 // this module's finish line does not require importing 1451's types.
 pub mod autoscrub_activity;
+// TASK 1476: the before-run, per-account, deletion-count and failure notices
+// for a scheduled AutoScrub batch, every one of which opens the activity
+// record behind it. Sits next to its gate 1472 above and reads its counts
+// straight out of that module's saved records, so a notice can never quote a
+// number the run did not produce.
+pub mod autoscrub_notices;
 // TASK 1464: pure decision rules for the scheduled AutoScrub runner (one
 // account at a time, pause on sleep/unavailable, resume on Run now or the
 // next schedule). Self-contained: gates 1422 (action pacing) and 1463
