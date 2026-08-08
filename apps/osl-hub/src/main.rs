@@ -1769,6 +1769,17 @@ async fn check_hub_password_reset_phrase(
 }
 
 #[tauri::command]
+async fn check_hub_recovery_word_retype(
+    request: password_lifecycle::RecoveryWordRetypeRequest,
+) -> Result<password_lifecycle::RecoveryWordRetypeResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        password_lifecycle::check_recovery_word_retype(request)
+    })
+    .await
+    .map_err(|_| "OSL recovery word check worker failed".to_owned())?
+}
+
+#[tauri::command]
 async fn get_hub_recovery_kit_unsaved() -> Result<bool, String> {
     tauri::async_runtime::spawn_blocking(account_recovery::recovery_kit_unsaved)
         .await

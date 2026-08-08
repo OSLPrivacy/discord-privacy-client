@@ -740,6 +740,7 @@ macro_rules! hub_tauri_commands {
             reset_hub_main_password_after_recovery,
             view_hub_recovery_phrase,
             check_hub_password_reset_phrase,
+            check_hub_recovery_word_retype,
             get_hub_recovery_kit_unsaved,
             set_hub_recovery_kit_unsaved,
             lock_hub_session,
@@ -2082,6 +2083,23 @@ mod tauri_registration_surface_tests {
                 "get_hub_recovery_kit_unsaved",
                 "set_hub_recovery_kit_unsaved",
             ],
+        );
+    }
+
+    #[test]
+    fn recovery_word_retype_check_is_registered_and_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_registered_and_granted(
+            &handlers,
+            &permissions,
+            &capability,
+            "check_hub_recovery_word_retype",
+        );
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &["check_hub_recovery_word_retype"],
         );
     }
 
