@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OSL Friends panel fixture</title>
+    <link rel="stylesheet" href="../src/styles.css" />
+    <style>
+      body { margin: 0; }
+      #app { min-height: 100vh; display: grid; place-items: center; padding: 28px; box-sizing: border-box; background: var(--bg); }
+    </style>
+    <script type="module">
+      (async () => {
+        try {
+          const { oslFriendsPanelMarkup } = await import("../src/osl-friends-panel-routing.ts");
+
+          const app = document.querySelector("#app");
+
+          const friends = [
+            {
+              friendId: "friend:f8e88443aa9253d65fd9fe5e9c05b855407d0133446703dd45408d0567b8e7c7",
+              oslUserId: "900000000000082801",
+              username: "Ada Friend",
+              picture: "data:image/gif;base64,R0lGODlhAQABAIAAAAD/ACwAAAAAAQABAAACAkQBADs=",
+              pictureStatus: "image-present",
+              initial: "A",
+              initialColour: "#2563eb",
+            },
+            {
+              friendId: "friend:065a8d10a8f0d9b449c53523ce8b36b8880f2fdbf618903dd017d66a075dda72",
+              oslUserId: "900000000000082803",
+              username: "Cleo Friend",
+              picture: null,
+              pictureStatus: "image-absent",
+              initial: "C",
+              initialColour: "#dc2626",
+            },
+          ];
+
+          app.innerHTML = oslFriendsPanelMarkup(friends);
+          window.oslFriendsPanelFixture = { friends: () => [...friends] };
+          document.documentElement.dataset.fixtureReady = "osl-friends-panel";
+        } catch (error) {
+          console.error("Fixture error:", error);
+          window.__fixtureError__ = error.message;
+          document.documentElement.dataset.fixtureError = error.message;
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+  </body>
+</html>
