@@ -501,6 +501,11 @@ pub struct AppPreferences {
     /// `bad_message_rules` (the normal Scrub run) and vice versa.
     #[serde(default)]
     pub autoscrub_bad_message_rules: HashMap<String, crate::bad_message_rules::BadMessageRule>,
+    /// The exact accounts, rule snapshots, and destructive-service risks the
+    /// owner accepted before enabling AutoScrub's Find-and-delete mode.
+    #[serde(default)]
+    pub autoscrub_deletion_agreement:
+        Option<crate::autoscrub_deletion_agreement::AutoScrubDeletionAgreement>,
     #[serde(default)]
     pub new_friend_defaults: NewFriendDefaults,
     #[serde(default)]
@@ -540,6 +545,7 @@ impl Default for AppPreferences {
             auto_whitelist_rules: HashMap::new(),
             bad_message_rules: HashMap::new(),
             autoscrub_bad_message_rules: HashMap::new(),
+            autoscrub_deletion_agreement: None,
             new_friend_defaults: NewFriendDefaults::default(),
             allowed_place_records: BTreeMap::new(),
             next_generation_message_policy: NextGenerationMessagePolicy::default(),

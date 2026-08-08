@@ -19022,6 +19022,58 @@ pub fn cmd_osl_save_autoscrub_bad_message_rule(
     })
 }
 
+/// Persist the explicit agreement shown before AutoScrub's Find-and-delete
+/// mode. The validator runs before mutation, so an unticked or incomplete
+/// replacement leaves any prior agreement intact.
+pub fn cmd_osl_save_autoscrub_deletion_agreement(
+    state: &AppState,
+    request: crate::autoscrub_deletion_agreement::AutoScrubDeletionAgreementRequest,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<crate::autoscrub_deletion_agreement::AutoScrubDeletionAgreement, String> {
+    record_activity_on_command_entry();
+    let agreement = {
+        let prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        crate::autoscrub_deletion_agreement::build_deletion_agreement(
+            request,
+            &prefs.autoscrub_bad_message_rules,
+        )?
+    };
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs.autoscrub_deletion_agreement = Some(agreement.clone());
+    }
+    persist_app_preferences_now(state, config_dir);
+    Ok(agreement)
+}
+
+/// The backend authority check for the "Find and delete" action. It refuses
+/// until a complete agreement has been saved, and refuses again if the action
+/// names different accounts/rules or a saved private-word rule has changed.
+pub fn cmd_osl_authorize_autoscrub_find_and_delete(
+    state: &AppState,
+    selected_account_ids: Vec<String>,
+    selected_rule_names: Vec<String>,
+) -> Result<crate::autoscrub_deletion_agreement::AutoScrubFindAndDeleteAuthorization, String> {
+    record_activity_on_command_entry();
+    let prefs = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned");
+    crate::autoscrub_deletion_agreement::authorize_find_and_delete(
+        prefs.autoscrub_deletion_agreement.as_ref(),
+        &selected_account_ids,
+        &selected_rule_names,
+        &prefs.autoscrub_bad_message_rules,
+    )
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct NewFriendDefaultsDto {
     pub account_reach: String,
