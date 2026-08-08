@@ -42,6 +42,7 @@ pub mod autoscrub_account_switches;
 pub mod autoscrub_deletion_agreement;
 pub mod autoscrub_controls;
 pub mod autoscrub_pro_gate;
+pub mod autoscrub_schedule_mode;
 pub mod bad_message_rules;
 pub mod both_sides_burn_progress;
 pub mod build_switch_metadata;
