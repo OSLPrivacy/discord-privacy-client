@@ -198,9 +198,9 @@ fn task3156_ask_step_blocks_chat_burn_until_confirmed() {
         cmd_osl_chat_burn_sender_message_records_choice(&state, CHAT_ID.to_owned(), "both-sides")
             .expect("unconfirmed burn returns an answer");
     let after_unconfirmed = askstep_count(&state);
+    assert_eq!(after_unconfirmed, 3);
     assert_eq!(unconfirmed.answer(), NEEDS_CONFIRMING_ANSWER);
     assert!(unconfirmed.result().is_none());
-    assert_eq!(after_unconfirmed, 3);
 
     let confirmed = cmd_osl_chat_burn_sender_message_records_choice_confirmed(
         &state,
