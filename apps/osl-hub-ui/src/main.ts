@@ -165,7 +165,7 @@ import {
 import { checkHubForUpdates, installHubUpdate, openHubReleasesPage, openHubSourceRepository, type UpdateStatus } from "./updates";
 import { createDiscordQaGeometryKeeper } from "./discord-qa-geometry";
 import { browserLogo, serviceLogo, providerLogo } from "./logos";
-import { activateLocalLoopbackContext, activateManualPeerContext, activateNativeManualPeerContext, activateOslChatContext, addOslChatReaction, addOslFriend, addOslFriendByUsername, answerHubChatApprovalSuggestion, burnActiveHubContext, burnHubServiceAccount, captureProtectionEnforced, closeOslChatContext, copyHubFriendInvite, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubRevocationStatus, getHubServiceBurnReadiness, getOslUsernameStatus, isHubPlaintext, isNormalizedOslUsername, listHubIdentities, listHubPeople, listOslChatHistory, loadActiveContextSecurity, loadAppNotifications, loadBuildIntegrityStatus, loadFriendProfile, loadInstalledBuildChatWarningStatus, openOslChatText, openPeerProseText, peerIsVerified, prepareLocalProtectedText, prepareOslChatText, preparePeerProseText, recoverHubIdentitySlot, removeOslChatReaction, saveActiveContextSecurity, revokeActiveHubFriendScope, setActiveHubFriendPermission, setActiveHubFriendReach, setHubChatApprovalSuggestionChoice, setHubFriendNickname, setLocalProtectedSheetOpen, setNativeDiscordProtectedOverlayOpen, setNativeDiscordProtectedOverlayOpenForQa, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, viewHubRecoveryPhrase, type AppNotification, type BuildIntegrityStatus, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type InstalledBuildChatWarning, type LocalPrivacyScanResult, type ManualPeerContext, type PersistedLocalPrivacyScanResult } from "./adapters";
+import { activateLocalLoopbackContext, activateManualPeerContext, activateNativeManualPeerContext, activateOslChatContext, addOslChatReaction, addOslFriend, addOslFriendByUsername, answerHubChatApprovalSuggestion, backBurnReview, burnActiveHubContext, burnHubServiceAccount, captureProtectionEnforced, closeOslChatContext, copyHubFriendInvite, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubRevocationStatus, getHubServiceBurnReadiness, getOslUsernameStatus, isHubPlaintext, isNormalizedOslUsername, listHubIdentities, listHubPeople, listOslChatHistory, loadActiveContextSecurity, loadAppNotifications, loadBuildIntegrityStatus, loadFriendProfile, loadInstalledBuildChatWarningStatus, openOslChatText, openPeerProseText, peerIsVerified, prepareLocalProtectedText, prepareOslChatText, preparePeerProseText, recoverHubIdentitySlot, removeOslChatReaction, saveActiveContextSecurity, saveBurnReviewState, revokeActiveHubFriendScope, setActiveHubFriendPermission, setActiveHubFriendReach, setHubChatApprovalSuggestionChoice, setHubFriendNickname, setLocalProtectedSheetOpen, setNativeDiscordProtectedOverlayOpen, setNativeDiscordProtectedOverlayOpenForQa, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, viewHubRecoveryPhrase, type AppNotification, type BuildIntegrityStatus, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type InstalledBuildChatWarning, type LocalPrivacyScanResult, type ManualPeerContext, type PersistedLocalPrivacyScanResult } from "./adapters";
 import { blankLocalProtectedModel, isLocalTtlSeconds, loadOrCreateLocalConversationId, localProtectedSheetMarkup, validLocalChatLabel, type LocalProtectedPane, type LocalProtectedSheetModel } from "./local-protected-sheet";
 import { claimOslUsername, createHubPrivateContactLink, createOslFriendRequestByOslName, type HubPrivateContactLink } from "./adapters";
 import { blankPeerProtectedModel, boundedPeerProtectedDraft, peerProtectedDraftByteFeedback, peerProtectedSheetMarkup, type PeerProtectedPane, type PeerProtectedSheetModel } from "./peer-protected-sheet";
@@ -267,7 +267,7 @@ import { attachOslChatComposerDragAndDrop, attachmentTrayMarkup, createOslChatAt
 import { createAttachmentTrayActions } from "./attachment-tray-actions";
 import { attachmentTrayScreenMarkup } from "./attachment-tray-screen";
 import { bindPrivateTypingBoxDropTarget } from "./private-typing-drop-target";
-import { initialBurnReviewScreenState, type BurnReviewScreenState } from "./burn-review-screen";
+import { burnReviewScreenMarkup, initialBurnReviewScreenState, selectBurnReviewSide, toggleBurnReviewHideOtherPeople, type BurnReviewSide, type BurnReviewScreenState } from "./burn-review-screen";
 import { destructStatusMarkup, type ServerDestructStatus } from "./destruct-status";
 import { offlineCapabilityStatus, type OfflineUnavailableCapability, type OslConnectionState } from "./offline-capability-status";
 import type { NativeDiscordOverlayOpenedBatch } from "./overlay-state";
@@ -6469,7 +6469,8 @@ function burnDialogMarkup(): string {
         ? `OSL removes local settings and caches for ${serviceBurnReadiness.indexedScopes} indexed ${serviceBurnReadiness.indexedScopes === 1 ? "scope" : "scopes"} in this connected account, then attempts to delete their sent relay blobs. Login profile, cookies, provider history, and other copies remain.`
         : "OSL must prove complete local coverage before app-wide burn is available.";
   const pro = licenseState.access === "pro" || licenseState.access === "offlineGrace";
-  return `<dialog class="burn-dialog" id="burn-dialog" aria-labelledby="burn-dialog-title"><section class="burn-card"><header><h2 id="burn-dialog-title">Burn local data</h2><button class="icon-button" data-close-burn aria-label="Close Burn">×</button></header><div class="burn-scope-grid" aria-label="Burn scope">${scopeCards}</div>${burnScopeTruthMarkup(burnScope)}${burnGuaranteeMarkup(effects)}${burnScope === "account" ? freshStartLimitationsMarkup() : ""}<details class="burn-more"><summary>Other options</summary><div class="burn-options"><label class="setting-line unavailable"><span><strong>Provider messages</strong><small>Not removed. Burn changes only indexed local OSL data and sent relay records.</small></span><input type="checkbox" disabled/></label><label class="setting-line unavailable"><span><strong>Burn for friends · Pro</strong><small>${pro ? "Requires every recipient’s prior signed consent and an acknowledgment from each device." : "A Pro initiator may request this for Free recipients only after each recipient gives signed consent."} The consent-and-acknowledgment workflow is unavailable in this build.</small></span><input type="checkbox" disabled/></label>${burnScope === "account" ? `<label class="setting-line interactive"><span><strong>Uninstall after burn</strong><small>After a successful local burn, open Windows installed apps.</small></span><input id="burn-uninstall" type="checkbox"/></label>` : ""}</div></details><form id="burn-confirm-form" class="burn-confirm"><label class="burn-confirm-ack" for="burn-confirm-ack"><input id="burn-confirm-ack" type="checkbox" ${selectedReason ? "disabled" : ""}/><span>I understand this cannot be undone.</span></label><p class="form-status" id="burn-form-status" role="status">${selectedReason ? escapeHtml(selectedReason) : "Check the box to continue."}</p><footer><button class="button ghost" type="button" data-close-burn>Cancel</button><button class="button danger" id="burn-confirm-submit" type="submit" disabled>${burnBusy ? "Burning…" : "Burn now"}</button></footer></form></section></dialog>`;
+  const review = burnScope === "chat" ? burnReviewScreenMarkup(burnReviewScreenState) : "";
+  return `<dialog class="burn-dialog" id="burn-dialog" aria-labelledby="burn-dialog-title"><section class="burn-card"><header><h2 id="burn-dialog-title">Burn local data</h2><button class="icon-button" data-close-burn aria-label="Close Burn">×</button></header><div class="burn-scope-grid" aria-label="Burn scope">${scopeCards}</div>${burnScopeTruthMarkup(burnScope)}${review}${burnGuaranteeMarkup(effects)}${burnScope === "account" ? freshStartLimitationsMarkup() : ""}<details class="burn-more"><summary>Other options</summary><div class="burn-options"><label class="setting-line unavailable"><span><strong>Provider messages</strong><small>Not removed. Burn changes only indexed local OSL data and sent relay records.</small></span><input type="checkbox" disabled/></label><label class="setting-line unavailable"><span><strong>Burn for friends · Pro</strong><small>${pro ? "Requires every recipient’s prior signed consent and an acknowledgment from each device." : "A Pro initiator may request this for Free recipients only after each recipient gives signed consent."} The consent-and-acknowledgment workflow is unavailable in this build.</small></span><input type="checkbox" disabled/></label>${burnScope === "account" ? `<label class="setting-line interactive"><span><strong>Uninstall after burn</strong><small>After a successful local burn, open Windows installed apps.</small></span><input id="burn-uninstall" type="checkbox"/></label>` : ""}</div></details><form id="burn-confirm-form" class="burn-confirm"><label class="burn-confirm-ack" for="burn-confirm-ack"><input id="burn-confirm-ack" type="checkbox" ${selectedReason ? "disabled" : ""}/><span>I understand this cannot be undone.</span></label><p class="form-status" id="burn-form-status" role="status">${selectedReason ? escapeHtml(selectedReason) : "Check the box to continue."}</p><footer><button class="button ghost" type="button" data-close-burn>Cancel</button><button class="button danger" id="burn-confirm-submit" type="submit" disabled>${burnBusy ? "Burning…" : "Burn now"}</button></footer></form></section></dialog>`;
 }
 
 function verificationDialogMarkup(copy: FriendVerificationCopy): string {
@@ -7639,6 +7640,34 @@ function bindBurnDialog(): void {
     render();
     if (next === "app") void prepareServiceBurn();
   }));
+  const saveReview = (): void => {
+    void saveBurnReviewState(
+      burnReviewScreenState.selectedSide,
+      "chat:active",
+      burnReviewScreenState.hideOtherPeople,
+    );
+  };
+  document.querySelectorAll<HTMLButtonElement>("[data-burn-review-side]").forEach((button) => button.addEventListener("click", () => {
+    const side = button.dataset.burnReviewSide as BurnReviewSide;
+    if (side !== "your_side" && side !== "their_side" && side !== "both_sides") return;
+    burnReviewScreenState = selectBurnReviewSide(burnReviewScreenState, side);
+    saveReview();
+    render();
+  }));
+  document.querySelector<HTMLInputElement>("#burn-review-hide-other-people")?.addEventListener("change", () => {
+    burnReviewScreenState = toggleBurnReviewHideOtherPeople(burnReviewScreenState);
+    saveReview();
+    render();
+  });
+  document.querySelectorAll<HTMLButtonElement>("[data-burn-review-server-choice]").forEach((button) => button.addEventListener("click", () => {
+    const choice = button.dataset.burnReviewServerChoice;
+    if (choice !== "this_channel" && choice !== "whole_server") return;
+    void saveBurnReviewState(choice, "chat:active", burnReviewScreenState.hideOtherPeople);
+  }));
+  document.querySelector<HTMLButtonElement>("#burn-review-back")?.addEventListener("click", () => {
+    void backBurnReview();
+    closeBurnDialog();
+  });
   const acknowledgement = document.querySelector<HTMLInputElement>("#burn-confirm-ack");
   const submit = document.querySelector<HTMLButtonElement>("#burn-confirm-submit");
   const validate = (): void => {

@@ -21,6 +21,26 @@ import type { ServiceId } from "./services";
 
 export type { HubRevocationStatus, HubScopeBurnOutcome };
 
+export interface BurnReviewState { selectedScope: string; selectedChat: string; hideOtherPeople: boolean; }
+
+function parseBurnReviewState(raw: unknown): BurnReviewState | null {
+  if (!isRecord(raw) || !exact(raw, ["selectedScope", "selectedChat", "hideOtherPeople"])) return null;
+  if (!safePlaintext(raw.selectedScope, 64) || !safePlaintext(raw.selectedChat, 128) || typeof raw.hideOtherPeople !== "boolean") return null;
+  return { selectedScope: String(raw.selectedScope), selectedChat: String(raw.selectedChat), hideOtherPeople: raw.hideOtherPeople };
+}
+
+export async function saveBurnReviewState(selectedScope: string, selectedChat: string, hideOtherPeople: boolean): Promise<BurnReviewState | null> {
+  if (!isTauriRuntime() || !safePlaintext(selectedScope, 64) || !safePlaintext(selectedChat, 128)) return null;
+  try { return checkedBackendResponse("save_burn_review_state", parseBurnReviewState(await invoke<unknown>("save_burn_review_state", { selectedScope, selectedChat, hideOtherPeople })), "the saved burn review state did not match the expected shape"); }
+  catch (error) { recordBackendFailure("save_burn_review_state", error, [selectedScope, selectedChat]); return null; }
+}
+
+export async function backBurnReview(): Promise<boolean> {
+  if (!isTauriRuntime()) return false;
+  try { await invoke("back_burn_review"); return true; }
+  catch (error) { recordBackendFailure("back_burn_review", error); return false; }
+}
+
 /**
  * The invite this device hands out.
  *
