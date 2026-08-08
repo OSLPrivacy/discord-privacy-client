@@ -186,6 +186,8 @@ pub mod native_window_host;
 #[cfg(feature = "core")]
 pub mod osl_chat_drag_drop;
 #[cfg(feature = "core")]
+pub mod osl_chat_attachment_download_permission;
+#[cfg(feature = "core")]
 pub mod osl_chat_file_limits;
 #[cfg(feature = "core")]
 pub mod osl_chat_local_state_key;
