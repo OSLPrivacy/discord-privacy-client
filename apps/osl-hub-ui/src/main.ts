@@ -279,6 +279,7 @@ import { mountChatBackgroundPane } from "./chat-background-pane";
 import { renderChatMessagesPane } from "./chat-messages-pane";
 import { bindSafetyNumberPanel, safetyNumberPanelMarkup } from "./safety-number-panel";
 import { bindStripLeftCluster, defaultStripQuickSettings, stripLeftClusterMarkup } from "./strip-left-cluster";
+import { createOslChatTypingController, OSL_CHAT_TYPING_INCOMING_EVENT, OSL_CHAT_TYPING_OUTGOING_EVENT, type OslChatTypingPreferences, type OslChatTypingSignal } from "./typing-indicator";
 import { peopleReverificationNoticeMarkup } from "./people-reverification-notice";
 import { discordQaWhitelistButtonMarkup } from "./discord-qa-whitelist-button";
 import { connectDiscordQaWhitelistButton, discordQaOpenPlace } from "./discord-qa-whitelist-place";
@@ -923,6 +924,30 @@ let buildIntegrityStatus: BuildIntegrityStatus | null = null;
 let startSomethingChoice: "direct" | "group" | "enclave" | null = null;
 let startSomethingJoiningRule: EnclaveJoiningRule = "invite_only";
 let startSomethingBusy = false;
+const oslChatHideOwnTypingStorageKey = "osl-chat-hide-own-typing-v1";
+const oslChatShowIncomingTypingStorageKey = "osl-chat-show-incoming-typing-v1";
+let oslChatTypingPreferences: OslChatTypingPreferences = {
+  hideOwnTyping: localStorage.getItem(oslChatHideOwnTypingStorageKey) === "true",
+  showIncomingTyping: localStorage.getItem(oslChatShowIncomingTypingStorageKey) !== "false",
+};
+let oslChatTypingPersonId: string | null = null;
+const oslChatTypingController = createOslChatTypingController({
+  preferences: oslChatTypingPreferences,
+  send: (signal) => {
+    window.dispatchEvent(new CustomEvent<OslChatTypingSignal>(OSL_CHAT_TYPING_OUTGOING_EVENT, { detail: signal }));
+  },
+  visibilityChanged: (personId) => {
+    oslChatTypingPersonId = personId;
+    if (route === "osl-chat") renderWhenIdle();
+  },
+});
+window.addEventListener(OSL_CHAT_TYPING_INCOMING_EVENT, (event) => {
+  const signal = (event as CustomEvent<unknown>).detail;
+  if (typeof signal !== "object" || signal === null || Array.isArray(signal)) return;
+  const candidate = signal as Partial<OslChatTypingSignal>;
+  if (typeof candidate.personId !== "string" || typeof candidate.typing !== "boolean") return;
+  oslChatTypingController.receive({ personId: candidate.personId, typing: candidate.typing });
+});
 const attachmentProgressByContext = new Map<string, AttachmentProgressEvent>();
 let privacyScanResult: LocalPrivacyScanResult | PersistedLocalPrivacyScanResult | null = null;
 let privacyScanFileName: string | null = null;
@@ -6146,6 +6171,7 @@ function oslChatContent(): string {
     buildIntegrity: buildIntegrityStatus,
     verificationWarningSurface: oslChatVerificationWarningSurface,
     buildWarning: installedBuildChatWarning,
+    typingPersonId: oslChatTypingPersonId,
   })}${offlineStatus}${receipt}${droppedFiles}${attachments}${settings}${startSheet}${chatSurfaceOverlays()}</main>`;
 }
 
@@ -6155,6 +6181,7 @@ function renderOslChatFriendSettings(person: HubPerson): string {
     approved: activeOslChatPersonId === person.personId && activeOslChatContext?.scopeApproved === true,
     verified: peerIsVerified(person),
     notificationSettings: readOslChatNotificationSettings(localStorage, person.personId),
+    typingPreferences: oslChatTypingPreferences,
     busy: oslChatBusy,
   });
 }
@@ -9267,6 +9294,18 @@ function bindWorkspace(): void {
     persistOslChatPreviewVisibility();
     render();
   });
+  document.querySelector<HTMLInputElement>("#osl-chat-hide-own-typing")?.addEventListener("change", (event) => {
+    oslChatTypingPreferences = { ...oslChatTypingPreferences, hideOwnTyping: (event.currentTarget as HTMLInputElement).checked };
+    localStorage.setItem(oslChatHideOwnTypingStorageKey, String(oslChatTypingPreferences.hideOwnTyping));
+    oslChatTypingController.setPreferences(oslChatTypingPreferences);
+    render();
+  });
+  document.querySelector<HTMLInputElement>("#osl-chat-show-incoming-typing")?.addEventListener("change", (event) => {
+    oslChatTypingPreferences = { ...oslChatTypingPreferences, showIncomingTyping: (event.currentTarget as HTMLInputElement).checked };
+    localStorage.setItem(oslChatShowIncomingTypingStorageKey, String(oslChatTypingPreferences.showIncomingTyping));
+    oslChatTypingController.setPreferences(oslChatTypingPreferences);
+    render();
+  });
   document.querySelector<HTMLButtonElement>("#osl-chat-permission-toggle")?.addEventListener("click", () => void toggleOslChatPermission());
   document.querySelector<HTMLButtonElement>("#osl-chat-back")?.addEventListener("click", () => void closeOslChat());
   document.querySelector<HTMLButtonElement>("#osl-chat-refresh")?.addEventListener("click", () => void refreshOslChat());
@@ -9293,6 +9332,7 @@ function bindWorkspace(): void {
     // mid-word. The preconditions that cannot change while typing (verified,
     // ready, not busy) are carried on the button by the view.
     setOslChatDraft(oslChatDraftInput.value, false);
+    oslChatTypingController.localDraftChanged(activeOslChatPersonId, oslChatDraftInput.value.length > 0);
   });
   oslChatDraftInput?.addEventListener("keydown", (event) => {
     if (!submitsOslChatDraft(event)) return;
@@ -10992,6 +11032,7 @@ async function sendOslChatFromRoute(route: OslChatSendRoute): Promise<void> {
   }];
   oslChatMessages.set(personId, messages);
   setOslChatDraft("");
+  oslChatTypingController.localDraftChanged(personId, false);
   oslChatViewOnce = false;
   oslChatBusy = false;
   render();
@@ -11006,6 +11047,7 @@ async function sendOslChat(event: SubmitEvent): Promise<void> {
 
 function resetOslChatUiState(clearMessages: boolean): void {
   oslChatOperationEpoch += 1;
+  oslChatTypingController.localDraftChanged(activeOslChatPersonId, false);
   activeOslChatPersonId = null;
   activeOslChatContext = null;
   oslChatDraft = "";

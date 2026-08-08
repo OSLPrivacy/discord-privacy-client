@@ -4,12 +4,14 @@ import { onOffToggle } from "./onboarding-controls";
 import { oslChatNotificationSettingsMarkup, type OslChatNotificationSettings } from "./osl-chat-notification-settings";
 import { peerIntegrityMarkup } from "./peer-integrity";
 import { escapeHtml } from "./services";
+import { oslChatTypingSettingsMarkup, type OslChatTypingPreferences } from "./typing-indicator";
 
 export interface OslChatSettingsState {
   isActive: boolean;
   approved: boolean;
   verified: boolean;
   notificationSettings: OslChatNotificationSettings;
+  typingPreferences?: OslChatTypingPreferences;
   busy: boolean;
 }
 
@@ -47,7 +49,7 @@ export function oslChatFriendSettingsMarkup(person: HubPerson, state: OslChatSet
     <nav class="osl-chat-settings-actions" aria-label="Chat actions"><button type="button" title="Mute notifications"><b aria-hidden="true">●</b><span>Mute</span></button><button type="button" title="Search this chat"><b aria-hidden="true">⌕</b><span>Search</span></button><button type="button" title="Chat media"><b aria-hidden="true">▦</b><span>Media</span></button><button data-open-safety-number="${escapeHtml(person.personId)}" type="button" title="Verify safety number"><b aria-hidden="true">△</b><span>Proof</span></button></nav>
     <div class="osl-chat-settings-groups">
       <section><h3>Message lifetime</h3>${autoDeleteRow()}${toggleRow("View once by default", "New messages open once, then close", "osl-chat-view-once-default-toggle", false)}${toggleRow("Cover text", "Show harmless text until you hold the eye", "osl-chat-cover-text-toggle", true)}<div class="osl-chat-settings-row osl-chat-permission-row${state.verified ? "" : " is-disabled"}" data-osl-chat-whitelist-state="${state.verified ? "available" : "not-verified"}" ${state.verified ? "" : 'aria-disabled="true"'}><span><strong>Whitelist</strong><small>${permissionDetail}</small></span>${permissionControl}</div></section>
-      ${oslChatNotificationSettingsMarkup(state.notificationSettings)}
+      ${oslChatNotificationSettingsMarkup(state.notificationSettings)}${oslChatTypingSettingsMarkup(state.typingPreferences ?? { hideOwnTyping: false, showIncomingTyping: true })}
       <section><h3>Encryption</h3>${peerIntegrityMarkup("unknown")}<button class="osl-chat-settings-row" data-open-safety-number="${escapeHtml(person.personId)}" type="button"><span><strong>Safety number</strong><small>Compare all 60 digits in groups of five.</small></span><b>View</b></button>${valueRow("Linked devices", "Review the devices receiving this conversation", "View")}${valueRow("Encryption", "", "OSL-X25519", "is-cipher")}</section>
       <section class="is-danger"><h3>Danger</h3>${valueRow("Clear history", "Removes OSL's copy on this device only", "")}${valueRow(`Block ${escapeHtml(name)}`, "", "")}${valueRow("Burn this chat", "", "Small", "is-danger-value")}</section>
     </div>

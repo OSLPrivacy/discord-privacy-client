@@ -1,5 +1,6 @@
 import type { VerificationWarningSurface } from "./verification-warning";
 import { viewOnceControlMarkup } from "./view-once-tier";
+import { oslChatTypingIndicatorMarkup } from "./typing-indicator";
 
 // Matches the enforced OSL Chat logical-message limit in broker.rs.
 export const OSL_CHAT_MAX_DRAFT_BYTES = 1024 * 1024;
@@ -263,6 +264,8 @@ export interface OslChatsViewModel {
   searchQuery?: string;
   sendBlockedReason?: string | null;
   attachmentAvailable?: boolean;
+  /** The active friend only; another thread's signal must never leak here. */
+  typingPersonId?: string | null;
 }
 
 export type OslChatBuildIntegrityStatus = "verified" | "mismatch" | "unknown";
@@ -570,8 +573,11 @@ function activeThread(model: OslChatsViewModel, friend: OslChatFriend): string {
       : "";
   const profileDisplayName = model.profileDisplayName?.trim() || "OSL profile";
   const messages = model.messages.length
-    ? `${messageGroups(model.messages, friend, profileDisplayName)}<div class="osl-chat-typing" aria-label="${escapeHtml(friend.nickname)} is typing">${avatar(friend.nickname, "is-typing")}<span><i></i><i></i><i></i></span></div>`
+    ? messageGroups(model.messages, friend, profileDisplayName)
     : '<p class="osl-chat-thread-empty">No messages yet.</p>';
+  const typingIndicator = model.typingPersonId === friend.personId
+    ? oslChatTypingIndicatorMarkup(friend.nickname)
+    : "";
   const warningSurface = model.verificationWarningSurface ?? "conversation-open";
   const handshakeWarning = warningSurface === "none" ? "" : oslChatHandshakeWarning(friend);
   const unconfirmed = handshakeWarning
@@ -589,7 +595,7 @@ function activeThread(model: OslChatsViewModel, friend: OslChatFriend): string {
   return `<section class="osl-chat-thread" aria-label="OSL direct chat with ${escapeHtml(friend.nickname)}">
     <header class="osl-chat-thread-header">${avatar(friend.nickname, "is-thread", friend.online !== false, friend.picture ?? null)}<button class="osl-chat-thread-identity" type="button" data-open-safety-number="${escapeHtml(friend.personId)}"><h2>${escapeHtml(friend.nickname)}${oslVerificationTickMarkup(friend.verificationTwoWay)}</h2><span class="osl-chat-status-style is-${friend.pendingKeyChange ? "key-changed" : friend.verified ? "verified" : "unverified"}">${verification}</span></button><button class="osl-chat-thread-settings" type="button" data-osl-chat-settings="${escapeHtml(friend.personId)}" aria-label="Chat settings">${moreIcon}</button></header>
     ${keyBanner}${unconfirmed}${blocked}
-    <div class="osl-chat-message-list" role="log" aria-live="polite" aria-relevant="additions text">${messages}</div>
+    <div class="osl-chat-message-list" role="log" aria-live="polite" aria-relevant="additions text">${messages}${typingIndicator}</div>
     ${buildIntegrityWarningRow(model.buildIntegrity)}
     ${buildWarningRow(model.buildWarning)}
     ${deletionUnconfirmedRow(model.deletionUnconfirmed ?? 0)}
