@@ -42,6 +42,17 @@ import { componentPickerScreen } from "./component-picker";
 import { componentManagerFromOnboarding } from "./component-manager";
 import { autoScrubConsentPrompt, decideAutoScrubInstall } from "./component-consent";
 import { autoScrubTierStatus } from "./autoscrub-tier";
+import {
+  chooseMessageDefault,
+  initialMessageDefaultsScreenState,
+  messageDefaultsScreenMarkup,
+  resetMessageDefaults,
+  savedMessageDefaultLabels,
+  saveMessageDefaults,
+  type MessageDefaults,
+  type MessageDefaultsControl,
+  type MessageDefaultsScreenState,
+} from "./message-defaults";
 import { deviceTransferManifestScreen } from "./device-transfer";
 import { initialOldDeviceCopyDecision, oldDeviceCopyDecisionView } from "./device-transfer-source";
 import { renderDeadmanScreen, selectDeadmanAction } from "./deadman";
@@ -234,7 +245,7 @@ import {
 import type { SecureLocalStore } from "./secure-local-store";
 import { createOslChatSecureLocalStore } from "./osl-chat-secure-store";
 
-export type Route = "onboarding" | "home" | "inbox" | "people" | "privacy" | "activity" | "connections" | "service" | "settings" | "mullvad" | "osl-chat" | "osl-mail" | "osl-servers" | "signal-qa";
+export type Route = "onboarding" | "home" | "inbox" | "people" | "privacy" | "activity" | "connections" | "service" | "settings" | "message-defaults" | "mullvad" | "osl-chat" | "osl-mail" | "osl-servers" | "signal-qa";
 
 /**
  * The colour a status chip is allowed to claim, resolved from the word printed
@@ -471,6 +482,7 @@ const recoveryKitUnsavedFlag = createRecoveryKitUnsavedFlag({
   write: (unsaved) => setHubRecoveryKitUnsaved(unsaved),
 });
 let settingsSection: SettingsSection = "account";
+let messageDefaultsScreen: MessageDefaultsScreenState = initialMessageDefaultsScreenState();
 let activeService: LinkedService | null = null;
 let activeHomeAppId: HomeAppId | null = null;
 let appLaunchPendingId: HomeAppId | null = null;
@@ -4489,6 +4501,7 @@ function nativeDiscordHeaderControls(): string {
   const visibilityBusy = discordQaHeaderBusy === "visibility";
   const rowProofBusy = discordQaRowProofState === "busy";
   const scopeApproved = context?.scopeApproved === true;
+  const openPlaceAllowed = context === null || scopeApproved;
   // Revoking used to be silent: the scope goes un-approved and the very next
   // send just fails closed in Rust ("Approve encryption for this friend
   // before continuing"), with nothing on screen explaining why. This chip
@@ -4535,7 +4548,9 @@ function nativeDiscordHeaderControls(): string {
   const transcriptNotice = transcriptFailed || transcriptUnapplied
     ? `<span class="discord-qa-visibility-notice" id="discord-qa-transcript-visibility-notice" role="status" data-transcript-state="${transcriptOutcome}">${transcriptFailed ? "Eye failed — transcript unchanged" : "Eye saved — no display surface open"}</span>`
     : "";
-  const transcriptVisibilityControl = `<button class="discord-qa-icon-control ${transcriptVisible ? "visible" : "hidden"}${transcriptFailed ? " transcript-failed" : ""}" id="discord-qa-transcript-visibility" type="button" aria-pressed="${transcriptVisible}" data-transcript-mode="${transcriptMode}" data-transcript-state="${transcriptOutcome}" ${transcriptFailed ? 'aria-invalid="true" ' : ""}aria-label="${transcriptVisible ? "Hide protected transcript" : "Show protected transcript"}" title="${transcriptTitle}" ${!verifiedPeer || visibilityBusy ? "disabled" : ""}>${eye}</button>`;
+  const transcriptVisibilityControl = openPlaceAllowed
+    ? `<button class="discord-qa-icon-control ${transcriptVisible ? "visible" : "hidden"}${transcriptFailed ? " transcript-failed" : ""}" id="discord-qa-transcript-visibility" type="button" aria-pressed="${transcriptVisible}" data-transcript-mode="${transcriptMode}" data-transcript-state="${transcriptOutcome}" ${transcriptFailed ? 'aria-invalid="true" ' : ""}aria-label="${transcriptVisible ? "Hide protected transcript" : "Show protected transcript"}" title="${transcriptTitle}" ${!verifiedPeer || visibilityBusy ? "disabled" : ""}>${eye}</button>`
+    : "";
   const lock = `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="${nativeDiscordProtectionActive ? "M8 10V7a4 4 0 0 1 8 0v3" : "M8 10V7a4 4 0 0 1 7.7-1.5"}"/></svg>`;
   // "Refused" only survives while protection is still off: an open composer
   // answers the question the refusal was asking. The four states are otherwise
@@ -4571,7 +4586,7 @@ function nativeDiscordHeaderControls(): string {
   // Pages with no message composer (e.g. Friends) report discordMarkerAvailable
   // false; the lock is hidden there. Protection already open stays shown so it
   // always has a control to turn back off, even if the view changes under it.
-  const composerControl = discordMarkerAvailable || nativeDiscordProtectionActive
+  const composerControl = openPlaceAllowed && (discordMarkerAvailable || nativeDiscordProtectionActive)
     ? `<button class="discord-qa-icon-control composer ${nativeDiscordProtectionActive ? "locked" : "unlocked"}${composerRefusal ? " composer-refused" : ""}" id="discord-qa-toggle-composer" type="button" aria-pressed="${nativeDiscordProtectionActive}" aria-label="${composerProtectionLabel}" title="${composerProtectionLabel}" ${discordQaComposerBusy ? "disabled" : ""} data-lock-state="${composerLockState}"${composerRefusal ? ' aria-invalid="true"' : ""}>${lock}${composerRefusedMark}</button>`
     : "";
   // Persistent, plain-language refusal in the header strip — the one surface
@@ -4848,6 +4863,7 @@ function workspaceContent(): string {
   if (route === "osl-mail") return oslMailContent();
   if (route === "osl-servers") return oslServersContent();
   if (route === "settings") return settingsContent();
+  if (route === "message-defaults") return messageDefaultsScreenMarkup(messageDefaultsScreen);
   if (route === "service" && activeService) return serviceContent();
   const launchableHomeApps = homeAppsFromServices(services).filter((app) => app.visibility === "launch");
   const roadmapHomeApps = launchableHomeApps.filter((app) => app.launchState !== "available");
@@ -5868,12 +5884,18 @@ function settingsContent(): string {
 
 function settingsSectionContent(): string {
   if (settingsSection === "account") return `${identitySettingsContent()}${settingsDivider()}${passwordSecuritySettingsContent()}${accountAdvancedSettingsContent()}${renderRecoveryStatesSettings()}`;
-  if (settingsSection === "apps") return `${serviceAccountsSettingsContent()}${optionalComponentsSettingsContent()}${sendingSettingsContent()}`;
+  if (settingsSection === "apps") return `${serviceAccountsSettingsContent()}${optionalComponentsSettingsContent()}${sendingSettingsContent()}${messageDefaultsSettingsEntry()}`;
   if (settingsSection === "scrub") return privacySettingsContent();
   if (settingsSection === "cleanup") return massCleanupSettingsContent();
   if (settingsSection === "notifications") return notificationSettingsContent();
   if (settingsSection === "appearance") return appearanceSettingsContent();
   return updateSettingsContent();
+}
+
+/** The way in to the Message defaults screen from Settings. */
+function messageDefaultsSettingsEntry(): string {
+  const labels = savedMessageDefaultLabels(messageDefaultsScreen.saved);
+  return `<div class="setting-line" data-message-defaults-entry><span><strong>Message defaults</strong><small>Timer ${escapeHtml(labels.timer)} · Burn ${escapeHtml(labels["burn-scope"])} · View once ${escapeHtml(labels["view-once-length"])} · ${escapeHtml(labels.writing)}</small></span><button class="button compact" type="button" data-route="message-defaults">Open</button></div>`;
 }
 
 function optionalComponentsSettingsContent(): string {
@@ -6503,8 +6525,8 @@ function notificationSettingsContent(): string {
   const visibleNotifications = visibleAppNotifications();
   const activity = notificationsEnabled && visibleNotifications.length
     ? visibleNotifications.map((item) => `<article class="notification-event"><span><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(notificationPreviewContent ? item.detail : "Private OSL activity")}</small></span><time>${escapeHtml(item.createdAt)}</time></article>`).join("")
-    : `<div class="empty-state"><strong>${notificationsEnabled ? "Nothing new" : "Activity is off"}</strong><p>${notificationsEnabled ? "New OSL security and chat events appear here." : "Turn on local activity to see OSL events on this device."}</p></div>`;
-  return `<h2>Activity</h2><p>Private events created by OSL on this device.</p><section class="notification-events" aria-label="Recent OSL activity">${activity}</section><div class="settings-list"><label class="setting-line interactive"><span><strong>Local OSL activity</strong><small>Master control for activity on this device.</small></span><input id="notifications-opt-in" type="checkbox" ${notificationsEnabled ? "checked" : ""}/></label><label class="setting-line interactive"><span><strong>Security changes</strong><small>Friend encryption-key changes that need verification.</small></span><input id="notification-security-activity" type="checkbox" ${notificationSecurityActivity ? "checked" : ""}/></label><label class="setting-line interactive"><span><strong>Show details</strong><small>Off by default. When off, Activity hides event content.</small></span><input id="notification-previews" type="checkbox" ${notificationPreviewContent ? "checked" : ""}/></label><label class="setting-line interactive"><span><strong>Suggest chat approval</strong><small>Suggestions never enable decryption.</small></span><input id="notification-scope-suggestions" type="checkbox" ${notificationScopeSuggestions ? "checked" : ""}/></label></div>${oslChatNotificationSettings()}<details class="settings-disclosure notification-apps"><summary><span><strong>Connected apps</strong><small>Provider unread counts are not read</small></span></summary><div class="notification-app-list">${apps}</div></details>`;
+    : `<div class="empty-state"><strong>${notificationsEnabled ? "Nothing new" : "Notifications are off"}</strong><p>${notificationsEnabled ? "New OSL security and chat events appear here." : "Turn on local activity to see OSL events on this device."}</p></div>`;
+  return `<h2>Notifications</h2><p>Choose what OSL tells you about on this device. Nothing on this screen is sent anywhere else.</p><section class="notification-events" aria-label="Recent OSL activity">${activity}</section><div class="settings-list"><label class="setting-line interactive"><span><strong>Local OSL activity</strong><small>Master control for activity on this device.</small></span><input id="notifications-opt-in" type="checkbox" ${notificationsEnabled ? "checked" : ""}/></label><label class="setting-line interactive"><span><strong>Security changes</strong><small>Friend encryption-key changes that need verification.</small></span><input id="notification-security-activity" type="checkbox" ${notificationSecurityActivity ? "checked" : ""}/></label><label class="setting-line interactive"><span><strong>Show details</strong><small>Off by default. When off, this screen hides event content.</small></span><input id="notification-previews" type="checkbox" ${notificationPreviewContent ? "checked" : ""}/></label><label class="setting-line interactive"><span><strong>Suggest chat approval</strong><small>Suggestions never enable decryption.</small></span><input id="notification-scope-suggestions" type="checkbox" ${notificationScopeSuggestions ? "checked" : ""}/></label><div class="setting-line"><span><strong>Sounds</strong><small>OSL stays silent. Alerts only appear on screen, and nothing plays a sound.</small></span><span class="setting-state-word">Silent</span></div></div><p class="settings-note">There is no Save button on this screen. Each choice takes effect and is remembered the moment you set it.</p>${oslChatNotificationSettings()}<details class="settings-disclosure notification-apps"><summary><span><strong>Connected apps</strong><small>Provider unread counts are not read</small></span></summary><div class="notification-app-list">${apps}</div></details>`;
 }
 
 function oslChatNotificationSettings(): string {
@@ -6514,8 +6536,9 @@ function oslChatNotificationSettings(): string {
   }).join("");
   const previewsChecked = chatPreviewHidingVisible(oslChatPreviewsVisible);
   const previewText = "Hide message previews on this device.";
-  const mutedDetails = muted ? `<details class="settings-disclosure" open><summary><span><strong>Muted OSL Chats</strong><small>${oslChatMutedPeople.size.toLocaleString("en-US")} muted</small></span></summary><div class="settings-list">${muted}</div></details>` : "";
-  return `<section class="settings-list osl-chat-notification-settings" aria-label="OSL Chat controls"><label class="setting-line interactive"><span><strong>Encrypted chat alerts</strong><small>New-message activity from unmuted OSL friends.</small></span><input id="notification-chat-activity" type="checkbox" ${notificationChatActivity ? "checked" : ""}/></label><label class="setting-line interactive"><span><strong>OSL Chat previews</strong><small>${previewText}</small></span><input id="osl-chat-preview-toggle" type="checkbox" ${previewsChecked ? "checked" : ""}/></label></section>${mutedDetails}`;
+  const mutedRows = muted || `<div class="setting-line"><span><strong>Nobody is muted</strong><small>Every friend you have approved can still reach you here.</small></span></div>`;
+  const mutedDetails = `<details class="settings-disclosure" open><summary><span><strong>Muted OSL Chats</strong><small>${oslChatMutedPeople.size.toLocaleString("en-US")} muted</small></span></summary><div class="settings-list">${mutedRows}</div></details>`;
+  return `<div class="settings-subhead"><h3>Messages</h3></div><section class="settings-list osl-chat-notification-settings" aria-label="OSL Chat controls"><label class="setting-line interactive"><span><strong>Encrypted chat alerts</strong><small>New-message activity from unmuted OSL friends.</small></span><input id="notification-chat-activity" type="checkbox" ${notificationChatActivity ? "checked" : ""}/></label><label class="setting-line interactive"><span><strong>OSL Chat previews</strong><small>${previewText}</small></span><input id="osl-chat-preview-toggle" type="checkbox" ${previewsChecked ? "checked" : ""}/></label></section><div class="settings-subhead"><h3>Friends</h3></div>${mutedDetails}`;
 }
 
 function setNotificationAppPreference(id: ServiceId, enabled: boolean): void {
@@ -7929,6 +7952,27 @@ function bindWorkspace(): void {
   document.querySelectorAll<HTMLButtonElement>("[data-settings-send-mode]").forEach((button) => button.addEventListener("click", () => {
     void changeSendingMode(button.dataset.settingsSendMode as SendMode);
   }));
+  // Message defaults. Save and Reset move the screen's own state; the saved
+  // values do not leave the app yet because `osl_save_message_defaults` is an
+  // `ipc` command that is not on the hub command surface. Wiring it is a
+  // separate step; the controls and their saved reading are this screen's job.
+  document.querySelectorAll<HTMLInputElement>("[data-message-default]").forEach((input) => input.addEventListener("change", () => {
+    messageDefaultsScreen = chooseMessageDefault(
+      messageDefaultsScreen,
+      input.dataset.messageDefault as MessageDefaultsControl,
+      input.value,
+    );
+    render();
+  }));
+  document.querySelector<HTMLButtonElement>("[data-message-default-save]")?.addEventListener("click", () => {
+    messageDefaultsScreen = saveMessageDefaults(messageDefaultsScreen);
+    render();
+    showToast("Message defaults saved");
+  });
+  document.querySelector<HTMLButtonElement>("[data-message-default-reset]")?.addEventListener("click", () => {
+    messageDefaultsScreen = resetMessageDefaults(messageDefaultsScreen);
+    render();
+  });
   document.querySelector<HTMLButtonElement>("[data-inbox-start-private]")?.addEventListener("click", () => inboxPrimaryAction());
   document.querySelectorAll<HTMLButtonElement>("[data-inbox-filter]").forEach((button) => button.addEventListener("click", () => {
     inboxFilter = parseInboxFilter(button.dataset.inboxFilter);
@@ -10635,6 +10679,7 @@ type OslHubUiTestStatePatch = {
   oslChatDraft?: string;
   recoveryBundle?: { userId: string; identityPhrase: string | null; passwordPhrase: string } | null;
   recoveryKitUnsaved?: boolean;
+  messageDefaults?: MessageDefaults;
 };
 
 function testHubPerson(person: Partial<HubPerson> & { personId: string }): HubPerson {
@@ -10683,6 +10728,7 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   deleteChoices = initialDeleteChoices();
   torOnboarding = initialTorOnboardingState();
   settingsSection = "account";
+  messageDefaultsScreen = initialMessageDefaultsScreenState(patch.messageDefaults);
   activeService = null;
   activeHomeAppId = null;
   activeOslChatPersonId = patch.activeOslChatPersonId ?? null;
@@ -11154,6 +11200,9 @@ export const __oslHubUiTest = {
     route = "settings";
     settingsSection = section;
     return workspaceContent();
+  },
+  messageDefaultsStateForTest(): MessageDefaultsScreenState {
+    return { saved: { ...messageDefaultsScreen.saved }, draft: { ...messageDefaultsScreen.draft } };
   },
   renderRouteShell(destination: Route): string {
     route = destination;

@@ -1,0 +1,19 @@
+{
+  "protection_state": "protected",
+  "privacy_level": "maximum",
+  "protection_choices": {
+    "level": "maximum",
+    "label": "Maximum",
+    "warnings": "before_send_and_public_post_warnings",
+    "cleanup": "attachment_cleaning_plus_7_day_review",
+    "app_exceptions": "app_exceptions_restricted",
+    "contact_rules": "protected_contacts_required"
+  },
+  "verification_warning": "before sending",
+  "trusted_people_count": 2,
+  "trusted_people": "2 trusted people",
+  "connected_app_count": 2,
+  "allowed_place_count": 2,
+  "apps": "2 connected apps",
+  "next_safe_step": "Open a protected conversation"
+}
