@@ -1192,27 +1192,27 @@ mod tests {
 
 #[cfg(test)]
 mod b0_01_scope_isolation {
-    //! B0-01 finding: what actually isolates one conversation's cover text
-    //! from another's is the *detection key*, not the scope cipher.
-    //!
-    //! `crates/ipc/tests/prose_token_live.rs::cross_scope_does_not_decode`
-    //! asserts the opposite -- "different cipher permutation + different MAC
-    //! key" -- while holding the detection key constant across both scopes. It
-    //! passed only because the blob id it derived from the recovered carrier
-    //! had never been uploaded, so the store answered 404 and the client
-    //! folded that to `None`. The assertion was reading a storage miss as a
-    //! cryptographic refusal. These two tests pin the real behaviour so the
-    //! next reader does not have to rediscover it.
-    //!
-    //! D-231 UPDATE. Once the bridge made the send path actually upload, the
-    //! storage miss stopped happening and `cross_scope_does_not_decode` went
-    //! red — correctly. Both findings above still hold verbatim: the scope
-    //! cipher still isolates nothing, and the detector is still the only value
-    //! that does. What changed is that the detector is now *derived per scope*
-    //! (`scope_bound_detection_key`), so the live assertion is satisfied by a
-    //! cryptographic refusal for the first time rather than by a 404. The two
-    //! tests below are unchanged and still pass, because they exercise the
-    //! `stego` layer directly and that layer's behaviour did not change.
+    // B0-01 finding: what actually isolates one conversation's cover text
+    // from another's is the *detection key*, not the scope cipher.
+    //
+    // `crates/ipc/tests/prose_token_live.rs::cross_scope_does_not_decode`
+    // asserts the opposite -- "different cipher permutation + different MAC
+    // key" -- while holding the detection key constant across both scopes. It
+    // passed only because the blob id it derived from the recovered carrier
+    // had never been uploaded, so the store answered 404 and the client
+    // folded that to `None`. The assertion was reading a storage miss as a
+    // cryptographic refusal. These two tests pin the real behaviour so the
+    // next reader does not have to rediscover it.
+    //
+    // D-231 UPDATE. Once the bridge made the send path actually upload, the
+    // storage miss stopped happening and `cross_scope_does_not_decode` went
+    // red — correctly. Both findings above still hold verbatim: the scope
+    // cipher still isolates nothing, and the detector is still the only value
+    // that does. What changed is that the detector is now *derived per scope*
+    // (`scope_bound_detection_key`), so the live assertion is satisfied by a
+    // cryptographic refusal for the first time rather than by a 404. The two
+    // tests below are unchanged and still pass, because they exercise the
+    // `stego` layer directly and that layer's behaviour did not change.
 
     use super::*;
     use crate::scope::{ScopeInput, ScopeKind};
