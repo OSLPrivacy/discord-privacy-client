@@ -12,14 +12,17 @@ describe("TASK 4913 connection route copy", () => {
     const routeRadios = choiceMarkup.match(/<input\b[^>]*\btype="radio"[^>]*>/gu) ?? [];
     const routeNames = routeRadios.map((radio) => /\baria-label="([^"]+)"/u.exec(radio)?.[1]);
 
-    expect(routeRadios).toHaveLength(2);
-    expect(routeNames).toEqual(["Tor", "Direct"]);
-    expect(routeRadios.join("\n")).not.toContain("Mullvad");
-    expect(choiceMarkup).toContain(`<div class="tor-mullvad-status" aria-label="Mullvad status"><strong>Mullvad</strong><span>${MULLVAD_COPY}</span></div>`);
+    // Keep these assertions soft so one broken screen reports every contract
+    // violation in a single gate run, including the unexpected route name and
+    // any honesty copy removed at the same time.
+    expect.soft(routeRadios).toHaveLength(2);
+    expect.soft(routeNames).toEqual(["Tor", "Direct"]);
+    expect.soft(routeRadios.join("\n")).not.toContain("Mullvad");
+    expect.soft(choiceMarkup).toContain(`<div class="tor-mullvad-status" aria-label="Mullvad status"><strong>Mullvad</strong><span>${MULLVAD_COPY}</span></div>`);
 
     const ready = applyTorSidecarEvent(initialTorBootStatus(), { event: "ready" });
     const successMarkup = onboardingTorMarkup(applyTorBootstrapStatus(initialTorOnboardingState(), ready));
-    expect(successMarkup).toContain(TOR_SUCCESS_COPY);
+    expect.soft(successMarkup).toContain(TOR_SUCCESS_COPY);
 
     console.info(`TASK4913_ROUTE_RADIO_COUNT=${routeRadios.length}`);
     console.info(`TASK4913_ROUTE_RADIO_NAMES=${routeNames.join("|")}`);
