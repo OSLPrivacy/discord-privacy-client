@@ -20704,6 +20704,21 @@ pub struct AlertModeChoiceDto {
     pub mode: String,
 }
 
+/// The concrete local effects requested for one received message.
+///
+/// The trusted desktop host consumes these two lists directly: each notice is
+/// displayed once and each sound is played once. Keeping the effects separate
+/// makes it impossible for a quiet alert to accidentally gain a sound merely
+/// because it has a notice.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReceivedMessageAlertDto {
+    pub message_id: String,
+    pub mode: String,
+    pub notices: Vec<String>,
+    pub sounds: Vec<String>,
+}
+
 impl From<crate::app_preferences::AlertModeChoice> for AlertModeChoiceDto {
     fn from(mode: crate::app_preferences::AlertModeChoice) -> Self {
         Self {
@@ -20739,6 +20754,41 @@ pub fn cmd_osl_read_alert_mode_choice(state: &AppState) -> Result<AlertModeChoic
         .expect("app_preferences mutex poisoned")
         .alert_mode_choice;
     Ok(mode.into())
+}
+
+/// Dispatch the local notice and sound effects for one message using the
+/// owner's saved alert mode. The message itself is never suppressed; this only
+/// determines the separate local attention effects.
+pub fn cmd_osl_alert_for_received_message(
+    state: &AppState,
+    message_id: String,
+) -> Result<ReceivedMessageAlertDto, String> {
+    record_activity_on_command_entry();
+    let message_id = message_id.trim();
+    if message_id.is_empty() {
+        return Err("OSL: received-message alert requires a message id".to_owned());
+    }
+
+    let mode = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .alert_mode_choice;
+    let effect_id = message_id.to_owned();
+    let (notices, sounds) = match mode {
+        crate::app_preferences::AlertModeChoice::Silent => (Vec::new(), Vec::new()),
+        crate::app_preferences::AlertModeChoice::Quiet => (vec![effect_id], Vec::new()),
+        crate::app_preferences::AlertModeChoice::Normal => {
+            (vec![effect_id.clone()], vec![effect_id])
+        }
+    };
+
+    Ok(ReceivedMessageAlertDto {
+        message_id: message_id.to_owned(),
+        mode: mode.words().to_owned(),
+        notices,
+        sounds,
+    })
 }
 
 pub fn cmd_osl_reset_alert_mode_choice(
