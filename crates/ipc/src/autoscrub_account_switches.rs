@@ -36,7 +36,10 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::autoscrub_pro_gate::{AutoScrubProSurface, PRO_CODE_REQUIRED};
+use crate::autoscrub_pro_gate::{
+    AutoScrubProSurface, AutoScrubSchedule, AutoScrubScheduleOutcome, AutoScrubScheduleRequest,
+    AUTOSCRUB_SCHEDULE_COMMAND, PRO_CODE_REQUIRED,
+};
 
 /// The two commands this module owns, by the exact name a caller invokes.
 pub const AUTOSCRUB_ACCOUNT_SWITCHES_COMMAND: &str = "autoscrub_account_switches";
@@ -460,6 +463,24 @@ impl AutoScrubAccountSwitchSurface {
             records: self.records.clone(),
             record_count: self.records.len(),
         })
+    }
+
+    /// Save a schedule only for an account the normal Scrub consent approved.
+    /// The approval check happens before the Pro surface can write the row.
+    pub fn schedule(
+        &mut self,
+        request: AutoScrubScheduleRequest,
+    ) -> Result<AutoScrubScheduleOutcome, AutoScrubSwitchRefusal> {
+        self.require_switchable(AUTOSCRUB_SCHEDULE_COMMAND, &request.account)?;
+        Ok(self
+            .pro
+            .schedule(request)
+            .expect("a switchable account has an unlocked Pro schedule gate"))
+    }
+
+    /// The saved schedules, exposed read-only.
+    pub fn schedules(&self) -> &[AutoScrubSchedule] {
+        self.pro.schedules()
     }
 
     /// Every saved on-record.
