@@ -15,7 +15,8 @@ use ipc::cipher_store_client::{
 use osl_privacy_hub::attachment_limits::AttachmentAccountTier;
 use osl_privacy_hub::osl_chat_attachment_download_permission::{
     download_pro_attachment_for_recipient, grant_recipient_download_from_pro_send,
-    RecipientAttachmentDownloadRequest, SHARE_REVOKED_REFUSAL_NAME,
+    RecipientAttachmentDownloadRequest, StoredReceiverPermission, StoredRecipientAttachment,
+    SHARE_REVOKED_REFUSAL_NAME,
 };
 
 const FILE_ID: &str = "06540654065406540654065406540654";
@@ -52,6 +53,17 @@ fn completed_pro_send() -> ProChunkedUploadReport {
     }
 }
 
+fn stored_attachment() -> StoredRecipientAttachment {
+    StoredRecipientAttachment {
+        file_id: FILE_ID.to_owned(),
+        file_name: "task-0654-photo.png".to_owned(),
+        byte_length: FILE_BYTES.len() as u64,
+        kind: "image/png".to_owned(),
+        owner_osl_user_id: "pro-sender-0654".to_owned(),
+        receiver_permission: StoredReceiverPermission::Download,
+    }
+}
+
 #[test]
 fn task_0654_free_recipient_downloads_exact_pro_file_and_revoked_share_is_named() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind direct download fixture");
@@ -79,17 +91,27 @@ fn task_0654_free_recipient_downloads_exact_pro_file_and_revoked_share_is_named(
 
     let client =
         CipherStoreClient::new(&format!("http://{address}")).expect("loopback cipher-store client");
-    let mut permission =
-        grant_recipient_download_from_pro_send(&completed_pro_send(), RECIPIENT_ID, FETCH_TOKEN)
-            .expect("completed Pro send grants its recipient");
+    let stored = stored_attachment();
+    let mut permission = grant_recipient_download_from_pro_send(
+        &completed_pro_send(),
+        &stored,
+        RECIPIENT_ID,
+        FETCH_TOKEN,
+    )
+    .expect("completed Pro send grants its recipient");
     let request = RecipientAttachmentDownloadRequest {
         recipient_osl_user_id: RECIPIENT_ID.to_owned(),
         account_tier: AttachmentAccountTier::Free,
     };
     let mut downloaded = Vec::new();
-    let receipt =
-        download_pro_attachment_for_recipient(&permission, &request, &client, &mut downloaded)
-            .expect("Free recipient is authorized for Pro-sent file");
+    let receipt = download_pro_attachment_for_recipient(
+        &permission,
+        &stored,
+        &request,
+        &client,
+        &mut downloaded,
+    )
+    .expect("Free recipient is authorized for Pro-sent file");
     server.join().expect("direct download fixture completes");
 
     assert_eq!(receipt.recipient_account_tier, AttachmentAccountTier::Free);
@@ -105,9 +127,14 @@ fn task_0654_free_recipient_downloads_exact_pro_file_and_revoked_share_is_named(
 
     assert!(permission.revoke());
     let mut revoked_output = Vec::new();
-    let refusal =
-        download_pro_attachment_for_recipient(&permission, &request, &client, &mut revoked_output)
-            .expect_err("revoked recipient share must be refused");
+    let refusal = download_pro_attachment_for_recipient(
+        &permission,
+        &stored,
+        &request,
+        &client,
+        &mut revoked_output,
+    )
+    .expect_err("revoked recipient share must be refused");
     assert_eq!(refusal.name(), SHARE_REVOKED_REFUSAL_NAME);
     assert!(revoked_output.is_empty());
     assert_eq!(
