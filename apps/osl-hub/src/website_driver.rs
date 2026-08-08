@@ -2409,6 +2409,59 @@ mod tests {
             .is_none());
     }
 
+    #[test]
+    fn task_1132_instagram_composer_finder_refuses_closed_and_search_focused_states() {
+        const INSTAGRAM_TITLE: &str = "Instagram — task 1132 fixture";
+        const BOX_ID: &str = "instagram-box-1132";
+        const COMPOSER_NAME: &str = "Instagram composer";
+        let good = Task1131Page::spawn(
+            INSTAGRAM_TITLE,
+            r#"<main data-osl-service="instagram" data-osl-instagram-place-kind="direct_message">
+                  <textarea id="instagram-box-1132" aria-label="Instagram composer" data-osl-instagram-composer="active"></textarea>
+                </main>"#,
+        );
+        let closed = Task1131Page::spawn(
+            "Instagram — task 1132 closed",
+            r#"<main data-osl-service="instagram" data-osl-instagram-place-kind="direct_message">
+                  <textarea id="instagram-box-1132" aria-label="Instagram composer" data-osl-instagram-composer="closed"></textarea>
+                </main>"#,
+        );
+        let search_focused = Task1131Page::spawn(
+            "Instagram — task 1132 search-focused",
+            r#"<main data-osl-service="instagram" data-osl-instagram-place-kind="direct_message">
+                  <input id="instagram-box-1132" role="searchbox" aria-label="Instagram composer" data-osl-instagram-composer="search-focused">
+                </main>"#,
+        );
+        let mut driver = RealBrowserWebsiteDriver::launch().expect("launch task 1132 fixture browser");
+
+        let discover = |driver: &mut RealBrowserWebsiteDriver, fixture: &Task1131Page| {
+            let page = driver
+                .find_page(WebsitePageRequest { url: fixture.url() })
+                .expect("open task 1132 fixture");
+            driver.read_page(&page).expect("wait for task 1132 fixture");
+            driver
+                .discover_instagram_window(&page)
+                .expect("read task 1132 fixture")
+        };
+
+        let good_result = discover(&mut driver, &good).expect("active composer must be found");
+        assert_eq!(good_result.active_composer, COMPOSER_NAME);
+        let closed_result = discover(&mut driver, &closed);
+        let search_focused_result = discover(&mut driver, &search_focused);
+        assert!(closed_result.is_none(), "closed must be refused by name");
+        assert!(
+            search_focused_result.is_none(),
+            "search-focused must be refused by name"
+        );
+        let restored_result = discover(&mut driver, &good).expect("restored active composer must be found");
+        assert_eq!(restored_result.active_composer, COMPOSER_NAME);
+
+        println!("TASK1132 box={BOX_ID} result_count=1 result_name={COMPOSER_NAME}");
+        println!("TASK1132 state=closed result=refused");
+        println!("TASK1132 state=search-focused result=refused");
+        println!("TASK1132 restored_box={BOX_ID} result_count=1 result_name={COMPOSER_NAME}");
+    }
+
     struct Task1131Page {
         listener_addr: String,
         running: std::sync::Arc<std::sync::atomic::AtomicBool>,
