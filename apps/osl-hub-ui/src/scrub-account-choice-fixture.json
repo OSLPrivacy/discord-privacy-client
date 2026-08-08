@@ -1,0 +1,18 @@
+{
+  "ownerUserId": "owner-task-1402",
+  "accounts": [
+    {
+      "serviceId": "discord",
+      "accountId": "discord-maple",
+      "accountLabel": "Personal Discord",
+      "appOrBrowserLabel": "Discord app"
+    },
+    {
+      "serviceId": "email",
+      "accountId": "gmail-birch",
+      "accountLabel": "Work Gmail",
+      "appOrBrowserLabel": "Firefox"
+    }
+  ],
+  "tickedAccountId": "discord-maple"
+}

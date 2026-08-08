@@ -1,5 +1,3 @@
-import type { VerificationWarningSurface } from "./verification-warning";
-
 // Matches the enforced OSL Chat logical-message limit in broker.rs.
 export const OSL_CHAT_MAX_DRAFT_BYTES = 1024 * 1024;
 
@@ -131,20 +129,6 @@ export interface OslChatMessage {
   body: string;
   state: OslChatDeliveryState;
   timestampLabel: string;
-  reactions?: readonly OslChatMessageReaction[];
-}
-
-export interface OslChatMessageReaction {
-  emoji: string;
-  count: number;
-  mine: boolean;
-}
-
-export interface OslChatBuildWarning {
-  kind: "changedBuild";
-  reason: "changed" | "corruptProof";
-  message: string;
-  messageSendingAvailable: true;
 }
 
 export interface OslChatsViewModel {
@@ -163,13 +147,7 @@ export interface OslChatsViewModel {
    * that is why the composer copy never promises removal on its own.
    */
   deletionUnconfirmed?: number;
-  buildIntegrity?: OslChatBuildIntegrityStatus | null;
-  verificationWarningSurface?: VerificationWarningSurface;
-  buildWarning?: OslChatBuildWarning | null;
-  verificationWarningSurface?: VerificationWarningSurface;
 }
-
-export type OslChatBuildIntegrityStatus = "verified" | "mismatch" | "unknown";
 
 /**
  * Which sender-facing receipt state the latest outgoing message has actually
@@ -258,19 +236,6 @@ export function applyOslChatDraftToElement(
   if (draftElement && draftElement.value !== draft) draftElement.value = draft;
 }
 
-export function submitsOslChatDraft(event: {
-  key: string;
-  isComposing?: boolean;
-  altKey?: boolean;
-  ctrlKey?: boolean;
-  metaKey?: boolean;
-  shiftKey?: boolean;
-}): boolean {
-  if (event.key !== "Enter") return false;
-  if (event.isComposing) return false;
-  return !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey;
-}
-
 function deliveryLabel(state: OslChatDeliveryState): string {
   switch (state) {
     case "queued": return "Not sent";
@@ -335,20 +300,11 @@ export function oslChatHandshakeWarning(friend: OslChatFriend): string {
   return `Nothing has ever arrived from ${friend.nickname}, so OSL cannot tell whether they finished their half. Until they add your invite, verify you and turn this chat on, what you send here cannot be opened on their device. Both people must complete every step.`;
 }
 
-function oslChatMutualReadiness(friend: OslChatFriend): boolean {
-  return friend.verified && friend.ready && friend.handshakeConfirmed === true;
-}
-
 function messageRow(message: OslChatMessage, friend: OslChatFriend): string {
   const label = deliveryLabel(message.state);
   const unreadable = oslChatMessageUnreadableNote(message, friend.handshakeConfirmed === true);
-  const reactionButtons = [
-    ...(message.reactions ?? []).map((reaction) => `<button class="osl-chat-reaction${reaction.mine ? " is-mine" : ""}" type="button" data-osl-chat-reaction="${escapeHtml(message.messageId)}" data-osl-chat-emoji="${escapeHtml(reaction.emoji)}" data-osl-chat-reaction-mine="${reaction.mine ? "true" : "false"}" aria-pressed="${reaction.mine ? "true" : "false"}"><span>${escapeHtml(reaction.emoji)}</span><span>${reaction.count}</span></button>`),
-    `<button class="osl-chat-reaction is-add" type="button" data-osl-chat-reaction="${escapeHtml(message.messageId)}" data-osl-chat-emoji="👍" data-osl-chat-reaction-mine="false" aria-label="Add reaction">👍</button>`,
-  ].join("");
   return `<article class="osl-chat-message is-${message.direction}" data-message-id="${escapeHtml(message.messageId)}">
     <div class="osl-chat-message-meta"><strong>${message.direction === "outgoing" ? "You" : escapeHtml(friend.nickname)}</strong><time>${escapeHtml(message.timestampLabel)}</time></div><p class="osl-chat-message-text">${escapeHtml(message.body)}</p>
-    <div class="osl-chat-reactions">${reactionButtons}</div>
     <footer><span class="osl-chat-message-state is-${message.state}">${label}</span>${unreadable ? `<span class="osl-chat-message-unreadable">${escapeHtml(unreadable)}</span>` : ""}</footer>
   </article>`;
 }
@@ -383,20 +339,6 @@ function deletionUnconfirmedRow(count: number): string {
   return `<p class="osl-chat-deletion-unconfirmed warning" role="status" data-osl-deletion-unconfirmed="${count}" data-deletion-status="not-confirmed"><strong>Deletion was not confirmed</strong><small>OSL asked for ${copies} it sent to be deleted, and has not been able to confirm it. It keeps trying. Until it can confirm, assume the copy is still there.</small></p>`;
 }
 
-function buildIntegrityWarningRow(status: OslChatBuildIntegrityStatus | null | undefined): string {
-  if (status === "verified" || !status) return "";
-  const detail = status === "mismatch"
-    ? "This app copy does not match OSL's signed build list. You can still send messages, but update or reinstall OSL before trusting this build."
-    : "OSL could not verify this app copy against its signed build list. You can still send messages, but update or reinstall OSL before trusting this build.";
-  return `<p class="osl-chat-build-warning warning" role="status" data-osl-build-integrity="${status}"><strong>Build verification warning</strong><small>${escapeHtml(detail)}</small></p>`;
-function buildWarningRow(warning: OslChatBuildWarning | null | undefined): string {
-  if (!warning || warning.kind !== "changedBuild" || warning.messageSendingAvailable !== true) {
-    return "";
-  }
-  const reason = warning.reason === "corruptProof" ? "corrupt-proof" : "changed";
-  return `<p class="osl-chat-build-warning warning" role="status" data-osl-chat-build-warning="${reason}" data-message-sending-available="true"><strong>Changed build warning</strong><small>${escapeHtml(warning.message)}</small></p>`;
-}
-
 function emptyThread(): string {
   return `<section class="osl-chat-thread is-empty" aria-label="OSL direct chat">
     <p>Select a friend.</p>
@@ -407,34 +349,27 @@ function activeThread(model: OslChatsViewModel, friend: OslChatFriend): string {
   const bytes = oslChatDraftBytes(model.draft);
   const withinLimit = bytes <= OSL_CHAT_MAX_DRAFT_BYTES;
   const hasDraft = model.draft.trim().length > 0;
-  const mutualReady = oslChatMutualReadiness(friend);
-  const peerState = mutualReady ? "mutual" : "one-way";
-  const canSend = mutualReady && hasDraft && withinLimit && !model.busy;
+  const canSend = friend.verified && friend.ready && hasDraft && withinLimit && !model.busy;
   const readiness = !friend.verified
     ? "Verify this friend to chat."
     : !friend.ready
       ? "Chat is not ready."
-      : !mutualReady
-        ? "Chat needs both people to answer before sending."
       : "";
   const messages = model.messages.length
     ? model.messages.map((message) => messageRow(message, friend)).join("")
     : '<p class="osl-chat-thread-empty">No messages yet.</p>';
-  const warningSurface = model.verificationWarningSurface ?? "conversation-open";
-  const handshakeWarning = warningSurface === "none" ? "" : oslChatHandshakeWarning(friend);
+  const handshakeWarning = oslChatHandshakeWarning(friend);
   const unconfirmed = handshakeWarning
-    ? `<p class="osl-chat-handshake-warning is-${warningSurface}" role="status" data-verification-warning-surface="${warningSurface}">${escapeHtml(handshakeWarning)}</p>`
+    ? `<p class="osl-chat-handshake-warning" role="status">${escapeHtml(handshakeWarning)}</p>`
     : "";
   return `<section class="osl-chat-thread" aria-label="OSL direct chat with ${escapeHtml(friend.nickname)}">
     ${unconfirmed}
     <header class="osl-chat-thread-header">${avatar(friend.nickname, "is-thread")}<div><h2>${escapeHtml(friend.nickname)}</h2><span>${friend.ready ? "Ready" : "Connecting"} · ${friend.verified ? "Verified" : "Unverified"}</span></div><button class="osl-chat-thread-settings" type="button" data-osl-chat-settings="${escapeHtml(friend.personId)}" aria-label="Chat settings">${settingsIcon}</button></header>
     <div class="osl-chat-message-list" role="log" aria-live="polite" aria-relevant="additions text">${messages}</div>
-    ${buildIntegrityWarningRow(model.buildIntegrity)}
-    ${buildWarningRow(model.buildWarning)}
     ${deletionUnconfirmedRow(model.deletionUnconfirmed ?? 0)}
     <form class="osl-chat-composer" data-osl-chat-compose="${escapeHtml(friend.personId)}">
       <label for="osl-chat-draft">Message</label>
-      <div class="osl-chat-composer-bar"><label class="osl-chat-view-once" title="View once"><input id="osl-chat-view-once" type="checkbox" ${model.viewOnce ? "checked" : ""} ${model.busy ? "disabled" : ""}/>${onceIcon}<span><strong>View once</strong><small>Kept out of OSL history. OSL asks for the sent copy to be deleted once it is opened, and says here when it cannot confirm that.</small></span></label><textarea id="osl-chat-draft" rows="1" placeholder="Message ${escapeHtml(friend.nickname)}" autocomplete="off" spellcheck="true" aria-describedby="osl-chat-draft-count osl-chat-readiness">${escapeHtml(model.draft)}</textarea><button class="osl-chat-send" type="submit" aria-label="${model.busy ? "Sending" : "Send"}" data-osl-chat-peer-state="${peerState}" data-osl-chat-send-context="${mutualReady && !model.busy ? "1" : "0"}" ${canSend ? "" : "disabled"}>${sendIcon}<span>${model.busy ? "Sending…" : "Send"}</span></button></div>
+      <div class="osl-chat-composer-bar"><label class="osl-chat-view-once" title="View once"><input id="osl-chat-view-once" type="checkbox" ${model.viewOnce ? "checked" : ""} ${model.busy ? "disabled" : ""}/>${onceIcon}<span><strong>View once</strong><small>Kept out of OSL history. OSL asks for the sent copy to be deleted once it is opened, and says here when it cannot confirm that.</small></span></label><textarea id="osl-chat-draft" rows="1" placeholder="Message ${escapeHtml(friend.nickname)}" autocomplete="off" spellcheck="true" aria-describedby="osl-chat-draft-count osl-chat-readiness">${escapeHtml(model.draft)}</textarea><button class="osl-chat-send" type="submit" aria-label="${model.busy ? "Sending" : "Send"}" data-osl-chat-send-context="${friend.verified && friend.ready && !model.busy ? "1" : "0"}" ${canSend ? "" : "disabled"}>${sendIcon}<span>${model.busy ? "Sending…" : "Send"}</span></button></div>
       <div class="osl-chat-composer-meta"><span id="osl-chat-readiness" class="osl-chat-readiness">${readiness}</span><output id="osl-chat-draft-count" class="osl-chat-byte-count${withinLimit ? "" : " is-over"}">${bytes.toLocaleString("en-US")} / ${OSL_CHAT_MAX_DRAFT_BYTES.toLocaleString("en-US")}</output></div>
     </form>
   </section>`;

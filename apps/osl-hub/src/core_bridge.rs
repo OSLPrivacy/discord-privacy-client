@@ -5,11 +5,19 @@
 //! local readiness and a feature inventory. Remote service webviews receive no
 //! Tauri capability and therefore cannot call this bridge.
 
+use std::sync::{
+    Arc,
+    Mutex,
+};
 use ipc::AppState;
 use serde::Serialize;
 use std::fmt;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex};
+use crate::runtime_switches::{
+    PASSWORD_SCREEN_ACCESS_SKIP_FOR_TEST,
+    ResolvedTestOnlyRunTimeSwitches,
+    read_startup_test_only_runtime_switches,
+};
 
 pub struct HubCoreState {
     pub osl: Arc<AppState>,
@@ -156,19 +164,6 @@ pub fn clear_activation_code(state: &HubCoreState) -> Result<HubLicenseState, St
     ipc::commands::cmd_osl_clear_license(&state.osl)
         .map_err(|_| "The saved activation code could not be cleared".to_owned())?;
     license_state(state)
-}
-
-pub fn live_server_revision_report(
-    state: &HubCoreState,
-) -> Result<keystore::LiveServerRevisionReport, String> {
-    let keyserver = state
-        .osl
-        .keyserver_slot()
-        .clone()
-        .ok_or_else(|| "OSL keyserver is not configured".to_owned())?;
-    keyserver
-        .live_server_revision_report()
-        .map_err(|error| format!("OSL live server revision report unavailable: {error}"))
 }
 
 fn normalize_activation_code(value: &str) -> Result<String, String> {
@@ -743,4 +738,17 @@ mod tests {
         assert_eq!(state.status, "UNKNOWN");
         assert_eq!(state.current_period_end, Some(42));
     }
+}
+
+pub fn live_server_revision_report(
+    state: &HubCoreState,
+) -> Result<keystore::LiveServerRevisionReport, String> {
+    let keyserver = state
+        .osl
+        .keyserver_slot()
+        .clone()
+        .ok_or_else(|| "OSL keyserver is not configured".to_owned())?;
+    keyserver
+        .live_server_revision_report()
+        .map_err(|error| format!("OSL live server revision report unavailable: {error}"))
 }

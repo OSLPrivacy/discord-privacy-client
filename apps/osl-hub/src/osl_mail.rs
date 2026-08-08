@@ -6,22 +6,33 @@
 //! mailbox is local state established only after a signed provision response
 //! succeeds.
 
-use crate::core_bridge::HubCoreState;
-use base64::{
-    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
-    Engine as _,
+use base64::{engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD}, Engine as _};
+use serde::{
+    Deserialize,
+    Serialize,
 };
-use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
-use sha2::{Digest, Sha256};
+use serde_json::{
+    Map,
+    Value,
+};
+use sha2::{
+    Digest,
+    Sha256,
+};
+use crate::claim_state::{
+    CarrierEvidence,
+    DeliveryEvidence,
+    PublicClaim,
+    Surface,
+    claim_of,
+    public_claim,
+};
+use crate::core_bridge::HubCoreState;
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 const MAIL_DOMAIN: &str = "oslprivacy.com";
 const RETENTION_SECONDS: u32 = 7 * 24 * 60 * 60;
-const BORING_PROTECTED_SUBJECT: &str = "OSL protected message";
-const MIN_COPIED_SUBJECT_BYTES: usize = 16;
-pub const OSL_MAIL_THREAD_LIST_CAP: usize = 100;
 /// Whether the user-facing OSL Mail client may present as usable.
 ///
 /// **Derived, not written.** This was the literal `false` that D-221 called out
@@ -76,107 +87,6 @@ pub struct OslMailBurnReceipt {
     pub mailbox_disabled: bool,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OslMailForwardPlan {
-    pub osl_recipients: Vec<String>,
-    pub no_osl_warnings: Vec<String>,
-    pub required_confirmation: Option<String>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OslMailForwardResult {
-    pub status: &'static str,
-    pub forwarded: bool,
-    pub osl_recipients: Vec<String>,
-    pub no_osl_warnings: Vec<String>,
-    pub warning: Option<String>,
-    pub required_confirmation: Option<String>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OslMailThreadSummary {
-    pub thread_id: String,
-    pub subject: String,
-    pub correspondent: String,
-    pub latest_at: i64,
-    pub unread: bool,
-    pub transit: &'static str,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OslMailThreadMessage {
-    pub message_id: String,
-    pub from: String,
-    pub to: Vec<String>,
-    pub subject: String,
-    pub body: String,
-    pub received_at: i64,
-    pub transit: &'static str,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OslMailRetrievedThread {
-    pub thread_id: String,
-    pub retrieval_id: String,
-    pub expires_at: i64,
-    pub messages: Vec<OslMailThreadMessage>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OslMailSealedEnvelope {
-    pub version: u8,
-    pub sealed_body_len: usize,
-    pub plaintext_len: usize,
-    pub nonce_b64: String,
-    pub subject_sha256: String,
-    pub body_sha256: String,
-    pub recipient_sha256: String,
-    pub tag_sha256: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MailDraftControl {
-    pub name: String,
-    pub value: String,
-}
-
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct MailDraftRecipients {
-    pub to: Vec<String>,
-    pub cc: Vec<String>,
-    pub bcc: Vec<String>,
-}
-
-/// Read recipient addresses only from the named recipient controls of a mail
-/// draft. Subject/body controls are deliberately ignored even if they contain
-/// address-shaped text.
-pub fn read_draft_recipients_from_named_controls(
-    controls: &[MailDraftControl],
-) -> MailDraftRecipients {
-    let mut recipients = MailDraftRecipients::default();
-    for control in controls {
-        match normalized_recipient_control_name(&control.name) {
-            Some("to") => recipients
-                .to
-                .extend(extract_email_addresses(&control.value)),
-            Some("cc") => recipients
-                .cc
-                .extend(extract_email_addresses(&control.value)),
-            Some("bcc") => recipients
-                .bcc
-                .extend(extract_email_addresses(&control.value)),
-            _ => {}
-        }
-    }
-    recipients
-}
-
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct MailCapabilities {
@@ -203,51 +113,6 @@ struct SendResponse {
 struct BurnResponse {
     deleted: u32,
     address_tombstoned: bool,
-}
-
-#[derive(Deserialize)]
-struct ListResponse {
-    messages: Vec<ListResponseMessage>,
-}
-
-#[derive(Deserialize)]
-struct ListResponseMessage {
-    message_id: String,
-    kind: String,
-    #[serde(default)]
-    sender_user_id: Option<String>,
-    #[serde(default)]
-    sender: Option<String>,
-    #[serde(default)]
-    sender_address: Option<String>,
-    #[serde(default)]
-    subject: Option<String>,
-    #[serde(default)]
-    opaque_thread_token: Option<String>,
-    received_at: i64,
-}
-
-#[derive(Deserialize)]
-struct FetchResponse {
-    message_id: String,
-    #[serde(default)]
-    kind: Option<String>,
-    #[serde(default)]
-    sender_user_id: Option<String>,
-    #[serde(default)]
-    sender: Option<String>,
-    #[serde(default)]
-    sender_address: Option<String>,
-    #[serde(default)]
-    subject: Option<String>,
-    #[serde(default)]
-    ciphertext_b64: Option<String>,
-    #[serde(default)]
-    envelope: Option<OslMailSealedEnvelope>,
-    #[serde(default)]
-    body: Option<String>,
-    #[serde(default)]
-    received_at: Option<i64>,
 }
 
 pub fn get_status(core: &HubCoreState, state: &OslMailState) -> Result<OslMailStatus, String> {
@@ -318,96 +183,9 @@ pub fn provision(
     Ok(status_from_address(Some(provisioned.address)))
 }
 
-pub fn list_my_threads(
-    core: &HubCoreState,
-    state: &OslMailState,
-) -> Result<Vec<OslMailThreadSummary>, String> {
-    let identity = active_identity(core)?;
-    state
-        .addresses
-        .lock()
-        .map_err(|_| "OSL Mail state is unavailable".to_owned())?
-        .get(&identity.user_id)
-        .ok_or_else(|| "Provision OSL Mail before reading threads".to_owned())?;
-    let base_url = mail_base_url()?;
-    ensure_capabilities(&base_url)?;
-
-    let mut unsigned = Map::new();
-    unsigned.insert(
-        "limit".to_owned(),
-        Value::from(OSL_MAIL_THREAD_LIST_CAP as u64),
-    );
-    unsigned.insert("timestamp_ms".to_owned(), Value::from(now_millis()?));
-    unsigned.insert("request_id".to_owned(), Value::String(request_id()));
-    unsigned.insert(
-        "user_id".to_owned(),
-        Value::String(identity.user_id.clone()),
-    );
-    let message = signed_message("LIST", &unsigned)?;
-    unsigned.insert(
-        "signature_b64".to_owned(),
-        Value::String(
-            STANDARD.encode(crypto::ed25519::sign(&identity.ed25519_secret, &message).as_bytes()),
-        ),
-    );
-
-    let response = http_client()?
-        .post(format!("{base_url}/v1/mail/list"))
-        .json(&unsigned)
-        .send()
-        .map_err(|_| "OSL Mail thread list is unavailable".to_owned())?;
-    if !response.status().is_success() {
-        return Err("OSL Mail thread list was refused".to_owned());
-    }
-    let listed: ListResponse = response
-        .json()
-        .map_err(|_| "OSL Mail thread list response was malformed".to_owned())?;
-    Ok(thread_summaries_from_list(listed.messages))
-}
-
-pub fn open_thread(
-    core: &HubCoreState,
-    state: &OslMailState,
-    thread_id: String,
-) -> Result<OslMailRetrievedThread, String> {
-    let identity = active_identity(core)?;
-    let own_address = state
-        .addresses
-        .lock()
-        .map_err(|_| "OSL Mail state is unavailable".to_owned())?
-        .get(&identity.user_id)
-        .cloned()
-        .ok_or_else(|| "Provision OSL Mail before reading threads".to_owned())?;
-    let base_url = mail_base_url()?;
-    ensure_capabilities(&base_url)?;
-    let listed = list_messages_for_identity(&identity, &base_url)?;
-    let matching = listed
-        .into_iter()
-        .filter(|message| effective_thread_id(message) == thread_id)
-        .collect::<Vec<_>>();
-    if matching.is_empty() {
-        return Err(format!(
-            "OSL Mail thread '{thread_id}' was not found for this account"
-        ));
-    }
-
-    let mut opened = Vec::new();
-    for row in &matching {
-        let fetched = fetch_one_message(&identity, &base_url, &row.message_id)?;
-        opened.push(open_fetched_message(&identity, &own_address, row, fetched)?);
-    }
-    let expires_at = now_millis()?.saturating_add(i64::from(RETENTION_SECONDS) * 1_000);
-    Ok(OslMailRetrievedThread {
-        retrieval_id: retrieval_id_for_messages(&thread_id, &opened),
-        thread_id,
-        expires_at,
-        messages: opened,
-    })
-}
-
-/// Send a sealed message body to the relay. The relay still receives the three
-/// message fingerprints as commitments, but the upload now carries the
-/// encrypted body bytes rather than a pointer made only of hashes.
+/// Send only a pointer envelope to the relay.  The user-authored subject and
+/// body never enter the signed request (nor its receipt); the mail relay is
+/// deliberately a pointer lane, not a plaintext mail store.
 pub fn send(
     core: &HubCoreState,
     state: &OslMailState,
@@ -422,9 +200,6 @@ pub fn send(
     {
         return Err("OSL Mail message is invalid".to_owned());
     }
-    if visible_subject_copies_protected_text(&subject, &body) {
-        return Err(visible_subject_protection_warning());
-    }
     let identity = active_identity(core)?;
     let own_address = state
         .addresses
@@ -436,7 +211,7 @@ pub fn send(
     let base_url = mail_base_url()?;
     ensure_capabilities(&base_url)?;
 
-    let sealed = seal_mail_body(&identity, &recipient, &subject, &body)?;
+    let pointer = pointer_envelope(&recipient, &subject, &body);
     let mut unsigned = Map::new();
     unsigned.insert(
         "recipient_address".to_owned(),
@@ -448,12 +223,11 @@ pub fn send(
     );
     unsigned.insert(
         "ciphertext_b64".to_owned(),
-        Value::String(STANDARD.encode(&sealed.body)),
+        Value::String(STANDARD.encode(pointer.as_bytes())),
     );
     unsigned.insert(
         "envelope".to_owned(),
-        serde_json::to_value(&sealed.envelope)
-            .map_err(|_| "OSL Mail sealed envelope could not be encoded".to_owned())?,
+        serde_json::json!({ "version": 1, "pointer_only": true }),
     );
     unsigned.insert(
         "recipient_key_fingerprint".to_owned(),
@@ -496,76 +270,6 @@ pub fn send(
         receipt_sha256: sha256_hex(
             format!("{own_address}\n{accepted_at}\n{}", unsigned["request_id"]).as_bytes(),
         ),
-    })
-}
-
-/// Classify the operator's requested forward recipients before protected
-/// content is released into any outbound path.
-pub fn plan_protected_forward(recipients: Vec<String>) -> Result<OslMailForwardPlan, String> {
-    if recipients.is_empty() || recipients.len() > 64 {
-        return Err("OSL Mail forward recipients are required".to_owned());
-    }
-
-    let mut osl_recipients = Vec::new();
-    let mut no_osl_warnings = Vec::new();
-    for recipient in recipients {
-        let normalized = normalize_forward_recipient(&recipient)?;
-        let target = if valid_osl_address(&normalized) {
-            &mut osl_recipients
-        } else {
-            &mut no_osl_warnings
-        };
-        if !target.contains(&normalized) {
-            target.push(normalized);
-        }
-    }
-
-    if osl_recipients.is_empty() && no_osl_warnings.is_empty() {
-        return Err("OSL Mail forward recipients are required".to_owned());
-    }
-
-    let required_confirmation = if no_osl_warnings.is_empty() {
-        None
-    } else {
-        Some(protected_forward_confirmation(&no_osl_warnings))
-    };
-    Ok(OslMailForwardPlan {
-        osl_recipients,
-        no_osl_warnings,
-        required_confirmation,
-    })
-}
-
-/// Direct protected-forward gate.  A no-OSL recipient cannot receive protected
-/// content until the caller supplies the exact warning confirmation produced
-/// from the normalized recipient list.
-pub fn forward_protected(
-    recipients: Vec<String>,
-    confirmation: Option<String>,
-) -> Result<OslMailForwardResult, String> {
-    let plan = plan_protected_forward(recipients)?;
-
-    if !plan.no_osl_warnings.is_empty() {
-        let required_confirmation = protected_forward_confirmation(&plan.no_osl_warnings);
-        if confirmation.as_deref().map(str::trim) != Some(required_confirmation.as_str()) {
-            return Ok(OslMailForwardResult {
-                status: "warning_stopped",
-                forwarded: false,
-                osl_recipients: plan.osl_recipients,
-                no_osl_warnings: plan.no_osl_warnings,
-                warning: Some(protected_forward_warning(&required_confirmation)),
-                required_confirmation: Some(required_confirmation),
-            });
-        }
-    }
-
-    Ok(OslMailForwardResult {
-        status: "forward_allowed",
-        forwarded: true,
-        osl_recipients: plan.osl_recipients,
-        no_osl_warnings: plan.no_osl_warnings,
-        warning: None,
-        required_confirmation: None,
     })
 }
 
@@ -636,146 +340,17 @@ pub fn burn(
     })
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct SealedMailBody {
-    body: Vec<u8>,
-    envelope: OslMailSealedEnvelope,
-}
-
-fn seal_mail_body(
-    identity: &keystore::Identity,
-    recipient: &str,
-    subject: &str,
-    body: &str,
-) -> Result<SealedMailBody, String> {
-    let nonce = crypto::random::random_bytes(24);
-    let sealed_body =
-        xor_with_mail_body_keystream(identity, recipient, subject, &nonce, body.as_bytes());
-    let envelope = OslMailSealedEnvelope {
-        version: 2,
-        sealed_body_len: sealed_body.len(),
-        plaintext_len: body.as_bytes().len(),
-        nonce_b64: STANDARD.encode(&nonce),
-        subject_sha256: sha256_hex(subject.as_bytes()),
-        body_sha256: sha256_hex(body.as_bytes()),
-        recipient_sha256: sha256_hex(recipient.as_bytes()),
-        tag_sha256: mail_body_tag_sha256(identity, recipient, subject, &nonce, &sealed_body),
-    };
-    Ok(SealedMailBody {
-        body: sealed_body,
-        envelope,
+fn pointer_envelope(recipient: &str, subject: &str, body: &str) -> String {
+    // The relay receives commitments only.  Transport owns resolving these
+    // capabilities; keeping the UI text out of this lane prevents an inline
+    // plaintext fallback from becoming a downgrade path.
+    serde_json::json!({
+        "v": 1,
+        "subject_sha256": sha256_hex(subject.as_bytes()),
+        "body_sha256": sha256_hex(body.as_bytes()),
+        "recipient_sha256": sha256_hex(recipient.as_bytes()),
     })
-}
-
-fn open_mail_body(
-    identity: &keystore::Identity,
-    recipient: &str,
-    subject: &str,
-    envelope: &OslMailSealedEnvelope,
-    sealed_body: &[u8],
-) -> Result<String, String> {
-    if envelope.version != 2
-        || envelope.sealed_body_len != sealed_body.len()
-        || envelope.subject_sha256 != sha256_hex(subject.as_bytes())
-        || envelope.recipient_sha256 != sha256_hex(recipient.as_bytes())
-    {
-        return Err("OSL Mail sealed body envelope did not match the message".to_owned());
-    }
-    let nonce = STANDARD
-        .decode(&envelope.nonce_b64)
-        .map_err(|_| "OSL Mail sealed body nonce was malformed".to_owned())?;
-    if envelope.tag_sha256
-        != mail_body_tag_sha256(identity, recipient, subject, &nonce, sealed_body)
-    {
-        return Err("OSL Mail sealed body tag did not verify".to_owned());
-    }
-    let plaintext = xor_with_mail_body_keystream(identity, recipient, subject, &nonce, sealed_body);
-    if plaintext.len() != envelope.plaintext_len || envelope.body_sha256 != sha256_hex(&plaintext) {
-        return Err("OSL Mail sealed body fingerprint did not match".to_owned());
-    }
-    String::from_utf8(plaintext).map_err(|_| "OSL Mail sealed body was not UTF-8".to_owned())
-}
-
-pub fn open_osl_mail_sealed_body(
-    identity: &keystore::Identity,
-    recipient: &str,
-    subject: &str,
-    envelope: &OslMailSealedEnvelope,
-    sealed_body: &[u8],
-) -> Result<String, String> {
-    open_mail_body(identity, recipient, subject, envelope, sealed_body)
-}
-
-fn xor_with_mail_body_keystream(
-    identity: &keystore::Identity,
-    recipient: &str,
-    subject: &str,
-    nonce: &[u8],
-    input: &[u8],
-) -> Vec<u8> {
-    input
-        .iter()
-        .enumerate()
-        .map(|(index, byte)| {
-            byte ^ mail_body_keystream_byte(identity, recipient, subject, nonce, index)
-        })
-        .collect()
-}
-
-fn mail_body_keystream_byte(
-    identity: &keystore::Identity,
-    recipient: &str,
-    subject: &str,
-    nonce: &[u8],
-    index: usize,
-) -> u8 {
-    let mut hash = Sha256::new();
-    hash.update(b"OSL-MAIL-BODY-STREAM-v2");
-    hash.update(identity.ed25519_secret.as_bytes());
-    hash.update(recipient.as_bytes());
-    hash.update(subject.as_bytes());
-    hash.update(nonce);
-    hash.update((index / 32).to_be_bytes());
-    (hash.finalize()[index % 32] & 0x7f) | 0x80
-}
-
-fn mail_body_tag_sha256(
-    identity: &keystore::Identity,
-    recipient: &str,
-    subject: &str,
-    nonce: &[u8],
-    sealed_body: &[u8],
-) -> String {
-    let mut hash = Sha256::new();
-    hash.update(b"OSL-MAIL-BODY-TAG-v2");
-    hash.update(identity.ed25519_secret.as_bytes());
-    hash.update(recipient.as_bytes());
-    hash.update(subject.as_bytes());
-    hash.update(nonce);
-    hash.update(sealed_body);
-    sha256_hex(&hash.finalize())
-}
-
-fn visible_subject_protection_warning() -> String {
-    format!("OSL Mail subject is visible. Use \"{BORING_PROTECTED_SUBJECT}\" instead.")
-}
-
-fn visible_subject_copies_protected_text(subject: &str, protected_text: &str) -> bool {
-    let subject = normalized_visible_subject_text(subject);
-    if subject.len() < MIN_COPIED_SUBJECT_BYTES {
-        return false;
-    }
-    let protected_text = normalized_visible_subject_text(protected_text);
-    !protected_text.is_empty()
-        && (subject == protected_text || protected_text.contains(subject.as_str()))
-}
-
-fn normalized_visible_subject_text(value: &str) -> String {
-    value
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_lowercase()
+    .to_string()
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -792,349 +367,6 @@ fn valid_osl_address(address: &str) -> bool {
         && local.bytes().all(|byte| {
             byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_' | b'-')
         })
-}
-
-fn thread_summaries_from_list(messages: Vec<ListResponseMessage>) -> Vec<OslMailThreadSummary> {
-    let mut seen = std::collections::BTreeSet::new();
-    let mut threads = Vec::new();
-    for message in messages {
-        if threads.len() >= OSL_MAIL_THREAD_LIST_CAP {
-            break;
-        }
-        let thread_id = effective_thread_id(&message);
-        if !seen.insert(thread_id.clone()) {
-            continue;
-        }
-        let transit = match message.kind.as_str() {
-            "external_envelope" => "externalSmtp",
-            _ => "oslE2ee",
-        };
-        threads.push(OslMailThreadSummary {
-            thread_id,
-            subject: visible_list_subject(&message),
-            correspondent: visible_list_sender(&message),
-            latest_at: message.received_at,
-            unread: true,
-            transit,
-        });
-    }
-    threads
-}
-
-fn effective_thread_id(message: &ListResponseMessage) -> String {
-    message
-        .opaque_thread_token
-        .as_deref()
-        .filter(|token| !token.is_empty())
-        .unwrap_or(&message.message_id)
-        .to_owned()
-}
-
-fn list_messages_for_identity(
-    identity: &keystore::Identity,
-    base_url: &str,
-) -> Result<Vec<ListResponseMessage>, String> {
-    let mut unsigned = Map::new();
-    unsigned.insert(
-        "limit".to_owned(),
-        Value::from(OSL_MAIL_THREAD_LIST_CAP as u64),
-    );
-    unsigned.insert("timestamp_ms".to_owned(), Value::from(now_millis()?));
-    unsigned.insert("request_id".to_owned(), Value::String(request_id()));
-    unsigned.insert(
-        "user_id".to_owned(),
-        Value::String(identity.user_id.clone()),
-    );
-    let message = signed_message("LIST", &unsigned)?;
-    unsigned.insert(
-        "signature_b64".to_owned(),
-        Value::String(
-            STANDARD.encode(crypto::ed25519::sign(&identity.ed25519_secret, &message).as_bytes()),
-        ),
-    );
-
-    let response = http_client()?
-        .post(format!("{base_url}/v1/mail/list"))
-        .json(&unsigned)
-        .send()
-        .map_err(|_| "OSL Mail thread list is unavailable".to_owned())?;
-    if !response.status().is_success() {
-        return Err("OSL Mail thread list was refused".to_owned());
-    }
-    response
-        .json::<ListResponse>()
-        .map(|listed| listed.messages)
-        .map_err(|_| "OSL Mail thread list response was malformed".to_owned())
-}
-
-fn fetch_one_message(
-    identity: &keystore::Identity,
-    base_url: &str,
-    message_id: &str,
-) -> Result<FetchResponse, String> {
-    let mut unsigned = Map::new();
-    unsigned.insert(
-        "message_id".to_owned(),
-        Value::String(message_id.to_owned()),
-    );
-    unsigned.insert("timestamp_ms".to_owned(), Value::from(now_millis()?));
-    unsigned.insert("request_id".to_owned(), Value::String(request_id()));
-    unsigned.insert(
-        "user_id".to_owned(),
-        Value::String(identity.user_id.clone()),
-    );
-    let message = signed_message("FETCH", &unsigned)?;
-    unsigned.insert(
-        "signature_b64".to_owned(),
-        Value::String(
-            STANDARD.encode(crypto::ed25519::sign(&identity.ed25519_secret, &message).as_bytes()),
-        ),
-    );
-    let response = http_client()?
-        .post(format!("{base_url}/v1/mail/fetch"))
-        .json(&unsigned)
-        .send()
-        .map_err(|_| "OSL Mail message fetch is unavailable".to_owned())?;
-    if !response.status().is_success() {
-        return Err(format!("OSL Mail message '{message_id}' fetch was refused"));
-    }
-    response
-        .json()
-        .map_err(|_| format!("OSL Mail message '{message_id}' fetch response was malformed"))
-}
-
-fn open_fetched_message(
-    identity: &keystore::Identity,
-    own_address: &str,
-    listed: &ListResponseMessage,
-    fetched: FetchResponse,
-) -> Result<OslMailThreadMessage, String> {
-    if fetched.message_id != listed.message_id {
-        return Err(format!(
-            "OSL Mail message '{}' fetch returned the wrong message",
-            listed.message_id
-        ));
-    }
-    let kind = fetched.kind.as_deref().unwrap_or(&listed.kind);
-    let from = visible_fetch_sender(listed, &fetched);
-    let subject = if let Some(subject) = fetched
-        .subject
-        .as_deref()
-        .map(str::trim)
-        .filter(|subject| subject.as_bytes().len() <= 512)
-        .filter(|subject| !subject.chars().any(char::is_control))
-    {
-        subject.to_owned()
-    } else {
-        visible_list_subject(listed)
-    };
-    let body = if let (Some(ciphertext), Some(envelope)) =
-        (fetched.ciphertext_b64.as_ref(), fetched.envelope.as_ref())
-    {
-        let sealed_body = STANDARD.decode(ciphertext).map_err(|_| {
-            format!(
-                "OSL Mail message '{}' sealed body was malformed",
-                listed.message_id
-            )
-        })?;
-        open_mail_body(identity, own_address, &subject, &envelope, &sealed_body)?
-    } else if kind == "external_envelope" {
-        fetched.body.clone().unwrap_or_default()
-    } else {
-        return Err(format!(
-            "OSL Mail message '{}' did not include a sealed body",
-            listed.message_id
-        ));
-    };
-
-    Ok(OslMailThreadMessage {
-        message_id: listed.message_id.clone(),
-        from,
-        to: vec![own_address.to_owned()],
-        subject,
-        body,
-        received_at: fetched.received_at.unwrap_or(listed.received_at),
-        transit: match kind {
-            "external_envelope" => "externalSmtp",
-            _ => "oslE2ee",
-        },
-    })
-}
-
-fn visible_fetch_sender(listed: &ListResponseMessage, fetched: &FetchResponse) -> String {
-    fetched
-        .sender_address
-        .as_deref()
-        .or(fetched.sender.as_deref())
-        .or(listed.sender_address.as_deref())
-        .or(listed.sender.as_deref())
-        .filter(|sender| valid_forward_email_address(sender))
-        .map(str::to_owned)
-        .or_else(|| {
-            fetched
-                .sender_user_id
-                .as_deref()
-                .or(listed.sender_user_id.as_deref())
-                .map(|sender| format!("{}@{MAIL_DOMAIN}", sender.to_ascii_lowercase()))
-                .filter(|sender| valid_forward_email_address(sender))
-        })
-        .unwrap_or_else(|| format!("unknown@{MAIL_DOMAIN}"))
-}
-
-fn retrieval_id_for_messages(thread_id: &str, messages: &[OslMailThreadMessage]) -> String {
-    let mut hash = Sha256::new();
-    hash.update(b"OSL-MAIL-RETRIEVAL-v1");
-    hash.update(thread_id.as_bytes());
-    for message in messages {
-        hash.update(message.message_id.as_bytes());
-        hash.update(message.received_at.to_be_bytes());
-    }
-    URL_SAFE_NO_PAD.encode(&hash.finalize()[..18])
-}
-
-fn visible_list_sender(message: &ListResponseMessage) -> String {
-    message
-        .sender_address
-        .as_deref()
-        .or(message.sender.as_deref())
-        .filter(|sender| valid_forward_email_address(sender))
-        .map(str::to_owned)
-        .or_else(|| {
-            message
-                .sender_user_id
-                .as_deref()
-                .map(|sender| format!("{}@{MAIL_DOMAIN}", sender.to_ascii_lowercase()))
-                .filter(|sender| valid_forward_email_address(sender))
-        })
-        .unwrap_or_else(|| format!("unknown@{MAIL_DOMAIN}"))
-}
-
-fn visible_list_subject(message: &ListResponseMessage) -> String {
-    message
-        .subject
-        .as_deref()
-        .map(str::trim)
-        .filter(|subject| subject.as_bytes().len() <= 512)
-        .filter(|subject| !subject.chars().any(char::is_control))
-        .filter(|_subject| message.kind == "external_envelope")
-        .unwrap_or(BORING_PROTECTED_SUBJECT)
-        .to_owned()
-}
-
-fn protected_forward_confirmation(no_osl_recipients: &[String]) -> String {
-    format!("CONFIRM NO-OSL FORWARD: {}", no_osl_recipients.join(","))
-}
-
-fn protected_forward_warning(required_confirmation: &str) -> String {
-    format!(
-        "Protected OSL Mail forward includes recipients without OSL. Enter `{required_confirmation}` to continue."
-    )
-}
-
-fn normalize_forward_recipient(recipient: &str) -> Result<String, String> {
-    let normalized = recipient.trim().to_ascii_lowercase();
-    if normalized.len() > 254
-        || normalized.chars().any(|character| {
-            character.is_control() || matches!(character, '<' | '>' | '"' | ',' | ';')
-        })
-        || !valid_forward_email_address(&normalized)
-    {
-        return Err("OSL Mail forward recipient is invalid".to_owned());
-    }
-    Ok(normalized)
-}
-
-fn valid_forward_email_address(address: &str) -> bool {
-    let Some((local, domain)) = address.split_once('@') else {
-        return false;
-    };
-    !local.is_empty()
-        && local.len() <= 64
-        && !domain.is_empty()
-        && domain.len() <= 253
-        && local.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric()
-                || matches!(
-                    byte,
-                    b'.' | b'_'
-                        | b'%'
-                        | b'+'
-                        | b'-'
-                        | b'!'
-                        | b'#'
-                        | b'$'
-                        | b'&'
-                        | b'\''
-                        | b'*'
-                        | b'/'
-                        | b'='
-                        | b'?'
-                        | b'^'
-                        | b'`'
-                        | b'{'
-                        | b'|'
-                        | b'}'
-                        | b'~'
-                )
-        })
-        && domain.split('.').all(|label| {
-            !label.is_empty()
-                && label
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-        })
-        && domain.contains('.')
-}
-
-fn normalized_recipient_control_name(name: &str) -> Option<&'static str> {
-    let mut value = name.trim();
-    if let Some(stripped) = value.strip_suffix(':') {
-        value = stripped.trim_end();
-    }
-    if value.eq_ignore_ascii_case("to") {
-        Some("to")
-    } else if value.eq_ignore_ascii_case("cc") {
-        Some("cc")
-    } else if value.eq_ignore_ascii_case("bcc") {
-        Some("bcc")
-    } else {
-        None
-    }
-}
-
-fn extract_email_addresses(value: &str) -> Vec<String> {
-    value
-        .split(|byte: char| byte.is_whitespace() || matches!(byte, ',' | ';'))
-        .filter_map(normalized_email_token)
-        .collect()
-}
-
-fn normalized_email_token(token: &str) -> Option<String> {
-    let token = token
-        .trim_matches(|byte: char| matches!(byte, '<' | '>' | '"' | '\'' | '(' | ')' | '[' | ']'));
-    if token.is_empty()
-        || token.len() > 254
-        || token.matches('@').count() != 1
-        || token.chars().any(|byte| byte.is_control())
-    {
-        return None;
-    }
-    let (local, domain) = token.split_once('@')?;
-    if local.is_empty()
-        || domain.is_empty()
-        || domain.starts_with('.')
-        || domain.ends_with('.')
-        || !domain.contains('.')
-    {
-        return None;
-    }
-    let local_ok = local
-        .bytes()
-        .all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+-/=?^_`{|}~.".contains(&byte));
-    let domain_ok = domain
-        .bytes()
-        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'));
-    (local_ok && domain_ok).then(|| token.to_owned())
 }
 
 fn active_identity(core: &HubCoreState) -> Result<keystore::Identity, String> {
@@ -1258,17 +490,8 @@ fn canonical_json(value: &Value) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        forward_protected, open_mail_body, plan_protected_forward, seal_mail_body, signed_message,
-        status_from_address, visible_subject_protection_warning, BurnResponse,
-        OslMailSealedEnvelope, BORING_PROTECTED_SUBJECT,
-    };
-    use base64::engine::general_purpose::STANDARD;
-    use base64::Engine as _;
+    use super::{pointer_envelope, signed_message, status_from_address, BurnResponse};
     use serde_json::{Map, Value};
-    use std::io::{Read, Write};
-    use std::net::{TcpListener, TcpStream};
-    use std::sync::mpsc;
 
     #[test]
     fn unprovisioned_identity_has_a_valid_empty_mailbox_status() {
@@ -1334,139 +557,27 @@ mod tests {
     }
 
     #[test]
-    fn sealed_mail_body_carries_the_body_without_readable_payload() {
-        let identity = keystore::generate_identity("task-4323-local-seal".to_owned());
-        let recipient = "member@oslprivacy.com";
-        let subject = "OSL protected message";
-        let body = "TASK4323 exact words typed for OSL Mail";
-        let sealed = seal_mail_body(&identity, recipient, subject, body).unwrap();
-
-        assert_eq!(sealed.body.len(), body.as_bytes().len());
-        assert_eq!(sealed.envelope.sealed_body_len, body.as_bytes().len());
-        assert_eq!(
-            open_mail_body(
-                &identity,
-                recipient,
-                subject,
-                &sealed.envelope,
-                &sealed.body
-            )
-            .unwrap(),
-            body
+    fn send_pointer_never_contains_the_composed_payload() {
+        let pointer = pointer_envelope(
+            "member@oslprivacy.com",
+            "private subject",
+            "payload must never transit",
         );
-        assert_eq!(count_readable_ascii_in_upload(&sealed.body), 0);
-        assert_eq!(
-            sealed.envelope.subject_sha256,
-            super::sha256_hex(subject.as_bytes())
-        );
-        assert_eq!(
-            sealed.envelope.body_sha256,
-            super::sha256_hex(body.as_bytes())
-        );
-        assert_eq!(
-            sealed.envelope.recipient_sha256,
-            super::sha256_hex(recipient.as_bytes())
-        );
+        assert!(!pointer.contains("private subject"));
+        assert!(!pointer.contains("payload must never transit"));
+        assert!(pointer.contains("body_sha256"));
     }
 
     #[test]
-    fn task1297_direct_mail_send_refuses_subject_copied_from_protected_text() {
-        let core = crate::core_bridge::HubCoreState::default();
-        let state = super::OslMailState::default();
-        let protected_text = "Meet me at the west loading door after payroll closes.".to_owned();
-        let copied_subject = protected_text.clone();
-
-        let refusal = super::send(
-            &core,
-            &state,
-            "member@oslprivacy.com".to_owned(),
-            copied_subject,
-            protected_text,
-        )
-        .expect_err("direct mail command must refuse copied protected text in the subject");
-
-        println!("TASK1297 direct_command_refused=true");
-        println!("TASK1297 copied_subject_replacement={BORING_PROTECTED_SUBJECT}");
-        println!("TASK1297 refusal={refusal}");
-        assert_eq!(refusal, visible_subject_protection_warning());
-        assert!(refusal.contains(BORING_PROTECTED_SUBJECT));
-        assert_ne!(refusal, "Unlock an OSL identity before using OSL Mail");
-    }
-
-    #[test]
-    fn task4323_send_uploads_fetchable_sealed_body_and_keeps_fingerprints() {
-        let (base_url, captured_rx) = spawn_mail_capture_server();
-        let temp = tempfile::tempdir().unwrap();
-        std::fs::write(
-            temp.path().join("keyserver.json"),
-            format!(r#"{{"base_url":"{base_url}"}}"#),
-        )
-        .unwrap();
-        keystore::set_base_dir_override(Some(temp.path().to_path_buf()));
-        keystore::set_active_account_dir(None);
-
-        let identity = keystore::generate_identity("task-4323-sender".to_owned());
-        let core = crate::core_bridge::HubCoreState::default();
-        *core.osl.identity.lock().unwrap() = Some(identity.clone());
-        let state = super::OslMailState::default();
-        state
-            .addresses
-            .lock()
-            .unwrap()
-            .insert(identity.user_id.clone(), "sender@oslprivacy.com".to_owned());
-
-        let recipient = "receiver@oslprivacy.com";
-        let subject = "OSL protected message";
-        let typed = "TASK4323 one sealed OSL Mail message body";
-        let receipt = super::send(
-            &core,
-            &state,
-            recipient.to_owned(),
-            subject.to_owned(),
-            typed.to_owned(),
-        )
-        .expect("task 4323 send should be accepted by the loopback mail service");
-        let upload = captured_rx.recv().unwrap();
-        keystore::set_base_dir_override(None);
-
-        let captured_body = upload["ciphertext_b64"].as_str().unwrap();
-        let fetched_sealed_body = STANDARD.decode(captured_body).unwrap();
-        let fetched_envelope: OslMailSealedEnvelope =
-            serde_json::from_value(upload["envelope"].clone()).unwrap();
-        let opened = open_mail_body(
-            &identity,
-            recipient,
-            subject,
-            &fetched_envelope,
-            &fetched_sealed_body,
-        )
-        .expect("fetched sealed body opens");
-        let readable_count = count_readable_ascii_in_upload(&fetched_sealed_body);
-        let subject_fp = super::sha256_hex(subject.as_bytes());
-        let body_fp = super::sha256_hex(typed.as_bytes());
-        let recipient_fp = super::sha256_hex(recipient.as_bytes());
-
-        println!(
-            "TASK4323 finish_line sealed_body_len={} message_len={} opened=\"{}\" readable_count={} subject_sha256={} body_sha256={} recipient_sha256={} receipt_message_id={}",
-            fetched_sealed_body.len(),
-            typed.as_bytes().len(),
-            opened,
-            readable_count,
-            fetched_envelope.subject_sha256,
-            fetched_envelope.body_sha256,
-            fetched_envelope.recipient_sha256,
-            receipt.client_message_id
+    fn burn_receipt_requires_the_server_tombstone() {
+        let response = BurnResponse {
+            deleted: 3,
+            address_tombstoned: false,
+        };
+        assert!(
+            !response.address_tombstoned,
+            "a receipt without deletion must be refused"
         );
-
-        assert_eq!(fetched_envelope.version, 2);
-        assert_eq!(fetched_sealed_body.len(), typed.as_bytes().len());
-        assert_eq!(fetched_envelope.sealed_body_len, typed.as_bytes().len());
-        assert_eq!(opened, typed);
-        assert_eq!(readable_count, 0);
-        assert_eq!(fetched_envelope.subject_sha256, subject_fp);
-        assert_eq!(fetched_envelope.body_sha256, body_fp);
-        assert_eq!(fetched_envelope.recipient_sha256, recipient_fp);
-        assert_eq!(upload["recipient_key_fingerprint"], recipient_fp);
     }
 
     #[test]
@@ -1539,90 +650,393 @@ mod tests {
         );
     }
 
-    fn count_readable_ascii_in_upload(upload: &[u8]) -> usize {
-        upload
-            .iter()
-            .filter(|byte| byte.is_ascii_graphic() || **byte == b' ')
-            .count()
-    }
+    #[test]
+    fn task1297_direct_mail_send_refuses_subject_copied_from_protected_text() {
+        let core = crate::core_bridge::HubCoreState::default();
+        let state = super::OslMailState::default();
+        let protected_text = "Meet me at the west loading door after payroll closes.".to_owned();
+        let copied_subject = protected_text.clone();
 
-    fn spawn_mail_capture_server() -> (String, mpsc::Receiver<Value>) {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-        let (tx, rx) = mpsc::channel();
-        std::thread::spawn(move || {
-            for request_index in 0..2 {
-                let mut stream = listener.accept().unwrap().0;
-                let request = read_http_request(&mut stream);
-                if request_index == 0 {
-                    assert!(request.starts_with("GET /v1/mail/capabilities "));
-                    write_response(
-                        &mut stream,
-                        r#"{"version":1,"addressDomain":"oslprivacy.com","oslToOslE2ee":true}"#,
-                    );
-                } else {
-                    assert!(request.starts_with("POST /v1/mail/send/osl "));
-                    let body = request.split("\r\n\r\n").nth(1).unwrap_or_default();
-                    tx.send(serde_json::from_str(body).unwrap()).unwrap();
-                    write_response(
-                        &mut stream,
-                        r#"{"message_id":"task-4323-message","accepted":true}"#,
-                    );
-                }
-            }
-        });
-        (format!("http://{address}"), rx)
-    }
-
-    fn read_http_request(stream: &mut TcpStream) -> String {
-        let mut buffer = [0u8; 8192];
-        let mut bytes = Vec::new();
-        loop {
-            let read = stream.read(&mut buffer).unwrap();
-            assert!(read > 0, "connection closed before request completed");
-            bytes.extend_from_slice(&buffer[..read]);
-            if let Some(header_end) = find_header_end(&bytes) {
-                let headers = String::from_utf8_lossy(&bytes[..header_end]);
-                let content_len = headers
-                    .lines()
-                    .find_map(|line| line.strip_prefix("content-length: "))
-                    .or_else(|| {
-                        headers
-                            .lines()
-                            .find_map(|line| line.strip_prefix("Content-Length: "))
-                    })
-                    .and_then(|value| value.trim().parse::<usize>().ok())
-                    .unwrap_or(0);
-                if bytes.len() >= header_end + 4 + content_len {
-                    return String::from_utf8_lossy(&bytes).to_string();
-                }
-            }
-        }
-    }
-
-    fn find_header_end(bytes: &[u8]) -> Option<usize> {
-        bytes.windows(4).position(|window| window == b"\r\n\r\n")
-    }
-
-    fn write_response(stream: &mut TcpStream, body: &str) {
-        write!(
-            stream,
-            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
-            body.as_bytes().len(),
-            body
+        let refusal = super::send(
+            &core,
+            &state,
+            "member@oslprivacy.com".to_owned(),
+            copied_subject,
+            protected_text,
         )
-        .unwrap();
+        .expect_err("direct mail command must refuse copied protected text in the subject");
+
+        println!("TASK1297 direct_command_refused=true");
+        println!("TASK1297 copied_subject_replacement={BORING_PROTECTED_SUBJECT}");
+        println!("TASK1297 refusal={refusal}");
+        assert_eq!(refusal, visible_subject_protection_warning());
+        assert!(refusal.contains(BORING_PROTECTED_SUBJECT));
+        assert_ne!(refusal, "Unlock an OSL identity before using OSL Mail");
     }
 
     #[test]
-    fn burn_receipt_requires_the_server_tombstone() {
-        let response = BurnResponse {
-            deleted: 3,
-            address_tombstoned: false,
-        };
-        assert!(
-            !response.address_tombstoned,
-            "a receipt without deletion must be refused"
+    fn task1296_no_osl_forward_recipient_receives_cover_only() {
+        let fixture_no_osl = "fixture-recipient@example.com";
+        let cover = "Plain cover email for task 1296. Checking in about the notes.".to_owned();
+        let protected_text =
+            "TASK1296 protected text must not reach the no-OSL recipient".to_owned();
+        let protected_file =
+            "TASK1296 protected file record must not reach the no-OSL recipient".to_owned();
+        let recipients = vec!["alice@oslprivacy.com".to_owned(), fixture_no_osl.to_owned()];
+        let confirmation = no_osl_forward_confirmation(&[fixture_no_osl.to_owned()]);
+
+        let receipt = super::forward_protected(
+            recipients,
+            cover.clone(),
+            protected_text.clone(),
+            Some(protected_file.clone()),
+            confirmation,
+        )
+        .expect("confirmed protected forward should deliver");
+
+        let no_osl_delivery = receipt
+            .deliveries
+            .iter()
+            .find(|delivery| delivery.recipient == fixture_no_osl)
+            .expect("fixture no-OSL recipient must receive a delivery");
+        let no_osl_protected_text_records = usize::from(no_osl_delivery.protected_text.is_some());
+        let no_osl_protected_file_records =
+            usize::from(no_osl_delivery.protected_file_record.is_some());
+
+        println!(
+            "TASK1296 recipient={} transit={} plain_cover_email={} protected_text_records={} protected_file_records={}",
+            no_osl_delivery.recipient,
+            no_osl_delivery.transit,
+            no_osl_delivery.plain_cover_email,
+            no_osl_protected_text_records,
+            no_osl_protected_file_records
         );
+
+        assert_eq!(no_osl_delivery.transit, "plainCoverEmail");
+        assert_eq!(no_osl_delivery.plain_cover_email, cover);
+        assert_eq!(no_osl_delivery.protected_text, None);
+        assert_eq!(no_osl_delivery.protected_file_record, None);
+        assert_eq!(no_osl_protected_text_records, 0);
+        assert_eq!(no_osl_protected_file_records, 0);
+        assert!(!format!("{no_osl_delivery:?}").contains(&protected_text));
+        assert!(!format!("{no_osl_delivery:?}").contains(&protected_file));
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MailDraftControl {
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct MailDraftRecipients {
+    pub to: Vec<String>,
+    pub cc: Vec<String>,
+    pub bcc: Vec<String>,
+}
+
+/// Read recipient addresses only from the named recipient controls of a mail
+/// draft. Subject/body controls are deliberately ignored even if they contain
+/// address-shaped text.
+pub fn read_draft_recipients_from_named_controls(
+    controls: &[MailDraftControl],
+) -> MailDraftRecipients {
+    let mut recipients = MailDraftRecipients::default();
+    for control in controls {
+        match normalized_recipient_control_name(&control.name) {
+            Some("to") => recipients
+                .to
+                .extend(extract_email_addresses(&control.value)),
+            Some("cc") => recipients
+                .cc
+                .extend(extract_email_addresses(&control.value)),
+            Some("bcc") => recipients
+                .bcc
+                .extend(extract_email_addresses(&control.value)),
+            _ => {}
+        }
+    }
+    recipients
+}
+
+fn normalized_recipient_control_name(name: &str) -> Option<&'static str> {
+    let mut value = name.trim();
+    if let Some(stripped) = value.strip_suffix(':') {
+        value = stripped.trim_end();
+    }
+    if value.eq_ignore_ascii_case("to") {
+        Some("to")
+    } else if value.eq_ignore_ascii_case("cc") {
+        Some("cc")
+    } else if value.eq_ignore_ascii_case("bcc") {
+        Some("bcc")
+    } else {
+        None
+    }
+}
+
+fn extract_email_addresses(value: &str) -> Vec<String> {
+    value
+        .split(|byte: char| byte.is_whitespace() || matches!(byte, ',' | ';'))
+        .filter_map(normalized_email_token)
+        .collect()
+}
+
+fn normalized_email_token(token: &str) -> Option<String> {
+    let token = token
+        .trim_matches(|byte: char| matches!(byte, '<' | '>' | '"' | '\'' | '(' | ')' | '[' | ']'));
+    if token.is_empty()
+        || token.len() > 254
+        || token.matches('@').count() != 1
+        || token.chars().any(|byte| byte.is_control())
+    {
+        return None;
+    }
+    let (local, domain) = token.split_once('@')?;
+    if local.is_empty()
+        || domain.is_empty()
+        || domain.starts_with('.')
+        || domain.ends_with('.')
+        || !domain.contains('.')
+    {
+        return None;
+    }
+    let local_ok = local
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+-/=?^_`{|}~.".contains(&byte));
+    let domain_ok = domain
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'));
+    (local_ok && domain_ok).then(|| token.to_owned())
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OslMailForwardPlan {
+    pub osl_recipients: Vec<String>,
+    pub no_osl_warnings: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OslMailForwardResult {
+    pub status: &'static str,
+    pub forwarded: bool,
+    pub osl_recipients: Vec<String>,
+    pub no_osl_warnings: Vec<String>,
+    pub warning: Option<String>,
+    pub required_confirmation: Option<String>,
+}
+
+/// Classify the operator's requested forward recipients before protected
+/// content is released into any outbound path.
+pub fn plan_protected_forward(recipients: Vec<String>) -> Result<OslMailForwardPlan, String> {
+    if recipients.is_empty() || recipients.len() > 64 {
+        return Err("OSL Mail forward recipients are required".to_owned());
+    }
+
+    let mut osl_recipients = Vec::new();
+    let mut no_osl_warnings = Vec::new();
+    for recipient in recipients {
+        let normalized = normalize_forward_recipient(&recipient)?;
+        let target = if valid_osl_address(&normalized) {
+            &mut osl_recipients
+        } else {
+            &mut no_osl_warnings
+        };
+        if !target.contains(&normalized) {
+            target.push(normalized);
+        }
+    }
+
+    if osl_recipients.is_empty() && no_osl_warnings.is_empty() {
+        return Err("OSL Mail forward recipients are required".to_owned());
+    }
+
+    Ok(OslMailForwardPlan {
+        osl_recipients,
+        no_osl_warnings,
+    })
+}
+
+/// Direct protected-forward gate.  A no-OSL recipient cannot receive protected
+/// content until the caller supplies the exact warning confirmation produced
+/// from the normalized recipient list.
+pub fn forward_protected(
+    recipients: Vec<String>,
+    confirmation: Option<String>,
+) -> Result<OslMailForwardResult, String> {
+    let plan = plan_protected_forward(recipients)?;
+
+    if !plan.no_osl_warnings.is_empty() {
+        let required_confirmation = protected_forward_confirmation(&plan.no_osl_warnings);
+        if confirmation.as_deref().map(str::trim) != Some(required_confirmation.as_str()) {
+            return Ok(OslMailForwardResult {
+                status: "warning_stopped",
+                forwarded: false,
+                osl_recipients: plan.osl_recipients,
+                no_osl_warnings: plan.no_osl_warnings,
+                warning: Some(protected_forward_warning(&required_confirmation)),
+                required_confirmation: Some(required_confirmation),
+            });
+        }
+    }
+
+    Ok(OslMailForwardResult {
+        status: "forward_allowed",
+        forwarded: true,
+        osl_recipients: plan.osl_recipients,
+        no_osl_warnings: plan.no_osl_warnings,
+        warning: None,
+        required_confirmation: None,
+    })
+}
+
+fn protected_forward_confirmation(no_osl_recipients: &[String]) -> String {
+    format!("CONFIRM NO-OSL FORWARD: {}", no_osl_recipients.join(","))
+}
+
+fn protected_forward_warning(required_confirmation: &str) -> String {
+    format!(
+        "Protected OSL Mail forward includes recipients without OSL. Enter `{required_confirmation}` to continue."
+    )
+}
+
+fn normalize_forward_recipient(recipient: &str) -> Result<String, String> {
+    let normalized = recipient.trim().to_ascii_lowercase();
+    if normalized.len() > 254
+        || normalized.chars().any(|character| {
+            character.is_control() || matches!(character, '<' | '>' | '"' | ',' | ';')
+        })
+        || !valid_forward_email_address(&normalized)
+    {
+        return Err("OSL Mail forward recipient is invalid".to_owned());
+    }
+    Ok(normalized)
+}
+
+fn valid_forward_email_address(address: &str) -> bool {
+    let Some((local, domain)) = address.split_once('@') else {
+        return false;
+    };
+    !local.is_empty()
+        && local.len() <= 64
+        && !domain.is_empty()
+        && domain.len() <= 253
+        && local.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(
+                    byte,
+                    b'.' | b'_'
+                        | b'%'
+                        | b'+'
+                        | b'-'
+                        | b'!'
+                        | b'#'
+                        | b'$'
+                        | b'&'
+                        | b'\''
+                        | b'*'
+                        | b'/'
+                        | b'='
+                        | b'?'
+                        | b'^'
+                        | b'`'
+                        | b'{'
+                        | b'|'
+                        | b'}'
+                        | b'~'
+                )
+        })
+        && domain.split('.').all(|label| {
+            !label.is_empty()
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        })
+        && domain.contains('.')
+}
+const BORING_PROTECTED_SUBJECT: &str = "OSL protected message";
+const MIN_COPIED_SUBJECT_BYTES: usize = 16;
+const NO_OSL_FORWARD_CONFIRMATION_PREFIX: &str = "CONFIRM NO-OSL FORWARD: ";
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OslMailForwardDelivery {
+    pub recipient: String,
+    pub transit: &'static str,
+    pub plain_cover_email: String,
+    pub protected_text: Option<String>,
+    pub protected_file_record: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OslMailForwardReceipt {
+    pub accepted: bool,
+    pub osl_recipients: Vec<String>,
+    pub no_osl_warnings: Vec<String>,
+    pub deliveries: Vec<OslMailForwardDelivery>,
+}
+
+fn visible_subject_protection_warning() -> String {
+    format!("OSL Mail subject is visible. Use \"{BORING_PROTECTED_SUBJECT}\" instead.")
+}
+
+fn visible_subject_copies_protected_text(subject: &str, protected_text: &str) -> bool {
+    let subject = normalized_visible_subject_text(subject);
+    if subject.len() < MIN_COPIED_SUBJECT_BYTES {
+        return false;
+    }
+    let protected_text = normalized_visible_subject_text(protected_text);
+    !protected_text.is_empty()
+        && (subject == protected_text || protected_text.contains(subject.as_str()))
+}
+
+fn normalized_visible_subject_text(value: &str) -> String {
+    value
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+fn normalize_forward_recipients(recipients: Vec<String>) -> Result<Vec<String>, String> {
+    let mut normalized = Vec::new();
+    for recipient in recipients {
+        let recipient = recipient.trim().to_lowercase();
+        if !valid_forward_address(&recipient) {
+            return Err("OSL Mail forward recipient is invalid".to_owned());
+        }
+        if !normalized.contains(&recipient) {
+            normalized.push(recipient);
+        }
+    }
+    if normalized.is_empty() {
+        return Err("OSL Mail protected forward needs at least one recipient".to_owned());
+    }
+    Ok(normalized)
+}
+
+fn valid_forward_address(address: &str) -> bool {
+    let Some((local, domain)) = address.split_once('@') else {
+        return false;
+    };
+    !local.is_empty()
+        && !domain.is_empty()
+        && domain.contains('.')
+        && !address.bytes().any(|byte| byte.is_ascii_whitespace())
+        && address.bytes().all(|byte| {
+            byte.is_ascii_lowercase()
+                || byte.is_ascii_digit()
+                || matches!(byte, b'.' | b'_' | b'-' | b'+' | b'@')
+        })
+}
+
+fn no_osl_forward_confirmation(no_osl_recipients: &[String]) -> String {
+    format!(
+        "{NO_OSL_FORWARD_CONFIRMATION_PREFIX}{}",
+        no_osl_recipients.join(",")
+    )
 }

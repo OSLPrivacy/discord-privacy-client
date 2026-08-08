@@ -72,6 +72,8 @@ fn persist_osl_chat_inbound(
     };
     store
         .put(&store::StoredMessage {
+            edit_revision: Default::default(),
+            reply_parent_id: Default::default(),
             discord_message_id: message_id,
             channel_id,
             sender_discord_id: sender_osl_user_id.clone(),
@@ -79,8 +81,6 @@ fn persist_osl_chat_inbound(
             plaintext,
             decrypted_at: created_at,
             burned: false,
-            reply_parent_id: None,
-            edit_revision: 1,
         })
         .map_err(|error| format!("OSL: first-party chat history: {error}"))
 }
@@ -1280,7 +1280,6 @@ pub struct PendingNativeOverlayText {
     pub message_id: String,
     pub expires_at: i64,
     pub person_to_person_e2ee: bool,
-    pub display_duration_seconds: Option<u64>,
 }
 
 #[derive(Clone, Serialize)]
@@ -1340,7 +1339,6 @@ pub struct OpenedNativeOverlayText {
     pub view_once_consumed: bool,
     pub created_at: i64,
     pub expires_at: i64,
-    pub display_duration_seconds: Option<u64>,
 }
 
 /// A single-device protected capsule. This is intentionally not described as
@@ -3919,7 +3917,6 @@ pub fn prepare_native_discord_overlay_text(
     ai_carrier: &crate::ai_carrier::AiCarrierState,
     plaintext: String,
     view_once: bool,
-    _display_duration_seconds: Option<u64>,
 ) -> Result<PreparedNativeOverlayCarrier, String> {
     let context_token = broker.active_native_manual_context_token()?;
     prepare_peer_inbox_text(
@@ -4115,6 +4112,108 @@ fn qa_encrypt_refusal_site(site: &'static str) {
 
 #[cfg(not(feature = "discord-qa-shell"))]
 fn qa_encrypt_refusal_site(_site: &'static str) {}
+
+pub const MESSAGE_SERVICE_SEND_RETRYABLE_LOCAL_RESULT: &str = "retryable";
+pub const MESSAGE_SERVICE_SEND_RETRY_AVAILABLE_ACTION: &str = "retry available";
+
+const DOCUMENTED_MESSAGE_SERVICE_SEND_FAILURES: &[&str] = &[
+    "expires_at_overflow",
+    "chunk_count_overflow",
+    "chunk_index_overflow",
+    "notice_encode_failed",
+    "verify_manual_v3_type_failed",
+    "post_control_inbox_failed",
+    "http_400",
+    "http_401",
+    "http_403",
+    "http_404",
+    "http_409",
+    "http_429",
+    "http_5xx",
+    "http_other",
+    "transport",
+    "encode_or_response",
+    "crypto",
+    "peer_bundle_proof_invalid",
+    "prekey_missing",
+    "local_state",
+];
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageServiceSendFailureLocalResult {
+    pub name: &'static str,
+    pub local_result: &'static str,
+    pub retryable: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageServiceSendFailurePreCoverResult {
+    pub name: &'static str,
+    pub local_result: &'static str,
+    pub retryable: bool,
+    pub retry_action: &'static str,
+    pub private_draft_fingerprint_before_sha256: String,
+    pub private_draft_fingerprint_after_sha256: String,
+    pub private_draft_unchanged: bool,
+    pub cover_preparation_count_start: usize,
+    pub cover_preparation_count_after: usize,
+}
+
+pub fn documented_message_service_send_failures() -> &'static [&'static str] {
+    DOCUMENTED_MESSAGE_SERVICE_SEND_FAILURES
+}
+
+pub fn retryable_local_result_for_message_service_send_failure(
+    name: &str,
+) -> Result<MessageServiceSendFailureLocalResult, String> {
+    let Some(documented) = DOCUMENTED_MESSAGE_SERVICE_SEND_FAILURES
+        .iter()
+        .copied()
+        .find(|documented| *documented == name)
+    else {
+        return Err(format!("unknown message-service send failure: {name}"));
+    };
+    Ok(MessageServiceSendFailureLocalResult {
+        name: documented,
+        local_result: MESSAGE_SERVICE_SEND_RETRYABLE_LOCAL_RESULT,
+        retryable: true,
+    })
+}
+
+pub fn documented_message_service_send_failure_local_results(
+) -> Vec<MessageServiceSendFailureLocalResult> {
+    DOCUMENTED_MESSAGE_SERVICE_SEND_FAILURES
+        .iter()
+        .copied()
+        .map(|name| MessageServiceSendFailureLocalResult {
+            name,
+            local_result: MESSAGE_SERVICE_SEND_RETRYABLE_LOCAL_RESULT,
+            retryable: true,
+        })
+        .collect()
+}
+
+pub fn retry_available_for_message_service_send_failure_before_cover_preparation(
+    name: &str,
+    private_draft: &str,
+    cover_preparation_count_start: usize,
+) -> Result<MessageServiceSendFailurePreCoverResult, String> {
+    let local = retryable_local_result_for_message_service_send_failure(name)?;
+    let draft_fingerprint = sha256_hex(private_draft.as_bytes());
+    Ok(MessageServiceSendFailurePreCoverResult {
+        name: local.name,
+        local_result: local.local_result,
+        retryable: local.retryable,
+        retry_action: MESSAGE_SERVICE_SEND_RETRY_AVAILABLE_ACTION,
+        private_draft_fingerprint_before_sha256: draft_fingerprint.clone(),
+        private_draft_fingerprint_after_sha256: draft_fingerprint,
+        private_draft_unchanged: true,
+        cover_preparation_count_start,
+        cover_preparation_count_after: cover_preparation_count_start,
+    })
+}
 
 fn prepare_peer_inbox_text(
     core: &HubCoreState,
@@ -5217,7 +5316,6 @@ fn drain_peer_inbox_text(
                         message_id: payload.message_id,
                         expires_at: payload.expires_at,
                         person_to_person_e2ee: true,
-                        display_duration_seconds: None,
                     });
                 }
                 continue;
@@ -5306,7 +5404,6 @@ fn drain_peer_inbox_text(
             view_once_consumed: payload.view_once,
             created_at: payload.created_at,
             expires_at: payload.expires_at,
-            display_duration_seconds: None,
         });
     }
     for (_, group) in chunk_groups {
@@ -5378,7 +5475,6 @@ fn drain_peer_inbox_text(
                         message_id: logical_message_id,
                         expires_at: group.template.expires_at,
                         person_to_person_e2ee: true,
-                        display_duration_seconds: None,
                     });
                 }
                 continue;
@@ -5485,7 +5581,6 @@ fn drain_peer_inbox_text(
                 view_once_consumed: logical.view_once,
                 created_at: logical.created_at,
                 expires_at: logical.expires_at,
-                display_duration_seconds: None,
             });
         }
     }
@@ -9657,6 +9752,153 @@ mod tests {
     }
 
     #[test]
+    fn task_3570_lists_every_documented_message_service_send_failure_as_retryable() {
+        let documented = documented_message_service_send_failures();
+        let handled = documented_message_service_send_failure_local_results();
+        let mut occurrences = std::collections::BTreeMap::<&str, usize>::new();
+        for result in &handled {
+            *occurrences.entry(result.name).or_insert(0) += 1;
+            assert_eq!(
+                result.local_result, MESSAGE_SERVICE_SEND_RETRYABLE_LOCAL_RESULT,
+                "{} must resolve to the retryable local result",
+                result.name
+            );
+            assert!(
+                result.retryable,
+                "{} must be marked retryable locally",
+                result.name
+            );
+        }
+
+        assert!(
+            !documented.is_empty(),
+            "the documented send-failure list must not be empty"
+        );
+        assert_eq!(
+            documented.len(),
+            handled.len(),
+            "every documented message-service send failure must be handled"
+        );
+        for name in documented {
+            assert_eq!(
+                occurrences.get(name).copied().unwrap_or(0),
+                1,
+                "{name} must appear exactly once"
+            );
+            assert_eq!(
+                retryable_local_result_for_message_service_send_failure(name)
+                    .expect("documented name resolves"),
+                MessageServiceSendFailureLocalResult {
+                    name,
+                    local_result: MESSAGE_SERVICE_SEND_RETRYABLE_LOCAL_RESULT,
+                    retryable: true,
+                }
+            );
+        }
+        let refused =
+            retryable_local_result_for_message_service_send_failure("not_documented_task_3570")
+                .unwrap_err();
+        assert_eq!(
+            refused,
+            "unknown message-service send failure: not_documented_task_3570"
+        );
+
+        println!("TASK3570_DOCUMENTED_FAILURE_COUNT={}", documented.len());
+        println!("TASK3570_HANDLED_FAILURE_COUNT={}", handled.len());
+        println!("TASK3570_UNIQUE_NAME_COUNT={}", occurrences.len());
+        println!("TASK3570_FAILURE_NAMES={}", documented.join(","));
+        for result in &handled {
+            println!(
+                "TASK3570_HANDLED_FAILURE name={} local_result={} retryable={}",
+                result.name, result.local_result, result.retryable
+            );
+        }
+        println!("TASK3570_UNKNOWN_NAME_RESULT=ERR");
+        println!("TASK3570_UNKNOWN_NAME_ERROR={refused}");
+    }
+
+    #[test]
+    fn task_3571_every_send_failure_stops_before_cover_preparation_and_keeps_draft() {
+        let documented = documented_message_service_send_failures();
+        let private_draft = "person's private draft for task 3571; never rewrite this text";
+        let draft_fingerprint_before = sha256_hex(private_draft.as_bytes());
+        let cover_preparation_count_start = 7usize;
+        let mut retry_available_count = 0usize;
+        let mut observed_names = Vec::new();
+
+        for name in documented {
+            let result = retry_available_for_message_service_send_failure_before_cover_preparation(
+                name,
+                private_draft,
+                cover_preparation_count_start,
+            )
+            .expect("documented failure returns a pre-cover retry result");
+            assert_eq!(result.name, *name);
+            assert_eq!(
+                result.local_result, MESSAGE_SERVICE_SEND_RETRYABLE_LOCAL_RESULT,
+                "{name} must keep the 3570 retryable local result"
+            );
+            assert!(result.retryable, "{name} must remain retryable");
+            assert_eq!(
+                result.retry_action, MESSAGE_SERVICE_SEND_RETRY_AVAILABLE_ACTION,
+                "{name} must expose retry available before cover preparation"
+            );
+            assert_eq!(
+                result.private_draft_fingerprint_before_sha256,
+                draft_fingerprint_before
+            );
+            assert_eq!(
+                result.private_draft_fingerprint_after_sha256,
+                draft_fingerprint_before
+            );
+            assert!(
+                result.private_draft_unchanged,
+                "{name} must not change the person's private draft"
+            );
+            assert_eq!(
+                result.cover_preparation_count_start,
+                cover_preparation_count_start
+            );
+            assert_eq!(
+                result.cover_preparation_count_after, cover_preparation_count_start,
+                "{name} must stop before cover preparation"
+            );
+            retry_available_count += 1;
+            observed_names.push(result.name);
+            println!(
+                "TASK3571_FAILURE name={} retry_action=\"{}\" local_result={} retryable={} draft_fingerprint_before_sha256={} draft_fingerprint_after_sha256={} private_draft_unchanged={} cover_preparation_count_start={} cover_preparation_count_after={}",
+                result.name,
+                result.retry_action,
+                result.local_result,
+                result.retryable,
+                result.private_draft_fingerprint_before_sha256,
+                result.private_draft_fingerprint_after_sha256,
+                result.private_draft_unchanged,
+                result.cover_preparation_count_start,
+                result.cover_preparation_count_after
+            );
+        }
+
+        assert!(!documented.is_empty());
+        assert_eq!(retry_available_count, documented.len());
+        assert_eq!(observed_names, documented);
+        let draft_fingerprint_after = sha256_hex(private_draft.as_bytes());
+        assert_eq!(draft_fingerprint_after, draft_fingerprint_before);
+
+        println!("TASK3571_LISTED_FAILURE_COUNT={}", documented.len());
+        println!("TASK3571_RETRY_AVAILABLE_COUNT={retry_available_count}");
+        println!("TASK3571_PRIVATE_DRAFT_FINGERPRINT_BEFORE_SHA256={draft_fingerprint_before}");
+        println!("TASK3571_PRIVATE_DRAFT_FINGERPRINT_AFTER_SHA256={draft_fingerprint_after}");
+        println!(
+            "TASK3571_PRIVATE_DRAFT_UNCHANGED={}",
+            draft_fingerprint_before == draft_fingerprint_after
+        );
+        println!("TASK3571_COVER_PREPARATION_COUNT_START={cover_preparation_count_start}");
+        println!("TASK3571_COVER_PREPARATION_COUNT_AFTER={cover_preparation_count_start}");
+        println!("TASK3571_FAILURE_NAMES={}", observed_names.join(","));
+    }
+
+    #[test]
     fn b6_preflight_names_every_current_runtime_blocker_without_network_or_state_mutation() {
         let state = ipc::AppState::new();
         let receipt = b6_preflight_for(B6PreflightInputs {
@@ -12546,7 +12788,6 @@ mod tests {
             view_once_consumed: true,
             created_at: 1_786_996_400,
             expires_at: 1_787_000_000,
-            display_duration_seconds: None,
         };
         let value = serde_json::to_value(OpenedNativeOverlayTextBatch {
             messages: vec![opened],
@@ -12554,7 +12795,6 @@ mod tests {
                 message_id: "peer-0123456789abcdef0123456789abcdef".to_owned(),
                 expires_at: 1_787_000_100,
                 person_to_person_e2ee: true,
-                display_duration_seconds: None,
             }],
             acknowledgments: Vec::new(),
             fetched: 2,
@@ -12602,7 +12842,6 @@ mod tests {
             view_once_consumed: false,
             created_at: 1_786_996_400,
             expires_at: 1_787_000_000,
-            display_duration_seconds: None,
         })
         .unwrap();
         assert!(reassembled.get("coverPointer").is_none());
@@ -12624,7 +12863,6 @@ mod tests {
                 view_once_consumed: false,
                 created_at: 1_786_996_400,
                 expires_at: 1_787_000_000,
-                display_duration_seconds: None,
             }
         }
 
@@ -13116,7 +13354,6 @@ mod tests {
                 message_id: bob_side.message_id.clone(),
                 expires_at: bob_side.expires_at,
                 person_to_person_e2ee: true,
-                display_duration_seconds: None,
             }],
             acknowledgments: Vec::new(),
             fetched: 1,

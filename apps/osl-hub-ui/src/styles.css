@@ -1562,50 +1562,6 @@ code {
   text-align: center;
 }
 .preferred-browser-choices .browser-logo { width: 22px; height: 22px; }
-.whitelisting-settings-list { display: grid; gap: 8px; }
-.auto-rule-row {
-  min-height: 56px;
-  padding: 8px 0;
-  border-bottom: 1px solid var(--line-soft);
-  display: grid;
-  grid-template-columns: minmax(120px, .72fr) minmax(260px, 1fr);
-  align-items: center;
-  gap: 12px;
-}
-.auto-rule-row:last-child { border-bottom: 0; }
-.auto-rule-row strong,
-.auto-rule-row small { display: block; }
-.auto-rule-row small { margin-top: 3px; color: var(--muted); font-size: 11px; }
-.auto-rule-choices {
-  min-width: 0;
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-}
-.auto-rule-choice {
-  min-height: 34px;
-  padding: 0 8px;
-  border: 1px solid var(--line-soft);
-  background: transparent;
-  color: var(--muted);
-  cursor: pointer;
-  font-size: 11px;
-  font-weight: 650;
-  line-height: 1.15;
-  overflow-wrap: anywhere;
-}
-.auto-rule-choice + .auto-rule-choice { border-left: 0; }
-.auto-rule-choice:first-child { border-radius: 6px 0 0 6px; }
-.auto-rule-choice:last-child { border-radius: 0 6px 6px 0; }
-.auto-rule-choice:hover { background: var(--panel-2); color: var(--text); }
-.auto-rule-choice.selected {
-  border-color: color-mix(in srgb, var(--brand) 52%, var(--line));
-  background: var(--brand-wash);
-  color: var(--brand);
-}
-.auto-rule-choice:focus-visible { position: relative; z-index: 1; outline: 2px solid var(--brand); outline-offset: 1px; }
-@media (max-width: 760px) {
-  .auto-rule-row { grid-template-columns: minmax(0, 1fr); }
-}
 .account-opening-defaults { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line-soft); }
 .account-opening-note { margin: 9px 0 0; color: var(--muted); font-size: 11px; }
 .saved-account-advanced {
@@ -3649,7 +3605,9 @@ code {
 
 .settings-page {
   display: grid;
-  grid-template-columns: 200px minmax(0, 1fr);
+  /* Wide enough that every Settings home explanation stays on one line; the
+     capture in screenshots/capture-linux-settings-home.mjs fails if one wraps. */
+  grid-template-columns: 452px minmax(0, 1fr);
 }
 
 .settings-sidebar {
@@ -3684,6 +3642,43 @@ code {
 }
 
 .settings-sidebar button.active { border-left-color: var(--brand); }
+
+/* Settings home: each choice is a label plus the one line that says what is
+   behind it. The explanation is not a hover title or a tooltip, because a
+   screenshot of this screen has to show it. */
+.settings-home-intro {
+  margin: 0 6px 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.settings-sidebar button.settings-home-choice {
+  display: grid;
+  gap: 2px;
+  min-height: 0;
+  padding: 8px;
+  margin-bottom: 2px;
+  border-radius: var(--radius);
+}
+
+.settings-home-choice-label {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.25;
+}
+
+.settings-home-choice-explanation {
+  font-size: 11.5px;
+  color: var(--muted);
+  line-height: 1.35;
+  white-space: normal;
+}
+
+.settings-sidebar button.settings-home-choice.active .settings-home-choice-explanation,
+.settings-sidebar button.settings-home-choice:hover .settings-home-choice-explanation {
+  color: var(--text);
+}
 
 .settings-detail {
   width: min(720px, 100%);
@@ -3962,6 +3957,79 @@ code {
 .settings-section > header p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
 .settings-section > header .settings-actions { margin: 0; }
 .settings-list { border-top: 1px solid var(--line-soft); }
+
+/* Whitelisting screen: the allowed-conversation list and its six controls.
+   Every state a user has to read -- which rows are ticked, what the search
+   found, whether anything is unsaved -- is painted text on this screen, never a
+   tooltip, because the screen is judged from a screenshot. */
+.whitelisting-screen { border-top: 0; }
+.whitelisting-screen > header { margin: 0 0 14px; }
+.whitelisting-screen > header h2 { margin: 0; font-size: 19px; }
+.whitelisting-screen > header p { margin: 4px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+
+.whitelisting-search { display: grid; gap: 5px; margin-bottom: 12px; }
+.whitelisting-search > label { font-size: 11px; font-weight: 600; color: var(--muted); }
+.whitelisting-search > input {
+  width: 100%;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 13px;
+}
+.whitelisting-search > input:focus-visible { outline: 2px solid var(--brand); outline-offset: 1px; }
+.whitelisting-search > input:disabled { opacity: .5; cursor: not-allowed; }
+.whitelisting-result { margin: 0; color: var(--text); font-size: 12px; font-weight: 600; }
+
+.whitelisting-bulk { display: flex; gap: 8px; margin-bottom: 10px; }
+
+.whitelisting-list {
+  display: grid;
+  gap: 6px;
+  margin: 0 0 14px;
+  padding: 0;
+  list-style: none;
+}
+.whitelisting-row {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+.whitelisting-row[data-whitelisting-allowed="true"] { border-left: 3px solid var(--brand); }
+.whitelisting-row.changed { border-color: var(--warn); }
+.whitelisting-row-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+.whitelisting-row-tick { width: 16px; height: 16px; margin: 0; flex: 0 0 auto; accent-color: var(--brand); }
+.whitelisting-row-text { display: grid; gap: 1px; min-width: 0; flex: 1 1 auto; }
+.whitelisting-row-text strong { font-size: 13px; color: var(--text); }
+.whitelisting-row-text small { font-size: 11px; color: var(--muted); }
+.whitelisting-row-state {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.whitelisting-row[data-whitelisting-allowed="true"] .whitelisting-row-state { color: var(--brand); }
+
+.whitelisting-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line-soft);
+}
+.whitelisting-unsaved { margin: 0; font-size: 12px; font-weight: 600; color: var(--warn); }
+.whitelisting-unsaved.saved { color: var(--muted); font-weight: 400; }
+.whitelisting-actions-note { flex: 1 0 100%; color: var(--muted); font-size: 11px; line-height: 1.5; }
 
 .settings-disclosure {
   margin-top: 12px;
@@ -4394,13 +4462,6 @@ code {
 .app-tile-copy small { display: block; }
 .app-tile-copy strong { overflow: hidden; font-size: 11px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .app-tile-copy small { margin-top: 2px; color: var(--subtle); font-size: 11px; }
-
-/* TASK 5008: Home's SOCIAL/EMAIL rows of circular brand tiles. */
-.circular-tile { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 0; border: 0; background: transparent; }
-.circular-tile-button { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 0; border: 0; background: transparent; color: var(--text); cursor: pointer; }
-.circular-tile-plate { width: min(58px, 100%); aspect-ratio: 1; border-radius: 50%; border: 1px solid var(--line); display: grid; place-items: center; background: var(--panel-2); color: var(--brand); }
-.circular-tile-label { overflow: hidden; font-size: 11px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.circular-tile.tile-hidden { opacity: .42; }
 .app-tile.app-unavailable { opacity: .42; }
 .app-tile.app-unavailable button { cursor: not-allowed; }
 .app-tile.app-unavailable .app-logo-plate { filter: grayscale(1); }
@@ -5077,8 +5138,12 @@ code {
     overflow-x: auto;
   }
   .settings-sidebar .eyebrow,
-  .settings-sidebar h1 { display: none; }
+  .settings-sidebar h1,
+  .settings-home-intro { display: none; }
   .settings-sidebar button { width: auto; min-width: max-content; }
+  /* Explanations still show when the sidebar turns into a scrolling strip, so
+     each choice gets a fixed width instead of one max-content line per card. */
+  .settings-sidebar button.settings-home-choice { width: 230px; min-width: 230px; flex: 0 0 230px; }
   .settings-detail { padding: 22px 18px 36px; }
   .app-grid { grid-template-columns: repeat(4, minmax(56px, 1fr)); }
   .guide-card { padding-inline: 20px; }
@@ -6254,7 +6319,6 @@ code {
 
 /* Whitelist roster: every whitelisted person, where they are trusted, and how
    far their reach was deliberately widened. */
-.discord-qa-whitelist { position: relative; }
 .discord-qa-whitelist #discord-qa-whitelist-roster {
   min-width: auto;
   padding: 0 9px;
@@ -6266,40 +6330,6 @@ code {
   text-transform: uppercase;
 }
 .whitelist-roster-list { display: grid; gap: 12px; }
-.whitelist-roster-dropdown {
-  position: absolute;
-  top: calc(100% + 8px);
-  right: 0;
-  z-index: 30;
-  width: min(280px, calc(100vw - 24px));
-  padding: 8px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--surface);
-  box-shadow: 0 16px 34px rgba(0, 0, 0, .18);
-}
-.whitelist-dropdown-list { display: grid; gap: 4px; }
-.whitelist-dropdown-row {
-  min-height: 42px;
-  display: grid;
-  grid-template-columns: 18px minmax(0, 1fr);
-  align-items: center;
-  gap: 10px;
-  padding: 7px 8px;
-  border-radius: 6px;
-}
-.whitelist-dropdown-row:hover { background: var(--osl-bg-hover); }
-.whitelist-dropdown-row input { margin: 0; }
-.whitelist-dropdown-row span,
-.whitelist-dropdown-row small { min-width: 0; }
-.whitelist-dropdown-row strong,
-.whitelist-dropdown-row small {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.whitelist-dropdown-row small { color: var(--muted); }
 .whitelist-roster-row { display: grid; gap: 8px; }
 .whitelist-roster-row > header {
   display: flex;

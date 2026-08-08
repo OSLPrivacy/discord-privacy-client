@@ -133,6 +133,10 @@ pub struct TorPreferenceState {
     path: PathBuf,
     preference: Mutex<Option<TorPreference>>,
     tor_config: Option<ArtiProxyConfig>,
+    /// Why no sidecar is available (e.g. the packaged osl-tor-sidecar file
+    /// is missing). Choosing Tor while this is set refuses with this exact
+    /// message instead of silently accepting a route that can never start.
+    tor_refusal: Option<String>,
     tor_client: Mutex<Option<TorClientFactory>>,
 }
 
@@ -142,6 +146,20 @@ impl TorPreferenceState {
     }
 
     pub fn load_with_arti_proxy_config(path: PathBuf, tor_config: Option<ArtiProxyConfig>) -> Self {
+        Self::load_with_arti_proxy_resolution(path, tor_config.ok_or(None))
+    }
+
+    /// Load with the outcome of sidecar resolution: either a launchable
+    /// config, or the reason none exists. `Err(None)` keeps the legacy
+    /// "no Tor configured, refuse quietly at authorization" behavior.
+    pub fn load_with_arti_proxy_resolution(
+        path: PathBuf,
+        resolution: Result<ArtiProxyConfig, Option<String>>,
+    ) -> Self {
+        let (tor_config, tor_refusal) = match resolution {
+            Ok(config) => (Some(config), None),
+            Err(refusal) => (None, refusal),
+        };
         let preference = read_preference(&path).unwrap_or(None);
         let tor_client = if preference == Some(TorPreference::Tor) {
             tor_config
@@ -154,6 +172,7 @@ impl TorPreferenceState {
             path,
             preference: Mutex::new(preference),
             tor_config,
+            tor_refusal,
             tor_client: Mutex::new(tor_client),
         };
         state.publish_process_route();
@@ -170,6 +189,7 @@ impl TorPreferenceState {
             path,
             preference: Mutex::new(preference),
             tor_config: None,
+            tor_refusal: None,
             tor_client: Mutex::new(Some(TorClientFactory::new(factory))),
         }
     }
@@ -264,6 +284,14 @@ impl TorPreferenceState {
                 *tor_client = None;
             }
             TorPreference::Tor if tor_client.is_none() => {
+                // No sidecar at all is a named refusal at selection time:
+                // the user must not be allowed to "choose" a route whose
+                // launcher is known to be missing from the installation.
+                if self.tor_config.is_none() {
+                    if let Some(refusal) = &self.tor_refusal {
+                        return Err(refusal.clone());
+                    }
+                }
                 *tor_client = self
                     .tor_config
                     .clone()
@@ -290,6 +318,70 @@ impl TorPreferenceState {
             }
         }
     }
+}
+
+/// File name of the Tor sidecar that Tauri packages next to the hub
+/// executable (`bundle.externalBin` in tauri.conf.json).
+pub const TOR_SIDECAR_FILE_NAME: &str = if cfg!(windows) {
+    "osl-tor-sidecar.exe"
+} else {
+    "osl-tor-sidecar"
+};
+
+/// Where the packaged sidecar lives: the directory of the running
+/// executable. This is Tauri's external-binary contract on every bundle
+/// format this app ships (NSIS install dir, deb/rpm usr/bin).
+pub fn bundled_tor_sidecar_path() -> Result<PathBuf, String> {
+    let exe = std::env::current_exe()
+        .map_err(|_| "OSL could not resolve its own executable path".to_owned())?;
+    let dir = exe
+        .parent()
+        .ok_or_else(|| "OSL executable has no parent directory".to_owned())?;
+    Ok(dir.join(TOR_SIDECAR_FILE_NAME))
+}
+
+/// Find the Tor sidecar executable for this run.
+///
+/// An explicit `OSL_ARTI_PROXY_PATH` override wins (development and tests);
+/// otherwise the sidecar packaged next to the app executable is used. A
+/// missing packaged sidecar is a refusal that names the missing file --
+/// never a silent fallback to some other Tor implementation on the machine.
+pub fn resolve_tor_sidecar_program() -> Result<PathBuf, String> {
+    if let Some(config) = arti_proxy_config_from_env() {
+        return Ok(config.program);
+    }
+    let path = bundled_tor_sidecar_path()?;
+    if path.is_file() {
+        Ok(path)
+    } else {
+        Err(format!(
+            "OSL refuses to start Tor: the packaged {TOR_SIDECAR_FILE_NAME} is missing at {}",
+            path.display()
+        ))
+    }
+}
+
+/// Resolve the full sidecar launch configuration.
+///
+/// The env override keeps its own args (`OSL_ARTI_PROXY_ARGS`). The packaged
+/// sidecar is told to listen on the transport's fixed loopback SOCKS address
+/// and to keep Arti state under the app's local data directory, so no Tor
+/// material lands outside OSL-owned paths.
+pub fn resolve_arti_proxy_config(tor_data_dir: &Path) -> Result<ArtiProxyConfig, String> {
+    if let Some(config) = arti_proxy_config_from_env() {
+        return Ok(config);
+    }
+    let program = resolve_tor_sidecar_program()?;
+    let mut config = ArtiProxyConfig::new(program);
+    config.args = vec![
+        "--listen".to_owned(),
+        config.socks_addr.to_string(),
+        "--state-dir".to_owned(),
+        tor_data_dir.join("state").display().to_string(),
+        "--cache-dir".to_owned(),
+        tor_data_dir.join("cache").display().to_string(),
+    ];
+    Ok(config)
 }
 
 pub fn arti_proxy_config_from_env() -> Option<ArtiProxyConfig> {

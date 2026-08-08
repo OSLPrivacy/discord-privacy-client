@@ -1399,7 +1399,6 @@ mod should_encrypt_to_tests {
         );
     }
 
-
     #[test]
     fn task_0129_unticked_group_member_direct_delivery_plan_contains_cover_only() {
         const SELF: &str = "900000000000000129";

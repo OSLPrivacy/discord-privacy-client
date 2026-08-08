@@ -8,8 +8,6 @@ pub const MESSENGER_WHITELIST_KIND_NAMES: [&str; 3] = [
     MESSENGER_ROOM_KIND,
 ];
 
-pub const MESSENGER_WHITELIST_KIND_NAMES: [&str; 2] =
-    [MESSENGER_DIRECT_MESSAGE_KIND, MESSENGER_GROUP_CHAT_KIND];
 
 pub fn messenger_whitelist_kind_names() -> &'static [&'static str] {
     &MESSENGER_WHITELIST_KIND_NAMES

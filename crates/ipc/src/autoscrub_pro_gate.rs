@@ -515,18 +515,6 @@ impl AutoScrubProSurface {
         &self.schedules
     }
 
-    /// Drop every saved schedule the predicate does not keep. The account-aware
-    /// schedule surface (Task 1457) uses this to re-save a schedule under a name
-    /// it already holds, and to drop the schedules of an account whose normal
-    /// Scrub consent has been withdrawn. It never *adds* a schedule, so it
-    /// cannot become a way around [`AutoScrubProSurface::schedule`]'s Pro gate.
-    pub fn retain_schedules<F>(&mut self, keep: F)
-    where
-        F: FnMut(&AutoScrubSchedule) -> bool,
-    {
-        self.schedules.retain(keep);
-    }
-
     /// Delete the messages a review already marked.
     pub fn deletion(
         &mut self,

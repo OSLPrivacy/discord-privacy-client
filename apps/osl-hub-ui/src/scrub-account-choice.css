@@ -1,0 +1,139 @@
+/* ---------------------------------------------------------------------------
+   TASK 1402 -- the final setup step: which accounts Scrub may use.
+
+   Every row is drawn the same. The tick is the only difference between an
+   account Scrub is allowed to touch and one it is not, so the ticked row lights
+   its box and its outline and nothing else on the row changes size or weight.
+   Back and Continue sit together at the foot; Continue is dimmed, not hidden,
+   while no account is ticked, so the reason it cannot be pressed stays visible.
+   --------------------------------------------------------------------------- */
+.scrub-account-screen {
+  --sa-bg: #080c0d;
+  --sa-card: #0d1114;
+  --sa-card-lit: #101619;
+  --sa-line: #2a343a;
+  --sa-text: #f4f7f8;
+  --sa-second: #b8c2c7;
+  --sa-accent: #2ac0f0;
+
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 100%;
+  padding: 40px 48px 36px;
+  background: var(--sa-bg);
+  color: var(--sa-text);
+  font-family: "Onest Variable", Onest, var(--font-ui);
+  display: flex;
+  flex-direction: column;
+  gap: 26px;
+}
+
+.scrub-account-screen *,
+.scrub-account-screen *::before,
+.scrub-account-screen *::after {
+  box-sizing: border-box;
+}
+
+.scrub-account-head {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.scrub-account-title {
+  margin: 0;
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.scrub-account-lead {
+  margin: 0;
+  max-width: 62ch;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--sa-second);
+}
+
+.scrub-account-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.scrub-account-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+  background: var(--sa-card);
+  border: 1px solid var(--sa-line);
+  cursor: pointer;
+}
+
+.scrub-account-row.ticked {
+  background: var(--sa-card-lit);
+  border-color: var(--sa-accent);
+}
+
+.scrub-account-names {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.scrub-account-label {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.scrub-account-where {
+  font-size: 12px;
+  color: var(--sa-second);
+}
+
+.scrub-account-empty {
+  margin: 0;
+  padding: 14px 16px;
+  border: 1px solid var(--sa-line);
+  font-size: 14px;
+  color: var(--sa-second);
+}
+
+/* The box is always drawn; only the mark inside it appears when ticked, so a
+   row never changes height as it is chosen. */
+.osl-tick {
+  flex: none;
+}
+
+.scrub-account-row .osl-tick-box {
+  stroke: var(--sa-line);
+  fill: none;
+}
+
+.scrub-account-row.ticked .osl-tick-box {
+  stroke: var(--sa-accent);
+  fill: none;
+}
+
+.scrub-account-row .osl-tick-mark {
+  stroke: transparent;
+}
+
+.scrub-account-row.ticked .osl-tick-mark {
+  stroke: var(--sa-accent);
+}
+
+.scrub-account-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: auto;
+}
+
+.scrub-account-continue[disabled] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}

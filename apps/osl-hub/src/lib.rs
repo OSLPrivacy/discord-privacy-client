@@ -4,21 +4,17 @@
 pub mod account_burn_selection;
 #[cfg(feature = "core")]
 pub mod account_identity_authority;
-#[cfg(all(feature = "core", feature = "desktop"))]
+#[cfg(feature = "core")]
 pub mod account_recovery;
 #[cfg(feature = "core")]
 pub mod allowed_place_commands;
 pub mod adapter_profile_boot;
 pub mod adapters;
-#[cfg(all(feature = "core", feature = "desktop", not(feature = "desktop")))]
-pub mod allowed_place_commands;
+#[cfg(feature = "core")]
 #[cfg(feature = "core")]
 pub mod attachment_formats;
-#[cfg(feature = "core")]
 pub mod attachment_limits;
-#[cfg(all(feature = "core", feature = "desktop"))]
-#[path = "attachment_limits.rs"]
-mod attachment_limits_desktop_decl;
+#[cfg(feature = "core")]
 #[cfg(feature = "core")]
 pub mod attachment_partial_guard;
 pub mod attachment_scan;
@@ -39,13 +35,12 @@ pub mod ai_consent;
 pub mod app_own_names;
 pub mod attended_imap;
 pub mod bad_message_rules;
-#[cfg(all(feature = "core", feature = "desktop"))]
+#[cfg(feature = "core")]
 pub mod autoscrub_bridge;
-#[cfg(all(feature = "core", feature = "desktop"))]
+#[cfg(feature = "core")]
 pub mod autoscrub_run;
 pub mod background_priority;
-#[cfg(all(feature = "core", feature = "desktop"))]
-pub mod bad_message_rules;
+#[cfg(feature = "core")]
 pub mod browser_companion;
 // The persistent footprint store is sealed with `ipc`'s process key, so it
 // belongs to the same runtime boundary as the other core storage modules.
@@ -61,7 +56,6 @@ pub mod burn_contract;
 pub mod burn_dispatch;
 #[cfg(feature = "core")]
 pub mod burn_journal_bridge;
-#[cfg(feature = "desktop")]
 pub mod burn_review_state;
 #[cfg(feature = "core")]
 pub mod burn_server;
@@ -74,7 +68,7 @@ pub mod cloud_autoscrub_authority;
 pub mod cloud_autoscrub_consent;
 pub mod cloud_autoscrub_envelope;
 pub mod cloud_autoscrub_execution;
-#[cfg(all(feature = "core", feature = "desktop"))]
+#[cfg(feature = "core")]
 pub mod cloud_autoscrub_run;
 #[cfg(feature = "core")]
 pub mod components;
@@ -96,7 +90,7 @@ pub mod execution_consent;
 pub mod external_overlay;
 pub(crate) mod firefox_migration_coordinator;
 pub mod front_window_grab;
-#[cfg(all(feature = "core", feature = "desktop"))]
+#[cfg(feature = "core")]
 pub mod friend_account_reach;
 pub mod hosted_audience;
 pub mod hosted_port;
@@ -105,15 +99,23 @@ pub mod hosted_session_port;
 pub mod installed_build_version;
 pub mod installed_build;
 pub mod invite_clipboard;
+// The iCloud Mail half of the shared mailbox reader (TASK 3071), and the iCloud
+// fill-in of the shared mail deleter (TASK 3073). Both are pure and free of this
+// crate's mail-website plumbing, so they are testable in every build that can
+// compile this crate.
+pub mod icloud_mail_deleter;
+pub mod icloud_mailbox_reader;
 /// The landing oracle: did this exact text land in the composer? Judged
 /// through channels that did not write it. Pure above its syscall seam, so the
 /// verdict is testable in every build that can compile this crate.
 pub mod landing_oracle;
+// The shared mail owner check (TASK 3044), carried out of `service_connections`
+// by TASK 3045 so the shared mail deleter can reach it on its own.
+pub mod mail_owner_check;
 /// When the hidden main window may be shown. Pure, and deliberately not behind
 /// `desktop`: the reveal rule is what decides whether the app is visible at all,
 /// so it is testable in every build that can compile this crate.
 pub mod main_window_reveal;
-#[cfg(feature = "desktop")]
 pub mod messenger_whitelist_kinds;
 pub mod model_pack_install;
 pub mod models;
@@ -124,7 +126,7 @@ pub mod native_apps;
 pub mod native_attachment_jobs;
 pub mod native_attachment_jobs_bridge;
 pub mod native_discord_adapter;
-#[cfg(all(feature = "core", feature = "desktop"))]
+#[cfg(feature = "core")]
 pub mod native_outlook_adapter;
 pub mod native_signal_adapter;
 pub mod native_telegram_adapter;
@@ -143,21 +145,10 @@ pub mod osl_profile;
 pub mod owner_presence;
 #[cfg(feature = "core")]
 pub mod peer_attachment_io;
-#[cfg(feature = "desktop")]
 pub mod preferences;
-// No tauri/platform dependency (only `attachment_scan` + serde + std), so it
-// is gated on `core` rather than `desktop`: TASK 3010 needs it reachable
-// without pulling in the desktop-only build (which, at the time of TASK
-// 3010, cannot compile -- see the note on `shared_marked_deletion_record`).
-#[cfg(feature = "core")]
 pub mod privacy_scan;
 #[cfg(feature = "core")]
 pub mod pro_context_cover;
-// TASK 3009: the shared marked-message deleter every service adapter fills
-// in. Joins the shared owner check in `privacy_scan`, so it is gated the
-// same way (`core`, not `desktop` -- see the note on `privacy_scan` above).
-#[cfg(feature = "core")]
-pub mod shared_marked_message_deleter;
 // Pure decision boundary: no store handle, no tauri, so it stays ungated and
 // is checkable without the desktop build.
 pub mod pro_marked_deletion;
@@ -166,20 +157,13 @@ pub mod pro_marked_deletion;
 // locator or a store handle itself.
 pub mod pro_marked_deletion_outcomes;
 pub mod proprietary_module_boundary;
-// TASK 3010: runs the shared deleter (TASK 3009) and files every row's
-// result with the TASK 1451 outcome record. Depends on privacy_scan through
-// the shared deleter, so it is gated the same way (`core`).
-#[cfg(feature = "core")]
-pub mod shared_marked_deletion_record;
 pub mod proprietary_module_lifecycle;
 pub mod scrub_erasure;
 pub mod scrub_erasure_queue;
 pub mod scrub_erasure_tracker;
 pub mod scrub_evidence_manifest;
-#[cfg(feature = "desktop")]
 pub mod shared_conversation_scroll;
 pub mod tor_pref;
-#[cfg(feature = "desktop")]
 pub mod scrub_hosted {
     pub mod checkpoint;
     pub mod fixture;
@@ -192,8 +176,6 @@ pub mod scrub_hosted {
     pub mod x_web;
     pub mod yahoo_mail;
 }
-#[cfg(feature = "desktop")]
-pub mod messenger_whitelist_kinds;
 #[cfg(feature = "core")]
 pub mod remove_everything;
 #[cfg(all(feature = "core", feature = "desktop"))]
@@ -202,12 +184,9 @@ pub mod revocation_drain_timer;
 pub mod rn_attribution;
 #[cfg(feature = "core")]
 pub mod rn_recovery;
-#[cfg(all(feature = "core", feature = "desktop"))]
+#[cfg(feature = "core")]
 pub mod run_choices;
-#[cfg(feature = "desktop")]
 pub mod scrub_hosted_port;
-pub mod quiet_hours;
-pub mod quiet_hours_notices;
 pub mod scrub_setup_store;
 /// **Binding Ledger 9, the seam ledger.** Adapters declared vs adapters with a
 /// live carry receipt, ratcheted in both directions against
@@ -220,32 +199,26 @@ pub(crate) mod seam_ledger;
 /// Every other implementation in the tree is `#[cfg(test)]`, which is why the
 /// offline send queue could not be wired at all before this module existed.
 pub mod secure_disk_backend;
-#[cfg(feature = "desktop")]
 pub mod service_connections;
 #[cfg(feature = "core")]
 pub mod server_records;
-#[cfg(all(feature = "core", feature = "desktop"))]
-pub mod service_connections;
+#[cfg(feature = "core")]
 pub mod service_host;
 #[cfg(feature = "core")]
 pub mod services;
-#[cfg(all(feature = "core", feature = "desktop"))]
+#[cfg(feature = "core")]
 pub mod update_apply;
-#[cfg(all(feature = "core", feature = "desktop"))]
+#[cfg(feature = "core")]
 pub mod update_state_backup;
-#[cfg(feature = "desktop")]
 pub mod updates;
 pub mod visual_binding;
-#[cfg(feature = "desktop")]
 pub mod web_surface_adapter;
-#[cfg(feature = "desktop")]
 pub mod website_driver;
 pub mod whatsapp_accessibility;
 pub mod whatsapp_qa_host;
 #[cfg(feature = "core")]
 pub mod whatsapp_qa_pairing;
 pub mod whatsapp_qa_transport;
-#[cfg(feature = "desktop")]
 pub mod x_whitelist;
 
 // Native executable verification is exercised only by Windows callers. Keep
@@ -268,41 +241,33 @@ pub mod chat_capture_protection;
 /// publication gates that read it must exist in every build that can compile the
 /// native adapters.
 pub mod claim_state;
-#[cfg(feature = "desktop")]
+#[cfg(feature = "core")]
 pub mod cleanup;
 #[cfg(feature = "core")]
 pub mod core_bridge;
-#[cfg(feature = "desktop")]
+#[cfg(feature = "core")]
 pub mod deadman;
 #[cfg(feature = "core")]
 pub mod destruct_ack_rollup;
 #[cfg(feature = "core")]
 pub mod device_transfer;
-#[cfg(all(feature = "core", feature = "discord-qa-shell", feature = "desktop"))]
-pub mod discord_qa_identity;
-#[cfg(all(feature = "core", feature = "discord-qa-shell", not(feature = "desktop")))]
-#[path = "discord_qa_identity_core_shim.rs"]
+#[cfg(all(feature = "core", feature = "discord-qa-shell"))]
 pub mod discord_qa_identity;
 #[cfg(all(feature = "core", feature = "discord-qa-shell"))]
 pub mod discord_qa_inbound_receipt;
-#[cfg(all(feature = "core", feature = "desktop"))]
+#[cfg(feature = "core")]
 pub mod eager_fetch;
-#[cfg(all(feature = "core", feature = "desktop"))]
+#[cfg(feature = "core")]
 pub mod eager_fetch_retry;
 pub mod identity_binding_verifier;
-#[cfg(all(feature = "core", feature = "desktop"))]
+#[cfg(feature = "core")]
 pub mod identity_registry;
 #[cfg(feature = "core")]
 pub mod inbound_receipts;
 pub mod isolated_worker;
-#[cfg(feature = "desktop")]
+#[cfg(feature = "core")]
 pub mod mass_cleanup;
 pub mod osl_chat_conversations;
-// The chat-settings DANGER block. Needs the local message store, so it lives
-// behind `core` like the store dependency itself.
-#[cfg(feature = "core")]
-pub mod osl_chat_danger_row;
-#[cfg(feature = "desktop")]
 pub mod osl_chat_delivery;
 pub mod osl_chat_queue;
 pub mod realtime_client;
@@ -313,31 +278,28 @@ pub mod realtime_subscription;
 #[cfg(feature = "core")]
 pub mod receipt_emit;
 pub mod row_who_wrote_it;
-#[cfg(all(feature = "core", feature = "desktop"))]
+#[cfg(feature = "core")]
 pub mod runtime_switches;
 // Timed deletion and view-once expiry. Needs `ipc` (sealed-at-rest storage) and
 // `store` (local plaintext cache), so it lives behind `core` like they do.
-#[cfg(feature = "desktop")]
 pub mod expiry_clock;
-#[cfg(all(feature = "core", feature = "desktop"))]
+#[cfg(feature = "core")]
 pub mod message_expiry;
 // View-once payloads are opened only after the native viewer proves capture
 // protection; the module is dependency-free so its ordering tests run on all
 // supported build hosts.
-#[cfg(all(feature = "core", feature = "desktop"))]
+#[cfg(feature = "core")]
 pub mod password_lifecycle;
 #[cfg(feature = "core")]
 pub mod view_once_eligibility;
-#[cfg(feature = "desktop")]
 pub mod view_once_open;
-#[cfg(feature = "desktop")]
 pub mod view_once_watch;
 pub mod visible_osl_mark;
 // The pure half of the headless QA self-test driver in `main.rs`. It lives here
 // only so it can actually be tested: the `osl-privacy-hub` binary cannot be
 // built on a Linux host, so every `#[cfg(test)]` inside `main.rs` is compiled
 // and never run.
-#[cfg(all(feature = "core", feature = "discord-qa-shell", feature = "desktop"))]
+#[cfg(all(feature = "core", feature = "discord-qa-shell"))]
 pub mod qa_selftest_request;
 // Provider-neutral off-screen surface capture. Same reason as
 // `qa_selftest_request` above: it was a private module of `main.rs`, so its
@@ -351,41 +313,33 @@ pub mod native_surface_capture;
 // order, and the registered-command/ACL proofs. Same reason as the two modules
 // above -- nothing inside `main.rs` is ever compiled or run by `--features
 // core`, which is the only configuration CI and the accept commands can build.
-#[cfg(all(feature = "core", feature = "desktop"))]
+#[cfg(feature = "core")]
 pub mod hub_command_surface;
-#[cfg(all(feature = "core", not(feature = "desktop")))]
-#[path = "hub_command_surface_core_shim.rs"]
-pub mod hub_command_surface;
-#[cfg(feature = "desktop")]
 pub mod imap_verify;
-#[cfg(all(feature = "core", feature = "desktop"))]
-pub mod runtime_switches;
-#[cfg(feature = "desktop")]
+#[cfg(feature = "core")]
 pub mod scrub_imap;
-#[cfg(all(feature = "core", feature = "desktop"))]
+#[cfg(feature = "core")]
 pub mod scrub_index;
-#[cfg(feature = "desktop")]
 pub mod scrub_receipt;
 #[cfg(feature = "core")]
 pub mod security;
 #[cfg(feature = "core")]
 pub mod security_credentials;
-#[cfg(feature = "desktop")]
 pub mod sensitive_warning;
 #[cfg(feature = "core")]
 pub mod service_burn_selection;
 #[cfg(feature = "core")]
 pub mod service_scope_index;
-#[cfg(feature = "desktop")]
-pub mod shared_conversation_scroll;
-#[cfg(feature = "desktop")]
+pub mod shared_mail_deleter;
+pub mod shared_mail_reader_types;
 pub mod shared_mailbox_reader;
+pub mod shared_marked_message_deleter;
 pub mod signal_destination_binding;
 #[cfg(feature = "core")]
 pub mod signal_extra_device_sender;
 #[cfg(feature = "core")]
 pub mod spaces;
-#[cfg(all(feature = "core", feature = "desktop"))]
+#[cfg(feature = "core")]
 pub mod startup_gate;
 
 // Share the original Tauri-free bootstrap verbatim so the app loads the same

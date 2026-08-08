@@ -4,20 +4,33 @@
 //! tree into `SignalNode`s.  It deliberately does not discover windows, read
 //! accessible names or text, place input, or attest a destination.
 
-use super::*;
 use crate::native_signal_adapter::{
-    discover_signal_composer, discover_signal_transcript, SignalNode, SignalRect, SignalRole,
+    SignalNode,
+    SignalRect,
+    SignalRole,
     SignalSelectorError,
+    discover_signal_composer,
+    discover_signal_transcript,
 };
 use crate::signal_destination_binding::{
-    SignalBindingStatus, SignalDestinationBindingState, SignalDestinationEvidence,
+    SignalBindingStatus,
+    SignalDestinationBindingState,
+    SignalDestinationEvidence,
 };
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    Mutex,
+    atomic::{AtomicUsize, Ordering},
+};
+use super::*;
 
 const MAX_SIGNAL_A11Y_NODES: usize = 4_096;
 const MAX_SIGNAL_A11Y_DEPTH: usize = 64;
 
-/// The operations supplied by Signal's native accessibility bridge.
+/// The L2-only operations supplied by Signal's native accessibility bridge.
+///
+/// Deliberately omits any send/submit operation: Signal placement writes a
+/// draft, while committing it is reserved for the later L3 task.
 pub trait SignalBackend: Send + Sync {
     fn capabilities(&self, now_unix_seconds: u64) -> CapabilitySet;
     fn locate(&self, target: &SurfaceTarget) -> Result<SurfaceBinding, AdapterRefusal>;
@@ -30,7 +43,6 @@ pub trait SignalBackend: Send + Sync {
     ) -> Result<SignalDestinationEvidence, AdapterRefusal>;
     fn place_without_submit(&self, binding: &SurfaceBinding, carrier: &Carrier)
         -> PlacementReceipt;
-    fn commit(&self, binding: &SurfaceBinding, placed: &PlacementReceipt) -> SendReceipt;
 }
 
 /// Signal's native surface adapter through L2 placement.
@@ -165,37 +177,14 @@ impl<B: SignalBackend> SurfaceAdapter for SignalSurfaceAdapter<B> {
 
     fn commit(
         &self,
-        binding: &SurfaceBinding,
-        authorization: &SendAuthorization,
-        placed: &PlacementReceipt,
+        _: &SurfaceBinding,
+        _: &SendAuthorization,
+        _: &PlacementReceipt,
     ) -> SendReceipt {
-        let refused = || SendReceipt {
+        SendReceipt {
             outcome: SendOutcome::NotSent,
             elapsed_ms: 0,
-        };
-        if !self.validates_binding(binding)
-            || !is_send_evidence_admissible(&binding.evidence)
-            || !same_scope(
-                &binding.scope_binding_hash,
-                &authorization.scope_binding_hash,
-            )
-            || !self.supports(adapter_profile::Capability::SendProtectedPayload)
-            || placed.status != PlacementStatus::Placed
-            || placed.placed_sha256.is_none()
-        {
-            return refused();
         }
-        let destination = match self.destination(binding) {
-            Ok(destination) => destination,
-            Err(_) => return refused(),
-        };
-        if destination.status != DestinationStatus::Attested
-            || !same_scope(&binding.scope_binding_hash, &destination.scope_binding_hash)
-            || !is_send_evidence_admissible(&destination.evidence)
-        {
-            return refused();
-        }
-        self.backend.commit(binding, placed)
     }
 
     fn paint_targets(&self, _: &SurfaceBinding) -> Result<Vec<PaintTarget>, AdapterRefusal> {
@@ -272,12 +261,12 @@ pub(crate) fn snapshot_claimed_signal_nodes(
 #[cfg(target_os = "windows")]
 mod windows {
     use super::*;
-    use windows::Win32::Foundation::HWND;
-    use windows::Win32::System::Com::{
+    use ::windows::Win32::Foundation::HWND;
+    use ::windows::Win32::System::Com::{
         CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
         COINIT_MULTITHREADED,
     };
-    use windows::Win32::UI::Accessibility::{
+    use ::windows::Win32::UI::Accessibility::{
         CUIAutomation, IUIAutomation, IUIAutomationElement, IUIAutomationTreeWalker,
         IUIAutomationValuePattern, UIA_ButtonControlTypeId, UIA_EditControlTypeId,
         UIA_ListControlTypeId, UIA_PaneControlTypeId, UIA_TextControlTypeId, UIA_ValuePatternId,
@@ -437,8 +426,6 @@ mod tests {
 
     struct PlacementBackend {
         placements: AtomicUsize,
-        commits: AtomicUsize,
-        signal_route: Option<&'static str>,
     }
 
     fn binding(generation: u64) -> SurfaceBinding {
@@ -463,17 +450,13 @@ mod tests {
 
     impl SignalBackend for PlacementBackend {
         fn capabilities(&self, _: u64) -> CapabilitySet {
-            let mut capabilities = [
+            [
                 adapter_profile::Capability::InspectVisibleComposer,
                 adapter_profile::Capability::InspectVisibleTranscript,
                 adapter_profile::Capability::PlaceProtectedPayload,
             ]
             .into_iter()
-            .collect::<CapabilitySet>();
-            if self.signal_route.is_some() {
-                capabilities.insert(adapter_profile::Capability::SendProtectedPayload);
-            }
-            capabilities
+            .collect()
         }
 
         fn locate(&self, target: &SurfaceTarget) -> Result<SurfaceBinding, AdapterRefusal> {
@@ -504,22 +487,6 @@ mod tests {
                 status: PlacementStatus::Placed,
                 placed_sha256: Some("carrier-digest".into()),
                 elapsed_ms: 1,
-            }
-        }
-
-        fn commit(&self, _: &SurfaceBinding, _: &PlacementReceipt) -> SendReceipt {
-            match self.signal_route {
-                Some(_) => {
-                    self.commits.fetch_add(1, Ordering::SeqCst);
-                    SendReceipt {
-                        outcome: SendOutcome::Sent,
-                        elapsed_ms: 1,
-                    }
-                }
-                None => SendReceipt {
-                    outcome: SendOutcome::NotSent,
-                    elapsed_ms: 0,
-                },
             }
         }
     }
@@ -587,10 +554,6 @@ mod tests {
         fn place_without_submit(&self, _: &SurfaceBinding, _: &Carrier) -> PlacementReceipt {
             unreachable!("destination attestation never places a carrier")
         }
-
-        fn commit(&self, _: &SurfaceBinding, _: &PlacementReceipt) -> SendReceipt {
-            unreachable!("destination attestation never commits")
-        }
     }
 
     #[test]
@@ -628,8 +591,6 @@ mod tests {
     fn t3_t15_places_only_a_focused_empty_draft_and_never_submits() {
         let adapter = SignalSurfaceAdapter::new(PlacementBackend {
             placements: AtomicUsize::new(0),
-            commits: AtomicUsize::new(0),
-            signal_route: None,
         });
         let binding = binding(1);
 
@@ -656,6 +617,32 @@ mod tests {
         );
         assert_eq!(refused.status, PlacementStatus::NotPlaced);
         assert_eq!(adapter.backend.placements.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn t3_t16_conversation_change_invalidates_prior_signal_attestation() {
+        let state = Arc::new(SignalDestinationBindingState::default());
+        let adapter = SignalSurfaceAdapter::with_destination_binding(
+            AttestationBackend {
+                conversation: Mutex::new(3),
+            },
+            Arc::clone(&state),
+        );
+        let binding = binding(7);
+
+        let first = adapter.destination(&binding).unwrap();
+        assert_eq!(first.status, DestinationStatus::Attested);
+        let first_readiness = state.readiness();
+        assert_eq!(first_readiness.status, SignalBindingStatus::Accepted);
+
+        *adapter.backend.conversation.lock().unwrap() = 8;
+        let second = adapter.destination(&binding).unwrap();
+
+        assert_eq!(second.status, DestinationStatus::Attested);
+        assert_ne!(first.conversation_digest, second.conversation_digest);
+        let second_readiness = state.readiness();
+        assert_eq!(second_readiness.status, SignalBindingStatus::Accepted);
+        assert!(second_readiness.lifecycle_generation > first_readiness.lifecycle_generation);
     }
 
     fn direct_signal_request(adapter: &SignalSurfaceAdapter<PlacementBackend>) -> String {
@@ -696,29 +683,58 @@ mod tests {
         assert_eq!(unrouted_result, "Signal route not selected");
     }
 
-    #[test]
-    fn t3_t16_conversation_change_invalidates_prior_signal_attestation() {
-        let state = Arc::new(SignalDestinationBindingState::default());
-        let adapter = SignalSurfaceAdapter::with_destination_binding(
-            AttestationBackend {
-                conversation: Mutex::new(3),
-            },
-            Arc::clone(&state),
-        );
-        let binding = binding(7);
+    struct DirectRouteBackend {
+        commits: AtomicUsize,
+    }
 
-        let first = adapter.destination(&binding).unwrap();
-        assert_eq!(first.status, DestinationStatus::Attested);
-        let first_readiness = state.readiness();
-        assert_eq!(first_readiness.status, SignalBindingStatus::Accepted);
+    impl SignalBackend for DirectRouteBackend {
+        fn capabilities(&self, _: u64) -> CapabilitySet {
+            [
+                adapter_profile::Capability::InspectVisibleComposer,
+                adapter_profile::Capability::InspectVisibleTranscript,
+                adapter_profile::Capability::PlaceProtectedPayload,
+                adapter_profile::Capability::SendProtectedPayload,
+            ]
+            .into_iter()
+            .collect()
+        }
 
-        *adapter.backend.conversation.lock().unwrap() = 8;
-        let second = adapter.destination(&binding).unwrap();
+        fn locate(&self, target: &SurfaceTarget) -> Result<SurfaceBinding, AdapterRefusal> {
+            Ok(binding(target.generation))
+        }
 
-        assert_eq!(second.status, DestinationStatus::Attested);
-        assert_ne!(first.conversation_digest, second.conversation_digest);
-        let second_readiness = state.readiness();
-        assert_eq!(second_readiness.status, SignalBindingStatus::Accepted);
-        assert!(second_readiness.lifecycle_generation > first_readiness.lifecycle_generation);
+        fn read_state(&self, _: &SurfaceBinding) -> Result<SurfaceState, AdapterRefusal> {
+            Ok(SurfaceState {
+                composer_text_sha256: "digest".into(),
+                composer_is_empty: true,
+                composer_is_password_field: false,
+                focused: true,
+                occluded: false,
+                read_was_complete: true,
+            })
+        }
+
+        fn destination_evidence(
+            &self,
+            binding: &SurfaceBinding,
+        ) -> Result<SignalDestinationEvidence, AdapterRefusal> {
+            Ok(destination_evidence(binding.generation, 9))
+        }
+
+        fn place_without_submit(&self, _: &SurfaceBinding, _: &Carrier) -> PlacementReceipt {
+            PlacementReceipt {
+                status: PlacementStatus::Placed,
+                placed_sha256: Some("carrier-digest".into()),
+                elapsed_ms: 1,
+            }
+        }
+
+        fn commit(&self, _: &SurfaceBinding, _: &PlacementReceipt) -> SendReceipt {
+            self.commits.fetch_add(1, Ordering::SeqCst);
+            SendReceipt {
+                outcome: SendOutcome::Sent,
+                elapsed_ms: 1,
+            }
+        }
     }
 }

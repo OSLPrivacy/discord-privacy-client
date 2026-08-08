@@ -66,6 +66,16 @@ pub fn record_recovery_word_confirmation(
     current: String,
     entries: Vec<ipc::main_password::RecoveryWordEntry>,
 ) -> Result<RecoverySetupState, String> {
+    // The command takes the DTO shape; `RecoveryWordEntry` is the same pair
+    // (position, word) under another lane's name, so convert rather than
+    // force one design onto the other.
+    let entries: Vec<ipc::commands::RecoveryWordRetypeEntryDto> = entries
+        .into_iter()
+        .map(|entry| ipc::commands::RecoveryWordRetypeEntryDto {
+            position: entry.position as u8,
+            word: entry.word,
+        })
+        .collect();
     let check = ipc::commands::cmd_osl_check_recovery_words(current, entries)?;
     if !check.ok {
         return Err("OSL recovery-word confirmation did not match".to_owned());
