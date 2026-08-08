@@ -72,7 +72,6 @@ function serverWordSightings(screens: string[]): string[] {
   }
   return sightings;
 }
-
 function functionSource(name: string, nextName: string): string {
   const start = mainSource.indexOf(`function ${name}`);
   const end = mainSource.indexOf(`function ${nextName}`, start + 1);
