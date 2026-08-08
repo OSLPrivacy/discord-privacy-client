@@ -205,6 +205,12 @@ import { oslMailStage, type OslMailStage } from "./desktop-service-policy";
 import { webSurfaceLabel, type WebSurfaceCapability } from "./web-surface-label";
 import { homeOverallStatus, homeProtectionState } from "./home-protection-state";
 import {
+  autoScrubActivityRecordMarkup,
+  autoScrubHomeActivityMarkup,
+  openAutoScrubHomeActivity,
+  type AutoScrubHomeActivityRecord,
+} from "./autoscrub-home-activity";
+import {
   OSL_MAIL_NAMED_SEND_REQUIRED,
   acknowledgeOslMailRetrieval,
   burnOslMailbox,
@@ -510,6 +516,7 @@ let massCleanupLoading = false;
 let autoScrubFleetStatus: AutoScrubFleetStatus | null = null;
 let autoScrubStatusLoading = false;
 let autoScrubStopPending = false;
+let autoScrubOpenedActivityRecord: AutoScrubHomeActivityRecord | null = null;
 let passwordRoleStatus: HubPasswordRoleStatus | null = null;
 const ownerRoleEditor = new OwnerRoleEditor();
 // "Forgot password?" (the `data-onboarding="account-recovery"` link on the
@@ -5344,7 +5351,7 @@ function homeNotificationsPopoverMarkup(): string {
   const empty = !attention && !items
     ? `<div class="home-notification-item home-notification-empty"><small>${notificationsEnabled ? "Nothing new." : "Local activity is off."}</small></div>`
     : "";
-  return `<div class="home-notifications-popover" role="dialog" aria-label="Notifications"><header>Notifications</header>${attention}${items}${empty}</div>`;
+  return `<div class="home-notifications-popover" role="dialog" aria-label="Notifications"><header>Notifications</header>${attention}${autoScrubHomeActivityMarkup()}${items}${empty}</div>`;
 }
 
 function dataAllowanceLimitBytes(): number {
@@ -5447,7 +5454,7 @@ function workspaceContent(): string {
   if (route === "people") return peopleDestinationContent();
   if (route === "privacy") return privacyDestinationContent();
   if (route === "scrub") return scrubDestinationContent();
-  if (route === "activity") return activityDestinationContent();
+  if (route === "activity") return `${autoScrubActivityRecordMarkup(autoScrubOpenedActivityRecord)}${activityDestinationContent()}`;
   if (route === "connections") return connectionsDestinationContent();
   if (route === "osl-chat") return oslChatContent();
   if (route === "osl-mail") return oslMailContent();
@@ -8946,6 +8953,12 @@ function bindWorkspace(): void {
   document.querySelector<HTMLButtonElement>("[data-connections-primary-action]")?.addEventListener("click", () => connectionsPrimaryAction());
   document.querySelector<HTMLButtonElement>("#install-mullvad-from-connections")?.addEventListener("click", () => void runMullvadSetupAction("install", "connections"));
   document.querySelector<HTMLButtonElement>("[data-activity-primary-action]")?.addEventListener("click", () => {
+    route = "activity";
+    render();
+  });
+  document.querySelector<HTMLButtonElement>("[data-autoscrub-home-view-activity]")?.addEventListener("click", (event) => {
+    const button = event.currentTarget as HTMLButtonElement;
+    autoScrubOpenedActivityRecord = openAutoScrubHomeActivity(button.dataset.autoscrubHomeViewActivity ?? "");
     route = "activity";
     render();
   });
