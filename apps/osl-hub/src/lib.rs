@@ -134,6 +134,7 @@ pub mod hosted_session_port;
 pub mod installed_build;
 #[cfg(not(task3982_focused))]
 pub mod installed_build_version;
+pub mod instagram_story;
 pub mod invite_clipboard;
 /// The landing oracle: did this exact text land in the composer? Judged
 /// through channels that did not write it. Pure above its syscall seam, so the

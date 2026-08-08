@@ -1,3 +1,8 @@
+use crate::instagram_story::{
+    inspect_instagram_story_publish_control, instagram_story_audience_stable_id,
+    invoke_instagram_story_publish, InstagramStoryPublishControl, InstagramStoryPublishInput,
+    InstagramStoryPublishReceipt,
+};
 use crate::security::{self, HubSecurityState};
 use ipc::allowed_places::{AllowedPlaceQuery, AllowedPlaceRecord};
 use serde::Serialize;
@@ -54,6 +59,11 @@ pub enum AllowedPlaceCommandJson {
         ok: bool,
         #[serde(flatten)]
         direction: security::AllowedPlaceDirectionState,
+    },
+    InstagramStoryPublish {
+        ok: bool,
+        #[serde(flatten)]
+        receipt: InstagramStoryPublishReceipt,
     },
 }
 
@@ -199,6 +209,45 @@ pub fn compare_allowed_place_json(
     })
 }
 
+pub fn instagram_story_publish_control_json(
+    store_dir: &Path,
+    input: &InstagramStoryPublishInput,
+) -> Result<InstagramStoryPublishControl, String> {
+    with_headless_store(store_dir, |security_state| {
+        inspect_instagram_story_publish_control(input, |account, member| {
+            instagram_story_audience_member_is_allowed(security_state, account, member)
+        })
+    })
+}
+
+pub fn publish_instagram_story_json(
+    store_dir: &Path,
+    input: &InstagramStoryPublishInput,
+) -> Result<AllowedPlaceCommandJson, String> {
+    with_headless_store(store_dir, |security_state| {
+        let receipt = invoke_instagram_story_publish(input, |account, member| {
+            instagram_story_audience_member_is_allowed(security_state, account, member)
+        })?;
+        Ok(AllowedPlaceCommandJson::InstagramStoryPublish { ok: true, receipt })
+    })
+}
+
+fn instagram_story_audience_member_is_allowed(
+    security_state: &HubSecurityState,
+    account: &str,
+    member: &str,
+) -> Result<bool, String> {
+    security::query_allowed_place_allowed(
+        security_state,
+        AllowedPlaceQuery {
+            app: "instagram".to_owned(),
+            account: account.to_owned(),
+            kind: crate::instagram_story::INSTAGRAM_STORY_ALLOWED_PLACE_KIND.to_owned(),
+            stable_id: instagram_story_audience_stable_id(account, member),
+        },
+    )
+}
+
 fn run_allowed_place_command(
     command: &str,
     args: &[String],
@@ -226,8 +275,12 @@ fn run_allowed_place_command(
             parsed.required("first-account")?,
             parsed.required("second-account")?,
         ),
+        "instagram-story-publish" => {
+            let input = parsed.instagram_story_input()?;
+            publish_instagram_story_json(&parsed.store, &input)
+        },
         _ => Err(
-            "usage: --allowed-place <add|remove|list|allowed|x-permissions|x-send|x-permission-check|tick|compare> --store <dir> [--app <app> --account <account> --kind <kind> --stable-id <stable-id> --first-account <account> --second-account <account>]"
+            "usage: --allowed-place <add|remove|list|allowed|x-permissions|x-send|x-permission-check|tick|compare|instagram-story-publish> --store <dir> [--app <app> --account <account> --kind <kind> --stable-id <stable-id> --first-account <account> --second-account <account> --audience <member,...> --published-at <seconds> --osl-expires-at <seconds> --effective-expires-at <seconds>]"
                 .to_owned(),
         ),
     }
@@ -351,6 +404,24 @@ impl ParsedArgs {
             kind: self.required("kind")?,
             stable_id: self.required("stable-id")?,
         })
+    }
+
+    fn instagram_story_input(&self) -> Result<InstagramStoryPublishInput, String> {
+        let audience = self.required("audience")?;
+        let selected_audience = audience.split(',').map(str::to_owned).collect::<Vec<_>>();
+        Ok(InstagramStoryPublishInput {
+            account: self.required("account")?,
+            selected_audience,
+            published_at: self.required_i64("published-at")?,
+            osl_expires_at: self.required_i64("osl-expires-at")?,
+            presented_effective_expires_at: Some(self.required_i64("effective-expires-at")?),
+        })
+    }
+
+    fn required_i64(&self, key: &str) -> Result<i64, String> {
+        self.required(key)?
+            .parse::<i64>()
+            .map_err(|_| format!("invalid --{key}"))
     }
 
     fn required(&self, key: &str) -> Result<String, String> {
