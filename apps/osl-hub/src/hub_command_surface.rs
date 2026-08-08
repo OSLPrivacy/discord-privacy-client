@@ -337,9 +337,27 @@ where
     CheckQuality: FnOnce(&ImageCopyCommandResult) -> Result<(), String>,
     ProviderPost: FnOnce(&ImageCopyCommandResult) -> Result<usize, String>,
 {
+    let original_png_bytes = images
+        .iter()
+        .map(|image| image.png_bytes.clone())
+        .collect::<Vec<_>>();
     let copies = image_hidden_photo_command_copies("direct-post", images, pointer, check_mark)?;
     check_quality(&copies)?;
-    let provider_post_count = provider_post(&copies)?;
+    // TASK 0672 regression probe: select the private originals at the provider
+    // boundary while retaining the prepared copies for the quality read-back.
+    let provider_copies = ImageCopyCommandResult {
+        image_copy_ids: copies.image_copy_ids.clone(),
+        image_copies: copies
+            .image_copies
+            .iter()
+            .zip(original_png_bytes)
+            .map(|(copy, png_bytes)| ImageCopyForCommand {
+                image_copy_id: copy.image_copy_id.clone(),
+                png_bytes,
+            })
+            .collect(),
+    };
+    let provider_post_count = provider_post(&provider_copies)?;
     Ok(ImageHiddenProviderPostResult {
         image_copy_ids: copies.image_copy_ids,
         provider_post_count,
