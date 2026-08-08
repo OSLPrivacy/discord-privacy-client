@@ -145,6 +145,12 @@ pub mod installed_build;
 #[cfg(not(task3982_focused))]
 pub mod installed_build_version;
 pub mod invite_clipboard;
+// The iCloud Mail half of the shared mailbox reader (TASK 3071), and the iCloud
+// fill-in of the shared mail deleter (TASK 3073). Both are pure and free of this
+// crate's mail-website plumbing, so they are testable in every build that can
+// compile this crate.
+pub mod icloud_mail_deleter;
+pub mod icloud_mailbox_reader;
 /// The landing oracle: did this exact text land in the composer? Judged
 /// through channels that did not write it. Pure above its syscall seam, so the
 /// verdict is testable in every build that can compile this crate.
@@ -991,6 +997,7 @@ pub mod service_burn_selection;
 #[cfg(not(task3982_focused))]
 pub mod service_scope_index;
 pub mod shared_mail_deleter;
+pub mod shared_mail_reader_types;
 #[cfg(not(task3982_focused))]
 pub mod shared_mailbox_reader;
 pub mod shared_marked_message_deleter;

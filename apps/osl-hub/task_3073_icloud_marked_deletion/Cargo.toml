@@ -1,0 +1,28 @@
+[package]
+name = "task-3073-icloud-marked-deletion"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# A standalone per-task command crate, the pattern `task_3045_shared_mail_deleter/`
+# established for exactly this situation. It does not copy anything: `src/main.rs`
+# compiles the real `../src/icloud_mail_deleter.rs`, `../src/icloud_mailbox_reader.rs`,
+# `../src/shared_mail_deleter.rs`, `../src/shared_mail_reader_types.rs`,
+# `../src/mail_owner_check.rs` and `../src/row_who_wrote_it.rs` straight out of
+# `apps/osl-hub/src/`, by path.
+#
+# It exists because the `osl-hub` lib does not parse on this branch: a dozen
+# files under `src/` carry interleaved-merge damage that predates this task and
+# is present at HEAD, HEAD~1 and HEAD~3 (see OSL-AUDITS/evidence/3073.md). This
+# crate is what lets the iCloud deleter be run and checked today, against the
+# same bytes the lib will build once that damage is repaired.
+[dependencies]
+serde = { version = "=1.0.228", features = ["derive"] }
+
+# Gate 3071's own test file carries `#![cfg(feature = "core")]`, and it is
+# compiled here unmodified, so this crate has to be able to answer to that name.
+[features]
+default = ["core"]
+core = []
+
+[workspace]
