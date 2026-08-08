@@ -37,5 +37,8 @@
     "protected_text_placeholder": "Mensaje protegido",
     "protected_image_alt": "Imagen protegida",
     "empty_copy": "No hay elemento de una sola vista para mostrar."
+  },
+  "settings": {
+    "heading": "Configuracion"
   }
 }
