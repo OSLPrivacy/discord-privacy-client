@@ -15,6 +15,18 @@ pub const LOOK_STYLE_BINDINGS: [(&str, &str); 8] = [
 ];
 
 /// Minimal window seam so native hosts and the Linux proof use the same binding.
+/// The named accent shown for a fresh profile and after Reset. The style value
+/// is kept alongside the product-facing name so tests and window bindings read
+/// the same documented default instead of inventing separate fallbacks.
+pub const DEFAULT_ACCENT_NAME: &str = "OSL blue";
+pub const DEFAULT_ACCENT_VALUE: &str = "#2ac0f0";
+
+pub fn resolved_accent_choice(security_state: &HubSecurityState) -> Result<String, String> {
+    Ok(
+        security::look_choice_value(security_state, "accent".to_owned())?
+            .unwrap_or_else(|| DEFAULT_ACCENT_NAME.to_owned()),
+    )
+}
 pub trait LookStyleWindow {
     fn set_style_value(&mut self, property: &str, value: &str) -> Result<(), String>;
 }

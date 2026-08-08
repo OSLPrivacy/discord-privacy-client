@@ -740,7 +740,7 @@ impl Default for MessageDefaults {
 }
 
 fn default_message_timer_seconds() -> u32 {
-    300
+    3_600
 }
 
 fn default_display_length_seconds() -> u32 {

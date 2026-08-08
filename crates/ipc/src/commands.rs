@@ -19975,6 +19975,9 @@ pub struct MessageDefaultsDto {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct DirectNewMessagePlanDto {
+    /// Fresh opaque identity for this exact plan. Callers must not reuse a
+    /// previous plan merely because its defaults happen to match.
+    pub plan_id: String,
     pub kind: String,
     pub conversation_kind: String,
     pub scope: crate::app_preferences::MessageScopeDefault,
@@ -20113,6 +20116,8 @@ pub fn cmd_osl_read_message_default_cover_writing(state: &AppState) -> Result<St
 pub fn cmd_osl_start_direct_new_message_plan(
     state: &AppState,
 ) -> Result<DirectNewMessagePlanDto, String> {
+    use rand::{rngs::OsRng, RngCore};
+
     record_activity_on_command_entry();
     let defaults = state
         .app_preferences
@@ -20120,7 +20125,17 @@ pub fn cmd_osl_start_direct_new_message_plan(
         .expect("app_preferences mutex poisoned")
         .message_defaults
         .clone();
+    let mut plan_id_bytes = [0_u8; 16];
+    OsRng.fill_bytes(&mut plan_id_bytes);
+    let plan_id = format!(
+        "plan-{}",
+        plan_id_bytes
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    );
     Ok(DirectNewMessagePlanDto {
+        plan_id,
         kind: "direct".to_string(),
         conversation_kind: "direct".to_string(),
         scope: defaults.scope,

@@ -216,7 +216,7 @@ fn task_0796_one_reset_restores_all_29_gate_scoped_direct_reads() {
         cmd_osl_read_message_default_view_once_length_seconds(&restarted.osl).unwrap();
     let writing = cmd_osl_read_message_default_cover_writing(&restarted.osl).unwrap();
     assert_eq!(burn_scope, "message");
-    assert_eq!(timer, 300);
+    assert_eq!(timer, 3_600);
     assert_eq!(view_once, 10);
     assert_eq!(writing, "plaintext");
     direct_reads.extend([
