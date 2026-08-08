@@ -207,6 +207,7 @@ import { initialMessageDefaultsScreenState, savedMessageDefaultLabels } from "./
 import { projectAutoScrubFleetStatus, type AutoScrubFleetStatus } from "./autoscrub-contract";
 import { freshStartCleanupPresentation, freshStartLimitationsMarkup } from "./fresh-start";
 import { loadAutoScrubRunFleetStatus, requestAutoScrubGlobalStop } from "./autoscrub-unattended-run";
+import { bindLiveScanControls, liveScanControlsMarkup } from "./live-scan-controls";
 import { oslMailStage, type OslMailStage } from "./desktop-service-policy";
 import { webSurfaceLabel, type WebSurfaceCapability } from "./web-surface-label";
 import { homeOverallStatus, homeProtectionState } from "./home-protection-state";
@@ -7435,7 +7436,7 @@ function autoScrubAssistantMarkup(proActive: boolean): string {
   const actions = status.stopAvailable
     ? `<button class="button compact" id="autoscrub-stop" type="button" ${autoScrubStopPending ? "disabled" : ""}>${autoScrubStopPending ? "Stopping…" : "Stop"}</button>`
     : `<button class="button compact" id="autoscrub-refresh" type="button" ${autoScrubStatusLoading ? "disabled" : ""}>${autoScrubStatusLoading ? "Checking…" : status.label}</button>`;
-  return `<details class="settings-disclosure autoscrub-disclosure"><summary><span><strong>AutoScrub assistant</strong><small>${autoScrubPlan}</small></span></summary><section class="autoscrub-card autoscrub-status-${status.tone}" aria-disabled="${status.stopAvailable ? "false" : "true"}"><header><div><span class="privacy-local-mark">LOCAL REVIEW</span><h3>${escapeHtml(status.label)}</h3></div>${actions}</header><p>${escapeHtml(tier.detail)} ${escapeHtml(status.detail)}</p><details><summary>Automation risks</summary><p>Future paced actions must stop on limits, challenges, changed content, or failed checks. Automation may break an app’s rules or restrict an account. Treat removal as unconfirmed until the app shows it is gone.</p></details></section></details>`;
+  return `<details class="settings-disclosure autoscrub-disclosure"><summary><span><strong>AutoScrub assistant</strong><small>${autoScrubPlan}</small></span></summary><section class="autoscrub-card autoscrub-status-${status.tone}" aria-disabled="${status.stopAvailable ? "false" : "true"}"><header><div><span class="privacy-local-mark">LOCAL REVIEW</span><h3>${escapeHtml(status.label)}</h3></div>${actions}</header><p>${escapeHtml(tier.detail)} ${escapeHtml(status.detail)}</p>${liveScanControlsMarkup()}<details><summary>Automation risks</summary><p>Future paced actions must stop on limits, challenges, changed content, or failed checks. Automation may break an app’s rules or restrict an account. Treat removal as unconfirmed until the app shows it is gone.</p></details></section></details>`;
 }
 
 function clearPrivacyScanState(): void {
@@ -7631,6 +7632,7 @@ function bindScrubControls(): void {
   });
   document.querySelector<HTMLButtonElement>("#autoscrub-refresh")?.addEventListener("click", () => void refreshAutoScrubFleetStatus());
   document.querySelector<HTMLButtonElement>("#autoscrub-stop")?.addEventListener("click", () => void stopAutoScrubFleet());
+  bindLiveScanControls(document);
 }
 
 function notificationSettingsContent(): string {

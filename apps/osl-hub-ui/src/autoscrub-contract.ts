@@ -399,7 +399,7 @@ export function projectAutoScrubFleetStatus(status: AutoScrubFleetStatus | null)
       stopAvailable: false,
     };
   }
-  if (status.stopConfirmation.required || status.quitGuard.state === "confirming") {
+  if (status.stopConfirmation.required) {
     return {
       label: "Confirm stop",
       detail: "Choose Keep scanning or Stop now.",
