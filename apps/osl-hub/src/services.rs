@@ -84,6 +84,8 @@ pub enum ConversationPlaceKind {
     Thread,
     /// A public place authored by the signed-in account (a post or reply).
     PublicPost,
+    /// A comment authored by the signed-in account.
+    Comment,
 }
 
 impl ConversationPlaceKind {
@@ -95,6 +97,7 @@ impl ConversationPlaceKind {
             Self::Channel => "channel",
             Self::Thread => "thread",
             Self::PublicPost => "public_post",
+            Self::Comment => "comment",
         }
     }
 }
@@ -163,6 +166,16 @@ impl ConversationPlaceCandidate {
             place_id: id.into(),
             label: label.into(),
             place_kind: ConversationPlaceKind::PublicPost,
+            server: None,
+            channel: None,
+        }
+    }
+
+    pub fn comment(id: impl Into<String>, label: impl Into<String>) -> Self {
+        Self {
+            place_id: id.into(),
+            label: label.into(),
+            place_kind: ConversationPlaceKind::Comment,
             server: None,
             channel: None,
         }
@@ -251,6 +264,67 @@ impl XBrowserPlace {
             place_id: place_id.into(),
             label: label.into(),
             kind,
+        }
+    }
+}
+
+/// A place observed by the read-only Instagram browser accessibility reader.
+/// Public kinds are deliberately owner-scoped so another person's content is
+/// never promoted to a Scrub destination.
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InstagramBrowserPlaceKind {
+    DirectMessage,
+    GroupDirectMessage,
+    OwnPost,
+    OwnComment,
+}
+
+impl InstagramBrowserPlaceKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::DirectMessage => "direct_message",
+            Self::GroupDirectMessage => "group_chat",
+            Self::OwnPost => "public_post",
+            Self::OwnComment => "comment",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InstagramBrowserPlace {
+    pub place_id: String,
+    pub label: String,
+    pub kind: InstagramBrowserPlaceKind,
+}
+
+impl InstagramBrowserPlace {
+    pub fn new(
+        place_id: impl Into<String>,
+        label: impl Into<String>,
+        kind: InstagramBrowserPlaceKind,
+    ) -> Self {
+        Self {
+            place_id: place_id.into(),
+            label: label.into(),
+            kind,
+        }
+    }
+}
+
+/// Read-only, accessibility-derived Instagram places; no credentials or
+/// browser session material are retained here.
+#[derive(Debug, Clone, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InstagramBrowserMachine {
+    pub places: Vec<InstagramBrowserPlace>,
+}
+
+impl InstagramBrowserMachine {
+    pub fn new(places: impl IntoIterator<Item = InstagramBrowserPlace>) -> Self {
+        Self {
+            places: places.into_iter().collect(),
         }
     }
 }
@@ -996,6 +1070,30 @@ pub fn read_x_shared_places(
     read_shared_conversation_places(owner_osl_user_id, "x", account_id, places)
 }
 
+/// Map currently observed Instagram browser places through the shared,
+/// account-specific risk-agreement gate.
+pub fn read_instagram_shared_places(
+    owner_osl_user_id: &str,
+    account_id: &str,
+    browser_machine: &InstagramBrowserMachine,
+) -> Result<Vec<SharedConversationPlace>, String> {
+    let places = browser_machine.places.iter().map(|place| match place.kind {
+        InstagramBrowserPlaceKind::DirectMessage => {
+            ConversationPlaceCandidate::direct_message(&place.place_id, &place.label)
+        }
+        InstagramBrowserPlaceKind::GroupDirectMessage => {
+            ConversationPlaceCandidate::group_chat(&place.place_id, &place.label)
+        }
+        InstagramBrowserPlaceKind::OwnPost => {
+            ConversationPlaceCandidate::public_post(&place.place_id, &place.label)
+        }
+        InstagramBrowserPlaceKind::OwnComment => {
+            ConversationPlaceCandidate::comment(&place.place_id, &place.label)
+        }
+    });
+    read_shared_conversation_places(owner_osl_user_id, "instagram", account_id, places)
+}
+
 /// Read messages from one owner-selected X direct-message or own-public-post
 /// place. The account-level risk agreement is checked before filtering or
 /// releasing rows, so an unticked account remains silent.
@@ -1318,7 +1416,8 @@ fn validate_conversation_place(place: &ConversationPlaceCandidate) -> Result<(),
         ConversationPlaceKind::DirectMessage
         | ConversationPlaceKind::Group
         | ConversationPlaceKind::GroupChat
-        | ConversationPlaceKind::PublicPost => Ok(()),
+        | ConversationPlaceKind::PublicPost
+        | ConversationPlaceKind::Comment => Ok(()),
         ConversationPlaceKind::Channel => {
             if place.server.is_some() {
                 Ok(())
