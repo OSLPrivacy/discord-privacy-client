@@ -21,6 +21,7 @@ use crate::group_send::{
     apply_skdm_recv, apply_skdm_request_recv, decrypt_v5_recv, encrypt_v5_send,
     OSL_RESULT_RECOVERY_IGNORED,
 };
+use crate::half_restored_surface::SurfaceDirection;
 use crate::main_password::{LockoutStatusDto, PasswordStatusDto};
 use crate::peer_map::{PeerEntry, WhitelistEntry};
 use crate::row_ownership_ladder::{
@@ -24488,6 +24489,18 @@ impl ProtectedPlaceAction {
             Self::Scrub => "scrub",
         }
     }
+
+    /// Which half of a conversation this action belongs to, for the TASK 4263
+    /// honest-refusal guard. `Scrub` is deliberately neither: taking OSL's own
+    /// text back off a page is cleanup, not traffic, and a half restored
+    /// service must still be able to clean up after itself.
+    fn surface_direction(self) -> Option<SurfaceDirection> {
+        match self {
+            Self::Read | Self::Show => Some(SurfaceDirection::Receive),
+            Self::Type | Self::Send => Some(SurfaceDirection::Send),
+            Self::Scrub => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -24510,6 +24523,13 @@ pub fn cmd_osl_trace_allowed_place_protected_message_path(
         action.as_str(),
         place.stable_id
     )];
+    // TASK 4263. This runs BEFORE the allowed-place check on purpose: a place on
+    // one of the three can be perfectly whitelisted and the service still cannot
+    // carry a message, so the person has to be told which app and which part,
+    // not "place not allowed", which would be a lie about the reason.
+    if let Some(direction) = action.surface_direction() {
+        crate::half_restored_surface::guard_surface_direction(&place.app, direction)?;
+    }
     crate::allowed_places::require_allowed_place_record(&app_data_dir, &place)
         .map_err(|e| format!("OSL: allowed-place check refused: {e}"))?;
     trace.push(format!(
@@ -24617,6 +24637,17 @@ impl AllowedPlaceAction {
             Self::Scrub => "Scrub item",
         }
     }
+
+    /// See `ProtectedPlaceAction::surface_direction`. `Prepare` counts as a send
+    /// attempt because a draft that is allowed to exist on a service that cannot
+    /// send it is exactly the half working appearance TASK 4263 forbids.
+    fn surface_direction(self) -> Option<SurfaceDirection> {
+        match self {
+            Self::Read => Some(SurfaceDirection::Receive),
+            Self::Prepare | Self::Place => Some(SurfaceDirection::Send),
+            Self::Scrub => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -24632,6 +24663,10 @@ pub fn cmd_osl_run_allowed_place_action(
     action: AllowedPlaceAction,
     place: crate::allowed_places::AllowedPlaceRecord,
 ) -> Result<AllowedPlaceActionReceiptDto, String> {
+    // TASK 4263: the three refuse by name before anything else is decided.
+    if let Some(direction) = action.surface_direction() {
+        crate::half_restored_surface::guard_surface_direction(&place.app, direction)?;
+    }
     crate::allowed_places::require_allowed_place_record(&app_data_dir, &place)
         .map_err(|e| format!("OSL: place not allowed: {e}"))?;
     Ok(AllowedPlaceActionReceiptDto {
