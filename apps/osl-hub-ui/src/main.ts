@@ -230,6 +230,7 @@ import { resumeOnboardingRoute } from "./onboarding-resume";
 import { createRecoveryKitUnsavedFlag } from "./recovery-kit-flag";
 import { loadHubRecoveryKitUnsaved, setHubRecoveryKitUnsaved } from "./adapters";
 import { burnFeatureClaimsMarkup } from "./feature-claims";
+import { removeEverythingScreenMarkup } from "./remove-everything-screen";
 import { burnRevocationReceipt, type BurnRevocationReceipt } from "./burn-revocation-receipt";
 import { senderReceiptStatus } from "./receipt-status";
 import { parseAttachmentProgressEvent, type AttachmentProgressEvent } from "./attachment-progress";
@@ -538,6 +539,9 @@ const recoveryKitUnsavedFlag = createRecoveryKitUnsavedFlag({
   write: (unsaved) => setHubRecoveryKitUnsaved(unsaved),
 });
 let settingsSection: SettingsSection = "account";
+// Account-local review state. The final typed confirmation remains in the
+// existing Burn dialog, after this page has shown its scope summaries.
+let removeEverythingScreenOpen = false;
 let windowSoundsSettings: WindowSoundsSettings = loadWindowSoundsSettings();
 let activeService: LinkedService | null = null;
 let activeHomeAppId: HomeAppId | null = null;
@@ -6196,7 +6200,9 @@ function settingsContent(): string {
 }
 
 function settingsSectionContent(): string {
-  if (settingsSection === "account") return `${identitySettingsContent()}${settingsDivider()}${dataAllowanceSettingsContent()}${settingsDivider()}${passwordSecuritySettingsContent()}${accountAdvancedSettingsContent()}${renderRecoveryStatesSettings()}`;
+  if (settingsSection === "account") return removeEverythingScreenOpen
+    ? removeEverythingScreenMarkup()
+    : `${identitySettingsContent()}${settingsDivider()}${dataAllowanceSettingsContent()}${settingsDivider()}${passwordSecuritySettingsContent()}${accountAdvancedSettingsContent()}${renderRecoveryStatesSettings()}`;
   if (settingsSection === "apps") return `${serviceAccountsSettingsContent()}${optionalComponentsSettingsContent()}${sendingSettingsContent()}${messageDefaultsSettingsEntry()}`;
   if (settingsSection === "privacy") return privacySectionSettingsContent();
   if (settingsSection === "whitelisting") return whitelistingSettingsContent();
@@ -6582,7 +6588,7 @@ function passwordSecuritySettingsContent(): string {
 }
 
 function accountAdvancedSettingsContent(): string {
-  return `<details class="account-advanced settings-disclosure"><summary>Advanced</summary><div class="danger-zone"><h3>Burn local data</h3><p>Review the scope and limits before anything changes.</p><button class="button danger" id="full-cleanup-button" data-open-burn="account">Review Burn</button></div></details>`;
+  return `<details class="account-advanced settings-disclosure"><summary>Advanced</summary><div class="danger-zone"><h3>Burn local data</h3><p>Review the scope and limits before anything changes.</p><button class="button danger" id="full-cleanup-button" type="button">Remove everything</button></div></details>`;
 }
 
 function serviceAccountsSettingsContent(): string {
@@ -8504,11 +8510,29 @@ function bindWorkspace(): void {
     const next = button.dataset.settings as SettingsSection;
     if (settingsSection === "scrub" && next !== "scrub") clearPrivacyScanState();
     if (settingsSection === "account" && next !== "account") newIdentityRecoveryPhrase = null;
+    if (next !== "account") removeEverythingScreenOpen = false;
     settingsSection = next;
     render();
     if (next === "scrub") void refreshAutoScrubFleetStatus();
     if (next === "cleanup") void refreshMassCleanupCapabilities();
   }));
+  document.querySelector<HTMLButtonElement>("#full-cleanup-button")?.addEventListener("click", () => {
+    removeEverythingScreenOpen = true;
+    render();
+  });
+  document.querySelector<HTMLButtonElement>("#remove-everything-cancel")?.addEventListener("click", () => {
+    removeEverythingScreenOpen = false;
+    render();
+  });
+  document.querySelector<HTMLButtonElement>("#remove-everything-confirm")?.addEventListener("click", () => {
+    // Scope review is complete. The established typed confirmation is still
+    // required before the account-wide cleanup command can run.
+    removeEverythingScreenOpen = false;
+    burnScope = "account";
+    burnDialogOpen = true;
+    burnResult = null;
+    render();
+  });
   document.querySelectorAll<HTMLInputElement>('input[name="window-position"]').forEach((input) => input.addEventListener("change", () => {
     if (!input.checked) return;
     windowSoundsSettings = { ...windowSoundsSettings, position: input.value as WindowPosition };
