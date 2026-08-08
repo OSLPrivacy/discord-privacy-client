@@ -1,0 +1,7 @@
+[package]
+name = "task-1109-break-x-send-choices"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
