@@ -236,6 +236,7 @@ import {
   type OslMailThreadSummary,
 } from "./osl-mail-adapter";
 import { oslMailViewMarkup, type OslMailComposeDraft, type OslMailPane } from "./osl-mail-view";
+import { registerClipboardImagePasting, type OslClipboardImageComposerView } from "./clipboard-image-composer-views";
 import { oslServersViewMarkup } from "./osl-servers-view";
 import { bindOwnerRoleEditor, OwnerRoleEditor, ownerRoleEditorMarkup } from "./owner-role-editor";
 export {
@@ -9219,6 +9220,26 @@ function bindWorkspace(): void {
   const oslMailBodyInput = document.querySelector<HTMLTextAreaElement>("#osl-mail-body");
   if (oslMailBodyInput) bindPrivateTypingBoxDropTarget(oslMailBodyInput, oslMailDropTray, render);
   document.querySelector<HTMLInputElement>("#osl-chat-view-once")?.addEventListener("change", (event) => { oslChatViewOnce = (event.currentTarget as HTMLInputElement).checked; });
+  registerClipboardImagePasting(
+    (selector) => document.querySelector(selector),
+    async (view: OslClipboardImageComposerView, imageBytesB64, mimeType) => {
+      try {
+        await invoke("intake_osl_chat_clipboard_image", {
+          imageBytesB64,
+          mimeType,
+          viewOnce: view.viewId === "osl-chat" && oslChatViewOnce,
+        });
+        if (view.viewId === "osl-chat") {
+          oslChatAttachments = await listOslChatAttachments() ?? oslChatAttachments;
+          renderWhenIdle();
+        } else {
+          showToast("Pasted image is staged in the encrypted attachment tray");
+        }
+      } catch {
+        showToast("OSL could not read the pasted clipboard image");
+      }
+    },
+  );
   document.querySelector<HTMLFormElement>("[data-osl-chat-compose]")?.addEventListener("submit", (event) => void sendOslChat(event));
   document.querySelector<HTMLButtonElement>("#osl-chat-attach")?.addEventListener("click", () => void sendOslChatAttachment());
   const oslChatComposerForm = document.querySelector<HTMLFormElement>("[data-osl-chat-compose]");
