@@ -219,7 +219,10 @@ fn build_store_client(socks_addr: SocketAddr) -> Result<Client, TorError> {
     keystore::blocking_http::off_async_context(|| {
         Client::builder()
             .proxy(proxy)
-            .timeout(Duration::from_secs(30))
+            // Ordinary Tor sends have a wider route budget. Attachment parts
+            // and keyserver polls install their more specific request budgets
+            // at the callers, so neither inherits a clearnet 30-second cap.
+            .timeout(Duration::from_secs(90))
             .http1_title_case_headers()
             .redirect(reqwest::redirect::Policy::none())
             .user_agent("discord-privacy-client/0.0.1")

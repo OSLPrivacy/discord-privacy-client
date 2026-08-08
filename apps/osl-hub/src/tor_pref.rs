@@ -76,7 +76,7 @@ impl AuthorizedStoreRoute {
                 }
                 _ => "OSL store transport is unavailable".to_owned(),
             }),
-            Self::Tor { http } => Ok(CipherStoreClient::with_http_client(base_url, http.clone())),
+            Self::Tor { http } => Ok(CipherStoreClient::with_tor_http_client(base_url, http.clone())),
         }
     }
 
@@ -89,7 +89,7 @@ impl AuthorizedStoreRoute {
             Self::Direct => Ok(None),
             Self::Tor { http } => {
                 let base_url = ipc::commands::resolve_keyserver_base_url(config_dir);
-                keystore::KeyServerClient::with_http_client(base_url, http.clone())
+                keystore::KeyServerClient::with_tor_http_client(base_url, http.clone())
                     .map(Some)
                     .map_err(|_| "OSL key server transport is unavailable".to_owned())
             }

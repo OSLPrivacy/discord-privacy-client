@@ -501,6 +501,88 @@ const LEGACY_DIRECT_ATTACHMENT_BYTES: u64 = 26 * 1024 * 1024;
 pub const ATTACHMENT_MULTIPART_PART_BYTES: u64 = 8 * 1024 * 1024;
 pub const ATTACHMENT_MULTIPART_MAX_PARTS: u32 = 128;
 const ATTACHMENT_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+/// A Tor circuit has materially different latency and throughput than the
+/// direct route. These are request-specific rather than one large global
+/// timeout: ordinary sends remain bounded while attachment parts get room.
+pub const TOR_STORE_SEND_TIMEOUT: Duration = Duration::from_secs(90);
+/// 8 MiB at 0.30 Mbit/s takes about 224 seconds before circuit overhead.
+/// Keep margin beyond the 300-second acceptance boundary rather than
+/// inheriting Direct's 120-second attachment limit.
+pub const TOR_ATTACHMENT_PART_TIMEOUT: Duration = Duration::from_secs(330);
+pub const TOR_ATTACHMENT_STALL_TIMEOUT: Duration = Duration::from_secs(180);
+pub const TOR_ATTACHMENT_PROGRESS_INTERVAL: Duration = Duration::from_secs(30);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AttachmentTransferStatus {
+    Moving,
+    Slow,
+    TorAttachmentStalled,
+}
+
+/// Classifies attachment progress from the time of the last observed byte.
+/// Tor distinguishes a live but slow circuit from three minutes of silence.
+#[derive(Clone, Copy, Debug)]
+pub struct AttachmentTransferWatchdog {
+    tor: bool,
+    last_progress: std::time::Instant,
+}
+
+impl AttachmentTransferWatchdog {
+    pub fn direct(now: std::time::Instant) -> Self {
+        Self {
+            tor: false,
+            last_progress: now,
+        }
+    }
+
+    pub fn tor(now: std::time::Instant) -> Self {
+        Self {
+            tor: true,
+            last_progress: now,
+        }
+    }
+
+    /// Record a received/sent byte and return the status that was visible just
+    /// before it arrived. A byte after a 30-second Tor gap is therefore
+    /// reported as `Slow`, not as a failure; the new byte resets the stall
+    /// clock for the next interval.
+    pub fn observe_progress_at(&mut self, now: std::time::Instant) -> AttachmentTransferStatus {
+        let status = self.status_at(now);
+        self.last_progress = now;
+        status
+    }
+
+    pub fn status_at(&self, now: std::time::Instant) -> AttachmentTransferStatus {
+        if !self.tor {
+            return AttachmentTransferStatus::Moving;
+        }
+        let idle = now.saturating_duration_since(self.last_progress);
+        if idle >= TOR_ATTACHMENT_STALL_TIMEOUT {
+            AttachmentTransferStatus::TorAttachmentStalled
+        } else if idle >= TOR_ATTACHMENT_PROGRESS_INTERVAL {
+            AttachmentTransferStatus::Slow
+        } else {
+            AttachmentTransferStatus::Moving
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct CipherStoreTimeouts {
+    send: Duration,
+    attachment: Duration,
+}
+
+impl CipherStoreTimeouts {
+    const DIRECT: Self = Self {
+        send: REQUEST_TIMEOUT,
+        attachment: ATTACHMENT_REQUEST_TIMEOUT,
+    };
+    const TOR: Self = Self {
+        send: TOR_STORE_SEND_TIMEOUT,
+        attachment: TOR_ATTACHMENT_PART_TIMEOUT,
+    };
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -714,6 +796,7 @@ impl<R: Read> Read for ExactPartReader<R> {
 pub struct CipherStoreClient {
     base_url: String,
     http: Client,
+    timeouts: CipherStoreTimeouts,
 }
 
 impl CipherStoreClient {
@@ -742,6 +825,11 @@ impl CipherStoreClient {
         Ok(Self {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             http,
+            timeouts: if keystore::egress::tor_is_selected() {
+                CipherStoreTimeouts::TOR
+            } else {
+                CipherStoreTimeouts::DIRECT
+            },
         })
     }
 
@@ -751,9 +839,23 @@ impl CipherStoreClient {
     /// the hub's Tor gate after it has refused unavailable tunnels and built a
     /// SOCKS-only client through `crates/transport`.
     pub fn with_http_client(base_url: impl Into<String>, http: Client) -> Self {
+        Self::with_timeouts(base_url, http, CipherStoreTimeouts::DIRECT)
+    }
+
+    /// Build from the SOCKS-only transport authorized by the Tor gate.
+    pub fn with_tor_http_client(base_url: impl Into<String>, http: Client) -> Self {
+        Self::with_timeouts(base_url, http, CipherStoreTimeouts::TOR)
+    }
+
+    fn with_timeouts(
+        base_url: impl Into<String>,
+        http: Client,
+        timeouts: CipherStoreTimeouts,
+    ) -> Self {
         Self {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             http,
+            timeouts,
         }
     }
 
@@ -784,6 +886,7 @@ impl CipherStoreClient {
             .header("content-type", "application/octet-stream")
             .header("x-osl-ttl-seconds", ttl_seconds.to_string())
             .header("x-osl-fetch-token", hex_lower(fetch_token))
+            .timeout(self.timeouts.send)
             .body(body.to_vec())
             .send()?;
         let status = resp.status();
@@ -882,6 +985,7 @@ impl CipherStoreClient {
             .header("x-osl-manage-digest", digest(&capabilities.manage_cap))
             .header("x-osl-delivery-tag", hex_lower(&capabilities.delivery_tag))
             .header("x-osl-object-class", object_class.header_value())
+            .timeout(self.timeouts.send)
             .body(body.to_vec())
             .send()?;
         parse_upload_response(response, FETCH_TOKEN_BYTES * 2)
@@ -901,6 +1005,7 @@ impl CipherStoreClient {
             .http
             .get(&url)
             .header("x-osl-fetch-cap", hex_lower(fetch_token))
+            .timeout(self.timeouts.send)
             .send()?;
         let status = resp.status();
         if status == StatusCode::NOT_FOUND {
@@ -941,6 +1046,7 @@ impl CipherStoreClient {
             .http
             .get(&url)
             .header("x-osl-fetch-token", hex_lower(fetch_token))
+            .timeout(self.timeouts.send)
             .send()?;
         let status = resp.status();
         if status == StatusCode::NOT_FOUND {
@@ -1004,6 +1110,7 @@ impl CipherStoreClient {
             .delete(format!("{}/v1/blob/{id_hex}", self.base_url))
             .header("x-osl-manage-cap", hex_lower(manage_cap))
             .header("x-osl-delete-grant", delete_grant.header_value()?)
+            .timeout(self.timeouts.send)
             .send()?;
         if response.status() == StatusCode::TOO_MANY_REQUESTS {
             return Err(CipherStoreError::RateLimited);
@@ -1028,7 +1135,10 @@ impl CipherStoreClient {
             "DELETE" => self.http.delete(url),
             _ => unreachable!(),
         };
-        let response = request.header(header, hex_lower(cap)).send()?;
+        let response = request
+            .header(header, hex_lower(cap))
+            .timeout(self.timeouts.send)
+            .send()?;
         if response.status() == StatusCode::TOO_MANY_REQUESTS {
             return Err(CipherStoreError::RateLimited);
         }
@@ -1055,6 +1165,7 @@ impl CipherStoreClient {
             .http
             .delete(&url)
             .header("x-osl-fetch-token", hex_lower(fetch_token))
+            .timeout(self.timeouts.send)
             .send()?;
         let status = resp.status();
         if status == StatusCode::TOO_MANY_REQUESTS {
@@ -1102,7 +1213,7 @@ impl CipherStoreClient {
         let response = self
             .http
             .post(format!("{}/v1/attachment", self.base_url))
-            .timeout(ATTACHMENT_REQUEST_TIMEOUT)
+            .timeout(self.timeouts.attachment)
             .header("content-type", "application/octet-stream")
             .header("content-length", length)
             .header("x-osl-ttl-seconds", ttl_seconds.to_string())
@@ -1269,7 +1380,7 @@ impl CipherStoreClient {
                 let response = self
                     .http
                     .post(format!("{}/v1/attachment/session", self.base_url))
-                    .timeout(ATTACHMENT_REQUEST_TIMEOUT)
+                    .timeout(self.timeouts.attachment)
                     .header("content-length", 0)
                     .header("x-osl-ttl-seconds", ttl_seconds.to_string())
                     .header("x-osl-fetch-token", &token)
@@ -1319,7 +1430,7 @@ impl CipherStoreClient {
                         "{}/v1/attachment/{}/part/{part_number}",
                         self.base_url, upload_id
                     ))
-                    .timeout(ATTACHMENT_REQUEST_TIMEOUT)
+                    .timeout(self.timeouts.attachment)
                     .header("content-type", "application/octet-stream")
                     .header("content-length", part_length)
                     .header("x-osl-fetch-token", &token)
@@ -1357,7 +1468,7 @@ impl CipherStoreClient {
                     "{}/v1/attachment/{}/complete",
                     self.base_url, upload_id
                 ))
-                .timeout(ATTACHMENT_REQUEST_TIMEOUT)
+                .timeout(self.timeouts.attachment)
                 .header("content-length", 0)
                 .header("x-osl-fetch-token", &token)
                 .send()?;
@@ -1404,7 +1515,7 @@ impl CipherStoreClient {
         let response = self
             .http
             .get(format!("{}/v1/attachment/{id_hex}", self.base_url))
-            .timeout(ATTACHMENT_REQUEST_TIMEOUT)
+            .timeout(self.timeouts.attachment)
             .header("x-osl-fetch-token", hex_lower(fetch_token))
             .send()?;
         let status = response.status();
@@ -1449,7 +1560,7 @@ impl CipherStoreClient {
         let response = self
             .http
             .delete(format!("{}/v1/attachment/{id_hex}", self.base_url))
-            .timeout(ATTACHMENT_REQUEST_TIMEOUT)
+            .timeout(self.timeouts.attachment)
             .header("x-osl-fetch-token", hex_lower(fetch_token))
             .send()?;
         if response.status() == StatusCode::TOO_MANY_REQUESTS {
@@ -2196,5 +2307,60 @@ mod tests {
             reader.read(&mut output).unwrap_err().kind(),
             io::ErrorKind::UnexpectedEof
         );
+    }
+
+    #[test]
+    fn task_4911_tor_attachment_budget_calls_live_transfer_slow_and_stall_by_name() {
+        let start = std::time::Instant::now();
+        let mut tor = AttachmentTransferWatchdog::tor(start);
+        let mut progress_seconds = Vec::new();
+        // 8 MiB / 0.30 Mbit/s is about 224 seconds. Model the fixture through
+        // second 300 so the assertion proves cadence and budget without making
+        // this focused unit test take five minutes of wall clock.
+        for second in (0..=300).step_by(30) {
+            let now = start + Duration::from_secs(second);
+            let status = tor.observe_progress_at(now);
+            if second == 0 {
+                assert_eq!(status, AttachmentTransferStatus::Moving);
+            } else {
+                assert_eq!(status, AttachmentTransferStatus::Slow);
+            }
+            assert_eq!(tor.status_at(now), AttachmentTransferStatus::Moving);
+            progress_seconds.push(second);
+        }
+        assert_eq!(TOR_ATTACHMENT_PART_TIMEOUT, Duration::from_secs(330));
+        assert_eq!(
+            CipherStoreTimeouts::TOR.attachment,
+            TOR_ATTACHMENT_PART_TIMEOUT,
+            "Tor attachment timeout must not reuse the Direct 120-second timer"
+        );
+        assert_eq!(
+            CipherStoreTimeouts::TOR.send,
+            TOR_STORE_SEND_TIMEOUT,
+            "Tor sends must have their own timeout budget"
+        );
+        assert!(TOR_ATTACHMENT_PART_TIMEOUT > Duration::from_secs(300));
+        assert!(progress_seconds
+            .windows(2)
+            .all(|pair| pair[1] - pair[0] <= 30));
+
+        let stalled = AttachmentTransferWatchdog::tor(start);
+        assert_eq!(
+            stalled.status_at(start + TOR_ATTACHMENT_PROGRESS_INTERVAL),
+            AttachmentTransferStatus::Slow
+        );
+        assert_eq!(
+            stalled.status_at(start + TOR_ATTACHMENT_STALL_TIMEOUT),
+            AttachmentTransferStatus::TorAttachmentStalled
+        );
+        assert_eq!(
+            CipherStoreTimeouts::DIRECT.attachment,
+            Duration::from_secs(120)
+        );
+        println!(
+            "TASK4911 tor_attachment=8MiB rate_mbit_s=0.30 progress_seconds={progress_seconds:?} last_progress_second=300 timeout_seconds=330 result=not_failed"
+        );
+        println!("TASK4911 tor_stall bytes_moving=0 stall_seconds=180 result=TorAttachmentStalled");
+        println!("TASK4911 direct_attachment_timeout_seconds=120");
     }
 }

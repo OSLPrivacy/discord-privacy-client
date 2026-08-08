@@ -951,7 +951,14 @@ pub struct KeyServerClient {
     /// double-slash hazards.
     base_url: String,
     client: reqwest::blocking::Client,
+    request_timeout: Duration,
 }
+
+/// Keyserver polls are small, but a Tor circuit can spend much longer than a
+/// clearnet request establishing a route. Keep this distinct from attachment
+/// transfer budgets.
+pub const TOR_KEYSERVER_POLL_TIMEOUT: Duration = Duration::from_secs(90);
+const DIRECT_KEYSERVER_TIMEOUT: Duration = Duration::from_secs(30);
 
 impl KeyServerClient {
     /// Release builds accept only the exact production HTTPS origin. Debug and
@@ -974,6 +981,7 @@ impl KeyServerClient {
                 return Ok(KeyServerClient {
                     base_url,
                     client: *client,
+                    request_timeout: TOR_KEYSERVER_POLL_TIMEOUT,
                 });
             }
             crate::egress::DirectClientDecision::Refuse => {
@@ -992,7 +1000,7 @@ impl KeyServerClient {
         // resulting client is identical for the existing sync callers.
         let client = std::thread::spawn(|| {
             reqwest::blocking::Client::builder()
-                .timeout(Duration::from_secs(30))
+                .timeout(DIRECT_KEYSERVER_TIMEOUT)
                 .http1_title_case_headers()
                 // Never follow an origin-changing redirect with signed protocol
                 // bodies. Production is already HTTPS and local tests do not need
@@ -1006,7 +1014,11 @@ impl KeyServerClient {
         .join()
         .map_err(|_| Error::Transport("reqwest client build panicked".to_string()))?
         .map_err(|e| Error::Transport(format!("reqwest client build: {e}")))?;
-        Ok(KeyServerClient { base_url, client })
+        Ok(KeyServerClient {
+            base_url,
+            client,
+            request_timeout: DIRECT_KEYSERVER_TIMEOUT,
+        })
     }
 
     /// Build a keyserver client with an already configured HTTP transport.
@@ -1019,7 +1031,24 @@ impl KeyServerClient {
         client: reqwest::blocking::Client,
     ) -> Result<Self> {
         let base_url = validate_keyserver_base_url(base_url.as_ref())?;
-        Ok(KeyServerClient { base_url, client })
+        Ok(KeyServerClient {
+            base_url,
+            client,
+            request_timeout: DIRECT_KEYSERVER_TIMEOUT,
+        })
+    }
+
+    /// Build from the SOCKS-only transport authorized by the Tor gate.
+    pub fn with_tor_http_client(
+        base_url: impl AsRef<str>,
+        client: reqwest::blocking::Client,
+    ) -> Result<Self> {
+        let base_url = validate_keyserver_base_url(base_url.as_ref())?;
+        Ok(KeyServerClient {
+            base_url,
+            client,
+            request_timeout: TOR_KEYSERVER_POLL_TIMEOUT,
+        })
     }
 
     /// Compatibility shim for pre-signed-mutation callers. The retired
@@ -2313,7 +2342,9 @@ impl KeyServerClient {
                 )));
             }
         };
-        req = req.header("Accept", "application/json");
+        req = req
+            .header("Accept", "application/json")
+            .timeout(self.request_timeout);
         if let Some((ctype, payload)) = body {
             req = req.header("Content-Type", ctype).body(payload.to_vec());
         }
@@ -2657,6 +2688,58 @@ mod tests {
             }
         });
         (port, rx)
+    }
+
+    #[test]
+    fn task_4911_tor_keyserver_polls_answer_twenty_ten_second_fixture_requests() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let body =
+                r#"{"revision":"tor-fixture","build_time":"fixture","configuration_name":"tor"}"#;
+            for _ in 0..20 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let _request = read_http_request(&mut stream);
+                thread::sleep(Duration::from_secs(10));
+                stream
+                    .write_all(format!(
+                        "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                        body.len()
+                    ).as_bytes())
+                    .unwrap();
+            }
+        });
+        let http = reqwest::blocking::Client::builder()
+            .timeout(TOR_KEYSERVER_POLL_TIMEOUT)
+            .build()
+            .unwrap();
+        let client =
+            KeyServerClient::with_tor_http_client(format!("http://127.0.0.1:{port}"), http)
+                .unwrap();
+        let mut answers = 0;
+        let mut timeout_errors = 0;
+        for _ in 0..20 {
+            match client.live_server_revision_report() {
+                Ok(report) => {
+                    assert_eq!(report.revision, "tor-fixture");
+                    answers += 1;
+                }
+                Err(error) => {
+                    if error.to_string().contains("timed out") {
+                        timeout_errors += 1;
+                    } else {
+                        panic!("unexpected Tor keyserver poll error: {error}");
+                    }
+                }
+            }
+        }
+        server.join().unwrap();
+        assert_eq!(answers, 20);
+        assert_eq!(timeout_errors, 0);
+        println!(
+            "TASK4911 tor_keyserver_polls=20 fixture_delay_seconds=10 answers={answers} timeout_errors={timeout_errors} poll_timeout_seconds={}",
+            TOR_KEYSERVER_POLL_TIMEOUT.as_secs()
+        );
     }
 
     fn request_target(request: &[u8]) -> String {
