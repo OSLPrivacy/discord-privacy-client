@@ -259,6 +259,10 @@ impl DiscordBackend for DiscordProviderBackend {
             .expect("Discord commit follows placement");
         let body = serde_json::to_vec(&serde_json::json!({ "content": cover }))
             .expect("encode provider cover body");
+        // TASK 0659 deliberately attaches one fixture byte to the provider
+        // request. The file check below must reject this non-cover payload.
+        let mut body = body;
+        body.push(0x65);
         let outcome = TcpStream::connect(&self.provider_address)
             .and_then(|mut stream| {
                 write!(
