@@ -217,8 +217,8 @@ describe("TASK 0329 Restore buttons and bad phrase", () => {
     expect(secondHidden).toEqual({ type: "password", value: longPassword });
 
     await harness.back.dispatch("click");
-    console.log(`TASK0329_BACK control=${harness.back.textContent} route=${ui.snapshot().onboardingRoute}`);
     expect(ui.snapshot().onboardingRoute).toBe("welcome");
+    console.log(`TASK0329_BACK control=${harness.back.textContent} route=${ui.snapshot().onboardingRoute}`);
   }, 30_000);
 
   it("records one restored account for the saved phrase and opens Unlock", async () => {
@@ -247,9 +247,11 @@ describe("TASK 0329 Restore buttons and bad phrase", () => {
     expect(harness.restore.disabled).toBe(false);
     await harness.form.dispatch("submit");
 
-    console.log(`TASK0329_VALID control=${harness.restore.textContent} phrase=${savedPhrase} password_len=${longPassword.length} matching=${harness.password.value === harness.confirm.value} restored_accounts=${restoredAccounts.length} route=${ui.snapshot().onboardingRoute}`);
     expect(restoredAccounts).toEqual(["osl_task0329"]);
     expect(ui.snapshot().onboardingRoute).toBe("unlock");
+    const unlockMarkup = ui.renderOnboardingRoute("unlock");
+    expect(unlockMarkup).toContain(">Unlock</button>");
+    console.log(`TASK0329_VALID control=${harness.restore.textContent} phrase=${savedPhrase} password_len=${longPassword.length} matching=${harness.password.value === harness.confirm.value} restored_accounts=${restoredAccounts.length} route=${ui.snapshot().onboardingRoute} screen_control=Unlock`);
   }, 30_000);
 
   it("refuses one changed recovery word and leaves Restore unchanged with zero accounts", async () => {
