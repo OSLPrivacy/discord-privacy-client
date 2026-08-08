@@ -277,6 +277,10 @@ pub mod isolated_worker;
 #[cfg(feature = "desktop")]
 pub mod mass_cleanup;
 pub mod osl_chat_conversations;
+// The chat-settings DANGER block. Needs the local message store, so it lives
+// behind `core` like the store dependency itself.
+#[cfg(feature = "core")]
+pub mod osl_chat_danger_row;
 #[cfg(feature = "desktop")]
 pub mod osl_chat_delivery;
 pub mod osl_chat_queue;

@@ -891,6 +891,7 @@ pub fn still_authorizes_imap_delete(
     }
     if context.now_unix_ms >= grant.deadline_unix_ms {
         return Err(ImapPolicyError::DeleteGrantExpired);
+    }
     if context.now_unix_ms >= grant.deadline_unix_ms {
         return Err(ImapPolicyError::GrantExpired);
     }
@@ -909,6 +910,7 @@ pub fn still_authorizes_imap_delete(
     if !grant
         .message_digests
         .contains(&prepared_message_digest(candidate))
+    {
         return Err(ImapPolicyError::SingleUseAuthorityRequired);
     }
     if grant.owner_osl_user_id != candidate.owner_osl_user_id
@@ -1175,6 +1177,8 @@ mod tests {
             .filter(|(_, mailbox_name, _)| mailbox_name == folder)
             .map(|(_, _, message_id)| message_id.clone())
             .collect()
+    }
+
     fn task_3556_state_command_list() -> Vec<String> {
         #[derive(Deserialize)]
         struct StateCommandList {
