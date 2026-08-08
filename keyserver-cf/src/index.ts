@@ -4,7 +4,6 @@
 ///   GET    /v1/healthz
 ///   POST   /v1/register
 ///   GET    /v1/pubkeys/:user_id
-///   POST   /v1/devices/lookup
 ///   POST   /v1/wrapped-keys
 ///   GET    /v1/wrapped-keys/:content_id
 ///   DELETE /v1/wrapped-keys
@@ -35,6 +34,12 @@
 import type { Env } from "./env.js";
 import { handleAccountOwnershipChallenge } from "./endpoints/account-ownership-challenge.js";
 import { handleAccountOwnershipProof } from "./endpoints/account-ownership-proof.js";
+import {
+  handleDiscoveryCardsPost,
+  handleDiscoveryCardsPublishPost,
+  handleDiscoveryCardsRead,
+  handleDiscoveryCardsTakeBackPost,
+} from "./endpoints/discovery-cards.js";
 import { handleCheckout } from "./endpoints/checkout.js";
 import { handleStripeDonationSession } from "./endpoints/donation-stripe.js";
 import { handleCheckoutClaim } from "./endpoints/checkout-claim.js";
@@ -46,7 +51,7 @@ import { handleCryptoSettlement, sweepAnonymousCryptoInvoices } from "./endpoint
 import { handleCryptoStatus } from "./endpoints/crypto-status.js";
 import { handleHealthz } from "./endpoints/healthz.js";
 import { handleWindowsDownload } from "./endpoints/download.js";
-import { handleDevicesLookup, handleDevicesPost } from "./endpoints/devices.js";
+import { handleDevices } from "./endpoints/devices.js";
 import { handleLicenseRedeem } from "./endpoints/license-redeem.js";
 import { handleLicenseValidate } from "./endpoints/license.js";
 import { handleLinkGrant } from "./endpoints/link-grant.js";
@@ -79,7 +84,6 @@ import { handleUsernameBucket } from "./endpoints/username-bucket.js";
 import {
   handlePublicNameExactSearch,
   handleUsernameClaim,
-  handleUsernameRelease,
   handleUsernameLookup,
 } from "./endpoints/usernames.js";
 import {
@@ -118,7 +122,7 @@ import {
 import type { PrepaidRedemptionReadiness } from "./lib/prepaid-redemption-readiness.js";
 import { sweepExpiredControlInboxRows } from "./lib/control-inbox-sweep.js";
 import { sweepExpiredSpaceEvents } from "./lib/space-event-sweep.js";
-import { sweepQuietOwnerSuccessions } from "./lib/account-ownership.js";
+import { sweepStaleDiscoveryCards } from "./lib/discovery-card.js";
 
 const MAX_MUTATION_BODY_BYTES = 1024 * 1024;
 const PUBLIC_GET_INGRESS_MAX_PER_MINUTE = 1200;
@@ -255,15 +259,12 @@ export default {
       console.error("[cron] privacy retention sweep failed");
     }
     try {
-      const changed = await sweepQuietOwnerSuccessions(env.DB);
-      if (changed.changedRoles > 0 || changed.moderationLogRows > 0) {
-        console.log(
-          `[cron] ownership succession changed ${changed.changedRoles} role row(s) ` +
-          `and wrote ${changed.moderationLogRows} moderation log row(s)`,
-        );
+      const deleted = await sweepStaleDiscoveryCards(env.DB);
+      if (deleted > 0) {
+        console.log(`[cron] discovery card sweep deleted ${deleted} stale row(s)`);
       }
     } catch {
-      console.error("[cron] ownership succession sweep failed");
+      console.error("[cron] discovery card sweep failed");
     }
     // Phase 6.4: TTL-sweep expired control_inbox rows. Hourly is
     // fine -- rows expire at 7d so a 1h slack is well within
@@ -413,9 +414,8 @@ async function dispatch(
     if (usernameBucket !== null) return await handleUsernameBucket(request, env, usernameBucket);
     const pubkeysUserId = matchParam(path, /^\/v1\/pubkeys\/([^/]+)$/);
     if (pubkeysUserId !== null) return await handlePubkeys(env, pubkeysUserId);
-    // Task 4803: the legacy path-based device lookup is gone. The account
-    // identifier belongs in the POST body so the platform request path does
-    // not retain it next to the caller address.
+    const devicesUserId = matchParam(path, /^\/v1\/devices\/([^/]+)$/);
+    if (devicesUserId !== null) return await handleDevices(env, devicesUserId);
     // D-260 / OPEN-4, DECIDED: `GET /v1/space-events/:tag` NO LONGER EXISTS.
     // It used to be dispatched here, and it was this lane's standing exception
     // to D81 -- the 32-byte bearer tag rode in the request path, where every
@@ -475,6 +475,10 @@ async function dispatch(
   }
 
   if (method === "POST") {
+    if (path === "/v1/discovery-cards") return await handleDiscoveryCardsPost(request, env);
+    if (path === "/v1/discovery-cards/publish") return await handleDiscoveryCardsPublishPost(request, env);
+    if (path === "/v1/discovery-cards/read") return await handleDiscoveryCardsRead(request, env);
+    if (path === "/v1/discovery-cards/take-back") return await handleDiscoveryCardsTakeBackPost(request, env);
     if (path === "/v1/update-attempts") {
       return withCors(await handleUpdateAttemptRecord(request, env), request);
     }
@@ -485,7 +489,6 @@ async function dispatch(
       return await handleAccountOwnershipProof(request, env);
     }
     if (path === "/v1/register") return await handleRegister(request, env);
-    if (path === "/v1/devices") return await handleDevicesPost(request, env);
     if (path === "/v1/mail/address") return await handleMailProvision(request, env);
     if (path === "/v1/mail/consent") return await handleMailConsent(request, env);
     if (path === "/v1/mail/send/osl") return await handleMailSendOsl(request, env);
@@ -495,7 +498,6 @@ async function dispatch(
     if (path === "/v1/mail/ack") return await handleMailRead(request, env, "ACK");
     if (path === "/v1/mail/delete") return await handleMailRead(request, env, "DELETE");
     if (path === "/v1/mail/burn") return await handleMailRead(request, env, "BURN");
-    if (path === "/v1/devices/lookup") return await handleDevicesLookup(request, env);
     if (path === "/v1/internal/sender-filter-rollout-root/provision") {
       return await handleSenderFilterRolloutRootProvision(request, env);
     }
@@ -608,7 +610,6 @@ async function dispatch(
   if (method === "DELETE") {
     const compBatchId = matchParam(path, /^\/v1\/internal\/comp\/batches\/([^/]+)$/);
     if (compBatchId) return await handleCompBatchRevoke(request, env, compBatchId);
-    if (path === "/v1/usernames/claim") return await handleUsernameRelease(request, env);
     if (path === "/v1/wrapped-keys") return await handleWrappedKeysDelete(request, env);
     const unregUserId = matchParam(path, /^\/v1\/pubkeys\/([^/]+)$/);
     if (unregUserId) return await handleUnregister(request, env, unregUserId);
