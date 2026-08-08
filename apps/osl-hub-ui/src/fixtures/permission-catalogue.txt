@@ -1,0 +1,47 @@
+seeing
+- read a text channel `KEY`
+- read channel history `KEY`
+- read message reactions `RELAY`
+- read attached file names `KEY`
+- see the member list `RELAY`
+- see audit log entries `TRUST`
+talking
+- send a message `KEY`
+- edit your own message `KEY`
+- delete your own message `KEY`
+- attach pictures `KEY`
+- attach files `KEY`
+- add reactions `RELAY`
+- mention everyone `TRUST`
+- use external emoji `RELAY`
+threads
+- create a thread `RELAY`
+- read a thread `KEY`
+- send in a thread `KEY`
+- rename a thread `RELAY`
+- archive a thread `RELAY`
+voice
+- join voice `RELAY`
+- speak in voice `RELAY`
+- share screen in voice `RELAY`
+- move self between voice channels `RELAY`
+- use voice activity `RELAY`
+moderation
+- timeout a member `TRUST`
+- kick a member `TRUST`
+- ban a member `TRUST`
+- delete another member's message `TRUST`
+- request clients hide a delivered message `RELAY`
+- pin or unpin a message `RELAY`
+- review reported messages `TRUST`
+managing
+- manage roles `TRUST`
+- manage channels `TRUST`
+- manage invite links `TRUST`
+- create invite links `RELAY`
+- change member nicknames `TRUST`
+- manage server webhooks `TRUST`
+appearance
+- change enclave appearance `TRUST`
+- change role appearance `TRUST`
+- change channel appearance `RELAY`

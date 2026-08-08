@@ -1,0 +1,188 @@
+/* ---------------------------------------------------------------------------
+   TASK 4852 - the role permission rows, with their enforcement tag and the
+   honest sentence for that class.
+
+   The tag is a short word (KEY / RELAY / TRUST) and the sentence sits directly
+   under the row it explains, in the row itself rather than in a tooltip or a
+   help page, because the finish line is that the explanation is ON SCREEN. The
+   three classes are given three different inks so a screenshot shows at a
+   glance how much of a role is a real rule and how much is only good manners:
+
+     KEY   brand cyan  - not a rule, and the strongest thing on the page
+     RELAY text        - a rule OSL's own relay keeps
+     TRUST amber       - a rule only honest apps keep
+   --------------------------------------------------------------------------- */
+.role-permission-screen {
+  max-width: 760px;
+  font-family: var(--font-ui);
+  color: var(--text);
+}
+
+.role-permission-screen h1 {
+  margin: 0 0 6px;
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: -.01em;
+}
+
+.role-permission-intro {
+  margin: 0;
+  max-width: 62ch;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+/* The legend states each sentence once at the top. It is a summary of the rows,
+   never a substitute for them: every row still carries its own sentence. */
+.role-permission-legend {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px;
+  margin: 14px 0 0;
+  padding: 12px;
+  list-style: none;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+}
+
+.role-permission-legend-item {
+  display: grid;
+  grid-template-columns: 64px 190px 1fr;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.role-permission-legend-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.role-permission-count {
+  margin: 12px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.role-permission-section {
+  margin: 18px 0 0;
+}
+
+.role-permission-section-name {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.role-permission-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  overflow: hidden;
+}
+
+.role-permission-row {
+  display: grid;
+  grid-template-columns: 1fr 54px 64px;
+  grid-template-areas:
+    "words switch tag"
+    "sentence sentence sentence";
+  align-items: center;
+  gap: 4px 10px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.role-permission-row:first-child { border-top: 0; }
+
+.role-permission-words {
+  grid-area: words;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+/* A permission that is on for this role is the subject of the row, so it is the
+   part drawn in full-strength ink. */
+.role-permission-row.allowed .role-permission-words {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.role-permission-switch {
+  grid-area: switch;
+  justify-self: end;
+  min-width: 42px;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel-3);
+  color: var(--muted);
+  font-size: 11px;
+  text-align: center;
+  cursor: pointer;
+  user-select: none;
+}
+
+.role-permission-row.allowed .role-permission-switch {
+  border-color: var(--brand);
+  background: var(--brand);
+  color: var(--brand-ink);
+  font-weight: 600;
+}
+
+.role-permission-switch:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+
+.role-permission-tag {
+  grid-area: tag;
+  justify-self: end;
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .06em;
+  white-space: nowrap;
+}
+
+.role-permission-tag[data-enforcement-tag="KEY"] {
+  border-color: var(--brand);
+  color: var(--brand);
+  background: var(--brand-wash);
+}
+
+.role-permission-tag[data-enforcement-tag="RELAY"] {
+  border-color: var(--line);
+  color: var(--text);
+  background: var(--panel-3);
+}
+
+.role-permission-tag[data-enforcement-tag="TRUST"] {
+  border-color: #b4801f;
+  color: #e0a83a;
+  background: rgba(224, 168, 58, .1);
+}
+
+.role-permission-sentence {
+  grid-area: sentence;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+/* TRUST is the only class where the promise can actually be broken, so its
+   sentence is the one that is not muted away. */
+.role-permission-sentence[data-enforcement-sentence="TRUST"] { color: #e0a83a; }
+
+.role-permission-legend-item .role-permission-sentence { grid-area: auto; }
+.role-permission-legend-item .role-permission-tag { grid-area: auto; justify-self: start; }
