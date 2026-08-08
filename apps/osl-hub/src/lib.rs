@@ -133,6 +133,7 @@ pub mod hosted_audience;
 pub mod hosted_port;
 pub mod hosted_provider_recipe;
 pub mod hosted_session_port;
+pub mod instagram_content_lifecycle;
 #[cfg(feature = "core")]
 pub mod instagram_direct_message;
 pub mod instagram_eye_state;
