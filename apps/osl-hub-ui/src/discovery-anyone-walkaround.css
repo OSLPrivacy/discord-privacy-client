@@ -1,0 +1,52 @@
+/* TASK 4760b - the old Strip cycler replica. OSL-OLD-STRIP-CYCLER-REPLICA
+   Layout only; every colour comes
+   from the palette in styles.css. The replica is deliberately plain: it is a
+   thing to click, not a thing to ship. Its refusal line is full-strength text,
+   not a footnote, so the words the gate says are readable on screen. */
+
+.old-strip-cycler {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 560px;
+  margin: 24px auto;
+  padding: 20px 24px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  color: var(--text);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.old-strip-cycler-button {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  width: 100%;
+  text-align: left;
+}
+
+.osc-label {
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.osc-value {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.osc-refusal {
+  margin: 0;
+  min-height: 20px;
+  font-size: 15px;
+  line-height: 1.4;
+  color: var(--text);
+}
+
+.osc-refusal:empty {
+  min-height: 20px;
+}
