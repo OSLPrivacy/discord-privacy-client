@@ -50,4 +50,25 @@ describe("TASK 5037 Appearance acceptance", () => {
     expect(loadAppearancePreferences(storage)).toEqual(changed);
     console.log("TASK5037 save_writes=1 restart_accent=coral restart_background=paper restart_avatar=spark persisted_values=3");
   });
+
+  it("saves the four named window, tray, and sound values", () => {
+    const storage = new CountingStorage();
+    const editor = createAppearancePreferencesEditor(defaultAppearancePreferences);
+    const changed = editor.preview({
+      ...defaultAppearancePreferences,
+      windowPosition: "remember",
+      movement: "snap-to-active-display",
+      trayPicture: "contact-avatar",
+      sounds: false,
+    });
+    expect(appearanceSettingsMarkup(changed)).toContain("data-appearance-tray-picture");
+    editor.save(storage);
+    expect(loadAppearancePreferences(storage)).toMatchObject({
+      windowPosition: "remember",
+      movement: "snap-to-active-display",
+      trayPicture: "contact-avatar",
+      sounds: false,
+    });
+    console.log("TASK5037 behaviour_values=4 position=remember movement=snap-to-active-display tray_picture=contact-avatar sound=false");
+  });
 });
