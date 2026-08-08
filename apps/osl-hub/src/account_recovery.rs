@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroize;
 
+use crate::{models::OnboardingPreferences, preferences::PreviewState};
+
 pub(crate) const RECOVERY_KIT_STATUS_FILE: &str = "recovery_kit_status.json";
 const RECOVERY_KIT_STATUS_VERSION: u32 = 1;
 const MAX_RECOVERY_KIT_STATUS_PLAINTEXT_BYTES: usize = 128;
@@ -96,6 +98,34 @@ pub(crate) fn account_usability_snapshot_at(
     key: &[u8; 32],
 ) -> Result<AccountUsabilitySnapshot, String> {
     ipc::unfinished_onboarding::account_usability_snapshot(directory, key)
+}
+
+/// Refuses the normal first-run completion transition until the encrypted,
+/// account-scoped recovery-word confirmation record exists.
+pub fn require_recovery_word_confirmation() -> Result<(), String> {
+    if recovery_setup_state()?
+        .recovery_confirmed_at_unix_seconds
+        .is_some()
+    {
+        return Ok(());
+    }
+    Err("Confirm the requested recovery words before finishing setup".to_owned())
+}
+
+/// Native trust boundary for the normal false-to-true setup finish.
+///
+/// Saves that leave setup unfinished, and later preference changes for an
+/// already-finished account, retain the ordinary preferences path. Only the
+/// first completion transition consumes this recovery-confirmation gate.
+pub fn save_normal_setup_completion(
+    preview: &PreviewState,
+    preferences: OnboardingPreferences,
+) -> Result<OnboardingPreferences, String> {
+    let finishing_setup = preferences.onboarding_complete && !preview.get()?.onboarding_complete;
+    if finishing_setup {
+        require_recovery_word_confirmation()?;
+    }
+    preview.save(preferences)
 }
 
 /// Records that a recovery kit was produced but has not been confirmed saved.
@@ -268,7 +298,10 @@ pub(crate) fn write_recovery_kit_status_with_confirmation(
 ) -> Result<(), String> {
     write_recovery_setup_state(
         path,
-        &RecoverySetupState { kit_unsaved, recovery_confirmed_at_unix_seconds },
+        &RecoverySetupState {
+            kit_unsaved,
+            recovery_confirmed_at_unix_seconds,
+        },
         key,
     )
 }

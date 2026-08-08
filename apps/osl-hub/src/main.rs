@@ -661,7 +661,7 @@ fn save_onboarding_preferences(
     state: State<'_, PreviewState>,
     preferences: OnboardingPreferences,
 ) -> Result<OnboardingPreferences, String> {
-    state.save(preferences)
+    account_recovery::save_normal_setup_completion(&state, preferences)
 }
 
 /// Persist the explicit connection route selected during onboarding.
