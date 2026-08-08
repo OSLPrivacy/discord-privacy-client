@@ -1,0 +1,121 @@
+[
+  {
+    "id": "messenger-direct-message",
+    "browser": {
+      "url": "https://www.messenger.com/t/314159",
+      "title": "Messenger — Ada Lovelace",
+      "accessibility": {
+        "service": "messenger",
+        "activeConversation": true,
+        "composer": {
+          "role": "textbox",
+          "name": "Message",
+          "accessible": true
+        }
+      }
+    },
+    "expected": {
+      "browserTitle": "Messenger — Ada Lovelace",
+      "placeKind": "messenger:direct_message",
+      "composer": "Message"
+    }
+  },
+  {
+    "id": "instagram-direct-message",
+    "browser": {
+      "url": "https://instagram.com/direct/t/271828",
+      "title": "Instagram • Direct",
+      "accessibility": {
+        "service": "instagram",
+        "activeConversation": true,
+        "composer": {
+          "role": "textbox",
+          "name": "Message…",
+          "accessible": true
+        }
+      }
+    },
+    "expected": {
+      "browserTitle": "Instagram • Direct",
+      "placeKind": "instagram:direct_message",
+      "composer": "Message…"
+    }
+  },
+  {
+    "id": "cross-service-claim",
+    "browser": {
+      "url": "https://instagram.com/direct/t/blocked",
+      "title": "Untrusted browser page",
+      "accessibility": {
+        "service": "messenger",
+        "activeConversation": true,
+        "composer": null
+      }
+    },
+    "expected": null
+  },
+  {
+    "id": "messenger-search-box",
+    "browser": {
+      "url": "https://www.messenger.com/t/search-focused",
+      "title": "Messenger",
+      "accessibility": {
+        "service": "messenger",
+        "activeConversation": true,
+        "composer": {
+          "role": "textbox",
+          "name": "Search Messenger",
+          "accessible": true
+        }
+      }
+    },
+    "expected": null
+  },
+  {
+    "id": "messenger-inbox-without-conversation",
+    "browser": {
+      "url": "https://www.messenger.com/",
+      "title": "Messenger",
+      "accessibility": {
+        "service": "messenger",
+        "activeConversation": false,
+        "composer": null
+      }
+    },
+    "expected": null
+  },
+  {
+    "id": "lookalike-host",
+    "browser": {
+      "url": "https://messenger.com.example.invalid/t/314159",
+      "title": "Messenger lookalike",
+      "accessibility": {
+        "service": "messenger",
+        "activeConversation": true,
+        "composer": {
+          "role": "textbox",
+          "name": "Message",
+          "accessible": true
+        }
+      }
+    },
+    "expected": null
+  },
+  {
+    "id": "unrelated-browser",
+    "browser": {
+      "url": "https://x.com/messages/314159",
+      "title": "Messages / X",
+      "accessibility": {
+        "service": "x",
+        "activeConversation": true,
+        "composer": {
+          "role": "textbox",
+          "name": "Post your reply",
+          "accessible": true
+        }
+      }
+    },
+    "expected": null
+  }
+]
