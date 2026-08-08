@@ -11,13 +11,13 @@ LIST = ROOT / "docs/testing/test-machine-list.json"
 def test_starting_list_is_complete_and_has_expected_groups():
     data = json.loads(LIST.read_text())
     names = {item["name"] for item in data["machines"]}
-    assert len(names) == 16
+    assert len(names) == 20
     assert "osl-build-pc" in names
     assert sum(item["system"] == "Windows 11" for item in data["machines"]) == 10
     assert sum(item["system"] == "Azure capacity reservation" for item in data["machines"]) == 5
     result = subprocess.run([sys.executable, str(CHECK), str(LIST)], capture_output=True, text=True)
     assert result.returncode == 0
-    assert "machine_list_entries=16" in result.stdout
+    assert "machine_list_entries=20" in result.stdout
 
 def test_missing_field_exits_one():
     data = json.loads(LIST.read_text())
@@ -28,3 +28,19 @@ def test_missing_field_exits_one():
         result = subprocess.run([sys.executable, str(CHECK), f.name], capture_output=True, text=True)
     assert result.returncode == 1
     assert "missing location" in result.stderr
+
+def test_azure_regions_and_processor_counts_are_exact_and_row_removal_fails():
+    rows = [
+        {"location": r, "powerState": "VM running", "processorCount": 2}
+        for r in ("francecentral", "polandcentral", "italynorth", "norwayeast")
+    ]
+    with tempfile.NamedTemporaryFile("w", suffix=".json") as f:
+        json.dump(rows, f); f.flush()
+        result = subprocess.run([sys.executable, str(CHECK), "--azure", f.name, str(LIST)], capture_output=True, text=True)
+        assert result.returncode == 0
+        assert "azure_regions_checked=4" in result.stdout
+        rows.pop()
+        f.seek(0); f.truncate(); json.dump(rows, f); f.flush()
+        result = subprocess.run([sys.executable, str(CHECK), "--azure", f.name, str(LIST)], capture_output=True, text=True)
+        assert result.returncode == 1
+        assert "norwayeast: expected 1 row, got 0" in result.stderr
