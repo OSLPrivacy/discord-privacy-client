@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
+    <title>OSL Privacy - TASK 0553</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <main style="padding: 40px; max-width: 640px;">
+        <h1>Send an OSL message</h1>
+        <p>The app underneath the timer overlay, so the overlay's scrim can be seen greying it out.</p>
+        <button class="button primary">Send</button>
+      </main>
+    </div>
+    <script type="module">
+      import { defaultTimerOverlayState, timerOverlayMarkup } from "/src/timer-overlay.ts";
+
+      const host = document.createElement("div");
+      host.id = "timer-overlay-host";
+      host.innerHTML = timerOverlayMarkup(defaultTimerOverlayState());
+      document.body.appendChild(host);
+      document.documentElement.dataset.task0553 = "ready";
+    </script>
+  </body>
+</html>

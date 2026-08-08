@@ -42,6 +42,85 @@
   --motion-slow: 240ms;
   --ease-out: cubic-bezier(.22, 1, .36, 1);
   --ease-standard: cubic-bezier(.2, 0, 0, 1);
+
+  /* Overwritten at runtime from the saved look choices (look-choice-bindings.ts). */
+  --osl-look-theme: system;
+  --osl-look-named-look: default;
+  --osl-look-accent: var(--brand);
+  --osl-look-corners: var(--radius);
+  --osl-look-glow: none;
+  --osl-look-text: medium;
+  --osl-look-spacing: normal;
+  --osl-look-see-through: off;
+}
+
+/* Timer overlay (timer-overlay.ts): greys out the app behind it while the
+   send-expiry Days/Hours/Minutes/Seconds fields are being set. */
+.timer-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+}
+
+.timer-overlay-scrim {
+  position: absolute;
+  inset: 0;
+  background: rgba(10, 10, 10, .72);
+  backdrop-filter: grayscale(1) blur(1px);
+}
+
+.timer-overlay-panel {
+  position: relative;
+  width: min(360px, calc(100% - 32px));
+  padding: 20px;
+  display: grid;
+  gap: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: var(--shadow);
+}
+
+.timer-overlay-heading {
+  margin: 0;
+  font-size: 17px;
+}
+
+.timer-overlay-fields {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.timer-overlay-field {
+  display: grid;
+  gap: 6px;
+  justify-items: center;
+}
+
+.timer-overlay-field-label {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.timer-overlay-field-input {
+  width: 100%;
+  min-height: 44px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  color: var(--text);
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 20px;
+  font-weight: 600;
 }
 
 
@@ -10874,6 +10953,7 @@ code {
    outranks `*`, so these keep their shape while every corner in the product
    stays hard. Anything with an actual corner is deliberately absent from this
    list. */
+.home-command-avatar,
 .dot,
 .app-account-dot,
 .home-command-dot,
@@ -11945,18 +12025,48 @@ code {
 
 
 .home-command-actions { display: flex; align-items: center; gap: 4px; }
-
-
-
-
+/* Each control is icon + word. The width is content-driven and the label is
+   never truncated -- no `max-width`, no `text-overflow: ellipsis`, no
+   `overflow: hidden` anywhere on this control or its label. An ellipsis IS
+   clipped text, so a rule that added one would defeat the thing the Home top
+   bar is checked for. The four labels are fixed short words ("Friends",
+   "Notifications", "Settings", "Profile"), so content-driven width is bounded;
+   the one arbitrary-length string in the bar, the operator's profile name,
+   deliberately rides in the tooltip instead of the label. */
 .home-command-icon {
   position: relative;
-  width: 44px;
   height: 44px;
-  padding: 10px;
+  padding: 0 12px;
   border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
+}
+.home-command-glyph {
+  position: relative;
+  width: 21px;
+  height: 21px;
   display: grid;
   place-items: center;
+  flex: 0 0 auto;
+}
+.home-command-label { display: block; }
+.home-command-avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  background: color-mix(in srgb, var(--brand) 18%, var(--panel-2));
+  color: var(--brand);
+  font-size: 11px;
+  font-weight: 700;
 }
 
 
@@ -11970,10 +12080,28 @@ code {
   background: var(--panel-2);
   color: var(--text);
 }
-
-
-
-
+/* Current-page state. The control for the page you are on is the only one in
+   full-contrast text with a filled plate and a brand underline, so "which page
+   am I on" is answerable from the bar without hovering anything. It pairs with
+   the `aria-current="page"` the same control carries. */
+.home-command-icon.active,
+.home-logo-button.active {
+  border-color: var(--line);
+  background: var(--panel-2);
+  color: var(--text);
+}
+.home-command-icon.active::after,
+.home-logo-button.active::after {
+  content: "";
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: -1px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--brand);
+}
+.home-logo-button.active { position: relative; }
 .home-command-icon svg,
 .home-section-action svg {
   width: 21px;
@@ -11984,14 +12112,13 @@ code {
   stroke-linejoin: round;
   stroke-width: 1.65;
 }
-
-
-
-
+/* Anchored to .home-command-glyph, not to the button: the button is now wider
+   than its icon, so a badge pinned to the button's own right edge would float
+   off the end of the word instead of sitting on the icon it counts for. */
 .home-command-badge {
   position: absolute;
-  top: 3px;
-  right: 2px;
+  top: -5px;
+  right: -7px;
   min-width: 17px;
   height: 17px;
   padding: 0 4px;
@@ -12011,8 +12138,8 @@ code {
 
 .home-command-dot {
   position: absolute;
-  top: 8px;
-  right: 8px;
+  top: -1px;
+  right: -3px;
   width: 6px;
   height: 6px;
   border: 1px solid var(--panel);
@@ -12050,6 +12177,20 @@ code {
    launcher layout in the "Home launcher" section is the only Home tile
    system now; do not add `.home-dashboard` tile overrides below it. */
 .home-dashboard .module-unavailable { opacity: .42; }
+.home-dashboard .app-tile > button:first-child:hover .app-logo-plate { opacity: .78; transform: scale(1.04); }
+/* The operator's profile name. It is the one arbitrary-length string the Home
+   top bar shows, and it shows it here rather than in the button's label, so a
+   long name wraps inside a bounded tooltip instead of stretching or truncating
+   a control in the bar. The bounding and `overflow-wrap: anywhere` carry over
+   from the floating profile dock this control replaced: the tooltip hangs from
+   the bar's right end, so it opens leftward to stay on screen. */
+.home-command-profile > .in-dom-tooltip {
+  left: auto;
+  right: 0;
+  max-width: min(14rem, calc(100vw - 96px));
+  overflow-wrap: anywhere;
+  text-align: right;
+}
 
 
 
