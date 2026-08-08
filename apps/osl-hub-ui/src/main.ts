@@ -169,8 +169,10 @@ import { webSurfaceLabel, type WebSurfaceCapability } from "./web-surface-label"
 import { homeProtectionState } from "./home-protection-state";
 import {
   burnOslMailbox,
+  listOslMailThreads,
   loadOslMailStatus,
   provisionOslMail,
+  retrieveOslMailThread,
   sendOslMail,
   type OslMailBurnReceipt,
   type OslMailDeleteReceipt,
@@ -5223,8 +5225,13 @@ async function refreshOslMail(): Promise<void> {
   oslMailThreads = [];
   oslMailActiveThread = null;
   if (status?.provisioned) {
-    oslMailThreadSyncUnavailable = true;
-    oslMailError = "Inbox sync is unavailable in this build; messages are not being reported as empty";
+    const threads = await listOslMailThreads();
+    if (threads) {
+      oslMailThreads = threads;
+    } else {
+      oslMailThreadSyncUnavailable = true;
+      oslMailError = "Inbox sync was refused; messages are not being reported as empty";
+    }
   }
   oslMailLoading = false;
   if (route === "osl-mail") render();
@@ -5239,9 +5246,15 @@ async function provisionOslMailFromProfile(): Promise<void> {
   oslMailStatus = await provisionOslMail(claimedOslUsername);
   oslMailThreads = [];
   oslMailActiveThread = null;
-  oslMailThreadSyncUnavailable = Boolean(oslMailStatus?.provisioned);
+  oslMailThreadSyncUnavailable = false;
   if (!oslMailStatus) oslMailError = "Mailbox setup was refused";
-  else if (oslMailThreadSyncUnavailable) oslMailError = "Inbox sync is unavailable in this build; messages are not being reported as empty";
+  else if (oslMailStatus.provisioned) await refreshOslMail();
+  if (route === "osl-mail") render();
+}
+
+async function openOslMailThread(threadId: string): Promise<void> {
+  oslMailActiveThread = await retrieveOslMailThread(threadId);
+  oslMailError = oslMailActiveThread ? null : "Message retrieval was refused";
   if (route === "osl-mail") render();
 }
 
@@ -7696,9 +7709,7 @@ function bindWorkspace(): void {
     render();
   });
   document.querySelectorAll<HTMLButtonElement>("[data-mail-thread]").forEach((button) => button.addEventListener("click", async () => {
-    oslMailActiveThread = null;
-    oslMailError = "Message retrieval is unavailable in this build";
-    render();
+    await openOslMailThread(button.dataset.mailThread ?? "");
   }));
   document.querySelector<HTMLButtonElement>("#osl-mail-ack")?.addEventListener("click", async () => {
     oslMailDeleteReceipt = null;

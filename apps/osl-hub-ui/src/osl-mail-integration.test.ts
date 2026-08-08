@@ -73,10 +73,11 @@ describe("OSL Mail Home integration", () => {
     expect(main).toContain('if (route === "osl-mail") return oslMailContent()');
   });
 
-  it("does not call the missing thread-list bridge or coerce failures to an empty inbox", () => {
-    expect(main).not.toContain("listOslMailThreads,");
-    expect(main).not.toContain("listOslMailThreads()");
-    expect(main).not.toContain("retrieveOslMailThread,");
+  it("calls the registered reading bridge without coercing a refusal to an empty inbox", () => {
+    expect(main).toContain("listOslMailThreads,");
+    expect(main).toContain("const threads = await listOslMailThreads();");
+    expect(main).toContain("retrieveOslMailThread,");
+    expect(main).toContain("await retrieveOslMailThread(threadId)");
     expect(main).not.toContain("acknowledgeOslMailRetrieval,");
     expect(main).not.toMatch(/listOslMailThreads\(\)\s*\?\?\s*\[\]/u);
     expect(main).toContain("oslMailThreadSyncUnavailable");

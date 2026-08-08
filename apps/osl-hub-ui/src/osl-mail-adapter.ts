@@ -227,6 +227,23 @@ export const provisionOslMail = (username: string): Promise<OslMailStatus | null
   ? call("osl_mail_provision", { username }, parseOslMailStatus)
   : Promise.resolve(null);
 
+export function parseOslMailThreadList(value: unknown): OslMailThreadSummary[] | null {
+  if (!Array.isArray(value) || value.length > 500 || !denseArray(value)) return null;
+  const rows = value.map(parseOslMailThreadSummary);
+  return rows.some((row) => row === null) ? null : rows as OslMailThreadSummary[];
+}
+
+export async function listOslMailThreads(): Promise<OslMailThreadSummary[] | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    return parseOslMailThreadList(await invoke<unknown>("osl_mail_list_threads"));
+  } catch { return null; }
+}
+
+export const retrieveOslMailThread = (threadId: string): Promise<OslMailRetrievedThread | null> => OSL_MAIL_ID.test(threadId)
+  ? call("osl_mail_retrieve_thread", { threadId }, parseOslMailRetrievedThread)
+  : Promise.resolve(null);
+
 export async function sendOslMail(recipient: string, subject: string, body: string): Promise<OslMailSendReceipt | null> {
   if (!OSL_MAIL_ADDRESS.test(recipient) || !text(subject, 512, true) || !text(body, MAX_BODY_BYTES)) return null;
   const receipt = await call("osl_mail_send", { recipient, subject, body }, parseOslMailSendReceipt);
