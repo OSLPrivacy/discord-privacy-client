@@ -85,6 +85,24 @@ pub struct WebsitePageText {
     pub controls: WebsitePageControls,
 }
 
+/// The bounded pieces of an Instagram web surface that the website driver may
+/// discover.  These are observations only; they do not authorize a write.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WebsiteInstagramDiscovery {
+    pub browser_title: String,
+    pub place_kind: String,
+    pub active_composer: String,
+}
+
+/// Bounded browser-window discovery shared by the reviewed messaging surfaces.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WebsiteBrowserDiscovery {
+    pub service_kind: String,
+    pub browser_title: String,
+    pub place_kind: String,
+    pub active_composer: String,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WebsiteSelectedEmail {
     pub page: WebsitePage,
@@ -191,6 +209,14 @@ struct BrowserPageSnapshot {
     title: String,
     text: String,
     controls: WebsitePageControls,
+    browser: Option<BrowserWebsiteSnapshot>,
+}
+
+#[derive(Deserialize)]
+struct BrowserWebsiteSnapshot {
+    service_kind: String,
+    place_kind: String,
+    active_composer: String,
 }
 
 #[derive(Deserialize)]
@@ -273,6 +299,55 @@ impl RealBrowserWebsiteDriver {
             .and_then(|target| target.web_socket_debugger_url)
             .ok_or(WebsiteDriverError::ReadFailed)
     }
+
+    /// Read the active Instagram place and composer from an already-open page.
+    ///
+    /// The browser-side query only yields a value for a page explicitly marked
+    /// as an Instagram surface and with one visible place record plus one
+    /// visible active composer.  In particular, a Messenger page cannot inherit
+    /// an Instagram place merely because it has similarly named controls.
+    pub fn discover_instagram_window(
+        &mut self,
+        page: &WebsitePage,
+    ) -> Result<Option<WebsiteInstagramDiscovery>, WebsiteDriverError> {
+        let websocket_url = self.page_websocket_url(page)?;
+        let snapshot = read_page_snapshot(&websocket_url)?;
+        Ok(instagram_discovery_from_snapshot(snapshot))
+    }
+
+    /// Discover the prepared browser surface without treating one service's
+    /// place taxonomy as another service's taxonomy.
+    pub fn discover_browser_window(
+        &mut self,
+        page: &WebsitePage,
+    ) -> Result<Option<WebsiteBrowserDiscovery>, WebsiteDriverError> {
+        let websocket_url = self.page_websocket_url(page)?;
+        let snapshot = read_page_snapshot(&websocket_url)?;
+        Ok(browser_discovery_from_snapshot(snapshot))
+    }
+}
+
+fn instagram_discovery_from_snapshot(
+    snapshot: BrowserPageSnapshot,
+) -> Option<WebsiteInstagramDiscovery> {
+    let browser = browser_discovery_from_snapshot(snapshot)?;
+    (browser.service_kind == "instagram").then_some(WebsiteInstagramDiscovery {
+        browser_title: browser.browser_title,
+        place_kind: browser.place_kind,
+        active_composer: browser.active_composer,
+    })
+}
+
+fn browser_discovery_from_snapshot(
+    snapshot: BrowserPageSnapshot,
+) -> Option<WebsiteBrowserDiscovery> {
+    let browser = snapshot.browser?;
+    Some(WebsiteBrowserDiscovery {
+        service_kind: browser.service_kind,
+        browser_title: snapshot.title,
+        place_kind: browser.place_kind,
+        active_composer: browser.active_composer,
+    })
 }
 
 impl WebsiteDriver for RealBrowserWebsiteDriver {
@@ -706,7 +781,30 @@ const PAGE_SNAPSHOT_EXPRESSION: &str = r#"
       editable_boxes: uniqueNames('input, textarea, [contenteditable=""], [contenteditable="true"], [role="textbox"], [role="searchbox"]', editable),
       buttons: uniqueNames('button, input[type="button"], input[type="submit"], input[type="reset"], [role="button"]'),
       visible_message_areas: uniqueNames('[role="log"], [role="feed"], [aria-live], [data-osl-message-area]')
-    }
+    },
+    browser: (() => {
+      const root = document.documentElement;
+      const body = document.body;
+      const serviceRoot = document.querySelector('[data-osl-service], [data-osl-website]');
+      const service = compact(
+        root.getAttribute('data-osl-service') ||
+        (body && body.getAttribute('data-osl-service')) ||
+        root.getAttribute('data-osl-website') ||
+        (body && body.getAttribute('data-osl-website')) ||
+        (serviceRoot && (serviceRoot.getAttribute('data-osl-service') || serviceRoot.getAttribute('data-osl-website')))
+      ).toLowerCase();
+      if (!['instagram', 'messenger'].includes(service)) return null;
+      const places = Array.from(document.querySelectorAll(`[data-osl-${service}-place-kind]`))
+        .filter(visible)
+        .map((element) => compact(element.getAttribute(`data-osl-${service}-place-kind`)))
+        .filter(Boolean);
+      const composers = Array.from(document.querySelectorAll(`[data-osl-${service}-composer="active"]`))
+        .filter(visible)
+        .map(controlName)
+        .filter(Boolean);
+      if (places.length !== 1 || composers.length !== 1) return null;
+      return { service_kind: service, place_kind: places[0], active_composer: composers[0] };
+    })()
   };
 })()
 "#;
@@ -1019,6 +1117,182 @@ mod tests {
             println!("TASK1200 website_driver_job={name}");
         }
     }
+
+    #[test]
+    fn task_1131_instagram_fixture_returns_its_title_place_and_active_composer_only() {
+        const INSTAGRAM_TITLE: &str = "Instagram — Maya fixture thread";
+        const INSTAGRAM_PLACE: &str = "direct_message";
+        const INSTAGRAM_COMPOSER: &str = "Message Maya";
+        const MESSENGER_PLACE: &str = "messenger_direct_message";
+
+        let fixture = |title: &str, service: Option<(&str, &str, &str)>| BrowserPageSnapshot {
+            title: title.to_owned(),
+            text: String::new(),
+            controls: WebsitePageControls::default(),
+            browser: service.map(|(service_kind, place_kind, active_composer)| {
+                BrowserWebsiteSnapshot {
+                    service_kind: service_kind.to_owned(),
+                    place_kind: place_kind.to_owned(),
+                    active_composer: active_composer.to_owned(),
+                }
+            }),
+        };
+
+        let instagram = fixture(
+            INSTAGRAM_TITLE,
+            Some(("instagram", INSTAGRAM_PLACE, INSTAGRAM_COMPOSER)),
+        );
+        let messenger = fixture(
+            "Messenger — Casey fixture thread",
+            Some(("messenger", MESSENGER_PLACE, "Message Casey")),
+        );
+        let unmarked = fixture("Other browser fixture", None);
+        let instagram_discovery = instagram_discovery_from_snapshot(instagram)
+            .expect("prepared Instagram fixture is discoverable");
+        let messenger_discovery = browser_discovery_from_snapshot(messenger)
+            .expect("prepared Messenger fixture is discoverable");
+        let other_discoveries = [browser_discovery_from_snapshot(unmarked)];
+
+        assert_eq!(instagram_discovery.browser_title, INSTAGRAM_TITLE);
+        assert_eq!(instagram_discovery.place_kind, INSTAGRAM_PLACE);
+        assert_eq!(instagram_discovery.active_composer, INSTAGRAM_COMPOSER);
+        assert_eq!(messenger_discovery.place_kind, MESSENGER_PLACE);
+        assert_ne!(messenger_discovery.place_kind, INSTAGRAM_PLACE);
+        assert!(other_discoveries.iter().flatten().all(|discovery| {
+            discovery.place_kind != INSTAGRAM_PLACE
+        }));
+
+        println!("TASK1131 browser_title={}", instagram_discovery.browser_title);
+        println!("TASK1131 instagram_place_kind={}", instagram_discovery.place_kind);
+        println!("TASK1131 active_composer={}", instagram_discovery.active_composer);
+        println!("TASK1131 messenger_place_kind={}", messenger_discovery.place_kind);
+        println!(
+            "TASK1131 other_fixture_instagram_place_kind_count={}",
+            other_discoveries
+                .iter()
+                .flatten()
+                .filter(|discovery| discovery.place_kind == INSTAGRAM_PLACE)
+                .count()
+        );
+    }
+
+    #[test]
+    fn task_1131_real_browser_finds_only_the_prepared_instagram_place_and_composer() {
+        const INSTAGRAM_TITLE: &str = "Instagram — Maya fixture thread";
+        const INSTAGRAM_PLACE: &str = "direct_message";
+        const INSTAGRAM_COMPOSER: &str = "Message Maya";
+        const MESSENGER_PLACE: &str = "messenger_direct_message";
+        let instagram = Task1131Page::spawn(
+            INSTAGRAM_TITLE,
+            r#"<main data-osl-service="instagram" data-osl-instagram-place-kind="direct_message">
+                  <textarea aria-label="Message Maya" data-osl-instagram-composer="active"></textarea>
+                </main>"#,
+        );
+        let messenger = Task1131Page::spawn(
+            "Messenger — Casey fixture thread",
+            r#"<main data-osl-service="messenger" data-osl-messenger-place-kind="messenger_direct_message">
+                  <textarea aria-label="Message Casey" data-osl-messenger-composer="active"></textarea>
+                </main>"#,
+        );
+        let other = Task1131Page::spawn(
+            "Other browser fixture",
+            r#"<main data-osl-service="other"><textarea aria-label="Draft"></textarea></main>"#,
+        );
+        let mut driver = RealBrowserWebsiteDriver::launch().expect("launch fixture browser");
+
+        let instagram_page = driver
+            .find_page(WebsitePageRequest { url: instagram.url() })
+            .expect("open Instagram fixture");
+        driver.read_page(&instagram_page).expect("wait for Instagram fixture");
+        let instagram_discovery = driver
+            .discover_instagram_window(&instagram_page)
+            .expect("read Instagram fixture")
+            .expect("Instagram fixture discovery");
+        assert_eq!(instagram_discovery.browser_title, INSTAGRAM_TITLE);
+        assert_eq!(instagram_discovery.place_kind, INSTAGRAM_PLACE);
+        assert_eq!(instagram_discovery.active_composer, INSTAGRAM_COMPOSER);
+
+        let messenger_page = driver
+            .find_page(WebsitePageRequest { url: messenger.url() })
+            .expect("open Messenger fixture");
+        driver.read_page(&messenger_page).expect("wait for Messenger fixture");
+        let messenger_discovery = driver
+            .discover_browser_window(&messenger_page)
+            .expect("read Messenger fixture")
+            .expect("Messenger fixture discovery");
+        assert_eq!(messenger_discovery.place_kind, MESSENGER_PLACE);
+        assert_ne!(messenger_discovery.place_kind, INSTAGRAM_PLACE);
+        assert!(driver
+            .discover_instagram_window(&messenger_page)
+            .expect("read Messenger as Instagram")
+            .is_none());
+
+        let other_page = driver
+            .find_page(WebsitePageRequest { url: other.url() })
+            .expect("open other fixture");
+        driver.read_page(&other_page).expect("wait for other fixture");
+        assert!(driver
+            .discover_browser_window(&other_page)
+            .expect("read other fixture")
+            .is_none());
+
+        println!("TASK1131 browser_title={}", instagram_discovery.browser_title);
+        println!("TASK1131 instagram_place_kind={}", instagram_discovery.place_kind);
+        println!("TASK1131 active_composer={}", instagram_discovery.active_composer);
+        println!("TASK1131 messenger_place_kind={}", messenger_discovery.place_kind);
+        println!("TASK1131 other_fixture_instagram_place_kind_count=0");
+    }
+
+    struct Task1131Page {
+        listener_addr: String,
+        running: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        worker: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl Task1131Page {
+        fn spawn(title: &'static str, body: &'static str) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind task 1131 fixture");
+            listener.set_nonblocking(true).expect("nonblocking fixture listener");
+            let listener_addr = listener.local_addr().expect("fixture address").to_string();
+            let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+            let worker_running = std::sync::Arc::clone(&running);
+            let worker = std::thread::spawn(move || {
+                while worker_running.load(std::sync::atomic::Ordering::SeqCst) {
+                    match listener.accept() {
+                        Ok((mut stream, _)) => {
+                            let mut request = [0_u8; 1024];
+                            let _ = stream.read(&mut request);
+                            let document = format!("<!doctype html><title>{title}</title>{body}");
+                            let response = format!(
+                                "HTTP/1.1 200 OK\r\ncontent-type: text/html; charset=utf-8\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                                document.len(), document
+                            );
+                            let _ = stream.write_all(response.as_bytes());
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(Duration::from_millis(10));
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+            Self { listener_addr, running, worker: Some(worker) }
+        }
+
+        fn url(&self) -> String {
+            format!("http://{}/task-1131.html", self.listener_addr)
+        }
+    }
+
+    impl Drop for Task1131Page {
+        fn drop(&mut self) {
+            self.running.store(false, std::sync::atomic::Ordering::SeqCst);
+            let _ = TcpStream::connect(&self.listener_addr);
+            if let Some(worker) = self.worker.take() {
+                let _ = worker.join();
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -1033,4 +1307,3 @@ pub struct WebsiteNamedControlRequest {
     pub name: &'static str,
     pub kind: WebsiteControlKind,
 }
-
