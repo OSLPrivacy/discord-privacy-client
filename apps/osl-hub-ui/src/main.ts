@@ -9,6 +9,7 @@ import "./local-protected-sheet.css";
 import "./friend-invite.css";
 import "./recovery-screen.css";
 import "./onboarding-mullvad.css";
+import "./appearance-settings.css";
 import { invoke } from "@tauri-apps/api/core";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -578,6 +579,8 @@ let identityStorageMethod: string | null = null;
 const knownIdentityStorageMethods = new Map<string, string>();
 let decryptDisplay = true;
 let themeChoice: ThemeChoice = initializeThemePreference(localStorage);
+let appearancePreferences: AppearancePreferences = loadAppearancePreferences(localStorage);
+let savedAppearancePreferences: AppearancePreferences = { ...appearancePreferences };
 let sidebarOrder: string[] = [];
 let hiddenServices = new Set<string>();
 let homeEditMode = false;
@@ -1357,6 +1360,11 @@ function applyTheme(choice: ThemeChoice): void {
     : choice;
   document.documentElement.dataset.theme = resolved;
   document.documentElement.dataset.themeChoice = choice;
+}
+
+function saveAppearance(next: AppearancePreferences): void {
+  appearancePreferences = next;
+  render();
 }
 
 function orderedServices(): LinkedService[] {
@@ -7740,6 +7748,38 @@ function bindWorkspace(): void {
     applyTheme(next);
     render();
   }));
+  document.querySelectorAll<HTMLButtonElement>("[data-appearance-accent]").forEach((button) => button.addEventListener("click", () => {
+    const accent = button.dataset.appearanceAccent;
+    if (accent && accentChoices.includes(accent as typeof accentChoices[number])) saveAppearance({ ...appearancePreferences, accent: accent as typeof accentChoices[number] });
+  }));
+  document.querySelectorAll<HTMLButtonElement>("[data-appearance-background]").forEach((button) => button.addEventListener("click", () => {
+    const background = button.dataset.appearanceBackground;
+    if (background && backgroundChoices.includes(background as typeof backgroundChoices[number])) saveAppearance({ ...appearancePreferences, background: background as typeof backgroundChoices[number] });
+  }));
+  document.querySelectorAll<HTMLButtonElement>("[data-appearance-avatar]").forEach((button) => button.addEventListener("click", () => {
+    const avatar = button.dataset.appearanceAvatar;
+    if (avatar && avatarChoices.includes(avatar as typeof avatarChoices[number])) saveAppearance({ ...appearancePreferences, avatar: avatar as typeof avatarChoices[number] });
+  }));
+  document.querySelector<HTMLSelectElement>("[data-appearance-window-position]")?.addEventListener("change", (event) => {
+    const windowPosition = (event.currentTarget as HTMLSelectElement).value;
+    if (windowPositionChoices.includes(windowPosition as typeof windowPositionChoices[number])) saveAppearance({ ...appearancePreferences, windowPosition: windowPosition as typeof windowPositionChoices[number] });
+  });
+  document.querySelector<HTMLInputElement>("[data-appearance-tray]")?.addEventListener("change", (event) => saveAppearance({ ...appearancePreferences, keepInTray: (event.currentTarget as HTMLInputElement).checked }));
+  document.querySelector<HTMLInputElement>("[data-appearance-sounds]")?.addEventListener("change", (event) => saveAppearance({ ...appearancePreferences, sounds: (event.currentTarget as HTMLInputElement).checked }));
+  document.querySelector<HTMLButtonElement>("[data-save-appearance]")?.addEventListener("click", () => {
+    appearancePreferences = saveAppearancePreferences(localStorage, appearancePreferences);
+    savedAppearancePreferences = { ...appearancePreferences };
+    render();
+  });
+  document.querySelector<HTMLButtonElement>("[data-cancel-appearance]")?.addEventListener("click", () => {
+    appearancePreferences = { ...savedAppearancePreferences };
+    render();
+  });
+  document.querySelector<HTMLButtonElement>("[data-reset-appearance]")?.addEventListener("click", () => {
+    appearancePreferences = resetAppearancePreferences(localStorage);
+    savedAppearancePreferences = { ...appearancePreferences };
+    render();
+  });
   document.querySelector("#service-guide-next")?.addEventListener("click", () => {
     if (serviceGuideStep !== null) setServiceGuideStep(nextServiceGuideStep(serviceGuideStep));
   });
