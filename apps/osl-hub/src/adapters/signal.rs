@@ -142,10 +142,7 @@ impl<B: SignalBackend> SurfaceAdapter for SignalSurfaceAdapter<B> {
             elapsed_ms: 0,
         };
         if !self.validates_binding(binding)
-            || !same_scope(
-                &binding.scope_binding_hash,
-                &authorization.scope_binding_hash,
-            )
+            || !same_scope_and_message_box(binding, authorization)
             || !self.supports(adapter_profile::Capability::PlaceProtectedPayload)
         {
             return refused();
@@ -682,7 +679,7 @@ mod tests {
 
         let placed = adapter.place(
             &binding,
-            &PlacementAuthorization::for_scope("scope-a"),
+            &PlacementAuthorization::for_scope_and_provider("scope-a", "signal").unwrap(),
             &Carrier("carrier".into()),
         );
         assert_eq!(placed.status, PlacementStatus::Placed);
@@ -698,7 +695,7 @@ mod tests {
 
         let refused = adapter.place(
             &binding,
-            &PlacementAuthorization::for_scope("other-scope"),
+            &PlacementAuthorization::for_scope_and_provider("other-scope", "signal").unwrap(),
             &Carrier("carrier".into()),
         );
         assert_eq!(refused.status, PlacementStatus::NotPlaced);
@@ -709,7 +706,7 @@ mod tests {
         let binding = binding(1);
         let placed = adapter.place(
             &binding,
-            &PlacementAuthorization::for_scope("scope-a"),
+            &PlacementAuthorization::for_scope_and_provider("scope-a", "signal").unwrap(),
             &Carrier("carrier".into()),
         );
         assert_eq!(placed.status, PlacementStatus::Placed);
@@ -751,7 +748,7 @@ mod tests {
         let binding = binding(31);
         let placed = adapter.place(
             &binding,
-            &PlacementAuthorization::for_scope("scope-a"),
+            &PlacementAuthorization::for_scope_and_provider("scope-a", "signal").unwrap(),
             &Carrier("carrier".into()),
         );
         assert_eq!(placed.status, PlacementStatus::Placed);

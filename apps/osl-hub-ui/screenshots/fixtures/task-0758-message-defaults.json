@@ -1,0 +1,21 @@
+{
+  "_comment": "TASK 0758 choices. Every one of the four saved values is deliberately NOT the FACTORY_MESSAGE_DEFAULTS starting point exported by src/message-defaults.ts, so the capture photographs choices somebody made rather than a screen that has never been touched. `contrast` IS the factory starting point, and is captured second so the two pictures can be compared dot by dot.",
+  "sample": {
+    "burnScope": "conversation",
+    "timerSeconds": 604800,
+    "viewOnceLengthSeconds": 60,
+    "coverWriting": "ai_covertext"
+  },
+  "contrast": {
+    "burnScope": "message",
+    "timerSeconds": 300,
+    "viewOnceLengthSeconds": 10,
+    "coverWriting": "plaintext"
+  },
+  "expected": {
+    "timer": "1 week",
+    "burn-scope": "This conversation",
+    "view-once-length": "60 seconds",
+    "writing": "AI"
+  }
+}

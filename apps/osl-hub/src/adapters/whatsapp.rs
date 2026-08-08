@@ -87,7 +87,7 @@ impl<B: WhatsAppBackend> SurfaceAdapter for WhatsAppSurfaceAdapter<B> {
         carrier: &Carrier,
     ) -> PlacementReceipt {
         if !self.valid(binding)
-            || !same_scope(&binding.scope_binding_hash, auth.scope_binding_hash())
+            || !same_scope_and_message_box(binding, auth)
             || !self.supports(adapter_profile::Capability::PlaceProtectedPayload)
         {
             return Self::refused();
@@ -244,7 +244,7 @@ mod tests {
         let b = binding();
         let placed = adapter.place(
             &b,
-            &PlacementAuthorization::for_scope("scope"),
+            &PlacementAuthorization::for_scope_and_provider("scope", "whatsapp").unwrap(),
             &Carrier("carrier".into()),
         );
         assert_eq!(placed.status, PlacementStatus::Placed);
@@ -272,7 +272,7 @@ mod tests {
             adapter
                 .place(
                     &binding(),
-                    &PlacementAuthorization::for_scope("scope"),
+                    &PlacementAuthorization::for_scope_and_provider("scope", "whatsapp").unwrap(),
                     &Carrier("carrier".into())
                 )
                 .status,
@@ -289,7 +289,7 @@ mod tests {
         pixel.evidence = BindingEvidence::Pixel;
         let placed = adapter.place(
             &pixel,
-            &PlacementAuthorization::for_scope("scope"),
+            &PlacementAuthorization::for_scope_and_provider("scope", "whatsapp").unwrap(),
             &Carrier("carrier".into()),
         );
         assert_eq!(

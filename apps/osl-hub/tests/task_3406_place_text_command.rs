@@ -49,3 +49,18 @@ fn task_3769_refuses_private_canary_clipboard_payload() {
         "10 private canary characters reached the clipboard: \"QQQQQQQQQQ\""
     );
 }
+
+fn task_3407_command_can_pause_for_manual_box_mutation_before_readback() {
+    assert!(TASK_3406.contains("--wait-before-read-ms"));
+    assert!(TASK_3406.contains("println!(\"waiting_before_read_ms={}\""));
+    assert!(TASK_3406.contains("thread::sleep(Duration::from_millis(args.wait_before_read_ms));"));
+}
+
+fn task_3407_command_compares_accessibility_readback_character_by_character() {
+    assert!(TASK_3406.contains("fn compare_readback(expected: &str, actual: &str)"));
+    assert!(TASK_3406.contains("let readback = value_of(&composer).unwrap_or_default();"));
+    assert!(TASK_3406.contains("println!(\"{}\", comparison.status_line());"));
+    assert!(TASK_3406.contains("Self::Matched => \"matched\".to_owned()"));
+    assert!(TASK_3406.contains("did-not-match first_differing_character_position={position}"));
+    assert!(TASK_3406.contains("return ReadbackComparison::DidNotMatch"));
+}

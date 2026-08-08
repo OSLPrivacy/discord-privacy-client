@@ -1082,3 +1082,38 @@ fn main() {
     eprintln!("task_3406_place_text requires Windows");
     std::process::exit(2);
 }
+
+enum ReadbackComparison {
+    Matched,
+    DidNotMatch {
+        position: usize,
+        expected: Option<char>,
+        actual: Option<char>,
+    },
+}
+
+fn compare_readback(expected: &str, actual: &str) -> ReadbackComparison {
+    let mut expected_chars = expected.chars();
+    let mut actual_chars = actual.chars();
+    for position in 1.. {
+        match (expected_chars.next(), actual_chars.next()) {
+            (Some(left), Some(right)) if left == right => {}
+            (None, None) => return ReadbackComparison::Matched,
+            (expected, actual) => {
+                return ReadbackComparison::DidNotMatch {
+                    position,
+                    expected,
+                    actual,
+                }
+            }
+        }
+    }
+    unreachable!("unbounded loop returns on match or first differing character")
+}
+
+fn printable_char(value: Option<char>) -> String {
+    match value {
+        Some(ch) => format!("{ch:?}"),
+        None => "<end>".to_owned(),
+    }
+}

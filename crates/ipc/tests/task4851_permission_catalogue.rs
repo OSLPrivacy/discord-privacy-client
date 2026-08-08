@@ -64,4 +64,40 @@ fn task4851_catalogue_has_sections_rows_tags_required_words_and_red_no_tag_check
 
     assert_eq!(output.status.code(), Some(1));
     assert!(stderr.contains("row has no enforcement tag: send a message"));
+
+    let broken_catalogue = catalogue
+        .replace("- attach pictures `KEY`\n", "- attach pictures\n")
+        .replace(
+            "- mention everyone `TRUST`\n",
+            "- mention everyone `RELAY`\n",
+        );
+    let mut child = Command::new(env!("CARGO_BIN_EXE_osl-permission-catalogue"))
+        .arg("check")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn permission catalogue checker");
+    child
+        .stdin
+        .as_mut()
+        .expect("checker stdin")
+        .write_all(broken_catalogue.as_bytes())
+        .expect("write invalid catalogue");
+    let output = child
+        .wait_with_output()
+        .expect("checker returns output for invalid catalogue");
+    let stderr = String::from_utf8(output.stderr).expect("checker stderr is utf8");
+
+    println!(
+        "TASK4851B broken_catalogue_exit={}",
+        output.status.code().unwrap_or_default()
+    );
+    println!("TASK4851B broken_catalogue_stderr={stderr}");
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr.contains("row has no enforcement tag: attach pictures"));
+    assert!(
+        stderr.contains("row is wrongly tagged: mention everyone expected `TRUST`, found `RELAY`")
+    );
 }

@@ -407,3 +407,16 @@ fn parse_tagged_row(row: &str) -> Result<(&str, EnforcementTag), PermissionCatal
     };
     Ok((words.trim(), tag))
 }
+
+fn expected_tag_for_row(row: &str) -> Option<EnforcementTag> {
+    PERMISSION_CATALOGUE
+        .iter()
+        .find(|permission| permission.words == row)
+        .map(|permission| permission.tag)
+}
+
+fn row_words(row: &str) -> &str {
+    row.rsplit_once(" `")
+        .map(|(words, _)| words.trim())
+        .unwrap_or_else(|| row.trim())
+}

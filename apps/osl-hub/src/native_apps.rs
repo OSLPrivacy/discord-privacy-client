@@ -1501,9 +1501,6 @@ pub fn launch_firefox_service(
     owner_osl_user_id: &str,
     service_id: FirefoxServiceId,
 ) -> Result<FirefoxLaunchResult, String> {
-    if service_id == FirefoxServiceId::Outlook {
-        return Err("Outlook opens only through the verified native app".to_owned());
-    }
     #[cfg(target_os = "windows")]
     {
         let firefox = firefox_executable()
@@ -2956,9 +2953,14 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn outlook_has_no_firefox_fallback() {
-        assert!(
-            launch_firefox_service(Path::new("."), "owner-a", FirefoxServiceId::Outlook).is_err()
+    fn task_4505_outlook_web_has_a_firefox_service_address() {
+        assert_eq!(
+            firefox_service_url(FirefoxServiceId::Outlook),
+            "https://outlook.live.com/mail/"
+        );
+        println!(
+            "TASK4505_OUTLOOK_WEB_FIREFOX_URL={}",
+            firefox_service_url(FirefoxServiceId::Outlook)
         );
     }
 

@@ -934,6 +934,8 @@ pub mod original_bootstrap;
 pub mod device_pairing;
 pub mod quiet_hours;
 pub mod quiet_hours_notices;
+pub mod proton_fake_page;
+pub mod shared_web_reader_shape;
 
 // The keystore/ipc crates deliberately keep the active-account dir, base-dir
 // override, and unlocked main-password key in process-wide statics (see

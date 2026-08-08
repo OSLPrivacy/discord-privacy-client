@@ -15,6 +15,71 @@ import { describe, expect, it } from "vitest";
 
 const TAG = "a".repeat(32);
 const BLOB = "b".repeat(32);
+const TASK_3924_ACCOUNT_NAMES = ["AccountQuartzSeven", "AccountVelvetNine"];
+const TASK_3924_FRIEND_NAMES = ["FriendYaraNorth", "FriendMiloSouth"];
+const TASK_3924_CONVERSATION_NAMES = [
+  "ConversationJuniperBay",
+  "ConversationLumenDock",
+];
+const TASK_3924_PRIVATE_WORDS = [
+  "private-amber-ledger",
+  "private-violet-receipt",
+  "private-cobalt-phrase",
+  "private-silver-token",
+  "private-copper-archive",
+];
+const TASK_3924_MESSAGE_FIXTURES = [
+  {
+    accountName: TASK_3924_ACCOUNT_NAMES[0]!,
+    friendName: TASK_3924_FRIEND_NAMES[0]!,
+    conversationName: TASK_3924_CONVERSATION_NAMES[0]!,
+    privateWord: TASK_3924_PRIVATE_WORDS[0]!,
+    wakeup: {
+      delivery_tag: "10000000000000000000000000000001",
+      blob_id: "20000000000000000000000000000001",
+    },
+  },
+  {
+    accountName: TASK_3924_ACCOUNT_NAMES[0]!,
+    friendName: TASK_3924_FRIEND_NAMES[1]!,
+    conversationName: TASK_3924_CONVERSATION_NAMES[1]!,
+    privateWord: TASK_3924_PRIVATE_WORDS[1]!,
+    wakeup: {
+      delivery_tag: "10000000000000000000000000000002",
+      blob_id: "20000000000000000000000000000002",
+    },
+  },
+  {
+    accountName: TASK_3924_ACCOUNT_NAMES[1]!,
+    friendName: TASK_3924_FRIEND_NAMES[0]!,
+    conversationName: TASK_3924_CONVERSATION_NAMES[0]!,
+    privateWord: TASK_3924_PRIVATE_WORDS[2]!,
+    wakeup: {
+      delivery_tag: "10000000000000000000000000000003",
+      blob_id: "20000000000000000000000000000003",
+    },
+  },
+  {
+    accountName: TASK_3924_ACCOUNT_NAMES[1]!,
+    friendName: TASK_3924_FRIEND_NAMES[1]!,
+    conversationName: TASK_3924_CONVERSATION_NAMES[1]!,
+    privateWord: TASK_3924_PRIVATE_WORDS[3]!,
+    wakeup: {
+      delivery_tag: "10000000000000000000000000000004",
+      blob_id: "20000000000000000000000000000004",
+    },
+  },
+  {
+    accountName: TASK_3924_ACCOUNT_NAMES[0]!,
+    friendName: TASK_3924_FRIEND_NAMES[0]!,
+    conversationName: TASK_3924_CONVERSATION_NAMES[0]!,
+    privateWord: TASK_3924_PRIVATE_WORDS[4]!,
+    wakeup: {
+      delivery_tag: "10000000000000000000000000000005",
+      blob_id: "20000000000000000000000000000005",
+    },
+  },
+];
 
 /// D-293 — the second test in this file used to read `connection.ts` back as
 /// TEXT through a `?raw` import and grade three spellings:
@@ -106,6 +171,17 @@ async function autoResponse(
   });
 }
 
+function countNeedle(haystack: string, needle: string): number {
+  let count = 0;
+  let offset = 0;
+  while (true) {
+    const found = haystack.indexOf(needle, offset);
+    if (found === -1) return count;
+    count += 1;
+    offset = found + needle.length;
+  }
+}
+
 describe("T1-T51 push Durable Object", () => {
   it("emits only fixed-size delivery_tag/blob_id wakeup frames", () => {
     const real = encodeWakeupFrame({ delivery_tag: TAG, blob_id: BLOB });
@@ -170,5 +246,119 @@ describe("T1-T51 push Durable Object", () => {
       await runInDurableObject(stub, (_instance, state) => state.storage.getAlarm()),
     ).toBeNull();
     expect(await runDurableObjectAlarm(stub)).toBe(false);
+  });
+
+  it("records five fixed-size wake-up exchanges without private labels", async () => {
+    const stub = namespace.get(namespace.newUniqueId());
+    const response = await stub.fetch("https://push.invalid/", {
+      headers: { Upgrade: "websocket" },
+    });
+    expect(response.status).toBe(101);
+    const client = response.webSocket;
+    if (!client) throw new Error("the Durable Object did not return a WebSocket");
+
+    const receivedFrames: string[] = [];
+    client.addEventListener("message", (event) => {
+      receivedFrames.push(String((event as MessageEvent).data));
+    });
+    client.accept();
+
+    const sentFrames: string[] = [];
+    const exchanges: { sent: string; received: string }[] = [];
+    const messages = TASK_3924_MESSAGE_FIXTURES.map(({ wakeup }) => wakeup);
+
+    expect(TASK_3924_ACCOUNT_NAMES).toHaveLength(2);
+    expect(messages).toHaveLength(5);
+    expect(TASK_3924_PRIVATE_WORDS).toHaveLength(5);
+    expect(
+      new Set(TASK_3924_MESSAGE_FIXTURES.map(({ friendName }) => friendName)).size,
+    ).toBe(2);
+    expect(
+      new Set(
+        TASK_3924_MESSAGE_FIXTURES.map(
+          ({ conversationName }) => conversationName,
+        ),
+      ).size,
+    ).toBe(2);
+
+    for (const [index, message] of messages.entries()) {
+      expect(
+        await runInDurableObject(stub, (instance) => instance.deliver(message)),
+      ).toBe(true);
+
+      sentFrames.push(IDLE_TICK);
+      client.send(IDLE_TICK);
+
+      const deadline = Date.now() + 10_000;
+      while (receivedFrames.length <= index) {
+        if (Date.now() > deadline) {
+          throw new Error(
+            `timed out waiting for task 3924 wake-up frame ${index}; got ${receivedFrames.length}`,
+          );
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+
+      exchanges.push({ sent: IDLE_TICK, received: receivedFrames[index]! });
+    }
+
+    const recordedFrames = exchanges.flatMap(({ sent, received }) => [
+      sent,
+      received,
+    ]);
+    const recordedWire = recordedFrames.join("");
+    const fixedFrameLengths = new Set(recordedFrames.map((frame) => frame.length));
+    const privateNeedles = [
+      ...TASK_3924_ACCOUNT_NAMES,
+      ...TASK_3924_FRIEND_NAMES,
+      ...TASK_3924_CONVERSATION_NAMES,
+      ...TASK_3924_PRIVATE_WORDS,
+    ];
+    const privateNeedleCounts = Object.fromEntries(
+      privateNeedles.map((needle) => [needle, countNeedle(recordedWire, needle)]),
+    ) as Record<string, number>;
+    const privateNeedleTotal = Object.values(privateNeedleCounts).reduce(
+      (sum, count) => sum + count,
+      0,
+    );
+    const countHits = (needles: readonly string[]) =>
+      needles.reduce((sum, needle) => sum + privateNeedleCounts[needle]!, 0);
+
+    expect(sentFrames).toEqual(Array(5).fill(IDLE_TICK));
+    expect(receivedFrames).toHaveLength(5);
+    expect(exchanges).toHaveLength(5);
+    expect(recordedWire.length).toBeGreaterThan(0);
+    expect(fixedFrameLengths).toEqual(new Set([FRAME_BYTES]));
+    expect(privateNeedleTotal).toBe(0);
+    for (const [index, received] of receivedFrames.entries()) {
+      expect(JSON.parse(received.trim())).toEqual(messages[index]);
+    }
+
+    console.info(
+      "TASK_3924_WAKEUP_RECORDING",
+      JSON.stringify({
+        account_names_searched: TASK_3924_ACCOUNT_NAMES.length,
+        friend_names_searched: TASK_3924_FRIEND_NAMES.length,
+        conversation_names_searched: TASK_3924_CONVERSATION_NAMES.length,
+        private_words_searched: TASK_3924_PRIVATE_WORDS.length,
+        distinct_fixture_friends: new Set(
+          TASK_3924_MESSAGE_FIXTURES.map(({ friendName }) => friendName),
+        ).size,
+        distinct_fixture_conversations: new Set(
+          TASK_3924_MESSAGE_FIXTURES.map(
+            ({ conversationName }) => conversationName,
+          ),
+        ).size,
+        recorded_exchanges: exchanges.length,
+        recorded_frames: recordedFrames.length,
+        recorded_bytes: recordedWire.length,
+        frame_lengths: [...fixedFrameLengths],
+        account_name_hits: countHits(TASK_3924_ACCOUNT_NAMES),
+        friend_name_hits: countHits(TASK_3924_FRIEND_NAMES),
+        conversation_name_hits: countHits(TASK_3924_CONVERSATION_NAMES),
+        private_word_hits: countHits(TASK_3924_PRIVATE_WORDS),
+        private_needle_total: privateNeedleTotal,
+      }),
+    );
   });
 });

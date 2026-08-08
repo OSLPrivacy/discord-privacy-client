@@ -1366,3 +1366,58 @@ fn validate_override_table(
         Err(ServerThreadPermissionError::InvalidRoleOverrideTable)
     }
 }
+
+pub struct HonestMentionRingDecision {
+    pub mention: ServerMentionKind,
+    pub trust: MentionPermissionTrust,
+    pub honest_receiving_apps: usize,
+    pub ringing_apps: usize,
+    pub highlighted_apps: usize,
+}
+
+pub enum MentionPermissionTrust {
+    Trust,
+}
+
+pub enum ServerMentionKind {
+    Everyone,
+    Here,
+    Role,
+}
+
+pub struct ServerMentionSendReceipt {
+    pub accepted: bool,
+    pub text: String,
+}
+
+pub fn accept_server_mention_text(
+    text: impl Into<String>,
+) -> Result<ServerMentionSendReceipt, ServerMembershipError> {
+    let text = bounded_non_empty(text.into(), "message_text")?;
+    Ok(ServerMentionSendReceipt {
+        accepted: true,
+        text,
+    })
+}
+
+pub fn honest_mention_ring_decision(
+    permissions: &ServerPermissionStore,
+    server_id: &str,
+    sender_name: &str,
+    mention: ServerMentionKind,
+    honest_receiving_apps: usize,
+    sender_claimed_mention_everyone: bool,
+) -> HonestMentionRingDecision {
+    let _ = sender_claimed_mention_everyone;
+    let can_ring = permissions
+        .require_person_permission(server_id, sender_name, ServerPermission::MentionEveryone)
+        .is_ok();
+    let ringing_apps = if can_ring { honest_receiving_apps } else { 0 };
+    HonestMentionRingDecision {
+        mention,
+        trust: mention.trust_row(),
+        honest_receiving_apps,
+        ringing_apps,
+        highlighted_apps: ringing_apps,
+    }
+}
