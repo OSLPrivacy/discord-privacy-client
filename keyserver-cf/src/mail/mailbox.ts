@@ -230,6 +230,21 @@ export class Mailbox extends DurableObject<Env> {
     ).toArray();
   }
 
+  /**
+   * The one authoritative unread decision.  Arrival creates a row with a
+   * null `opened_at`; `fetchMessage` records the first time its ciphertext is
+   * handed to the client to show.  Keeping this beside those transitions makes
+   * the count durable across desktop restarts and prevents each caller from
+   * inventing its own definition of unread.
+   */
+  unreadCount(ownerUserId: string): number {
+    this.assertOwner(ownerUserId);
+    return this.sql.exec<{ unread: number }>(
+      "SELECT COUNT(*) unread FROM messages WHERE expires_at > ? AND opened_at IS NULL",
+      Date.now(),
+    ).one()!.unread;
+  }
+
   fetchMessage(ownerUserId: string, messageId: string): MessageRow | null {
     this.assertOwner(ownerUserId);
     const row = this.sql.exec<MessageRow>(

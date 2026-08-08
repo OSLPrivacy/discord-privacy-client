@@ -187,7 +187,10 @@ export async function handleMailRead(request: Request, env: Env, operation: "LIS
   if (operation === "LIST") {
     const limit = body.limit === undefined ? 50 : body.limit;
     if (typeof limit !== "number" || !Number.isSafeInteger(limit)) return badRequest("limit invalid");
-    return json({ messages: await box.list(auth.userId, limit) });
+    return json({
+      messages: await box.list(auth.userId, limit),
+      unread_count: await box.unreadCount(auth.userId),
+    });
   }
   if (operation === "FETCH") {
     if (!isProtocolId(body.message_id)) return badRequest("message_id invalid");
