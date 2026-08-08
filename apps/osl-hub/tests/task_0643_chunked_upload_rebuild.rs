@@ -63,7 +63,14 @@ impl OslStorageFixture {
                             TRAILING_BYTES
                         };
                         assert_eq!(request.body.len(), expected_piece_size);
-                        stored.extend_from_slice(&request.body);
+                        // TASK 0644 deliberately drops the final numbered
+                        // piece after acknowledging it, so the rebuild hash
+                        // check must detect the incomplete stored file.
+                        if piece_number != 2 {
+                            stored.extend_from_slice(&request.body);
+                        } else {
+                            println!("TASK0644 skipped_piece_number={piece_number}");
+                        }
                         respond_json(
                             &mut stream,
                             &format!(
@@ -74,7 +81,6 @@ impl OslStorageFixture {
                     3 => {
                         assert_eq!(request.method, "POST");
                         assert_eq!(request.path, format!("/v1/attachment/{UPLOAD_ID}/complete"));
-                        assert_eq!(stored.len(), expected_size);
                         respond_json(
                             &mut stream,
                             &format!(
@@ -246,7 +252,6 @@ fn task_0643_chunked_upload_rebuilds_exact_file_from_osl_storage() {
         "TASK0643 original_hash_match={}",
         original_hash == read_back_hash
     );
-    assert_eq!(fetched as usize, fixture.len());
     assert_eq!(
         read_back_hash, original_hash,
         "rebuilt OSL storage file hash"
