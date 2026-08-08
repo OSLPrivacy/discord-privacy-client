@@ -103,7 +103,10 @@ impl Dialer {
         Ok(Upstream::Tor(Box::new(stream)))
     }
 
-    async fn tor_client(&self, sink: &StatusSink) -> Result<Arc<TorClient<PreferredRuntime>>, String> {
+    async fn tor_client(
+        &self,
+        sink: &StatusSink,
+    ) -> Result<Arc<TorClient<PreferredRuntime>>, String> {
         let client = self
             .tor
             .get_or_try_init(|| self.build_tor_client(sink))
@@ -111,7 +114,10 @@ impl Dialer {
         Ok(Arc::clone(client))
     }
 
-    async fn build_tor_client(&self, sink: &StatusSink) -> Result<Arc<TorClient<PreferredRuntime>>, String> {
+    async fn build_tor_client(
+        &self,
+        sink: &StatusSink,
+    ) -> Result<Arc<TorClient<PreferredRuntime>>, String> {
         // args::parse enforces these in tor mode; reaching here without
         // them means a Config was hand-built wrong.
         let (Some(state_dir), Some(cache_dir)) = (&self.state_dir, &self.cache_dir) else {

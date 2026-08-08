@@ -64,7 +64,9 @@ pub fn parse<I: Iterator<Item = String>>(mut argv: I) -> Result<Config, String> 
                     "tor" => DialMode::Tor,
                     "direct" => DialMode::Direct,
                     other => {
-                        return Err(format!("unknown dial mode {other:?}; expected tor or direct"))
+                        return Err(format!(
+                            "unknown dial mode {other:?}; expected tor or direct"
+                        ))
                     }
                 });
             }

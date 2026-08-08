@@ -28,11 +28,19 @@ pub enum StatusEvent {
     /// The upstream dial succeeded and relaying is about to begin.
     ConnectOk { conn: u64, target: String },
     /// The upstream dial failed; the SOCKS client got a failure reply.
-    ConnectFailed { conn: u64, target: String, reason: String },
+    ConnectFailed {
+        conn: u64,
+        target: String,
+        reason: String,
+    },
     /// The request was refused before any dial was attempted.
     Refused { conn: u64, reason: String },
     /// A relayed connection finished, with per-direction byte counts.
-    Closed { conn: u64, bytes_to_target: u64, bytes_from_target: u64 },
+    Closed {
+        conn: u64,
+        bytes_to_target: u64,
+        bytes_from_target: u64,
+    },
     /// A recoverable error tied to one connection or subsystem.
     Error { scope: String, detail: String },
     /// The sidecar is exiting.
