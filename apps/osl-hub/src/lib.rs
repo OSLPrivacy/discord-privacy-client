@@ -227,6 +227,9 @@ pub mod irreversible_actions;
 #[cfg(feature = "core")]
 #[cfg(not(task3982_focused))]
 pub mod pro_context_cover;
+// Pure decision boundary: no store handle, no tauri, so it stays ungated and
+// is checkable without the desktop build.
+pub mod pro_marked_deletion;
 pub mod proprietary_module_boundary;
 pub mod proprietary_module_lifecycle;
 pub mod protected_clipboard;
