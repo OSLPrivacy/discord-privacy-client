@@ -4022,43 +4022,61 @@ pub fn cmd_osl_chat_burn_sender_message_records_choice(
     state: &AppState,
     open_chat_id: String,
     selected_scope: &str,
-) -> Result<ChatBurnSenderMessageRecordsChoiceDto, String> {
-    record_activity_on_command_entry();
-    let self_user_id = state
-        .identity_slot()
-        .as_ref()
-        .map(|identity| identity.user_id.clone())
-        .ok_or_else(|| "OSL: chat burn needs a loaded identity".to_string())?;
-    let selected_message_ids = {
-        let guard = state
-            .message_store
-            .lock()
-            .expect("message_store mutex poisoned");
-        let Some(store) = guard.as_ref() else {
-            return Err("OSL: chat burn needs a message store".to_string());
-        };
-        store
-            .list_by_channel(&open_chat_id, u32::MAX)
-            .map_err(|e| format!("OSL: select open-chat sender records: {e}"))?
-            .into_iter()
-            .filter(|message| message.sender_osl_user_id == self_user_id)
-            .map(|message| message.discord_message_id)
-            .collect::<Vec<_>>()
-    };
-    let result = cmd_osl_burn_sender_message_records_choice(
+) -> Result<crate::irreversible_action::IrreversibleActionAnswer<ChatBurnSenderMessageRecordsChoiceDto>, String> {
+    cmd_osl_chat_burn_sender_message_records_choice_confirmed(
         state,
-        selected_scope,
-        selected_message_ids.clone(),
-    )?;
-    Ok(ChatBurnSenderMessageRecordsChoiceDto {
         open_chat_id,
-        selected_scope: selected_scope.to_owned(),
-        selected_message_ids,
-        requested_count: result.requested_count,
-        local_removal_count: result.local_removal_count,
-        remote_removal_count: result.remote_removal_count,
-        remaining_local_count: result.remaining_local_count,
-        equal_removal_counts: result.equal_removal_counts,
+        selected_scope,
+        false,
+    )
+}
+
+/// Confirmation-aware chat-burn entry point.  The unconfirmed convenience
+/// form above is intentionally fail-closed when the saved ask choice is on.
+pub fn cmd_osl_chat_burn_sender_message_records_choice_confirmed(
+    state: &AppState,
+    open_chat_id: String,
+    selected_scope: &str,
+    confirmed: bool,
+) -> Result<crate::irreversible_action::IrreversibleActionAnswer<ChatBurnSenderMessageRecordsChoiceDto>, String> {
+    record_activity_on_command_entry();
+    crate::irreversible_action::run_irreversible_action(state, confirmed, || {
+        let self_user_id = state
+            .identity_slot()
+            .as_ref()
+            .map(|identity| identity.user_id.clone())
+            .ok_or_else(|| "OSL: chat burn needs a loaded identity".to_string())?;
+        let selected_message_ids = {
+            let guard = state
+                .message_store
+                .lock()
+                .expect("message_store mutex poisoned");
+            let Some(store) = guard.as_ref() else {
+                return Err("OSL: chat burn needs a message store".to_string());
+            };
+            store
+                .list_by_channel(&open_chat_id, u32::MAX)
+                .map_err(|e| format!("OSL: select open-chat sender records: {e}"))?
+                .into_iter()
+                .filter(|message| message.sender_osl_user_id == self_user_id)
+                .map(|message| message.discord_message_id)
+                .collect::<Vec<_>>()
+        };
+        let result = cmd_osl_burn_sender_message_records_choice(
+            state,
+            selected_scope,
+            selected_message_ids.clone(),
+        )?;
+        Ok(ChatBurnSenderMessageRecordsChoiceDto {
+            open_chat_id,
+            selected_scope: selected_scope.to_owned(),
+            selected_message_ids,
+            requested_count: result.requested_count,
+            local_removal_count: result.local_removal_count,
+            remote_removal_count: result.remote_removal_count,
+            remaining_local_count: result.remaining_local_count,
+            equal_removal_counts: result.equal_removal_counts,
+        })
     })
 }
 

@@ -209,6 +209,7 @@ pub mod peer_attachment_io;
 pub mod preferences;
 #[cfg(not(task3982_focused))]
 pub mod privacy_scan;
+pub mod irreversible_actions;
 #[cfg(feature = "core")]
 #[cfg(not(task3982_focused))]
 pub mod pro_context_cover;

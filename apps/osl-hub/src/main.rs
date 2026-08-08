@@ -43,6 +43,7 @@ use osl_privacy_hub::identity_registry::{
     self, HubIdentityBurnResult, HubIdentityRegistryState, HubIdentitySlotCreation,
     HubIdentitySlotDto, HubIdentitySwitchResult,
 };
+use osl_privacy_hub::irreversible_actions;
 use osl_privacy_hub::main_window_reveal::{
     main_window_reveal, main_window_should_start_hidden, CaptureAffinity, MainWindowReveal,
     PageLoadPhase,
@@ -2140,12 +2141,13 @@ async fn reset_every_setting(
     core: State<'_, HubCoreState>,
     security_state: State<'_, HubSecurityState>,
     session: State<'_, HubAccountSessionState>,
-) -> Result<security::ResetEverySettingRecord, String> {
+    confirmed: bool,
+) -> Result<ipc::irreversible_action::IrreversibleActionAnswer<security::ResetEverySettingRecord>, String> {
     if caller.label() != "main" {
         return Err("Only the trusted OSL window may reset settings".to_owned());
     }
     let _session = session.transition.lock().await;
-    security::reset_every_setting(&core, &security_state)
+    irreversible_actions::reset_every_setting(&core, &security_state, confirmed)
 }
 
 #[tauri::command]

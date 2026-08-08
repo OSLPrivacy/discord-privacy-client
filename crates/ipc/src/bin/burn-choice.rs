@@ -1,6 +1,4 @@
-use ipc::commands::{
-    cmd_osl_burn_sender_message_records_choice, cmd_osl_chat_burn_sender_message_records_choice,
-};
+use ipc::commands::cmd_osl_burn_sender_message_records_choice;
 use ipc::AppState;
 use keystore::KeyServerClient;
 use std::process::ExitCode;
@@ -266,11 +264,15 @@ fn run_chat_burn(
         .lock()
         .expect("message store mutex poisoned") = Some(store);
 
-    let result = cmd_osl_chat_burn_sender_message_records_choice(
+    let answer = ipc::commands::cmd_osl_chat_burn_sender_message_records_choice_confirmed(
         &state,
         open_chat_id.to_owned(),
         selected_scope,
+        true,
     )?;
+    let result = answer
+        .result()
+        .ok_or_else(|| "OSL: chat burn still needs confirmation".to_owned())?;
     println!(
         "TASK0525 chat_burn_result open_chat_id={} selected_scope={} action=cmd_osl_burn_sender_message_records_both_sides selected_message_ids={} requested_count={} local_removal_count={} remote_removal_count={} equal_removal_counts={}",
         result.open_chat_id,
