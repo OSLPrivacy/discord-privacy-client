@@ -11058,10 +11058,52 @@ code {
 
 
 .home-apps > header h1 { margin: 0; font-size: 18px; }
-
-
-
-
+.home-arrange-header { margin-bottom: 14px; }
+.home-arrange-header h2 { margin: 0; font-size: 15px; }
+.arrange-tiles-screen { width: min(840px, 100%); margin: 0 auto; padding: 30px 26px 48px; }
+.arrange-tiles-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; padding-bottom: 22px; border-bottom: 1px solid var(--line); }
+.arrange-tiles-header h1 { margin: 4px 0 8px; font-size: clamp(28px, 4vw, 38px); }
+.arrange-tiles-header p:not(.eyebrow) { max-width: 560px; margin: 0; color: var(--muted); line-height: 1.5; }
+.arrange-tiles-exits { display: flex; flex: none; gap: 8px; }
+.arrange-tile-notice { margin: 16px 0 0; padding: 10px 12px; border-left: 3px solid var(--brand); background: var(--brand-wash); color: var(--text); font-size: 13px; }
+.arrange-tile-list { margin-top: 24px; }
+.arrange-tile-list > header { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 10px; }
+.arrange-tile-list h2, .arrange-tile-list p { margin: 0; }
+.arrange-tile-list h2 { font-size: 15px; }
+.arrange-tile-list p, .arrange-drag-note { color: var(--muted); font-size: 12px; }
+.arrange-drag-note { white-space: nowrap; }
+.arrange-tile-stack { display: grid; gap: 8px; }
+.arrange-tile { display: grid; grid-template-columns: 20px 42px minmax(0, 1fr) auto; align-items: center; gap: 12px; min-height: 70px; padding: 10px 12px; border: 1px solid var(--line); background: var(--panel); cursor: grab; transition: opacity var(--motion-fast) linear, border-color var(--motion-fast) linear, transform var(--motion-fast) var(--ease-standard); }
+.arrange-tile:hover { border-color: var(--brand); }
+.arrange-tile.dragging { opacity: .38; transform: scale(.985); }
+.arrange-tile.is-hidden { border-style: dashed; background: color-mix(in srgb, var(--panel) 72%, var(--bg)); }
+.arrange-tile-grip { color: var(--subtle); font-size: 20px; line-height: 1; cursor: grab; }
+.arrange-tile-logo { width: 40px; height: 40px; display: grid; place-items: center; }
+.arrange-tile-logo .company-logo { width: 29px; height: 29px; }
+.arrange-tile-copy { display: grid; gap: 3px; min-width: 0; }
+.arrange-tile-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+.arrange-tile-copy small { color: var(--muted); font-size: 12px; }
+.arrange-tile-actions { display: flex; align-items: center; gap: 6px; }
+.arrange-tile-actions .button { min-width: 34px; min-height: 32px; padding: 0 9px; }
+.arrange-hidden-list { padding-top: 4px; }
+@media (max-width: 620px) {
+  .arrange-tiles-screen { padding: 20px 16px 36px; }
+  .arrange-tiles-header { display: grid; }
+  .arrange-tiles-exits { width: 100%; }
+  .arrange-tiles-exits .button { flex: 1; }
+  .arrange-tile { grid-template-columns: 16px 36px minmax(0, 1fr); gap: 8px; }
+  .arrange-tile-logo { width: 36px; height: 36px; }
+  .arrange-tile-actions { grid-column: 2 / -1; justify-content: flex-end; }
+}
+.app-tile {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  box-shadow: none !important;
+  transition: border-color var(--motion-base) var(--ease-standard), background-color var(--motion-base) var(--ease-standard), opacity var(--motion-fast) linear;
+}
+.app-tile:hover:not(:disabled) { transform: none; }
 .app-tile > button:first-child {
   width: 100%; height: 100%; padding: 12px; border: 0; background: transparent;
   color: inherit; text-align: left; cursor: pointer;

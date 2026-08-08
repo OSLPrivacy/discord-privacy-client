@@ -238,7 +238,7 @@ import {
 import type { SecureLocalStore } from "./secure-local-store";
 import { createOslChatSecureLocalStore } from "./osl-chat-secure-store";
 
-export type Route = "onboarding" | "home" | "inbox" | "people" | "privacy" | "scrub" | "activity" | "connections" | "service" | "settings" | "mullvad" | "osl-chat" | "osl-mail" | "osl-servers" | "signal-qa";
+export type Route = "onboarding" | "home" | "arrange-tiles" | "inbox" | "people" | "privacy" | "scrub" | "activity" | "connections" | "service" | "settings" | "mullvad" | "osl-chat" | "osl-mail" | "osl-servers" | "signal-qa";
 
 /**
  * The colour a status chip is allowed to claim, resolved from the word printed
@@ -641,6 +641,7 @@ let homeEditMode = false;
 let homeTileOrder: string[] = [];
 let hiddenHomeTiles = new Set<string>();
 let draggingHomeTileId: string | null = null;
+let homeTileArrangementNotice = "";
 let friendCode: string | null = null;
 let friendDisplayId: string | null = null;
 let claimedOslUsername: string | null = null;
@@ -4498,7 +4499,7 @@ export function primarySidebarBadge(label: string, labels: readonly string[]): s
 export function primarySidebarMarkup(): string {
   const destinationLabels = oslPrimaryDestinations.map((destination) => destination.label);
   const activeDestination = (id: OslPrimaryDestination): boolean => {
-    if (id === "home") return route === "home" && !friendsDialogOpen;
+    if (id === "home") return (route === "home" || route === "arrange-tiles") && !friendsDialogOpen;
     if (id === "inbox") return route === "inbox" || route === "osl-chat" || route === "osl-mail";
     if (id === "people") return route === "people" || friendsDialogOpen || (route === "settings" && settingsSection === "whitelisting");
     if (id === "privacy") return route === "privacy" || route === "scrub" || (route === "settings" && (settingsSection === "privacy" || settingsSection === "scrub" || settingsSection === "cleanup" || settingsSection === "appearance"));
@@ -4744,7 +4745,7 @@ function nativeDiscordHeaderControls(): string {
 
 function trustedHeader(): string {
   // Service controls stay compact; deeper setup remains progressively disclosed.
-  if (route === "home" || route === "inbox" || route === "people" || route === "privacy" || route === "scrub" || route === "activity" || route === "connections" || route === "osl-chat" || route === "osl-mail") return homeHeader();
+  if (route === "home" || route === "arrange-tiles" || route === "inbox" || route === "people" || route === "privacy" || route === "scrub" || route === "activity" || route === "connections" || route === "osl-chat" || route === "osl-mail") return homeHeader();
   if (route === "mullvad") {
     return `<div class="trusted-stack"><header class="workspace-header mullvad-host-header"><button class="button compact" id="mullvad-return" type="button">${mullvadReturnRoute === "onboarding" ? "Back to setup" : "Back to Home"}</button><div class="service-context"><span><strong>Mullvad</strong><small>Existing session · capture resistance does not cover Mullvad</small></span></div></header></div>`;
   }
@@ -5080,6 +5081,40 @@ function homeFriendsPanelMarkup(): string {
   return `<aside class="home-friends-panel" aria-label="Friends"><div class="home-friends-scroll"><header class="home-friends-head"><button class="home-friends-collapse" type="button" data-collapse-friends aria-label="Hide the Friends panel"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></button><h2>Friends</h2></header><form id="add-friend-form" class="home-friends-add"><input id="friend-code-input" placeholder="Paste an invite or type a username" aria-label="Paste an invite or type a username" autocomplete="off" autocapitalize="none" spellcheck="false"/><button type="submit">Add</button></form><p class="form-status" id="friend-form-status" role="status"></p><h3 class="home-friends-label">Pending</h3><div class="home-friends-list">${pendingRows}</div><h3 class="home-friends-label">Verified</h3><div class="home-friends-list">${verifiedRows}</div></div><footer class="home-friends-foot">${footer}</footer></aside>`;
 }
 
+/** A focused, non-destructive arrangement surface; its exits always return Home. */
+function arrangeTilesContent(): string {
+  const launchableApps = homeAppsFromServices(services).filter((app) => app.visibility === "launch");
+  const modules = [
+    { id: "osl-chats", name: "OSL Chat", available: true },
+    { id: "osl-mail", name: "OSL Mail", available: false },
+    { id: "osl-notes", name: "OSL Notes", available: false },
+    { id: "scrub", name: "Scrub", available: true },
+  ] as const;
+  const appsById = new Map(launchableApps.map((app) => [app.id, app]));
+  const modulesById = new Map(modules.map((module) => [module.id, module]));
+  const arranged = normalizeHomeTileArrangement(
+    [...launchableApps.map((app) => app.id), ...modules.map((module) => module.id)],
+    { order: homeTileOrder, hidden: [...hiddenHomeTiles] },
+  );
+  const hidden = new Set(arranged.hidden);
+  const tile = (id: string, isHidden: boolean): string => {
+    const position = arranged.order.indexOf(id);
+    const module = modulesById.get(id as typeof modules[number]["id"]);
+    const app = appsById.get(id as HomeAppId);
+    if (!module && !app) return "";
+    const name = module?.name ?? app?.displayName ?? id;
+    const icon = module ? homeModuleIcon(module.id) : homeAppLogo(app!);
+    const state = module ? (module.available ? "Ready" : "Coming later") : (app!.launchState === "available" ? "Ready" : "Coming later");
+    const visibilityAction = isHidden ? "Show" : "Hide";
+    const visibilityLabel = isHidden ? `Show ${name} on Home` : `Hide ${name} from Home`;
+    return `<article class="arrange-tile ${isHidden ? "is-hidden" : ""}" data-tile-id="${escapeHtml(id)}" data-arrange-tile-id="${escapeHtml(id)}" draggable="true" role="listitem" aria-label="${escapeHtml(name)} tile, position ${position + 1}${isHidden ? ", hidden" : ""}"><span class="arrange-tile-grip" aria-hidden="true">⠿</span><span class="app-logo-plate arrange-tile-logo" aria-hidden="true">${icon}</span><span class="arrange-tile-copy"><strong>${escapeHtml(name)}</strong><small>${state}${isHidden ? " · Hidden from Home" : ""}</small></span><span class="arrange-tile-actions"><button class="button compact" type="button" data-tile-move="${escapeHtml(id)}:-1" ${position === 0 ? "disabled" : ""} aria-label="Move ${escapeHtml(name)} earlier">←</button><button class="button compact" type="button" data-tile-move="${escapeHtml(id)}:1" ${position === arranged.order.length - 1 ? "disabled" : ""} aria-label="Move ${escapeHtml(name)} later">→</button><button class="button compact ${isHidden ? "primary" : ""}" type="button" data-tile-toggle="${escapeHtml(id)}" aria-label="${escapeHtml(visibilityLabel)}">${visibilityAction}</button></span></article>`;
+  };
+  const visible = arranged.order.filter((id) => !hidden.has(id));
+  const hiddenIds = arranged.order.filter((id) => hidden.has(id));
+  const notice = homeTileArrangementNotice ? `<p class="arrange-tile-notice" role="status" aria-live="polite">${escapeHtml(homeTileArrangementNotice)}</p>` : "";
+  return `<main class="content-viewport arrange-tiles-screen" aria-labelledby="route-heading"><header class="arrange-tiles-header"><div><p class="eyebrow">Home</p><h1 id="route-heading" tabindex="-1">Arrange tiles</h1><p>Drag a tile or use the arrows to choose its place. Hidden tiles can be restored here whenever you need them.</p></div><div class="arrange-tiles-exits"><button class="button compact" type="button" data-arrange-back>Back to Home</button><button class="button primary" type="button" data-arrange-done>Done</button></div></header>${notice}<section class="arrange-tile-list" aria-labelledby="arrange-visible-heading"><header><div><h2 id="arrange-visible-heading">Shown on Home</h2><p>${visible.length} tile${visible.length === 1 ? "" : "s"} shown</p></div><span class="arrange-drag-note" aria-hidden="true">⠿ Drag to reorder</span></header><div class="arrange-tile-stack" role="list" aria-label="Tiles shown on Home">${visible.map((id) => tile(id, false)).join("")}</div></section>${hiddenIds.length ? `<section class="arrange-tile-list arrange-hidden-list" aria-labelledby="arrange-hidden-heading"><header><div><h2 id="arrange-hidden-heading">Hidden tiles</h2><p>Restoring a tile keeps its saved position.</p></div></header><div class="arrange-tile-stack" role="list" aria-label="Hidden tiles">${hiddenIds.map((id) => tile(id, true)).join("")}</div></section>` : ""}</main>`;
+}
+
 function workspaceContent(): string {
   if (route === "mullvad") return `<main class="content-viewport host-viewport native-host-open" id="route-heading" tabindex="-1" aria-label="Your existing Mullvad window is open inside OSL"><span class="sr-only">Mullvad remains a separate foreign application. OSL does not read its account or VPN state.</span></main>`;
   if (route === "inbox") return inboxDestinationContent();
@@ -5093,6 +5128,7 @@ function workspaceContent(): string {
   if (route === "osl-servers") return oslServersContent();
   if (route === "settings") return settingsContent();
   if (route === "service" && activeService) return serviceContent();
+  if (route === "arrange-tiles") return arrangeTilesContent();
   const launchableHomeApps = homeAppsFromServices(services).filter((app) => app.visibility === "launch");
   const roadmapHomeApps = launchableHomeApps.filter((app) => app.launchState !== "available");
   const rememberedHomeApps = new Set<HomeAppId>(hasExplicitOnboardingAppSelection
@@ -8667,7 +8703,10 @@ function bindWorkspace(): void {
     render();
   });
   document.querySelector("#native-app-back")?.addEventListener("click", async () => { await closeActiveServiceSurface(); serviceAccountPickerOpen = false; route = "home"; activeService = null; activeHomeAppId = null; render(); });
-  document.querySelectorAll("[data-edit-home]").forEach((button) => button.addEventListener("click", () => { homeEditMode = !homeEditMode; render(); }));
+  document.querySelectorAll("[data-edit-home]").forEach((button) => button.addEventListener("click", () => { route = "arrange-tiles"; homeEditMode = false; render(); }));
+  document.querySelectorAll<HTMLButtonElement>("[data-arrange-home]").forEach((button) => button.addEventListener("click", () => { route = "arrange-tiles"; homeEditMode = false; render(); }));
+  document.querySelector<HTMLButtonElement>("[data-arrange-back]")?.addEventListener("click", () => { route = "home"; homeEditMode = false; render(); });
+  document.querySelector<HTMLButtonElement>("[data-arrange-done]")?.addEventListener("click", () => { route = "home"; homeEditMode = false; render(); });
   document.querySelector("#home-add-apps")?.addEventListener("click", () => {
     route = "settings";
     settingsSection = "apps";
@@ -9210,6 +9249,8 @@ function moveHomeTile(raw: string): void {
   homeTileOrder = arranged.order;
   hiddenHomeTiles = new Set(arranged.hidden);
   saveHomeTilePreferences();
+  const position = arranged.order.indexOf(id) + 1;
+  homeTileArrangementNotice = position > 0 ? `Moved ${id} to position ${position}.` : "Tile order saved.";
   render();
 }
 
@@ -9221,6 +9262,7 @@ function reorderHomeTile(sourceId: string | null, targetId: string | null): void
   homeTileOrder = arranged.order;
   hiddenHomeTiles = new Set(arranged.hidden);
   saveHomeTilePreferences();
+  if (sourceId && targetId) homeTileArrangementNotice = `Moved ${sourceId} before ${targetId}.`;
   render();
 }
 
@@ -9240,6 +9282,7 @@ function toggleHomeTile(id: string): void {
   homeTileOrder = arranged.order;
   hiddenHomeTiles = new Set(arranged.hidden);
   saveHomeTilePreferences();
+  homeTileArrangementNotice = hiddenHomeTiles.has(id) ? `Hidden ${id} from Home.` : `Restored ${id} to Home.`;
   render();
 }
 
@@ -11302,6 +11345,7 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   homeFriendsPanelCollapsed = false;
   homeTileOrder = [];
   hiddenHomeTiles.clear();
+  homeTileArrangementNotice = "";
   ownedConfirmation = null;
   ownedConfirmationBusy = false;
   ownedConfirmationError = "";
