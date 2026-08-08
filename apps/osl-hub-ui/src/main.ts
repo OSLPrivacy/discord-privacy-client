@@ -10,6 +10,7 @@ import "./friend-invite.css";
 import "./friend-page.css";
 import "./recovery-screen.css";
 import "./onboarding-mullvad.css";
+import "./appearance-settings.css";
 import { invoke } from "@tauri-apps/api/core";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -220,6 +221,7 @@ export {
 } from "./autoscrub-unattended-run";
 import { initializeThemePreference, themeStorageKey, type ThemeChoice } from "./theme-preference";
 import { defaultWindowSoundsSettings, loadWindowSoundsSettings, saveWindowSoundsSettings, windowSoundsSettingsMarkup, type WindowPosition, type WindowSoundsSettings } from "./window-sounds-settings";
+import { accentChoices, appearanceSettingsMarkup, avatarChoices, backgroundChoices, loadAppearancePreferences, resetAppearancePreferences, saveAppearancePreferences, windowPositionChoices, type AppearancePreferences } from "./appearance-preferences";
 import { inDomTooltipMarkup } from "./in-dom-tooltip";
 import { applyOslChatDraftToElement, firstPartyOslSurfaceContract, OSL_CHAT_MAX_DRAFT_BYTES, oslChatDraftBytes, oslChatHandshakeConfirmed, oslChatsViewMarkup, senderReceiptStateFor, submitsOslChatDraft, type OslChatMessage } from "./osl-chats-view";
 import { createOslChatDeliveryRuntime, mergeOslChatTimeline, oslChatHistoryMessages, oslChatOpenRefusalMessage, pruneExpiredOslChatMessages, receivedOslChatBatchMessage, type OslChatDeliveryHost } from "./osl-chat-runtime";
@@ -676,6 +678,8 @@ let identityStorageMethod: string | null = null;
 const knownIdentityStorageMethods = new Map<string, string>();
 let decryptDisplay = true;
 let themeChoice: ThemeChoice = initializeThemePreference(localStorage);
+let appearancePreferences: AppearancePreferences = loadAppearancePreferences(localStorage);
+let savedAppearancePreferences: AppearancePreferences = { ...appearancePreferences };
 let sidebarOrder: string[] = [];
 let hiddenServices = new Set<string>();
 let homeEditMode = false;
@@ -1507,6 +1511,11 @@ function applyTheme(choice: ThemeChoice): void {
     : choice;
   document.documentElement.dataset.theme = resolved;
   document.documentElement.dataset.themeChoice = choice;
+}
+
+function saveAppearance(next: AppearancePreferences): void {
+  appearancePreferences = next;
+  render();
 }
 
 function orderedServices(): LinkedService[] {
@@ -7422,7 +7431,8 @@ function activationSettingsContent(): string {
 }
 
 function appearanceSettingsContent(): string {
-  return `<h2>Appearance</h2><p>Choose a theme. Arrange apps with Edit on Home.</p><div class="theme-grid">${(["system", "dark", "light"] as ThemeChoice[]).map((choice) => `<button class="theme-card ${themeChoice === choice ? "selected" : ""}" data-theme-choice="${choice}"><span class="theme-swatch ${choice}"></span><strong>${choice[0].toUpperCase()}${choice.slice(1)}</strong><small>${choice === "system" ? "Follow this device" : `${choice} interface`}</small></button>`).join("")}</div>`;
+  const theme = `<div class="theme-grid">${(["system", "dark", "light"] as ThemeChoice[]).map((choice) => `<button class="theme-card ${themeChoice === choice ? "selected" : ""}" data-theme-choice="${choice}"><span class="theme-swatch ${choice}"></span><strong>${choice[0].toUpperCase()}${choice.slice(1)}</strong><small>${choice === "system" ? "Follow this device" : `${choice} interface`}</small></button>`).join("")}</div>`;
+  return `${appearanceSettingsMarkup(appearancePreferences)}<section class="appearance-theme"><h3>Theme</h3>${theme}</section>`;
 }
 
 function developerSettingsContent(): string {
@@ -9022,6 +9032,38 @@ function bindWorkspace(): void {
     applyTheme(next);
     render();
   }));
+  document.querySelectorAll<HTMLButtonElement>("[data-appearance-accent]").forEach((button) => button.addEventListener("click", () => {
+    const accent = button.dataset.appearanceAccent;
+    if (accent && accentChoices.includes(accent as typeof accentChoices[number])) saveAppearance({ ...appearancePreferences, accent: accent as typeof accentChoices[number] });
+  }));
+  document.querySelectorAll<HTMLButtonElement>("[data-appearance-background]").forEach((button) => button.addEventListener("click", () => {
+    const background = button.dataset.appearanceBackground;
+    if (background && backgroundChoices.includes(background as typeof backgroundChoices[number])) saveAppearance({ ...appearancePreferences, background: background as typeof backgroundChoices[number] });
+  }));
+  document.querySelectorAll<HTMLButtonElement>("[data-appearance-avatar]").forEach((button) => button.addEventListener("click", () => {
+    const avatar = button.dataset.appearanceAvatar;
+    if (avatar && avatarChoices.includes(avatar as typeof avatarChoices[number])) saveAppearance({ ...appearancePreferences, avatar: avatar as typeof avatarChoices[number] });
+  }));
+  document.querySelector<HTMLSelectElement>("[data-appearance-window-position]")?.addEventListener("change", (event) => {
+    const windowPosition = (event.currentTarget as HTMLSelectElement).value;
+    if (windowPositionChoices.includes(windowPosition as typeof windowPositionChoices[number])) saveAppearance({ ...appearancePreferences, windowPosition: windowPosition as typeof windowPositionChoices[number] });
+  });
+  document.querySelector<HTMLInputElement>("[data-appearance-tray]")?.addEventListener("change", (event) => saveAppearance({ ...appearancePreferences, keepInTray: (event.currentTarget as HTMLInputElement).checked }));
+  document.querySelector<HTMLInputElement>("[data-appearance-sounds]")?.addEventListener("change", (event) => saveAppearance({ ...appearancePreferences, sounds: (event.currentTarget as HTMLInputElement).checked }));
+  document.querySelector<HTMLButtonElement>("[data-save-appearance]")?.addEventListener("click", () => {
+    appearancePreferences = saveAppearancePreferences(localStorage, appearancePreferences);
+    savedAppearancePreferences = { ...appearancePreferences };
+    render();
+  });
+  document.querySelector<HTMLButtonElement>("[data-cancel-appearance]")?.addEventListener("click", () => {
+    appearancePreferences = { ...savedAppearancePreferences };
+    render();
+  });
+  document.querySelector<HTMLButtonElement>("[data-reset-appearance]")?.addEventListener("click", () => {
+    appearancePreferences = resetAppearancePreferences(localStorage);
+    savedAppearancePreferences = { ...appearancePreferences };
+    render();
+  });
   document.querySelector("#service-guide-next")?.addEventListener("click", () => {
     if (serviceGuideStep !== null) setServiceGuideStep(nextServiceGuideStep(serviceGuideStep));
   });
