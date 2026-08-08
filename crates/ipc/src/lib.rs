@@ -226,6 +226,9 @@ pub use commands::{
 };
 pub use state::AppState;
 
+#[cfg(test)]
+mod task_0278_remove_friend_not_block;
+
 use serde::Serialize;
 use thiserror::Error;
 
