@@ -136,6 +136,8 @@ pub mod installed_build;
 pub mod installed_build_version;
 pub mod instagram_story;
 pub mod invite_clipboard;
+/// Fail-closed availability gate for Instagram's desktop story controls.
+pub mod instagram_story_tools;
 /// The landing oracle: did this exact text land in the composer? Judged
 /// through channels that did not write it. Pure above its syscall seam, so the
 /// verdict is testable in every build that can compile this crate.
