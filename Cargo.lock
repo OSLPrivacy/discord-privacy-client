@@ -346,7 +346,9 @@ dependencies = [
  "llama-cpp-sys-2",
  "osl-cover-draft",
  "rand 0.8.6",
+ "sha2",
  "stego",
+ "tempfile",
  "trybuild",
  "zeroize",
 ]
