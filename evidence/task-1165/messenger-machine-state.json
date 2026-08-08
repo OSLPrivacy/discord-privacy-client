@@ -1,0 +1,17 @@
+{
+  "task": "1165",
+  "machine": "osl-messenger-1165",
+  "resourceGroup": "OSL-MESSENGER-QA-1165",
+  "region": "polandcentral",
+  "powerState": "VM running",
+  "size": "Standard_B2s_v2",
+  "browser": {
+    "name": "Microsoft Edge",
+    "version": "151.0.4129.72",
+    "url": "https://www.facebook.com/messages/"
+  },
+  "testAccountCredentialSource": {
+    "azureKeyVaultCount": 0,
+    "status": "unavailable"
+  }
+}
