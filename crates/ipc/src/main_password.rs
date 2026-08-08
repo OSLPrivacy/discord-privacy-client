@@ -208,6 +208,11 @@ pub struct RecoveryWordCheckDto {
     pub checked: Vec<RecoveryWordCheckedDto>,
 }
 
+/// Setup asks for three selected recovery words. The command must validate the
+/// complete, position-ordered selection rather than accepting any non-empty
+/// subset of correct answers as confirmation.
+pub const RECOVERY_WORD_CONFIRMATION_COUNT: usize = 3;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerifyFailureDto {
     pub ok: bool, // always false on this path
@@ -1042,6 +1047,10 @@ pub fn check_recovery_words(
 ) -> Result<RecoveryWordCheckDto, String> {
     let phrase = Zeroizing::new(view_recovery_phrase(dir, current)?);
     let words: Vec<&str> = phrase.split_whitespace().collect();
+    let has_complete_ordered_selection = entries.len() == RECOVERY_WORD_CONFIRMATION_COUNT
+        && entries
+            .windows(2)
+            .all(|pair| pair[0].position < pair[1].position);
     let checked = entries
         .iter()
         .map(|entry| {
@@ -1059,7 +1068,7 @@ pub fn check_recovery_words(
         })
         .collect::<Vec<_>>();
     Ok(RecoveryWordCheckDto {
-        ok: !checked.is_empty() && checked.iter().all(|entry| entry.matched),
+        ok: has_complete_ordered_selection && checked.iter().all(|entry| entry.matched),
         checked,
     })
 }
