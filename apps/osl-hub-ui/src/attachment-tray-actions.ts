@@ -20,6 +20,8 @@ export interface AttachmentTrayActionsState {
 export interface AttachmentTrayActions {
   getState(): AttachmentTrayActionsState;
   getCards(): readonly AttachmentTrayCard[];
+  /** Appends checked records admitted by a picker, paste, or drop intake. */
+  addCards(cards: readonly AttachmentTrayCard[]): void;
   /** Removes one card by its tray `removableId`. No-op if not present. */
   removeCard(removableId: string): void;
   /** Marks the start of one in-flight attachment check. */
@@ -45,6 +47,11 @@ export function createAttachmentTrayActions(initialCards: readonly AttachmentTra
   return {
     getState: state,
     getCards: () => cards,
+    addCards(nextCards) {
+      if (nextCards.length === 0) return;
+      cards = [...cards, ...nextCards];
+      notify();
+    },
     removeCard(removableId) {
       const next = cards.filter((card) => card.removableId !== removableId);
       if (next.length === cards.length) return;

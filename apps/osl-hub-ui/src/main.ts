@@ -235,8 +235,8 @@ import { burnFeatureClaimsMarkup } from "./feature-claims";
 import { removeEverythingScreenMarkup } from "./remove-everything-screen";
 import { burnRevocationReceipt, type BurnRevocationReceipt } from "./burn-revocation-receipt";
 import { senderReceiptStatus } from "./receipt-status";
-import { parseAttachmentProgressEvent, type AttachmentProgressEvent } from "./attachment-progress";
-import { attachOslChatComposerDragAndDrop, createOslChatAttachmentTray, type OslChatAttachmentTrayState } from "./chat-attachment-drop";
+import { attachmentProgressMarkup, parseAttachmentProgressEvent, type AttachmentProgressEvent } from "./attachment-progress";
+import { attachOslChatComposerDragAndDrop, attachmentTrayMarkup, createOslChatAttachmentTray, type OslChatAttachmentTrayState } from "./chat-attachment-drop";
 import { initialBurnReviewScreenState, type BurnReviewScreenState } from "./burn-review-screen";
 import { destructStatusMarkup, type ServerDestructStatus } from "./destruct-status";
 import { offlineCapabilityStatus, type OfflineUnavailableCapability, type OslConnectionState } from "./offline-capability-status";
@@ -5596,6 +5596,16 @@ function oslChatContent(): string {
   });
   const settingsPerson = oslChatSettingsPersonId ? hubPeople.find((person) => person.personId === oslChatSettingsPersonId) ?? null : null;
   const settings = settingsPerson ? oslChatFriendSettingsMarkup(settingsPerson) : "";
+  const attachments = activeOslChatContext?.scopeApproved && pro
+    ? `<section class="osl-chat-attachments" aria-label="Encrypted attachments"><header><strong>Attachments</strong><button class="button compact" id="osl-chat-attach" type="button" ${oslChatBusy ? "disabled" : ""}>Choose file</button></header>${[...attachmentProgressByContext.values()].map(attachmentProgressMarkup).join("")}${oslChatAttachments.length ? oslChatAttachments.map((item) => `<button class="setting-line" data-osl-chat-attachment="${escapeHtml(item.attachmentId)}" type="button"><span><strong>${escapeHtml(item.originalFilename)}</strong><small>${item.viewOnce ? "View once · " : ""}${item.plaintextSize.toLocaleString("en-US")} bytes</small></span>${statusTag("Open")}</button>`).join("") : `<p>No pending attachments.</p>`}<small>Images open in OSL's capture-resistant viewer. Other supported files open temporarily in their Windows viewer, which may allow capture.</small></section>`
+    : "";
+  const droppedFiles = oslChatDropTray.attachments.length
+    ? attachmentTrayMarkup(oslChatDropTray)
+    : "";
+  const receipt = activeOslChatPersonId
+    ? oslChatSenderReceiptMarkup(oslChatMessages.get(activeOslChatPersonId) ?? [])
+    : "";
+  const offlineStatus = oslRelayConnectionState() === "offline" ? offlineCapabilitiesMarkup() : "";
   return `<main class="osl-chat-page" aria-label="OSL Chats">${oslChatsViewMarkup({
     friends,
     activePersonId: activeOslChatPersonId,
@@ -5613,7 +5623,7 @@ function oslChatContent(): string {
     buildIntegrity: buildIntegrityStatus,
     verificationWarningSurface: oslChatVerificationWarningSurface,
     buildWarning: installedBuildChatWarning,
-  })}${settings}</main>`;
+  })}${offlineStatus}${receipt}${droppedFiles}${attachments}${settings}</main>`;
 }
 
 /** Browser offline is a reliable negative signal; any other state stays unknown. */
