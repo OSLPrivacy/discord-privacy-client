@@ -166,7 +166,6 @@ export interface OslChatsViewModel {
   buildIntegrity?: OslChatBuildIntegrityStatus | null;
   verificationWarningSurface?: VerificationWarningSurface;
   buildWarning?: OslChatBuildWarning | null;
-  verificationWarningSurface?: VerificationWarningSurface;
 }
 
 export type OslChatBuildIntegrityStatus = "verified" | "mismatch" | "unknown";
@@ -389,6 +388,8 @@ function buildIntegrityWarningRow(status: OslChatBuildIntegrityStatus | null | u
     ? "This app copy does not match OSL's signed build list. You can still send messages, but update or reinstall OSL before trusting this build."
     : "OSL could not verify this app copy against its signed build list. You can still send messages, but update or reinstall OSL before trusting this build.";
   return `<p class="osl-chat-build-warning warning" role="status" data-osl-build-integrity="${status}"><strong>Build verification warning</strong><small>${escapeHtml(detail)}</small></p>`;
+}
+
 function buildWarningRow(warning: OslChatBuildWarning | null | undefined): string {
   if (!warning || warning.kind !== "changedBuild" || warning.messageSendingAvailable !== true) {
     return "";

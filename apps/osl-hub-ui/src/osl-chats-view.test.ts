@@ -139,6 +139,8 @@ describe("OSL chats view", () => {
 
     expect(oslChatsViewMarkup(model({ draft: "Hello", buildIntegrity: "verified" })))
       .not.toContain("Build verification warning");
+  });
+
   it("TASK0434 starts direct chats only when both peers have answered", () => {
     const supported = [
       friend({ personId: "supporting-peer-1", nickname: "Rose", handshakeConfirmed: true }),
@@ -164,6 +166,8 @@ describe("OSL chats view", () => {
     console.log(`TASK0434 unsupported_peers_cannot_silently_send_weakly=${unsupportedWeaklyBlocked ? 1 : 0} state=one-way`);
     expect(supportedEnabled).toBe(2);
     expect(unsupportedWeaklyBlocked).toBe(true);
+  });
+
   it("shows the changed-build warning for changed and corrupt proofs while send stays available", () => {
     for (const [reason, marker] of [["changed", "changed"], ["corruptProof", "corrupt-proof"]] as const) {
       const markup = oslChatsViewMarkup(model({
