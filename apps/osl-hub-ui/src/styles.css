@@ -12811,6 +12811,13 @@ code {
   background: var(--panel);
 }
 
+.enclave-channel-permissions {
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+
 .owner-role-editor-header,
 .owner-role-editor-header > div,
 .owner-role-form > header,
@@ -12859,6 +12866,58 @@ code {
   .owner-role-editor-grid { grid-template-columns: 1fr; }
   .owner-role-list { border-right: 0; border-bottom: 1px solid var(--line); }
   .owner-role-fields, .owner-role-limits, .owner-role-toggle-grid, .owner-role-permissions > div { grid-template-columns: 1fr; }
+}
+
+.enclave-channel-permissions > header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.enclave-channel-permissions h2,
+.enclave-channel-permissions p { margin: 0; }
+.enclave-channel-permissions h2 { font-size: 15px; }
+.enclave-channel-permissions p,
+.enclave-channel-permissions small { color: var(--muted); font-size: 11px; line-height: 1.45; }
+.enclave-channel-permissions header > span:first-child { display: grid; gap: 3px; }
+
+.enclave-channel-sync-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 9px;
+}
+
+.enclave-channel-sync-label {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+[data-permission-sync="changed"] .enclave-channel-sync-label { color: var(--warning); }
+.enclave-channel-permission-list { margin: 0; padding: 0; list-style: none; }
+
+.enclave-channel-permission-row {
+  min-height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.enclave-channel-permission-row:last-child { border-bottom: 0; }
+.enclave-channel-permission-row > span:first-child { display: grid; gap: 2px; }
+.enclave-channel-permission-choices { display: flex; gap: 4px; }
+.enclave-channel-permission-choices [aria-pressed="true"] { color: var(--brand); background: var(--brand-wash); }
+
+@media (max-width: 620px) {
+  .enclave-channel-permissions > header { grid-template-columns: 1fr; }
+  .enclave-channel-sync-actions { justify-content: space-between; }
 }
 
 /* --- Connections ---------------------------------------------------------- */
