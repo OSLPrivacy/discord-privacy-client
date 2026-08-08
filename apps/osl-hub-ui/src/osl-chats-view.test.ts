@@ -139,6 +139,8 @@ describe("OSL chats view", () => {
     // a request, and pinned as NOT a completion. Master 7.5.
     expect(markup).toContain("Kept out of OSL history");
     expect(markup).toContain("asks for the sent copy to be deleted");
+    expect(markup).toMatch(/making one needs\s+Pro/u);
+    expect(markup).toMatch(/opening one is\s+free/u);
     expect(markup).not.toMatch(/\bRemoved after it is opened\b/u);
     expect(markup).toMatch(/id="osl-chat-view-once" type="checkbox" checked/u);
   });

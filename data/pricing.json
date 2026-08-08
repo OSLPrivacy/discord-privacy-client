@@ -109,7 +109,7 @@
         "Sending encrypted images",
         "Sending other kinds of file",
         "AutoScrub",
-        "View once, expiry and burn",
+        "Making view-once items (opening them remains Free), expiry and burn",
         "AI-written cover text"
       ],
       "$includes_note": "Owner decision 2026-07-26: keep selling, but as a STATED early-access purchase. The purchase summary may only list capabilities with sellable:true in capability_registry, so encrypted image sending is never sold present-tense. works_today and arrives_at_v1 drive the checkout copy and are enforced by check-claims on checkout surfaces."

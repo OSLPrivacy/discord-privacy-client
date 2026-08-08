@@ -2329,7 +2329,7 @@ function welcomeOnboardingContent(): string {
 
 function proSetupContent(): string {
   const pro = licenseState.access === "pro" || licenseState.access === "offlineGrace";
-  if (pro && !proOnboardingCodeEntryRequested) return `<section class="pro-setup onboarding-centered-step" aria-labelledby="route-heading">${statusTag("Pro active", "active")}<h1 id="route-heading" tabindex="-1">OSL Pro is ready</h1><p class="compact-lead onboarding-centered-copy">Pro features are available on this device.</p><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-pro-ready" type="button">Continue</button></div></section>`;
+  if (pro && !proOnboardingCodeEntryRequested) return `<section class="pro-setup onboarding-centered-step" aria-labelledby="route-heading">${statusTag("Pro active", "active")}<h1 id="route-heading" tabindex="-1">OSL Pro is ready</h1><p class="compact-lead onboarding-centered-copy">Pro features are available on this device. Making view-once items needs Pro; opening one is free.</p><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-pro-ready" type="button">Continue</button></div></section>`;
   // No third variant. Requesting code entry (Back on the ready screen) shows
   // the actual code form below even while a licence is active -- that request
   // is the only reason `proOnboardingCodeEntryRequested` exists. A second
@@ -5956,8 +5956,11 @@ function oslChatContent(): string {
   });
   const settingsPerson = oslChatSettingsPersonId ? hubPeople.find((person) => person.personId === oslChatSettingsPersonId) ?? null : null;
   const settings = settingsPerson ? oslChatFriendSettingsMarkup(settingsPerson) : "";
-  const attachments = activeOslChatContext?.scopeApproved && pro
-    ? `<section class="osl-chat-attachments" aria-label="Encrypted attachments"><header><strong>Attachments</strong><button class="button compact" id="osl-chat-attach" type="button" ${oslChatBusy ? "disabled" : ""}>Choose file</button></header>${[...attachmentProgressByContext.values()].map(attachmentProgressMarkup).join("")}${oslChatAttachments.length ? oslChatAttachments.map((item) => `<button class="setting-line" data-osl-chat-attachment="${escapeHtml(item.attachmentId)}" type="button"><span><strong>${escapeHtml(item.originalFilename)}</strong><small>${item.viewOnce ? "View once · " : ""}${item.plaintextSize.toLocaleString("en-US")} bytes</small></span>${statusTag("Open")}</button>`).join("") : `<p>No pending attachments.</p>`}<small>Images open in OSL's capture-resistant viewer. Other supported files open temporarily in their Windows viewer, which may allow capture.</small></section>`
+  const attachmentCreation = pro
+    ? `<button class="button compact" id="osl-chat-attach" type="button" ${oslChatBusy ? "disabled" : ""}>Choose file</button>`
+    : `<span class="quiet-note">Pro is required to make an attachment.</span>`;
+  const attachments = activeOslChatContext?.scopeApproved
+    ? `<section class="osl-chat-attachments" aria-label="Encrypted attachments"><header><strong>Attachments</strong>${attachmentCreation}</header>${pro ? [...attachmentProgressByContext.values()].map(attachmentProgressMarkup).join("") : ""}${oslChatAttachments.length ? oslChatAttachments.map((item) => `<button class="setting-line" data-osl-chat-attachment="${escapeHtml(item.attachmentId)}" type="button"><span><strong>${escapeHtml(item.originalFilename)}</strong><small>${item.viewOnce ? "View once · " : ""}${item.plaintextSize.toLocaleString("en-US")} bytes</small></span>${statusTag("Open")}</button>`).join("") : `<p>No pending attachments.</p>`}<small>Opening a received view-once item is free. Images open in OSL's capture-resistant viewer. Other supported files open temporarily in their Windows viewer, which may allow capture.</small></section>`
     : "";
   const droppedFiles = oslChatDropTray.attachments.length
     ? attachmentTrayMarkup(oslChatDropTray)

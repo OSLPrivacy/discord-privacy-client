@@ -734,12 +734,12 @@ Monetization should remain understandable:
 - Timers and retention for OSL-native text.
 - Email tracker warnings and link sanitization.
 - Sensitive-history scanning and a category summary.
-- No encrypted images, image attachments, image cleanup or view-once media.
+- No encrypted images, image attachments, image cleanup or creation of view-once media. Free users can still open view-once items they receive.
 - No manual, guided, bulk or unattended history cleanup execution.
 
 ### Pro
 
-- Encrypted images, files, attachment sanitization and view-once media.
+- Encrypted images, files, attachment sanitization and creation of view-once media. Receiving and opening view-once items remains Free.
 - Guided manual cleanup, bulk cleanup where supported and verified receipts.
 - Advanced retention schedules and the customer-controlled Always-On Retention Agent.
 - Full exposure and cleanup workspace.

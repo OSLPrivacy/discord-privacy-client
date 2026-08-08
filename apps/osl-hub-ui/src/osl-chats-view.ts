@@ -560,7 +560,7 @@ function activeThread(model: OslChatsViewModel, friend: OslChatFriend): string {
         // its value. An off state here would need a reason nobody needs to
         // read, and the Send button is the real in-flight guard.
         iconMarkup: onceIcon,
-        detail: "Kept out of OSL history. OSL asks for the sent copy to be deleted once it is opened, and says here when it cannot confirm that.",
+        detail: "Making a view-once item needs Pro; opening one is free. Kept out of OSL history. OSL asks for the sent copy to be deleted once it is opened, and says here when it cannot confirm that.",
       })}<button class="osl-chat-emoji" type="button" aria-label="Choose emoji" ${keyChanged ? "disabled" : ""}>${emojiIcon}</button><button class="osl-chat-send" type="submit" aria-label="${model.busy ? "Sending" : "Send"}" data-osl-chat-peer-state="${peerState}" data-osl-chat-send-context="${mutualReady && !keyChanged && !model.busy ? "1" : "0"}" ${canSend ? "" : "disabled"}>${sendIcon}<span>${model.busy ? "Sending…" : "Send"}</span></button><span class="osl-chat-drop-outline" aria-hidden="true">Drop to attach</span></div>
       <div class="osl-chat-composer-meta"><span id="osl-chat-readiness" class="osl-chat-readiness">${readiness}</span><output id="osl-chat-draft-count" class="osl-chat-byte-count${withinLimit ? "" : " is-over"}">${withinLimit ? "" : `${bytes.toLocaleString("en-US")} / ${OSL_CHAT_MAX_DRAFT_BYTES.toLocaleString("en-US")}`}</output></div>
     </form>
