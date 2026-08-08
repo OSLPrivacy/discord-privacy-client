@@ -29,6 +29,7 @@ import { chooseForwardSecrecyMode, initialForwardSecrecyOnboardingState, onboard
 import { onboardingPasswordRoleContent as passwordRoleContent } from "./password-roles";
 import { chooseTorRoute, initialTorOnboardingState, onboardingTorMarkup, type TorOnboardingState } from "./onboarding-tor";
 import { chooseCoverInsertion, initialCoverInsertionChoice, onboardingCoverMarkup, type CoverInsertionChoice } from "./onboarding-cover";
+import { onboardingCaptureVisibilityMarkup } from "./onboarding-capture-visibility";
 import { continueButton } from "./onboarding-controls";
 import { CLEAN_FILES_CHOICES, initialBeforeSendChecks, onboardingBeforeSendMarkup, type BeforeSendChecks, type CleanFilesChoice } from "./onboarding-before-send";
 import { initialDeleteChoices, onboardingDeleteMarkup, type DeleteChoices } from "./onboarding-delete";
@@ -328,7 +329,7 @@ const NATIVE_DISCORD_COMPOSER_UNREACHABLE_EVENT = "osl://native-discord-composer
 // warning.
 const NATIVE_DISCORD_COMPOSER_UNREACHABLE_REASONS = ["zorder-band", "keyboard-focus", "session-ended"] as const;
 type NativeDiscordComposerUnreachableReason = (typeof NATIVE_DISCORD_COMPOSER_UNREACHABLE_REASONS)[number];
-type OnboardingRoute = "pro" | "welcome" | "create" | "import" | "unlock" | "keylost" | "account-recovery" | "recovery" | "recovery-check" | "mullvad" | "sending" | "defaults" | "tor" | "forward-secrecy" | "cover" | "passwords" | "burnpass" | "privacy" | "tutorial" | "detected" | "install" | "apps" | "browser" | "decoy";
+type OnboardingRoute = "pro" | "welcome" | "create" | "import" | "unlock" | "keylost" | "account-recovery" | "recovery" | "recovery-check" | "mullvad" | "sending" | "defaults" | "tor" | "forward-secrecy" | "cover" | "visibility" | "passwords" | "burnpass" | "privacy" | "tutorial" | "detected" | "install" | "apps" | "browser" | "decoy";
 type SettingsSection = "account" | "apps" | "scrub" | "cleanup" | "notifications" | "appearance" | "about";
 type SavedAccountMode = "ask" | "use" | "clean";
 type BurnScope = "chat" | "app" | "account";
@@ -1899,7 +1900,7 @@ function dockOnboardingBackControl(): void {
 }
 
 function onboardingSetupNavigationMarkup(): string {
-  return ["recovery-check", "pro", "forward-secrecy", "privacy", "defaults", "tor", "sending", "cover", "passwords", "burnpass", "browser", "detected", "install", "apps", "mullvad"].includes(onboardingRoute)
+  return ["recovery-check", "pro", "forward-secrecy", "privacy", "defaults", "tor", "sending", "cover", "visibility", "passwords", "burnpass", "browser", "detected", "install", "apps", "mullvad"].includes(onboardingRoute)
     ? `<div class="setup-footer onboarding-actions onboarding-nav"><button class="button ghost onboarding-back" id="onboarding-back" type="button">Back</button></div>`
     : "";
 }
@@ -1964,6 +1965,7 @@ function onboardingContent(): string {
   if (onboardingRoute === "tor") return onboardingTorMarkup(torOnboarding);
   if (onboardingRoute === "forward-secrecy") return onboardingForwardSecrecyMarkup(forwardSecrecyOnboarding);
   if (onboardingRoute === "cover") return coverDraftSetupContent();
+  if (onboardingRoute === "visibility") return onboardingCaptureVisibilityMarkup();
   if (onboardingRoute === "passwords") return onboardingPasswordRoleContent("stealth");
   if (onboardingRoute === "burnpass") return onboardingPasswordRoleContent("burn");
   if (onboardingRoute === "privacy") return onboardingPrivacyContent();
@@ -10221,6 +10223,7 @@ function scheduleOslChatBackgroundSync(delayMs = 30_000): void {
 type OslHubUiTestStatePatch = {
   route?: Route;
   onboardingRoute?: OnboardingRoute;
+  onboardingComplete?: boolean;
   setup?: Partial<SetupState>;
   coreReady?: boolean;
   storageMethod?: string | null;
@@ -10282,6 +10285,7 @@ function applyTestCoreState(ready: boolean, storageMethod: string | null, bootst
 function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   route = patch.route ?? "home";
   onboardingRoute = patch.onboardingRoute ?? "welcome";
+  onboardingComplete = patch.onboardingComplete ?? false;
   setup = { ...defaultSetup, ...patch.setup };
   settingsSection = "account";
   activeService = null;
