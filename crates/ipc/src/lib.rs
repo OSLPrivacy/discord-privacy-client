@@ -122,6 +122,9 @@ pub mod unfinished_onboarding;
 // Padmé applies to the stored transport object, outside the AEAD plaintext
 // padding boundary.  Expose it from the shipping IPC crate so the upload path
 // can consume the one canonical implementation as the object envelope lands.
+pub mod automatic_stop;
+/// Whole-service cost projection and threshold alarms over durable usage.
+pub mod cost_alarm;
 pub mod transport_padding;
 /// Durable, per-person attachment and daily activity accounting used by the
 /// storage-budget gate.
