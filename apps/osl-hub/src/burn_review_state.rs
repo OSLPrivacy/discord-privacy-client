@@ -1,10 +1,13 @@
-use std::path::{Path, PathBuf};
-use std::sync::Mutex;
-
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const BURN_REVIEW_STATE_VERSION: u8 = 1;
 const MAX_BURN_REVIEW_STATE_BYTES: u64 = 16 * 1024;
+const BURN_SCREEN_SCOPES: [&str; 3] = ["chat", "app", "account"];
 
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -53,11 +56,24 @@ pub struct BurnReviewFinalChoiceResult {
 struct BurnReviewDocument {
     version: u8,
     selection: Option<BurnReviewSelection>,
+    #[serde(default)]
+    screen_states: BTreeMap<String, BurnScreenState>,
+}
+
+impl Default for BurnReviewDocument {
+    fn default() -> Self {
+        Self {
+            version: BURN_REVIEW_STATE_VERSION,
+            selection: None,
+            screen_states: BTreeMap::new(),
+        }
+    }
 }
 
 #[derive(Default)]
 struct BurnReviewMemory {
     selection: Option<BurnReviewSelection>,
+    screen_states: BTreeMap<String, BurnScreenState>,
 }
 
 pub struct BurnReviewState {
@@ -67,10 +83,13 @@ pub struct BurnReviewState {
 
 impl BurnReviewState {
     pub fn load(path: PathBuf) -> Self {
-        let selection = read_state(&path).and_then(|document| document.selection);
+        let document = read_state(&path).unwrap_or_default();
         Self {
             path,
-            inner: Mutex::new(BurnReviewMemory { selection }),
+            inner: Mutex::new(BurnReviewMemory {
+                selection: document.selection,
+                screen_states: document.screen_states,
+            }),
         }
     }
 
@@ -110,6 +129,39 @@ impl BurnReviewState {
         self.inner
             .lock()
             .map(|state| state.selection.clone())
+            .map_err(|_| "burn review state lock is unavailable".to_owned())
+    }
+
+    /// Save the presentation state for one of the named burn screens.  This is
+    /// deliberately separate from the burn action: opening or changing a
+    /// screen never authorizes deletion.
+    pub fn save_burn_screen_command(
+        &self,
+        command: BurnScreenStateCommand,
+    ) -> Result<BurnScreenState, String> {
+        validate_burn_screen_scope(&command.scope)?;
+        let state = BurnScreenState {
+            selected_burn_time: normalize_screen_field(
+                "selected burn time",
+                command.selected_burn_time,
+            )?,
+            warning_text: normalize_screen_field("warning text", command.warning_text)?,
+        };
+        let mut memory = self
+            .inner
+            .lock()
+            .map_err(|_| "burn review state lock is unavailable".to_owned())?;
+        memory.screen_states.insert(command.scope, state.clone());
+        self.write_memory(&memory)?;
+        Ok(state)
+    }
+
+    /// Read a named burn screen without making any burn request.
+    pub fn get_burn_screen_command(&self, scope: &str) -> Result<Option<BurnScreenState>, String> {
+        validate_burn_screen_scope(scope)?;
+        self.inner
+            .lock()
+            .map(|state| state.screen_states.get(scope).cloned())
             .map_err(|_| "burn review state lock is unavailable".to_owned())
     }
 
@@ -188,18 +240,40 @@ impl BurnReviewState {
     }
 
     fn replace_selection(&self, selection: Option<BurnReviewSelection>) -> Result<(), String> {
-        let document = BurnReviewDocument {
-            version: BURN_REVIEW_STATE_VERSION,
-            selection: selection.clone(),
-        };
-        write_state(&self.path, &document)?;
         let mut state = self
             .inner
             .lock()
             .map_err(|_| "burn review state lock is unavailable".to_owned())?;
         state.selection = selection;
+        self.write_memory(&state)?;
         Ok(())
     }
+
+    fn write_memory(&self, memory: &BurnReviewMemory) -> Result<(), String> {
+        write_state(
+            &self.path,
+            &BurnReviewDocument {
+                version: BURN_REVIEW_STATE_VERSION,
+                selection: memory.selection.clone(),
+                screen_states: memory.screen_states.clone(),
+            },
+        )
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BurnScreenStateCommand {
+    pub scope: String,
+    pub selected_burn_time: String,
+    pub warning_text: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BurnScreenState {
+    pub selected_burn_time: String,
+    pub warning_text: String,
 }
 
 fn validate_selection(selection: &BurnReviewSelection) -> Result<(), String> {
@@ -207,6 +281,27 @@ fn validate_selection(selection: &BurnReviewSelection) -> Result<(), String> {
         return Err("burn review selection is invalid".to_owned());
     }
     Ok(())
+}
+
+fn validate_burn_screen_scope(scope: &str) -> Result<(), String> {
+    if BURN_SCREEN_SCOPES.contains(&scope) {
+        Ok(())
+    } else {
+        Err(format!("unknown burn screen scope: {scope}"))
+    }
+}
+
+fn normalize_screen_field(label: &str, value: String) -> Result<String, String> {
+    let normalized = value.trim();
+    if normalized.is_empty()
+        || normalized.len() > MAX_REVIEW_FIELD_BYTES
+        || normalized.chars().any(char::is_control)
+    {
+        return Err(format!(
+            "Burn screen {label} must be bounded printable text"
+        ));
+    }
+    Ok(normalized.to_owned())
 }
 
 fn valid_opaque(value: &str, max: usize) -> bool {
