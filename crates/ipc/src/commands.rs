@@ -19109,7 +19109,6 @@ pub fn cmd_osl_authorize_autoscrub_find_and_delete(
         &prefs.autoscrub_bad_message_rules,
     )
 }
-
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct NewFriendDefaultsDto {
     pub account_reach: String,
