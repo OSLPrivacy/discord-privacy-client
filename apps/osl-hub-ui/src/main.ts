@@ -122,6 +122,8 @@ import {
   removeHubAlternatePassword,
   setHubAlternatePassword,
   setupHubMainPassword,
+  checkHubPasswordResetPhrase,
+  resetHubMainPasswordAfterRecovery,
   unavailableCoreIntegration,
   unconfiguredLicenseState,
   unlockHubPasswordGate,
@@ -411,22 +413,30 @@ let passwordRoleStatus: HubPasswordRoleStatus | null = null;
 // account-recovery.ts actually runs and its refusals reach the screen.
 let accountRecoveryFlow: AccountRecoveryFlow = initialAccountRecoveryFlow;
 let legacyRecoveryMigration: LegacyRecoveryMigration | null = null;
-/**
- * There is no native verifier behind this yet: no Tauri command exists that
- * turns a password recovery phrase into a recovery token, and none that sets a
- * password from one (see the task log for L-ATTR). The shipping dependency
- * therefore fails closed with a message the user can act on, exactly like the
- * "not available in this build" wording the alternate-password roles use, and
- * introduces no IPC. Tests inject a real one through `__oslHubUiTest`.
- */
-const passwordRecoveryUnavailable = "Password recovery is not available in this build. Your password was not changed.";
+// The approved phrase remains in memory only for the short interval between
+// the native phrase check and the native reset. The opaque token ties that
+// phrase approval to the flow state; neither value is persisted or rendered.
+let approvedAccountRecovery: { phrase: string; token: string } | null = null;
 let accountRecoveryDependencies: AccountRecoveryDependencies = {
-  verifyPhrase: () => Promise.reject(new Error(passwordRecoveryUnavailable)),
-  setPassword: () => Promise.reject(new Error(passwordRecoveryUnavailable)),
+  verifyPhrase: async (phrase) => {
+    const checked = await checkHubPasswordResetPhrase(phrase);
+    if (checked.status !== "approved" || !checked.recoveryToken) {
+      approvedAccountRecovery = null;
+      return { ok: false, lockoutStatus: checked.lockoutStatus };
+    }
+    approvedAccountRecovery = { phrase, token: checked.recoveryToken };
+    return { ok: true, recoveryToken: checked.recoveryToken, lockoutStatus: checked.lockoutStatus };
+  },
+  setPassword: async (newPassword, recoveryToken) => {
+    const approved = approvedAccountRecovery;
+    if (!approved || approved.token !== recoveryToken) throw new Error("Password reset requires a fresh phrase approval");
+    await resetHubMainPasswordAfterRecovery(approved.phrase, newPassword);
+    approvedAccountRecovery = null;
+  },
 };
 let recoveryMigrationDependencies: RecoveryMigrationDependencies = {
-  addPhraseWrap: () => Promise.reject(new Error(passwordRecoveryUnavailable)),
-  freshStart: () => Promise.reject(new Error(passwordRecoveryUnavailable)),
+  addPhraseWrap: () => Promise.reject(new Error("Recovery migration is unavailable in this build")),
+  freshStart: () => Promise.reject(new Error("Recovery migration is unavailable in this build")),
 };
 let setup: SetupState = parseSetupState(null);
 let route: Route = "onboarding";
@@ -3384,6 +3394,7 @@ function bindOnboarding(): void {
 function resetAccountRecovery(): void {
   accountRecoveryFlow = initialAccountRecoveryFlow;
   legacyRecoveryMigration = null;
+  approvedAccountRecovery = null;
 }
 
 function formValue(form: HTMLFormElement, name: string): string {
@@ -3446,10 +3457,52 @@ function bindAccountRecovery(): void {
     event.preventDefault();
     void runAccountRecoveryPhrase(formValue(event.currentTarget as HTMLFormElement, "recoveryPhrase"));
   });
-  document.querySelector<HTMLFormElement>("[data-account-recovery-password]")?.addEventListener("submit", (event) => {
-    event.preventDefault();
-    const form = event.currentTarget as HTMLFormElement;
-    void runAccountRecoveryPassword(formValue(form, "newPassword"), formValue(form, "confirmPassword"));
+  const passwordForm = document.querySelector<HTMLFormElement>("[data-account-recovery-password]");
+  const newPassword = document.querySelector<HTMLInputElement>("#account-recovery-new-password");
+  const confirmPassword = document.querySelector<HTMLInputElement>("#account-recovery-confirm-password");
+  const continueButton = document.querySelector<HTMLButtonElement>("#account-recovery-continue");
+  if (passwordForm) {
+    const currentPasswords = (): { replacement: string; confirmation: string } => ({
+      replacement: newPassword?.value ?? formValue(passwordForm, "newPassword"),
+      confirmation: confirmPassword?.value ?? formValue(passwordForm, "confirmPassword"),
+    });
+    const canContinue = (replacement: string, confirmation: string): boolean =>
+      accountRecoveryFlow.step === "password"
+      && accountRecoveryFlow.recoveryToken !== null
+      && isValidNewMainPassword(replacement)
+      && replacement === confirmation;
+    const updateContinue = (): void => {
+      const values = currentPasswords();
+      if (continueButton) continueButton.disabled = !canContinue(values.replacement, values.confirmation);
+    };
+    newPassword?.addEventListener("input", updateContinue);
+    confirmPassword?.addEventListener("input", updateContinue);
+    updateContinue();
+    passwordForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const values = currentPasswords();
+      // Disabled is an affordance, not authority. Re-check the native phrase
+      // approval and both live fields so dispatching submit directly cannot
+      // reach the password-reset command.
+      if (!canContinue(values.replacement, values.confirmation)) {
+        if (continueButton) continueButton.disabled = true;
+        // Preserve the state machine's specific local validation message on an
+        // approved phrase; it refuses before invoking the native reset.
+        if (accountRecoveryFlow.step === "password" && accountRecoveryFlow.recoveryToken) {
+          void runAccountRecoveryPassword(values.replacement, values.confirmation);
+        }
+        return;
+      }
+      if (newPassword) newPassword.value = "";
+      if (confirmPassword) confirmPassword.value = "";
+      if (continueButton) continueButton.disabled = true;
+      void runAccountRecoveryPassword(values.replacement, values.confirmation);
+    });
+  }
+  document.querySelector<HTMLButtonElement>("[data-account-recovery-back]")?.addEventListener("click", () => {
+    if (continueButton) continueButton.disabled = true;
+    resetAccountRecovery();
+    render();
   });
   document.querySelector<HTMLFormElement>("[data-recovery-add-phrase-wrap]")?.addEventListener("submit", (event) => {
     event.preventDefault();
