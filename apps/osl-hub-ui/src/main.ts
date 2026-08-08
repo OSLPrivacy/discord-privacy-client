@@ -259,6 +259,7 @@ import { OslProfilePaneState, seededProfilePaneRecords, type ScopedProfileRecord
 import { mountChatBackgroundPane } from "./chat-background-pane";
 import { renderChatMessagesPane } from "./chat-messages-pane";
 import { bindSafetyNumberPanel, safetyNumberPanelMarkup } from "./safety-number-panel";
+import { bindStripLeftCluster, defaultStripQuickSettings, stripLeftClusterMarkup } from "./strip-left-cluster";
 import { peopleReverificationNoticeMarkup } from "./people-reverification-notice";
 import { discordQaWhitelistButtonMarkup } from "./discord-qa-whitelist-button";
 import { connectDiscordQaWhitelistButton, discordQaOpenPlace } from "./discord-qa-whitelist-place";
@@ -990,6 +991,7 @@ let nativeDiscordCovertextEnabled = false;
 // command still re-checks readiness before it accepts the selection.
 let nativeDiscordAiCovertextSelected = false;
 let nativeDiscordAiModelReady = false;
+let stripQuickSettings = defaultStripQuickSettings();
 const oslChatPreviewStorageKey = "osl-chat-previews-visible-v1";
 const oslChatMutedStorageKey = "osl-chat-muted-people-v1";
 const oslChatUnreadStorageKey = "osl-chat-unread-v1";
@@ -5239,7 +5241,8 @@ function nativeDiscordHeaderControls(): string {
   // the box around it. Four controls is four answers to "is this protected right
   // now"; the blueprint says one. The other three and their handlers are gone.
   if (!discordQaShell) {
-    return `<div class="native-discord-header-controls" aria-label="Discord privacy controls">${composerUnreachableNotice}<button class="header-protection-control burn in-dom-tooltip-anchor" data-open-burn="chat" type="button" ${inactive}>Burn${inDomTooltipMarkup("Burn this local OSL chat")}</button>${coverWritingControlsMarkup("discord", { covertextEnabled: nativeDiscordCovertextEnabled, aiAvailable: nativeDiscordAiModelReady, aiSelected: nativeDiscordAiCovertextSelected, covertextId: "native-discord-covertext", aiCovertextId: "native-discord-ai-covertext" })}${transcriptNotice}${transcriptVisibilityControl}</div>`;
+    const plan = licenseState.access === "pro" || licenseState.access === "offlineGrace" ? "pro" : "free";
+    return `<div class="native-discord-header-controls" aria-label="Discord privacy controls">${stripLeftClusterMarkup(plan, stripQuickSettings)}${composerUnreachableNotice}<span class="strip-right-cluster" aria-label="Carrier controls"><button class="header-protection-control burn in-dom-tooltip-anchor" data-open-burn="chat" type="button" ${inactive}>Burn${inDomTooltipMarkup("Burn this local OSL chat")}</button>${coverWritingControlsMarkup("discord", { covertextEnabled: nativeDiscordCovertextEnabled, aiAvailable: nativeDiscordAiModelReady, aiSelected: nativeDiscordAiCovertextSelected, covertextId: "native-discord-covertext", aiCovertextId: "native-discord-ai-covertext" })}${transcriptNotice}${transcriptVisibilityControl}</span></div>`;
   }
   return `<div class="native-discord-header-controls discord-qa-header-controls" aria-label="Discord QA privacy controls"><div class="discord-qa-header-left"><button class="discord-qa-control danger icon-only in-dom-tooltip-anchor" data-open-burn="account" type="button" aria-label="Account Burn">${accountBurnIcon}${inDomTooltipMarkup("Open Account Burn confirmation")}</button></div><button class="discord-qa-control danger icon-only discord-qa-discord-burn in-dom-tooltip-anchor" data-open-burn="app" type="button" aria-label="Discord Burn">${discordBurnIcon}${inDomTooltipMarkup("Open Discord Burn confirmation")}</button><div class="discord-qa-header-right">${rowProofControl}<div class="discord-qa-whitelist" role="group" aria-label="Connected verified peer whitelist"><button class="in-dom-tooltip-anchor" id="discord-qa-whitelist-roster" type="button" aria-haspopup="dialog" aria-expanded="${whitelistRosterOpen}" ${discordQaHeaderBusy ? "disabled" : ""}>Whitelist${inDomTooltipMarkup("Review who is whitelisted and where")}</button>${discordQaWhitelistButtonMarkup({ scopeApproved, protectionActive: nativeDiscordProtectionActive, verifiedPeer: Boolean(verifiedPeer), busy: whitelistBusy })}</div><button class="discord-qa-control danger icon-only chat-burn in-dom-tooltip-anchor" data-open-burn="chat" type="button" ${inactive} aria-label="Chat Burn">${flame}${inDomTooltipMarkup("Open Chat Burn confirmation")}</button>${composerUnreachableNotice}${composerRefusalNotice}${transcriptNotice}${transcriptVisibilityControl}${composerControl}${whitelistWarningNotice}</div></div>`;
 }
@@ -9290,6 +9293,26 @@ function bindWorkspace(): void {
     serviceAccountPickerOpen = false;
     render();
   }));
+  bindStripLeftCluster(document as unknown as Parameters<typeof bindStripLeftCluster>[0], stripQuickSettings, {
+    home: () => {
+      route = "home";
+      activeService = null;
+      activeHomeAppId = null;
+      render();
+    },
+    settings: () => {
+      route = "settings";
+      settingsSection = "account";
+      render();
+    },
+    burn: () => {
+      burnScope = "chat";
+      burnDialogOpen = true;
+      burnResult = null;
+      render();
+    },
+    changed: () => render(),
+  });
   // A `[data-service]` click binding used to sit here. Nothing in the repo emits
   // a bare `data-service` attribute (`data-service-kind`, `data-service-account`
   // and `data-service-current-session` are different attributes and have their

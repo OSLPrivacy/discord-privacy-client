@@ -4044,9 +4044,18 @@ code {
   gap: 5px;
 }
 
-
-
-
+.strip-left-cluster, .strip-right-cluster { display: flex; align-items: center; gap: 5px; }
+.strip-logo, .strip-plan-chip, .strip-burn, .strip-quick-settings > summary { min-height: 30px; box-sizing: border-box; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--text-muted); font: inherit; font-size: 11px; padding: 0 9px; display: inline-flex; align-items: center; }
+.strip-logo { color: #a5f3fc; font-weight: 800; }
+.strip-plan-chip { color: #a5f3fc; letter-spacing: .06em; font-weight: 800; }
+.strip-burn { color: var(--danger); }
+.strip-quick-settings { position: relative; }
+.strip-quick-settings > summary { cursor: pointer; list-style: none; }
+.strip-quick-settings > summary::-webkit-details-marker { display: none; }
+.strip-quick-settings-menu { position: absolute; z-index: 5; top: 34px; left: 0; min-width: 245px; padding: 5px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); box-shadow: 0 8px 20px rgba(0, 0, 0, .28); }
+.strip-quick-setting { width: 100%; display: flex; justify-content: space-between; gap: 14px; padding: 7px; border: 0; border-radius: 4px; background: transparent; color: var(--text); font: inherit; font-size: 11px; text-align: left; }
+.strip-quick-setting:hover { background: rgba(35, 166, 190, .14); }
+.strip-quick-setting strong { color: #a5f3fc; }
 
 .header-protection-control {
   min-height: 30px;
