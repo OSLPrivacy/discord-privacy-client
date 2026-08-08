@@ -157,6 +157,14 @@ pub struct HubMainPasswordSetupResult {
     pub readiness: HubPasswordReadiness,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HubPasswordResetPhraseCheck {
+    pub status: &'static str,
+    pub recovery_token: Option<String>,
+    pub lockout_status: ipc::main_password::LockoutStatusDto,
+}
+
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecoveryWordRetypeAnswer {
@@ -424,6 +432,34 @@ pub fn setup_main_password(
         encrypted_state_reload_complete: outcome.reload_issue_count == 0,
         encrypted_state_reload_issue_count: outcome.reload_issue_count,
         readiness: readiness(state),
+    })
+}
+
+pub fn check_password_reset_phrase(
+    state: &HubCoreState,
+    phrase: String,
+) -> Result<HubPasswordResetPhraseCheck, String> {
+    let _lifecycle = state
+        .lifecycle_lock
+        .lock()
+        .map_err(|_| "OSL account lifecycle is unavailable".to_owned())?;
+    check_password_reset_phrase_using(&state.osl, phrase)
+}
+
+fn check_password_reset_phrase_using(
+    state: &AppState,
+    phrase: String,
+) -> Result<HubPasswordResetPhraseCheck, String> {
+    let recovery_token = ipc::commands::cmd_osl_verify_recovery_phrase(state, phrase).ok();
+    let lockout_status = ipc::commands::cmd_osl_lockout_status()?;
+    Ok(HubPasswordResetPhraseCheck {
+        status: if recovery_token.is_some() {
+            "approved"
+        } else {
+            "refused"
+        },
+        recovery_token,
+        lockout_status,
     })
 }
 

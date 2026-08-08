@@ -57,7 +57,7 @@ export interface IdentityProtectionStatus {
 }
 
 export interface HubPasswordReadiness {
-  accessState: string;
+  accessState: "passwordRequired" | "identitySetupRequired" | "passwordSetupRequired" | "ready" | "unavailable";
   identityLoaded: boolean;
   mainPasswordSet: boolean;
   unlocked: boolean;
@@ -66,6 +66,20 @@ export interface HubPasswordReadiness {
   canImportIdentityPhrase: boolean;
   passwordAttemptsUsed: number;
   passwordLockoutSecondsRemaining: number;
+}
+
+export interface HubPasswordLockoutStatus {
+  passwordLockedUntil: number | null;
+  passwordAttemptsUsed: number;
+  phraseLockedUntil: number | null;
+  phraseAttemptsUsed: number;
+  now: number;
+}
+
+export interface HubPasswordResetPhraseCheck {
+  status: "approved" | "refused";
+  recoveryToken: string | null;
+  lockoutStatus: HubPasswordLockoutStatus;
 }
 
 export interface HubMainPasswordSetupResult {
@@ -268,6 +282,28 @@ export async function setupHubMainPassword(password: string): Promise<HubMainPas
   return parseMainPasswordSetupResult(await invoke<unknown>("setup_hub_main_password", { password }));
 }
 
+export async function checkHubPasswordResetPhrase(phrase: string): Promise<HubPasswordResetPhraseCheck> {
+  const recoveryPhrase = phrase.trim();
+  if (!isTauriRuntime() || !isRecoveryPhrase(recoveryPhrase)) throw new Error("password reset phrase check unavailable");
+  return parseHubPasswordResetPhraseCheck(
+    await invoke<unknown>("check_hub_password_reset_phrase", { phrase: recoveryPhrase }),
+  );
+}
+
+export async function resetHubMainPasswordAfterRecovery(
+  recoveryPhrase: string,
+  newPassword: string,
+): Promise<HubPasswordReadiness> {
+  const normalizedPhrase = recoveryPhrase.trim();
+  if (!isTauriRuntime() || !isRecoveryPhrase(normalizedPhrase) || !isValidNewMainPassword(newPassword)) {
+    throw new Error("password reset unavailable");
+  }
+  return parseHubPasswordReadiness(await invoke<unknown>("reset_hub_main_password_after_recovery", {
+    recoveryPhrase: normalizedPhrase,
+    newPassword,
+  }));
+}
+
 export function isActivationCode(value: string): boolean {
   return /^OSL-[0-9A-Z]{4}(?:-[0-9A-Z]{4}){3}$/.test(value.trim().toUpperCase());
 }
@@ -387,11 +423,71 @@ export function parseMainPasswordSetupResult(raw: unknown): HubMainPasswordSetup
     || typeof raw.encryptedStateReloadComplete !== "boolean"
     || !Number.isSafeInteger(raw.encryptedStateReloadIssueCount)
     || (raw.encryptedStateReloadIssueCount as number) < 0
-    || typeof raw.readiness !== "object"
-    || raw.readiness === null
-    || Array.isArray(raw.readiness)
   ) throw new Error("invalid password setup response");
-  return raw as unknown as HubMainPasswordSetupResult;
+  return { ...raw, readiness: parseHubPasswordReadiness(raw.readiness) } as HubMainPasswordSetupResult;
+}
+
+export function parseHubPasswordReadiness(raw: unknown): HubPasswordReadiness {
+  const keys = [
+    "accessState",
+    "identityLoaded",
+    "mainPasswordSet",
+    "unlocked",
+    "serviceNeutralIdentitySupported",
+    "canCreateIdentity",
+    "canImportIdentityPhrase",
+    "passwordAttemptsUsed",
+    "passwordLockoutSecondsRemaining",
+  ] as const;
+  const accessStates: readonly HubPasswordReadiness["accessState"][] = [
+    "passwordRequired", "identitySetupRequired", "passwordSetupRequired", "ready", "unavailable",
+  ];
+  if (
+    !isExactRecord(raw, keys)
+    || !accessStates.includes(raw.accessState as HubPasswordReadiness["accessState"])
+    || keys.slice(1, 7).some((key) => typeof raw[key] !== "boolean")
+    || !isNonNegativeSafeInteger(raw.passwordAttemptsUsed)
+    || !isNonNegativeSafeInteger(raw.passwordLockoutSecondsRemaining)
+  ) throw new Error("invalid password readiness response");
+  return raw as unknown as HubPasswordReadiness;
+}
+
+export function parseHubPasswordResetPhraseCheck(raw: unknown): HubPasswordResetPhraseCheck {
+  if (!isExactRecord(raw, ["status", "recoveryToken", "lockoutStatus"])) {
+    throw new Error("invalid password reset phrase response");
+  }
+  const approved = raw.status === "approved";
+  if (
+    (!approved && raw.status !== "refused")
+    || (approved ? !isSafeText(raw.recoveryToken, 512) : raw.recoveryToken !== null)
+  ) throw new Error("invalid password reset phrase response");
+  return {
+    status: raw.status,
+    recoveryToken: raw.recoveryToken,
+    lockoutStatus: parseHubPasswordLockoutStatus(raw.lockoutStatus),
+  } as HubPasswordResetPhraseCheck;
+}
+
+function parseHubPasswordLockoutStatus(raw: unknown): HubPasswordLockoutStatus {
+  // `HubPasswordResetPhraseCheck` is camel-cased by its own Serde attribute,
+  // but its nested IPC DTO deliberately retains the Rust field names.
+  const keys = ["password_locked_until", "password_attempts_used", "phrase_locked_until", "phrase_attempts_used", "now"] as const;
+  if (
+    !isExactRecord(raw, keys)
+    || !isOptionalUnixSeconds(raw.password_locked_until)
+    || !isNonNegativeSafeInteger(raw.password_attempts_used)
+    || !isOptionalUnixSeconds(raw.phrase_locked_until)
+    || !isNonNegativeSafeInteger(raw.phrase_attempts_used)
+    || !isOptionalUnixSeconds(raw.now)
+    || raw.now === null
+  ) throw new Error("invalid password reset phrase response");
+  return {
+    passwordLockedUntil: raw.password_locked_until,
+    passwordAttemptsUsed: raw.password_attempts_used,
+    phraseLockedUntil: raw.phrase_locked_until,
+    phraseAttemptsUsed: raw.phrase_attempts_used,
+    now: raw.now,
+  };
 }
 
 export function parseCoreReadiness(raw: unknown): CoreReadiness {
@@ -533,4 +629,8 @@ function isSafeTextArray(value: unknown, maxItems: number, maxLength: number): v
 
 function isOptionalUnixSeconds(value: unknown): value is number | null {
   return value === null || (Number.isSafeInteger(value) && Number(value) >= 0 && Number(value) <= 32_503_680_000);
+}
+
+function isNonNegativeSafeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) >= 0;
 }

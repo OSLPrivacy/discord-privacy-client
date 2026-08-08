@@ -76,6 +76,7 @@ use osl_privacy_hub::osl_mail::{self, OslMailState, OslMailStatus};
 use osl_privacy_hub::osl_profile::{self, HubProfileDto, HubProfileInput, OwnerProfilePictureDto};
 use osl_privacy_hub::password_lifecycle::{
     self, HubIdentityCreationOwnerSignoff, HubIdentitySetupResult, HubMainPasswordSetupResult,
+    HubPasswordReadiness, HubPasswordResetPhraseCheck,
 };
 use osl_privacy_hub::peer_attachment_io;
 use osl_privacy_hub::preferences::{apply_saved_message_runtime_preferences, PreviewState};
@@ -1599,6 +1600,24 @@ async fn setup_hub_main_password(
     result
 }
 
+#[tauri::command]
+async fn reset_hub_main_password_after_recovery(
+    app: tauri::AppHandle,
+    recovery_phrase: String,
+    new_password: String,
+) -> Result<HubPasswordReadiness, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<HubCoreState>();
+        password_lifecycle::reset_main_password_after_recovery(
+            &state,
+            recovery_phrase,
+            new_password,
+        )
+    })
+    .await
+    .map_err(|_| "OSL password reset worker failed".to_string())?
+}
+
 /// T15-A3/A4: read the password-recovery phrase back after onboarding.
 ///
 /// `cmd_osl_view_recovery_phrase` existed in `crates/ipc` but was registered
@@ -1617,6 +1636,19 @@ async fn view_hub_recovery_phrase(current: String) -> Result<String, String> {
     })
     .await
     .map_err(|_| "OSL recovery phrase worker failed".to_string())?
+}
+
+#[tauri::command]
+async fn check_hub_password_reset_phrase(
+    app: tauri::AppHandle,
+    phrase: String,
+) -> Result<HubPasswordResetPhraseCheck, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<HubCoreState>();
+        password_lifecycle::check_password_reset_phrase(&state, phrase)
+    })
+    .await
+    .map_err(|_| "OSL password reset phrase worker failed".to_string())?
 }
 
 #[tauri::command]
