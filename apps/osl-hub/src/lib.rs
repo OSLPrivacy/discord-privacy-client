@@ -140,6 +140,7 @@ pub mod landing_oracle;
 /// When the hidden main window may be shown. Pure, and deliberately not behind
 /// `desktop`: the reveal rule is what decides whether the app is visible at all,
 /// so it is testable in every build that can compile this crate.
+pub mod mail_owner_check;
 pub mod main_window_reveal;
 #[cfg(feature = "core")]
 pub mod look_window;
@@ -916,6 +917,7 @@ pub mod service_burn_selection;
 #[cfg(feature = "core")]
 #[cfg(not(task3982_focused))]
 pub mod service_scope_index;
+pub mod shared_mail_deleter;
 #[cfg(not(task3982_focused))]
 pub mod shared_mailbox_reader;
 pub mod signal_destination_binding;

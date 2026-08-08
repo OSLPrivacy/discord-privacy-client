@@ -105,12 +105,13 @@ pub const fn aol_control_mapping() -> &'static [WebsiteNamedControlRequest] {
     &AOL_CONTROL_REQUESTS
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct VisibleMailMessage {
-    pub message_id: String,
-    pub mailbox: String,
-    pub sender_address: Option<String>,
-}
+// The shared mail owner check moved to `crate::mail_owner_check` so the shared
+// mail deleter can reach it without this file's website plumbing. Re-exported
+// here, so `service_connections::VisibleMailMessage` and friends still resolve.
+pub use crate::mail_owner_check::{
+    mail_message_is_owned_by_signed_in_address, mail_message_who_wrote_it, MailOwnerCheckError,
+    VisibleMailMessage,
+};
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct SharedMailLabel {
@@ -261,45 +262,6 @@ impl SharedMailboxPagingStop for SharedMailboxNeverStop {
     ) -> bool {
         false
     }
-}
-
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub enum MailOwnerCheckError {
-    SenderAddressUnreadable,
-}
-
-impl MailOwnerCheckError {
-    pub const fn reason(&self) -> &'static str {
-        match self {
-            Self::SenderAddressUnreadable => "OSL: sender address cannot be read",
-        }
-    }
-}
-
-pub fn mail_message_is_owned_by_signed_in_address(
-    signed_in_address: &str,
-    message: &VisibleMailMessage,
-) -> Result<bool, MailOwnerCheckError> {
-    let sender = message
-        .sender_address
-        .as_deref()
-        .map(str::trim)
-        .filter(|sender| !sender.is_empty())
-        .ok_or(MailOwnerCheckError::SenderAddressUnreadable)?;
-    Ok(sender.eq_ignore_ascii_case(signed_in_address.trim()))
-}
-
-pub fn mail_message_who_wrote_it(
-    signed_in_address: &str,
-    message: &VisibleMailMessage,
-) -> Result<SharedRowWhoWroteIt, MailOwnerCheckError> {
-    Ok(
-        if mail_message_is_owned_by_signed_in_address(signed_in_address, message)? {
-            SharedRowWhoWroteIt::Yours
-        } else {
-            SharedRowWhoWroteIt::Theirs
-        },
-    )
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
