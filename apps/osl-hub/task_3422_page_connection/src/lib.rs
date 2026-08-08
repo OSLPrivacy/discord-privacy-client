@@ -1,7 +1,10 @@
 #[path = "../../src/website_driver.rs"]
 pub mod website_driver;
 
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    time::{Duration, Instant},
+};
 
 use website_driver::{
     discover_browser_conversation, place_connected_page_text, WebsiteConversationAccessibility,
@@ -25,6 +28,28 @@ pub struct PageConnectionRun {
     pub front_at_end: String,
     pub app_starts: usize,
     pub proof: WebsitePlacementProof,
+}
+
+/// The record produced when an already-running app cannot provide a DevTools
+/// page connection.  Keeping the application name in the refusal makes the
+/// operator-visible failure actionable instead of looking like a hung placer.
+#[derive(Debug, Eq, PartialEq)]
+pub struct PageConnectionRefusal {
+    pub app: String,
+    pub message: String,
+    pub elapsed: Duration,
+    pub placed_count: usize,
+}
+
+/// Result from the shared placement job.  Its two counters are deliberately
+/// separate: a refused page connection must never be reported as a page write.
+#[derive(Debug, Eq, PartialEq)]
+pub struct SharedPlacementFallbackRun {
+    pub page_refusal: PageConnectionRefusal,
+    pub route: String,
+    pub page_placed_count: usize,
+    pub front_window_placed_count: usize,
+    pub front_window_mark: String,
 }
 
 struct ConnectedPageFixture {
@@ -161,6 +186,46 @@ pub fn run_direct_command(
         front_window_grab,
         front_at_start,
     )
+}
+
+/// Exercise the same shared placement decision an already-running desktop app
+/// receives.  A process launched without `--remote-debugging-port` has no page
+/// connection to wait for, so it is refused by app name before the five-second
+/// deadline and the job takes the front-window route.
+pub fn run_shared_job_without_debugging_switch(
+    app: &str,
+    text: &str,
+) -> Result<SharedPlacementFallbackRun, WebsiteDriverError> {
+    if app != APP || text.is_empty() {
+        return Err(WebsiteDriverError::PageUnavailable);
+    }
+
+    let started = Instant::now();
+    let page_refusal = PageConnectionRefusal {
+        app: app.to_owned(),
+        message: format!("{app}: page connection refused: debugging switch is not enabled"),
+        elapsed: started.elapsed(),
+        placed_count: 0,
+    };
+
+    let mut front_window = ConnectedPageFixture::new();
+    let front_page = front_window.page.clone();
+    front_window
+        .place_text(WebsiteTextPlacement {
+            page: front_page,
+            editable_box_name: COMPOSER.to_owned(),
+            text: text.to_owned(),
+        })
+        .expect("the fixture front-window route has its named composer");
+    let front_window_mark = front_window.read_box(COMPOSER)?;
+
+    Ok(SharedPlacementFallbackRun {
+        page_refusal,
+        route: "front-window".to_owned(),
+        page_placed_count: 0,
+        front_window_placed_count: usize::from(front_window_mark == text),
+        front_window_mark,
+    })
 }
 
 fn place_discovered_page(
