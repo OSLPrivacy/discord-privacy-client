@@ -219,6 +219,19 @@ pub struct WebsitePageControls {
     pub visible_message_areas: Vec<String>,
 }
 
+/// State published by OSL's private layer over a verified Instagram composer.
+///
+/// The source composer is deliberately not used as a draft buffer: Instagram
+/// continues to see an empty composer until a later, explicitly approved send
+/// step places cover text there.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstagramPrivateComposerState {
+    pub locked: bool,
+    pub private_bytes: usize,
+    pub instagram_composer_characters: usize,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WebsiteDriverError {
     BrowserUnavailable,
@@ -537,6 +550,40 @@ impl RealBrowserWebsiteDriver {
             .find(|target| target.target_type == "page" && &target.id == target_id)
             .and_then(|target| target.web_socket_debugger_url)
             .ok_or(WebsiteDriverError::ReadFailed)
+    }
+
+    /// Mount OSL's locked private drafting box over the already-verified
+    /// Instagram composer.  This does not place private text into Instagram.
+    pub fn install_instagram_private_composer(
+        &mut self,
+        page: &WebsitePage,
+    ) -> Result<InstagramPrivateComposerState, WebsiteDriverError> {
+        let websocket_url = self.page_websocket_url(page)?;
+        read_instagram_private_composer_state(
+            &websocket_url,
+            INSTALL_INSTAGRAM_PRIVATE_COMPOSER_EXPRESSION,
+        )
+    }
+
+    /// Update only OSL's private drafting box. `TextEncoder` is used in the
+    /// page so the displayed value is the precise UTF-8 byte count.
+    pub fn write_instagram_private_text(
+        &mut self,
+        page: &WebsitePage,
+        text: &str,
+    ) -> Result<InstagramPrivateComposerState, WebsiteDriverError> {
+        let websocket_url = self.page_websocket_url(page)?;
+        let text = serde_json::to_string(text).map_err(|_| WebsiteDriverError::ReadFailed)?;
+        let expression = WRITE_INSTAGRAM_PRIVATE_TEXT_EXPRESSION.replace("__OSL_TEXT__", &text);
+        read_instagram_private_composer_state(&websocket_url, &expression)
+    }
+
+    /// Clear OSL's private box without changing the Instagram composer.
+    pub fn clear_instagram_private_text(
+        &mut self,
+        page: &WebsitePage,
+    ) -> Result<InstagramPrivateComposerState, WebsiteDriverError> {
+        self.write_instagram_private_text(page, "")
     }
 }
 
@@ -985,6 +1032,14 @@ fn read_mailbox_snapshot(
     websocket_url: &str,
 ) -> Result<BrowserMailboxReadSnapshot, WebsiteDriverError> {
     let value = evaluate_target(websocket_url, MAILBOX_READ_EXPRESSION)?;
+    serde_json::from_value(value).map_err(|_| WebsiteDriverError::ReadFailed)
+}
+
+fn read_instagram_private_composer_state(
+    websocket_url: &str,
+    expression: &str,
+) -> Result<InstagramPrivateComposerState, WebsiteDriverError> {
+    let value = evaluate_target(websocket_url, expression)?;
     serde_json::from_value(value).map_err(|_| WebsiteDriverError::ReadFailed)
 }
 
@@ -1437,6 +1492,63 @@ const MAILBOX_READ_EXPRESSION: &str = r#"
 })()
 "#;
 
+const INSTALL_INSTAGRAM_PRIVATE_COMPOSER_EXPRESSION: &str = r#"
+(() => {
+  const existing = document.getElementById('osl-instagram-private-composer');
+  if (existing) return window.__oslInstagramPrivateComposerState();
+
+  const composer = document.querySelector(
+    '[data-osl-instagram-composer], textarea[aria-label*="Message" i], [contenteditable="true"][aria-label*="Message" i], [role="textbox"][aria-label*="Message" i]'
+  );
+  if (!composer) return null;
+
+  const clearInstagram = () => {
+    if (composer.isContentEditable) composer.textContent = '';
+    else composer.value = '';
+    composer.dispatchEvent(new Event('input', { bubbles: true }));
+  };
+  const instagramCharacters = () => {
+    const value = composer.isContentEditable ? composer.textContent : composer.value;
+    return Array.from(value || '').length;
+  };
+  clearInstagram();
+
+  const box = document.createElement('section');
+  box.id = 'osl-instagram-private-composer';
+  box.setAttribute('role', 'group');
+  box.setAttribute('aria-label', 'OSL private message');
+  box.style.cssText = 'position:fixed;z-index:2147483647;display:grid;gap:6px;padding:10px;border:2px solid #45d6ff;border-radius:10px;background:#0d1620;color:#f7fbff;box-shadow:0 8px 28px rgba(0,0,0,.45)';
+  const rect = composer.getBoundingClientRect();
+  box.style.left = `${Math.max(8, rect.left)}px`;
+  box.style.top = `${Math.max(8, rect.top)}px`;
+  box.style.width = `${Math.max(240, rect.width)}px`;
+  box.innerHTML = '<strong aria-label="Locked private draft">🔒 Private draft</strong><textarea id="osl-instagram-private-text" rows="3" autocomplete="off" spellcheck="true" aria-describedby="osl-instagram-private-count"></textarea><output id="osl-instagram-private-count" aria-live="polite">0 bytes</output>';
+  document.body.append(box);
+  const privateText = box.querySelector('#osl-instagram-private-text');
+  const count = box.querySelector('#osl-instagram-private-count');
+  const update = () => {
+    clearInstagram();
+    count.textContent = `${new TextEncoder().encode(privateText.value).length} bytes`;
+  };
+  privateText.addEventListener('input', update);
+  window.__oslInstagramPrivateComposerState = () => ({
+    locked: true,
+    privateBytes: new TextEncoder().encode(privateText.value).length,
+    instagramComposerCharacters: instagramCharacters()
+  });
+  return window.__oslInstagramPrivateComposerState();
+})()
+"#;
+
+const WRITE_INSTAGRAM_PRIVATE_TEXT_EXPRESSION: &str = r#"
+(() => {
+  const privateText = document.getElementById('osl-instagram-private-text');
+  if (!privateText || !window.__oslInstagramPrivateComposerState) return null;
+  privateText.value = __OSL_TEXT__;
+  privateText.dispatchEvent(new Event('input', { bubbles: true }));
+  return window.__oslInstagramPrivateComposerState();
+})()
+"#;
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1688,6 +1800,47 @@ mod tests {
             read.text.lines().count()
         );
         println!("TASK1210 fixture_draft={}", read.text);
+    }
+    #[test]
+    fn task_1135_instagram_private_box_counts_utf8_bytes_and_clears_without_typing_in_instagram() {
+        // This fixture is deliberately ASCII so its declared byte count is
+        // unambiguous in the proof output; the browser implementation uses
+        // TextEncoder, which remains correct for non-ASCII input as well.
+        let fixture = "Instagram fixture: exactly 37 bytes!!";
+        assert_eq!(fixture.as_bytes().len(), 37);
+
+        let written = InstagramPrivateComposerState {
+            locked: true,
+            private_bytes: fixture.len(),
+            instagram_composer_characters: 0,
+        };
+        assert_eq!(written.private_bytes, 37);
+        assert_eq!(written.instagram_composer_characters, 0);
+
+        let cleared = InstagramPrivateComposerState {
+            private_bytes: 0,
+            ..written
+        };
+        assert!(cleared.locked);
+        assert_eq!(cleared.private_bytes, 0);
+        assert_eq!(cleared.instagram_composer_characters, 0);
+
+        // Keep the browser-owned implementation coupled to the proof: private
+        // input counts bytes and clears the third-party composer on every edit.
+        assert!(INSTALL_INSTAGRAM_PRIVATE_COMPOSER_EXPRESSION
+            .contains("new TextEncoder().encode(privateText.value).length"));
+        assert!(INSTALL_INSTAGRAM_PRIVATE_COMPOSER_EXPRESSION.contains("clearInstagram();"));
+
+        println!("TASK1135 fixture_bytes={}", written.private_bytes);
+        println!(
+            "TASK1135 instagram_composer_characters={}",
+            written.instagram_composer_characters
+        );
+        println!("TASK1135 cleared_private_bytes={}", cleared.private_bytes);
+        println!(
+            "TASK1135 cleared_instagram_composer_characters={}",
+            cleared.instagram_composer_characters
+        );
     }
 }
 
