@@ -137,8 +137,8 @@ export function recoveryScreenMarkup(flow: AccountRecoveryFlow): string {
       <span class="restore-label-row"><label for="account-recovery-phrase">Password recovery phrase</label><em>stays on this device</em></span>
       <textarea class="restore-phrase" id="account-recovery-phrase" name="recoveryPhrase" rows="3" autocomplete="off" autocapitalize="none" spellcheck="false" required></textarea>
       ${error}
-      <button class="stealth-submit restore-submit" type="submit"><span>Verify phrase</span>${RECOVERY_ARROW}</button>
+      <button class="stealth-submit restore-submit" id="account-recovery-phrase-continue" type="submit"><span>Continue</span>${RECOVERY_ARROW}</button>
     </form>
-    <div class="setup-footer onboarding-actions stealth-links restore-links"><button class="text-button" type="button" data-onboarding="welcome">← Back</button></div>
+    <div class="setup-footer onboarding-actions stealth-links restore-links"><button class="text-button" type="button" data-onboarding="unlock">← Back</button></div>
   </section>`;
 }

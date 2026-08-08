@@ -539,11 +539,12 @@ function handleOnboardingRouteAction(rawRoute: unknown): boolean {
     showToast("Unknown onboarding route refused");
     return false;
   }
+  const leavingAccountRecovery = onboardingRoute === "account-recovery";
   onboardingRoute = onboardingRouteForBuild(rawRoute);
   if (onboardingRoute === "import") cleanDeviceRestoreState = initialCleanDeviceRestoreState;
   // Arriving at recovery always starts at the phrase step: a half-finished
   // flow, or a token from a previous attempt, must never be inherited.
-  if (onboardingRoute === "account-recovery") resetAccountRecovery();
+  if (leavingAccountRecovery || onboardingRoute === "account-recovery") resetAccountRecovery();
   render();
   return true;
 }
@@ -569,7 +570,7 @@ const ownerRoleEditor = new OwnerRoleEditor();
 // "Forgot password?" (the `data-onboarding="account-recovery"` link on the
 // unlock card) rendered `recoveryScreenMarkup(initialAccountRecoveryFlow)` --
 // always the *initial* flow, with no submit handler on either form. Typing a
-// recovery phrase and pressing "Verify phrase" did nothing at all, silently.
+// recovery phrase and pressing "Continue" did nothing at all, silently.
 // The flow now lives here so the already-specified state machine in
 // account-recovery.ts actually runs and its refusals reach the screen.
 let accountRecoveryFlow: AccountRecoveryFlow = initialAccountRecoveryFlow;
@@ -4283,6 +4284,9 @@ async function runAccountRecoveryPhrase(phrase: string): Promise<void> {
 
 async function runAccountRecoveryPassword(newPassword: string, confirmPassword: string): Promise<void> {
   accountRecoveryFlow = await submitRecoveredPassword(accountRecoveryFlow, newPassword, confirmPassword, accountRecoveryDependencies);
+  // A completed reset returns to the existing unlock screen immediately. The
+  // replacement password is deliberately not treated as a sign-in attempt.
+  if (accountRecoveryFlow.step === "complete") onboardingRoute = "unlock";
   render();
 }
 
