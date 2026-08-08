@@ -228,6 +228,8 @@ pub mod osl_chat_content_name;
 #[cfg(feature = "core")]
 pub mod osl_chat_alert_words;
 #[cfg(feature = "core")]
+pub mod osl_chat_attachment_filename;
+#[cfg(feature = "core")]
 pub mod osl_chat_drag_drop;
 #[cfg(feature = "core")]
 pub mod osl_chat_pro_attachment_send;
