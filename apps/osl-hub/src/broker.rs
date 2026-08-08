@@ -133,9 +133,17 @@ pub(crate) fn prose_send_key(core: &HubCoreState) -> Result<[u8; 32], String> {
 }
 const MAX_PARTICIPANTS: usize = 512;
 const MAX_TEXT_BYTES: usize = 1_000;
-const MAX_NATIVE_OVERLAY_CHUNK_BYTES: usize = 40 * 1024;
-const MAX_NATIVE_OVERLAY_LOGICAL_TEXT_BYTES: usize = 1024 * 1024;
-const MAX_NATIVE_OVERLAY_TEXT_CHUNKS: usize = 32;
+pub const PRIVATE_MESSAGE_BYTES_PER_COVER: usize = 40 * 1024;
+const MAX_NATIVE_OVERLAY_CHUNK_BYTES: usize = PRIVATE_MESSAGE_BYTES_PER_COVER;
+/// Most public cover messages one private message is allowed to produce.
+///
+/// Each private chunk gets its own cipher-store pointer and cover. Keeping the
+/// cap here makes the fan-out an explicit send policy instead of letting one
+/// composer action silently create an arbitrarily long run of public covers.
+pub const MAX_COVER_MESSAGES_PER_PRIVATE_MESSAGE: usize = 10;
+const MAX_NATIVE_OVERLAY_TEXT_CHUNKS: usize = MAX_COVER_MESSAGES_PER_PRIVATE_MESSAGE;
+const MAX_NATIVE_OVERLAY_LOGICAL_TEXT_BYTES: usize =
+    PRIVATE_MESSAGE_BYTES_PER_COVER * MAX_COVER_MESSAGES_PER_PRIVATE_MESSAGE;
 const MAX_NATIVE_OVERLAY_REASSEMBLY_GROUPS: usize = 8;
 const MAX_NATIVE_OVERLAY_REASSEMBLY_BYTES: usize = 8 * 1024 * 1024;
 /// How many contested chunk rows one reassembly group will keep as alternates.
@@ -4253,11 +4261,10 @@ fn prepare_peer_inbox_text_with_route_clients(
     let is_fixed_discord_qa_probe = plaintext == "OSL Discord QA probe" && !view_once;
     #[cfg(feature = "discord-qa-shell")]
     record_fixed_discord_qa_broker_stage(is_fixed_discord_qa_probe, "scope", "entered", None)?;
-    if plaintext.is_empty() || plaintext.len() > MAX_NATIVE_OVERLAY_LOGICAL_TEXT_BYTES {
-        return Err(format!(
-            "Private message must be between 1 and {MAX_NATIVE_OVERLAY_LOGICAL_TEXT_BYTES} UTF-8 bytes"
-        ));
-    }
+    // Work out and enforce the complete cover fan-out before selecting a
+    // carrier, resolving a route, uploading a blob, or posting a relay row.
+    // A refusal therefore cannot leave a partial string of cover messages.
+    let chunks = plan_private_message_cover_chunks(&plaintext)?;
     // Resolve the optional carrier before any pointer is encoded. Cloud is not
     // an option in this path, so it cannot be reached around consent.
     let _carrier_decision = ai_carrier.select_for_shipping_send();
@@ -4276,7 +4283,6 @@ fn prepare_peer_inbox_text_with_route_clients(
     })?;
     let history_plaintext =
         (context.service_id == "osl-chat" && !view_once).then(|| plaintext.clone());
-    let chunks = split_native_overlay_text(&plaintext)?;
     let chunk_count = u16::try_from(chunks.len()).map_err(|_| {
         qa_encrypt_refusal_site("chunk_count_overflow");
         "OSL could not deliver the protected message".to_owned()
@@ -4638,15 +4644,32 @@ fn prepare_peer_inbox_text_with_route_clients(
     })
 }
 
-fn split_native_overlay_text(plaintext: &str) -> Result<Vec<String>, String> {
-    if plaintext.is_empty() || plaintext.len() > MAX_NATIVE_OVERLAY_LOGICAL_TEXT_BYTES {
-        return Err("The private message is too large".to_owned());
+/// Split one accepted private message into the chunks that each receive one
+/// cipher-store pointer and one public cover in the shipping send loop.
+pub fn plan_private_message_cover_chunks(plaintext: &str) -> Result<Vec<String>, String> {
+    if plaintext.is_empty() {
+        return Err("This private message is empty.".to_owned());
+    }
+    if plaintext.len() > MAX_NATIVE_OVERLAY_LOGICAL_TEXT_BYTES {
+        let mut retained_bytes = MAX_NATIVE_OVERLAY_LOGICAL_TEXT_BYTES;
+        while retained_bytes > 0 && !plaintext.is_char_boundary(retained_bytes) {
+            retained_bytes -= 1;
+        }
+        let characters_to_remove = plaintext[retained_bytes..].chars().count();
+        let character_word = if characters_to_remove == 1 {
+            "character"
+        } else {
+            "characters"
+        };
+        return Err(format!(
+            "This private message is too long. Remove {characters_to_remove} {character_word}."
+        ));
     }
     let mut chunks = Vec::new();
     let mut start = 0usize;
     while start < plaintext.len() {
         let mut end = start
-            .saturating_add(MAX_NATIVE_OVERLAY_CHUNK_BYTES)
+            .saturating_add(PRIVATE_MESSAGE_BYTES_PER_COVER)
             .min(plaintext.len());
         while end > start && !plaintext.is_char_boundary(end) {
             end -= 1;
@@ -4657,9 +4680,8 @@ fn split_native_overlay_text(plaintext: &str) -> Result<Vec<String>, String> {
         chunks.push(plaintext[start..end].to_owned());
         start = end;
     }
-    if chunks.is_empty() || chunks.len() > MAX_NATIVE_OVERLAY_TEXT_CHUNKS {
-        return Err("The private message is too large".to_owned());
-    }
+    debug_assert!(!chunks.is_empty());
+    debug_assert!(chunks.len() <= MAX_COVER_MESSAGES_PER_PRIVATE_MESSAGE);
     Ok(chunks)
 }
 
@@ -11801,7 +11823,7 @@ mod tests {
             .map_or(source, |(production, _)| production);
         let producer = production
             .split_once("fn prepare_peer_inbox_text(")
-            .and_then(|(_, tail)| tail.split_once("fn split_native_overlay_text("))
+            .and_then(|(_, tail)| tail.split_once("fn plan_private_message_cover_chunks("))
             .map(|(body, _)| body)
             .expect("native overlay producer source is present");
         let helper = production
@@ -15702,18 +15724,18 @@ mod tests {
 
     #[test]
     fn native_text_chunks_preserve_boundaries_and_reassemble_only_complete_consistent_groups() {
-        let logical = format!("first\n\n{}🙂\nlast", "\\\n".repeat(520_000));
+        let logical = format!("first\n\n{}🙂\nlast", "\\\n".repeat(180_000));
         assert!(logical.len() <= MAX_NATIVE_OVERLAY_LOGICAL_TEXT_BYTES);
-        let chunks = split_native_overlay_text(&logical).unwrap();
+        let chunks = plan_private_message_cover_chunks(&logical).unwrap();
         assert!(chunks.len() <= MAX_NATIVE_OVERLAY_TEXT_CHUNKS);
         assert!(chunks
             .iter()
-            .all(|chunk| chunk.len() <= MAX_NATIVE_OVERLAY_CHUNK_BYTES));
+            .all(|chunk| chunk.len() <= PRIVATE_MESSAGE_BYTES_PER_COVER));
         assert_eq!(chunks.concat(), logical);
-        assert!(
-            split_native_overlay_text(&"x".repeat(MAX_NATIVE_OVERLAY_LOGICAL_TEXT_BYTES + 1))
-                .is_err()
-        );
+        assert!(plan_private_message_cover_chunks(
+            &"x".repeat(MAX_NATIVE_OVERLAY_LOGICAL_TEXT_BYTES + 1)
+        )
+        .is_err());
 
         let alice = keystore::generate_identity("osl-native-chunk-alice".to_owned());
         let bob = keystore::generate_identity("osl-native-chunk-bob".to_owned());
@@ -15748,9 +15770,9 @@ mod tests {
         };
         let chunk_plaintext = format!(
             "{}🙂",
-            "\n\\".repeat((MAX_NATIVE_OVERLAY_CHUNK_BYTES - 4) / 2)
+            "\n\\".repeat((PRIVATE_MESSAGE_BYTES_PER_COVER - 4) / 2)
         );
-        assert_eq!(chunk_plaintext.len(), MAX_NATIVE_OVERLAY_CHUNK_BYTES);
+        assert_eq!(chunk_plaintext.len(), PRIVATE_MESSAGE_BYTES_PER_COVER);
         let meta = NativeTextChunkMeta {
             logical_message_id: "peer-11112222333344445555666677778888".to_owned(),
             chunk_index: 0,
