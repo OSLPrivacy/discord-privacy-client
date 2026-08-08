@@ -227,14 +227,16 @@ export const provisionOslMail = (username: string): Promise<OslMailStatus | null
   ? call("osl_mail_provision", { username }, parseOslMailStatus)
   : Promise.resolve(null);
 
+export function parseOslMailThreadList(value: unknown): OslMailThreadSummary[] | null {
+  if (!Array.isArray(value) || value.length > 500 || !denseArray(value)) return null;
+  const rows = value.map(parseOslMailThreadSummary);
+  return rows.some((row) => row === null) ? null : rows as OslMailThreadSummary[];
+}
+
 export async function listOslMailThreads(): Promise<OslMailThreadSummary[] | null> {
   if (!isTauriRuntime()) return null;
-  try {
-    const value = await invoke<unknown>("osl_mail_list_threads");
-    if (!Array.isArray(value) || value.length > 500) return null;
-    const rows = value.map(parseOslMailThreadSummary);
-    return rows.some((row) => row === null) ? null : rows as OslMailThreadSummary[];
-  } catch { return null; }
+  try { return parseOslMailThreadList(await invoke<unknown>("osl_mail_list_threads")); }
+  catch { return null; }
 }
 
 export const retrieveOslMailThread = (threadId: string): Promise<OslMailRetrievedThread | null> => OSL_MAIL_ID.test(threadId)

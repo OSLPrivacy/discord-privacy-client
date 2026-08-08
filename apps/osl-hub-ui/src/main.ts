@@ -6360,6 +6360,12 @@ async function provisionOslMailFromProfile(): Promise<void> {
   if (route === "osl-mail") render();
 }
 
+async function openOslMailThread(threadId: string): Promise<void> {
+  oslMailActiveThread = await retrieveOslMailThread(threadId);
+  oslMailError = oslMailActiveThread ? null : "Message retrieval was refused";
+  if (route === "osl-mail") render();
+}
+
 async function sendOslMailForm(form: HTMLFormElement, choice: OslMailSendChoice): Promise<void> {
   escapeAuditSendAttempts += 1;
   const recipient = form.querySelector<HTMLInputElement>("#osl-mail-to")?.value ?? "";
@@ -9469,10 +9475,7 @@ function bindWorkspace(): void {
     render();
   });
   document.querySelectorAll<HTMLButtonElement>("[data-mail-thread]").forEach((button) => button.addEventListener("click", async () => {
-    const threadId = button.dataset.mailThread ?? "";
-    oslMailActiveThread = await retrieveOslMailThread(threadId);
-    oslMailError = oslMailActiveThread ? null : "Message retrieval was refused";
-    render();
+    await openOslMailThread(button.dataset.mailThread ?? "");
   }));
   document.querySelector<HTMLButtonElement>("#osl-mail-ack")?.addEventListener("click", async () => {
     if (!oslMailActiveThread) return;
