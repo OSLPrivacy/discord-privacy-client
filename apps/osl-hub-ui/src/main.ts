@@ -197,6 +197,7 @@ import {
 } from "./osl-mail-adapter";
 import { oslMailViewMarkup, type OslMailComposeDraft, type OslMailPane } from "./osl-mail-view";
 import { oslServersViewMarkup } from "./osl-servers-view";
+import { bindOwnerRoleEditor, OwnerRoleEditor, ownerRoleEditorMarkup } from "./owner-role-editor";
 export {
   autoscrubUnattendedContractGate,
   autoscrubUnattendedProductionRun,
@@ -470,6 +471,7 @@ let autoScrubFleetStatus: AutoScrubFleetStatus | null = null;
 let autoScrubStatusLoading = false;
 let autoScrubStopPending = false;
 let passwordRoleStatus: HubPasswordRoleStatus | null = null;
+const ownerRoleEditor = new OwnerRoleEditor();
 // "Forgot password?" (the `data-onboarding="account-recovery"` link on the
 // unlock card) rendered `recoveryScreenMarkup(initialAccountRecoveryFlow)` --
 // always the *initial* flow, with no submit handler on either form. Typing a
@@ -5563,7 +5565,7 @@ function oslChatFriendSettingsMarkup(person: HubPerson): string {
 }
 
 function oslServersContent(): string {
-  return oslServersViewMarkup((label) => statusTag(label));
+  return oslServersViewMarkup((label) => statusTag(label), ownerRoleEditorMarkup(ownerRoleEditor.snapshot()));
 }
 
 function homeModuleIcon(id: "osl-chats" | "osl-mail" | "osl-servers" | "scrub" | "activity" | "osl-notes"): string {
@@ -8739,6 +8741,7 @@ function bindWorkspace(): void {
   bindBurnDialog();
   bindOwnedConfirmation();
   bindUpdateControls();
+  bindOwnerRoleEditor(ownerRoleEditor, render);
 }
 
 async function openHomeAppFromLauncher(appId: HomeAppId, intent: number): Promise<void> {

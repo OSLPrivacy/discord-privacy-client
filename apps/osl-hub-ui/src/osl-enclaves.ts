@@ -9,6 +9,7 @@ import { oslEnclavesFiveRegionSurface } from "./osl-enclaves-surface";
 export interface OslEnclavesSurfaceModel {
   readonly state?: OslEnclaveState;
   readonly statusTag: (label: string) => string;
+  readonly roleEditorMarkup?: string;
 }
 
 /**
@@ -19,6 +20,6 @@ export interface OslEnclavesSurfaceModel {
  * channel pane, and the capability/honesty sheet lives on as the surface's
  * About subpage rather than being the whole screen.
  */
-export function oslEnclavesSurfaceMarkup({ state = {}, statusTag }: OslEnclavesSurfaceModel): string {
-  return oslEnclavesFiveRegionSurface({ stateNotices: oslEnclaveStateMarkup(state), statusTag });
+export function oslEnclavesSurfaceMarkup({ state = {}, statusTag, roleEditorMarkup = "" }: OslEnclavesSurfaceModel): string {
+  return oslEnclavesFiveRegionSurface({ stateNotices: oslEnclaveStateMarkup(state), statusTag, roleEditorMarkup });
 }

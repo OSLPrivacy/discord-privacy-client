@@ -474,6 +474,7 @@ function aboutMarkup(statusTag: (label: string) => string): string {
 export interface OslEnclavesRegionModel {
   readonly stateNotices: string;
   readonly statusTag: (label: string) => string;
+  readonly roleEditorMarkup?: string;
 }
 
 let lastModel: OslEnclavesRegionModel | null = null;
@@ -493,7 +494,7 @@ function dynamicMarkup(model: OslEnclavesRegionModel): string {
 /** The whole five-region surface. `main.ts` reaches this via osl-enclaves.ts. */
 export function oslEnclavesFiveRegionSurface(model: OslEnclavesRegionModel): string {
   lastModel = model;
-  return `<main class="content-viewport osl-enclaves-page"><h1 id="route-heading" class="sr-only" tabindex="-1">OSL Enclaves</h1>${appRailMarkup()}<div class="enclv-dynamic" data-enclave-root>${dynamicMarkup(model)}</div></main>`;
+  return `<main class="content-viewport osl-enclaves-page"><h1 id="route-heading" class="sr-only" tabindex="-1">OSL Enclaves</h1>${appRailMarkup()}<div class="enclv-dynamic" data-enclave-root>${dynamicMarkup(model)}</div>${model.roleEditorMarkup ?? ""}</main>`;
 }
 
 function rerender(): void {
