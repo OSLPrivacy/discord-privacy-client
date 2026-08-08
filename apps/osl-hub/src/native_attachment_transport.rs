@@ -820,7 +820,7 @@ fn open_pending_inner(
     // Replay is committed and the encrypted inbox capability is already gone, so
     // the remote burn cannot reopen this attachment. Hand the decrypted copy to
     // the external reader first, then burn: the replay slot is spent either way.
-    launch_and_scavenge(opened)?;
+    launch_and_scavenge(opened, plan.expires_at())?;
     if plan.view_once {
         burn_view_once(&client, &plan.object_id, &token)?;
     }
@@ -893,7 +893,10 @@ const PLAINTEXT_REMOVAL_WINDOW: Duration = Duration::from_secs(600);
 #[cfg(windows)]
 const PLAINTEXT_REMOVAL_INTERVAL: Duration = Duration::from_secs(5);
 
-fn launch_and_scavenge(staged: peer_attachment_io::StagedPlaintext) -> Result<(), String> {
+fn launch_and_scavenge(
+    staged: peer_attachment_io::StagedPlaintext,
+    expires_at: i64,
+) -> Result<(), String> {
     if ipc::attachment_wire::is_blocked_automatic_open_filename(staged.original_filename()) {
         return Err(with_plaintext_removal(
             "This attachment type cannot be opened automatically".to_owned(),
@@ -910,6 +913,17 @@ fn launch_and_scavenge(staged: peer_attachment_io::StagedPlaintext) -> Result<()
             Some(root) => root.to_owned(),
             None => return Err("The decrypted attachment is unavailable".to_owned()),
         };
+        if let Err(error) = osl_privacy_hub::message_expiry::record_timed_attachment_artifact(
+            &root,
+            &path,
+            osl_privacy_hub::message_expiry::TimedAttachmentArtifactKind::UnlockedCopy,
+            expires_at,
+        ) {
+            return Err(with_plaintext_removal(
+                format!("OSL could not guarantee timed removal of the decrypted copy ({error})"),
+                staged.remove_now(),
+            ));
+        }
         // Install the OS-owned deletion before anything can read the plaintext.
         // The reaper is a separate process, so the decrypted copy's lifetime no
         // longer depends on an in-process best-effort call winning a race with

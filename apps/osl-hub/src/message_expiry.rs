@@ -1181,6 +1181,205 @@ pub fn expire_timed_delete_records_at_path(
 // Abandoned decrypted staging files
 // ---------------------------------------------------------------------------
 
+/// Durable ownership record for a filesystem artifact created while opening a
+/// timed attachment.  The shipping image preview and thumbnail paths are
+/// memory-only; today only `UnlockedCopy` reaches this ledger.  Keeping the
+/// other kinds explicit makes a future on-disk derivative impossible to add
+/// without also choosing its expiry semantics.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TimedAttachmentArtifactKind {
+    File,
+    Preview,
+    Thumbnail,
+    UnlockedCopy,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct TimedAttachmentArtifactRecord {
+    file_name: String,
+    kind: TimedAttachmentArtifactKind,
+    expires_at: i64,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+struct TimedAttachmentArtifactLedger {
+    version: u8,
+    records: Vec<TimedAttachmentArtifactRecord>,
+}
+
+/// Exact results from the absolute-deadline artifact sweep.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct TimedAttachmentArtifactExpiryReport {
+    pub expired: usize,
+    pub removed: usize,
+    pub retained: usize,
+    pub removal_failures: usize,
+    pub removed_files: usize,
+    pub removed_previews: usize,
+    pub removed_thumbnails: usize,
+    pub removed_unlocked_copies: usize,
+}
+
+const TIMED_ATTACHMENT_ARTIFACT_FILE: &str = "timed-attachment-artifacts.json";
+const TIMED_ATTACHMENT_ARTIFACT_LABEL: &str = "OSL timed attachment artifact ledger";
+const TIMED_ATTACHMENT_ARTIFACT_MAX_BYTES: u64 = 256 * 1024;
+const TIMED_ATTACHMENT_ARTIFACT_MAX_RECORDS: usize = 512;
+
+fn timed_attachment_artifact_lock() -> &'static std::sync::Mutex<()> {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+}
+
+fn timed_attachment_artifact_path(local_data_dir: &Path) -> Result<PathBuf, String> {
+    if !local_data_dir.is_absolute()
+        || local_data_dir.parent().is_none()
+        || local_data_dir.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::CurDir | std::path::Component::ParentDir
+            )
+        })
+    {
+        return Err("OSL attachment root is invalid".to_owned());
+    }
+    let metadata = std::fs::symlink_metadata(local_data_dir)
+        .map_err(|_| "OSL attachment root could not be checked".to_owned())?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err("OSL attachment root is unsafe".to_owned());
+    }
+    Ok(local_data_dir.join(TIMED_ATTACHMENT_ARTIFACT_FILE))
+}
+
+fn load_timed_attachment_artifact_ledger(
+    local_data_dir: &Path,
+) -> Result<TimedAttachmentArtifactLedger, String> {
+    let path = timed_attachment_artifact_path(local_data_dir)?;
+    let Some(bytes) = crate::atomic_file::read_recoverable_bounded(
+        &path,
+        TIMED_ATTACHMENT_ARTIFACT_MAX_BYTES,
+        TIMED_ATTACHMENT_ARTIFACT_LABEL,
+    )?
+    else {
+        return Ok(TimedAttachmentArtifactLedger {
+            version: 1,
+            records: Vec::new(),
+        });
+    };
+    let ledger: TimedAttachmentArtifactLedger = serde_json::from_slice(&bytes)
+        .map_err(|_| format!("{TIMED_ATTACHMENT_ARTIFACT_LABEL} is malformed"))?;
+    if ledger.version != 1 || ledger.records.len() > TIMED_ATTACHMENT_ARTIFACT_MAX_RECORDS {
+        return Err(format!("{TIMED_ATTACHMENT_ARTIFACT_LABEL} is malformed"));
+    }
+    for record in &ledger.records {
+        let path = local_data_dir
+            .join(STAGING_DIRECTORY)
+            .join(&record.file_name);
+        if record.expires_at <= 0
+            || crate::peer_attachment_io::staging_file_name_in_root(local_data_dir, &path)
+                .as_deref()
+                != Ok(record.file_name.as_str())
+        {
+            return Err(format!("{TIMED_ATTACHMENT_ARTIFACT_LABEL} is malformed"));
+        }
+    }
+    Ok(ledger)
+}
+
+fn store_timed_attachment_artifact_ledger(
+    local_data_dir: &Path,
+    ledger: &TimedAttachmentArtifactLedger,
+) -> Result<(), String> {
+    let path = timed_attachment_artifact_path(local_data_dir)?;
+    let bytes = serde_json::to_vec(ledger)
+        .map_err(|_| format!("{TIMED_ATTACHMENT_ARTIFACT_LABEL} could not be encoded"))?;
+    if bytes.len() as u64 > TIMED_ATTACHMENT_ARTIFACT_MAX_BYTES {
+        return Err(format!(
+            "{TIMED_ATTACHMENT_ARTIFACT_LABEL} exceeds its storage limit"
+        ));
+    }
+    crate::atomic_file::write_recoverable(&path, &bytes, TIMED_ATTACHMENT_ARTIFACT_LABEL)
+}
+
+/// Bind an OSL-owned staging path to the timed attachment's absolute deadline.
+/// Re-registering the same path may shorten but never lengthen its lifetime.
+pub fn record_timed_attachment_artifact(
+    local_data_dir: &Path,
+    artifact_path: &Path,
+    kind: TimedAttachmentArtifactKind,
+    expires_at: i64,
+) -> Result<(), String> {
+    if expires_at <= 0 {
+        return Err("OSL timed attachment artifact expiry is invalid".to_owned());
+    }
+    let file_name =
+        crate::peer_attachment_io::staging_file_name_in_root(local_data_dir, artifact_path)?;
+    let _guard = timed_attachment_artifact_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let mut ledger = load_timed_attachment_artifact_ledger(local_data_dir)?;
+    if let Some(record) = ledger
+        .records
+        .iter_mut()
+        .find(|record| record.file_name == file_name)
+    {
+        if record.kind != kind {
+            return Err("OSL timed attachment artifact kind changed".to_owned());
+        }
+        record.expires_at = record.expires_at.min(expires_at);
+    } else {
+        if ledger.records.len() >= TIMED_ATTACHMENT_ARTIFACT_MAX_RECORDS {
+            return Err("OSL timed attachment artifact ledger is full".to_owned());
+        }
+        ledger.records.push(TimedAttachmentArtifactRecord {
+            file_name,
+            kind,
+            expires_at,
+        });
+    }
+    store_timed_attachment_artifact_ledger(local_data_dir, &ledger)
+}
+
+/// Remove every registered attachment artifact whose absolute deadline has
+/// elapsed. Failed removals stay registered and are retried on the next tick.
+pub fn expire_timed_attachment_artifacts(
+    local_data_dir: &Path,
+    now: i64,
+) -> Result<TimedAttachmentArtifactExpiryReport, String> {
+    let _guard = timed_attachment_artifact_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let mut ledger = load_timed_attachment_artifact_ledger(local_data_dir)?;
+    let mut retained = Vec::with_capacity(ledger.records.len());
+    let mut report = TimedAttachmentArtifactExpiryReport::default();
+    for record in ledger.records.drain(..) {
+        if record.expires_at > now {
+            report.retained += 1;
+            retained.push(record);
+            continue;
+        }
+        report.expired += 1;
+        let path = local_data_dir
+            .join(STAGING_DIRECTORY)
+            .join(&record.file_name);
+        if crate::peer_attachment_io::remove_staging_path_in_root(local_data_dir, &path).is_err() {
+            report.removal_failures += 1;
+            retained.push(record);
+            continue;
+        }
+        report.removed += 1;
+        match record.kind {
+            TimedAttachmentArtifactKind::File => report.removed_files += 1,
+            TimedAttachmentArtifactKind::Preview => report.removed_previews += 1,
+            TimedAttachmentArtifactKind::Thumbnail => report.removed_thumbnails += 1,
+            TimedAttachmentArtifactKind::UnlockedCopy => report.removed_unlocked_copies += 1,
+        }
+    }
+    ledger.records = retained;
+    store_timed_attachment_artifact_ledger(local_data_dir, &ledger)?;
+    Ok(report)
+}
+
 /// Mirrors `peer_attachment_io`'s private staging directory name.
 ///
 /// Duplicated deliberately rather than widening that module's API while another
@@ -1294,6 +1493,7 @@ pub struct PassReport {
     pub timed_delete_shredded_cache_rows: usize,
     pub dropped_receipt_records: usize,
     pub removed_staging_files: usize,
+    pub removed_timed_attachment_artifacts: usize,
     /// A leg that failed. The pass never propagates it: a failed sweep is
     /// retried on the next tick and must not become a refusal to do the rest.
     pub degraded: bool,
@@ -1419,9 +1619,16 @@ pub fn run_pass(
     now: i64,
 ) -> PassReport {
     let mut report = PassReport::default();
+    match expire_timed_attachment_artifacts(local_data_dir, now) {
+        Ok(expired) => {
+            report.removed_timed_attachment_artifacts = expired.removed;
+            report.removed_staging_files = expired.removed;
+        }
+        Err(_) => report.degraded = true,
+    }
     // Abandoned decrypted files are removable without the storage key, and are
     // exactly what is left behind by a crash, so sweep them either way.
-    report.removed_staging_files =
+    report.removed_staging_files +=
         sweep_abandoned_staging(local_data_dir, STAGED_PLAINTEXT_MAX_AGE);
 
     let Some(key) = ipc::main_password::get_file_storage_key() else {

@@ -1815,6 +1815,15 @@ pub struct NativeOverlayAttachmentOpenPlan {
     expires_at: i64,
 }
 
+impl NativeOverlayAttachmentOpenPlan {
+    /// Absolute attachment deadline used by local artifact cleanup. It is not
+    /// serialized to the renderer; only the Rust-owned open path may bind a
+    /// filesystem artifact to it.
+    pub fn expires_at(&self) -> i64 {
+        self.expires_at
+    }
+}
+
 impl Drop for NativeOverlayAttachmentOpenPlan {
     fn drop(&mut self) {
         self.attachment_key.fill(0);

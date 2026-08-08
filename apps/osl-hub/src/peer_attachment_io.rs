@@ -1021,6 +1021,29 @@ pub fn remove_staging_path_in_root(root: &Path, path: &Path) -> Result<(), Strin
     }
 }
 
+/// Return the validated, root-relative name of one OSL attachment staging
+/// file without opening or removing it.
+///
+/// The timed-attachment expiry ledger stores this name rather than an absolute
+/// path.  Re-validating it against the caller's current app-local-data root on
+/// every sweep prevents a copied ledger, symlink, or path traversal from
+/// turning expiry cleanup into an arbitrary-file deletion primitive.
+pub fn staging_file_name_in_root(root: &Path, path: &Path) -> Result<String, String> {
+    validate_staging_path_in_root(root, path)?;
+    let staging = path
+        .parent()
+        .ok_or_else(|| "staged attachment path is invalid".to_owned())?;
+    let metadata = std::fs::symlink_metadata(staging)
+        .map_err(|_| "OSL attachment staging directory could not be checked".to_owned())?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err("OSL attachment staging directory is unsafe".to_owned());
+    }
+    path.file_name()
+        .and_then(|value| value.to_str())
+        .map(str::to_owned)
+        .ok_or_else(|| "staged attachment path is invalid".to_owned())
+}
+
 fn validate_staging_path_in_root(root: &Path, path: &Path) -> Result<(), String> {
     let staging = staging_directory_for_root(root)?;
     if path.parent() != Some(staging.as_path()) {
