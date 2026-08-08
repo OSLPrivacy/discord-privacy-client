@@ -75,7 +75,7 @@
 
 .timer-overlay-panel {
   position: relative;
-  width: min(360px, calc(100% - 32px));
+  width: min(440px, calc(100% - 32px));
   padding: 20px;
   display: grid;
   gap: 16px;
@@ -89,6 +89,36 @@
 .timer-overlay-heading {
   margin: 0;
   font-size: 17px;
+}
+
+.timer-overlay-limit { margin: 0; color: var(--muted); }
+
+.timer-overlay-choices {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(88px, 1fr));
+  gap: 8px;
+}
+
+.timer-overlay-choice {
+  min-height: 40px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.timer-overlay-choice-disabled,
+.timer-overlay-choice:disabled {
+  border-color: var(--line-soft);
+  background: color-mix(in srgb, var(--panel-2) 55%, var(--bg));
+  color: var(--muted);
+  cursor: not-allowed;
+  filter: grayscale(1);
+  opacity: .42;
 }
 
 .timer-overlay-fields {
