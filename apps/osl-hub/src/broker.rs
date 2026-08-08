@@ -8557,6 +8557,20 @@ pub fn burn_indexed_local_protected_binding(
     )
 }
 
+#[cfg(any(test, feature = "task-3712-test"))]
+pub fn test_local_protected_binding_count(context_binding_sha256: &str) -> Result<usize, String> {
+    let dir = keystore::osl_config_dir()
+        .map_err(|_| "OSL Privacy account storage is unavailable".to_owned())?;
+    let file_key = ipc::main_password::get_file_storage_key()
+        .ok_or_else(|| "Unlock OSL before reading indexed protected state".to_owned())?;
+    let ledger = load_local_ledger(&dir.join(LOCAL_PROTECTED_FILE), &file_key)?;
+    Ok(ledger
+        .records
+        .values()
+        .filter(|record| record.context_binding == context_binding_sha256)
+        .count())
+}
+
 fn decrypt_local_protected_capsule_in_dir(
     core: &HubCoreState,
     broker: &HubBrokerState,

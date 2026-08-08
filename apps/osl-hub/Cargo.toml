@@ -138,6 +138,9 @@ task-3234-test = ["keystore/task-3235-test"]
 # Hermetic acceptance seam for TASK 0863. It exposes only the file-backed
 # seven-screen reset probe and is absent from normal/default/desktop builds.
 task-0863-test = []
+# Hermetic acceptance seam for TASK 3712. It exposes only the encrypted local
+# protected-binding count used to query the Remove everything fixture.
+task-3712-test = []
 
 [lib]
 # The package is `osl-hub` so it can be selected with `cargo -p osl-hub`.
