@@ -1,0 +1,638 @@
+{
+  "task": "0858",
+  "screen": "not-started",
+  "tile": "whatsapp",
+  "window": {
+    "width": 1280,
+    "height": 900
+  },
+  "documentTitle": "Service status",
+  "namedControls": [
+    {
+      "name": "title",
+      "selector": "#tile-status-title",
+      "rect": {
+        "x": 359,
+        "y": 69,
+        "width": 236.984375,
+        "height": 31.046875
+      },
+      "drawn": {
+        "width": 237,
+        "height": 32,
+        "distinctColors": 398,
+        "nonBackground": 7584,
+        "brightPixels": 1844
+      }
+    },
+    {
+      "name": "capability",
+      "selector": "[data-tile-status-capability]",
+      "rect": {
+        "x": 359,
+        "y": 142.84375,
+        "width": 110.375,
+        "height": 25.046875
+      },
+      "drawn": {
+        "width": 111,
+        "height": 26,
+        "distinctColors": 197,
+        "nonBackground": 2886,
+        "brightPixels": 294
+      }
+    },
+    {
+      "name": "limits",
+      "selector": "[data-tile-status-limit-count]",
+      "rect": {
+        "x": 359,
+        "y": 346.203125,
+        "width": 562,
+        "height": 207.5
+      },
+      "drawn": {
+        "width": 562,
+        "height": 208,
+        "distinctColors": 1177,
+        "nonBackground": 116896,
+        "brightPixels": 6797
+      }
+    },
+    {
+      "name": "action",
+      "selector": ".tile-status-next",
+      "rect": {
+        "x": 359,
+        "y": 594.703125,
+        "width": 287.0625,
+        "height": 36
+      },
+      "drawn": {
+        "width": 288,
+        "height": 37,
+        "distinctColors": 324,
+        "nonBackground": 9897,
+        "brightPixels": 8657
+      }
+    },
+    {
+      "name": "back",
+      "selector": "#native-app-back",
+      "rect": {
+        "x": 773.984375,
+        "y": 646.703125,
+        "width": 147.015625,
+        "height": 44
+      },
+      "drawn": {
+        "width": 148,
+        "height": 45,
+        "distinctColors": 269,
+        "nonBackground": 6660,
+        "brightPixels": 493
+      }
+    }
+  ],
+  "capabilityLabel": "Not started",
+  "claimLabel": "Coming later",
+  "capabilitySentence": "carrier write capability was measured and refused",
+  "explanation": "OSL measured WhatsApp's composer against the live client and the write did not land: the value reaches the accessibility layer and the message document stays empty. This is a refused technique, not unfinished work, so nothing is proven here.",
+  "can": [],
+  "limits": [
+    "OSL cannot place a message into WhatsApp's own composer. No live carry receipt exists for WhatsApp.",
+    "OSL cannot read a protected message back out of WhatsApp. Delivery through WhatsApp has never been proven against the live client.",
+    "OSL cannot open WhatsApp in a separate OSL profile on this device.",
+    "OSL has never carried a protected message between two people through WhatsApp. Nothing you send through WhatsApp is protected by OSL.",
+    "WhatsApp's adapter refuses synthesised input, which is the only technique any surface here has been shown to land by."
+  ],
+  "action": {
+    "label": "Write this in OSL Chat instead",
+    "id": null,
+    "target": "osl-chat",
+    "handler": "data-route"
+  },
+  "back": {
+    "label": "Back to Home",
+    "target": "home"
+  },
+  "accessibleNames": [
+    "Service status",
+    "What OSL cannot do here",
+    "Write this in OSL Chat instead",
+    "See what OSL has proven so far",
+    "Burn…",
+    "Back to Home",
+    "Service status",
+    "NOT STARTED",
+    "COMING LATER",
+    "carrier write capability was measured and refused",
+    "OSL measured WhatsApp's composer against the live client and the write did not land: the value reaches the accessibility layer and the message document stays empty. This is a refused technique, not unfinished work, so nothing is proven here.",
+    "WHAT OSL CANNOT DO HERE",
+    "Write this in OSL Chat instead",
+    "See what OSL has proven so far",
+    "Burn…",
+    "Back to Home",
+    "Service status",
+    "WhatsApp",
+    "NOT STARTED",
+    "COMING LATER",
+    "carrier write capability was measured and refused",
+    "OSL measured WhatsApp's composer against the live client and the write did not",
+    "land: the value reaches the accessibility layer and the message document stays",
+    "empty. This is a refused technique, not unfinished work, so nothing is proven here.",
+    "WHAT OSL CANNOT DO HERE",
+    "Write this in OSL Chat instead",
+    "See what OSL has proven so far",
+    "Burn…",
+    "Back to Home",
+    "Service status",
+    "WhatsApp",
+    "WHAT OSL CANNOT DO HERE",
+    "OSL cannot place a message into WhatsApp's own composer. No live carry receipt exists for WhatsApp.",
+    "OSL cannot read a protected message back out of WhatsApp. Delivery through WhatsApp has never been proven against the live client.",
+    "OSL cannot open WhatsApp in a separate OSL profile on this device.",
+    "OSL has never carried a protected message between two people through WhatsApp. Nothing you send through WhatsApp is protected by OSL.",
+    "WhatsApp's adapter refuses synthesised input, which is the only technique any surface here has been shown to land by.",
+    "OSL cannot place a message into WhatsApp's own composer. No live carry receipt",
+    "exists for WhatsApp.",
+    "OSL cannot read a protected message back out of WhatsApp. Delivery through",
+    "WhatsApp has never been proven against the live client.",
+    "OSL cannot open WhatsApp in a separate OSL profile on this device.",
+    "OSL has never carried a protected message between two people through",
+    "WhatsApp. Nothing you send through WhatsApp is protected by OSL.",
+    "WhatsApp's adapter refuses synthesised input, which is the only technique any",
+    "surface here has been shown to land by."
+  ],
+  "domTree": {
+    "tag": "main",
+    "id": "route-heading",
+    "class": "content-viewport native-app-page tile-status-page",
+    "data": {
+      "tileStatusPage": "whatsapp",
+      "tileStatusRoute": "service:whatsapp",
+      "tileStatusCapabilityLabel": "Not started"
+    },
+    "rect": {
+      "x": 0,
+      "y": 0,
+      "width": 1280,
+      "height": 773.703125
+    },
+    "children": [
+      {
+        "tag": "section",
+        "class": "native-app-card tile-status-card",
+        "data": {},
+        "rect": {
+          "x": 330,
+          "y": 40,
+          "width": 620,
+          "height": 693.703125
+        },
+        "children": [
+          {
+            "tag": "header",
+            "class": "tile-status-header",
+            "data": {},
+            "rect": {
+              "x": 359,
+              "y": 69,
+              "width": 236.984375,
+              "height": 98.890625
+            },
+            "children": [
+              {
+                "tag": "h1",
+                "id": "tile-status-title",
+                "data": {},
+                "text": "Service status",
+                "rect": {
+                  "x": 359,
+                  "y": 69,
+                  "width": 236.984375,
+                  "height": 31.046875
+                },
+                "children": []
+              },
+              {
+                "tag": "p",
+                "class": "tile-status-service",
+                "data": {
+                  "tileStatusService": "whatsapp"
+                },
+                "text": "WhatsApp",
+                "rect": {
+                  "x": 359,
+                  "y": 110.046875,
+                  "width": 236.984375,
+                  "height": 22.796875
+                },
+                "children": []
+              },
+              {
+                "tag": "p",
+                "class": "tile-status-labels",
+                "data": {},
+                "rect": {
+                  "x": 359,
+                  "y": 142.84375,
+                  "width": 236.984375,
+                  "height": 25.046875
+                },
+                "children": [
+                  {
+                    "tag": "span",
+                    "class": "status-tag tile-status-capability-tag",
+                    "data": {
+                      "tileStatusCapability": "Not started"
+                    },
+                    "text": "Not started",
+                    "rect": {
+                      "x": 359,
+                      "y": 142.84375,
+                      "width": 110.375,
+                      "height": 25.046875
+                    },
+                    "children": []
+                  },
+                  {
+                    "tag": "span",
+                    "class": "status-tag tile-status-claim-tag",
+                    "data": {
+                      "tileStatusClaim": "Coming later"
+                    },
+                    "text": "Coming later",
+                    "rect": {
+                      "x": 477.375,
+                      "y": 142.84375,
+                      "width": 118.609375,
+                      "height": 25.046875
+                    },
+                    "children": []
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "tag": "p",
+            "class": "tile-status-capability-sentence",
+            "data": {
+              "tileStatusCapabilitySentence": "whatsapp"
+            },
+            "text": "carrier write capability was measured and refused",
+            "rect": {
+              "x": 359,
+              "y": 185.890625,
+              "width": 377.1875,
+              "height": 22.5
+            },
+            "children": []
+          },
+          {
+            "tag": "p",
+            "class": "tile-status-explanation",
+            "data": {
+              "tileStatusExplanation": "whatsapp"
+            },
+            "text": "OSL measured WhatsApp's composer against the live client and the write did not land: the value reaches the accessibility layer and the message document stays empty. This is a refused technique, not unfinished work, so nothing is proven here.",
+            "rect": {
+              "x": 359,
+              "y": 226.390625,
+              "width": 562,
+              "height": 60.421875
+            },
+            "children": []
+          },
+          {
+            "tag": "section",
+            "class": "tile-status-group tile-status-group-limits",
+            "ariaLabel": "What OSL cannot do here",
+            "data": {},
+            "rect": {
+              "x": 359,
+              "y": 304.8125,
+              "width": 562,
+              "height": 248.890625
+            },
+            "children": [
+              {
+                "tag": "h2",
+                "data": {},
+                "text": "What OSL cannot do here",
+                "rect": {
+                  "x": 359,
+                  "y": 321.8125,
+                  "width": 562,
+                  "height": 14.390625
+                },
+                "children": []
+              },
+              {
+                "tag": "ul",
+                "class": "tile-status-facts",
+                "data": {
+                  "tileStatusLimitCount": "5"
+                },
+                "rect": {
+                  "x": 359,
+                  "y": 346.203125,
+                  "width": 562,
+                  "height": 207.5
+                },
+                "children": [
+                  {
+                    "tag": "li",
+                    "class": "tile-status-fact tile-status-fact-limit",
+                    "data": {
+                      "tileStatusLimit": "placing"
+                    },
+                    "rect": {
+                      "x": 359,
+                      "y": 346.203125,
+                      "width": 562,
+                      "height": 39
+                    },
+                    "children": [
+                      {
+                        "tag": "span",
+                        "class": "tile-status-fact-mark",
+                        "data": {},
+                        "text": "✕",
+                        "rect": {
+                          "x": 359,
+                          "y": 346.203125,
+                          "width": 16,
+                          "height": 19.5
+                        },
+                        "children": []
+                      },
+                      {
+                        "tag": "span",
+                        "class": "tile-status-fact-text",
+                        "data": {},
+                        "text": "OSL cannot place a message into WhatsApp's own composer. No live carry receipt exists for WhatsApp.",
+                        "rect": {
+                          "x": 385,
+                          "y": 346.203125,
+                          "width": 536,
+                          "height": 39
+                        },
+                        "children": []
+                      }
+                    ]
+                  },
+                  {
+                    "tag": "li",
+                    "class": "tile-status-fact tile-status-fact-limit",
+                    "data": {
+                      "tileStatusLimit": "reading"
+                    },
+                    "rect": {
+                      "x": 359,
+                      "y": 393.203125,
+                      "width": 562,
+                      "height": 39
+                    },
+                    "children": [
+                      {
+                        "tag": "span",
+                        "class": "tile-status-fact-mark",
+                        "data": {},
+                        "text": "✕",
+                        "rect": {
+                          "x": 359,
+                          "y": 393.203125,
+                          "width": 16,
+                          "height": 19.5
+                        },
+                        "children": []
+                      },
+                      {
+                        "tag": "span",
+                        "class": "tile-status-fact-text",
+                        "data": {},
+                        "text": "OSL cannot read a protected message back out of WhatsApp. Delivery through WhatsApp has never been proven against the live client.",
+                        "rect": {
+                          "x": 385,
+                          "y": 393.203125,
+                          "width": 536,
+                          "height": 39
+                        },
+                        "children": []
+                      }
+                    ]
+                  },
+                  {
+                    "tag": "li",
+                    "class": "tile-status-fact tile-status-fact-limit",
+                    "data": {
+                      "tileStatusLimit": "opening"
+                    },
+                    "rect": {
+                      "x": 359,
+                      "y": 440.203125,
+                      "width": 562,
+                      "height": 19.5
+                    },
+                    "children": [
+                      {
+                        "tag": "span",
+                        "class": "tile-status-fact-mark",
+                        "data": {},
+                        "text": "✕",
+                        "rect": {
+                          "x": 359,
+                          "y": 440.203125,
+                          "width": 16,
+                          "height": 19.5
+                        },
+                        "children": []
+                      },
+                      {
+                        "tag": "span",
+                        "class": "tile-status-fact-text",
+                        "data": {},
+                        "text": "OSL cannot open WhatsApp in a separate OSL profile on this device.",
+                        "rect": {
+                          "x": 385,
+                          "y": 440.203125,
+                          "width": 536,
+                          "height": 19.5
+                        },
+                        "children": []
+                      }
+                    ]
+                  },
+                  {
+                    "tag": "li",
+                    "class": "tile-status-fact tile-status-fact-limit",
+                    "data": {
+                      "tileStatusLimit": "protectedMessaging"
+                    },
+                    "rect": {
+                      "x": 359,
+                      "y": 467.703125,
+                      "width": 562,
+                      "height": 39
+                    },
+                    "children": [
+                      {
+                        "tag": "span",
+                        "class": "tile-status-fact-mark",
+                        "data": {},
+                        "text": "✕",
+                        "rect": {
+                          "x": 359,
+                          "y": 467.703125,
+                          "width": 16,
+                          "height": 19.5
+                        },
+                        "children": []
+                      },
+                      {
+                        "tag": "span",
+                        "class": "tile-status-fact-text",
+                        "data": {},
+                        "text": "OSL has never carried a protected message between two people through WhatsApp. Nothing you send through WhatsApp is protected by OSL.",
+                        "rect": {
+                          "x": 385,
+                          "y": 467.703125,
+                          "width": 536,
+                          "height": 39
+                        },
+                        "children": []
+                      }
+                    ]
+                  },
+                  {
+                    "tag": "li",
+                    "class": "tile-status-fact tile-status-fact-limit",
+                    "data": {
+                      "tileStatusLimit": "blocker:send-input-generalisation"
+                    },
+                    "rect": {
+                      "x": 359,
+                      "y": 514.703125,
+                      "width": 562,
+                      "height": 39
+                    },
+                    "children": [
+                      {
+                        "tag": "span",
+                        "class": "tile-status-fact-mark",
+                        "data": {},
+                        "text": "✕",
+                        "rect": {
+                          "x": 359,
+                          "y": 514.703125,
+                          "width": 16,
+                          "height": 19.5
+                        },
+                        "children": []
+                      },
+                      {
+                        "tag": "span",
+                        "class": "tile-status-fact-text",
+                        "data": {},
+                        "text": "WhatsApp's adapter refuses synthesised input, which is the only technique any surface here has been shown to land by.",
+                        "rect": {
+                          "x": 385,
+                          "y": 514.703125,
+                          "width": 536,
+                          "height": 39
+                        },
+                        "children": []
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "tag": "div",
+            "class": "tile-status-actions",
+            "data": {},
+            "rect": {
+              "x": 359,
+              "y": 575.703125,
+              "width": 562,
+              "height": 129
+            },
+            "children": [
+              {
+                "tag": "button",
+                "class": "button primary native-app-action tile-status-next",
+                "data": {
+                  "tileStatusAction": "osl-chat",
+                  "tileStatusHandler": "data-route",
+                  "route": "osl-chat"
+                },
+                "text": "Write this in OSL Chat instead",
+                "rect": {
+                  "x": 359,
+                  "y": 594.703125,
+                  "width": 287.0625,
+                  "height": 36
+                },
+                "children": []
+              },
+              {
+                "tag": "button",
+                "class": "text-button tile-status-evidence",
+                "data": {
+                  "tileStatusAction": "connections",
+                  "tileStatusHandler": "data-route",
+                  "route": "connections"
+                },
+                "text": "See what OSL has proven so far",
+                "rect": {
+                  "x": 662.0625,
+                  "y": 596.703125,
+                  "width": 233.578125,
+                  "height": 32
+                },
+                "children": []
+              },
+              {
+                "tag": "button",
+                "id": "burn-button",
+                "class": "text-button tile-status-burn",
+                "data": {
+                  "openBurn": "app"
+                },
+                "text": "Burn…",
+                "rect": {
+                  "x": 359,
+                  "y": 659.703125,
+                  "width": 47.84375,
+                  "height": 32
+                },
+                "children": []
+              },
+              {
+                "tag": "button",
+                "id": "native-app-back",
+                "class": "text-back tile-status-back",
+                "data": {
+                  "tileStatusAction": "home",
+                  "tileStatusHandler": "data-route"
+                },
+                "text": "Back to Home",
+                "rect": {
+                  "x": 773.984375,
+                  "y": 646.703125,
+                  "width": 147.015625,
+                  "height": 44
+                },
+                "children": []
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

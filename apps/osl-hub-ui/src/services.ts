@@ -398,6 +398,36 @@ export function nativeAppTileLabel(status: NativeAppSupportStatus | null): strin
   return nativeAppGeneratedLabel(status);
 }
 
+export function nativeAppCapabilitySentence(
+  carrier: NativeAppCarrierEvidence,
+  delivery: NativeAppDeliveryEvidence,
+): string {
+  switch (carrier) {
+    case "notBuilt": return "no carrier capability is wired";
+    case "noCarrierByConstruction": return "no carrier capability exists on this surface by construction";
+    case "externallyBlocked": return "carrier capability is blocked by the other side";
+    case "measuredAndRefused": return "carrier write capability was measured and refused";
+    case "builtNeverProvenLive": return "carrier capability is wired but not live-proven";
+    case "provenLiveWithReceipt":
+      return delivery === "provenLiveBothWays"
+        ? "live carry capability is proven; delivery is live-proven"
+        : "live carry capability is proven; delivery is not live-proven";
+  }
+}
+
+export function nativeAppStatusPageFor(row: {
+  supportStatus: NativeAppSupportStatus;
+  carrierEvidence: NativeAppCarrierEvidence;
+  deliveryEvidence: NativeAppDeliveryEvidence;
+  claimNote: string;
+}): NativeAppStatusPageData {
+  return {
+    capability: nativeAppCapabilitySentence(row.carrierEvidence, row.deliveryEvidence),
+    generatedLabel: nativeAppGeneratedLabel(row.supportStatus),
+    explanation: row.claimNote,
+  };
+}
+
 // The FALLBACK catalog, shown before the backend answers. Rust owns the claim
 // decision (`apps/osl-hub/src/claim_state.rs`); this list is only ever allowed
 // to agree with it, and `services.test.ts` reads the Rust source to check that.
@@ -971,7 +1001,11 @@ export function parseNativeApps(raw: unknown): NativeApp[] {
   if (!Array.isArray(raw) || raw.length > nativeAppIds.length) throw new Error("invalid native app catalog");
   const seen = new Set<NativeAppId>();
   return raw.map((candidate) => {
-    if (!isExactRecord(candidate, ["id", "displayName", "availability", "supportStatus", "carrierEvidence", "deliveryEvidence", "claimBlockers", "claimNote", "statusPage", "protectedMode", "isolatedProfileAvailable", "supportsOverlay"])) throw new Error("invalid native app catalog");
+    const withStatusPage = isExactRecord(candidate, ["id", "displayName", "availability", "supportStatus", "carrierEvidence", "deliveryEvidence", "claimBlockers", "claimNote", "statusPage", "protectedMode", "isolatedProfileAvailable", "supportsOverlay"]);
+    if (!withStatusPage
+      && !isExactRecord(candidate, ["id", "displayName", "availability", "supportStatus", "carrierEvidence", "deliveryEvidence", "claimBlockers", "claimNote", "protectedMode", "isolatedProfileAvailable", "supportsOverlay"])) {
+      throw new Error("invalid native app catalog");
+    }
     const id = candidate.id as NativeAppId;
     if (!nativeAppIds.includes(id) || seen.has(id) || !isDisplayString(candidate.displayName, 80)
       || !["installed", "installable", "unavailable"].includes(String(candidate.availability))
@@ -987,12 +1021,19 @@ export function parseNativeApps(raw: unknown): NativeApp[] {
     // "measured against the live client and refused", and only the sentence
     // tells a user which one they are looking at.
     if (!isDisplayString(candidate.claimNote, 400)) throw new Error("invalid native app catalog");
-    if (!isExactRecord(candidate.statusPage, ["capability", "generatedLabel", "explanation"])
-      || !isDisplayString(candidate.statusPage.capability, 120)
-      || !isDisplayString(candidate.statusPage.generatedLabel, 80)
-      || !isDisplayString(candidate.statusPage.explanation, 400)
-      || candidate.statusPage.generatedLabel !== nativeAppGeneratedLabel(candidate.supportStatus as NativeAppSupportStatus)
-      || candidate.statusPage.explanation !== candidate.claimNote) {
+    const derivedStatusPage = nativeAppStatusPageFor({
+      supportStatus: candidate.supportStatus as NativeAppSupportStatus,
+      carrierEvidence: candidate.carrierEvidence as NativeAppCarrierEvidence,
+      deliveryEvidence: candidate.deliveryEvidence as NativeAppDeliveryEvidence,
+      claimNote: candidate.claimNote as string,
+    });
+    if (withStatusPage
+      && (!isExactRecord(candidate.statusPage, ["capability", "generatedLabel", "explanation"])
+        || !isDisplayString(candidate.statusPage.capability, 120)
+        || !isDisplayString(candidate.statusPage.generatedLabel, 80)
+        || !isDisplayString(candidate.statusPage.explanation, 400)
+        || candidate.statusPage.generatedLabel !== nativeAppGeneratedLabel(candidate.supportStatus as NativeAppSupportStatus)
+        || candidate.statusPage.explanation !== candidate.claimNote)) {
       throw new Error("invalid native app catalog");
     }
     if (!Array.isArray(candidate.claimBlockers)
@@ -1020,11 +1061,13 @@ export function parseNativeApps(raw: unknown): NativeApp[] {
       deliveryEvidence: candidate.deliveryEvidence as NativeApp["deliveryEvidence"],
       claimBlockers: [...candidate.claimBlockers as readonly string[]],
       claimNote: candidate.claimNote as string,
-      statusPage: {
-        capability: candidate.statusPage.capability as string,
-        generatedLabel: candidate.statusPage.generatedLabel as string,
-        explanation: candidate.statusPage.explanation as string,
-      },
+      statusPage: withStatusPage
+        ? {
+          capability: (candidate.statusPage as Record<string, unknown>).capability as string,
+          generatedLabel: (candidate.statusPage as Record<string, unknown>).generatedLabel as string,
+          explanation: (candidate.statusPage as Record<string, unknown>).explanation as string,
+        }
+        : derivedStatusPage,
       protectedMode: candidate.protectedMode as NativeApp["protectedMode"],
       isolatedProfileAvailable: candidate.isolatedProfileAvailable,
       supportsOverlay: candidate.supportsOverlay,

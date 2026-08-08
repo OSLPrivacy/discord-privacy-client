@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { configuredTopStripApps, embeddedAccountsForHomeApp, escapeHtml, homeAppsFromServices, loadLinkedServices, loadNativeApps, nativeAppGeneratedLabel, notificationIntegrationEligibility, parseEmbeddedServiceHost, parseFirefoxStatus, parseLinkedAccount, parseLinkedServices, parseMullvadStatus, parseNativeAppAction, parseNativeApps, serviceAccountsForProvider } from "./services";
+import { configuredTopStripApps, embeddedAccountsForHomeApp, escapeHtml, homeAppsFromServices, loadLinkedServices, loadNativeApps, nativeAppCapabilitySentence, nativeAppGeneratedLabel, nativeAppStatusPageFor, notificationIntegrationEligibility, parseEmbeddedServiceHost, parseFirefoxStatus, parseLinkedAccount, parseLinkedServices, parseMullvadStatus, parseNativeAppAction, parseNativeApps, serviceAccountsForProvider } from "./services";
 
 const originalAppRoster = [
   "discord", "telegram", "signal", "whatsapp", "messenger",
@@ -90,6 +90,12 @@ describe("linked-service contract", () => {
     expect(() => parseNativeApps([{ ...telegram, claimBlockers: "none" }])).toThrow();
     expect(() => parseNativeApps([{ ...telegram, statusPage: { ...telegram.statusPage, generatedLabel: "Available" } }])).toThrow();
     expect(() => parseNativeApps([{ ...telegram, statusPage: { ...telegram.statusPage, explanation: "A second source of truth." } }])).toThrow();
+    const { statusPage: _sent, ...wireTelegram } = { ...telegram, supportStatus: "comingSoon" } as const;
+    const [derived] = parseNativeApps([wireTelegram]);
+    expect(derived.statusPage).toEqual(nativeAppStatusPageFor(wireTelegram));
+    expect(derived.statusPage.generatedLabel).toBe("Coming later");
+    expect(derived.statusPage.explanation).toBe(wireTelegram.claimNote);
+    expect(derived.statusPage.capability).toBe("carrier capability is wired but not live-proven");
     expect(() => parseNativeAppAction({ id: "instagram", started: true }, false)).toThrow();
   });
 
@@ -384,6 +390,10 @@ describe("native app catalog agrees with the Rust support decision", () => {
         .toBe(app.claimNote);
       expect(app.statusPage.capability, `${app.id} status page data does not name the real capability`)
         .toMatch(/\bcapability\b/u);
+      expect(app.statusPage.capability, `${app.id} capability sentence is not derivable from its evidence`)
+        .toBe(nativeAppCapabilitySentence(app.carrierEvidence, app.deliveryEvidence));
+      expect(app.statusPage, `${app.id} status page is not derivable from the rest of its row`)
+        .toEqual(nativeAppStatusPageFor(app));
     }
 
     // The evidence is per surface and is NOT one value stamped on everything --
