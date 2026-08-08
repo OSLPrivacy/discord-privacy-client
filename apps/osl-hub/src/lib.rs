@@ -183,6 +183,7 @@ pub mod messenger_place_reader;
 /// Messenger's browser-observation adapter for the shared Scrub message
 /// reader. It is gated before it consumes any browser rows.
 pub mod messenger_message_reader;
+pub mod messenger_message_deleter;
 pub mod model_pack_install;
 pub mod models;
 pub mod mullvad_window_host;
