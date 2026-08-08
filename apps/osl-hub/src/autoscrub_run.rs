@@ -1507,6 +1507,8 @@ pub struct AutoScrubAccountRunResult {
     pub service_id: ServiceKind,
     pub account_id: String,
     pub result: &'static str,
+}
+
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AutoScrubRunActionRequest {
@@ -1747,6 +1749,7 @@ impl AutoScrubRunStore {
             ) {
                 run.stop_requested = true;
             }
+            if matches!(
                 run.summary.phase,
                 AutoScrubRunPhase::Running | AutoScrubRunPhase::ReviewRequired
             ) {
@@ -2858,7 +2861,11 @@ mod production_fleet_tests {
     }
 
     fn reviewed_request_for_account(
-        reviewed_request_for(service_id, "acct-discord-1", reviewed_item_count)
+        service_id: ServiceKind,
+        account_id: &str,
+        reviewed_item_count: u32,
+    ) -> AutoScrubReviewedRunRequest {
+        reviewed_request_for(service_id, account_id, reviewed_item_count)
     }
 
     fn reviewed_request_for(
@@ -2871,7 +2878,6 @@ mod production_fleet_tests {
             service_id,
             account_id: account_id.to_owned(),
             review_token: format!("review-token-{account_id}-{reviewed_item_count}"),
-            review_token: format!("review-token-{reviewed_item_count}"),
             plan_digest: "a".repeat(64),
             reviewed_item_count,
             pace_milliseconds: MIN_REVIEWED_RUN_PACE_MILLISECONDS,

@@ -1427,6 +1427,60 @@ async fn osl_import_data(
     .map_err(|e| format!("OSL: join error: {e}"))?
 }
 
+#[tauri::command]
+async fn osl_copy_my_history_here_confirmation(
+    selected_count: usize,
+) -> Result<ipc::commands::CopyMyHistoryHereConfirmation, String> {
+    ipc::commands::cmd_osl_copy_my_history_here_confirmation(selected_count)
+}
+
+#[tauri::command]
+async fn osl_export_history_for_copy(
+    app: tauri::AppHandle,
+    channel_id: String,
+    discord_message_ids: Vec<String>,
+) -> Result<String, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        ipc::commands::cmd_osl_export_history_for_copy(
+            state.inner(),
+            channel_id,
+            discord_message_ids,
+        )
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+#[tauri::command]
+async fn osl_copy_my_history_here(
+    app: tauri::AppHandle,
+    history_copy_b64: String,
+    phrase: String,
+) -> Result<ipc::commands::CopyMyHistoryHereResult, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        ipc::commands::cmd_osl_copy_my_history_here(state.inner(), history_copy_b64, phrase)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+#[tauri::command]
+async fn osl_history_copy_month_data_bytes(app: tauri::AppHandle) -> Result<u64, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        Ok::<u64, String>(ipc::commands::cmd_osl_history_copy_month_data_bytes(
+            state.inner(),
+        ))
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
 /// Legacy upgrade: assign a recovery phrase to an account that lacks one.
 #[tauri::command]
 async fn osl_ensure_recovery_phrase(app: tauri::AppHandle) -> Result<(), String> {
@@ -3550,6 +3604,10 @@ fn main() {
             osl_switch_account,
             osl_export_data,
             osl_import_data,
+            osl_copy_my_history_here_confirmation,
+            osl_export_history_for_copy,
+            osl_copy_my_history_here,
+            osl_history_copy_month_data_bytes,
             osl_ensure_recovery_phrase,
             osl_verify_main_password,
             osl_verify_recovery_phrase,

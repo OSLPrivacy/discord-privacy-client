@@ -292,15 +292,17 @@ impl SignalWhitelistKind {
 pub enum MessengerWhitelistKind {
     DirectMessage,
     GroupChat,
+    Community,
 }
 
 impl MessengerWhitelistKind {
-    pub const ALL: [Self; 2] = [Self::DirectMessage, Self::GroupChat];
+    pub const ALL: [Self; 3] = [Self::DirectMessage, Self::GroupChat, Self::Community];
 
     pub fn id(self) -> &'static str {
         match self {
             Self::DirectMessage => "direct_message",
             Self::GroupChat => "group_chat",
+            Self::Community => "community",
         }
     }
 
@@ -308,6 +310,7 @@ impl MessengerWhitelistKind {
         match self {
             Self::DirectMessage => "direct message",
             Self::GroupChat => "group chat",
+            Self::Community => "community",
         }
     }
 }

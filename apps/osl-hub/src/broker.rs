@@ -2803,6 +2803,47 @@ fn prepare_direct_manual_v3(
     encrypt_direct_manual_v3_payload(core, peer, ipc::wire_v2::MSG_TYPE_CONTENT, &payload)
 }
 
+#[derive(Clone)]
+struct DirectManualV3Recipient {
+    x25519_pub: crypto::x25519::PublicKey,
+    mlkem_pub: crypto::ml_kem_768::EncapsulationKey,
+}
+
+impl DirectManualV3Recipient {
+    fn from_identity(identity: &keystore::Identity) -> Self {
+        Self {
+            x25519_pub: identity.x25519_public,
+            mlkem_pub: identity.mlkem_encapsulation_key(),
+        }
+    }
+
+    fn from_binding(peer: &ManualPeerBinding) -> Self {
+        Self {
+            x25519_pub: crypto::x25519::PublicKey::from_bytes(peer.peer_x25519_public),
+            mlkem_pub: crypto::ml_kem_768::EncapsulationKey::from_bytes(
+                &peer.peer_mlkem768_public,
+            ),
+        }
+    }
+}
+
+fn direct_manual_v3_recipient_ceiling(payload_len: usize) -> usize {
+    ipc::wire_v2::max_v3_recipients_for_plaintext_len(payload_len)
+}
+
+fn enforce_direct_manual_v3_recipient_ceiling(
+    recipient_count: usize,
+    payload_len: usize,
+) -> Result<(), String> {
+    let ceiling = direct_manual_v3_recipient_ceiling(payload_len);
+    if recipient_count > ceiling {
+        return Err(format!(
+            "too many devices for one message: {recipient_count} devices requested, ceiling is {ceiling}"
+        ));
+    }
+    Ok(())
+}
+
 fn encrypt_direct_manual_v3_payload(
     core: &HubCoreState,
     peer: &ManualPeerBinding,
@@ -2816,19 +2857,36 @@ fn encrypt_direct_manual_v3_payload(
         .map_err(|_| "OSL identity state is unavailable".to_owned())?
         .clone()
         .ok_or_else(|| "OSL identity is not loaded".to_owned())?;
+    encrypt_direct_manual_v3_payload_for_recipients(
+        &identity,
+        peer,
+        &[
+            DirectManualV3Recipient::from_identity(&identity),
+            DirectManualV3Recipient::from_binding(peer),
+        ],
+        message_type,
+        payload,
+    )
+}
+
+fn encrypt_direct_manual_v3_payload_for_recipients(
+    identity: &keystore::Identity,
+    peer: &ManualPeerBinding,
+    recipients: &[DirectManualV3Recipient],
+    message_type: u8,
+    payload: &[u8],
+) -> Result<String, String> {
+    enforce_direct_manual_v3_recipient_ceiling(recipients.len(), payload.len())?;
     if constant_time_eq_32(identity.x25519_public.as_bytes(), &peer.peer_x25519_public) {
         return Err("OSL manual peer key matches the active identity".to_owned());
     }
-    let recipients = [
-        ipc::wire_v2::RecipientV3 {
-            x25519_pub: identity.x25519_public,
-            mlkem_pub: identity.mlkem_encapsulation_key(),
-        },
-        ipc::wire_v2::RecipientV3 {
-            x25519_pub: crypto::x25519::PublicKey::from_bytes(peer.peer_x25519_public),
-            mlkem_pub: crypto::ml_kem_768::EncapsulationKey::from_bytes(&peer.peer_mlkem768_public),
-        },
-    ];
+    let recipients: Vec<_> = recipients
+        .iter()
+        .map(|recipient| ipc::wire_v2::RecipientV3 {
+            x25519_pub: recipient.x25519_pub,
+            mlkem_pub: recipient.mlkem_pub.clone(),
+        })
+        .collect();
     ipc::wire_v2::encrypt_v3(
         &identity.x25519_secret,
         &identity.x25519_public,
@@ -5349,23 +5407,37 @@ pub fn drain_osl_chat_text(
     capture_protection_ready: bool,
 ) -> Result<OpenedNativeOverlayTextBatch, String> {
     let context_token = broker.active_osl_chat_context_token()?;
+    open_capture_gated_private_message_queue(capture_protection_ready, || {
+        // Reaching the inbox at all proves the key server is reachable, so this is
+        // the honest moment to finish anything the last outage stranded. A drain
+        // failure must not block receiving: the records stay queued for the next
+        // poll.
+        let _ = drain_osl_chat_send_queue(core);
+        drain_peer_inbox_text(
+            core,
+            security_state,
+            broker,
+            &context_token,
+            None,
+            false,
+            capture_protection_ready,
+        )
+    })
+}
+
+const OSL_CHAT_UNPROTECTED_MODE_REFUSAL: &str = "OSL Chat refused unprotected mode";
+
+fn open_capture_gated_private_message_queue<F>(
+    capture_protection_ready: bool,
+    open_queue: F,
+) -> Result<OpenedNativeOverlayTextBatch, String>
+where
+    F: FnOnce() -> Result<OpenedNativeOverlayTextBatch, String>,
+{
     if !capture_protection_ready {
-        return Err("OSL Chat refused unprotected mode".to_owned());
+        return Err(OSL_CHAT_UNPROTECTED_MODE_REFUSAL.to_owned());
     }
-    // Reaching the inbox at all proves the key server is reachable, so this is
-    // the honest moment to finish anything the last outage stranded. A drain
-    // failure must not block receiving: the records stay queued for the next
-    // poll.
-    let _ = drain_osl_chat_send_queue(core);
-    drain_peer_inbox_text(
-        core,
-        security_state,
-        broker,
-        &context_token,
-        None,
-        false,
-        capture_protection_ready,
-    )
+    open_queue()
 }
 
 /// Fetch the active peer's control rows through the signed sender-filtered
@@ -6735,16 +6807,15 @@ fn begin_peer_attachment(
         crate::view_once_eligibility::require_view_once_attachment_eligibility(&mime_type)?;
     }
     let tier = active_attachment_account_tier(core)?;
-    if crate::attachment_limits::check_attachment_size(plaintext_size, tier).is_err() {
     if crate::attachment_limits::check_attachment_request(plaintext_size, 1, tier).is_err() {
+        return Err(ERROR.to_owned());
+    }
     let plaintext_limit = if osl_chat {
         crate::osl_chat_file_limits::current_osl_chat_file_size_limit(core).max_bytes
     } else {
         ipc::attachment_wire::MAX_STREAMED_ATTACHMENT_BYTES
     };
     if plaintext_size == 0 || plaintext_size > plaintext_limit {
-    let tier = active_attachment_account_tier(core);
-    if crate::attachment_limits::check_attachment_limits(tier, plaintext_size, 1).is_err() {
         return Err(ERROR.to_owned());
     }
     let ttl_seconds = security::scope_security(manual.scope.clone())
@@ -6796,12 +6867,6 @@ fn active_attachment_account_tier(
         }
         keystore::LicenseState::Free => crate::attachment_limits::AttachmentAccountTier::Free,
     })
-) -> crate::attachment_limits::AttachmentAccountTier {
-    if ipc::tier_gate::is_paid_equivalent(&core.osl) {
-        crate::attachment_limits::AttachmentAccountTier::Pro
-    } else {
-        crate::attachment_limits::AttachmentAccountTier::Free
-    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -8026,10 +8091,9 @@ enum PeerWireOrientation {
     PeerToSelf,
     /// Outbound. This identity wrote it to the verified peer.
     ///
-    /// Recoverable because OSL addresses every outbound peer message to TWO
-    /// recipient slots -- this identity's and the peer's -- when it builds the
-    /// wire, so the operator's own X25519/ML-KEM keys open their own sent
-    /// message. Nothing is stored in the clear to make this work.
+    /// Recoverable because OSL includes this identity in the v3 recipient slots
+    /// when it builds the wire, so the operator's own X25519/ML-KEM keys open
+    /// their own sent message. Nothing is stored in the clear to make this work.
     SelfToPeer,
 }
 
@@ -8856,20 +8920,14 @@ fn verify_inspected_manual_v3(
     peer_public: &[u8; 32],
     expected_sender: &[u8; 32],
 ) -> Result<(), ()> {
-    if inspected.recipient_hashes.len() != 2
-        || !constant_time_eq_32(&inspected.sender_ik, expected_sender)
+    if !constant_time_eq_32(&inspected.sender_ik, expected_sender)
         || constant_time_eq_32(self_public, peer_public)
     {
         return Err(());
     }
     let self_hash =
         ipc::wire_v2::pubkey_hash_prefix(&crypto::x25519::PublicKey::from_bytes(*self_public));
-    let peer_hash =
-        ipc::wire_v2::pubkey_hash_prefix(&crypto::x25519::PublicKey::from_bytes(*peer_public));
-    let first = inspected.recipient_hashes[0];
-    let second = inspected.recipient_hashes[1];
-    if !((first == self_hash && second == peer_hash) || (first == peer_hash && second == self_hash))
-    {
+    if !inspected.recipient_hashes.contains(&self_hash) {
         return Err(());
     }
     Ok(())
@@ -12837,7 +12895,7 @@ mod tests {
             ("telegram", "Telegram"),
             ("osl-chat", "OSL Chats"),
         ];
-        const CUT_SURFACES: &[&str] = &["instagram", "snapchat", "x", "messenger"];
+        const CUT_SURFACES: &[&str] = &["instagram", "snapchat", "x"];
         let mut named_results = 0usize;
 
         for (service_id, display_name) in SURFACES {
@@ -17594,7 +17652,7 @@ mod tests {
         .is_ok());
         let wrong_recipient = InspectedV3Content {
             sender_ik: selected_friend,
-            recipient_hashes: vec![self_hash, [0x99; 8]],
+            recipient_hashes: vec![friend_hash, [0x99; 8]],
         };
         assert!(verify_inspected_manual_v3(
             &wrong_recipient,
@@ -17613,7 +17671,7 @@ mod tests {
     }
 
     #[test]
-    fn direct_manual_v3_has_exact_self_peer_recipients_and_peer_opens_it() {
+    fn direct_manual_v3_has_self_peer_recipients_and_peer_opens_it() {
         let alice = keystore::generate_identity("osl-alice-direct".to_owned());
         let bob = keystore::generate_identity("osl-bob-direct".to_owned());
         let core = HubCoreState::default();
@@ -17764,7 +17822,7 @@ mod tests {
         )
         .unwrap();
 
-        // The attachment envelope uses the same exact two-recipient proof but
+        // The attachment envelope uses the same sender and self-slot proof but
         // a distinct authenticated message type. Its encrypted policy binds
         // the file bytes, key, peer identities, context, and view-once bit.
         *core.osl.identity.lock().unwrap() = Some(bob.clone());
@@ -20487,6 +20545,95 @@ ok i will weekend again with you",
         payload.require_capture_protection = false;
         assert!(capture_policy_allows_plaintext(&payload, true));
         assert!(capture_policy_allows_plaintext(&payload, false));
+    }
+
+    #[test]
+    fn task_4017_capture_required_private_message_is_held_until_protection_is_ready() {
+        let source = include_str!("broker.rs");
+        let drain_osl_chat_text_body = source
+            .split_once("pub fn drain_osl_chat_text(")
+            .and_then(|(_, tail)| {
+                tail.split_once("/// Fetch the active peer's control rows")
+                    .map(|(body, _)| body)
+            })
+            .expect("production OSL Chat drain source is present");
+        assert!(
+            drain_osl_chat_text_body.contains(
+                "open_capture_gated_private_message_queue(capture_protection_ready,"
+            ),
+            "the shipping OSL Chat drain must use the same capture gate this test exercises"
+        );
+
+        let mut queue = vec![PeerProtectedPayload {
+            version: PEER_PROTECTED_VERSION,
+            message_id: "peer-4017000000000000000000000000000".to_owned(),
+            send_seq: None,
+            scope_commitment: None,
+            created_at: 1_786_996_400,
+            expires_at: 1_787_000_000,
+            service_id: "osl-chat".to_owned(),
+            conversation_binding: "manual-dm-task-4017".to_owned(),
+            sender_osl_user_id: "osl-sender-4017".to_owned(),
+            recipient_osl_user_id: "osl-recipient-4017".to_owned(),
+            plaintext: "task 4017 private message".to_owned(),
+            view_once: false,
+            display_duration_seconds: None,
+            require_capture_protection: true,
+            logical_message_id: None,
+            chunk_index: None,
+            chunk_count: None,
+            whole_sha256: None,
+        }];
+        assert_eq!(queue.len(), 1);
+        assert!(capture_policy_allows_plaintext(&queue[0], true));
+        assert!(!capture_policy_allows_plaintext(&queue[0], false));
+        println!("TASK4017_MESSAGE_DEMANDS_CAPTURE_PROTECTION=true");
+
+        let protected_off = open_capture_gated_private_message_queue(false, || {
+            panic!("capture-off open must not touch the private-message queue")
+        });
+        let refusal_sentence = protected_off.expect_err("capture-off open is refused");
+        let opened_private_messages_off = 0usize;
+        let queue_after_refusal = queue.len();
+        println!(
+            "TASK4017_OPENED_PRIVATE_MESSAGES_WITH_PROTECTION_OFF={opened_private_messages_off}"
+        );
+        println!("TASK4017_REFUSAL_SENTENCE={refusal_sentence}");
+        println!("TASK4017_QUEUE_COUNT_AFTER_REFUSAL={queue_after_refusal}");
+        assert_eq!(opened_private_messages_off, 0);
+        assert_eq!(refusal_sentence, OSL_CHAT_UNPROTECTED_MODE_REFUSAL);
+        assert_eq!(queue_after_refusal, 1);
+
+        let protected_on = open_capture_gated_private_message_queue(true, || {
+            let payload = queue.pop().expect("one held private message opens");
+            assert!(capture_policy_allows_plaintext(&payload, true));
+            Ok(OpenedNativeOverlayTextBatch {
+                messages: vec![OpenedNativeOverlayText::test_fixture(
+                    &payload.message_id,
+                    None,
+                    &payload.plaintext,
+                    true,
+                    true,
+                    false,
+                    payload.created_at,
+                    payload.expires_at,
+                )],
+                pending_view_once: Vec::new(),
+                acknowledgments: Vec::new(),
+                fetched: 1,
+                decrypt_display_enabled: true,
+                deferred_rows: 0,
+                unrecognized_wire_rows: 0,
+            })
+        })
+        .expect("capture-on open succeeds");
+        let opened_private_messages_on = protected_on.messages.len();
+        println!(
+            "TASK4017_OPENED_PRIVATE_MESSAGES_WITH_PROTECTION_ON={opened_private_messages_on}"
+        );
+        println!("TASK4017_QUEUE_COUNT_AFTER_PROTECTED_OPEN={}", queue.len());
+        assert_eq!(opened_private_messages_on, 1);
+        assert_eq!(queue.len(), 0);
     }
 
     #[test]

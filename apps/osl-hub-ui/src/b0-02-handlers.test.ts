@@ -275,7 +275,9 @@ describe("B0-02 handler bindings", () => {
     __oslHubUiTest.bindWorkspace();
     changePreset.dispatch("click");
 
-    expect(__oslHubUiTest.snapshot()).toMatchObject({ route: "onboarding", onboardingRoute: "privacy" });
+    // TASK 0720: Change preset now opens the privacy level setting screen in
+    // place, instead of detouring into the retired onboarding privacy screen.
+    expect(__oslHubUiTest.snapshot()).toMatchObject({ route: "privacy", privacyLevelScreenOpen: true });
     expect(mainSource).toContain('#install-mullvad-from-connections');
     expect(mainSource).toContain('runMullvadSetupAction("install", "connections")');
   }, MODULE_RELOAD_BUDGET_MS);

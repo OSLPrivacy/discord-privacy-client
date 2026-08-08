@@ -2048,7 +2048,7 @@ export function parseNotifications(raw: unknown): AppNotification[] | null {
       || !safe(item.title, 100)
       || !safe(item.detail, 240)
       || !safe(item.createdAt, 40)
-      || (item.appId !== undefined && !["discord", "telegram", "email", "signal", "whatsapp"].includes(String(item.appId)))) return null;
+      || (item.appId !== undefined && !["discord", "telegram", "email", "signal", "whatsapp", "messenger"].includes(String(item.appId)))) return null;
     parsed.push(item as unknown as AppNotification);
   }
   return parsed;

@@ -279,6 +279,7 @@ pub struct MullvadActionResult {
 #[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum FirefoxServiceId {
+    Messenger,
     Gmail,
     Outlook,
     Proton,
@@ -780,6 +781,10 @@ const FIREFOX_CANDIDATES: &[ExecutableCandidate] = &[
 
 #[cfg(any(target_os = "windows", test))]
 const FIREFOX_SERVICES: &[(FirefoxServiceId, &str)] = &[
+    (
+        FirefoxServiceId::Messenger,
+        "https://www.facebook.com/messages/",
+    ),
     (FirefoxServiceId::Gmail, "https://mail.google.com/"),
     (FirefoxServiceId::Outlook, "https://outlook.live.com/mail/"),
     (FirefoxServiceId::Proton, "https://mail.proton.me/"),
@@ -1553,6 +1558,7 @@ pub fn install_firefox() -> Result<FirefoxInstallResult, String> {
 #[cfg(any(target_os = "windows", test))]
 pub(crate) fn firefox_service_url(service_id: FirefoxServiceId) -> &'static str {
     match service_id {
+        FirefoxServiceId::Messenger => "https://www.facebook.com/messages/",
         FirefoxServiceId::Gmail => "https://mail.google.com/",
         FirefoxServiceId::Outlook => "https://outlook.live.com/mail/",
         FirefoxServiceId::Proton => "https://mail.proton.me/",
@@ -5459,7 +5465,7 @@ pub(crate) mod tests {
 
     #[test]
     fn firefox_manifest_is_exhaustive_and_https_only() {
-        assert_eq!(FIREFOX_SERVICES.len(), 9);
+        assert_eq!(FIREFOX_SERVICES.len(), 10);
         assert_eq!(FIREFOX_PACKAGE_ID, "Mozilla.Firefox");
         assert_eq!(FIREFOX_MIGRATION_SWITCH, "--migration");
         assert_eq!(FIREFOX_WAIT_FOR_BROWSER_SWITCH, "-wait-for-browser");

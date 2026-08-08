@@ -24,6 +24,9 @@
 //! 3148 added `follow_active_app_choice`, the explicit on/off choice for
 //! whether the OSL window follows whichever app is in front. Missing legacy
 //! files load as off.
+//!
+//! 4750 added the OSL discovery setting and the separate discovery-replies
+//! master switch. Missing legacy files load as `never` and `off`.
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
@@ -396,6 +399,74 @@ impl FollowActiveAppChoice {
     }
 }
 
+/// Who OSL may answer when asked "are you on OSL?".
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub enum DiscoverySetting {
+    #[default]
+    #[serde(rename = "never")]
+    Never,
+    #[serde(rename = "allowed")]
+    Allowed,
+    #[serde(rename = "shared-room")]
+    SharedRoom,
+    #[serde(rename = "anyone")]
+    Anyone,
+}
+
+impl DiscoverySetting {
+    pub const CHOICES: [Self; 4] = [Self::Never, Self::Allowed, Self::SharedRoom, Self::Anyone];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Never => "never",
+            Self::Allowed => "allowed",
+            Self::SharedRoom => "shared-room",
+            Self::Anyone => "anyone",
+        }
+    }
+}
+
+pub fn parse_discovery_setting(value: &str) -> Result<DiscoverySetting, String> {
+    DiscoverySetting::CHOICES
+        .into_iter()
+        .find(|choice| choice.as_str() == value)
+        .ok_or_else(|| format!("unknown discovery setting {value}"))
+}
+
+pub fn discovery_setting_choices() -> Vec<String> {
+    DiscoverySetting::CHOICES
+        .into_iter()
+        .map(|choice| choice.as_str().to_owned())
+        .collect()
+}
+
+/// Master switch for replying to discovery pings. Off means OSL never answers
+/// "are you on OSL?", regardless of the four-way discovery setting.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DiscoveryRepliesSwitch {
+    On,
+    #[default]
+    Off,
+}
+
+impl DiscoveryRepliesSwitch {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::On => "on",
+            Self::Off => "off",
+        }
+    }
+}
+
+pub fn parse_discovery_replies_switch(value: &str) -> Result<DiscoveryRepliesSwitch, String> {
+    match value {
+        "on" => Ok(DiscoveryRepliesSwitch::On),
+        "off" => Ok(DiscoveryRepliesSwitch::Off),
+        _ => Err(format!("unknown discovery replies switch {value}")),
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppPreferences {
     #[serde(default)]
@@ -440,6 +511,10 @@ pub struct AppPreferences {
     pub verification_warning: VerificationWarningChoice,
     #[serde(default)]
     pub behaviour_choices: HashMap<String, String>,
+    #[serde(default)]
+    pub discovery_setting: DiscoverySetting,
+    #[serde(default)]
+    pub discovery_replies: DiscoveryRepliesSwitch,
 }
 
 impl Default for AppPreferences {
@@ -466,6 +541,8 @@ impl Default for AppPreferences {
             privacy_level_rule_sets: HashMap::new(),
             verification_warning: VerificationWarningChoice::default(),
             behaviour_choices: HashMap::new(),
+            discovery_setting: DiscoverySetting::default(),
+            discovery_replies: DiscoveryRepliesSwitch::default(),
         }
     }
 }

@@ -1,0 +1,80 @@
+/* TASK 0720: privacy level setting screen. */
+
+.privacy-level-screen {
+  padding: 22px 24px 32px;
+  display: grid;
+  gap: 18px;
+  align-content: start;
+}
+
+.privacy-level-choices {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+  align-items: start;
+}
+
+.privacy-level-card {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  display: grid;
+  gap: 12px;
+  align-content: start;
+}
+
+.privacy-level-card.selected {
+  border-color: var(--brand);
+  background: var(--panel-2);
+}
+
+.privacy-level-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.privacy-level-head input[type="radio"] {
+  margin-top: 3px;
+  flex: 0 0 auto;
+  accent-color: var(--brand);
+}
+
+.privacy-level-head label {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+  cursor: pointer;
+}
+
+.privacy-level-head label strong { font-size: 15px; }
+.privacy-level-head label small { color: var(--muted); font-size: 12px; line-height: 1.45; }
+
+.privacy-level-selected-mark {
+  margin-left: auto;
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border: 1px solid var(--brand);
+  border-radius: 999px;
+  color: var(--brand);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .02em;
+}
+
+.privacy-level-effects {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.privacy-level-card.selected .privacy-level-effects { color: var(--text); }

@@ -7,6 +7,7 @@ import {
   siGmx,
   siGooglechrome,
   siMaildotcom,
+  siMessenger,
   siOpera,
   siSignal,
   siTelegram,
@@ -21,6 +22,7 @@ const serviceIcons: Partial<Record<ServiceId | "signal", SimpleIcon>> = {
   telegram: siTelegram,
   signal: siSignal,
   whatsapp: siWhatsapp,
+  messenger: siMessenger,
 };
 
 const providerIcons: Record<string, SimpleIcon> = {

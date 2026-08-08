@@ -5,6 +5,7 @@ pub const DEFAULT_HOME_TILE_ORDER: &[&str] = &[
     "telegram",
     "signal",
     "whatsapp",
+    "messenger",
     "gmail",
     "outlook",
     "proton",
@@ -659,6 +660,7 @@ pub enum ServiceKind {
     Telegram,
     #[serde(rename = "whatsapp")]
     WhatsApp,
+    Messenger,
     Email,
     Signal,
 }

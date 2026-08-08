@@ -47,6 +47,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -3542,7 +3543,7 @@ pub fn cmd_osl_persist_inbound(
 /// crate intentionally does not depend on `serde` (it's a pure
 /// at-rest layer); this DTO crosses the IPC boundary and is the
 /// shape boot.js sees on `osl_load_channel_history`.
-#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct StoredMessageDto {
     pub discord_message_id: String,
     pub channel_id: String,
@@ -3558,6 +3559,22 @@ pub struct StoredMessageDto {
 impl From<StoredMessage> for StoredMessageDto {
     fn from(m: StoredMessage) -> Self {
         StoredMessageDto {
+            discord_message_id: m.discord_message_id,
+            channel_id: m.channel_id,
+            sender_discord_id: m.sender_discord_id,
+            sender_osl_user_id: m.sender_osl_user_id,
+            plaintext: m.plaintext,
+            decrypted_at: m.decrypted_at,
+            burned: m.burned,
+            reply_parent_id: m.reply_parent_id,
+            edit_revision: m.edit_revision,
+        }
+    }
+}
+
+impl From<StoredMessageDto> for StoredMessage {
+    fn from(m: StoredMessageDto) -> Self {
+        StoredMessage {
             discord_message_id: m.discord_message_id,
             channel_id: m.channel_id,
             sender_discord_id: m.sender_discord_id,
@@ -10833,6 +10850,7 @@ fn cmd_osl_send_friend_request_with_dir(
     dir: &Path,
 ) -> Result<SendFriendRequestResult, String> {
     guard_friend_request_peer_binding(state, &peer_discord_id)?;
+    guard_friend_request_not_blocked(dir, &peer_discord_id)?;
     let scope: crate::scope::Scope = scope_input
         .try_into()
         .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
@@ -10875,6 +10893,36 @@ fn cmd_osl_send_friend_request_with_dir(
     save_pending_friend_requests(&path, &records)?;
 
     Ok(SendFriendRequestResult { request, pending })
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingFriendRequestCountDto {
+    pub person_id: String,
+    pub for_person: usize,
+    pub total: usize,
+}
+
+/// A direct, read-only count of the pending friend requests on file, so a caller
+/// can re-state what is pending from the store itself rather than from whatever a
+/// send happened to return.
+pub fn cmd_osl_count_pending_friend_requests(
+    _state: &AppState,
+    peer_discord_id: String,
+) -> Result<PendingFriendRequestCountDto, String> {
+    record_activity_on_command_entry();
+    validate_friend_request_person_id(&peer_discord_id)?;
+    let dir =
+        keystore::osl_config_dir().map_err(|e| format!("OSL: pending friend request dir: {e}"))?;
+    let records = load_pending_friend_requests(&pending_friend_requests_path(&dir))?;
+    Ok(PendingFriendRequestCountDto {
+        for_person: records
+            .iter()
+            .filter(|record| record.peer_discord_id == peer_discord_id)
+            .count(),
+        total: records.len(),
+        person_id: peer_discord_id,
+    })
 }
 
 pub fn cmd_osl_create_friend_invite_link(
@@ -14556,13 +14604,17 @@ pub fn cmd_osl_ensure_recovery_phrase(state: &AppState) -> Result<(), String> {
 
 /// Magic header for an encrypted data-export blob.
 const OSL_EXPORT_MAGIC: &[u8] = b"OSLDATA1";
+const OSL_HISTORY_COPY_MAGIC: &[u8] = b"OSLHIST1";
+
+pub const COPY_MY_HISTORY_HERE_ACTION_LABEL: &str = "Copy my history here";
+pub const COPY_MY_HISTORY_HERE_CONFIRMATION_SENTENCE: &str =
+    "This puts your history in one more place.";
 
 /// Account data files included in a transfer export, relative to the
 /// config dir. Excludes identity.json (rebuilt from the phrase),
 /// keyserver/license config + password/lockout markers + UI prefs
-/// (device-specific). The message store (sealed under the identity
-/// x25519 secret, which the phrase reproduces) is included so history
-/// transfers and decrypts on the new device.
+/// (device-specific). The message store is deliberately excluded: A12 makes
+/// old history a separate, explicit, priced copy action.
 const OSL_EXPORT_FILES: &[&str] = &[
     "peer_map.json",
     "whitelist_state.json",
@@ -14576,9 +14628,6 @@ const OSL_EXPORT_FILES: &[&str] = &[
     "scope_blobs.json",
     crate::space_roster::SPACE_ROSTER_FILE,
     crate::tombstone_file::TOMBSTONE_FILE,
-    "store/messages.sqlite",
-    "store/messages.sqlite-wal",
-    "store/messages.sqlite-shm",
 ];
 
 /// Account-relative files carried by an encrypted identity export.
@@ -14625,6 +14674,223 @@ fn require_recovery_entropy(state: &AppState, why: &str) -> Result<[u8; 16], Str
         .as_ref()
         .ok_or_else(|| "OSL: identity not loaded".to_string())?;
     id.recovery_entropy.ok_or_else(|| format!("OSL: {why}"))
+}
+
+fn active_account_for_transfer(state: &AppState) -> Result<String, String> {
+    let g = state.identity_slot();
+    let id = g
+        .as_ref()
+        .ok_or_else(|| "OSL: identity not loaded".to_string())?;
+    Ok(id
+        .discord_snowflake
+        .clone()
+        .unwrap_or_else(|| id.user_id.clone()))
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct HistoryCopyPackage {
+    version: u32,
+    account: String,
+    messages: Vec<StoredMessageDto>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CopyMyHistoryHereConfirmation {
+    pub action_label: String,
+    pub sentence: String,
+    pub selected_count: usize,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CopyMyHistoryHereResult {
+    pub action_label: String,
+    pub confirmation_sentence: String,
+    pub copied_count: usize,
+    pub plaintext_bytes_written: u64,
+    pub monthly_data_bytes_before: u64,
+    pub monthly_data_bytes_after: u64,
+}
+
+pub fn cmd_osl_copy_my_history_here_confirmation(
+    selected_count: usize,
+) -> Result<CopyMyHistoryHereConfirmation, String> {
+    if selected_count == 0 {
+        return Err("OSL: choose at least one history message to copy".to_string());
+    }
+    Ok(CopyMyHistoryHereConfirmation {
+        action_label: COPY_MY_HISTORY_HERE_ACTION_LABEL.to_string(),
+        sentence: COPY_MY_HISTORY_HERE_CONFIRMATION_SENTENCE.to_string(),
+        selected_count,
+    })
+}
+
+pub fn cmd_osl_history_copy_month_data_bytes(state: &AppState) -> u64 {
+    state
+        .history_copy_data_allowance_this_month_bytes
+        .load(Ordering::SeqCst)
+}
+
+pub fn cmd_osl_export_history_for_copy(
+    state: &AppState,
+    channel_id: String,
+    discord_message_ids: Vec<String>,
+) -> Result<String, String> {
+    guard_session_on_command_entry(state)?;
+    if channel_id.is_empty() {
+        return Err("OSL: choose a history conversation to copy".to_string());
+    }
+    cmd_osl_copy_my_history_here_confirmation(discord_message_ids.len())?;
+    let entropy = require_recovery_entropy(
+        state,
+        "this account has no recovery phrase, so its history can't be copied here",
+    )?;
+    let account = active_account_for_transfer(state)?;
+    let guard = state
+        .message_store
+        .lock()
+        .expect("message_store mutex poisoned");
+    let Some(store) = guard.as_ref() else {
+        return Err("OSL: message history is not open".to_string());
+    };
+    let mut messages = Vec::with_capacity(discord_message_ids.len());
+    for message_id in discord_message_ids {
+        let Some(message) = store
+            .get(&message_id)
+            .map_err(|e| format!("OSL: copy history read: {e}"))?
+        else {
+            return Err(format!(
+                "OSL: selected history message {} is not on this device",
+                crate::log_id::log_id(&message_id)
+            ));
+        };
+        if message.channel_id != channel_id {
+            return Err(
+                "OSL: selected history message is not in the chosen conversation".to_string(),
+            );
+        }
+        messages.push(StoredMessageDto::from(message));
+    }
+    let package = HistoryCopyPackage {
+        version: 1,
+        account,
+        messages,
+    };
+    seal_history_copy_package(&package, entropy)
+}
+
+fn seal_history_copy_package(
+    package: &HistoryCopyPackage,
+    entropy: [u8; 16],
+) -> Result<String, String> {
+    let plaintext =
+        serde_json::to_vec(package).map_err(|e| format!("OSL: history copy serialize: {e}"))?;
+    let key = export_aead_key(&entropy)?;
+    let nonce_bytes = crypto::random::random_bytes(crypto::aead::NONCE_SIZE);
+    let mut na = [0u8; crypto::aead::NONCE_SIZE];
+    na.copy_from_slice(&nonce_bytes);
+    let nonce = crypto::aead::Nonce::from_bytes(na);
+    let ct = crypto::aead::seal(&key, &nonce, OSL_HISTORY_COPY_MAGIC, &plaintext)
+        .map_err(|e| format!("OSL: history copy encrypt: {e}"))?;
+    let mut out =
+        Vec::with_capacity(OSL_HISTORY_COPY_MAGIC.len() + crypto::aead::NONCE_SIZE + ct.len());
+    out.extend_from_slice(OSL_HISTORY_COPY_MAGIC);
+    out.extend_from_slice(nonce.as_bytes());
+    out.extend_from_slice(&ct);
+    Ok(STANDARD.encode(&out))
+}
+
+fn open_history_copy_package(blob_b64: &str, phrase: &str) -> Result<HistoryCopyPackage, String> {
+    let mnemonic = bip39::Mnemonic::parse_in_normalized(bip39::Language::English, phrase.trim())
+        .map_err(|_| "OSL: that isn't a valid 12-word recovery phrase.".to_string())?;
+    let ev = mnemonic.to_entropy();
+    if ev.len() != 16 {
+        return Err("OSL: recovery phrase must be exactly 12 words.".to_string());
+    }
+    let mut entropy = [0u8; 16];
+    entropy.copy_from_slice(&ev);
+
+    let raw = STANDARD
+        .decode(blob_b64.trim())
+        .map_err(|e| format!("OSL: history copy: base64 decode: {e}"))?;
+    let prefix = OSL_HISTORY_COPY_MAGIC.len() + crypto::aead::NONCE_SIZE;
+    if raw.len() < prefix || &raw[..OSL_HISTORY_COPY_MAGIC.len()] != OSL_HISTORY_COPY_MAGIC {
+        return Err("OSL: that file isn't an OSL history copy.".to_string());
+    }
+    let mut na = [0u8; crypto::aead::NONCE_SIZE];
+    na.copy_from_slice(&raw[OSL_HISTORY_COPY_MAGIC.len()..prefix]);
+    let nonce = crypto::aead::Nonce::from_bytes(na);
+    let key = export_aead_key(&entropy)?;
+    let plaintext = crypto::aead::open(&key, &nonce, OSL_HISTORY_COPY_MAGIC, &raw[prefix..])
+        .map_err(|_| {
+            "OSL: couldn't decrypt history copy -- the phrase doesn't match this file, \
+             or the file is corrupt."
+                .to_string()
+        })?;
+    let package: HistoryCopyPackage =
+        serde_json::from_slice(&plaintext).map_err(|e| format!("OSL: history copy parse: {e}"))?;
+    if package.version != 1 {
+        return Err("OSL: history copy: unsupported or missing version".to_string());
+    }
+    cmd_osl_copy_my_history_here_confirmation(package.messages.len())?;
+    Ok(package)
+}
+
+pub fn cmd_osl_copy_my_history_here(
+    state: &AppState,
+    history_copy_b64: String,
+    phrase: String,
+) -> Result<CopyMyHistoryHereResult, String> {
+    guard_session_on_command_entry(state)?;
+    let package = open_history_copy_package(&history_copy_b64, &phrase)?;
+    let active_account = active_account_for_transfer(state)?;
+    if package.account != active_account {
+        return Err(format!(
+            "OSL: history copy belongs to account {}, not the currently active account. Nothing was copied.",
+            crate::log_id::log_id(&package.account)
+        ));
+    }
+    let confirmation = cmd_osl_copy_my_history_here_confirmation(package.messages.len())?;
+    let before = cmd_osl_history_copy_month_data_bytes(state);
+    let mut bytes_written = 0u64;
+    let mut copied_count = 0usize;
+    {
+        let guard = state
+            .message_store
+            .lock()
+            .expect("message_store mutex poisoned");
+        let Some(store) = guard.as_ref() else {
+            return Err("OSL: message history is not open on this device".to_string());
+        };
+        for dto in package.messages {
+            let plaintext_len = u64::try_from(dto.plaintext.as_bytes().len())
+                .map_err(|_| "OSL: history copy byte count overflow".to_string())?;
+            let message = StoredMessage::from(dto);
+            store
+                .put(&message)
+                .map_err(|e| format!("OSL: copy history write: {e}"))?;
+            bytes_written = bytes_written
+                .checked_add(plaintext_len)
+                .ok_or_else(|| "OSL: history copy byte count overflow".to_string())?;
+            copied_count += 1;
+        }
+    }
+    let previous = state
+        .history_copy_data_allowance_this_month_bytes
+        .fetch_add(bytes_written, Ordering::SeqCst);
+    let after = previous
+        .checked_add(bytes_written)
+        .ok_or_else(|| "OSL: history copy data allowance overflow".to_string())?;
+    Ok(CopyMyHistoryHereResult {
+        action_label: confirmation.action_label,
+        confirmation_sentence: confirmation.sentence,
+        copied_count,
+        plaintext_bytes_written: bytes_written,
+        monthly_data_bytes_before: before,
+        monthly_data_bytes_after: after,
+    })
 }
 
 fn decode_export_identity(
@@ -18882,6 +19148,12 @@ pub struct TelegramWhitelistKindDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MessengerWhitelistKindDto {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TelegramAutoWhitelistRuleDto {
     pub rule_lookup: String,
     pub choice: String,
@@ -18931,6 +19203,17 @@ pub fn cmd_osl_get_telegram_whitelist_kinds() -> Result<Vec<TelegramWhitelistKin
     Ok(crate::auto_whitelist_rules::TelegramWhitelistKind::ALL
         .into_iter()
         .map(|kind| TelegramWhitelistKindDto {
+            id: kind.id().to_string(),
+            name: kind.name().to_string(),
+        })
+        .collect())
+}
+
+pub fn cmd_osl_get_messenger_whitelist_kinds() -> Result<Vec<MessengerWhitelistKindDto>, String> {
+    record_activity_on_command_entry();
+    Ok(crate::auto_whitelist_rules::MessengerWhitelistKind::ALL
+        .into_iter()
+        .map(|kind| MessengerWhitelistKindDto {
             id: kind.id().to_string(),
             name: kind.name().to_string(),
         })
@@ -20637,6 +20920,103 @@ pub fn cmd_osl_reset_follow_active_app_choice(
     }
     persist_app_preferences_now(state, config_dir);
     Ok(choice.as_str().to_owned())
+}
+
+pub fn cmd_osl_read_discovery_setting(state: &AppState) -> Result<String, String> {
+    record_activity_on_command_entry();
+    let prefs = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned");
+    Ok(prefs.discovery_setting.as_str().to_owned())
+}
+
+pub fn cmd_osl_save_discovery_setting(
+    state: &AppState,
+    value: String,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<String, String> {
+    record_activity_on_command_entry();
+    let setting = crate::app_preferences::parse_discovery_setting(&value)?;
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs.discovery_setting = setting;
+    }
+    persist_app_preferences_now(state, config_dir);
+    Ok(setting.as_str().to_owned())
+}
+
+pub fn cmd_osl_list_discovery_setting_choices() -> Result<Vec<String>, String> {
+    record_activity_on_command_entry();
+    Ok(crate::app_preferences::discovery_setting_choices())
+}
+
+pub fn cmd_osl_read_discovery_replies_switch(state: &AppState) -> Result<String, String> {
+    record_activity_on_command_entry();
+    let prefs = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned");
+    Ok(prefs.discovery_replies.as_str().to_owned())
+}
+
+pub fn cmd_osl_set_discovery_replies_switch(
+    state: &AppState,
+    value: String,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<String, String> {
+    record_activity_on_command_entry();
+    let switch = crate::app_preferences::parse_discovery_replies_switch(&value)?;
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs.discovery_replies = switch;
+    }
+    persist_app_preferences_now(state, config_dir);
+    Ok(switch.as_str().to_owned())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DiscoveryPublishReportDto {
+    pub cards_written: usize,
+    pub answers_written: usize,
+    pub status: String,
+}
+
+pub fn cmd_osl_walk_discovery_publish_path(
+    state: &AppState,
+) -> Result<DiscoveryPublishReportDto, String> {
+    record_activity_on_command_entry();
+    let prefs = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned");
+    if prefs.discovery_replies == crate::app_preferences::DiscoveryRepliesSwitch::Off {
+        return Ok(DiscoveryPublishReportDto {
+            cards_written: 0,
+            answers_written: 0,
+            status: "skipped: discovery replies are off".to_owned(),
+        });
+    }
+
+    let cards_written = match prefs.discovery_setting {
+        crate::app_preferences::DiscoverySetting::Never => 0,
+        crate::app_preferences::DiscoverySetting::Allowed
+        | crate::app_preferences::DiscoverySetting::SharedRoom
+        | crate::app_preferences::DiscoverySetting::Anyone => 1,
+    };
+    Ok(DiscoveryPublishReportDto {
+        cards_written,
+        answers_written: cards_written,
+        status: "published".to_owned(),
+    })
 }
 
 // ---- Phase 9-D: onboarding tour + VPN warning ----

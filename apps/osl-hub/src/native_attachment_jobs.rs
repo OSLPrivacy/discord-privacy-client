@@ -1114,8 +1114,10 @@ mod tests {
             "TASK0046 attachment_tray result=refused staged_count=0 limit_bytes={} attempted_bytes={}",
             crate::attachment_limits::MAX_ATTACHMENT_BYTES,
             crate::attachment_limits::MAX_ATTACHMENT_BYTES + 1
+        );
     }
 
+    #[test]
     fn clipboard_image_intake_creates_one_selected_image_attachment_card() {
         let mut registry = NativeAttachmentJobRegistry::default();
         let card = registry

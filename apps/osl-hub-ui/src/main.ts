@@ -11905,3 +11905,63 @@ if (!runningUnderVitest && !skipAutoBootstrap) {
     scheduleOslChatBackgroundSync(1_000);
   }
 }
+
+/**
+ * One top-bar control: the OSL mark or an icon, then the word it is called.
+ *
+ * `data-current-page` is the machine-readable half of the current-page state
+ * and `aria-current` / the `current` class are the halves the owner and a
+ * screen reader get. All three are written from the same boolean, so the
+ * highlight, the assistive-technology state and the attribute a check reads
+ * cannot disagree with each other.
+ *
+ * The logo control keeps `home-logo-button` and the official vector mark; the
+ * other four keep `home-command-icon`, so the badge and dot styling they
+ * already had still applies.
+ */
+function homeTopBarControl(
+  id: HomeTopBarControlId,
+  current: boolean,
+  attributes: string,
+  ariaSuffix: string,
+  extra: string,
+): string {
+  const label = homeTopBarControlLabels[id];
+  const mark = id === "logo" ? `<img src="${oslVectorLogoUrl}" alt=""/>` : homeCommandIcon(id);
+  const opening = id === "logo"
+    ? `<button class="home-logo-button home-top-bar-control`
+    : `<button class="home-command-icon home-top-bar-control`;
+  return `${opening} ${current ? "current" : ""} in-dom-tooltip-anchor" type="button" data-top-bar-control="${id}" data-current-page="${current}" ${attributes} aria-label="${label}${ariaSuffix}${current ? ", current page" : ""}" ${current ? 'aria-current="page"' : ""}>${mark}<span class="home-top-bar-label">${label}</span>${extra}${inDomTooltipMarkup(label)}</button>`;
+}
+
+/**
+ * TASK 0816. Which control -- if any -- owns the page currently on screen.
+ *
+ * Exactly one control can be current, and the answer is derived from the same
+ * state the controls navigate to, so the highlight cannot disagree with where
+ * the owner actually is. Pages that belong to the sidebar rather than to the
+ * top bar (Inbox, People, Privacy, Activity, Connections, a service window)
+ * return `null`: nothing is highlighted, which is itself the honest answer.
+ */
+export function homeTopBarCurrentControl(page: HomeTopBarPage): HomeTopBarControlId | null {
+  // The Friends dialog opens over Home, so it is checked before the route.
+  if (page.friendsDialogOpen) return "friends";
+  if (page.route === "settings") {
+    if (page.settingsSection === "notifications") return "notifications";
+    return page.profileSettingsFocus ? "profile" : "settings";
+  }
+  if (page.route === "home") return "logo";
+  return null;
+}
+
+function homeTopBarPage(): HomeTopBarPage {
+  return { route, settingsSection, friendsDialogOpen, profileSettingsFocus };
+}
+
+/**
+ * TASK 0594. The one place the UI asks "may this account make a view once
+ * message?". Opening one is never asked about here: that path is free (0591).
+ */
+function viewOnceCreationAllowedHere(): boolean {
+  return viewOnceCreationAllowed(licenseState.access);
+}

@@ -111,11 +111,12 @@
 /// exists, so they are two rows.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
 pub enum Surface {
-    // Chat carriers — 4.
+    // Chat carriers — 5.
     Discord,
     Signal,
     Whatsapp,
     Telegram,
+    Messenger,
     // Native email carrier — Outlook desktop, which has a `NativeAppId` variant.
     OutlookDesktop,
     // Email carriers on the web — the eight with legal analysis, plus Tuta.
@@ -424,6 +425,15 @@ pub const SURFACE_CLAIMS: &[SurfaceClaim] = &[
         authority: "D-206; support-matrix telegram_desktop_public (externally_blocked)",
         reason: "OSL has carried cover text through Telegram's composer and earned a live carry receipt for it -- the only surface that has. But OSL's own support matrix still records Telegram as externally blocked, which is a claim about Telegram rather than about us. Those disagree, so OSL makes no claim about it.",
     },
+    SurfaceClaim {
+        surface: Surface::Messenger,
+        carrier: CarrierEvidence::NotBuilt,
+        delivery: DeliveryEvidence::NotDeliverable,
+        blockers: &[ClaimBlocker::WebSurfaceLegalReview],
+        matrix: MatrixPosition::NoRow,
+        authority: "task 4257 catalogue restore; no Messenger send or delivery proof",
+        reason: "Messenger is present only as a fixed catalogue surface. No Messenger carrier is wired, no send proof exists, and nothing sent through Messenger is claimed to be protected.",
+    },
     // ---- Native email carrier ---------------------------------------------
     SurfaceClaim {
         surface: Surface::OutlookDesktop,
@@ -666,6 +676,7 @@ impl Surface {
             Self::Signal => "signal",
             Self::Whatsapp => "whatsapp",
             Self::Telegram => "telegram",
+            Self::Messenger => "messenger",
             Self::OutlookDesktop | Self::OutlookWeb => "outlook",
             Self::Gmail => "gmail",
             Self::Proton => "proton",

@@ -89,6 +89,7 @@ pub mod scope_blobs_file;
 pub mod scope_ttl_file;
 pub mod screen_words;
 pub mod server_membership;
+pub mod service_settings_restore;
 pub mod space_roster;
 // Unit a45: encrypted UI-side storage contract (checklist A6). Defines the
 // `SecureLocalStore` trait + `SealedStore` reference impl; does not migrate
