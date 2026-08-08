@@ -192,6 +192,25 @@ pub struct WebsiteConversationDiscovery {
     pub composer: String,
 }
 
+/// Coordinate page discovery with the canonical named text placer without
+/// asking the operating system to activate or foreground another window.
+pub fn place_connected_page_text<D: WebsiteDriver>(
+    driver: &mut D,
+    page: WebsitePage,
+    discovery: &WebsiteConversationDiscovery,
+    text: String,
+    front_window_grab: bool,
+) -> Result<WebsitePlacementProof, WebsiteDriverError> {
+    if front_window_grab {
+        return Err(WebsiteDriverError::PageUnavailable);
+    }
+    driver.place_text(WebsiteTextPlacement {
+        page,
+        editable_box_name: discovery.composer.clone(),
+        text,
+    })
+}
+
 /// Classifies an already-open browser conversation from canonical service URL
 /// routing and accessibility evidence.  Unknown URL shapes, service claims,
 /// inactive conversations, and inaccessible/non-textbox composers all fail

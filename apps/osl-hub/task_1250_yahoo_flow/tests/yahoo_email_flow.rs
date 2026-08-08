@@ -52,6 +52,7 @@ fn task_1250_fake_page_yahoo_email_flow() {
     let placement = driver
         .place_text(WebsiteTextPlacement {
             page: page.clone(),
+            editable_box_name: "Compose".to_owned(),
             text: TASK_1250_WORDS.to_owned(),
         })
         .expect("place exact Yahoo words");
