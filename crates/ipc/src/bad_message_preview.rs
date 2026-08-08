@@ -174,6 +174,46 @@ impl ServiceConnection for FixtureServiceConnection {
 mod tests {
     use super::*;
 
+    /// TASK 1462's break fixture: the preview may read it, but a deletion is a
+    /// hard test failure after the attempted call has been counted.
+    struct DeleteFailsFixture {
+        messages: Vec<PreviewMessage>,
+        preview_reader_calls: AtomicUsize,
+        delete_calls: AtomicUsize,
+    }
+
+    impl DeleteFailsFixture {
+        fn new(messages: Vec<PreviewMessage>) -> Self {
+            Self {
+                messages,
+                preview_reader_calls: AtomicUsize::new(0),
+                delete_calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn preview_reader_call_count(&self) -> usize {
+            self.preview_reader_calls.load(Ordering::SeqCst)
+        }
+
+        fn delete_call_count(&self) -> usize {
+            self.delete_calls.load(Ordering::SeqCst)
+        }
+    }
+
+    impl ServiceConnection for DeleteFailsFixture {
+        fn read_messages(&self) -> Result<Vec<PreviewMessage>, String> {
+            self.preview_reader_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(self.messages.clone())
+        }
+
+        fn delete_message(&self, message_id: &str) -> Result<(), String> {
+            let delete_call_count = self.delete_calls.fetch_add(1, Ordering::SeqCst) + 1;
+            panic!(
+                "TASK1462 FAILING DELETE METHOD CALLED delete_call_count={delete_call_count} message_id={message_id}"
+            );
+        }
+    }
+
     fn rule(word: &str) -> BadMessageRule {
         BadMessageRule {
             rule_name: "private words".to_string(),
@@ -195,6 +235,43 @@ mod tests {
         assert_eq!(preview.deleted_count, 0);
         assert_eq!(connection.deletion_call_count(), 0);
         assert!(connection.read_call_count() > 0);
+    }
+
+    #[test]
+    fn task_1462_preview_reads_fixture_without_calling_failing_delete_method() {
+        let fixture = DeleteFailsFixture::new(vec![
+            PreviewMessage::new("safe-1", "general", "ordinary fixture message"),
+            PreviewMessage::new(
+                "match-1",
+                "project-room",
+                "the COBALT-1462 value must stay private",
+            ),
+        ]);
+        let rules = [rule("COBALT-1462")];
+
+        let preview = preview_bad_message_rules(&rules, &fixture)
+            .expect("preview must complete against the delete-failing fixture");
+        let preview_reader_call_count = fixture.preview_reader_call_count();
+        let delete_call_count = fixture.delete_call_count();
+
+        println!(
+            "TASK1462 preview_completed=true preview_reader_call_count={preview_reader_call_count} delete_call_count={delete_call_count} scanned_message_count={} match_count={}",
+            preview.scanned_message_count,
+            preview.match_count()
+        );
+
+        assert_eq!(preview.scanned_message_count, 2);
+        assert_eq!(preview.match_count(), 1);
+        assert_eq!(preview.matches[0].message_id, "match-1");
+        assert_eq!(preview.deleted_count, 0);
+        assert!(
+            preview_reader_call_count > 0,
+            "preview reader was never called"
+        );
+        assert_eq!(
+            delete_call_count, 0,
+            "preview called the fixture's forbidden delete method"
+        );
     }
 
     #[test]
