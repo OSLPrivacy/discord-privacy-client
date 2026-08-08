@@ -716,7 +716,7 @@ describe("fresh-account continuation", () => {
     expect(styles).toMatch(/\.onboarding-centered-step\s*\{[^}]*width:\s*min\(440px,\s*100%\);[^}]*margin:\s*auto;[^}]*text-align:\s*center;/s);
   });
 
-  it("continues from saved recovery material into optional Pro setup", () => {
+  it("continues from saved recovery material through the word check into optional Pro setup", () => {
     const recovery = functionSource("recoveryContent", "identityPasswordForm");
     const binding = functionSource("bindOnboarding", "completeOnboarding");
     expect(recovery).toContain('id="copy-recovery-kit"');
@@ -730,9 +730,10 @@ describe("fresh-account continuation", () => {
     // reducer, which is what makes "saved" and "not saved" a state the app can
     // still see after a restart instead of a module-local boolean.
     expect(binding).toMatch(/recoverySaved\?\.addEventListener\("change"[\s\S]*?applyRecoveryKitAction\(\{ kind: "set-saved-acknowledged", acknowledged: recoverySaved\.checked \}\)[\s\S]*?recoveryContinue\.disabled = !recoverySavedAcknowledged/);
-    // Same QA-shell-aware default as bootstrap: routes through onboardingRouteForBuild("pro")
-    // instead of the hard-coded "pro" literal, still landing on Pro setup for normal builds.
-    expect(binding).toMatch(/#recovery-continue[\s\S]*?applyRecoveryKitAction\(\{ kind: "continue" \}\) !== "leave-recovery"[\s\S]*?onboardingRoute = pendingOnboardingRoute\(\) \?\? onboardingRouteForBuild\("pro"\)/);
+    expect(binding).toMatch(/#recovery-continue[\s\S]*?recoverySavedAcknowledged[\s\S]*?onboardingRoute = "recovery-check"/);
+    // The saved acknowledgement is committed only after the native word check
+    // passes, and the QA-shell-aware default still follows that final gate.
+    expect(source).toMatch(/#recovery-word-check-continue[\s\S]*?recoveryWordCheckContinueDisabled\(recoveryWordCheckState\)[\s\S]*?applyRecoveryKitAction\(\{ kind: "continue" \}\)[\s\S]*?onboardingRoute = pendingOnboardingRoute\(\) \?\? onboardingRouteForBuild\("pro"\)/);
   });
 
   it("starts every recovery screen unacknowledged and clears recovery state on full cleanup", () => {

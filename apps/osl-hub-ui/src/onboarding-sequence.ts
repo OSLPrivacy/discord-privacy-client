@@ -6,6 +6,7 @@
 export const ONBOARDING_SEQUENCE = [
   "welcome",
   "recovery",
+  "recovery-check",
   "pro",
   "forward-secrecy",
   "privacy",

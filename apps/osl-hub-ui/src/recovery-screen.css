@@ -155,6 +155,56 @@
   transform: translateY(calc(-50% - 1px));
 }
 
+.recovery-word-check-screen {
+  width: min(520px, 100%);
+  margin: auto;
+  text-align: center;
+}
+
+.recovery-word-check-screen > p {
+  color: var(--osl-setup-muted);
+}
+
+.recovery-word-check-list {
+  display: grid;
+  gap: 12px;
+  margin: 24px 0 18px;
+}
+
+.recovery-word-check-row {
+  display: grid;
+  grid-template-columns: 84px 1fr;
+  align-items: center;
+  gap: 14px;
+  text-align: left;
+  color: var(--osl-setup-second);
+}
+
+.recovery-word-check-row input {
+  width: 100%;
+  min-height: 44px;
+  border: 1px solid var(--osl-setup-line);
+  border-radius: 3px;
+  background: var(--osl-setup-card);
+  color: var(--osl-setup-text);
+  padding: 9px 12px;
+  font: 15px/1.4 Consolas, "Cascadia Mono", "DejaVu Sans Mono", monospace;
+}
+
+.recovery-word-check-row input[aria-invalid="true"] {
+  border-color: var(--danger, #e25c5c);
+}
+
+.recovery-word-check-status {
+  min-height: 1.5em;
+  margin: 0 0 14px;
+}
+
+.recovery-word-check-screen #recovery-word-check-continue:disabled {
+  opacity: .35;
+  cursor: default;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .recovery-check-box,
   .recovery-check-mark { transition: none; }
