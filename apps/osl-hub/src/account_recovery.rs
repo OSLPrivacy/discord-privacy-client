@@ -115,7 +115,6 @@ pub fn save_normal_setup_completion(
     }
     preview.save(preferences)
 }
-
 /// Records that a recovery kit was produced but has not been confirmed saved.
 pub fn mark_recovery_kit_unsaved() -> Result<(), String> {
     let key = active_file_key()?;

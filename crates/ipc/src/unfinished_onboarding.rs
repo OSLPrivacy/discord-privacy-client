@@ -353,7 +353,6 @@ fn read_onboarding_restart_document(path: &Path) -> RestartDocumentRead {
         _ => RestartDocumentRead::Invalid,
     }
 }
-
 pub fn read_setup_status(
     directory: &Path,
     key: &[u8; 32],
