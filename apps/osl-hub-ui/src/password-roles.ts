@@ -118,7 +118,7 @@ export function onboardingPasswordRoleContent({ role, configured, passwordEyeIco
       ${confirmation}
       <p class="unlock-error" data-onboarding-role-error role="alert"></p>
       ${caveat}
-      <button class="stealth-submit" type="submit" form="${formId}" data-onboarding-role-submit disabled><span>Set password</span></button>
+      <button class="stealth-submit" type="submit" form="${formId}" data-onboarding-role-submit disabled><span>${role === "burn" ? "Continue" : "Set password"}</span></button>
     </form>
     <div class="setup-footer onboarding-actions stealth-links"><button class="text-button onboarding-role-skip" type="button" data-skip-onboarding-password-role="${shape.next}">Skip</button></div>
   </section>`;

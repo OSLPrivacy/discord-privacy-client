@@ -306,7 +306,7 @@ describe("clean onboarding sign in", () => {
     // into. So what has to hold for these two is not the old markup shape but
     // that, on EACH of them, the submit is still findable by the attribute the
     // binding uses and there is still a way out.
-    for (const [role, next] of [["stealth", "burnpass"], ["burn", "mullvad"]] as const) {
+    for (const [role, next] of [["stealth", "burnpass"], ["burn", "pro"]] as const) {
       const rendered = onboardingPasswordRoleContent({
         role,
         configured: false,
