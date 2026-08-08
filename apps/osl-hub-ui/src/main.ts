@@ -169,6 +169,8 @@ import { blankLocalProtectedModel, isLocalTtlSeconds, loadOrCreateLocalConversat
 import { claimOslUsername, createHubPrivateContactLink, createOslFriendRequestByOslName, type HubPrivateContactLink } from "./adapters";
 import { blankPeerProtectedModel, boundedPeerProtectedDraft, peerProtectedDraftByteFeedback, peerProtectedSheetMarkup, type PeerProtectedPane, type PeerProtectedSheetModel } from "./peer-protected-sheet";
 import { peerIntegrityMarkup } from "./peer-integrity";
+import { futureAccountSwitchMarkup } from "./future-account-switch";
+import { loadFutureAccountSwitchStates, saveFutureAccountSwitch } from "./future-account-switch-connect";
 import oslLogoUrl from "../../osl-hub/icons/icon-cyan.png";
 import oslVectorLogoUrl from "./assets/logo-mark.svg";
 import oslGhostMarkUrl from "./assets/Ghost-white.svg";
@@ -865,6 +867,10 @@ let friendsDialogPage = 0;
 let homeNotificationsOpen = false;
 let homeFriendsPanelCollapsed = false;
 const pendingFriendRequestsByName: PendingFriendRequestEntry[] = [];
+// The Hub owns this preference. The map is only the most recently loaded or
+// acknowledged state used to draw each friend's switch.
+const friendFutureAccountAutoWhitelist = new Map<string, boolean>();
+const friendFutureAccountAutoWhitelistBusy = new Set<string>();
 let burnDialogOpen = false;
 let burnScope: BurnScope = "chat";
 let burnBusy = false;
@@ -6118,7 +6124,14 @@ function peopleListMarkup(mode: PeopleListMode, limit?: number, offset = 0): str
     const nicknameForm = mode === "manage" ? `<form class="friend-nickname-form" data-nickname-person="${escapeHtml(person.personId)}"><label><span>Nickname on this device</span><input name="nickname" maxlength="48" value="${escapeHtml(person.alias ?? "")}" placeholder="Add a nickname" autocomplete="off" spellcheck="false"/></label><button class="button compact" type="submit">Save</button></form>` : "";
     const removeControl = mode === "manage" ? friendRemovalButtonMarkup(person.personId, escapeHtml) : "";
     const whitelistControls = mode === "manage" ? friendWideWhitelistButtonsMarkup(person.personId, escapeHtml) : "";
-    const management = `<details class="friend-management"><summary>Manage</summary><div>${nicknameForm}<div class="friend-approvals"><span>Approved chats</span><div>${scopes}</div>${truncated}</div><details class="friend-security"><summary>Security details</summary><div><span>OSL ID</span><code>${escapeHtml(identity)}</code><span>Verification code</span><code>${escapeHtml(person.safetyNumber)}</code></div></details>${whitelistControls}${removeControl}</div></details>`;
+    const futureAccountSwitch = mode === "manage"
+      ? futureAccountSwitchMarkup({
+        personId: person.personId,
+        enabled: friendFutureAccountAutoWhitelist.get(person.personId) ?? false,
+        busy: friendFutureAccountAutoWhitelistBusy.has(person.personId),
+      })
+      : "";
+    const management = `<details class="friend-management"><summary>Manage</summary><div>${nicknameForm}<div class="friend-approvals"><span>Approved chats</span><div>${scopes}</div>${truncated}</div>${futureAccountSwitch}<details class="friend-security"><summary>Security details</summary><div><span>OSL ID</span><code>${escapeHtml(identity)}</code><span>Verification code</span><code>${escapeHtml(person.safetyNumber)}</code></div></details>${whitelistControls}${removeControl}</div></details>`;
     return `<article class="person-row person-profile"><header><div><strong>${escapeHtml(nickname)}</strong><small>${escapeHtml(friendHandshakeSummary(person.safetyNumberVerified, person.pendingKeyChange))}</small></div>${action}</header>${management}</article>`;
   }).join("");
 }
@@ -8632,6 +8645,9 @@ function bindWorkspace(): void {
     saveWindowSoundsSettings(windowSoundsSettings);
     render();
   });
+  document.querySelectorAll<HTMLInputElement>("[data-future-account-toggle]").forEach((input) => {
+    input.addEventListener("change", (event) => void changeFriendFutureAccountSwitch(event.currentTarget as HTMLInputElement));
+  });
   document.querySelectorAll<HTMLButtonElement>("[data-osl-chat-open]").forEach((button) => button.addEventListener("click", () => {
     void openOslChat(button.dataset.oslChatOpen ?? "");
   }));
@@ -10322,6 +10338,30 @@ async function saveFriendNickname(event: SubmitEvent): Promise<void> {
   showToast(updated.alias ? "Nickname saved on this device" : "Nickname removed from this device");
 }
 
+async function loadFriendFutureAccountSwitchStates(): Promise<void> {
+  const personIds = hubPeople.map((person) => person.personId);
+  const loaded = await loadFutureAccountSwitchStates(personIds, { isTauriRuntime, invoke, recordBackendFailure });
+  friendFutureAccountAutoWhitelist.clear();
+  for (const [personId, enabled] of loaded) friendFutureAccountAutoWhitelist.set(personId, enabled);
+}
+
+async function changeFriendFutureAccountSwitch(input: HTMLInputElement): Promise<void> {
+  const personId = input.dataset.futureAccountToggle ?? "";
+  if (!personId || friendFutureAccountAutoWhitelistBusy.has(personId)) return;
+  const requested = input.checked;
+  const previous = friendFutureAccountAutoWhitelist.get(personId) ?? false;
+  friendFutureAccountAutoWhitelistBusy.add(personId);
+  input.disabled = true;
+  const saved = await saveFutureAccountSwitch(personId, requested, { isTauriRuntime, invoke, recordBackendFailure });
+  friendFutureAccountAutoWhitelistBusy.delete(personId);
+  if (saved) friendFutureAccountAutoWhitelist.set(saved.personId, saved.enabled);
+  if (!saved) {
+    input.checked = previous;
+    showToast("Future-account approval was not saved · nothing changed");
+  }
+  render();
+}
+
 async function copyFriendInvite(): Promise<void> {
   if (!friendCode) { showToast("Friend invite is unavailable"); return; }
   const result = await copyHubFriendInvite(friendCode);
@@ -10419,6 +10459,7 @@ async function refreshIdentityScopedState(): Promise<void> {
   friendCode = profile?.friendCode ?? null;
   friendDisplayId = profile?.oslUserId ?? null;
   hubPeople = people;
+  await loadFriendFutureAccountSwitchStates();
   services = linkedServices;
   appNotifications = mergePersistedOslChatNotifications(notifications);
   installedBuildChatWarning = buildWarning;
@@ -10955,7 +10996,11 @@ function startReadyWorkspaceLoads(): void {
   void refreshAutoScrubFleetStatus();
   void getOslUsernameStatus("osl").catch(() => null);
   void loadFriendProfile().then((profile) => { friendCode = profile?.friendCode ?? null; friendDisplayId = profile?.oslUserId ?? null; if (route === "home") renderWhenIdle(); });
-  void listHubPeople().then((people) => { hubPeople = people ?? []; if (route === "home") renderWhenIdle(); });
+  void listHubPeople().then(async (people) => {
+    hubPeople = people ?? [];
+    await loadFriendFutureAccountSwitchStates();
+    if (route === "home") renderWhenIdle();
+  });
   if (notificationsEnabled) void setNotificationsEnabled(true).then(async (enabled) => {
     appNotifications = enabled ? mergePersistedOslChatNotifications(await loadAppNotifications()) : null;
     if (route === "home") renderWhenIdle();
@@ -11922,6 +11967,8 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   linkedServicesChecked = patch.servicesChecked ?? patch.services !== undefined;
   hubPeople = (patch.hubPeople ?? []).map(testHubPerson);
   oslChatDraft = patch.oslChatDraft ?? "";
+  friendFutureAccountAutoWhitelist.clear();
+  friendFutureAccountAutoWhitelistBusy.clear();
   hubIdentities = patch.hubIdentities ?? [];
   hubIdentitiesLoad = patch.hubIdentitiesLoad ?? (patch.hubIdentities ? "loaded" : "pending");
   identityListRefreshInFlight = false;
