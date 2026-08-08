@@ -149,6 +149,7 @@ pub mod mail_owner_check;
 /// When the hidden main window may be shown. Pure, and deliberately not behind
 /// `desktop`: the reveal rule is what decides whether the app is visible at all,
 /// so it is testable in every build that can compile this crate.
+pub mod mail_com_mail_deleter;
 pub mod main_window_reveal;
 #[cfg(feature = "core")]
 pub mod look_window;
