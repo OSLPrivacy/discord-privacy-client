@@ -930,7 +930,10 @@ const identityDiscoveryChoiceStorageKey = "osl-identity-discovery-choice-v1";
 const onboardingBranchStorageKey = "osl-onboarding-branch-v1";
 const experimentalSendConsentStorageKey = "osl-experimental-send-consent-v1";
 const rnWirePolicyStorageKey = "osl-rn-wire-policy-requested-v1";
-let nativeDiscordCovertextEnabled = true;
+// No cover-writing choice is active until the operator presses one of the two
+// shared buttons.  TASK 3520 wires this plain choice to the built-in wordbank;
+// the adjacent AI choice remains unavailable until its writer is finished.
+let nativeDiscordCovertextEnabled = false;
 const oslChatPreviewStorageKey = "osl-chat-previews-visible-v1";
 const oslChatMutedStorageKey = "osl-chat-muted-people-v1";
 const oslChatUnreadStorageKey = "osl-chat-unread-v1";
@@ -9017,11 +9020,10 @@ function bindWorkspace(): void {
   document.querySelector<HTMLFormElement>("#identity-recover-form")?.addEventListener("submit", (event) => void recoverAdditionalIdentity(event));
   document.querySelectorAll<HTMLButtonElement>("[data-switch-identity]").forEach((button) => button.addEventListener("click", () => void switchIdentity(button.dataset.switchIdentity ?? "")));
   document.querySelector<HTMLButtonElement>("#native-discord-covertext")?.addEventListener("click", () => {
-    const requested = !nativeDiscordCovertextEnabled;
-    void invoke<boolean>("set_native_discord_covertext_enabled", { enabled: requested }).then((confirmed) => {
-      nativeDiscordCovertextEnabled = confirmed === requested ? confirmed : nativeDiscordCovertextEnabled;
+    void invoke<boolean>("select_native_discord_covertext_writer").then((confirmed) => {
+      nativeDiscordCovertextEnabled = confirmed;
       render();
-      showToast(nativeDiscordCovertextEnabled ? "Covertext is on" : "Covertext is off; private messages stay inside OSL");
+      showToast(nativeDiscordCovertextEnabled ? "Covertext wordbank selected" : "Covertext did not change");
     }).catch(() => showToast("Covertext did not change"));
   });
   document.querySelector<HTMLButtonElement>("#discord-qa-run-test")?.addEventListener("click", () => {

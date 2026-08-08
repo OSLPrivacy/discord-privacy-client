@@ -3895,6 +3895,21 @@ fn set_native_discord_covertext_enabled(
     Ok(state.covertext_enabled())
 }
 
+/// The plain shared Covertext button is itself the wordbank choice.  It does
+/// not disable carrier placement or accept a second chooser value.
+#[tauri::command]
+fn select_native_discord_covertext_writer(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+) -> Result<bool, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL header may choose Covertext".to_owned());
+    }
+    let state = app.state::<ai_carrier::AiCarrierState>();
+    state.set_wordbank_writer_selected(true);
+    Ok(state.wordbank_writer_selected())
+}
+
 #[tauri::command]
 fn get_native_discord_overlay_state(
     app: tauri::AppHandle,

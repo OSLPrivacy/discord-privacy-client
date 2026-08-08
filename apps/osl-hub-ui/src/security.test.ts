@@ -394,6 +394,7 @@ describe("bundled preview security boundary", () => {
       "allow-open-osl-chat-attachment",
       "allow-set-native-discord-protected-overlay-open",
       "allow-set-native-discord-covertext-enabled",
+      "allow-select-native-discord-covertext-writer",
       "allow-create-service-account",
       "allow-open-service-host",
       "allow-open-hosted-session-scan",

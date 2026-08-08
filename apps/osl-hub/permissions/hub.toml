@@ -204,6 +204,11 @@ description = "Allow only the trusted OSL header to enable or disable the fixed 
 commands.allow = ["set_native_discord_covertext_enabled"]
 
 [[permission]]
+identifier = "allow-select-native-discord-covertext-writer"
+description = "Allow only the trusted OSL header Covertext button to select the existing layered local wordbank writer."
+commands.allow = ["select_native_discord_covertext_writer"]
+
+[[permission]]
 identifier = "allow-set-hub-screenshot-protection"
 description = "Apply or remove Windows capture resistance for the trusted OSL Privacy window and its child service surface."
 commands.allow = ["set_hub_screenshot_protection"]

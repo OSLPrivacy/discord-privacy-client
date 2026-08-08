@@ -189,6 +189,31 @@ pub struct ProseTokenSendKeys<'a> {
     pub conversation_key: &'a [u8],
 }
 
+/// Selects the visible writer used for a prose-token carrier.
+///
+/// `Baseline` preserves the pre-TASK-3520 carrier byte-for-byte at the API
+/// boundary. `Covertext` is the explicit button choice: it routes the same
+/// private pointer through the existing four-layer wordbank codec instead of
+/// inventing another bank or exposing a settings menu.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ProseTokenCoverWriter {
+    #[default]
+    Baseline,
+    Covertext,
+}
+
+/// The one layered wordbank policy selected by the Covertext button.
+///
+/// Pointer `Low` is intentional: unlike `High`, it retains the bridge's full
+/// 20-byte id+seed carrier. The three visible layers run at `High`, so pressing
+/// the button exercises capitalisation, the grown vocabulary, and spelling.
+const COVERTEXT_LAYER_SETTINGS: stego::CoverLayerSettings = stego::CoverLayerSettings::new(
+    stego::LayerStrength::Low,
+    stego::LayerStrength::High,
+    stego::LayerStrength::High,
+    stego::LayerStrength::High,
+);
+
 /// Errors that surface from the composite send/recv paths.
 #[derive(Debug, thiserror::Error)]
 pub enum ProseTokenError {
@@ -490,15 +515,41 @@ pub fn prose_token_send(
     dpc0_wire: &str,
     ttl_seconds: u32,
 ) -> Result<ProseTokenSendOutput, ProseTokenError> {
+    prose_token_send_with_writer(
+        config_dir,
+        scope_input,
+        detection_key,
+        keys,
+        dpc0_wire,
+        ttl_seconds,
+        ProseTokenCoverWriter::Baseline,
+    )
+}
+
+/// Same send with an explicit visible-cover writer choice.
+///
+/// Existing callers keep using [`prose_token_send`] and therefore retain the
+/// baseline carrier. The hub calls this variant only when it has a typed
+/// Covertext-button choice to pass through.
+pub fn prose_token_send_with_writer(
+    config_dir: &std::path::Path,
+    scope_input: &ScopeInput,
+    detection_key: &[u8; MAC_KEY_LEN],
+    keys: ProseTokenSendKeys<'_>,
+    dpc0_wire: &str,
+    ttl_seconds: u32,
+    writer: ProseTokenCoverWriter,
+) -> Result<ProseTokenSendOutput, ProseTokenError> {
     let base_url = crate::cipher_store_client::resolve_cipher_store_base_url(config_dir)?;
     let client = CipherStoreClient::new(base_url)?;
-    prose_token_send_with_client(
+    prose_token_send_with_client_and_writer(
         &client,
         scope_input,
         detection_key,
         keys,
         dpc0_wire,
         ttl_seconds,
+        writer,
     )
 }
 
@@ -516,6 +567,31 @@ pub fn prose_token_send_with_client(
     keys: ProseTokenSendKeys<'_>,
     dpc0_wire: &str,
     ttl_seconds: u32,
+) -> Result<ProseTokenSendOutput, ProseTokenError> {
+    prose_token_send_with_client_and_writer(
+        client,
+        scope_input,
+        detection_key,
+        keys,
+        dpc0_wire,
+        ttl_seconds,
+        ProseTokenCoverWriter::Baseline,
+    )
+}
+
+/// Caller-supplied-client send with an explicit visible-cover writer choice.
+///
+/// This is the route-aware variant used by the hub. Writer choice changes only
+/// how the already-uploaded private pointer is rendered; upload authority,
+/// object framing, TTL, and burn behavior remain identical.
+pub fn prose_token_send_with_client_and_writer(
+    client: &CipherStoreClient,
+    scope_input: &ScopeInput,
+    detection_key: &[u8; MAC_KEY_LEN],
+    keys: ProseTokenSendKeys<'_>,
+    dpc0_wire: &str,
+    ttl_seconds: u32,
+    writer: ProseTokenCoverWriter,
 ) -> Result<ProseTokenSendOutput, ProseTokenError> {
     let body = dpc0_wire
         .strip_prefix(DPC0_PREFIX)
@@ -558,7 +634,16 @@ pub fn prose_token_send_with_client(
     // D-231: the scope-bound detector, never the caller's. See
     // `scope_bound_detection_key`.
     let scoped_detector = scope_bound_detection_key(detection_key, scope_input)?;
-    let cover_text = stego::encode_token(&cipher, &scoped_detector, &bridge_pack(&id, &seed));
+    let carrier = bridge_pack(&id, &seed);
+    let cover_text = match writer {
+        ProseTokenCoverWriter::Baseline => stego::encode_token(&cipher, &scoped_detector, &carrier),
+        ProseTokenCoverWriter::Covertext => stego::encode_layered_cover(
+            &scoped_detector,
+            stego::LayeredCoverInput::Seed(carrier),
+            COVERTEXT_LAYER_SETTINGS,
+        )
+        .expect("Covertext policy accepts the full bridge carrier"),
+    };
 
     Ok(ProseTokenSendOutput {
         cover_text,
@@ -610,7 +695,17 @@ fn prose_token_decode_carrier(
     // different conversation fails the detect tag here and returns `None`, so
     // callers can check prepared text without opening any cipher-store route.
     let scoped_detector = scope_bound_detection_key(detection_key, scope_input)?;
-    Ok(stego::decode_token(&cipher, &scoped_detector, msg))
+    if let Some(carrier) = stego::decode_token(&cipher, &scoped_detector, msg) {
+        return Ok(Some(carrier));
+    }
+    Ok(
+        match stego::decode_layered_cover(&scoped_detector, COVERTEXT_LAYER_SETTINGS, msg) {
+            Some(stego::LayeredCoverInput::Seed(carrier)) => Some(carrier),
+            // The fixed button policy uses pointer Low, so its decoder can never
+            // produce a shared handle. Keep this exhaustive in case stego evolves.
+            Some(stego::LayeredCoverInput::SharedHandle(_)) | None => None,
+        },
+    )
 }
 
 /// Recover only the pointer/id encoded in prepared cover text.

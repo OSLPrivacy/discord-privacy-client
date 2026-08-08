@@ -804,6 +804,7 @@ macro_rules! hub_tauri_commands {
             burn_native_discord_overlay_chat,
             set_native_discord_overlay_security,
             set_native_discord_covertext_enabled,
+            select_native_discord_covertext_writer,
             host_mullvad_window,
             resize_mullvad_window,
             focus_mullvad_window,

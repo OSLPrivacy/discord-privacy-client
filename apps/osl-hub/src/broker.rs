@@ -1988,6 +1988,7 @@ pub fn prepare_peer_prose_text_with_capture_and_store_client(
         None,
         Some(store_client),
         None,
+        ipc::prose_token::ProseTokenCoverWriter::Baseline,
     )
     .map(|envelope| envelope.prepared)
 }
@@ -2113,6 +2114,7 @@ fn prepare_peer_prose_text_inner(
         None,
         None,
         None,
+        ipc::prose_token::ProseTokenCoverWriter::Baseline,
     )
 }
 
@@ -2162,6 +2164,7 @@ fn prepare_peer_prose_text_inner_with_chunk(
     chunk: Option<NativeTextChunkMeta>,
     store_client: Option<&ipc::cipher_store_client::CipherStoreClient>,
     send_order: Option<AuthenticatedSenderOrder>,
+    cover_writer: ipc::prose_token::ProseTokenCoverWriter,
 ) -> Result<PreparedPeerProseEnvelope, String> {
     let manual = broker.manual_peer_for(context_token)?;
     let verified = security::require_manual_peer_scope_approved(
@@ -2228,22 +2231,24 @@ fn prepare_peer_prose_text_inner_with_chunk(
     // `store_client` is Some only once the Tor gate has authorized a route, and
     // a selected-but-unhealthy Tor never reaches here at all.
     let uploaded = if let Some(store_client) = store_client {
-        ipc::prose_token::prose_token_send_with_client(
+        ipc::prose_token::prose_token_send_with_client_and_writer(
             store_client,
             &manual.scope,
             &detection_key,
             send_keys,
             &encrypted,
             ttl_seconds,
+            cover_writer,
         )
     } else {
-        ipc::prose_token::prose_token_send(
+        ipc::prose_token::prose_token_send_with_writer(
             &dir,
             &manual.scope,
             &detection_key,
             send_keys,
             &encrypted,
             ttl_seconds,
+            cover_writer,
         )
     }
     // D-144: the user-facing sentence stays byte-identical, but the cause is no
@@ -4281,6 +4286,11 @@ fn prepare_peer_inbox_text_with_route_clients(
     // Resolve the optional carrier before any pointer is encoded. Cloud is not
     // an option in this path, so it cannot be reached around consent.
     let _carrier_decision = ai_carrier.select_for_shipping_send();
+    let cover_writer = if ai_carrier.wordbank_writer_selected() {
+        ipc::prose_token::ProseTokenCoverWriter::Covertext
+    } else {
+        ipc::prose_token::ProseTokenCoverWriter::Baseline
+    };
     let manual = broker.manual_peer_for(context_token)?;
     let context = broker.context_for(context_token)?;
     require_messaging_risk_agreed(
@@ -4451,6 +4461,7 @@ fn prepare_peer_inbox_text_with_route_clients(
             Some(meta),
             store_client,
             Some(send_order.clone()),
+            cover_writer,
         );
         #[cfg(feature = "discord-qa-shell")]
         if let Err(error) = &encrypted_result {

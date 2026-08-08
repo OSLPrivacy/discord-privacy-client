@@ -844,6 +844,7 @@ mod tests {
         "request_native_discord_visible_row_qa_receipt",
         "send_native_discord_overlay_carrier",
         "set_native_discord_covertext_enabled",
+        "select_native_discord_covertext_writer",
         "get_native_discord_overlay_state",
         "set_native_discord_overlay_security",
         "prepare_native_discord_overlay_text",

@@ -18,6 +18,11 @@ use std::sync::Mutex;
 #[derive(Default)]
 pub struct AiCarrierState {
     local_model_ready: AtomicBool,
+    // The shared Covertext button chooses the built-in layered wordbank for
+    // this running session.  It is deliberately separate from model
+    // availability: an unpressed choice keeps the established cover writer,
+    // while pressing the plain Covertext button selects the local wordbank.
+    wordbank_writer_selected: AtomicBool,
     cloud_consent: AiCloudConsent,
     // Previewing is deliberately an opt-in held only for this running session.
     // A restart must fail closed rather than unexpectedly resuming typing into
@@ -28,6 +33,15 @@ pub struct AiCarrierState {
 impl AiCarrierState {
     pub fn set_local_model_ready(&self, ready: bool) {
         self.local_model_ready.store(ready, Ordering::Release);
+    }
+
+    pub fn set_wordbank_writer_selected(&self, selected: bool) {
+        self.wordbank_writer_selected
+            .store(selected, Ordering::Release);
+    }
+
+    pub fn wordbank_writer_selected(&self) -> bool {
+        self.wordbank_writer_selected.load(Ordering::Acquire)
     }
 
     pub fn ensure_bundled_local_model(
@@ -153,6 +167,14 @@ mod tests {
         state.set_local_model_ready(true);
         assert!(state.status().local_model_ready);
         assert!(!state.status().word_bank_fallback);
+    }
+
+    #[test]
+    fn task_3520_plain_covertext_button_selects_the_wordbank_writer() {
+        let state = AiCarrierState::default();
+        assert!(!state.wordbank_writer_selected());
+        state.set_wordbank_writer_selected(true);
+        assert!(state.wordbank_writer_selected());
     }
 
     #[test]
