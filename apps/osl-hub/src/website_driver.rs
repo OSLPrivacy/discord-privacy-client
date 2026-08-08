@@ -237,6 +237,35 @@ pub struct MessengerPreparedCoverState {
     pub messenger_composer_characters: usize,
 }
 
+/// UI-facing state for Messenger's protected send button.
+///
+/// The button binds the person's exact selected choice to cover preparation.
+/// It holds no provider Send control and exposes no posting operation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MessengerSendButton {
+    selected_choice: MessengerSendChoice,
+}
+
+impl MessengerSendButton {
+    /// Connect the button to one of the five exact choices shown by the
+    /// protected composer.
+    pub fn for_selected_choice(choice_name: &str) -> Result<Self, WebsiteDriverError> {
+        Ok(Self {
+            selected_choice: MessengerSendChoice::parse(choice_name)?,
+        })
+    }
+
+    /// Prepare the selected cover without pressing Messenger's Send control.
+    pub fn prepare_selected_cover(
+        &self,
+        driver: &mut RealBrowserWebsiteDriver,
+        page: &WebsitePage,
+        cover_text: &str,
+    ) -> Result<MessengerPreparedCoverState, WebsiteDriverError> {
+        driver.prepare_messenger_cover_for_choice(page, self.selected_choice.name(), cover_text)
+    }
+}
+
 /// Classify an already-open browser conversation from canonical service URL
 /// routing and accessibility evidence. Unknown claims fail closed.
 pub fn discover_browser_conversation(
