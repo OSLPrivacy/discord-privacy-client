@@ -3378,6 +3378,45 @@ mod password_policy_tests {
         );
     }
 
+    #[test]
+    fn task_0337_exact_burn_password_opens_confirmation_and_near_match_is_harmless() {
+        let account_dir = tempfile::tempdir().expect("disposable account directory");
+        let _guard = use_temp_config_dir(account_dir.path());
+        let disposable_account = "osl_task_0337_disposable";
+        let account_file = account_dir.path().join("identity.json");
+        std::fs::write(&account_file, disposable_account).expect("write disposable account");
+
+        let main_password = "main-pass-0337";
+        let saved_burn_password = "burn-0337-password";
+        let near_match = "burn-0337-passw0rd";
+        set_main_password(account_dir.path(), main_password).expect("save main password");
+        set_burn_password(account_dir.path(), main_password, saved_burn_password)
+            .expect("save exact burn password");
+
+        let marker = read_marker_pub(account_dir.path()).expect("read saved password marker");
+        assert!(marker.burn_password_hash_b64.is_some());
+        let mut burn_requests = 0_u32;
+
+        let near_result = verify_gate_password_with_marker(&marker, near_match)
+            .expect("verify harmless near-match");
+        assert!(matches!(near_result, GateMatch::Wrong));
+        assert_eq!(burn_requests, 0);
+        assert_eq!(std::fs::read_to_string(&account_file).unwrap(), disposable_account);
+        assert!(account_dir.path().join("password_marker.json").exists());
+        println!(
+            "TASK0337_MARKER_NEAR_MATCH password={near_match} role=wrong refused=true disposable_accounts=1 burn_requests={burn_requests} page=unlock"
+        );
+
+        let exact_result = verify_gate_password_with_marker(&marker, saved_burn_password)
+            .expect("verify exact saved burn password");
+        assert!(matches!(exact_result, GateMatch::Burn));
+        burn_requests += 1;
+        assert_eq!(burn_requests, 1);
+        println!(
+            "TASK0337_MARKER_BURN password={saved_burn_password} role=burn burn_requests={burn_requests} burn_confirmation=opened"
+        );
+    }
+
     mod exact_unit_tests {
         use super::*;
 
