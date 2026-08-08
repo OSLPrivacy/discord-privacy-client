@@ -323,6 +323,7 @@ pub mod service_burn_selection;
 #[cfg(feature = "core")]
 pub mod service_scope_index;
 pub mod shared_conversation_scroll;
+pub mod shared_delete_action;
 pub mod shared_mailbox_reader;
 pub mod signal_destination_binding;
 #[cfg(feature = "core")]
