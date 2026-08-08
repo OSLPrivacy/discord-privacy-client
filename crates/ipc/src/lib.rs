@@ -105,6 +105,13 @@ pub mod revocation;
 pub mod schedule_storage;
 pub mod scope;
 pub mod scope_blobs_file;
+// TASK 1472: AutoScrub activity record (start, end, account, matches,
+// deletions, failures, text, location) for every run. Self-contained for
+// the same reason as scheduled_runner_rules above: gate 1451 (record
+// deletion outcomes) and gate 1464 (this crate's scheduled_runner_rules,
+// already merged here) live on other lanes / this lane respectively, and
+// this module's finish line does not require importing 1451's types.
+pub mod autoscrub_activity;
 // TASK 1464: pure decision rules for the scheduled AutoScrub runner (one
 // account at a time, pause on sleep/unavailable, resume on Run now or the
 // next schedule). Self-contained: gates 1422 (action pacing) and 1463
