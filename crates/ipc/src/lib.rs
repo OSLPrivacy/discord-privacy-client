@@ -56,6 +56,7 @@ pub mod email_send_modes;
 pub mod email_whitelist_kinds;
 pub mod fresh_start;
 pub mod friend_request;
+pub mod friend_service_name;
 pub mod group_manifest;
 pub(crate) mod group_send;
 pub mod license_lifecycle;
