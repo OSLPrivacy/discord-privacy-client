@@ -1,0 +1,36 @@
+{
+  "fixture": "task-0358-device-key-lost-fixed",
+  "window": {
+    "width": 1280,
+    "height": 800
+  },
+  "title": "Device key lost",
+  "controls": [
+    {
+      "role": "button",
+      "name": "Restore with recovery phrase"
+    }
+  ],
+  "axNames": [
+    "OSL Privacy - TASK 0358",
+    "Device key lost",
+    "Restore with recovery phrase",
+    "Device key lost",
+    "The key that unlocks it is gone from this device. Your 12-word recovery phrase restores the same account and contacts, here or on any other device.",
+    "Restore with recovery phrase",
+    "Nothing has been deleted. Until you restore, everything stays encrypted and unreadable",
+    "Device key lost",
+    "The key that unlocks it is gone from this device. Your 12-",
+    "word recovery phrase restores the same account and ",
+    "contacts, here or on any other device.",
+    "Restore with recovery phrase",
+    "Nothing has been deleted. Until you restore, everything stays ",
+    "encrypted and unreadable"
+  ],
+  "image": {
+    "path": "/home/liamw/osl-exec-j/apps/osl-hub-ui/screenshots/artifacts/task-0358-device-key-lost.png",
+    "bytes": 36139,
+    "width": 1280,
+    "height": 800
+  }
+}

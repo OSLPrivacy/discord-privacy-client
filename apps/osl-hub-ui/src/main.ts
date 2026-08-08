@@ -2252,7 +2252,7 @@ function identityKeyLostContent(): string {
   // The footnote answers that, so it stays: nothing has been deleted.
   return `<section class="keylost-screen" aria-labelledby="route-heading">
     <img class="keylost-logo" src="${oslGhostMarkUrl}" alt="" width="104" height="104"/>
-    <h1 id="route-heading" tabindex="-1" class="keylost-title">This device can no longer open your account</h1>
+    <h1 id="route-heading" tabindex="-1" class="keylost-title">Device key lost</h1>
     <p class="keylost-copy">The key that unlocks it is gone from this device. Your 12-word recovery phrase restores the same account and contacts, here or on any other device.</p>
     <button class="signin-unlock keylost-action" data-onboarding="import" type="button"><span class="signin-unlock-label">Restore with recovery phrase</span>${signinArrowIcon()}</button>
     <p class="keylost-quiet">Nothing has been deleted. Until you restore, everything stays encrypted and unreadable</p>
