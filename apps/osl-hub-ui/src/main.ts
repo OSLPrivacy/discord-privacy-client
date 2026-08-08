@@ -4411,8 +4411,12 @@ function bindImportForm(): void {
   const submit = document.querySelector<HTMLButtonElement>("#identity-import-submit");
   const error = document.querySelector<HTMLElement>("#import-error");
   if (!form || !phrase || !password || !confirm || !submit || !error) return;
+  const canSubmit = (): boolean =>
+    isRecoveryPhrase(phrase.value)
+    && isValidNewMainPassword(password.value)
+    && password.value === confirm.value;
   const validate = (): void => {
-    submit.disabled = !isRecoveryPhrase(phrase.value) || !isValidNewMainPassword(password.value) || password.value !== confirm.value;
+    submit.disabled = !canSubmit();
     error.textContent = "";
   };
   phrase.addEventListener("input", validate);
@@ -4420,7 +4424,12 @@ function bindImportForm(): void {
   confirm.addEventListener("input", validate);
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    if (submit.disabled) return;
+    // A disabled button is presentation, not an authorization check: callers
+    // can dispatch submit directly or mutate the DOM before doing so.
+    if (!canSubmit()) {
+      submit.disabled = true;
+      return;
+    }
     let phraseSecret = phrase.value;
     let passwordSecret = password.value;
     phrase.value = "";
