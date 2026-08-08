@@ -345,6 +345,8 @@ pub mod visual_binding;
 pub mod web_surface_adapter;
 /// Hermetic records for the direct X active-window discovery command.
 pub mod x_window_composer;
+/// Private input box rendered only after X's composer has been recognised.
+pub mod x_private_composer;
 #[cfg(not(task3982_focused))]
 pub mod website_driver;
 pub mod whatsapp_accessibility;
