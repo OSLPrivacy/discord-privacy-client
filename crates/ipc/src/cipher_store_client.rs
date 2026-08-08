@@ -526,6 +526,31 @@ struct AttachmentCompleteResponse {
     size_bytes: u64,
 }
 
+/// Receipt for one finished piece of a Pro chunked attachment upload.
+/// `upload_id` is the server-assigned multipart session/object identifier.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProChunkedUploadPiece {
+    pub upload_id: String,
+    pub piece_number: u32,
+    pub size_bytes: u64,
+}
+
+/// Receipt for the completed file produced by a Pro chunked attachment upload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProChunkedUploadFile {
+    pub file_id: String,
+    pub total_size_bytes: u64,
+    pub piece_count: u32,
+    pub expires_at: i64,
+}
+
+/// Ordered receipts from a Pro chunked attachment upload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProChunkedUploadReport {
+    pub finished_pieces: Vec<ProChunkedUploadPiece>,
+    pub completed_file: ProChunkedUploadFile,
+}
+
 struct ExactPartReader<R> {
     inner: R,
     remaining: u64,
@@ -933,7 +958,12 @@ impl CipherStoreClient {
         }
         sealed.seek(SeekFrom::Start(0))?;
         if length > LEGACY_DIRECT_ATTACHMENT_BYTES {
-            return self.upload_attachment_multipart(sealed, length, ttl_seconds, fetch_token);
+            return self
+                .upload_attachment_multipart(sealed, length, ttl_seconds, fetch_token)
+                .map(|report| UploadResult {
+                    id_hex: report.completed_file.file_id,
+                    expires_at: report.completed_file.expires_at,
+                });
         }
         let response = self
             .http
@@ -948,13 +978,39 @@ impl CipherStoreClient {
         parse_upload_response(response, 32)
     }
 
+    /// Upload an already-sealed Pro attachment as numbered 8 MiB pieces.
+    ///
+    /// Unlike [`Self::upload_attachment_file`], this always uses the multipart
+    /// protocol, including for a file that fits in one piece. The returned
+    /// report preserves the server-confirmed order and size of every finished
+    /// piece as well as the final completed-file receipt.
+    pub fn upload_attachment_file_pro_chunked(
+        &self,
+        mut sealed: File,
+        ttl_seconds: u32,
+        fetch_token: &[u8; FETCH_TOKEN_BYTES],
+    ) -> Result<ProChunkedUploadReport, CipherStoreError> {
+        if !is_valid_ttl(ttl_seconds) {
+            return Err(CipherStoreError::BadTtl(ttl_seconds));
+        }
+        let length = sealed.metadata()?.len();
+        if length == 0 || length > MAX_SEALED_ATTACHMENT_BYTES {
+            return Err(CipherStoreError::BlobTooLarge {
+                got: usize::try_from(length).unwrap_or(usize::MAX),
+                max: MAX_SEALED_ATTACHMENT_BYTES as usize,
+            });
+        }
+        sealed.seek(SeekFrom::Start(0))?;
+        self.upload_attachment_multipart(sealed, length, ttl_seconds, fetch_token)
+    }
+
     fn upload_attachment_multipart(
         &self,
         sealed: File,
         length: u64,
         ttl_seconds: u32,
         fetch_token: &[u8; FETCH_TOKEN_BYTES],
-    ) -> Result<UploadResult, CipherStoreError> {
+    ) -> Result<ProChunkedUploadReport, CipherStoreError> {
         let token = hex_lower(fetch_token);
         let response = self
             .http
@@ -984,7 +1040,11 @@ impl CipherStoreClient {
                 return Err(error);
             }
         };
+        let piece_count = u32::try_from(plan.len()).map_err(|_| {
+            CipherStoreError::ParseError("multipart part count overflow".to_owned())
+        })?;
         let result = (|| {
+            let mut finished_pieces = Vec::with_capacity(plan.len());
             for (part_number, offset, part_length) in plan {
                 let mut part_file = sealed.try_clone()?;
                 part_file.seek(SeekFrom::Start(offset))?;
@@ -1010,6 +1070,11 @@ impl CipherStoreClient {
                         "multipart part receipt mismatch".to_owned(),
                     ));
                 }
+                finished_pieces.push(ProChunkedUploadPiece {
+                    upload_id: session.id.clone(),
+                    piece_number: receipt.part_number,
+                    size_bytes: receipt.size_bytes,
+                });
             }
             if sealed.metadata()?.len() != length {
                 return Err(CipherStoreError::Io(io::Error::new(
@@ -1036,9 +1101,14 @@ impl CipherStoreClient {
                     "multipart completion receipt mismatch".to_owned(),
                 ));
             }
-            Ok(UploadResult {
-                id_hex: complete.id,
-                expires_at: complete.expires_at,
+            Ok(ProChunkedUploadReport {
+                finished_pieces,
+                completed_file: ProChunkedUploadFile {
+                    file_id: complete.id,
+                    total_size_bytes: complete.size_bytes,
+                    piece_count,
+                    expires_at: complete.expires_at,
+                },
             })
         })();
         if result.is_err() {
