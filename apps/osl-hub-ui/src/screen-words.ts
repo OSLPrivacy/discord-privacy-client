@@ -275,7 +275,32 @@ export function findBannedWords(text: string): string[] {
   });
 }
 
-export function checkScreenWords(screenSource: string, requiredWords: readonly string[]): ScreenWordReport {
+export function checkScreenWords(screenSource: string, requiredWords: readonly string[]): ScreenWordReport;
+export function checkScreenWords(markup: string, expected: { title: string; requiredWords: readonly string[] }): ScreenWordReport;
+export function checkScreenWords(
+  screenSource: string,
+  requiredWordsOrExpectation: readonly string[] | { title: string; requiredWords: readonly string[] },
+): ScreenWordReport {
+  if (!Array.isArray(requiredWordsOrExpectation)) {
+    const expectation = requiredWordsOrExpectation as { title: string; requiredWords: readonly string[] };
+    const text = visibleText(screenSource);
+    const words = visibleWords(screenSource);
+    const presentWords = expectation.requiredWords.filter((word) => text.includes(word));
+    const bannedWords = BANNED_SCREEN_WORDS.filter((banned) => {
+      const escaped = banned.replace(/[/\\^$*+?.()|[\]{}]/gu, "\\$&").replace(/\s+/gu, "\\s+");
+      return new RegExp(`\\b${escaped}s?\\b`, "iu").test(text);
+    });
+    return {
+      title: screenTitle(screenSource) || null,
+      text,
+      words,
+      wordCount: words.length,
+      presentWords: [...presentWords],
+      missingWords: expectation.requiredWords.filter((word) => !presentWords.includes(word)),
+      bannedWords: [...bannedWords],
+    };
+  }
+  const requiredWords = requiredWordsOrExpectation as readonly string[];
   const text = readScreenText(screenSource);
   const words = readScreenWords(screenSource);
   const presentWords = requiredWords.filter((word) => words.includes(word));
