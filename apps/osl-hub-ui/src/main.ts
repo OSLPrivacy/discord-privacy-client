@@ -260,6 +260,8 @@ import { connectDiscordQaWhitelistButton, discordQaOpenPlace } from "./discord-q
 import { parseEnclaveAudience, type EnclaveAudience } from "./osl-collab";
 import { startDirectConversation, startEnclave, startGroupConversation, startSomethingSheetMarkup, type EnclaveJoiningRule, type StartSomethingDependencies, type StartSomethingPerson } from "./start-something";
 import { addFriendByNameBoxMarkup, addFriendFailureStatus, bindAddFriendByNameForm, bindFriendRemovalControls, bindMainWindowFocusChanges, friendHandshakeDetail, friendHandshakeSummary, friendInviteCardMarkup, friendRemovalButtonMarkup, friendTrustAction, friendVerificationCopy, friendWideWhitelistButtonsMarkup, inviteCopyFailureToast, onboardingPaintDecision, ownedConfirmationSubmitDisabled, RecoveryCaptureGate, removeHubFriend, shouldClearRemovedFriendChat, verificationSubmission, type FriendVerificationCopy, type PendingFriendRequestEntry } from "./ui-behavior";
+import { acceptedFriendPageActionsMarkup } from "./friend-page-actions";
+import { friendPictureMarkup } from "./friend-picture";
 import { runRecoveryReveal, submitsRecoveryReveal } from "./recovery-reveal";
 import { addLegacyPhraseWrap, initialAccountRecoveryFlow, legacyMarkerRecoveryRefused, legacyRecoveryMigrationMarkup, recoveryScreenMarkup, submitRecoveredPassword, submitRecoveryPhrase, type AccountRecoveryDependencies, type AccountRecoveryFlow, type LegacyRecoveryMigration, type RecoveryMigrationDependencies } from "./account-recovery";
 import { RECOVERY_SHOW_ANYWAY_ACKNOWLEDGEMENT, recoveryKitReducer, recoveryKitSecretCardsMarkup, recoveryKitView, visibleRecoverySecrets, type RecoveryKitAction, type RecoveryKitState, type RecoveryKitView } from "./recovery-kit";
@@ -6363,8 +6365,20 @@ function peopleListMarkup(mode: PeopleListMode, limit?: number, offset = 0): str
         busy: friendFutureAccountAutoWhitelistBusy.has(person.personId),
       })
       : "";
+    const acceptedFriendActions = mode === "manage" && person.safetyNumberVerified && !person.pendingKeyChange
+      ? acceptedFriendPageActionsMarkup({
+        personId: person.personId,
+        name: nickname,
+        pictureMarkup: friendPictureMarkup({
+          picture: null,
+          fallbackLetter: nickname.slice(0, 1).toUpperCase() || "?",
+          fallbackColour: "#2ac0f0",
+        }),
+        accepted: true,
+      })
+      : "";
     const management = `<details class="friend-management"><summary>Manage</summary><div>${nicknameForm}<div class="friend-approvals"><span>Approved chats</span><div>${scopes}</div>${truncated}</div>${futureAccountSwitch}<details class="friend-security"><summary>Security details</summary><div><span>OSL ID</span><code>${escapeHtml(identity)}</code><span>Verification code</span><code>${escapeHtml(person.safetyNumber)}</code></div></details>${whitelistControls}${removeControl}</div></details>`;
-    return `<article class="person-row person-profile"><header><div><strong>${escapeHtml(nickname)}</strong><small>${escapeHtml(friendHandshakeSummary(person.safetyNumberVerified, person.pendingKeyChange))}</small></div>${action}</header>${management}</article>`;
+    return `<article class="person-row person-profile"><header><div><strong>${escapeHtml(nickname)}</strong><small>${escapeHtml(friendHandshakeSummary(person.safetyNumberVerified, person.pendingKeyChange))}</small></div>${action}</header>${acceptedFriendActions}${management}</article>`;
   }).join("");
 }
 
