@@ -12682,6 +12682,12 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   coverInsertion = patch.coverInsertion ?? initialCoverInsertionChoice();
   deleteChoices = initialDeleteChoices();
   torOnboarding = initialTorOnboardingState();
+  recoveryBundle = null;
+  recoverySavedAcknowledged = false;
+  recoveryNoSecretAcknowledged = false;
+  recoveryShownWithoutProtection = false;
+  recoveryRevealError = null;
+  recoveryRevealBusy = false;
   settingsSection = "account";
   friendsSettingsState = defaultFriendsSettingsState();
   activeService = null;
@@ -13404,17 +13410,32 @@ export const __oslHubUiTest = {
   cleanDeviceRestoreSnapshot(): CleanDeviceRestoreState {
     return { ...cleanDeviceRestoreState };
   },
+  /** Adopt the same native unsaved-kit reminder that startup reads. */
+  loadRecoveryKitReminder(): Promise<boolean> {
+    return recoveryKitUnsavedFlag.load();
+  },
   recoveryKitSnapshot(): {
     onboardingRoute: OnboardingRoute;
     bundle: typeof recoveryBundle;
     savedAcknowledged: boolean;
     wordCheck: RecoveryWordCheckState;
+    mode: RecoveryKitView["mode"];
+    kitUnsaved: boolean;
+    hasSecrets: boolean;
+    revealError: string | null;
+    revealBusy: boolean;
   } {
+    const state = recoveryKitStateNow();
     return {
       onboardingRoute,
       bundle: recoveryBundle ? { ...recoveryBundle } : null,
       savedAcknowledged: recoverySavedAcknowledged,
       wordCheck: recoveryWordCheckState,
+      mode: recoveryKitView(state).mode,
+      kitUnsaved: state.kitUnsaved,
+      hasSecrets: state.secrets !== null,
+      revealError: recoveryRevealError,
+      revealBusy: recoveryRevealBusy,
     };
   },
   bindWorkspace(): void {
