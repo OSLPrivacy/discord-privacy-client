@@ -104,6 +104,9 @@ pub mod sender_key_state;
 pub mod session_lock;
 pub mod state;
 pub mod state_reload;
+// TASK 5031: "rename them, just for me" / "give them a colour, just for me" —
+// local overlays that never touch the other account's own profile record.
+pub mod this_person_overlay;
 pub mod tier_gate;
 pub mod tofu;
 pub mod tombstone_file;

@@ -23867,3 +23867,159 @@ pub fn cmd_osl_burn_both_sides_server_copies(
         remote_removal_count: response.deleted_count,
     })
 }
+
+// ---------------------------------------------------------------------------
+// TASK 5031 — the THIS PERSON block.
+//
+// "Rename them, just for me" and "give them a colour, just for me" are local
+// overlays. Everything below reads the other account's profile name from the
+// friend record and the overlay from its own file, and never writes one into
+// the other. `crates/ipc/src/this_person_overlay.rs` holds the rules.
+// ---------------------------------------------------------------------------
+
+use crate::this_person_overlay::{
+    PersonPlaceLabel, SafetyNumberPersonIdentity, ThisPersonOverlay, ThisPersonOverlayError,
+};
+
+/// The THIS PERSON block as the chat-settings modal draws it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ThisPersonBlockDto {
+    pub person_id: String,
+    /// The other account's own profile name, exactly as their record holds it.
+    pub profile_name: String,
+    pub local_rename: Option<String>,
+    pub local_colour: Option<String>,
+    /// The colour actually drawn — the chosen one, or the derived one when the
+    /// operator has chosen none.
+    pub colour: String,
+    pub colour_choices: Vec<String>,
+    /// Said on the setting itself, not only in the docs.
+    pub local_only_sentence: &'static str,
+}
+
+fn this_person_error(error: ThisPersonOverlayError) -> String {
+    error.to_string()
+}
+
+/// The other account's own profile record for `person_id`.
+///
+/// Read-only here on purpose: no command in this block may write to it. A local
+/// rename that edited this record would be visible to every other reader of the
+/// roster as if the person had published that name themselves.
+fn stored_friend_profile_name(app_data_dir: &Path, person_id: &str) -> Result<String, String> {
+    let state = crate::friend_request::load_friend_request_file_state(app_data_dir)
+        .map_err(|error| format!("OSL: {error:?}"))?;
+    state
+        .friends
+        .iter()
+        .find(|friend| friend.remote_identity_id == person_id)
+        .map(|friend| friend.display_name.clone())
+        .ok_or_else(|| ThisPersonOverlayError::UnknownPerson.to_string())
+}
+
+fn this_person_block(
+    app_data_dir: &Path,
+    person_id: &str,
+    overlay: &ThisPersonOverlay,
+) -> Result<ThisPersonBlockDto, String> {
+    let profile_name = stored_friend_profile_name(app_data_dir, person_id)?;
+    let resolved = crate::this_person_overlay::resolve_this_person(person_id, &profile_name, overlay);
+    Ok(ThisPersonBlockDto {
+        person_id: person_id.to_owned(),
+        profile_name,
+        local_rename: overlay.local_rename.clone(),
+        local_colour: overlay.local_colour.clone(),
+        colour: resolved.colour,
+        colour_choices: crate::this_person_overlay::THIS_PERSON_COLOUR_CHOICES
+            .iter()
+            .map(|colour| (*colour).to_owned())
+            .collect(),
+        local_only_sentence: crate::this_person_overlay::THIS_PERSON_LOCAL_ONLY_SENTENCE,
+    })
+}
+
+pub fn cmd_osl_this_person_block(
+    app_data_dir: PathBuf,
+    person_id: String,
+) -> Result<ThisPersonBlockDto, String> {
+    record_activity_on_command_entry();
+    let overlay = crate::this_person_overlay::read_this_person_overlay(&app_data_dir, &person_id)
+        .map_err(this_person_error)?;
+    this_person_block(&app_data_dir, &person_id, &overlay)
+}
+
+/// Save the local rename. `None` (or a blank string) clears it, which restores
+/// the profile name everywhere without touching the local colour.
+pub fn cmd_osl_set_this_person_local_rename(
+    app_data_dir: PathBuf,
+    person_id: String,
+    rename: Option<String>,
+) -> Result<ThisPersonBlockDto, String> {
+    record_activity_on_command_entry();
+    // Refuse first, so an unknown person never leaves an orphan overlay behind.
+    stored_friend_profile_name(&app_data_dir, &person_id)?;
+    let overlay = crate::this_person_overlay::set_this_person_local_rename(
+        &app_data_dir,
+        &person_id,
+        rename.as_deref(),
+    )
+    .map_err(this_person_error)?;
+    this_person_block(&app_data_dir, &person_id, &overlay)
+}
+
+pub fn cmd_osl_clear_this_person_local_rename(
+    app_data_dir: PathBuf,
+    person_id: String,
+) -> Result<ThisPersonBlockDto, String> {
+    cmd_osl_set_this_person_local_rename(app_data_dir, person_id, None)
+}
+
+pub fn cmd_osl_set_this_person_local_colour(
+    app_data_dir: PathBuf,
+    person_id: String,
+    colour: Option<String>,
+) -> Result<ThisPersonBlockDto, String> {
+    record_activity_on_command_entry();
+    stored_friend_profile_name(&app_data_dir, &person_id)?;
+    let overlay = crate::this_person_overlay::set_this_person_local_colour(
+        &app_data_dir,
+        &person_id,
+        colour.as_deref(),
+    )
+    .map_err(this_person_error)?;
+    this_person_block(&app_data_dir, &person_id, &overlay)
+}
+
+/// The three places this person's name and colour are drawn: sidebar row,
+/// thread header, notification. One resolved answer, three surfaces.
+pub fn cmd_osl_this_person_places(
+    app_data_dir: PathBuf,
+    person_id: String,
+) -> Result<Vec<PersonPlaceLabel>, String> {
+    record_activity_on_command_entry();
+    let profile_name = stored_friend_profile_name(&app_data_dir, &person_id)?;
+    let overlay = crate::this_person_overlay::read_this_person_overlay(&app_data_dir, &person_id)
+        .map_err(this_person_error)?;
+    Ok(crate::this_person_overlay::this_person_places(
+        &person_id,
+        &profile_name,
+        &overlay,
+    ))
+}
+
+/// The identity line above the safety number. The profile name is always
+/// present; a local rename can only sit beside it.
+pub fn cmd_osl_this_person_safety_number_identity(
+    app_data_dir: PathBuf,
+    person_id: String,
+) -> Result<SafetyNumberPersonIdentity, String> {
+    record_activity_on_command_entry();
+    let profile_name = stored_friend_profile_name(&app_data_dir, &person_id)?;
+    let overlay = crate::this_person_overlay::read_this_person_overlay(&app_data_dir, &person_id)
+        .map_err(this_person_error)?;
+    Ok(crate::this_person_overlay::safety_number_person_identity(
+        &person_id,
+        &profile_name,
+        &overlay,
+    ))
+}
