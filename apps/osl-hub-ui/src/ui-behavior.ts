@@ -331,6 +331,27 @@ export function friendRemovalButtonMarkup(
   return `<button class="button compact danger" type="button" data-remove-person="${escapeAttribute(personId)}">Remove friend</button>`;
 }
 
+export const FRIEND_WHITELIST_EVERYWHERE_SELECTOR = "[data-whitelist-everywhere-person]";
+export const FRIEND_WHITELIST_NOWHERE_SELECTOR = "[data-whitelist-nowhere-person]";
+
+/**
+ * Friend-wide reach buttons operate on every current account for this friend,
+ * unlike the individual chat approvals displayed above them.
+ */
+export function friendWhitelistEverywhereButtonMarkup(
+  personId: string,
+  escapeAttribute: (value: string) => string,
+): string {
+  return `<button class="button compact" type="button" data-whitelist-everywhere-person="${escapeAttribute(personId)}">Whitelist everywhere</button>`;
+}
+
+export function friendWhitelistNowhereButtonMarkup(
+  personId: string,
+  escapeAttribute: (value: string) => string,
+): string {
+  return `<button class="button compact danger" type="button" data-whitelist-nowhere-person="${escapeAttribute(personId)}">Whitelist nowhere</button>`;
+}
+
 export function bindFriendRemovalControls(
   root: FriendRemovalRoot,
   requestFriendRemoval: (personId: string) => void,
