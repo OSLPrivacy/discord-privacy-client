@@ -16993,6 +16993,69 @@ code {
 
 .osl-role-ability-detail { grid-column: 1 / -1; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
 
+/* TASK 0772 — Look is a device-local visual preference surface. */
+:root[data-look-named="midnight"],
+:root[data-look-named="paper"],
+:root[data-look-named="signal"] {
+  --bg: var(--look-named-bg);
+  --panel: var(--look-named-panel);
+  --panel-2: color-mix(in srgb, var(--look-named-panel) 86%, var(--look-named-text));
+  --panel-3: color-mix(in srgb, var(--look-named-panel) 76%, var(--look-named-text));
+  --line: color-mix(in srgb, var(--look-named-muted) 46%, var(--look-named-panel));
+  --line-soft: color-mix(in srgb, var(--look-named-muted) 26%, var(--look-named-panel));
+  --text: var(--look-named-text);
+  --muted: var(--look-named-muted);
+}
+
+:root[data-look-named] { --brand: var(--look-accent, #06b6d4); }
+:root[data-look-corners="square"] { --radius: 0px; }
+:root[data-look-corners="soft"] { --radius: 10px; }
+:root[data-look-text="large"] { font-size: 17px; }
+:root[data-look-spacing="relaxed"] { --look-control-gap: 10px; }
+:root[data-look-spacing="compact"] { --look-control-gap: 5px; }
+:root[data-look-glow="true"] { --look-glow: 0 0 22px color-mix(in srgb, var(--look-accent) 35%, transparent); }
+:root[data-look-glow="false"] { --look-glow: none; }
+
+.look-screen { max-width: 1120px; }
+.look-heading { margin-bottom: 14px; }
+.look-heading .eyebrow { margin: 0 0 4px; color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.look-heading h2 { margin: 0; font-size: 28px; letter-spacing: -.03em; }
+.look-heading > p:last-child { max-width: 68ch; margin: 5px 0 0; color: var(--muted); font-size: 13px; line-height: 1.45; }
+.look-layout { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--look-control-gap, 5px); }
+.look-group, .look-reset { min-width: 0; padding: 10px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); box-shadow: var(--look-glow, none); }
+.look-group h3 { margin: 0; font-size: 13px; }
+.look-group-note { min-height: 16px; margin: 2px 0 7px; color: var(--muted); font-size: 11px; line-height: 1.25; }
+.look-choice-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; }
+.look-choice { min-width: 0; min-height: 54px; padding: 6px 7px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg); color: var(--text); cursor: pointer; text-align: left; }
+.look-choice:hover, .look-choice:focus-visible { border-color: var(--look-accent, var(--brand)); outline: none; }
+.look-choice.selected { border-color: var(--look-accent, var(--brand)); box-shadow: inset 3px 0 0 var(--look-accent, var(--brand)), var(--look-glow, none); background: var(--panel-2); }
+.look-choice strong, .look-choice small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.look-choice strong { font-size: 12px; }
+.look-choice small { margin-top: 2px; color: var(--muted); font-size: 10px; line-height: 1.2; }
+.look-named-midnight { background: linear-gradient(135deg, #0b1020, #172448); }
+.look-named-paper { background: linear-gradient(135deg, #f4f0e8, #d9d0bd); color: #263239; }
+.look-named-signal { background: linear-gradient(135deg, #111516, #1d3438); }
+.look-accent-cyan.selected { border-color: #06b6d4; }
+.look-accent-violet.selected { border-color: #8b5cf6; }
+.look-accent-amber.selected { border-color: #f59e0b; }
+.look-pair-group { padding-bottom: 8px; }
+.look-pairs { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.look-inline-choices { display: grid; grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr); gap: 4px; align-items: stretch; }
+.look-inline-choices > span { align-self: center; color: var(--muted); font-size: 10px; font-weight: 700; text-transform: uppercase; writing-mode: vertical-rl; transform: rotate(180deg); }
+.look-inline-choices .look-choice { min-height: 45px; }
+.look-reset { display: flex; grid-column: 1 / -1; align-items: center; justify-content: space-between; gap: 12px; min-height: 52px; }
+.look-reset > div { min-width: 0; }
+.look-reset strong, .look-reset small { display: block; }
+.look-reset strong { font-size: 13px; }
+.look-reset small { margin-top: 2px; color: var(--muted); font-size: 11px; }
+.look-reset .button { min-height: 32px; padding: 5px 12px; }
+
+@media (max-width: 760px) {
+  .look-layout { grid-template-columns: 1fr; }
+  .look-reset { grid-column: auto; }
+  .look-choice-row { grid-template-columns: 1fr; }
+}
+
 /* OSL Chats — a native full-window messenger, not a card inside the Hub. */
 .osl-chats-shell .home-command-bar { min-height: 58px; }
 .osl-chats-shell .desktop-top-row { min-height: 58px; }

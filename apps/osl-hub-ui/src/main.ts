@@ -240,6 +240,7 @@ export {
 import { initializeThemePreference, themeStorageKey, type ThemeChoice } from "./theme-preference";
 import { defaultWindowSoundsSettings, loadWindowSoundsSettings, saveWindowSoundsSettings, windowSoundsSettingsMarkup, type WindowPosition, type WindowSoundsSettings } from "./window-sounds-settings";
 import { accentChoices, appearanceSettingsMarkup, avatarChoices, backgroundChoices, loadAppearancePreferences, resetAppearancePreferences, saveAppearancePreferences, windowPositionChoices, type AppearancePreferences } from "./appearance-preferences";
+import { applyLookState, defaultLookState, loadLookState, lookScreenMarkup, lookStorageKey, saveLookState, type LookMode, type LookState } from "./look-screen";
 import { inDomTooltipMarkup } from "./in-dom-tooltip";
 import { coverWritingControlsMarkup } from "./cover-writing-controls";
 import { applyOslChatDraftToElement, firstPartyOslSurfaceContract, OSL_CHAT_MAX_DRAFT_BYTES, oslChatDraftBytes, oslChatHandshakeConfirmed, oslChatsViewMarkup, senderReceiptStateFor, submitsOslChatDraft, type OslChatMessage } from "./osl-chats-view";
@@ -706,6 +707,9 @@ let decryptDisplay = true;
 let themeChoice: ThemeChoice = initializeThemePreference(localStorage);
 let appearancePreferences: AppearancePreferences = loadAppearancePreferences(localStorage);
 let savedAppearancePreferences: AppearancePreferences = { ...appearancePreferences };
+let lookState: LookState = localStorage.getItem(lookStorageKey) === null
+  ? { ...defaultLookState, mode: themeChoice === "system" ? "computer" : themeChoice }
+  : loadLookState(localStorage);
 let sidebarOrder: string[] = [];
 let hiddenServices = new Set<string>();
 let homeEditMode = false;
@@ -1549,6 +1553,7 @@ function applyTheme(choice: ThemeChoice): void {
     : choice;
   document.documentElement.dataset.theme = resolved;
   document.documentElement.dataset.themeChoice = choice;
+  applyLookState(document.documentElement, lookState);
 }
 
 function saveAppearance(next: AppearancePreferences): void {
@@ -7583,7 +7588,20 @@ function activationSettingsContent(): string {
 
 function appearanceSettingsContent(): string {
   const theme = `<div class="theme-grid">${(["system", "dark", "light"] as ThemeChoice[]).map((choice) => `<button class="theme-card ${themeChoice === choice ? "selected" : ""}" data-theme-choice="${choice}"><span class="theme-swatch ${choice}"></span><strong>${choice[0].toUpperCase()}${choice.slice(1)}</strong><small>${choice === "system" ? "Follow this device" : `${choice} interface`}</small></button>`).join("")}</div>`;
-  return `${appearanceSettingsMarkup(appearancePreferences)}<section class="appearance-theme"><h3>Theme</h3>${theme}</section>`;
+  return `${lookScreenMarkup(lookState)}${appearanceSettingsMarkup(appearancePreferences)}<section class="appearance-theme"><h3>Theme</h3>${theme}</section>`;
+}
+
+function saveAndApplyLook(next: LookState): void {
+  lookState = next;
+  saveLookState(localStorage, next);
+  themeChoice = parseTheme(next.mode === "computer" ? "system" : next.mode);
+  localStorage.setItem(themeStorageKey, themeChoice);
+  applyTheme(themeChoice);
+  render();
+}
+
+function lookMode(value: string | undefined): LookMode | null {
+  return value === "light" || value === "dark" || value === "computer" ? value : null;
 }
 
 function developerSettingsContent(): string {
@@ -9304,12 +9322,9 @@ function bindWorkspace(): void {
     render();
     if (burnScope === "app") void prepareServiceBurn();
   }));
-  document.querySelectorAll<HTMLButtonElement>("[data-theme-choice]").forEach((button) => button.addEventListener("click", () => {
-    const next = parseTheme(button.dataset.themeChoice ?? null);
-    themeChoice = next;
-    localStorage.setItem(themeStorageKey, next);
-    applyTheme(next);
-    render();
+  document.querySelectorAll<HTMLButtonElement>("[data-look-mode]").forEach((button) => button.addEventListener("click", () => {
+    const mode = lookMode(button.dataset.lookMode);
+    if (mode) saveAndApplyLook({ ...lookState, mode });
   }));
   document.querySelectorAll<HTMLButtonElement>("[data-appearance-accent]").forEach((button) => button.addEventListener("click", () => {
     const accent = button.dataset.appearanceAccent;
@@ -9343,6 +9358,30 @@ function bindWorkspace(): void {
     savedAppearancePreferences = { ...appearancePreferences };
     render();
   });
+  document.querySelectorAll<HTMLButtonElement>("[data-look-named]").forEach((button) => button.addEventListener("click", () => {
+    const named = button.dataset.lookNamed;
+    if (named === "midnight" || named === "paper" || named === "signal") saveAndApplyLook({ ...lookState, named });
+  }));
+  document.querySelectorAll<HTMLButtonElement>("[data-look-accent]").forEach((button) => button.addEventListener("click", () => {
+    const accent = button.dataset.lookAccent;
+    if (accent === "cyan" || accent === "violet" || accent === "amber") saveAndApplyLook({ ...lookState, accent });
+  }));
+  document.querySelectorAll<HTMLButtonElement>("[data-look-corners]").forEach((button) => button.addEventListener("click", () => {
+    const corners = button.dataset.lookCorners;
+    if (corners === "square" || corners === "soft") saveAndApplyLook({ ...lookState, corners });
+  }));
+  document.querySelectorAll<HTMLButtonElement>("[data-look-glow]").forEach((button) => button.addEventListener("click", () => {
+    saveAndApplyLook({ ...lookState, glow: button.dataset.lookGlow === "on" });
+  }));
+  document.querySelectorAll<HTMLButtonElement>("[data-look-text]").forEach((button) => button.addEventListener("click", () => {
+    const text = button.dataset.lookText;
+    if (text === "comfortable" || text === "large") saveAndApplyLook({ ...lookState, text });
+  }));
+  document.querySelectorAll<HTMLButtonElement>("[data-look-spacing]").forEach((button) => button.addEventListener("click", () => {
+    const spacing = button.dataset.lookSpacing;
+    if (spacing === "compact" || spacing === "relaxed") saveAndApplyLook({ ...lookState, spacing });
+  }));
+  document.querySelector<HTMLButtonElement>("[data-look-reset]")?.addEventListener("click", () => saveAndApplyLook(defaultLookState));
   document.querySelector("#service-guide-next")?.addEventListener("click", () => {
     if (serviceGuideStep !== null) setServiceGuideStep(nextServiceGuideStep(serviceGuideStep));
   });
