@@ -96,6 +96,13 @@ pub mod revocation;
 pub mod schedule_storage;
 pub mod scope;
 pub mod scope_blobs_file;
+// TASK 1464: pure decision rules for the scheduled AutoScrub runner (one
+// account at a time, pause on sleep/unavailable, resume on Run now or the
+// next schedule). Self-contained: gates 1422 (action pacing) and 1463
+// (schedule storage) live only on other lanes as of this commit and are not
+// merged here, and this task's finish line does not require importing
+// either — see the module doc comment.
+pub mod scheduled_runner_rules;
 pub mod scope_ttl_file;
 pub mod screen_words;
 pub mod server_membership;
