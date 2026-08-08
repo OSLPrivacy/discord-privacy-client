@@ -89,7 +89,7 @@ export function applyTorSidecarEvent(status: TorBootStatus, event: TorSidecarEve
   if (status.ready || status.failed) return status;
   if (event.event === "bootstrap") {
     const clamped = Math.min(100, Math.max(0, Math.trunc(event.percent)));
-    return { ...status, percent: clamped };
+    return { ...status, percent: Math.max(status.percent, clamped) };
   }
   if (event.event === "ready") return { ready: true, failed: false, slow: false, percent: 100, errorMessage: null };
   return { ...status, failed: true, errorMessage: event.message };

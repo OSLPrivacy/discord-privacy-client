@@ -73,11 +73,11 @@ describe("applyTorSidecarEvent", () => {
     expect(applyTorSidecarEvent(initialTorBootStatus(), { event: "bootstrap", percent: -5 }).percent).toBe(0);
   });
 
-  it("copies the last bootstrap reading even when it is lower", () => {
+  it("never lets percent run backwards on a later, lower reading", () => {
     const mid = applyTorSidecarEvent(initialTorBootStatus(), { event: "bootstrap", percent: 60 });
     const next = applyTorSidecarEvent(mid, { event: "bootstrap", percent: 10 });
-    expect(next.percent).toBe(10);
-    expect(torRouteStatusLabel(next)).toBe("Connecting -- 10%");
+    expect(next.percent).toBe(60);
+    expect(torRouteStatusLabel(next)).toBe("Connecting -- 60%");
   });
 
   it("flips ready and reports 'Connected'", () => {
