@@ -50,6 +50,11 @@ import { handleHealthz } from "./endpoints/healthz.js";
 import { handleLanding, handleRobots } from "./lib/landing.js";
 import { clientIp, error, notFound, serverError } from "./lib/http.js";
 import { rateLimit, sweepRateCounters } from "./lib/rate-limit.js";
+import {
+  limitDownloadResponse,
+  sweepTransferLimits,
+  withUploadTransferLimit,
+} from "./lib/transfer-limits.js";
 import { CYCLE_MARKER } from "./lib/d2-proof-contract.js";
 import { verifyStorageGrant } from "./lib/storage-grant.js";
 import {
@@ -75,7 +80,7 @@ export default {
   ): Promise<Response> {
     void ctx;
     try {
-      return await dispatch(request, env);
+      return limitDownloadResponse(await dispatch(request, env), env, clientIp(request));
     } catch {
       console.error("[fetch] unhandled failure");
       return serverError();
@@ -121,6 +126,11 @@ export default {
       await sweepRateCounters(env);
     } catch {
       console.error("[rate-counter-sweep] failed");
+    }
+    try {
+      await sweepTransferLimits(env);
+    } catch {
+      console.error("[transfer-limit-sweep] failed");
     }
   },
 };
@@ -192,13 +202,13 @@ async function dispatch(request: Request, env: Env): Promise<Response> {
     if (!rl.allowed) {
       return error(429, "rate_limited", "upload rate limit hit");
     }
-    return handleUpload(request, env);
+    return withUploadTransferLimit(request, env, clientIp(request), (limited) => handleUpload(limited, env));
   }
 
   if (path === "/v1/attachment" && request.method === "POST") {
     const rl = await rateLimit(env, clientIp(request), "attachment-upload");
     if (!rl.allowed) return error(429, "rate_limited", "upload rate limit hit");
-    return handleAttachmentUpload(request, env);
+    return withUploadTransferLimit(request, env, clientIp(request), (limited) => handleAttachmentUpload(limited, env));
   }
 
   // Session creation has its own small budget: it reserves storage before any
@@ -214,12 +224,12 @@ async function dispatch(request: Request, env: Env): Promise<Response> {
   if (attachmentPartMatch && request.method === "PUT") {
     const rl = await rateLimit(env, clientIp(request), "attachment-upload");
     if (!rl.allowed) return error(429, "rate_limited", "upload rate limit hit");
-    return handleAttachmentPartUpload(
-      request,
+    return withUploadTransferLimit(request, env, clientIp(request), (limited) => handleAttachmentPartUpload(
+      limited,
       env,
       attachmentPartMatch[1]!,
       Number(attachmentPartMatch[2]),
-    );
+    ));
   }
 
   const attachmentCompleteMatch = /^\/v1\/attachment\/([0-9a-f]{32})\/complete$/.exec(path);
