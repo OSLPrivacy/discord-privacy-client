@@ -1,0 +1,90 @@
+[
+  {
+    "role": "RootWebArea",
+    "name": "Discovery: Anyone"
+  },
+  {
+    "role": "dialog",
+    "name": "Turn on Anyone?"
+  },
+  {
+    "role": "checkbox",
+    "name": "I have read all three sentences and I want to be findable by anyone."
+  },
+  {
+    "role": "heading",
+    "name": "Turn on Anyone?"
+  },
+  {
+    "role": "button",
+    "name": "Close"
+  },
+  {
+    "role": "button",
+    "name": "Back"
+  },
+  {
+    "role": "button",
+    "name": "Turn on"
+  },
+  {
+    "role": "StaticText",
+    "name": "Turn on Anyone?"
+  },
+  {
+    "role": "StaticText",
+    "name": "Close"
+  },
+  {
+    "role": "StaticText",
+    "name": "Anyone who knows your handle can learn you run OSL."
+  },
+  {
+    "role": "StaticText",
+    "name": "That includes the carrier itself, which can check its whole history."
+  },
+  {
+    "role": "StaticText",
+    "name": "This is retroactive and permanent. Turning it off later removes your record, but it does not un-tell anyone who already looked."
+  },
+  {
+    "role": "StaticText",
+    "name": "Back"
+  },
+  {
+    "role": "StaticText",
+    "name": "Turn on"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Turn on Anyone?"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Close"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Anyone who knows your handle can learn you run OSL."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "That includes the carrier itself, which can check its whole history."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "This is retroactive and permanent. Turning it off later removes your record, but "
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "it does not un-tell anyone who already looked."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Back"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Turn on"
+  }
+]
