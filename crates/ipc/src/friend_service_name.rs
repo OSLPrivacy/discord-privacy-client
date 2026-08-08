@@ -82,6 +82,10 @@ impl FriendServiceNameFileState {
         &self.records
     }
 
+    pub fn count(&self) -> usize {
+        self.records.len()
+    }
+
     fn validate(&self) -> Result<(), String> {
         if self.records.len() > MAX_BINDINGS {
             return Err("OSL friend service name list is full".to_owned());
