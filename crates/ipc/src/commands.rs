@@ -190,6 +190,18 @@ mod command_activity_tests {
         assert_command_marks_activity("cmd_osl_get_self_user_id", || {
             let _ = cmd_osl_get_self_user_id(&state);
         });
+        assert_command_marks_activity("cmd_osl_open_window_with_behaviour", || {
+            let _ = cmd_osl_open_window_with_behaviour(&state);
+        });
+        assert_command_marks_activity("cmd_osl_apply_movement_behaviour", || {
+            let _ = cmd_osl_apply_movement_behaviour(&state);
+        });
+        assert_command_marks_activity("cmd_osl_show_tray_with_behaviour", || {
+            let _ = cmd_osl_show_tray_with_behaviour(&state);
+        });
+        assert_command_marks_activity("cmd_osl_play_sound_with_behaviour", || {
+            let _ = cmd_osl_play_sound_with_behaviour(&state);
+        });
     }
 }
 
@@ -19742,6 +19754,60 @@ pub struct BehaviourChoiceDto {
     pub choice: String,
 }
 
+/// The choices consulted whenever OSL opens a window.
+///
+/// `position` and `remember place` are deliberately reported together: a
+/// window opener needs both to decide whether to restore a saved location or
+/// place a new window.  Keeping this as a direct command prevents a caller
+/// from substituting its own defaults after the user has saved a choice.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowOpeningBehaviourDto {
+    pub action: String,
+    pub position: String,
+    pub remember_place: String,
+}
+
+/// The selection used by the direct movement action.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MovementBehaviourDto {
+    pub action: String,
+    pub movement: String,
+}
+
+/// The selection used by the direct tray action.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TrayBehaviourDto {
+    pub action: String,
+    pub tray_picture: String,
+}
+
+/// The choices consulted before playing a notification sound.
+///
+/// Sound, mute, and quiet-hours must travel together so a caller cannot play
+/// a saved sound while silently ignoring either of the user's suppressions.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SoundBehaviourDto {
+    pub action: String,
+    pub sound: String,
+    pub mute: String,
+    pub quiet_hours: String,
+}
+
+fn selected_behaviour_choice(
+    preferences: &crate::app_preferences::AppPreferences,
+    name: crate::app_preferences::BehaviourChoiceName,
+) -> String {
+    preferences
+        .behaviour_choices
+        .get(name.label())
+        .cloned()
+        .unwrap_or_else(|| "default".to_string())
+}
+
 pub fn cmd_osl_save_behaviour_choice(
     state: &AppState,
     name: String,
@@ -19774,17 +19840,91 @@ pub fn cmd_osl_read_behaviour_choice(
 ) -> Result<BehaviourChoiceDto, String> {
     record_activity_on_command_entry();
     let name = crate::app_preferences::parse_behaviour_choice_name(&name)?;
-    let choice = state
+    let preferences = state
         .app_preferences
         .lock()
-        .expect("app_preferences mutex poisoned")
-        .behaviour_choices
-        .get(name.label())
-        .cloned()
-        .unwrap_or_else(|| "default".to_string());
+        .expect("app_preferences mutex poisoned");
     Ok(BehaviourChoiceDto {
         name: name.label().to_string(),
-        choice,
+        choice: selected_behaviour_choice(&preferences, name),
+    })
+}
+
+/// Open a window using the current saved window-placement selections.
+pub fn cmd_osl_open_window_with_behaviour(
+    state: &AppState,
+) -> Result<WindowOpeningBehaviourDto, String> {
+    record_activity_on_command_entry();
+    let preferences = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned");
+    Ok(WindowOpeningBehaviourDto {
+        action: "open-window".to_string(),
+        position: selected_behaviour_choice(
+            &preferences,
+            crate::app_preferences::BehaviourChoiceName::Position,
+        ),
+        remember_place: selected_behaviour_choice(
+            &preferences,
+            crate::app_preferences::BehaviourChoiceName::RememberPlace,
+        ),
+    })
+}
+
+/// Move a window using the current saved movement selection.
+pub fn cmd_osl_apply_movement_behaviour(state: &AppState) -> Result<MovementBehaviourDto, String> {
+    record_activity_on_command_entry();
+    let preferences = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned");
+    Ok(MovementBehaviourDto {
+        action: "move-window".to_string(),
+        movement: selected_behaviour_choice(
+            &preferences,
+            crate::app_preferences::BehaviourChoiceName::Movement,
+        ),
+    })
+}
+
+/// Show a tray item using the current saved tray-picture selection.
+pub fn cmd_osl_show_tray_with_behaviour(state: &AppState) -> Result<TrayBehaviourDto, String> {
+    record_activity_on_command_entry();
+    let preferences = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned");
+    Ok(TrayBehaviourDto {
+        action: "show-tray".to_string(),
+        tray_picture: selected_behaviour_choice(
+            &preferences,
+            crate::app_preferences::BehaviourChoiceName::TrayPicture,
+        ),
+    })
+}
+
+/// Play a notification sound using all currently saved sound-policy choices.
+pub fn cmd_osl_play_sound_with_behaviour(state: &AppState) -> Result<SoundBehaviourDto, String> {
+    record_activity_on_command_entry();
+    let preferences = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned");
+    Ok(SoundBehaviourDto {
+        action: "play-sound".to_string(),
+        sound: selected_behaviour_choice(
+            &preferences,
+            crate::app_preferences::BehaviourChoiceName::Sound,
+        ),
+        mute: selected_behaviour_choice(
+            &preferences,
+            crate::app_preferences::BehaviourChoiceName::Mute,
+        ),
+        quiet_hours: selected_behaviour_choice(
+            &preferences,
+            crate::app_preferences::BehaviourChoiceName::QuietHours,
+        ),
     })
 }
 
