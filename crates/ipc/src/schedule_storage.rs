@@ -209,7 +209,6 @@ impl ScheduleStore {
             .remove(account_id)
             .ok_or(ScheduleError::NotFound)
     }
-
     pub fn len(&self) -> usize {
         self.schedules.len()
     }
