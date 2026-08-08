@@ -23,6 +23,8 @@ pub struct NamedPlaceRecord {
     pub place_name: String,
     pub state: NamedPlaceState,
     pub source_task: String,
+    pub research_task: Option<String>,
+    pub build_task: Option<String>,
     pub proving_check: String,
     pub person_can_do: String,
 }

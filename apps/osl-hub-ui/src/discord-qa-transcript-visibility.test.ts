@@ -55,7 +55,7 @@ function renderEye(input: {
     "visibilityBusy",
     "discordQaTranscriptVisibilityOutcome",
     "eye",
-    `const openPlaceAllowed = true;\n${block}\nreturn { transcriptNotice, transcriptVisibilityControl };`,
+    `${block}\nreturn { transcriptNotice, transcriptVisibilityControl };`,
   ) as (
     transcriptVisible: boolean,
     verifiedPeer: unknown,
@@ -256,7 +256,7 @@ describe("Discord QA transcript visibility (the green eye)", () => {
   it("leaves the composer-less lock-visibility gate inert", () => {
     expect(source).toContain("let discordMarkerAvailable = true;");
     expect(headerControls).toContain(
-      "const composerControl = openPlaceAllowed && (discordMarkerAvailable || nativeDiscordProtectionActive)",
+      "const composerControl = discordMarkerAvailable || nativeDiscordProtectionActive",
     );
     // The eye must not read or drive that gate.
     expect(visibilityToggle).not.toContain("discordMarkerAvailable");

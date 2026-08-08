@@ -53,6 +53,21 @@ export async function stopAutoScrubNowAfterStopRequest(): Promise<AutoScrubFleet
   return parseAutoScrubFleetStatus(await invoke<unknown>("stop_autoscrub_now_after_stop_request"));
 }
 
+export async function pauseAutoScrubLiveUpdates(): Promise<void> {
+  autoScrubLiveUpdatesPaused = true;
+}
+
+export async function resumeAutoScrubLiveUpdates(): Promise<AutoScrubFleetStatus | null> {
+  autoScrubLiveUpdatesPaused = false;
+  return loadAutoScrubRunFleetStatus();
+}
+
+export function isAutoScrubLiveUpdatesPaused(): boolean {
+  return autoScrubLiveUpdatesPaused;
+}
+
+let autoScrubLiveUpdatesPaused = false;
+
 export async function requestAutoScrubRunAction(
   runId: string,
   action: AutoScrubRunActionKind,

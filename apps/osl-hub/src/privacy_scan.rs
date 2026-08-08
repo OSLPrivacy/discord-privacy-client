@@ -6,7 +6,6 @@
 //! those inputs encrypted and deterministically reproduce findings from disk.
 
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashSet};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use crate::attachment_scan::{
@@ -18,7 +17,6 @@ const MAX_MESSAGES: usize = 2_000;
 const MAX_TEXT_BYTES: usize = 8 * 1024;
 const MAX_LOCATOR_BYTES: usize = 256;
 const MAX_PREVIEW_CHARS: usize = 120;
-const MAX_SENDER_BYTES: usize = 256;
 const MAX_EMAIL_RECIPIENTS: usize = 64;
 const MAX_EMAIL_RECIPIENT_BYTES: usize = 256;
 const MAX_EMAIL_BURN_ID_BYTES: usize = 256;
@@ -33,11 +31,6 @@ pub const GMAIL_ORDINARY_ATTACHMENT_LIMIT_BYTES: u64 =
 pub const MAIL_DOT_COM_FREE_ORDINARY_ATTACHMENT_LIMIT_MB: u64 = 30;
 pub const MAIL_DOT_COM_PREMIUM_ORDINARY_ATTACHMENT_LIMIT_MB: u64 = 100;
 pub const EXCHANGE_ORDINARY_ATTACHMENT_LIMIT_MB: u64 = 150;
-const MAIL_ATTACHMENT_MIB: u64 = 1024 * 1024;
-const MAILCOM_FREE_ORDINARY_ATTACHMENT_LIMIT_MB: u32 = 30;
-const MAILCOM_PREMIUM_ORDINARY_ATTACHMENT_LIMIT_MB: u32 = 100;
-const EXCHANGE_DEFAULT_ORDINARY_ATTACHMENT_LIMIT_MB: u32 = 10;
-const BLOCKED_JUMP_REFERENCE: &str = "blocked-local-reference";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -61,136 +54,6 @@ pub struct LocalMessageCandidate {
     pub email_folder_identity: Option<String>,
     #[serde(default)]
     pub attachments: Vec<LocalAttachmentCandidate>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ServiceFoundMessageInput {
-    pub service_id: String,
-    pub sender: Option<String>,
-    pub signed_in_account_sender: Option<String>,
-    pub sent_at_unix_ms: i64,
-    pub place: String,
-    pub text: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FoundMessageRecord {
-    pub sender: String,
-    pub sent_at_unix_ms: i64,
-    pub place: String,
-    pub text: String,
-    pub sent_by_signed_in_account: bool,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct MessageOwnerCheckInput {
-    pub signed_in_account_sender: Option<String>,
-    pub message_sender: Option<String>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MessageOwnerCheckError {
-    UnknownSignedInAccountSender,
-    UnknownMessageSender,
-    InvalidSender,
-}
-
-impl std::fmt::Display for MessageOwnerCheckError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::UnknownSignedInAccountSender => {
-                f.write_str("signed-in account sender is unknown")
-            }
-            Self::UnknownMessageSender => f.write_str("message sender is unknown"),
-            Self::InvalidSender => f.write_str("message owner check sender is invalid"),
-        }
-    }
-}
-
-impl std::error::Error for MessageOwnerCheckError {}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum FoundMessageRecordError {
-    MissingSender,
-    MissingSignedInAccountSender,
-    InvalidField,
-}
-
-impl std::fmt::Display for FoundMessageRecordError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::MissingSender => f.write_str("found message sender is missing"),
-            Self::MissingSignedInAccountSender => {
-                f.write_str("signed-in account sender is missing")
-            }
-            Self::InvalidField => f.write_str("found message record field is invalid"),
-        }
-    }
-}
-
-impl std::error::Error for FoundMessageRecordError {}
-
-impl From<MessageOwnerCheckError> for FoundMessageRecordError {
-    fn from(value: MessageOwnerCheckError) -> Self {
-        match value {
-            MessageOwnerCheckError::UnknownMessageSender => Self::MissingSender,
-            MessageOwnerCheckError::UnknownSignedInAccountSender => {
-                Self::MissingSignedInAccountSender
-            }
-            MessageOwnerCheckError::InvalidSender => Self::InvalidField,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct OrdinaryAttachmentSetItem {
-    pub display_name: String,
-    pub size_bytes: u64,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum OrdinaryAttachmentLimitProfile {
-    MailcomFree,
-    MailcomPremium,
-    Exchange { company_limit_mb: Option<u32> },
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct OrdinaryAttachmentSetDecision {
-    pub accepted: bool,
-    pub provider_label: String,
-    pub limit_mb: u32,
-    pub total_mb: u64,
-    pub rejected_attachment_name: Option<String>,
-    pub refusal: Option<String>,
-}
-
-impl OrdinaryAttachmentLimitProfile {
-    fn provider_label(self) -> String {
-        match self {
-            Self::MailcomFree => "Mail.com Free".to_owned(),
-            Self::MailcomPremium => "Mail.com Premium".to_owned(),
-            Self::Exchange {
-                company_limit_mb: None,
-            } => "Exchange default".to_owned(),
-            Self::Exchange {
-                company_limit_mb: Some(limit_mb),
-            } => format!("Exchange company {limit_mb} MB"),
-        }
-    }
-
-    fn limit_mb(self) -> u32 {
-        match self {
-            Self::MailcomFree => MAILCOM_FREE_ORDINARY_ATTACHMENT_LIMIT_MB,
-            Self::MailcomPremium => MAILCOM_PREMIUM_ORDINARY_ATTACHMENT_LIMIT_MB,
-            Self::Exchange { company_limit_mb } => {
-                company_limit_mb.unwrap_or(EXCHANGE_DEFAULT_ORDINARY_ATTACHMENT_LIMIT_MB)
-            }
-        }
-    }
 }
 
 #[derive(Clone, Copy, Eq, Hash, PartialEq, Serialize)]
@@ -246,17 +109,6 @@ pub struct LocalPrivacyScanResult {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SavedReviewMatch {
-    pub full_text: String,
-    pub reason: &'static str,
-    pub service: String,
-    pub place: String,
-    pub date: String,
-    pub time: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct EmailProtectionCheckDisplay {
     pub message_locator: String,
     pub reply_recipients: Vec<String>,
@@ -270,13 +122,6 @@ pub struct EmailProtectionCheckDisplay {
 pub enum EmailBurnScope {
     Thread,
     Folder,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ReviewResultAccountGroup {
-    pub account_id: String,
-    pub matches: Vec<SavedReviewMatch>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -301,13 +146,6 @@ impl ProtectedEmailReplyAction {
             Self::ReplyAll => "replyAll",
         }
     }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ReviewResultStoreOutput {
-    pub groups: Vec<ReviewResultAccountGroup>,
-    pub total_matches: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -380,98 +218,6 @@ pub fn scan_local_messages(messages: Vec<LocalMessageCandidate>) -> LocalPrivacy
     scan_local_messages_with_analyzers(messages, AttachmentAnalyzers::default())
 }
 
-pub fn group_saved_matches_by_account(
-    messages: Vec<LocalMessageCandidate>,
-) -> ReviewResultStoreOutput {
-    let mut grouped = BTreeMap::<String, Vec<SavedReviewMatch>>::new();
-    for message in messages.into_iter().take(MAX_MESSAGES) {
-        if !valid_candidate(&message) {
-            continue;
-        }
-        let (date, time) = match message.created_at_unix_ms {
-            Some(unix_ms) => utc_date_time(unix_ms),
-            None => ("unknown".to_owned(), "unknown".to_owned()),
-        };
-        for (_, _, reason) in classify(&message.text) {
-            grouped
-                .entry(message.account_id.clone())
-                .or_default()
-                .push(SavedReviewMatch {
-                    full_text: message.text.clone(),
-                    reason,
-                    service: service_label(&message.service_id).to_owned(),
-                    place: message.conversation_id.clone(),
-                    date: date.clone(),
-                    time: time.clone(),
-                });
-        }
-    }
-
-    let total_matches = grouped.values().map(Vec::len).sum();
-    let groups = grouped
-        .into_iter()
-        .map(|(account_id, matches)| ReviewResultAccountGroup {
-            account_id,
-            matches,
-        })
-        .collect();
-    ReviewResultStoreOutput {
-        groups,
-        total_matches,
-    }
-}
-
-pub fn name_found_message_record(
-    input: ServiceFoundMessageInput,
-) -> Result<FoundMessageRecord, FoundMessageRecordError> {
-    if input.service_id.is_empty()
-        || input.service_id.len() > 32
-        || !input.service_id.bytes().all(valid_id_byte)
-        || input.place.is_empty()
-        || input.place.len() > 256
-        || input.text.is_empty()
-        || input.text.len() > MAX_TEXT_BYTES
-        || input.text.contains('\0')
-    {
-        return Err(FoundMessageRecordError::InvalidField);
-    }
-
-    let sent_by_signed_in_account = did_signed_in_account_send_message(MessageOwnerCheckInput {
-        signed_in_account_sender: input.signed_in_account_sender,
-        message_sender: input.sender.clone(),
-    })?;
-    let sender = normalized_sender(input.sender, MessageOwnerCheckError::UnknownMessageSender)?;
-
-    Ok(FoundMessageRecord {
-        sender,
-        sent_at_unix_ms: input.sent_at_unix_ms,
-        place: input.place,
-        text: input.text,
-        sent_by_signed_in_account,
-    })
-}
-
-pub fn name_found_message_records(
-    inputs: Vec<ServiceFoundMessageInput>,
-) -> Result<Vec<FoundMessageRecord>, FoundMessageRecordError> {
-    inputs.into_iter().map(name_found_message_record).collect()
-}
-
-pub fn did_signed_in_account_send_message(
-    input: MessageOwnerCheckInput,
-) -> Result<bool, MessageOwnerCheckError> {
-    let signed_in_account_sender = normalized_sender(
-        input.signed_in_account_sender,
-        MessageOwnerCheckError::UnknownSignedInAccountSender,
-    )?;
-    let message_sender = normalized_sender(
-        input.message_sender,
-        MessageOwnerCheckError::UnknownMessageSender,
-    )?;
-
-    Ok(message_sender == signed_in_account_sender)
-}
-
 /// Reject oversized attachment IPC inputs before they are cloned, decoded, or
 /// passed to the parser boundary. This validates only the transport envelope;
 /// byte-derived type detection and extraction remain in `attachment_scan`.
@@ -496,44 +242,6 @@ pub fn validate_attachment_input_batch(messages: &[LocalMessageCandidate]) -> Re
         }
     }
     Ok(())
-}
-
-pub fn check_ordinary_attachment_set_limit(
-    profile: OrdinaryAttachmentLimitProfile,
-    attachments: &[OrdinaryAttachmentSetItem],
-) -> OrdinaryAttachmentSetDecision {
-    let provider_label = profile.provider_label();
-    let limit_mb = profile.limit_mb();
-    let limit_bytes = u64::from(limit_mb) * MAIL_ATTACHMENT_MIB;
-    let mut total_bytes = 0u64;
-
-    for attachment in attachments {
-        total_bytes = total_bytes.saturating_add(attachment.size_bytes);
-        if total_bytes > limit_bytes {
-            let total_mb = total_bytes.div_ceil(MAIL_ATTACHMENT_MIB);
-            let refusal = format!(
-                "{provider_label} refuses ordinary attachments over {limit_mb} MB: {} makes the ordinary attachment set {total_mb} MB",
-                attachment.display_name
-            );
-            return OrdinaryAttachmentSetDecision {
-                accepted: false,
-                provider_label,
-                limit_mb,
-                total_mb,
-                rejected_attachment_name: Some(attachment.display_name.clone()),
-                refusal: Some(refusal),
-            };
-        }
-    }
-
-    OrdinaryAttachmentSetDecision {
-        accepted: true,
-        provider_label,
-        limit_mb,
-        total_mb: total_bytes.div_ceil(MAIL_ATTACHMENT_MIB),
-        rejected_attachment_name: None,
-        refusal: None,
-    }
 }
 
 /// Scan with explicitly supplied local media capabilities. The desktop build
@@ -577,13 +285,13 @@ pub fn scan_local_messages_with_analyzers(
                 service_id: message.service_id.clone(),
                 account_id: message.account_id.clone(),
                 conversation_id: message.conversation_id.clone(),
-                message_locator: result_message_locator(&message.message_locator),
+                message_locator: message.message_locator.clone(),
                 authored_by_self: message.authored_by_self,
                 created_at_unix_ms: message.created_at_unix_ms,
                 category,
                 confidence,
                 reason,
-                local_preview: result_preview(&message.text),
+                local_preview: preview(&message.text),
                 can_request_delete: message.authored_by_self,
                 attachment_path: None,
             });
@@ -608,15 +316,15 @@ pub fn scan_local_messages_with_analyzers(
                     service_id: message.service_id.clone(),
                     account_id: message.account_id.clone(),
                     conversation_id: message.conversation_id.clone(),
-                    message_locator: result_message_locator(&message.message_locator),
+                    message_locator: message.message_locator.clone(),
                     authored_by_self: message.authored_by_self,
                     created_at_unix_ms: message.created_at_unix_ms,
                     category,
                     confidence,
                     reason,
-                    local_preview: result_preview(&fragment.text),
+                    local_preview: preview(&fragment.text),
                     can_request_delete: message.authored_by_self,
-                    attachment_path: Some(result_attachment_path(&fragment.path)),
+                    attachment_path: Some(fragment.path.clone()),
                 });
             }
         }
@@ -633,7 +341,7 @@ pub fn scan_local_messages_with_analyzers(
                 service_id: message.service_id.clone(),
                 account_id: message.account_id.clone(),
                 conversation_id: message.conversation_id.clone(),
-                message_locator: result_message_locator(&message.message_locator),
+                message_locator: message.message_locator.clone(),
                 authored_by_self: message.authored_by_self,
                 created_at_unix_ms: message.created_at_unix_ms,
                 category,
@@ -641,7 +349,7 @@ pub fn scan_local_messages_with_analyzers(
                 reason: signal.reason,
                 local_preview: "Local media classification signal".into(),
                 can_request_delete: message.authored_by_self,
-                attachment_path: Some(result_attachment_path(&signal.path)),
+                attachment_path: Some(signal.path),
             });
         }
     }
@@ -913,20 +621,6 @@ fn valid_candidate(message: &LocalMessageCandidate) -> bool {
         && message.attachments.iter().all(valid_attachment_input)
 }
 
-fn normalized_sender(
-    value: Option<String>,
-    unknown_error: MessageOwnerCheckError,
-) -> Result<String, MessageOwnerCheckError> {
-    let sender = value
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
-        .ok_or(unknown_error)?;
-    if sender.len() > MAX_SENDER_BYTES || sender.chars().any(char::is_control) {
-        return Err(MessageOwnerCheckError::InvalidSender);
-    }
-    Ok(sender)
-}
-
 fn valid_email_burn_identity(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= MAX_EMAIL_BURN_ID_BYTES
@@ -990,45 +684,6 @@ fn unsafe_attachment_metadata_char(value: char) -> bool {
 
 fn valid_id_byte(byte: u8) -> bool {
     byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
-}
-
-fn service_label(service_id: &str) -> &str {
-    match service_id {
-        "discord" => "Discord",
-        "telegram" => "Telegram",
-        "whatsapp" => "WhatsApp",
-        "email" => "Email",
-        "signal" => "Signal",
-        other => other,
-    }
-}
-
-fn utc_date_time(unix_ms: i64) -> (String, String) {
-    let seconds = unix_ms.div_euclid(1_000);
-    let days = seconds.div_euclid(86_400);
-    let second_of_day = seconds.rem_euclid(86_400);
-    let (year, month, day) = civil_from_days(days);
-    let hour = second_of_day / 3_600;
-    let minute = (second_of_day % 3_600) / 60;
-    (
-        format!("{year:04}-{month:02}-{day:02}"),
-        format!("{hour:02}:{minute:02}"),
-    )
-}
-
-fn civil_from_days(days_since_unix_epoch: i64) -> (i64, u32, u32) {
-    let z = days_since_unix_epoch + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let day_of_era = z - era * 146_097;
-    let year_of_era =
-        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let mut year = year_of_era + era * 400;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let month_prime = (5 * day_of_year + 2) / 153;
-    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
-    let month = month_prime + if month_prime < 10 { 3 } else { -9 };
-    year += if month <= 2 { 1 } else { 0 };
-    (year, month as u32, day as u32)
 }
 
 fn classify(text: &str) -> Vec<(PrivacyRiskCategory, u8, &'static str)> {
@@ -1295,70 +950,6 @@ fn preview(text: &str) -> String {
     output
 }
 
-fn result_message_locator(locator: &str) -> String {
-    if contains_jump_reference(locator) {
-        BLOCKED_JUMP_REFERENCE.to_owned()
-    } else {
-        locator.to_owned()
-    }
-}
-
-fn result_attachment_path(path: &str) -> String {
-    if contains_jump_reference(path) {
-        BLOCKED_JUMP_REFERENCE.to_owned()
-    } else {
-        path.to_owned()
-    }
-}
-
-fn result_preview(text: &str) -> String {
-    preview(&redact_jump_reference_tokens(text))
-}
-
-fn redact_jump_reference_tokens(text: &str) -> String {
-    let mut output = String::with_capacity(text.len().min(MAX_PREVIEW_CHARS));
-    for (index, token) in text.split_whitespace().enumerate() {
-        if index > 0 {
-            output.push(' ');
-        }
-        if contains_jump_reference(token) {
-            output.push_str("[blocked-reference]");
-        } else {
-            output.push_str(token);
-        }
-    }
-    output
-}
-
-fn contains_jump_reference(value: &str) -> bool {
-    let lower = value.to_ascii_lowercase();
-    contains_url_or_deep_link(&lower) || contains_open_action_reference(&lower)
-}
-
-fn contains_url_or_deep_link(lower: &str) -> bool {
-    lower.contains("://")
-        || lower.starts_with("mailto:")
-        || lower.starts_with("tel:")
-        || lower.starts_with("www.")
-        || lower.contains(".com/")
-        || lower.contains(".net/")
-        || lower.contains(".org/")
-        || lower.contains("deep-link")
-        || lower.contains("deeplink")
-}
-
-fn contains_open_action_reference(lower: &str) -> bool {
-    lower.contains("open_service")
-        || lower.contains("open-service")
-        || lower.contains("openservice")
-        || lower.contains("open_action")
-        || lower.contains("open-action")
-        || lower.contains("openaction")
-        || lower.contains("open action")
-        || lower.contains("openserviceroute")
-        || lower.contains("open_service_host")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1382,25 +973,6 @@ mod tests {
         }
     }
 
-    fn fixture_message(
-        service_id: &str,
-        account_id: &str,
-        conversation_id: &str,
-        created_at_unix_ms: i64,
-        text: &str,
-    ) -> LocalMessageCandidate {
-        LocalMessageCandidate {
-            service_id: service_id.to_owned(),
-            account_id: account_id.to_owned(),
-            conversation_id: conversation_id.to_owned(),
-            message_locator: format!("{conversation_id}:message"),
-            authored_by_self: true,
-            created_at_unix_ms: Some(created_at_unix_ms),
-            text: text.to_owned(),
-            attachments: Vec::new(),
-        }
-    }
-
     #[test]
     fn flags_high_confidence_local_risks_without_persisting() {
         let result = scan_local_messages(vec![
@@ -1412,230 +984,6 @@ mod tests {
         assert_eq!(result.findings.len(), 3);
         assert_eq!(result.analysis_location, "this_device_only");
         assert!(!result.persisted);
-    }
-
-    #[test]
-    fn task_1444_direct_results_output_groups_two_fixture_matches_with_all_location_fields() {
-        let output = group_saved_matches_by_account(vec![
-            fixture_message(
-                "discord",
-                "discord-account-alpha-1444",
-                "dm:task-1444-alpha",
-                1_786_008_600_000,
-                "password: correct horse battery staple",
-            ),
-            fixture_message(
-                "telegram",
-                "telegram-account-beta-1444",
-                "chat:task-1444-beta",
-                1_786_013_100_000,
-                "recovery phrase: maple bridge cloud midnight",
-            ),
-            fixture_message(
-                "discord",
-                "discord-account-alpha-1444",
-                "dm:task-1444-alpha",
-                1_786_008_600_000,
-                "Want to get coffee tomorrow?",
-            ),
-        ]);
-        println!(
-            "TASK1444_DIRECT_RESULT command=group_saved_matches_by_account group_count={} total_matches={}",
-            output.groups.len(),
-            output.total_matches
-        );
-        for group in &output.groups {
-            println!(
-                "TASK1444_GROUP account_id={} match_count={}",
-                group.account_id,
-                group.matches.len()
-            );
-            for item in &group.matches {
-                println!(
-                    "TASK1444_MATCH account_id={} full_text=\"{}\" reason=\"{}\" service=\"{}\" place=\"{}\" date={} time={}",
-                    group.account_id,
-                    item.full_text,
-                    item.reason,
-                    item.service,
-                    item.place,
-                    item.date,
-                    item.time
-                );
-            }
-        }
-
-        assert_eq!(output.groups.len(), 2);
-        assert_eq!(output.total_matches, 2);
-        assert_eq!(output.groups[0].account_id, "discord-account-alpha-1444");
-        assert_eq!(output.groups[0].matches.len(), 1);
-        assert_eq!(
-            output.groups[0].matches[0],
-            SavedReviewMatch {
-                full_text: "password: correct horse battery staple".to_owned(),
-                reason: "This looks like a password, API key, or access credential.",
-                service: "Discord".to_owned(),
-                place: "dm:task-1444-alpha".to_owned(),
-                date: "2026-08-06".to_owned(),
-                time: "09:30".to_owned(),
-            }
-        );
-        assert_eq!(output.groups[1].account_id, "telegram-account-beta-1444");
-        assert_eq!(output.groups[1].matches.len(), 1);
-        assert_eq!(
-            output.groups[1].matches[0],
-            SavedReviewMatch {
-                full_text: "recovery phrase: maple bridge cloud midnight".to_owned(),
-                reason: "This may expose account or wallet recovery material.",
-                service: "Telegram".to_owned(),
-                place: "chat:task-1444-beta".to_owned(),
-                date: "2026-08-06".to_owned(),
-                time: "10:45".to_owned(),
-            }
-        );
-    }
-
-    #[test]
-    fn task_3000_direct_command_names_found_message_record_shape_and_refuses_missing_sender() {
-        let samples = vec![
-            ServiceFoundMessageInput {
-                service_id: "discord".to_owned(),
-                sender: Some("Ari Discord".to_owned()),
-                signed_in_account_sender: Some("Tessa Telegram".to_owned()),
-                sent_at_unix_ms: 1_786_008_600_000,
-                place: "discord:dm:task-3000-alpha:message-1".to_owned(),
-                text: "Discord sample found message 3000".to_owned(),
-            },
-            ServiceFoundMessageInput {
-                service_id: "telegram".to_owned(),
-                sender: Some("Tessa Telegram".to_owned()),
-                signed_in_account_sender: Some("Tessa Telegram".to_owned()),
-                sent_at_unix_ms: 1_786_012_200_000,
-                place: "telegram:chat:task-3000-beta:message-2".to_owned(),
-                text: "Telegram sample found message 3000".to_owned(),
-            },
-            ServiceFoundMessageInput {
-                service_id: "signal".to_owned(),
-                sender: Some("Sam Signal".to_owned()),
-                signed_in_account_sender: Some("Tessa Telegram".to_owned()),
-                sent_at_unix_ms: 1_786_015_800_000,
-                place: "signal:thread:task-3000-gamma:message-3".to_owned(),
-                text: "Signal sample found message 3000".to_owned(),
-            },
-        ];
-        let services: Vec<String> = samples
-            .iter()
-            .map(|sample| sample.service_id.clone())
-            .collect();
-        let records =
-            name_found_message_records(samples.clone()).expect("sample records are valid");
-        println!(
-            "TASK3000_DIRECT_RESULT command=name_found_message_records service_count={} record_count={}",
-            services.len(),
-            records.len()
-        );
-        for (service, record) in services.iter().zip(&records) {
-            let all_five_fields_set = !record.sender.is_empty()
-                && record.sent_at_unix_ms > 0
-                && !record.place.is_empty()
-                && !record.text.is_empty();
-            println!(
-                "TASK3000_RECORD service={} sender=\"{}\" sent_at_unix_ms={} place=\"{}\" text=\"{}\" sent_by_signed_in_account={} all_five_fields_set={}",
-                service,
-                record.sender,
-                record.sent_at_unix_ms,
-                record.place,
-                record.text,
-                record.sent_by_signed_in_account,
-                all_five_fields_set
-            );
-        }
-
-        assert_eq!(records.len(), 3);
-        assert_eq!(
-            records,
-            vec![
-                FoundMessageRecord {
-                    sender: "Ari Discord".to_owned(),
-                    sent_at_unix_ms: 1_786_008_600_000,
-                    place: "discord:dm:task-3000-alpha:message-1".to_owned(),
-                    text: "Discord sample found message 3000".to_owned(),
-                    sent_by_signed_in_account: false,
-                },
-                FoundMessageRecord {
-                    sender: "Tessa Telegram".to_owned(),
-                    sent_at_unix_ms: 1_786_012_200_000,
-                    place: "telegram:chat:task-3000-beta:message-2".to_owned(),
-                    text: "Telegram sample found message 3000".to_owned(),
-                    sent_by_signed_in_account: true,
-                },
-                FoundMessageRecord {
-                    sender: "Sam Signal".to_owned(),
-                    sent_at_unix_ms: 1_786_015_800_000,
-                    place: "signal:thread:task-3000-gamma:message-3".to_owned(),
-                    text: "Signal sample found message 3000".to_owned(),
-                    sent_by_signed_in_account: false,
-                },
-            ]
-        );
-
-        let refused = name_found_message_record(ServiceFoundMessageInput {
-            service_id: "discord".to_owned(),
-            sender: None,
-            signed_in_account_sender: Some("Ari Discord".to_owned()),
-            sent_at_unix_ms: 1_786_008_600_000,
-            place: "discord:dm:task-3000-alpha:message-missing-sender".to_owned(),
-            text: "Missing sender must be refused".to_owned(),
-        })
-        .expect_err("missing sender must be refused");
-        println!(
-            "TASK3000_REFUSAL command=name_found_message_record missing_sender_refused={} error=\"{}\"",
-            refused == FoundMessageRecordError::MissingSender,
-            refused
-        );
-        assert_eq!(refused, FoundMessageRecordError::MissingSender);
-    }
-
-    #[test]
-    fn task_3001_direct_command_answers_owner_check_and_refuses_unknown_sender() {
-        let signed_in = "task-3001-signed-in-account";
-        let yes = did_signed_in_account_send_message(MessageOwnerCheckInput {
-            signed_in_account_sender: Some(signed_in.to_owned()),
-            message_sender: Some(signed_in.to_owned()),
-        })
-        .expect("known matching sender checks");
-        println!(
-            "TASK3001_OWNER_CHECK command=did_signed_in_account_send_message message=sent-by-account signed_in_sender=\"{}\" message_sender=\"{}\" result={}",
-            signed_in,
-            signed_in,
-            if yes { "yes" } else { "no" }
-        );
-
-        let other_sender = "task-3001-other-account";
-        let no = did_signed_in_account_send_message(MessageOwnerCheckInput {
-            signed_in_account_sender: Some(signed_in.to_owned()),
-            message_sender: Some(other_sender.to_owned()),
-        })
-        .expect("known non-matching sender checks");
-        println!(
-            "TASK3001_OWNER_CHECK command=did_signed_in_account_send_message message=sent-by-someone-else signed_in_sender=\"{}\" message_sender=\"{}\" result={}",
-            signed_in,
-            other_sender,
-            if no { "yes" } else { "no" }
-        );
-
-        let refused = did_signed_in_account_send_message(MessageOwnerCheckInput {
-            signed_in_account_sender: Some(signed_in.to_owned()),
-            message_sender: None,
-        })
-        .expect_err("unknown sender must be refused");
-        println!(
-            "TASK3001_OWNER_CHECK_REFUSAL command=did_signed_in_account_send_message message=unknown-sender result=ERR error=\"{}\"",
-            refused
-        );
-
-        assert!(yes);
-        assert!(!no);
-        assert_eq!(refused, MessageOwnerCheckError::UnknownMessageSender);
     }
 
     #[test]
@@ -1663,27 +1011,6 @@ mod tests {
         let result = scan_local_messages(vec![candidate]);
         assert_eq!(result.findings.len(), 1);
         assert!(!result.findings[0].can_request_delete);
-    }
-
-    #[test]
-    fn result_json_blocks_original_message_jump_links() {
-        let mut candidate = message(
-            "password: example https://discord.com/channels/@me/123/456?openAction=open_service_host",
-        );
-        candidate.message_locator =
-            "https://discord.com/channels/@me/123/456?deepLink=osl://open&openAction=open_service_host"
-                .to_owned();
-
-        let result = scan_local_messages(vec![candidate]);
-        let json = serde_json::to_string(&result).expect("serialize privacy scan result");
-
-        assert_eq!(result.findings.len(), 1);
-        assert_eq!(result.findings[0].message_locator, BLOCKED_JUMP_REFERENCE);
-        assert!(!json.contains("https://"));
-        assert!(!json.contains("discord.com/channels"));
-        assert!(!json.contains("deepLink"));
-        assert!(!json.contains("openAction"));
-        assert!(!json.contains("open_service_host"));
     }
 
     #[test]
@@ -1736,113 +1063,6 @@ mod tests {
         assert_eq!(
             result.findings[0].attachment_path.as_deref(),
             Some("photo.jpg")
-        );
-    }
-
-    fn mib(value: u64) -> u64 {
-        value * MAIL_ATTACHMENT_MIB
-    }
-
-    fn ordinary_set(prefix: &str, first_mb: u64, second_mb: u64) -> Vec<OrdinaryAttachmentSetItem> {
-        vec![
-            OrdinaryAttachmentSetItem {
-                display_name: format!("{prefix}-a.bin"),
-                size_bytes: mib(first_mb),
-            },
-            OrdinaryAttachmentSetItem {
-                display_name: format!("{prefix}-b.bin"),
-                size_bytes: mib(second_mb),
-            },
-        ]
-    }
-
-    fn set_limit_verdict(
-        label: &str,
-        profile: OrdinaryAttachmentLimitProfile,
-        accepted_mb: u64,
-        refused_mb: u64,
-    ) -> String {
-        let accepted = check_ordinary_attachment_set_limit(
-            profile,
-            &ordinary_set(
-                &format!("task3761-{label}-under"),
-                accepted_mb / 2,
-                accepted_mb - (accepted_mb / 2),
-            ),
-        );
-        let refused = check_ordinary_attachment_set_limit(
-            profile,
-            &ordinary_set(
-                &format!("task3761-{label}-over"),
-                refused_mb / 2,
-                refused_mb - (refused_mb / 2),
-            ),
-        );
-        let accepted_status = if accepted.accepted {
-            "accepted"
-        } else {
-            "refused"
-        };
-        let refused_status = if refused.accepted {
-            "accepted"
-        } else {
-            "refused"
-        };
-        format!(
-            "TASK3761 {label} accepted_set_status={accepted_status} accepted_set_mb={} refused_set_status={refused_status} refused_set_mb={} refused_by_name={} limit_mb={} refusal=\"{}\"",
-            accepted.total_mb,
-            refused.total_mb,
-            refused.rejected_attachment_name.as_deref().unwrap_or(""),
-            refused.limit_mb,
-            refused.refusal.as_deref().unwrap_or("")
-        )
-    }
-
-    #[test]
-    fn task3761_mailcom_and_exchange_attachment_limits_refuse_sets_by_name() {
-        let lines = vec![
-            set_limit_verdict(
-                "mailcom_free",
-                OrdinaryAttachmentLimitProfile::MailcomFree,
-                29,
-                31,
-            ),
-            set_limit_verdict(
-                "mailcom_premium",
-                OrdinaryAttachmentLimitProfile::MailcomPremium,
-                99,
-                101,
-            ),
-            set_limit_verdict(
-                "exchange_default",
-                OrdinaryAttachmentLimitProfile::Exchange {
-                    company_limit_mb: None,
-                },
-                9,
-                11,
-            ),
-            set_limit_verdict(
-                "exchange_company_50",
-                OrdinaryAttachmentLimitProfile::Exchange {
-                    company_limit_mb: Some(50),
-                },
-                49,
-                51,
-            ),
-        ];
-
-        for line in &lines {
-            println!("{line}");
-        }
-
-        assert_eq!(
-            lines,
-            vec![
-                "TASK3761 mailcom_free accepted_set_status=accepted accepted_set_mb=29 refused_set_status=refused refused_set_mb=31 refused_by_name=task3761-mailcom_free-over-b.bin limit_mb=30 refusal=\"Mail.com Free refuses ordinary attachments over 30 MB: task3761-mailcom_free-over-b.bin makes the ordinary attachment set 31 MB\"",
-                "TASK3761 mailcom_premium accepted_set_status=accepted accepted_set_mb=99 refused_set_status=refused refused_set_mb=101 refused_by_name=task3761-mailcom_premium-over-b.bin limit_mb=100 refusal=\"Mail.com Premium refuses ordinary attachments over 100 MB: task3761-mailcom_premium-over-b.bin makes the ordinary attachment set 101 MB\"",
-                "TASK3761 exchange_default accepted_set_status=accepted accepted_set_mb=9 refused_set_status=refused refused_set_mb=11 refused_by_name=task3761-exchange_default-over-b.bin limit_mb=10 refusal=\"Exchange default refuses ordinary attachments over 10 MB: task3761-exchange_default-over-b.bin makes the ordinary attachment set 11 MB\"",
-                "TASK3761 exchange_company_50 accepted_set_status=accepted accepted_set_mb=49 refused_set_status=refused refused_set_mb=51 refused_by_name=task3761-exchange_company_50-over-b.bin limit_mb=50 refusal=\"Exchange company 50 MB refuses ordinary attachments over 50 MB: task3761-exchange_company_50-over-b.bin makes the ordinary attachment set 51 MB\"",
-            ]
         );
     }
 
@@ -2337,5 +1557,61 @@ mod tests {
             ]
         );
         assert!(target_lists_separate);
+    }
+}
+
+pub fn did_signed_in_account_send_message(
+    input: MessageOwnerCheckInput,
+) -> Result<bool, MessageOwnerCheckError> {
+    let signed_in_account_sender = normalized_sender(
+        input.signed_in_account_sender,
+        MessageOwnerCheckError::UnknownSignedInAccountSender,
+    )?;
+    let message_sender = normalized_sender(
+        input.message_sender,
+        MessageOwnerCheckError::UnknownMessageSender,
+    )?;
+
+    Ok(message_sender == signed_in_account_sender)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MessageOwnerCheckError {
+    UnknownSignedInAccountSender,
+    UnknownMessageSender,
+    InvalidSender,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MessageOwnerCheckInput {
+    pub signed_in_account_sender: Option<String>,
+    pub message_sender: Option<String>,
+}
+
+const MAX_SENDER_BYTES: usize = 320;
+
+fn normalized_sender(
+    value: Option<String>,
+    unknown_error: MessageOwnerCheckError,
+) -> Result<String, MessageOwnerCheckError> {
+    let sender = value
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .ok_or(unknown_error)?;
+    if sender.len() > MAX_SENDER_BYTES || sender.chars().any(char::is_control) {
+        return Err(MessageOwnerCheckError::InvalidSender);
+    }
+    Ok(sender)
+}
+
+impl std::fmt::Display for MessageOwnerCheckError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let text = match self {
+            Self::UnknownSignedInAccountSender => "the signed-in account sender is unknown",
+            Self::UnknownMessageSender => "the message sender is unknown",
+            Self::InvalidSender => "the sender is not a usable address",
+        };
+        f.write_str(text)
     }
 }

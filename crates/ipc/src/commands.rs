@@ -16667,9 +16667,8 @@ pub fn cmd_osl_mark_scope_burned(
         }
         g.version = 1;
     }
-    if persist_burned_scopes_now(state).is_ok() {
-        record_burn_ledger_enrollment(state);
-    }
+    persist_burned_scopes_now(state);
+    record_burn_ledger_enrollment(state);
     Ok(())
 }
 
@@ -16757,32 +16756,26 @@ pub fn cmd_osl_unburn_scope(
     scope_id: String,
 ) -> Result<bool, String> {
     record_activity_on_command_entry();
-    let mut g = state
-        .burned_scopes
-        .lock()
-        .expect("burned_scopes mutex poisoned");
-    let before = g.scopes.len();
-    let mut next = g.clone();
-    next.scopes
-        .retain(|e| !(e.scope_kind == scope_kind && e.scope_id == scope_id));
-    if next.scopes.len() == before {
-        return Ok(false);
-    }
-    let dir = match keystore::osl_config_dir() {
-        Ok(d) => d,
-        Err(e) => {
-            record_persist_error(state, "burned_scopes dir resolve", &e);
-            return Err(format!("burned_scopes dir resolve: {e}"));
+    let removed = {
+        let mut g = state
+            .burned_scopes
+            .lock()
+            .expect("burned_scopes mutex poisoned");
+        let before = g.scopes.len();
+        g.scopes
+            .retain(|e| !(e.scope_kind == scope_kind && e.scope_id == scope_id));
+        let after = g.scopes.len();
+        if after < before {
+            g.version = 1;
+            true
+        } else {
+            false
         }
     };
-    let path = dir.join("burned_scopes.json");
-    next.version = 1;
-    if let Err(e) = crate::burned_scopes_file::write_burned_scopes(&path, &next) {
-        record_persist_error(state, "burned_scopes.json", &e);
-        return Err(format!("burned_scopes.json: {e}"));
+    if removed {
+        persist_burned_scopes_now(state);
     }
-    *g = next;
-    Ok(true)
+    Ok(removed)
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -17980,6 +17973,137 @@ pub fn cmd_osl_set_thread_permissions(
         .map_err(|error| error.to_string())
 }
 
+pub fn cmd_osl_set_channel_role_permission_overrides(
+    state: &AppState,
+    server_id: String,
+    channel_id: String,
+    cells: Vec<crate::server_membership::RolePermissionOverrideCell>,
+) -> Result<crate::server_membership::RolePermissionOverrideTable, String> {
+    record_activity_on_command_entry();
+    let mut threads = state
+        .server_thread_permissions
+        .lock()
+        .expect("server_thread_permissions mutex poisoned");
+    threads
+        .set_channel_role_permission_overrides(server_id, channel_id, cells)
+        .map_err(|error| error.to_string())
+}
+
+pub fn cmd_osl_read_channel_role_permission_overrides(
+    state: &AppState,
+    server_id: String,
+    channel_id: String,
+) -> Result<crate::server_membership::RolePermissionOverrideTable, String> {
+    record_activity_on_command_entry();
+    let threads = state
+        .server_thread_permissions
+        .lock()
+        .expect("server_thread_permissions mutex poisoned");
+    threads
+        .read_channel_role_permission_overrides(server_id, channel_id)
+        .map_err(|error| error.to_string())
+}
+
+pub fn cmd_osl_set_thread_role_permission_overrides(
+    state: &AppState,
+    server_id: String,
+    channel_id: String,
+    thread_id: String,
+    cells: Vec<crate::server_membership::RolePermissionOverrideCell>,
+) -> Result<crate::server_membership::RolePermissionOverrideTable, String> {
+    record_activity_on_command_entry();
+    let mut threads = state
+        .server_thread_permissions
+        .lock()
+        .expect("server_thread_permissions mutex poisoned");
+    threads
+        .set_thread_role_permission_overrides(server_id, channel_id, thread_id, cells)
+        .map_err(|error| error.to_string())
+}
+
+pub fn cmd_osl_read_thread_role_permission_overrides(
+    state: &AppState,
+    server_id: String,
+    channel_id: String,
+    thread_id: String,
+) -> Result<crate::server_membership::RolePermissionOverrideTable, String> {
+    record_activity_on_command_entry();
+    let threads = state
+        .server_thread_permissions
+        .lock()
+        .expect("server_thread_permissions mutex poisoned");
+    threads
+        .read_thread_role_permission_overrides(server_id, channel_id, thread_id)
+        .map_err(|error| error.to_string())
+}
+
+pub fn cmd_osl_set_channel_reaction_policy(
+    state: &AppState,
+    server_id: String,
+    channel_id: String,
+    mode: crate::server_membership::ChannelReactionPolicyMode,
+    allowed_emoji: Vec<String>,
+) -> Result<crate::server_membership::ChannelReactionPolicy, String> {
+    record_activity_on_command_entry();
+    let mut threads = state
+        .server_thread_permissions
+        .lock()
+        .expect("server_thread_permissions mutex poisoned");
+    threads
+        .set_channel_reaction_policy(server_id, channel_id, mode, allowed_emoji)
+        .map_err(|error| error.to_string())
+}
+
+pub fn cmd_osl_read_channel_reaction_policy(
+    state: &AppState,
+    server_id: String,
+    channel_id: String,
+) -> Result<crate::server_membership::ChannelReactionPolicy, String> {
+    record_activity_on_command_entry();
+    let threads = state
+        .server_thread_permissions
+        .lock()
+        .expect("server_thread_permissions mutex poisoned");
+    threads
+        .read_channel_reaction_policy(server_id, channel_id)
+        .map_err(|error| error.to_string())
+}
+
+pub fn cmd_osl_add_channel_reaction(
+    state: &AppState,
+    server_id: String,
+    channel_id: String,
+    message_id: String,
+    actor_name: String,
+    emoji: String,
+) -> Result<crate::server_membership::ChannelReactionResult, String> {
+    record_activity_on_command_entry();
+    let mut threads = state
+        .server_thread_permissions
+        .lock()
+        .expect("server_thread_permissions mutex poisoned");
+    threads
+        .add_channel_reaction(server_id, channel_id, message_id, actor_name, emoji)
+        .map_err(|error| error.to_string())
+}
+
+pub fn cmd_osl_count_channel_reactions(
+    state: &AppState,
+    server_id: String,
+    channel_id: String,
+    message_id: String,
+) -> Result<usize, String> {
+    record_activity_on_command_entry();
+    let threads = state
+        .server_thread_permissions
+        .lock()
+        .expect("server_thread_permissions mutex poisoned");
+    threads
+        .read_channel_reaction_policy(server_id.clone(), channel_id.clone())
+        .map_err(|error| error.to_string())?;
+    Ok(threads.channel_reaction_count(&server_id, &channel_id, &message_id))
+}
+
 pub fn cmd_osl_save_allowed_place(
     state: &AppState,
     record: crate::allowed_places::AllowedPlaceRecord,
@@ -18427,6 +18551,70 @@ pub fn cmd_osl_save_bad_message_rule(
             .expect("app_preferences mutex poisoned");
         prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
         prefs.bad_message_rules.insert(rule_name, rule.clone());
+    }
+    persist_app_preferences_now(state, config_dir);
+    Ok(BadMessageRuleDto {
+        rule_name: rule.rule_name,
+        private_word: rule.private_word,
+    })
+}
+
+/// TASK 1459: AutoScrub's bad-message rule listing. Reuses the same
+/// [`BadMessageRuleDto`] shape and the same
+/// [`crate::bad_message_rules::BadMessageRule`] rule types as normal Scrub's
+/// `cmd_osl_list_bad_message_rules`, but reads AutoScrub's own switch
+/// (`autoscrub_bad_message_rules`), independent of the normal Scrub run.
+pub fn cmd_osl_list_autoscrub_bad_message_rules(
+    state: &AppState,
+) -> Result<Vec<BadMessageRuleDto>, String> {
+    record_activity_on_command_entry();
+    let mut rules: Vec<_> = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .autoscrub_bad_message_rules
+        .values()
+        .map(|rule| BadMessageRuleDto {
+            rule_name: rule.rule_name.clone(),
+            private_word: rule.private_word.clone(),
+        })
+        .collect();
+    rules.sort_by(|a, b| a.rule_name.cmp(&b.rule_name));
+    Ok(rules)
+}
+
+/// TASK 1459: AutoScrub's bad-message rule save. Reuses the same rule-name
+/// and private-word parsing as normal Scrub's `cmd_osl_save_bad_message_rule`
+/// (`crate::bad_message_rules::parse_bad_message_rule_name` /
+/// `parse_private_word`), so a private word is editable under the same
+/// validation on both surfaces. The result is written to AutoScrub's own
+/// `autoscrub_bad_message_rules` map — a switch independent of normal
+/// Scrub's `bad_message_rules` map, so this save never mutates the normal
+/// Scrub run.
+pub fn cmd_osl_save_autoscrub_bad_message_rule(
+    state: &AppState,
+    rule_name: String,
+    private_word: String,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<BadMessageRuleDto, String> {
+    record_activity_on_command_entry();
+    let rule_name = crate::bad_message_rules::parse_bad_message_rule_name(&rule_name)?
+        .name()
+        .to_string();
+    let private_word = crate::bad_message_rules::parse_private_word(&private_word)?;
+    let rule = crate::bad_message_rules::BadMessageRule {
+        rule_name: rule_name.clone(),
+        private_word: private_word.clone(),
+    };
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs
+            .autoscrub_bad_message_rules
+            .insert(rule_name, rule.clone());
     }
     persist_app_preferences_now(state, config_dir);
     Ok(BadMessageRuleDto {
@@ -20616,12 +20804,12 @@ pub fn cmd_osl_list_burned_scopes(state: &AppState) -> Result<Vec<BurnedScopeDto
         .collect())
 }
 
-fn persist_burned_scopes_now(state: &AppState) -> Result<(), String> {
+fn persist_burned_scopes_now(state: &AppState) {
     let dir = match keystore::osl_config_dir() {
         Ok(d) => d,
         Err(e) => {
-            record_persist_error(state, "burned_scopes dir resolve", &e);
-            return Err(format!("burned_scopes dir resolve: {e}"));
+            record_persist_error(state, "burned_scopes dir resolve", e);
+            return;
         }
     };
     let path = dir.join("burned_scopes.json");
@@ -20631,10 +20819,8 @@ fn persist_burned_scopes_now(state: &AppState) -> Result<(), String> {
         .expect("burned_scopes mutex poisoned");
     if let Err(e) = crate::burned_scopes_file::write_burned_scopes(&path, &g) {
         drop(g);
-        record_persist_error(state, "burned_scopes.json", &e);
-        return Err(format!("burned_scopes.json: {e}"));
+        record_persist_error(state, "burned_scopes.json", e);
     }
-    Ok(())
 }
 
 /// 7d-B3: wipe every OSL file. Also clears in-memory AppState so the

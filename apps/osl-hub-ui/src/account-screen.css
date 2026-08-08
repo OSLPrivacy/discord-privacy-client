@@ -1,0 +1,254 @@
+/*
+  Account screen. Every rule lives here rather than on a `style` attribute: the
+  shipped CSP is `style-src 'self'`, so inline styling never applies in the real
+  window (see src/csp-render-gate.test.ts).
+*/
+
+.account-screen-stage {
+  min-height: 100vh;
+  margin: 0;
+  padding: 14px;
+  background: var(--bg);
+  font-family: var(--font-ui);
+}
+
+.account-screen {
+  display: grid;
+  gap: 10px;
+  padding: 16px 18px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--text);
+}
+
+.account-screen-header {
+  display: grid;
+  gap: 4px;
+}
+
+.account-screen-heading {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 21px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.account-screen-intro {
+  margin: 0;
+  max-width: 78ch;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.account-controls {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* name and line | value | button | reset. */
+.account-control {
+  display: grid;
+  grid-template-columns: minmax(300px, 1fr) 190px 178px minmax(300px, 1.05fr);
+  align-items: center;
+  gap: 14px;
+  padding: 9px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+}
+
+.account-control[data-changed="yes"] {
+  border-color: var(--brand);
+}
+
+/*
+  `justify-items: start` so the name's box hugs the word. The screenshot check
+  crops this rectangle and asks how much of it is drawn on, and a short name in
+  a box the width of the column would answer "hardly any" however well it drew.
+*/
+.account-control-head {
+  display: grid;
+  justify-items: start;
+  gap: 2px;
+  min-width: 0;
+}
+
+.account-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.account-detail {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.account-value-slot {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.account-value {
+  font-size: 13px;
+  color: var(--text);
+}
+
+/*
+  The masked slot draws bullets on the row and nothing else: no border, no
+  background, no rounded corner. The screenshot check counts the ink blobs in
+  this rectangle and requires them all the same size, which is what a run of
+  bullets is and no password is, so anything drawn around the text would be
+  counted as a glyph.
+*/
+.account-value-masked {
+  display: inline-block;
+  padding: 0;
+  border: 0;
+  background: none;
+  font-family: var(--font-mono);
+  font-size: 15px;
+  line-height: 1.2;
+  letter-spacing: 0.28em;
+  color: var(--text);
+}
+
+.account-value-plain {
+  color: var(--muted);
+  font-size: 12.5px;
+  text-transform: none;
+}
+
+.account-input,
+.account-select {
+  width: 100%;
+  min-width: 0;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 12.5px;
+}
+
+.account-input:focus-visible,
+.account-select:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 1px;
+}
+
+.account-action-slot {
+  display: flex;
+  justify-content: flex-start;
+}
+
+.account-action {
+  padding: 5px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.account-action:hover {
+  border-color: var(--brand);
+  color: var(--brand);
+}
+
+.account-reset {
+  display: grid;
+  grid-template-columns: 72px 1fr;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+
+.account-reset-button {
+  padding: 5px 8px;
+  border: 1px solid var(--brand);
+  border-radius: var(--radius);
+  background: var(--brand-wash);
+  color: var(--brand);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.account-reset-button:hover {
+  background: var(--brand);
+  color: var(--brand-ink);
+}
+
+/* Where the button would have been, the reason there is none. */
+.account-reset-none {
+  padding: 5px 8px;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius);
+  color: var(--subtle);
+  font-size: 12px;
+  text-align: center;
+}
+
+.account-reset-text {
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1.35;
+}
+
+.account-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 12px 18px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.account-action-group {
+  display: grid;
+  gap: 4px;
+}
+
+.account-action-button {
+  justify-self: start;
+  padding: 7px 14px;
+  border: 1px solid var(--brand);
+  border-radius: var(--radius);
+  background: var(--brand);
+  color: var(--brand-ink);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.account-action-button-quiet {
+  border-color: var(--line);
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+.account-action-text {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.account-status {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--text);
+  font-size: 12px;
+}

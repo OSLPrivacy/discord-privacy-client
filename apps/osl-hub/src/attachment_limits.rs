@@ -13,10 +13,6 @@ pub enum AttachmentAccountTier {
 
 impl AttachmentAccountTier {
     pub const fn max_attachment_bytes(self) -> u64 {
-        self.max_bytes_per_file()
-    }
-
-    pub const fn max_bytes_per_file(self) -> u64 {
         match self {
             Self::Free => FREE_MAX_ATTACHMENT_BYTES,
             Self::Pro => PRO_MAX_ATTACHMENT_BYTES,
@@ -75,20 +71,12 @@ pub fn check_attachment_request(
     check_attachment_count(count)
 }
 
-pub fn check_attachment_limits(
-    tier: AttachmentAccountTier,
-    bytes_per_file: u64,
-    file_count: usize,
-) -> Result<(), AttachmentLimitError> {
-    check_attachment_request(bytes_per_file, file_count, tier)
-}
-
 pub fn attachment_limit_command(
     tier: AttachmentAccountTier,
     bytes_per_file: u64,
     file_count: usize,
 ) -> &'static str {
-    match check_attachment_limits(tier, bytes_per_file, file_count) {
+    match check_attachment_request(bytes_per_file, file_count, tier) {
         Ok(()) => "accept",
         Err(_) => "reject",
     }
@@ -97,8 +85,6 @@ pub fn attachment_limit_command(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const MIB: u64 = 1024 * 1024;
 
     #[test]
     fn shared_attachment_size_check_uses_the_account_tier_window() {
@@ -136,6 +122,7 @@ mod tests {
 
     #[test]
     fn task0051_checks_attachment_limits_directly() {
+        const MIB: u64 = 1024 * 1024;
         let cases = [
             ("24 MB", AttachmentAccountTier::Free, 24 * MIB, 1, "accept"),
             ("26 MB", AttachmentAccountTier::Free, 26 * MIB, 1, "reject"),
@@ -147,8 +134,20 @@ mod tests {
                 1,
                 "reject",
             ),
-            ("16 files", AttachmentAccountTier::Free, MIB, 16, "accept"),
-            ("17 files", AttachmentAccountTier::Free, MIB, 17, "reject"),
+            (
+                "16 files",
+                AttachmentAccountTier::Free,
+                1 * MIB,
+                16,
+                "accept",
+            ),
+            (
+                "17 files",
+                AttachmentAccountTier::Free,
+                1 * MIB,
+                17,
+                "reject",
+            ),
         ];
 
         for (label, tier, bytes_per_file, file_count, expected) in cases {

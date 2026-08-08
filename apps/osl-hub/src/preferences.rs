@@ -6,9 +6,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::claim_state::{self, Surface};
 use crate::models::{
-    default_home_tile_order, is_default_home_tile, HomeTileArrangementAction,
-    HomeTileArrangementInput, HomeTileArrangementRead, HomeTileCapabilityFacts, HomeTileData,
-    OnboardingPreferences, DEFAULT_HOME_TILE_ORDER,
+    default_home_tile_order, is_default_home_tile, HomeTileArrangementInput,
+    HomeTileArrangementRead, HomeTileCapabilityFacts, HomeTileData, OnboardingPreferences,
+    DEFAULT_HOME_TILE_ORDER,
 };
 
 const PREVIEW_STATE_VERSION: u8 = 1;
@@ -21,8 +21,6 @@ struct PreferencesDocument {
     onboarding: OnboardingPreferences,
     #[serde(default)]
     home_tiles_by_user: BTreeMap<String, StoredHomeTileArrangement>,
-    #[serde(default)]
-    scrub_account_permissions_by_user: BTreeMap<String, StoredScrubAccountPermissions>,
 }
 
 impl Default for PreferencesDocument {
@@ -31,7 +29,6 @@ impl Default for PreferencesDocument {
             version: PREVIEW_STATE_VERSION,
             onboarding: OnboardingPreferences::default(),
             home_tiles_by_user: BTreeMap::new(),
-            scrub_account_permissions_by_user: BTreeMap::new(),
         }
     }
 }
@@ -40,7 +37,6 @@ pub struct PreviewState {
     path: PathBuf,
     onboarding: Mutex<OnboardingPreferences>,
     home_tiles_by_user: Mutex<BTreeMap<String, StoredHomeTileArrangement>>,
-    scrub_account_permissions_by_user: Mutex<BTreeMap<String, StoredScrubAccountPermissions>>,
 }
 
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
@@ -48,59 +44,6 @@ pub struct PreviewState {
 struct StoredHomeTileArrangement {
     order: Vec<String>,
     hidden: Vec<String>,
-}
-
-#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ScrubAccountPermissionInput {
-    pub available_account_ids: Vec<String>,
-    pub selected_account_ids: Vec<String>,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ScrubAccountPermissionRead {
-    pub account_ids: Vec<String>,
-}
-
-#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct DiscordScrubConsentFacts {
-    pub real_reading: String,
-    pub careful_scrolling: String,
-    pub service_rules: String,
-    pub ban_risk: String,
-    pub stopping: String,
-}
-
-#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct DiscordScrubConsentFactsInput {
-    pub account_id: String,
-    pub facts: DiscordScrubConsentFacts,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DiscordScrubConsentFactsRead {
-    pub account_id: String,
-    pub facts: DiscordScrubConsentFacts,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DiscordScrubRiskAgreementRead {
-    pub account_ids: Vec<String>,
-    pub agreed_account_ids: Vec<String>,
-    pub may_continue: bool,
-}
-
-#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct StoredScrubAccountPermissions {
-    account_ids: Vec<String>,
-    #[serde(default)]
-    discord_consent_facts_by_account_id: BTreeMap<String, DiscordScrubConsentFacts>,
 }
 
 impl PreviewState {
@@ -116,23 +59,11 @@ impl PreviewState {
                     .map(|owner| (owner, sanitize_arrangement(arrangement)))
             })
             .collect();
-        let scrub_account_permissions_by_user = document
-            .scrub_account_permissions_by_user
-            .into_iter()
-            .filter_map(|(owner, permissions)| {
-                validate_owner_key(&owner).ok().and_then(|owner| {
-                    sanitize_scrub_account_permissions(permissions)
-                        .ok()
-                        .map(|permissions| (owner, permissions))
-                })
-            })
-            .collect();
 
         Self {
             path,
             onboarding: Mutex::new(onboarding),
             home_tiles_by_user: Mutex::new(home_tiles_by_user),
-            scrub_account_permissions_by_user: Mutex::new(scrub_account_permissions_by_user),
         }
     }
 
@@ -153,18 +84,6 @@ impl PreviewState {
             .lock()
             .map_err(|_| "home tile preferences lock is unavailable".to_owned())?
             .clone();
-        let scrub_account_permissions_by_user = self
-            .scrub_account_permissions_by_user
-            .lock()
-            .map_err(|_| "Scrub account permissions lock is unavailable".to_owned())?
-            .clone();
-        write_preferences(
-            &self.path,
-            &preferences,
-            &home_tiles_by_user,
-            &scrub_account_permissions_by_user,
-        )
-        .map_err(|error| format!("could not save preview preferences: {error}"))?;
         write_preferences(&self.path, &preferences, &home_tiles_by_user)
             .map_err(|error| format!("could not save preview preferences: {error}"))?;
 
@@ -216,19 +135,6 @@ impl PreviewState {
             .map_err(|_| "home tile preferences lock is unavailable".to_owned())?
             .clone();
         home_tiles_by_user.insert(owner_user_id.clone(), stored.clone());
-        let scrub_account_permissions_by_user = self
-            .scrub_account_permissions_by_user
-            .lock()
-            .map_err(|_| "Scrub account permissions lock is unavailable".to_owned())?
-            .clone();
-
-        write_preferences(
-            &self.path,
-            &onboarding,
-            &home_tiles_by_user,
-            &scrub_account_permissions_by_user,
-        )
-        .map_err(|error| format!("could not save home tile preferences: {error}"))?;
 
         write_preferences(&self.path, &onboarding, &home_tiles_by_user)
             .map_err(|error| format!("could not save home tile preferences: {error}"))?;
@@ -240,259 +146,6 @@ impl PreviewState {
         *current = home_tiles_by_user;
         Ok(read_arrangement(Some(stored)))
     }
-
-    pub fn apply_home_tile_arrangement_action(
-        &self,
-        owner_user_id: &str,
-        action: HomeTileArrangementAction,
-    ) -> Result<HomeTileArrangementRead, String> {
-        let owner_user_id = validate_owner_key(owner_user_id)?;
-        let onboarding = self
-            .onboarding
-            .lock()
-            .map_err(|_| "preview preferences lock is unavailable".to_owned())?
-            .clone();
-        let mut home_tiles_by_user = self
-            .home_tiles_by_user
-            .lock()
-            .map_err(|_| "home tile preferences lock is unavailable".to_owned())?
-            .clone();
-        let current = home_tiles_by_user.get(&owner_user_id).cloned();
-        let mut stored = current
-            .map(sanitize_arrangement)
-            .unwrap_or_else(default_arrangement);
-
-        apply_arrangement_action(&mut stored, action)?;
-
-        home_tiles_by_user.insert(owner_user_id.clone(), sanitize_arrangement(stored.clone()));
-        let scrub_account_permissions_by_user = self
-            .scrub_account_permissions_by_user
-            .lock()
-            .map_err(|_| "Scrub account permissions lock is unavailable".to_owned())?
-            .clone();
-        write_preferences(
-            &self.path,
-            &onboarding,
-            &home_tiles_by_user,
-            &scrub_account_permissions_by_user,
-        )
-        .map_err(|error| format!("could not save home tile preferences: {error}"))?;
-
-        let stored = home_tiles_by_user
-            .get(&owner_user_id)
-            .cloned()
-            .ok_or_else(|| "home tile preferences were not saved".to_owned())?;
-        let mut current = self
-            .home_tiles_by_user
-            .lock()
-            .map_err(|_| "home tile preferences lock is unavailable".to_owned())?;
-        *current = home_tiles_by_user;
-        Ok(read_arrangement(Some(stored)))
-    }
-
-    pub fn save_scrub_account_permissions(
-        &self,
-        owner_user_id: &str,
-        input: ScrubAccountPermissionInput,
-    ) -> Result<ScrubAccountPermissionRead, String> {
-        let owner_user_id = validate_owner_key(owner_user_id)?;
-        let stored = sanitize_scrub_account_permission_input(input)?;
-        let onboarding = self
-            .onboarding
-            .lock()
-            .map_err(|_| "preview preferences lock is unavailable".to_owned())?
-            .clone();
-        let home_tiles_by_user = self
-            .home_tiles_by_user
-            .lock()
-            .map_err(|_| "home tile preferences lock is unavailable".to_owned())?
-            .clone();
-        let mut scrub_account_permissions_by_user = self
-            .scrub_account_permissions_by_user
-            .lock()
-            .map_err(|_| "Scrub account permissions lock is unavailable".to_owned())?
-            .clone();
-
-        scrub_account_permissions_by_user.insert(owner_user_id, stored.clone());
-        write_preferences(
-            &self.path,
-            &onboarding,
-            &home_tiles_by_user,
-            &scrub_account_permissions_by_user,
-        )
-        .map_err(|error| format!("could not save Scrub account permissions: {error}"))?;
-
-        let mut current = self
-            .scrub_account_permissions_by_user
-            .lock()
-            .map_err(|_| "Scrub account permissions lock is unavailable".to_owned())?;
-        *current = scrub_account_permissions_by_user;
-        Ok(read_scrub_account_permissions(Some(stored)))
-    }
-
-    pub fn save_discord_scrub_consent_facts(
-        &self,
-        owner_user_id: &str,
-        input: DiscordScrubConsentFactsInput,
-    ) -> Result<DiscordScrubConsentFactsRead, String> {
-        let owner_user_id = validate_owner_key(owner_user_id)?;
-        let input = sanitize_discord_scrub_consent_facts_input(input)?;
-        let onboarding = self
-            .onboarding
-            .lock()
-            .map_err(|_| "preview preferences lock is unavailable".to_owned())?
-            .clone();
-        let home_tiles_by_user = self
-            .home_tiles_by_user
-            .lock()
-            .map_err(|_| "home tile preferences lock is unavailable".to_owned())?
-            .clone();
-        let mut scrub_account_permissions_by_user = self
-            .scrub_account_permissions_by_user
-            .lock()
-            .map_err(|_| "Scrub account permissions lock is unavailable".to_owned())?
-            .clone();
-        let permissions = scrub_account_permissions_by_user
-            .get_mut(&owner_user_id)
-            .ok_or_else(|| "Choose a Discord account before recording consent facts".to_owned())?;
-        if !permissions.account_ids.contains(&input.account_id) {
-            return Err("Consent facts can only be stored for a chosen Discord account".to_owned());
-        }
-
-        permissions
-            .discord_consent_facts_by_account_id
-            .insert(input.account_id.clone(), input.facts.clone());
-        write_preferences(
-            &self.path,
-            &onboarding,
-            &home_tiles_by_user,
-            &scrub_account_permissions_by_user,
-        )
-        .map_err(|error| format!("could not save Discord consent facts: {error}"))?;
-
-        let mut current = self
-            .scrub_account_permissions_by_user
-            .lock()
-            .map_err(|_| "Scrub account permissions lock is unavailable".to_owned())?;
-        *current = scrub_account_permissions_by_user;
-        Ok(DiscordScrubConsentFactsRead {
-            account_id: input.account_id,
-            facts: input.facts,
-        })
-    }
-
-    pub fn get_discord_scrub_consent_facts(
-        &self,
-        owner_user_id: &str,
-        account_id: &str,
-    ) -> Result<DiscordScrubConsentFactsRead, String> {
-        let owner_user_id = validate_owner_key(owner_user_id)?;
-        validate_scrub_account_id(account_id)?;
-        let current = self
-            .scrub_account_permissions_by_user
-            .lock()
-            .map_err(|_| "Scrub account permissions lock is unavailable".to_owned())?;
-        let permissions = current
-            .get(&owner_user_id)
-            .ok_or_else(|| "Choose a Discord account before reading consent facts".to_owned())?;
-        if !permissions.account_ids.iter().any(|id| id == account_id) {
-            return Err("Consent facts can only be read for a chosen Discord account".to_owned());
-        }
-        let facts = permissions
-            .discord_consent_facts_by_account_id
-            .get(account_id)
-            .cloned()
-            .ok_or_else(|| "Discord consent facts have not been recorded".to_owned())?;
-        Ok(DiscordScrubConsentFactsRead {
-            account_id: account_id.to_owned(),
-            facts,
-        })
-    }
-
-    pub fn continue_discord_scrub_after_risk_agreement(
-        &self,
-        owner_user_id: &str,
-    ) -> Result<DiscordScrubRiskAgreementRead, String> {
-        let owner_user_id = validate_owner_key(owner_user_id)?;
-        let current = self
-            .scrub_account_permissions_by_user
-            .lock()
-            .map_err(|_| "Scrub account permissions lock is unavailable".to_owned())?;
-        let permissions = current
-            .get(&owner_user_id)
-            .cloned()
-            .ok_or_else(|| "Choose a Discord account before continuing".to_owned())
-            .and_then(sanitize_scrub_account_permissions)?;
-        if permissions.account_ids.is_empty() {
-            return Err("Choose a Discord account before continuing".to_owned());
-        }
-
-        let agreed_account_ids = permissions
-            .account_ids
-            .iter()
-            .filter(|account_id| {
-                permissions
-                    .discord_consent_facts_by_account_id
-                    .contains_key(*account_id)
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-        let missing_account_ids = permissions
-            .account_ids
-            .iter()
-            .filter(|account_id| {
-                !permissions
-                    .discord_consent_facts_by_account_id
-                    .contains_key(*account_id)
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-        if !missing_account_ids.is_empty() {
-            return Err(format!(
-                "Risk agreement is required for every selected Discord account before continuing: missing={}",
-                missing_account_ids.join(",")
-            ));
-        }
-
-        Ok(DiscordScrubRiskAgreementRead {
-            account_ids: permissions.account_ids,
-            agreed_account_ids,
-            may_continue: true,
-        })
-    }
-
-    pub fn get_scrub_account_permissions(
-        &self,
-        owner_user_id: &str,
-    ) -> Result<ScrubAccountPermissionRead, String> {
-        let owner_user_id = validate_owner_key(owner_user_id)?;
-        let current = self
-            .scrub_account_permissions_by_user
-            .lock()
-            .map_err(|_| "Scrub account permissions lock is unavailable".to_owned())?;
-        Ok(read_scrub_account_permissions(
-            current.get(&owner_user_id).cloned(),
-        ))
-    }
-}
-
-#[cfg(feature = "core")]
-pub fn apply_message_runtime_preferences(
-    core: &crate::core_bridge::HubCoreState,
-    preferences: &OnboardingPreferences,
-) -> bool {
-    core.osl
-        .set_rn_wire_in_enabled(preferences.rn_wire_policy_requested);
-    core.osl.rn_wire_in_enabled()
-}
-
-#[cfg(feature = "core")]
-pub fn apply_saved_message_runtime_preferences(
-    core: &crate::core_bridge::HubCoreState,
-    state: &PreviewState,
-) -> Result<bool, String> {
-    let preferences = state.get()?;
-    Ok(apply_message_runtime_preferences(core, &preferences))
 }
 
 fn read_preferences(path: &Path) -> Option<PreferencesDocument> {
@@ -511,13 +164,11 @@ fn write_preferences(
     path: &Path,
     preferences: &OnboardingPreferences,
     home_tiles_by_user: &BTreeMap<String, StoredHomeTileArrangement>,
-    scrub_account_permissions_by_user: &BTreeMap<String, StoredScrubAccountPermissions>,
 ) -> Result<(), String> {
     let document = PreferencesDocument {
         version: PREVIEW_STATE_VERSION,
         onboarding: preferences.clone(),
         home_tiles_by_user: home_tiles_by_user.clone(),
-        scrub_account_permissions_by_user: scrub_account_permissions_by_user.clone(),
     };
     let bytes = serde_json::to_vec_pretty(&document)
         .map_err(|_| "preferences could not be encoded".to_owned())?;
@@ -525,132 +176,6 @@ fn write_preferences(
         return Err("preview preferences exceed the size limit".to_owned());
     }
     crate::atomic_file::write_recoverable(path, &bytes, "preview preferences")
-}
-
-fn sanitize_scrub_account_permission_input(
-    input: ScrubAccountPermissionInput,
-) -> Result<StoredScrubAccountPermissions, String> {
-    if input.available_account_ids.len() > 32 || input.selected_account_ids.len() > 32 {
-        return Err("Scrub account permission list is too large".to_owned());
-    }
-    let mut available = HashSet::<String>::new();
-    for account_id in input.available_account_ids {
-        validate_scrub_account_id(&account_id)?;
-        if !available.insert(account_id) {
-            return Err("Scrub available accounts must be unique".to_owned());
-        }
-    }
-    let mut selected = HashSet::<String>::new();
-    for account_id in input.selected_account_ids {
-        validate_scrub_account_id(&account_id)?;
-        if !available.contains(&account_id) {
-            return Err("Scrub selected account is not available".to_owned());
-        }
-        if !selected.insert(account_id) {
-            return Err("Scrub selected accounts must be unique".to_owned());
-        }
-    }
-
-    let mut account_ids = available
-        .into_iter()
-        .filter(|account_id| selected.contains(account_id))
-        .collect::<Vec<_>>();
-    account_ids.sort();
-    Ok(StoredScrubAccountPermissions {
-        account_ids,
-        discord_consent_facts_by_account_id: BTreeMap::new(),
-    })
-}
-
-fn sanitize_scrub_account_permissions(
-    permissions: StoredScrubAccountPermissions,
-) -> Result<StoredScrubAccountPermissions, String> {
-    if permissions.account_ids.len() > 32 {
-        return Err("Scrub account permission list is too large".to_owned());
-    }
-    let mut seen = HashSet::<String>::new();
-    let mut account_ids = Vec::with_capacity(permissions.account_ids.len());
-    for account_id in permissions.account_ids {
-        validate_scrub_account_id(&account_id)?;
-        if !seen.insert(account_id.clone()) {
-            return Err("Scrub account permissions must be unique".to_owned());
-        }
-        account_ids.push(account_id);
-    }
-    account_ids.sort();
-    let mut discord_consent_facts_by_account_id = BTreeMap::new();
-    for (account_id, facts) in permissions.discord_consent_facts_by_account_id {
-        validate_scrub_account_id(&account_id)?;
-        if account_ids.iter().any(|selected| selected == &account_id) {
-            discord_consent_facts_by_account_id.insert(account_id, sanitize_consent_facts(facts)?);
-        }
-    }
-    Ok(StoredScrubAccountPermissions {
-        account_ids,
-        discord_consent_facts_by_account_id,
-    })
-}
-
-fn read_scrub_account_permissions(
-    permissions: Option<StoredScrubAccountPermissions>,
-) -> ScrubAccountPermissionRead {
-    let account_ids = permissions
-        .and_then(|permissions| sanitize_scrub_account_permissions(permissions).ok())
-        .map(|permissions| permissions.account_ids)
-        .unwrap_or_default();
-    ScrubAccountPermissionRead { account_ids }
-}
-
-fn sanitize_discord_scrub_consent_facts_input(
-    input: DiscordScrubConsentFactsInput,
-) -> Result<DiscordScrubConsentFactsInput, String> {
-    validate_scrub_account_id(&input.account_id)?;
-    Ok(DiscordScrubConsentFactsInput {
-        account_id: input.account_id,
-        facts: sanitize_consent_facts(input.facts)?,
-    })
-}
-
-fn sanitize_consent_facts(
-    facts: DiscordScrubConsentFacts,
-) -> Result<DiscordScrubConsentFacts, String> {
-    Ok(DiscordScrubConsentFacts {
-        real_reading: validate_consent_fact("real reading", facts.real_reading)?,
-        careful_scrolling: validate_consent_fact("careful scrolling", facts.careful_scrolling)?,
-        service_rules: validate_consent_fact("service rules", facts.service_rules)?,
-        ban_risk: validate_consent_fact("ban risk", facts.ban_risk)?,
-        stopping: validate_consent_fact("stopping", facts.stopping)?,
-    })
-}
-
-fn validate_consent_fact(label: &str, fact: String) -> Result<String, String> {
-    let fact = fact.trim().to_owned();
-    if !fact.is_empty()
-        && fact.len() <= 256
-        && fact
-            .bytes()
-            .all(|byte| byte.is_ascii_graphic() || byte == b' ')
-    {
-        Ok(fact)
-    } else {
-        Err(format!("Discord consent fact is invalid: {label}"))
-    }
-}
-
-fn validate_scrub_account_id(account_id: &str) -> Result<(), String> {
-    let bytes = account_id.as_bytes();
-    if !bytes.is_empty()
-        && bytes.len() <= 64
-        && (bytes[0].is_ascii_lowercase() || bytes[0].is_ascii_digit())
-        && (bytes[bytes.len() - 1].is_ascii_lowercase() || bytes[bytes.len() - 1].is_ascii_digit())
-        && bytes
-            .iter()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-')
-    {
-        Ok(())
-    } else {
-        Err("Scrub account id is invalid".to_owned())
-    }
 }
 
 fn validate_owner_key(owner_user_id: &str) -> Result<String, String> {
@@ -694,17 +219,6 @@ fn sanitize_arrangement(arrangement: StoredHomeTileArrangement) -> StoredHomeTil
     StoredHomeTileArrangement { order, hidden }
 }
 
-fn default_arrangement() -> StoredHomeTileArrangement {
-    StoredHomeTileArrangement {
-        order: default_home_tile_order(),
-        hidden: Vec::new(),
-    }
-}
-
-fn read_arrangement(arrangement: Option<StoredHomeTileArrangement>) -> HomeTileArrangementRead {
-    let arrangement = arrangement
-        .map(sanitize_arrangement)
-        .unwrap_or_else(default_arrangement);
 fn read_arrangement(arrangement: Option<StoredHomeTileArrangement>) -> HomeTileArrangementRead {
     let arrangement =
         arrangement
@@ -722,77 +236,6 @@ fn read_arrangement(arrangement: Option<StoredHomeTileArrangement>) -> HomeTileA
         } else {
             visible_tiles.push(tile);
         }
-    }
-    HomeTileArrangementRead {
-        visible_tiles,
-        hidden_tiles,
-    }
-}
-
-fn apply_arrangement_action(
-    arrangement: &mut StoredHomeTileArrangement,
-    action: HomeTileArrangementAction,
-) -> Result<(), String> {
-    match action {
-        HomeTileArrangementAction::Move { tile_id, delta } => {
-            validate_tile_id(&tile_id)?;
-            if delta != -1 && delta != 1 {
-                return Err("home tile move delta must be -1 or 1".to_owned());
-            }
-            let index = arrangement
-                .order
-                .iter()
-                .position(|tile| tile == &tile_id)
-                .ok_or_else(|| "home tile move target is unknown".to_owned())?;
-            let target = index as isize + delta as isize;
-            if target < 0 || target >= arrangement.order.len() as isize {
-                return Err("home tile move target is outside the arrangement".to_owned());
-            }
-            arrangement.order.swap(index, target as usize);
-        }
-        HomeTileArrangementAction::Drag {
-            tile_id,
-            before_tile_id,
-        } => {
-            validate_tile_id(&tile_id)?;
-            validate_tile_id(&before_tile_id)?;
-            if tile_id == before_tile_id {
-                return Ok(());
-            }
-            let source = arrangement
-                .order
-                .iter()
-                .position(|tile| tile == &tile_id)
-                .ok_or_else(|| "home tile drag source is unknown".to_owned())?;
-            let tile = arrangement.order.remove(source);
-            let target = arrangement
-                .order
-                .iter()
-                .position(|candidate| candidate == &before_tile_id)
-                .ok_or_else(|| "home tile drag target is unknown".to_owned())?;
-            arrangement.order.insert(target, tile);
-        }
-        HomeTileArrangementAction::Hide { tile_id } => {
-            validate_tile_id(&tile_id)?;
-            if !arrangement.hidden.iter().any(|tile| tile == &tile_id) {
-                arrangement.hidden.push(tile_id);
-            }
-        }
-        HomeTileArrangementAction::Show { tile_id } => {
-            validate_tile_id(&tile_id)?;
-            arrangement.hidden.retain(|tile| tile != &tile_id);
-        }
-        HomeTileArrangementAction::Done => {}
-    }
-    *arrangement = sanitize_arrangement(arrangement.clone());
-    Ok(())
-}
-
-fn validate_tile_id(tile_id: &str) -> Result<(), String> {
-    if is_default_home_tile(tile_id) {
-        Ok(())
-    } else {
-        Err("home tile action target is unknown".to_owned())
     }
     let visible_tile_data = tile_data(&visible_tiles);
     let hidden_tile_data = tile_data(&hidden_tiles);
@@ -850,14 +293,10 @@ fn capability_facts_for_home_tile(tile: &str) -> Option<HomeTileCapabilityFacts>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{ForwardSecrecyMode, HomeTileArrangementAction, PlacementMode, SendMode};
-    use crate::models::{CoverInsertion, ForwardSecrecyMode, PlacementMode, SendMode};
     use crate::models::{ForwardSecrecyMode, PlacementMode, SendMode};
     use serde_json::Value;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
-    }
-
 
     fn temporary_file() -> PathBuf {
         let nonce = SystemTime::now()
@@ -877,10 +316,8 @@ mod tests {
             onboarding_complete: true,
             send_mode: SendMode::SingleEnter,
             placement_mode: PlacementMode::Compatibility,
-            cover_insertion: Some(CoverInsertion::TypeNaturally),
             show_plaintext_preview: false,
             window_capture_enabled: true,
-            rn_wire_policy_requested: false,
             acknowledge_experimental_send_risk: true,
             forward_secrecy_mode: ForwardSecrecyMode::default(),
         };
@@ -928,10 +365,8 @@ mod tests {
             onboarding_complete: true,
             send_mode: SendMode::DoubleEnter,
             placement_mode: PlacementMode::Compatibility,
-            cover_insertion: None,
             show_plaintext_preview: true,
             window_capture_enabled: true,
-            rn_wire_policy_requested: false,
             acknowledge_experimental_send_risk: false,
             forward_secrecy_mode: ForwardSecrecyMode::default(),
         };
@@ -956,10 +391,8 @@ mod tests {
             onboarding_complete: true,
             send_mode: SendMode::Manual,
             placement_mode: PlacementMode::Atomic,
-            cover_insertion: Some(CoverInsertion::InsertOnSend),
             show_plaintext_preview: false,
             window_capture_enabled: true,
-            rn_wire_policy_requested: false,
             acknowledge_experimental_send_risk: false,
             forward_secrecy_mode: ForwardSecrecyMode::default(),
         };
@@ -1094,159 +527,6 @@ mod tests {
     }
 
     #[test]
-    fn task_0813_direct_tile_actions_change_saved_arrangement_and_survive_restart() {
-        let path = temporary_file();
-        let state = PreviewState::load(path.clone());
-        let owner = "user-0813";
-
-        let moved = state
-            .apply_home_tile_arrangement_action(
-                owner,
-                HomeTileArrangementAction::Move {
-                    tile_id: "gmail".to_owned(),
-                    delta: -1,
-                },
-            )
-            .expect("move tile");
-        println!(
-            "TASK0813 move_action=move move_order_prefix={}",
-            moved
-                .visible_tiles
-                .iter()
-                .take(5)
-                .cloned()
-                .collect::<Vec<_>>()
-                .join(",")
-        );
-
-        let dragged = state
-            .apply_home_tile_arrangement_action(
-                owner,
-                HomeTileArrangementAction::Drag {
-                    tile_id: "scrub".to_owned(),
-                    before_tile_id: "discord".to_owned(),
-                },
-            )
-            .expect("drag tile");
-        println!(
-            "TASK0813 drag_action=drag drag_order_prefix={}",
-            dragged
-                .visible_tiles
-                .iter()
-                .take(6)
-                .cloned()
-                .collect::<Vec<_>>()
-                .join(",")
-        );
-
-        let hidden = state
-            .apply_home_tile_arrangement_action(
-                owner,
-                HomeTileArrangementAction::Hide {
-                    tile_id: "telegram".to_owned(),
-                },
-            )
-            .expect("hide tile");
-        println!(
-            "TASK0813 hide_action=hide hidden_tiles={}",
-            hidden.hidden_tiles.join(",")
-        );
-
-        let shown = state
-            .apply_home_tile_arrangement_action(
-                owner,
-                HomeTileArrangementAction::Show {
-                    tile_id: "telegram".to_owned(),
-                },
-            )
-            .expect("show tile");
-        println!(
-            "TASK0813 show_action=show hidden_tiles={}",
-            if shown.hidden_tiles.is_empty() {
-                "(none)".to_owned()
-            } else {
-                shown.hidden_tiles.join(",")
-            }
-        );
-
-        let final_hidden = state
-            .apply_home_tile_arrangement_action(
-                owner,
-                HomeTileArrangementAction::Hide {
-                    tile_id: "osl-mail".to_owned(),
-                },
-            )
-            .expect("hide final tile");
-        assert_eq!(final_hidden.hidden_tiles, vec!["osl-mail"]);
-
-        let done = state
-            .apply_home_tile_arrangement_action(owner, HomeTileArrangementAction::Done)
-            .expect("done tile arrangement");
-        println!(
-            "TASK0813 done_action=done final_visible_tiles={}",
-            done.visible_tiles.join(",")
-        );
-        println!(
-            "TASK0813 done_action=done final_hidden_tiles={}",
-            done.hidden_tiles.join(",")
-        );
-
-        let restarted = PreviewState::load(path.clone())
-            .get_home_tile_arrangement(owner)
-            .expect("restart reads saved arrangement");
-        println!(
-            "TASK0813 restart_visible_tiles={}",
-            restarted.visible_tiles.join(",")
-        );
-        println!(
-            "TASK0813 restart_hidden_tiles={}",
-            restarted.hidden_tiles.join(",")
-        );
-
-        let expected_visible = vec![
-            "scrub",
-            "discord",
-            "telegram",
-            "signal",
-            "gmail",
-            "whatsapp",
-            "outlook",
-            "proton",
-            "yahoo",
-            "aol",
-            "gmx",
-            "maildotcom",
-            "icloud",
-            "tuta",
-            "osl-chats",
-            "osl-notes",
-        ];
-        assert_eq!(
-            moved
-                .visible_tiles
-                .iter()
-                .take(5)
-                .map(String::as_str)
-                .collect::<Vec<_>>(),
-            vec!["discord", "telegram", "signal", "gmail", "whatsapp"]
-        );
-        assert_eq!(
-            dragged
-                .visible_tiles
-                .iter()
-                .take(6)
-                .map(String::as_str)
-                .collect::<Vec<_>>(),
-            vec!["scrub", "discord", "telegram", "signal", "gmail", "whatsapp"]
-        );
-        assert_eq!(hidden.hidden_tiles, vec!["telegram"]);
-        assert!(shown.hidden_tiles.is_empty());
-        assert_eq!(done.visible_tiles, expected_visible);
-        assert_eq!(done.hidden_tiles, vec!["osl-mail"]);
-        assert_eq!(restarted, done);
-
-        let _ = fs::remove_dir_all(path.parent().unwrap());
-    }
     fn task_0801_direct_tile_data_includes_capability_facts_and_saves_no_label_text() {
         let path = temporary_file();
         let state = PreviewState::load(path.clone());

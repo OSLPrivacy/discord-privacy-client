@@ -398,6 +398,7 @@ impl FollowActiveAppChoice {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppPreferences {
+
     #[serde(default)]
     pub version: u32,
     #[serde(default)]
@@ -424,6 +425,12 @@ pub struct AppPreferences {
     pub auto_whitelist_rules: HashMap<String, crate::auto_whitelist_rules::AutoWhitelistChoice>,
     #[serde(default)]
     pub bad_message_rules: HashMap<String, crate::bad_message_rules::BadMessageRule>,
+    /// TASK 1459: AutoScrub's own bad-message rule selections. Reuses the
+    /// normal Scrub [`crate::bad_message_rules::BadMessageRule`] type, but is
+    /// stored in its own map so saving a rule here never touches
+    /// `bad_message_rules` (the normal Scrub run) and vice versa.
+    #[serde(default)]
+    pub autoscrub_bad_message_rules: HashMap<String, crate::bad_message_rules::BadMessageRule>,
     #[serde(default)]
     pub new_friend_defaults: NewFriendDefaults,
     #[serde(default)]
@@ -440,11 +447,23 @@ pub struct AppPreferences {
     pub verification_warning: VerificationWarningChoice,
     #[serde(default)]
     pub behaviour_choices: HashMap<String, String>,
+    #[serde(default)]
+    pub new_friend_account_reach: NewFriendAccountReach,
+    #[serde(default)]
+    pub new_friend_auto_whitelist: crate::auto_whitelist_rules::AutoWhitelistChoice,
+    #[serde(default)]
+    pub new_friend_verification_warnings: NewFriendVerificationWarnings,
+    #[serde(default)]
+    pub verification_warning_choice: VerificationWarningChoice,
 }
 
 impl Default for AppPreferences {
     fn default() -> Self {
         Self {
+            new_friend_verification_warnings: NewFriendVerificationWarnings::default(),
+            verification_warning_choice: VerificationWarningChoice::default(),
+            new_friend_account_reach: NewFriendAccountReach::default(),
+            new_friend_auto_whitelist: crate::auto_whitelist_rules::AutoWhitelistChoice::default(),
             version: 0,
             stego_mode: StegoMode::default(),
             tour: TourState::default(),
@@ -458,6 +477,7 @@ impl Default for AppPreferences {
             language: default_language_choice(),
             auto_whitelist_rules: HashMap::new(),
             bad_message_rules: HashMap::new(),
+            autoscrub_bad_message_rules: HashMap::new(),
             new_friend_defaults: NewFriendDefaults::default(),
             allowed_place_records: BTreeMap::new(),
             next_generation_message_policy: NextGenerationMessagePolicy::default(),

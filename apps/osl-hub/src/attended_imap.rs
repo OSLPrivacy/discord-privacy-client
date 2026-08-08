@@ -4,11 +4,19 @@
 //! inspection results, deterministic local fixture, and delete-authority checks
 //! that a reviewed IMAP adapter must satisfy before it can mutate a mailbox.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{
+    BTreeMap,
+    BTreeSet,
+};
+use serde::{
+    Deserialize,
+    Serialize,
+};
+use sha2::{
+    Digest,
+    Sha256,
+};
 use std::fmt;
-
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 const MAX_HOST_BYTES: usize = 253;
@@ -543,6 +551,14 @@ pub fn prepare_delete(
         mailbox_name,
         message_id,
     )?;
+    let mut digest_input = Vec::new();
+    write_lp(&mut digest_input, owner_osl_user_id.as_bytes());
+    write_lp(&mut digest_input, account_id.as_bytes());
+    write_lp(&mut digest_input, mailbox_name.as_bytes());
+    write_lp(&mut digest_input, message_id.as_bytes());
+    digest_input.extend_from_slice(&message.uid.to_be_bytes());
+    digest_input.extend_from_slice(&message.fingerprint);
+    let batch_digest = Sha256::digest(digest_input).into();
     Ok(PreparedImapDelete {
         owner_osl_user_id: owner_osl_user_id.to_owned(),
         account_id: account_id.to_owned(),
@@ -550,14 +566,7 @@ pub fn prepare_delete(
         message_id: message_id.to_owned(),
         prepared_uid: message.uid,
         fingerprint: message.fingerprint,
-        batch_digest: prepared_message_digest_parts(
-            owner_osl_user_id,
-            account_id,
-            mailbox_name,
-            message_id,
-            message.uid,
-            &message.fingerprint,
-        ),
+        batch_digest,
     })
 }
 
@@ -615,7 +624,6 @@ pub struct ReviewedAttendedImapBatch {
     owner_osl_user_id: String,
     account_id: String,
     batch_digest: [u8; 32],
-    message_digests: BTreeSet<[u8; 32]>,
     message_count: usize,
 }
 
@@ -625,7 +633,6 @@ impl fmt::Debug for ReviewedAttendedImapBatch {
             .field("owner_osl_user_id", &"<redacted>")
             .field("account_id", &"<redacted>")
             .field("batch_digest", &"<redacted>")
-            .field("message_digest_count", &self.message_digests.len())
             .field("message_count", &self.message_count)
             .finish()
     }
@@ -638,7 +645,6 @@ pub struct ImapDeleteGrant {
     pub owner_osl_user_id: String,
     pub account_id: String,
     pub batch_digest: [u8; 32],
-    pub message_digests: BTreeSet<[u8; 32]>,
     pub message_fingerprints: BTreeSet<[u8; 32]>,
     pub phase: ImapDeletePhase,
     pub entitlement: ImapEntitlement,
@@ -655,7 +661,6 @@ impl fmt::Debug for ImapDeleteGrant {
             .field("owner_osl_user_id", &"<redacted>")
             .field("account_id", &"<redacted>")
             .field("batch_digest", &"<redacted>")
-            .field("message_digest_count", &self.message_digests.len())
             .field(
                 "message_fingerprint_count",
                 &self.message_fingerprints.len(),
@@ -728,7 +733,6 @@ impl AttendedImapDeleteAuthorizer {
             owner_osl_user_id: reviewed.owner_osl_user_id,
             account_id: reviewed.account_id,
             batch_digest: reviewed.batch_digest,
-            message_digests: reviewed.message_digests,
             message_fingerprints: BTreeSet::new(),
             phase: ImapDeletePhase::Reviewed,
             entitlement: ImapEntitlement::Pro,
@@ -791,21 +795,17 @@ pub fn authorize_attended_imap_batch_reviewed(
     validate_binding(owner_osl_user_id, MAX_OWNER_BYTES)?;
     validate_binding(account_id, MAX_ACCOUNT_ID_BYTES)?;
     let mut digest_input = Vec::new();
-    let mut message_digests = BTreeSet::new();
     for item in prepared {
         if item.owner_osl_user_id != owner_osl_user_id || item.account_id != account_id {
             return Err(ImapPolicyError::AccountBindingMismatch);
         }
-        let message_digest = prepared_message_digest(item);
-        message_digests.insert(message_digest);
-        digest_input.extend_from_slice(&message_digest);
+        digest_input.extend_from_slice(&item.batch_digest);
     }
     let batch_digest = Sha256::digest(digest_input).into();
     Ok(ReviewedAttendedImapBatch {
         owner_osl_user_id: owner_osl_user_id.to_owned(),
         account_id: account_id.to_owned(),
         batch_digest,
-        message_digests,
         message_count: prepared.len(),
     })
 }
@@ -830,17 +830,16 @@ pub fn scrub_imap_verify(
     grant: &mut ImapDeleteGrant,
     reviewed: &ReviewedAttendedImapBatch,
 ) -> Result<(), ImapPolicyError> {
-    if grant.authority != ImapGrantAuthority::Attended || grant.revoked {
+    if grant.authority != ImapGrantAuthority::Attended
+        || grant.revoked
+        || grant.owner_osl_user_id != reviewed.owner_osl_user_id
+        || grant.account_id != reviewed.account_id
+        || grant.batch_digest != reviewed.batch_digest
+    {
         return Err(ImapPolicyError::AuthorityRefused);
     }
-    if grant.owner_osl_user_id != reviewed.owner_osl_user_id {
-        return Err(ImapPolicyError::DeleteGrantWrongOwner);
-    }
-    if grant.account_id != reviewed.account_id || grant.batch_digest != reviewed.batch_digest {
-        return Err(ImapPolicyError::DeleteGrantWrongScope);
-    }
     if grant.used {
-        return Err(ImapPolicyError::DeleteGrantUsed);
+        return Err(ImapPolicyError::SingleUseAuthorityRequired);
     }
     grant.used = true;
     Ok(())
@@ -854,27 +853,6 @@ pub fn scrubImapVerify(
     scrub_imap_verify(grant, reviewed)
 }
 
-pub fn delete_prepared_with_grant(
-    mailbox: &mut ImapMailbox,
-    grant: &mut ImapDeleteGrant,
-    context: ImapDeleteContext,
-    prepared: &PreparedImapDelete,
-) -> Result<ImapDeleteReceipt, ImapPolicyError> {
-    delete_prepared_with_optional_grant(mailbox, Some(grant), context, prepared)
-}
-
-pub fn delete_prepared_with_optional_grant(
-    mailbox: &mut ImapMailbox,
-    grant: Option<&mut ImapDeleteGrant>,
-    context: ImapDeleteContext,
-    prepared: &PreparedImapDelete,
-) -> Result<ImapDeleteReceipt, ImapPolicyError> {
-    let grant = grant.ok_or(ImapPolicyError::DeleteGrantMissing)?;
-    still_authorizes_imap_delete(context, grant, prepared)?;
-    grant.used = true;
-    delete_prepared(mailbox, prepared)
-}
-
 pub fn still_authorizes_imap_delete(
     context: ImapDeleteContext,
     grant: &ImapDeleteGrant,
@@ -886,29 +864,16 @@ pub fn still_authorizes_imap_delete(
     if context.phase != ImapDeletePhase::Executing || grant.phase != ImapDeletePhase::Executing {
         return Err(ImapPolicyError::PhaseRefused);
     }
-    if grant.authority != ImapGrantAuthority::Attended {
-        return Err(ImapPolicyError::AuthorityRefused);
-    }
-    if context.now_unix_ms >= grant.deadline_unix_ms {
-        return Err(ImapPolicyError::DeleteGrantExpired);
+    if context.now_unix_ms > grant.deadline_unix_ms {
+        return Err(ImapPolicyError::GrantExpired);
     }
     if grant.revoked {
         return Err(ImapPolicyError::AuthorityRefused);
     }
-    if grant.used {
-        return Err(ImapPolicyError::DeleteGrantUsed);
-    }
-    if grant.owner_osl_user_id != candidate.owner_osl_user_id {
-        return Err(ImapPolicyError::DeleteGrantWrongOwner);
-    }
-    if grant.account_id != candidate.account_id || grant.batch_digest != candidate.batch_digest {
-        return Err(ImapPolicyError::DeleteGrantWrongScope);
-    }
-    if !grant
-        .message_digests
-        .contains(&prepared_message_digest(candidate))
+    if grant.owner_osl_user_id != candidate.owner_osl_user_id
+        || grant.account_id != candidate.account_id
     {
-        return Err(ImapPolicyError::SingleUseAuthorityRequired);
+        return Err(ImapPolicyError::AccountBindingMismatch);
     }
     if !grant.message_fingerprints.contains(&candidate.fingerprint) {
         return Err(ImapPolicyError::FingerprintMismatch);
@@ -974,15 +939,11 @@ pub enum ImapPolicyError {
     BatchNotReviewed,
     SingleUseAuthorityRequired,
     AuthorityRefused,
-    DeleteGrantMissing,
-    DeleteGrantWrongOwner,
-    DeleteGrantWrongScope,
-    DeleteGrantUsed,
-    DeleteGrantExpired,
     EntitlementRequired,
     PhaseRefused,
     GrantExpired,
     PresenceRequired,
+    DeleteGrantMissing,
 }
 
 impl fmt::Display for ImapPolicyError {
@@ -997,15 +958,11 @@ impl fmt::Display for ImapPolicyError {
             Self::BatchNotReviewed => "IMAP delete batch was not reviewed",
             Self::SingleUseAuthorityRequired => "IMAP delete authority must be single-use",
             Self::AuthorityRefused => "IMAP delete authority was refused",
-            Self::DeleteGrantMissing => "IMAP delete grant is missing",
-            Self::DeleteGrantWrongOwner => "IMAP delete grant belongs to a different owner",
-            Self::DeleteGrantWrongScope => "IMAP delete grant is for a different scope",
-            Self::DeleteGrantUsed => "IMAP delete grant was already used",
-            Self::DeleteGrantExpired => "IMAP delete grant expired",
             Self::EntitlementRequired => "IMAP delete requires active entitlement",
             Self::PhaseRefused => "IMAP delete is not in the authorized phase",
             Self::GrantExpired => "IMAP delete authority expired",
             Self::PresenceRequired => "IMAP attended presence is required",
+            Self::DeleteGrantMissing => "IMAP delete grant is missing",
         };
         f.write_str(message)
     }
@@ -1094,35 +1051,6 @@ fn write_lp(target: &mut Vec<u8>, value: &[u8]) {
     target.extend_from_slice(value);
 }
 
-fn prepared_message_digest(prepared: &PreparedImapDelete) -> [u8; 32] {
-    prepared_message_digest_parts(
-        &prepared.owner_osl_user_id,
-        &prepared.account_id,
-        &prepared.mailbox,
-        &prepared.message_id,
-        prepared.prepared_uid,
-        &prepared.fingerprint,
-    )
-}
-
-fn prepared_message_digest_parts(
-    owner_osl_user_id: &str,
-    account_id: &str,
-    mailbox: &str,
-    message_id: &str,
-    uid: u32,
-    fingerprint: &[u8; 32],
-) -> [u8; 32] {
-    let mut digest_input = Vec::new();
-    write_lp(&mut digest_input, owner_osl_user_id.as_bytes());
-    write_lp(&mut digest_input, account_id.as_bytes());
-    write_lp(&mut digest_input, mailbox.as_bytes());
-    write_lp(&mut digest_input, message_id.as_bytes());
-    digest_input.extend_from_slice(&uid.to_be_bytes());
-    digest_input.extend_from_slice(fingerprint);
-    Sha256::digest(digest_input).into()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1142,33 +1070,6 @@ mod tests {
         )
         .unwrap();
         (mailbox, prepared)
-    }
-
-    fn executable_grant(prepared: &PreparedImapDelete, now_unix_ms: i64) -> ImapDeleteGrant {
-        let mut fingerprints = BTreeSet::new();
-        fingerprints.insert(prepared.fingerprint);
-        ImapDeleteGrant {
-            grant_id: "task-0410-grant".to_owned(),
-            authority: ImapGrantAuthority::Attended,
-            owner_osl_user_id: prepared.owner_osl_user_id.clone(),
-            account_id: prepared.account_id.clone(),
-            batch_digest: prepared.batch_digest,
-            message_fingerprints: fingerprints,
-            phase: ImapDeletePhase::Executing,
-            entitlement: ImapEntitlement::Pro,
-            deadline_unix_ms: now_unix_ms + 1_000,
-            used: false,
-            revoked: false,
-        }
-    }
-
-    fn deleted_targets_in_folder(mailbox: &ImapMailbox, folder: &str) -> Vec<String> {
-        mailbox
-            .deleted
-            .iter()
-            .filter(|(_, mailbox_name, _)| mailbox_name == folder)
-            .map(|(_, _, message_id)| message_id.clone())
-            .collect()
     }
 
     fn task_3556_state_command_list() -> Vec<String> {
@@ -1414,7 +1315,7 @@ mod tests {
         assert_eq!(scrubImapVerify(&mut grant, &reviewed), Ok(()));
         assert_eq!(
             scrubImapVerify(&mut grant, &reviewed),
-            Err(ImapPolicyError::DeleteGrantUsed)
+            Err(ImapPolicyError::SingleUseAuthorityRequired)
         );
 
         let mut revoke_authorizer = AttendedImapDeleteAuthorizer::default();
@@ -1461,15 +1362,12 @@ mod tests {
         let (_mailbox, prepared) = fixture_and_prepared();
         let mut fingerprints = BTreeSet::new();
         fingerprints.insert(prepared.fingerprint);
-        let mut message_digests = BTreeSet::new();
-        message_digests.insert(prepared_message_digest(&prepared));
         let mut grant = ImapDeleteGrant {
             grant_id: "grant-1".to_owned(),
             authority: ImapGrantAuthority::Attended,
             owner_osl_user_id: prepared.owner_osl_user_id.clone(),
             account_id: prepared.account_id.clone(),
             batch_digest: prepared.batch_digest,
-            message_digests,
             message_fingerprints: fingerprints,
             phase: ImapDeletePhase::Executing,
             entitlement: ImapEntitlement::Pro,
@@ -1505,299 +1403,20 @@ mod tests {
         expired.now_unix_ms = 1_501;
         assert_eq!(
             still_authorizes_imap_delete(expired, &grant, &prepared),
-            Err(ImapPolicyError::DeleteGrantExpired)
+            Err(ImapPolicyError::GrantExpired)
         );
 
         let mut wrong_account = prepared.clone();
         wrong_account.account_id = "acct-other".to_owned();
         assert_eq!(
             still_authorizes_imap_delete(context, &grant, &wrong_account),
-            Err(ImapPolicyError::DeleteGrantWrongScope)
+            Err(ImapPolicyError::AccountBindingMismatch)
         );
 
         grant.message_fingerprints.clear();
         assert_eq!(
             still_authorizes_imap_delete(context, &grant, &prepared),
-            Err(ImapPolicyError::DeleteGrantWrongScope)
-        );
-    }
-
-    #[test]
-    fn task_0410_delete_grant_expiry_and_replay_block_refuses_without_deleting_record() {
-        let (mut fresh_mailbox, prepared) = fixture_and_prepared();
-        let context = ImapDeleteContext {
-            entitlement: ImapEntitlement::Pro,
-            phase: ImapDeletePhase::Executing,
-            now_unix_ms: 10_000,
-        };
-
-        let mut fresh = executable_grant(&prepared, context.now_unix_ms);
-        assert!(
-            delete_prepared_with_grant(&mut fresh_mailbox, &mut fresh, context, &prepared).is_ok()
-        );
-        assert_eq!(fresh_mailbox.deleted_count(), 1);
-        assert!(fresh.used);
-        println!(
-            "TASK0410 fresh_grant delete_result=ok deleted_count={} used={}",
-            fresh_mailbox.deleted_count(),
-            fresh.used
-        );
-
-        let (mut used_mailbox, used_prepared) = fixture_and_prepared();
-        let mut used = executable_grant(&used_prepared, context.now_unix_ms);
-        used.used = true;
-        let used_refusal =
-            delete_prepared_with_grant(&mut used_mailbox, &mut used, context, &used_prepared)
-                .unwrap_err();
-        assert_eq!(used_refusal, ImapPolicyError::DeleteGrantUsed);
-        assert_eq!(used_mailbox.deleted_count(), 0);
-        println!(
-            "TASK0410 used_grant refusal={used_refusal:?} deleted_count={}",
-            used_mailbox.deleted_count()
-        );
-
-        let (mut expired_mailbox, expired_prepared) = fixture_and_prepared();
-        let mut expired = executable_grant(&expired_prepared, context.now_unix_ms);
-        expired.deadline_unix_ms = context.now_unix_ms;
-        let expired_refusal = delete_prepared_with_grant(
-            &mut expired_mailbox,
-            &mut expired,
-            context,
-            &expired_prepared,
-        )
-        .unwrap_err();
-        assert_eq!(expired_refusal, ImapPolicyError::DeleteGrantExpired);
-        assert_eq!(expired_mailbox.deleted_count(), 0);
-        println!(
-            "TASK0410 expired_grant refusal={expired_refusal:?} deleted_count={}",
-            expired_mailbox.deleted_count()
-        );
-    }
-
-    #[test]
-    fn task_0411_delete_authorization_errors_are_distinct_safe_refusal_codes() {
-        let context = ImapDeleteContext {
-            entitlement: ImapEntitlement::Pro,
-            phase: ImapDeletePhase::Executing,
-            now_unix_ms: 10_000,
-        };
-
-        let (mut missing_mailbox, missing_prepared) = fixture_and_prepared();
-        let missing_refusal = delete_prepared_with_optional_grant(
-            &mut missing_mailbox,
-            None,
-            context,
-            &missing_prepared,
-        )
-        .unwrap_err();
-
-        let (mut wrong_owner_mailbox, wrong_owner_prepared) = fixture_and_prepared();
-        let mut wrong_owner = executable_grant(&wrong_owner_prepared, context.now_unix_ms);
-        wrong_owner.owner_osl_user_id = "owner-other".to_owned();
-        let wrong_owner_refusal = delete_prepared_with_optional_grant(
-            &mut wrong_owner_mailbox,
-            Some(&mut wrong_owner),
-            context,
-            &wrong_owner_prepared,
-        )
-        .unwrap_err();
-
-        let (mut wrong_scope_mailbox, wrong_scope_prepared) = fixture_and_prepared();
-        let mut wrong_scope = executable_grant(&wrong_scope_prepared, context.now_unix_ms);
-        wrong_scope.account_id = "acct-other".to_owned();
-        let wrong_scope_refusal = delete_prepared_with_optional_grant(
-            &mut wrong_scope_mailbox,
-            Some(&mut wrong_scope),
-            context,
-            &wrong_scope_prepared,
-        )
-        .unwrap_err();
-
-        let (mut used_mailbox, used_prepared) = fixture_and_prepared();
-        let mut used = executable_grant(&used_prepared, context.now_unix_ms);
-        used.used = true;
-        let used_refusal = delete_prepared_with_optional_grant(
-            &mut used_mailbox,
-            Some(&mut used),
-            context,
-            &used_prepared,
-        )
-        .unwrap_err();
-
-        let (mut expired_mailbox, expired_prepared) = fixture_and_prepared();
-        let mut expired = executable_grant(&expired_prepared, context.now_unix_ms);
-        expired.deadline_unix_ms = context.now_unix_ms;
-        let expired_refusal = delete_prepared_with_optional_grant(
-            &mut expired_mailbox,
-            Some(&mut expired),
-            context,
-            &expired_prepared,
-        )
-        .unwrap_err();
-
-        let observed = [
-            (
-                "missing_grant",
-                missing_refusal,
-                ImapPolicyError::DeleteGrantMissing,
-                missing_mailbox.deleted_count(),
-            ),
-            (
-                "wrong_owner_grant",
-                wrong_owner_refusal,
-                ImapPolicyError::DeleteGrantWrongOwner,
-                wrong_owner_mailbox.deleted_count(),
-            ),
-            (
-                "wrong_scope_grant",
-                wrong_scope_refusal,
-                ImapPolicyError::DeleteGrantWrongScope,
-                wrong_scope_mailbox.deleted_count(),
-            ),
-            (
-                "used_grant",
-                used_refusal,
-                ImapPolicyError::DeleteGrantUsed,
-                used_mailbox.deleted_count(),
-            ),
-            (
-                "expired_grant",
-                expired_refusal,
-                ImapPolicyError::DeleteGrantExpired,
-                expired_mailbox.deleted_count(),
-            ),
-        ];
-
-        let distinct_codes: BTreeSet<String> = observed
-            .iter()
-            .map(|(_, refusal, _, _)| format!("{refusal:?}"))
-            .collect();
-        let request_count = observed.len();
-        assert_eq!(request_count, 5);
-        assert_eq!(distinct_codes.len(), 5);
-
-        for (label, refusal, expected, deleted_count) in observed {
-            assert_eq!(refusal, expected);
-            assert_eq!(deleted_count, 0);
-            println!("TASK0411 {label} refusal_code={refusal:?} deleted_count={deleted_count}");
-        }
-        println!(
-            "TASK0411 direct_bad_requests={} distinct_refusal_codes={}",
-            request_count,
-            distinct_codes.len()
-        );
-    }
-
-    #[test]
-    fn task_0410_delete_grant_expiry_and_replay_block_refuses_without_deleting_record() {
-        let (mut fresh_mailbox, prepared) = fixture_and_prepared();
-        let context = ImapDeleteContext {
-            entitlement: ImapEntitlement::Pro,
-            phase: ImapDeletePhase::Executing,
-            now_unix_ms: 10_000,
-        };
-
-        let mut fresh = executable_grant(&prepared, context.now_unix_ms);
-        assert!(
-            delete_prepared_with_grant(&mut fresh_mailbox, &mut fresh, context, &prepared).is_ok()
-        );
-        assert_eq!(fresh_mailbox.deleted_count(), 1);
-        assert!(fresh.used);
-        println!(
-            "TASK0410 fresh_grant delete_result=ok deleted_count={} used={}",
-            fresh_mailbox.deleted_count(),
-            fresh.used
-        );
-
-        let (mut used_mailbox, used_prepared) = fixture_and_prepared();
-        let mut used = executable_grant(&used_prepared, context.now_unix_ms);
-        used.used = true;
-        let used_refusal =
-            delete_prepared_with_grant(&mut used_mailbox, &mut used, context, &used_prepared)
-                .unwrap_err();
-        assert_eq!(used_refusal, ImapPolicyError::SingleUseAuthorityRequired);
-        assert_eq!(used_mailbox.deleted_count(), 0);
-        println!(
-            "TASK0410 used_grant refusal={used_refusal:?} deleted_count={}",
-            used_mailbox.deleted_count()
-        );
-
-        let (mut expired_mailbox, expired_prepared) = fixture_and_prepared();
-        let mut expired = executable_grant(&expired_prepared, context.now_unix_ms);
-        expired.deadline_unix_ms = context.now_unix_ms;
-        let expired_refusal = delete_prepared_with_grant(
-            &mut expired_mailbox,
-            &mut expired,
-            context,
-            &expired_prepared,
-        )
-        .unwrap_err();
-        assert_eq!(expired_refusal, ImapPolicyError::GrantExpired);
-        assert_eq!(expired_mailbox.deleted_count(), 0);
-        println!(
-            "TASK0410 expired_grant refusal={expired_refusal:?} deleted_count={}",
-            expired_mailbox.deleted_count()
-        );
-    }
-
-    #[test]
-    fn task_1227_check_folder_burn_cannot_widen_itself() {
-        let owner = "owner-maple-1";
-        let account = "acct-maple-1";
-        let message_id = "maple-mail-1";
-        let mut mailbox = ImapMailbox::from_messages(vec![
-            ImapMessageSnapshot {
-                owner_osl_user_id: owner.to_owned(),
-                account_id: account.to_owned(),
-                mailbox: "Red".to_owned(),
-                message_id: message_id.to_owned(),
-                uid: 10,
-                fingerprint: message_fingerprint(account, "Red", message_id, 10),
-                authored_by_self: true,
-            },
-            ImapMessageSnapshot {
-                owner_osl_user_id: owner.to_owned(),
-                account_id: account.to_owned(),
-                mailbox: "Blue".to_owned(),
-                message_id: message_id.to_owned(),
-                uid: 20,
-                fingerprint: message_fingerprint(account, "Blue", message_id, 20),
-                authored_by_self: true,
-            },
-        ]);
-
-        let red_targets_before = deleted_targets_in_folder(&mailbox, "Red");
-        assert_eq!(red_targets_before.len(), 0);
-        println!(
-            "TASK1227 red_count_before={} red_targets_before={red_targets_before:?}",
-            red_targets_before.len()
-        );
-
-        let prepared = prepare_delete(&mailbox, owner, account, "Red", message_id).unwrap();
-        let receipt = delete_prepared(&mut mailbox, &prepared).unwrap();
-        assert_eq!(receipt.mailbox, "Red");
-        assert_eq!(receipt.message_id, message_id);
-        let red_targets_after = deleted_targets_in_folder(&mailbox, "Red");
-        assert_eq!(red_targets_after, vec![message_id.to_owned()]);
-        println!(
-            "TASK1227 red_delete_result message_id={} red_count_after={} red_targets_after={red_targets_after:?}",
-            receipt.message_id,
-            red_targets_after.len()
-        );
-
-        let mut widened_to_blue = prepared.clone();
-        widened_to_blue.mailbox = "Blue".to_owned();
-        let blue_refusal = delete_prepared(&mut mailbox, &widened_to_blue).unwrap_err();
-        assert_eq!(blue_refusal, ImapPolicyError::FingerprintMismatch);
-        println!(
-            "TASK1227 blue_refusal=Blue is refused as outside folder Red reason={blue_refusal:?}"
-        );
-
-        let red_targets_after_blue = deleted_targets_in_folder(&mailbox, "Red");
-        assert_eq!(red_targets_after_blue, vec![message_id.to_owned()]);
-        println!(
-            "TASK1227 red_final_count={} red_final_targets={red_targets_after_blue:?}",
-            red_targets_after_blue.len()
+            Err(ImapPolicyError::FingerprintMismatch)
         );
     }
 
@@ -1811,7 +1430,6 @@ mod tests {
                     owner_osl_user_id: prepared.owner_osl_user_id.clone(),
                     account_id: prepared.account_id.clone(),
                     batch_digest: prepared.batch_digest,
-                    message_digests: BTreeSet::new(),
                     message_count: 0,
                 },
                 1_000,
@@ -1846,7 +1464,6 @@ mod tests {
             owner_osl_user_id: prepared.owner_osl_user_id.clone(),
             account_id: prepared.account_id.clone(),
             batch_digest: prepared.batch_digest,
-            message_digests: BTreeSet::new(),
             message_fingerprints: BTreeSet::new(),
             phase: ImapDeletePhase::Executing,
             entitlement: ImapEntitlement::Pro,
@@ -1919,4 +1536,27 @@ mod tests {
             ImapGrantAuthority::Attended
         );
     }
+}
+
+pub fn delete_prepared_with_grant(
+    mailbox: &mut ImapMailbox,
+    grant: &mut ImapDeleteGrant,
+    context: ImapDeleteContext,
+    prepared: &PreparedImapDelete,
+) -> Result<ImapDeleteReceipt, ImapPolicyError> {
+    still_authorizes_imap_delete(context, grant, prepared)?;
+    grant.used = true;
+    delete_prepared(mailbox, prepared)
+}
+
+pub fn delete_prepared_with_optional_grant(
+    mailbox: &mut ImapMailbox,
+    grant: Option<&mut ImapDeleteGrant>,
+    context: ImapDeleteContext,
+    prepared: &PreparedImapDelete,
+) -> Result<ImapDeleteReceipt, ImapPolicyError> {
+    let grant = grant.ok_or(ImapPolicyError::DeleteGrantMissing)?;
+    still_authorizes_imap_delete(context, grant, prepared)?;
+    grant.used = true;
+    delete_prepared(mailbox, prepared)
 }

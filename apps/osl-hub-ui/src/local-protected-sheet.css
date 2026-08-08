@@ -171,20 +171,3 @@
 
 .peer-message-receipt span { color: var(--muted); }
 .peer-message-receipt strong { color: var(--text); font-weight: 600; }
-
-/* TASK 3426 - the failed-placement notice, shown above the person's own text. */
-.placement-failure {
-  background: color-mix(in srgb, var(--danger) 9%, var(--panel));
-  border: 1px solid color-mix(in srgb, var(--danger) 52%, var(--line));
-  display: grid;
-  gap: 6px;
-  margin: 0 0 14px;
-  padding: 14px 16px;
-}
-
-.placement-failure p { margin: 0; line-height: 1.5; }
-.placement-failure-headline { color: var(--danger); font-size: 14px; font-weight: 700; }
-.placement-failure-reason { color: var(--text); font-size: 13px; }
-.placement-failure-not-sent { color: var(--text); font-size: 13px; font-weight: 700; }
-.placement-failure-where { color: var(--muted); font-size: 12px; }
-.placement-failure-detail { color: var(--muted); font-size: 11px; word-break: break-word; }

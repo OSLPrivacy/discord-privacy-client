@@ -4,7 +4,7 @@ import { isTauriRuntime } from "./preferences";
 // no longer thrown away with the exception: it is recorded, sanitized and
 // unchanged, so a developer can see why a command was refused instead of
 // guessing from a generic sentence. See ./backend-failure.ts.
-import { checkedBackendResponse, recordBackendFailure, recordInvalidBackendResponse, rejectBackendResponse, sanitizeBackendMessage } from "./backend-failure";
+import { checkedBackendResponse, recordBackendFailure, recordInvalidBackendResponse, sanitizeBackendMessage } from "./backend-failure";
 import {
   parseNativeDiscordOverlayOpenedBatch,
   type NativeDiscordOverlayOpenedBatch,
@@ -29,7 +29,7 @@ export type { HubRevocationStatus, HubScopeBurnOutcome };
  * friend is added (`HubPerson.safetyNumber`).
  */
 export interface FriendProfile { friendCode: string; oslUserId: string; }
-export interface AppNotification { id: string; title: string; detail: string; createdAt: string; appId?: ServiceId; }
+export interface AppNotification { id: string; title: string; detail: string; createdAt: string; }
 export type SupportMatrixPublicStatus = "available" | "beta" | "coming_soon" | "externally_blocked" | "unsupported";
 export type SupportMatrixInputEvidenceStatus = "qualified_profile" | "runtime_proven" | "qa_foundations_only" | "separate_qa_required" | "externally_blocked" | "unsupported" | "unknown";
 export interface SupportMatrixPresentationInput {
@@ -96,40 +96,12 @@ export interface PreparedOslChatText {
   viewOnce: boolean;
   deliveredToOslInbox: true;
 }
-export type BuildIntegrityStatus = "verified" | "mismatch" | "unknown";
 export interface OslChatHistoryRow {
   messageId: string;
   senderOslUserId: string;
   plaintext: string;
   createdAt: number;
   decryptedAt: number;
-  reactions: OslChatMessageReaction[];
-}
-export interface OslChatMessageReaction {
-  emoji: string;
-  count: number;
-  mine: boolean;
-}
-export interface OslChatReactionResult {
-  messageId: string;
-  emoji: string;
-  identityOslUserId: string;
-  added: boolean;
-  removed: boolean;
-  reactionCount: number;
-}
-export type OslChatBurnChoice = "yourSide" | "theirSide" | "bothSides";
-export interface OslChatBurnResult {
-  choice: OslChatBurnChoice;
-  messagesBefore: number;
-  messagesAfter: number;
-  rowsDestroyed: number;
-  yourRowsDestroyed: number;
-  theirRowsDestroyed: number;
-  othersRowsDestroyed: 0;
-  othersMessagesHidden: boolean;
-  localCleanupComplete: true;
-  recipientCopiesDeleted: false;
 }
 export interface PreparedHubAttachment {
   sealedB64: string;
@@ -200,8 +172,6 @@ export interface HubServiceBurnReadiness {
 }
 export interface HubServiceBurnResult {
   burnId: string;
-  currentAccountId: string;
-  selectedTotal: number;
   scopesBurned: number;
   rowsDestroyed: number;
   whitelistEntriesRemoved: number;
@@ -221,9 +191,6 @@ export interface LocalMessageCandidate {
   authoredBySelf: boolean;
   createdAtUnixMs: number | null;
   text: string;
-  replyRecipient?: string | null;
-  visibleRecipients?: string[];
-  hiddenRecipients?: string[];
   attachments?: LocalAttachmentCandidate[];
 }
 export interface LocalAttachmentCandidate {
@@ -249,7 +216,6 @@ export interface UninspectedAttachment {
 }
 export interface LocalPrivacyScanResult {
   findings: LocalPrivacyFinding[];
-  emailProtectionChecks: EmailProtectionCheckDisplay[];
   messagesScanned: number;
   messagesRejected: number;
   truncated: boolean;
@@ -260,13 +226,6 @@ export interface LocalPrivacyScanResult {
   videosChecked: boolean;
   attachmentTypesScanned: string[];
   uninspectedAttachments: UninspectedAttachment[];
-}
-export interface EmailProtectionCheckDisplay {
-  messageLocator: string;
-  replyRecipients: string[];
-  replyAllRecipients: string[];
-  visibleRecipients: string[];
-  distinctRecipientCount: number;
 }
 export interface PersistedLocalPrivacyScanResult extends Omit<LocalPrivacyScanResult, "persisted"> {
   persisted: true;
@@ -299,13 +258,6 @@ export interface SupportMatrixRowPresentation {
   publicClaimAllowed: boolean;
 }
 export type SupportMatrixPresentation = SupportMatrixPublicPresentation | SupportMatrixRowPresentation;
-export type InstalledBuildWarningReason = "changed" | "corruptProof";
-export interface InstalledBuildChatWarning {
-  kind: "changedBuild";
-  reason: InstalledBuildWarningReason;
-  message: string;
-  messageSendingAvailable: true;
-}
 
 export const LOCAL_PROTECTED_TEXT_MAX_BYTES = 1_000;
 export const HUB_PLAINTEXT_MAX_BYTES = 1_000;
@@ -565,12 +517,11 @@ export async function closeOslChatContext(): Promise<boolean> {
   catch (error) { recordBackendFailure("close_osl_chat_context", error); return false; }
 }
 
-export async function prepareOslChatText(plaintext: string, viewOnce = false, displayDurationSeconds?: number): Promise<PreparedOslChatText | null> {
-  if (!isTauriRuntime() || !isHubPlaintext(plaintext) || typeof viewOnce !== "boolean"
-    || (displayDurationSeconds !== undefined && (!Number.isSafeInteger(displayDurationSeconds) || displayDurationSeconds < 1 || displayDurationSeconds > 60))) return null;
+export async function prepareOslChatText(plaintext: string, viewOnce = false): Promise<PreparedOslChatText | null> {
+  if (!isTauriRuntime() || !isHubPlaintext(plaintext) || typeof viewOnce !== "boolean") return null;
   try {
     return checkedBackendResponse("prepare_osl_chat_text",
-      parsePreparedOslChatText(await invoke<unknown>("prepare_osl_chat_text", displayDurationSeconds === undefined ? { plaintext, viewOnce } : { plaintext, viewOnce, displayDurationSeconds })),
+      parsePreparedOslChatText(await invoke<unknown>("prepare_osl_chat_text", { plaintext, viewOnce })),
       "the prepared message did not match the expected shape");
   } catch (error) { recordBackendFailure("prepare_osl_chat_text", error, [plaintext]); return null; }
 }
@@ -585,101 +536,33 @@ export async function openOslChatText(): Promise<NativeDiscordOverlayOpenedBatch
   catch (error) { recordBackendFailure("open_osl_chat_text", error); return null; }
 }
 
-function parseBuildIntegrityStatus(value: unknown): BuildIntegrityStatus | null {
-  return value === "verified" || value === "mismatch" || value === "unknown" ? value : null;
-}
-
-export async function loadBuildIntegrityStatus(): Promise<BuildIntegrityStatus | null> {
+export async function listOslChatHistory(): Promise<OslChatHistoryRow[] | null> {
   if (!isTauriRuntime()) return null;
   try {
-    return checkedBackendResponse("build_integrity_status",
-      parseBuildIntegrityStatus(await invoke<unknown>("build_integrity_status")),
-      "the build integrity status did not match the expected shape");
-  } catch (error) { recordBackendFailure("build_integrity_status", error); return null; }
-}
-
-export async function listOslChatHistory(hideOthersMessages = false): Promise<OslChatHistoryRow[] | null> {
-  if (!isTauriRuntime()) return null;
-  try {
-    const value = await invoke<unknown>("list_osl_chat_history", { hideOthersMessages });
+    const value = await invoke<unknown>("list_osl_chat_history");
     if (!Array.isArray(value) || value.length > 200) return null;
     const rows = value.map((entry) => {
       if (!isRecord(entry)
-        || !exact(entry, ["discord_message_id", "channel_id", "sender_discord_id", "sender_osl_user_id", "plaintext", "decrypted_at", "burned", "reactions"])
+        || !exact(entry, ["discord_message_id", "channel_id", "sender_discord_id", "sender_osl_user_id", "plaintext", "decrypted_at", "burned"])
         || !safe(entry.discord_message_id, 96)
         || !isContextId(entry.channel_id)
         || !isContextId(entry.sender_osl_user_id)
         || !isHubPlaintext(entry.plaintext)
         || !Number.isSafeInteger(entry.decrypted_at)
         || Number(entry.decrypted_at) <= 0
-        || typeof entry.burned !== "boolean"
-        || !Array.isArray(entry.reactions)
-        || entry.reactions.length > 24) return null;
-      const reactions = entry.reactions.map(parseOslChatMessageReaction);
-      if (reactions.some((reaction) => reaction === null)) return null;
+        || typeof entry.burned !== "boolean") return null;
       return {
         messageId: entry.discord_message_id as string,
         senderOslUserId: entry.sender_osl_user_id as string,
         plaintext: entry.plaintext as string,
         createdAt: entry.decrypted_at as number,
         decryptedAt: entry.decrypted_at as number,
-        reactions: reactions as OslChatMessageReaction[],
       };
     });
     return checkedBackendResponse("list_osl_chat_history",
       rows.some((row) => row === null) ? null : rows as OslChatHistoryRow[],
       "a history row did not match the expected shape");
   } catch (error) { recordBackendFailure("list_osl_chat_history", error); return null; }
-}
-
-export async function burnOslChatHistory(choice: OslChatBurnChoice, hideOthersMessages = false): Promise<OslChatBurnResult | null> {
-  if (!isTauriRuntime() || !["yourSide", "theirSide", "bothSides"].includes(choice)) return null;
-  try {
-    return parseOslChatBurnResult(await invoke<unknown>("burn_osl_chat_history", { choice, hideOthersMessages }));
-  } catch (error) { recordBackendFailure("burn_osl_chat_history", error); return null; }
-}
-
-export function parseOslChatBurnResult(raw: unknown): OslChatBurnResult | null {
-  if (!isRecord(raw) || !exact(raw, ["choice", "messagesBefore", "messagesAfter", "rowsDestroyed", "yourRowsDestroyed", "theirRowsDestroyed", "othersRowsDestroyed", "othersMessagesHidden", "localCleanupComplete", "recipientCopiesDeleted"])) return null;
-  if (!["yourSide", "theirSide", "bothSides"].includes(String(raw.choice))
-    || ![raw.messagesBefore, raw.messagesAfter, raw.rowsDestroyed, raw.yourRowsDestroyed, raw.theirRowsDestroyed, raw.othersRowsDestroyed].every(boundedCount)
-    || raw.othersRowsDestroyed !== 0
-    || typeof raw.othersMessagesHidden !== "boolean"
-    || raw.localCleanupComplete !== true
-    || raw.recipientCopiesDeleted !== false) return null;
-  return raw as unknown as OslChatBurnResult;
-}
-
-export function parseInstalledBuildChatWarning(raw: unknown): InstalledBuildChatWarning | null {
-  if (raw === null || raw === undefined) return null;
-  if (!isRecord(raw)
-    || raw.kind !== "changedBuild"
-    || (raw.reason !== "changed" && raw.reason !== "corruptProof")
-    || raw.message !== "OSL build changed after its startup proof. Sending stays available."
-    || raw.messageSendingAvailable !== true) return null;
-  return {
-    kind: "changedBuild",
-    reason: raw.reason,
-    message: raw.message,
-    messageSendingAvailable: true,
-  };
-}
-
-export async function loadInstalledBuildChatWarningStatus(): Promise<InstalledBuildChatWarning | null> {
-  if (!isTauriRuntime()) return null;
-  try {
-    return checkedBackendResponse("installed_build_chat_warning_status",
-      parseInstalledBuildChatWarning(await invoke<unknown>("installed_build_chat_warning_status")),
-      "the installed-build warning did not match the expected shape");
-  } catch (error) { recordBackendFailure("installed_build_chat_warning_status", error); return null; }
-}
-
-export async function addOslChatReaction(messageId: string, emoji: string): Promise<OslChatReactionResult | null> {
-  return updateOslChatReaction("add_osl_chat_reaction", messageId, emoji);
-}
-
-export async function removeOslChatReaction(messageId: string, emoji: string): Promise<OslChatReactionResult | null> {
-  return updateOslChatReaction("remove_osl_chat_reaction", messageId, emoji);
 }
 
 export async function preparePeerProseText(
@@ -1032,119 +915,6 @@ export async function revokeActiveHubFriendScope(contextToken: string, personId:
       "the person row did not match the expected shape");
   }
   catch (error) { recordBackendFailure("revoke_active_hub_friend_scope", error); return null; }
-}
-
-/**
- * TASK 0240's per-friend, per-owned-account reach choice, as the backend
- * states it. One record is one owned account's answer for one friend, so two
- * owned accounts can carry two different answers for the same person.
- */
-export interface FriendAccountReachChoice {
-  personId: string;
-  serviceId: string;
-  accountId: string;
-  broadened: boolean;
-}
-
-export function parseFriendAccountReachChoice(raw: unknown): FriendAccountReachChoice | null {
-  if (!isRecord(raw) || !exact(raw, ["personId", "serviceId", "accountId", "broadened"])) return null;
-  if (!safe(raw.personId, 180) || !safeOpaque(raw.serviceId, 128) || !safeOpaque(raw.accountId, 128)) return null;
-  if (typeof raw.broadened !== "boolean") return null;
-  return raw as unknown as FriendAccountReachChoice;
-}
-
-// Change exactly ONE owned account's reach for one friend. The command carries
-// that account's own service and account identifier and nothing else, so a tick
-// box can never move an account the person did not touch. The identifier rules
-// match the backend's own (`validate_account_reach_component`): a refusal is
-// better than a command the backend will reject.
-export async function setHubFriendAccountReachChoice(
-  personId: string,
-  serviceId: string,
-  accountId: string,
-  broadened: boolean,
-): Promise<FriendAccountReachChoice | null> {
-  if (!isTauriRuntime() || !safe(personId, 180) || !safeOpaque(serviceId, 128) || !safeOpaque(accountId, 128) || typeof broadened !== "boolean") return null;
-  try {
-    return checkedBackendResponse("set_hub_friend_account_reach_choice",
-      parseFriendAccountReachChoice(await invoke<unknown>("set_hub_friend_account_reach_choice", {
-        personId,
-        serviceId,
-        accountId,
-        broadened,
-      })),
-      "the account reach choice did not match the expected shape");
-  } catch (error) { recordBackendFailure("set_hub_friend_account_reach_choice", error, [accountId]); return null; }
-}
-
-/** Ask the backend directly what every recorded account reach choice is. */
-export async function listHubFriendAccountReachChoices(personId: string): Promise<FriendAccountReachChoice[] | null> {
-  if (!isTauriRuntime() || !safe(personId, 180)) return null;
-  try {
-    const raw = await invoke<unknown>("list_hub_friend_account_reach_choices", { personId });
-    if (!Array.isArray(raw) || raw.length > 512) {
-      return rejectBackendResponse("list_hub_friend_account_reach_choices",
-        "the account reach choice list did not match the expected shape");
-    }
-    const choices = raw.map(parseFriendAccountReachChoice);
-    return checkedBackendResponse("list_hub_friend_account_reach_choices",
-      choices.every((choice): choice is FriendAccountReachChoice => choice !== null) ? choices : null,
-      "an account reach choice did not match the expected shape");
-  } catch (error) { recordBackendFailure("list_hub_friend_account_reach_choices", error); return null; }
-}
-
-/** One row of TASK 0280's blocked-people store, as the backend records it. */
-export interface HubBlockedPerson {
-  peerDiscordId: string;
-  state: string;
-  blockedAtUnixSeconds: number;
-}
-
-export function parseHubBlockedPerson(raw: unknown): HubBlockedPerson | null {
-  if (!isRecord(raw) || !exact(raw, ["peerDiscordId", "state", "blockedAtUnixSeconds"])) return null;
-  if (!safe(raw.peerDiscordId, 180) || raw.state !== "Blocked" || !boundedCount(raw.blockedAtUnixSeconds)) return null;
-  return raw as unknown as HubBlockedPerson;
-}
-
-/** Ask the backend directly who is on the blocked-people list. */
-export async function listHubBlockedPeople(): Promise<HubBlockedPerson[] | null> {
-  if (!isTauriRuntime()) return null;
-  try {
-    const raw = await invoke<unknown>("list_hub_blocked_people");
-    if (!Array.isArray(raw) || raw.length > 10_000) {
-      return rejectBackendResponse("list_hub_blocked_people", "the blocked people list did not match the expected shape");
-    }
-    const people = raw.map(parseHubBlockedPerson);
-    return checkedBackendResponse("list_hub_blocked_people",
-      people.every((person): person is HubBlockedPerson => person !== null) ? people : null,
-      "a blocked person did not match the expected shape");
-  } catch (error) { recordBackendFailure("list_hub_blocked_people", error); return null; }
-}
-
-/** The result TASK 0280's unblock command reports back. */
-export interface HubUnblockPersonResult {
-  personId: string;
-  removedFromBlocked: boolean;
-  blockedCount: number;
-  friendshipState: string;
-  allowedPlaces: number;
-}
-
-export function parseHubUnblockPersonResult(raw: unknown): HubUnblockPersonResult | null {
-  if (!isRecord(raw) || !exact(raw, ["personId", "removedFromBlocked", "blockedCount", "friendshipState", "allowedPlaces"])) return null;
-  if (!safe(raw.personId, 180) || typeof raw.removedFromBlocked !== "boolean") return null;
-  if (!boundedCount(raw.blockedCount) || !safe(raw.friendshipState, 32) || !boundedCount(raw.allowedPlaces)) return null;
-  return raw as unknown as HubUnblockPersonResult;
-}
-
-/** Remove one person from the blocked-people list. One command, one person. */
-export async function unblockHubPerson(personId: string): Promise<HubUnblockPersonResult | null> {
-  if (!isTauriRuntime() || !safe(personId, 180)) return null;
-  try {
-    return checkedBackendResponse("unblock_hub_person",
-      parseHubUnblockPersonResult(await invoke<unknown>("unblock_hub_person", { peerDiscordId: personId })),
-      "the unblock result did not match the expected shape");
-  } catch (error) { recordBackendFailure("unblock_hub_person", error, [personId]); return null; }
 }
 
 export function parseHubPerson(raw: unknown): HubPerson | null {
@@ -1532,8 +1302,8 @@ export function parseHubServiceBurnReadiness(raw: unknown): HubServiceBurnReadin
 }
 
 export function parseHubServiceBurnResult(raw: unknown): HubServiceBurnResult | null {
-  if (!isRecord(raw) || !exact(raw, ["burnId", "currentAccountId", "selectedTotal", "scopesBurned", "rowsDestroyed", "whitelistEntriesRemoved", "remoteBlobsDeleted", "remoteBlobDeletionsFailed", "localCleanupComplete", "remoteCleanupComplete", "loginProfileUntouched", "nativeHistoryUntouched"])) return null;
-  if (!/^[a-f0-9]{64}$/.test(String(raw.burnId)) || !safePlaintext(raw.currentAccountId, 128) || ![raw.selectedTotal, raw.scopesBurned, raw.rowsDestroyed, raw.whitelistEntriesRemoved, raw.remoteBlobsDeleted, raw.remoteBlobDeletionsFailed].every(boundedCount) || typeof raw.localCleanupComplete !== "boolean" || typeof raw.remoteCleanupComplete !== "boolean" || raw.loginProfileUntouched !== true || raw.nativeHistoryUntouched !== true) return null;
+  if (!isRecord(raw) || !exact(raw, ["burnId", "scopesBurned", "rowsDestroyed", "whitelistEntriesRemoved", "remoteBlobsDeleted", "remoteBlobDeletionsFailed", "localCleanupComplete", "remoteCleanupComplete", "loginProfileUntouched", "nativeHistoryUntouched"])) return null;
+  if (!/^[a-f0-9]{64}$/.test(String(raw.burnId)) || ![raw.scopesBurned, raw.rowsDestroyed, raw.whitelistEntriesRemoved, raw.remoteBlobsDeleted, raw.remoteBlobDeletionsFailed].every(boundedCount) || typeof raw.localCleanupComplete !== "boolean" || typeof raw.remoteCleanupComplete !== "boolean" || raw.loginProfileUntouched !== true || raw.nativeHistoryUntouched !== true) return null;
   return raw as unknown as HubServiceBurnResult;
 }
 
@@ -1908,10 +1678,8 @@ function parsePrivacyScan(raw: unknown, persisted: boolean): LocalPrivacyScanRes
   if (!isRecord(raw)) return null;
   const baseKeys = ["findings", "messagesScanned", "messagesRejected", "truncated", "analysisLocation", "persisted"];
   const attachmentKeys = ["attachmentsScanned", "imagesChecked", "videosChecked", "attachmentTypesScanned", "uninspectedAttachments"];
-  const emailProtectionKeys = ["emailProtectionChecks"];
   const hasAttachmentKeys = attachmentKeys.some((key) => Object.prototype.hasOwnProperty.call(raw, key));
-  const hasEmailProtectionKeys = emailProtectionKeys.some((key) => Object.prototype.hasOwnProperty.call(raw, key));
-  if (!exact(raw, [...baseKeys, ...(hasAttachmentKeys ? attachmentKeys : []), ...(hasEmailProtectionKeys ? emailProtectionKeys : [])])) return null;
+  if (!exact(raw, hasAttachmentKeys ? [...baseKeys, ...attachmentKeys] : baseKeys)) return null;
   const maxMessages = persisted ? 10_000_000 : 2_000;
   if (!Array.isArray(raw.findings) || raw.findings.length > 1_000 || !Number.isSafeInteger(raw.messagesScanned) || Number(raw.messagesScanned) < 0 || Number(raw.messagesScanned) > maxMessages || !Number.isSafeInteger(raw.messagesRejected) || Number(raw.messagesRejected) < 0 || typeof raw.truncated !== "boolean" || raw.analysisLocation !== "this_device_only" || raw.persisted !== persisted) return null;
   const attachmentsScanned = hasAttachmentKeys ? raw.attachmentsScanned : 0;
@@ -1919,7 +1687,6 @@ function parsePrivacyScan(raw: unknown, persisted: boolean): LocalPrivacyScanRes
   const videosChecked = hasAttachmentKeys ? raw.videosChecked : false;
   const attachmentTypesScanned = hasAttachmentKeys ? raw.attachmentTypesScanned : [];
   const uninspectedAttachments = hasAttachmentKeys ? raw.uninspectedAttachments : [];
-  const emailProtectionChecks = hasEmailProtectionKeys ? raw.emailProtectionChecks : [];
   if (!boundedCount(attachmentsScanned)
     || typeof imagesChecked !== "boolean"
     || typeof videosChecked !== "boolean"
@@ -1929,30 +1696,10 @@ function parsePrivacyScan(raw: unknown, persisted: boolean): LocalPrivacyScanRes
     || new Set(attachmentTypesScanned).size !== attachmentTypesScanned.length
     || !Array.isArray(uninspectedAttachments)
     || uninspectedAttachments.length > 1_000
-    || !uninspectedAttachments.every(validUninspectedAttachment)
-    || !Array.isArray(emailProtectionChecks)
-    || emailProtectionChecks.length > maxMessages
-    || !emailProtectionChecks.every(validEmailProtectionCheckDisplay)) return null;
+    || !uninspectedAttachments.every(validUninspectedAttachment)) return null;
   const findings = raw.findings.map(parsePrivacyFinding);
   if (!findings.every((finding): finding is LocalPrivacyFinding => finding !== null)) return null;
-  return { ...raw, findings, emailProtectionChecks, attachmentsScanned, imagesChecked, videosChecked, attachmentTypesScanned, uninspectedAttachments } as LocalPrivacyScanResult | PersistedLocalPrivacyScanResult;
-}
-
-function validEmailProtectionCheckDisplay(value: unknown): boolean {
-  if (!isRecord(value) || !exact(value, ["messageLocator", "replyRecipients", "replyAllRecipients", "visibleRecipients", "distinctRecipientCount"])) return false;
-  return safePlaintext(value.messageLocator, 256)
-    && Array.isArray(value.replyRecipients)
-    && value.replyRecipients.length <= 1
-    && value.replyRecipients.every((recipient) => safePlaintext(recipient, 256))
-    && Array.isArray(value.replyAllRecipients)
-    && value.replyAllRecipients.length <= 64
-    && value.replyAllRecipients.every((recipient) => safePlaintext(recipient, 256))
-    && Array.isArray(value.visibleRecipients)
-    && value.visibleRecipients.length <= 64
-    && value.visibleRecipients.every((recipient) => safePlaintext(recipient, 256))
-    && Number.isSafeInteger(value.distinctRecipientCount)
-    && Number(value.distinctRecipientCount) >= value.visibleRecipients.length
-    && Number(value.distinctRecipientCount) <= 128;
+  return { ...raw, findings, attachmentsScanned, imagesChecked, videosChecked, attachmentTypesScanned, uninspectedAttachments } as LocalPrivacyScanResult | PersistedLocalPrivacyScanResult;
 }
 
 function parsePrivacyFinding(raw: unknown): LocalPrivacyFinding | null {
@@ -1972,20 +1719,11 @@ function validLocalCandidate(candidate: LocalMessageCandidate): boolean {
     && safePlaintext(candidate.messageLocator, 256)
     && typeof candidate.authoredBySelf === "boolean"
     && (candidate.createdAtUnixMs === null || Number.isSafeInteger(candidate.createdAtUnixMs))
-    && (candidate.replyRecipient === undefined || candidate.replyRecipient === null || safePlaintext(candidate.replyRecipient, 256))
-    && (candidate.visibleRecipients === undefined || validRecipientList(candidate.visibleRecipients))
-    && (candidate.hiddenRecipients === undefined || validRecipientList(candidate.hiddenRecipients))
     && ((safePlaintext(candidate.text, 8 * 1024)) || (candidate.text === "" && Boolean(candidate.attachments?.length)))
     && (candidate.attachments === undefined || (Array.isArray(candidate.attachments)
       && candidate.attachments.length > 0
       && candidate.attachments.length <= 64
       && candidate.attachments.every(validLocalAttachment)));
-}
-
-function validRecipientList(recipients: unknown): recipients is string[] {
-  return Array.isArray(recipients)
-    && recipients.length <= 64
-    && recipients.every((recipient) => safePlaintext(recipient, 256));
 }
 
 function validLocalAttachment(attachment: LocalAttachmentCandidate): boolean {
@@ -2042,13 +1780,7 @@ export function parseNotifications(raw: unknown): AppNotification[] | null {
   if (!Array.isArray(raw) || raw.length > 20) return null;
   const parsed: AppNotification[] = [];
   for (const item of raw) {
-    if (!isRecord(item)
-      || !exact(item, item.appId === undefined ? ["id", "title", "detail", "createdAt"] : ["id", "title", "detail", "createdAt", "appId"])
-      || !safe(item.id, 64)
-      || !safe(item.title, 100)
-      || !safe(item.detail, 240)
-      || !safe(item.createdAt, 40)
-      || (item.appId !== undefined && !["discord", "telegram", "email", "signal", "whatsapp"].includes(String(item.appId)))) return null;
+    if (!isRecord(item) || !exact(item, ["id", "title", "detail", "createdAt"]) || !safe(item.id, 64) || !safe(item.title, 100) || !safe(item.detail, 240) || !safe(item.createdAt, 40)) return null;
     parsed.push(item as unknown as AppNotification);
   }
   return parsed;
@@ -2183,59 +1915,9 @@ export function parseDecryptedHubPlaintext(raw: unknown): string | null {
   return isHubPlaintext(raw) ? raw : null;
 }
 
-function parseOslChatMessageReaction(raw: unknown): OslChatMessageReaction | null {
-  if (!isRecord(raw)
-    || !exact(raw, ["emoji", "count", "mine"])
-    || !safeReactionEmoji(raw.emoji)
-    || !Number.isSafeInteger(raw.count)
-    || Number(raw.count) <= 0
-    || Number(raw.count) > 10_000
-    || typeof raw.mine !== "boolean") return null;
-  return {
-    emoji: raw.emoji,
-    count: Number(raw.count),
-    mine: raw.mine,
-  };
-}
-
-function parseOslChatReactionResult(raw: unknown): OslChatReactionResult | null {
-  if (!isRecord(raw)
-    || !exact(raw, ["messageId", "emoji", "identityOslUserId", "added", "removed", "reactionCount"])
-    || !safe(raw.messageId, 96)
-    || !safeReactionEmoji(raw.emoji)
-    || !isContextId(raw.identityOslUserId)
-    || typeof raw.added !== "boolean"
-    || typeof raw.removed !== "boolean"
-    || !Number.isSafeInteger(raw.reactionCount)
-    || Number(raw.reactionCount) < 0
-    || Number(raw.reactionCount) > 10_000) return null;
-  return {
-    messageId: raw.messageId,
-    emoji: raw.emoji,
-    identityOslUserId: raw.identityOslUserId,
-    added: raw.added,
-    removed: raw.removed,
-    reactionCount: Number(raw.reactionCount),
-  };
-}
-
-async function updateOslChatReaction(
-  command: "add_osl_chat_reaction" | "remove_osl_chat_reaction",
-  messageId: string,
-  emoji: string,
-): Promise<OslChatReactionResult | null> {
-  if (!isTauriRuntime() || !safe(messageId, 96) || !safeReactionEmoji(emoji)) return null;
-  try {
-    return checkedBackendResponse(command,
-      parseOslChatReactionResult(await invoke<unknown>(command, { messageId, emoji })),
-      "the reaction result did not match the expected shape");
-  } catch (error) { recordBackendFailure(command, error, [messageId, emoji]); return null; }
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === "object" && value !== null && !Array.isArray(value); }
 function exact(value: Record<string, unknown>, keys: string[]): boolean { const actual = Object.keys(value); return actual.length === keys.length && actual.every((key) => keys.includes(key)); }
 function safe(value: unknown, max: number): value is string { return typeof value === "string" && value.length > 0 && value.length <= max && !/[<>\u0000-\u001f\u007f]/.test(value); }
-function safeReactionEmoji(value: unknown): value is string { return typeof value === "string" && value.length > 0 && value.length <= 64 && value.trim() === value && !/[\u0000-\u001f\u007f]/.test(value); }
 function safePlaintext(value: unknown, max: number): value is string { return typeof value === "string" && value.length > 0 && value.length <= max && !/[\u0000\u007f]/.test(value); }
 function normalizeSupportMatrixStatus(value: unknown): SupportMatrixRowStatus | null {
   if (typeof value !== "string") return null;

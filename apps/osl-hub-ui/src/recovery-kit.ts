@@ -50,8 +50,6 @@ export interface RecoveryKitState {
   noRecoverySecretAcknowledged: boolean;
   /** A kit exists for this account that the owner has never confirmed saving. */
   kitUnsaved: boolean;
-  /** The owner continued after OSL had no recovery secret to show. */
-  noRecoverySecretAcknowledged?: boolean;
 }
 
 export type RecoveryKitMode =

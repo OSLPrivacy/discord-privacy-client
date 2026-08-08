@@ -98,3 +98,57 @@ pub fn apply_email_composer_input(
         },
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmailDraftReadbackState {
+    body: String,
+    matching_readback_count: usize,
+    send_count: usize,
+}
+
+impl EmailDraftReadbackState {
+    pub fn place(body: impl Into<String>) -> Self {
+        Self {
+            body: body.into(),
+            matching_readback_count: 0,
+            send_count: 0,
+        }
+    }
+
+    pub fn body(&self) -> &str {
+        &self.body
+    }
+
+    pub const fn matching_readback_count(&self) -> usize {
+        self.matching_readback_count
+    }
+
+    pub const fn send_count(&self) -> usize {
+        self.send_count
+    }
+
+    pub fn readback(&mut self, returned_readback: &str) -> Result<EmailDraftReadbackProof, String> {
+        if returned_readback != self.body {
+            return Err("readback mismatch".to_owned());
+        }
+        self.matching_readback_count = self.matching_readback_count.saturating_add(1);
+        Ok(EmailDraftReadbackProof {
+            body: self.body.clone(),
+            returned_readback: returned_readback.to_owned(),
+            matching_readback_count: self.matching_readback_count,
+        })
+    }
+
+    pub fn send_after_readback(&mut self, returned_readback: &str) -> Result<(), String> {
+        self.readback(returned_readback)?;
+        self.send_count = self.send_count.saturating_add(1);
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmailDraftReadbackProof {
+    pub body: String,
+    pub returned_readback: String,
+    pub matching_readback_count: usize,
+}

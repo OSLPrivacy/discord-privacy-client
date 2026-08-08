@@ -6165,6 +6165,7 @@ pub enum NativeDiscordRowPoster {
 /// returning plaintext.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeDiscordRowAttributionEvidence {
+
     pub discord_message_id: String,
     pub poster_identity_sha256: String,
     pub who_wrote_it: SharedRowWhoWroteIt,
@@ -6173,6 +6174,7 @@ pub struct NativeDiscordRowAttributionEvidence {
     pub scope_binding_sha256: String,
     pub window_generation: u64,
     pub row_index: usize,
+    pub poster: NativeDiscordRowPoster,
 }
 
 /// Domain-separated scope commitment shared by the native producer and broker.

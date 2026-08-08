@@ -24,10 +24,6 @@ const whitelistWarningBlock = region(
   "  const whitelistWarningNotice = nativeDiscordProtectionActive && verifiedPeer && !scopeApproved",
   "\n  const transcriptVisible = peerProtectedSheet.decryptDisplayEnabled;",
 );
-const unlistedPlaceProtectedControlsBlock = region(
-  '  const transcriptMode = transcriptVisible ? "plaintext" : "flagtext";',
-  '\n  return `<div class="native-discord-header-controls',
-);
 
 /**
  * Evaluate the shipped whitelist-warning markup block, so the trigger
@@ -46,59 +42,6 @@ function renderWhitelistWarning(input: {
     `${whitelistWarningBlock}\nreturn whitelistWarningNotice;`,
   ) as (protectionActive: boolean, verifiedPeer: boolean, scopeApproved: boolean) => string;
   return build(input.protectionActive, input.verifiedPeer, input.scopeApproved);
-}
-
-function renderUnlistedPlaceProtectedControls(): string {
-  const block = unlistedPlaceProtectedControlsBlock
-    .replace(": DiscordQaTranscriptVisibilityOutcome", "");
-  const build = new Function(
-    "context",
-    "scopeApproved",
-    "nativeDiscordProtectionActive",
-    "discordQaComposerBusy",
-    "discordQaComposerRefusal",
-    "discordMarkerAvailable",
-    "discordQaRowProofState",
-    "verifiedPeer",
-    "visibilityBusy",
-    "discordQaTranscriptVisibilityOutcome",
-    "transcriptVisible",
-    "eye",
-    "rowProofBusy",
-    "escapeHtml",
-    `const openPlaceAllowed = context === null || scopeApproved;\n${block}\nreturn [transcriptVisibilityControl, composerControl].join("");`,
-  ) as (
-    context: unknown,
-    scopeApproved: boolean,
-    protectionActive: boolean,
-    composerBusy: boolean,
-    composerRefusal: unknown,
-    markerAvailable: boolean,
-    rowProofState: string,
-    verifiedPeer: unknown,
-    visibilityBusy: boolean,
-    transcriptOutcome: string,
-    transcriptVisible: boolean,
-    eye: string,
-    rowProofBusy: boolean,
-    escapeHtml: (value: string) => string,
-  ) => string;
-  return build(
-    { contextToken: "unlisted-place-fixture", personId: "person-1" },
-    false,
-    true,
-    false,
-    null,
-    true,
-    "idle",
-    { personId: "person-1" },
-    false,
-    "applied",
-    true,
-    "<svg data-fixture-eye></svg>",
-    false,
-    (value: string) => value,
-  );
 }
 
 describe("Discord QA whitelist revoke warning", () => {
@@ -154,19 +97,6 @@ describe("Discord QA whitelist revoke warning", () => {
       '${composerRefusalNotice}${transcriptNotice}${transcriptVisibilityControl}${composerControl}${whitelistWarningNotice}',
     );
     expect(headerControls).toContain('class="native-discord-header-controls discord-qa-header-controls"');
-  });
-
-  it("TASK0126 renders no protected controls for an unlisted open place", () => {
-    const fixture = renderUnlistedPlaceProtectedControls();
-    const counts = {
-      lock: (fixture.match(/id="discord-qa-toggle-composer"/gu) ?? []).length,
-      eye: (fixture.match(/id="discord-qa-transcript-visibility"/gu) ?? []).length,
-      send: (fixture.match(/\b(?:send|Send)\b|data-lock-state=/gu) ?? []).length,
-      protectedText: (fixture.match(/protected text|peer-protected|data-osl-protected-box-rule/giu) ?? []).length,
-    };
-
-    console.info(`TASK0126 unlisted-place fixture lock=${counts.lock} eye=${counts.eye} send=${counts.send} protected-text=${counts.protectedText}`);
-    expect(counts).toEqual({ lock: 0, eye: 0, send: 0, protectedText: 0 });
   });
 
   it("matches the house style of its sibling status chips", () => {

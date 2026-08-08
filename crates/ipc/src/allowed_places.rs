@@ -30,6 +30,7 @@ pub enum AllowedPlaceStoreError {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AllowedPlaceRecord {
+
     pub app: String,
     pub account: String,
     pub kind: String,
@@ -38,6 +39,7 @@ pub struct AllowedPlaceRecord {
     pub place_name: String,
     #[serde(default)]
     pub person_name: String,
+
 }
 
 impl AllowedPlaceRecord {
@@ -767,6 +769,70 @@ pub const TASK_4202_EXAMPLE_ALLOWED_PLACE_RECORD: &str = r#"{
   "personCan": "Send protected text to the user's own Telegram saved chat."
 }"#;
 
+pub const TASK_4206_DISCORD_DIRECT_MESSAGE_ALLOWED_PLACE_RECORD: &str = r#"{
+  "app": "Discord",
+  "exactPlaceName": "direct message",
+  "access": "approved",
+  "sourceTask": 4206,
+  "typingBoxCheck": "crates/ipc/tests/discord_place_kind_fixtures.rs::five_discord_fixture_places_resolve_and_saved_messages_exits_with_code_1",
+  "personCan": "Send protected text in a Discord direct message."
+}"#;
+
+pub const TASK_4206_DISCORD_GROUP_CHAT_ALLOWED_PLACE_RECORD: &str = r#"{
+  "app": "Discord",
+  "exactPlaceName": "group chat",
+  "access": "approved",
+  "sourceTask": 4206,
+  "typingBoxCheck": "crates/ipc/tests/discord_place_kind_fixtures.rs::five_discord_fixture_places_resolve_and_saved_messages_exits_with_code_1",
+  "personCan": "Send protected text in a Discord group chat."
+}"#;
+
+pub const TASK_4206_DISCORD_SERVER_CHANNEL_ALLOWED_PLACE_RECORD: &str = r#"{
+  "app": "Discord",
+  "exactPlaceName": "server channel",
+  "access": "approved",
+  "sourceTask": 4206,
+  "typingBoxCheck": "crates/ipc/tests/discord_place_kind_fixtures.rs::five_discord_fixture_places_resolve_and_saved_messages_exits_with_code_1",
+  "personCan": "Send protected text in one Discord server channel."
+}"#;
+
+pub const TASK_4206_DISCORD_SERVER_ALLOWED_PLACE_RECORD: &str = r#"{
+  "app": "Discord",
+  "exactPlaceName": "server",
+  "access": "approved",
+  "sourceTask": 4206,
+  "typingBoxCheck": "crates/ipc/tests/discord_place_kind_fixtures.rs::five_discord_fixture_places_resolve_and_saved_messages_exits_with_code_1",
+  "personCan": "Send protected text across a whole Discord server."
+}"#;
+
+pub const TASK_4205_TELEGRAM_STORY_LOOK_ONLY_PLACE_RECORD: &str = r#"{
+  "app": "Telegram",
+  "exactPlaceName": "story",
+  "access": "look-only",
+  "sourceTask": 4205,
+  "typingBoxCheck": "look-only record: no typing box check may authorize placement",
+  "personCan": "Look at Telegram stories without placing protected text there."
+}"#;
+
+pub const TASK_4205_WHATSAPP_STATUS_LOOK_ONLY_PLACE_RECORD: &str = r#"{
+  "app": "WhatsApp",
+  "exactPlaceName": "status",
+  "access": "look-only",
+  "sourceTask": 4205,
+  "typingBoxCheck": "look-only record: no typing box check may authorize placement",
+  "personCan": "Look at WhatsApp status without placing protected text there."
+}"#;
+
+pub const ALLOWED_PLACE_MACHINE_RECORD_LIST: [&str; 7] = [
+    TASK_4202_EXAMPLE_ALLOWED_PLACE_RECORD,
+    TASK_4206_DISCORD_DIRECT_MESSAGE_ALLOWED_PLACE_RECORD,
+    TASK_4206_DISCORD_GROUP_CHAT_ALLOWED_PLACE_RECORD,
+    TASK_4206_DISCORD_SERVER_CHANNEL_ALLOWED_PLACE_RECORD,
+    TASK_4206_DISCORD_SERVER_ALLOWED_PLACE_RECORD,
+    TASK_4205_TELEGRAM_STORY_LOOK_ONLY_PLACE_RECORD,
+    TASK_4205_WHATSAPP_STATUS_LOOK_ONLY_PLACE_RECORD,
+];
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum AllowedPlaceRecordReadError {
     #[error("missing allowed-place record part: {part}")]
@@ -798,6 +864,96 @@ pub fn read_allowed_place_machine_record_json(
         .map_err(|error| AllowedPlaceRecordReadError::Json(error.to_string()))?;
     record.validate_filled()?;
     Ok(record)
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum AllowedPlaceAdmissionError {
+    #[error("OSL: {app_place} is look-only in the allowed-place records (app {app}, place {exact_place_name})")]
+    LookOnly {
+        app_place: String,
+        app: String,
+        exact_place_name: String,
+    },
+
+    #[error("OSL: no allowed-place record for {app_place} (app {app}, place {exact_place_name})")]
+    NoRecord {
+        app_place: String,
+        app: String,
+        exact_place_name: String,
+    },
+
+    #[error("OSL: allowed-place record list is unreadable before {app_place}: {source}")]
+    RecordListUnreadable {
+        app_place: String,
+        source: AllowedPlaceRecordReadError,
+    },
+
+    #[error("OSL: approved allowed-place record for {app_place} reached the old place model, which refused it: {reason}")]
+    OldPlaceModelRefused { app_place: String, reason: String },
+}
+
+pub fn require_approved_place_record(
+    app: &str,
+    exact_place_name: &str,
+) -> std::result::Result<AllowedPlaceMachineRecord, AllowedPlaceAdmissionError> {
+    let app_place = admission_app_place(app, exact_place_name);
+    let requested_app = app.trim();
+    let requested_place = exact_place_name.trim();
+
+    for raw in ALLOWED_PLACE_MACHINE_RECORD_LIST {
+        let record = read_allowed_place_machine_record_json(raw).map_err(|source| {
+            AllowedPlaceAdmissionError::RecordListUnreadable {
+                app_place: app_place.clone(),
+                source,
+            }
+        })?;
+        if record.app.eq_ignore_ascii_case(requested_app)
+            && record.exact_place_name == requested_place
+        {
+            return match record.access {
+                AllowedPlaceAccess::Approved => Ok(record),
+                AllowedPlaceAccess::LookOnly => Err(AllowedPlaceAdmissionError::LookOnly {
+                    app_place,
+                    app: requested_app.to_owned(),
+                    exact_place_name: requested_place.to_owned(),
+                }),
+            };
+        }
+    }
+
+    Err(AllowedPlaceAdmissionError::NoRecord {
+        app_place,
+        app: requested_app.to_owned(),
+        exact_place_name: requested_place.to_owned(),
+    })
+}
+
+pub fn record_gated_place_kind_for_old_model(
+    app: &str,
+    exact_place_name: &str,
+) -> std::result::Result<String, AllowedPlaceAdmissionError> {
+    let record = require_approved_place_record(app, exact_place_name)?;
+    let app_place = admission_app_place(&record.app, &record.exact_place_name);
+    crate::auto_whitelist_rules::normalize_auto_whitelist_app_kind(&old_model_app_kind_input(
+        &record,
+    ))
+    .map_err(|reason| AllowedPlaceAdmissionError::OldPlaceModelRefused { app_place, reason })
+}
+
+fn old_model_app_kind_input(record: &AllowedPlaceMachineRecord) -> String {
+    if record.app.trim().eq_ignore_ascii_case("discord") {
+        format!("{}:{}", record.app, record.exact_place_name)
+    } else {
+        record.app.clone()
+    }
+}
+
+fn admission_app_place(app: &str, exact_place_name: &str) -> String {
+    format!(
+        "{} {}",
+        app.trim().to_ascii_lowercase(),
+        exact_place_name.trim().to_ascii_lowercase()
+    )
 }
 
 pub fn read_allowed_place_record(
@@ -920,7 +1076,3 @@ pub fn allowed_place_summary(app_data_dir: impl AsRef<Path>) -> Result<AllowedPl
         places: places.max(0) as usize,
     })
 }
-
-
-
-
