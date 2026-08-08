@@ -186,7 +186,6 @@ pub fn allowed_place_tick_json(
         Ok(AllowedPlaceCommandJson::Tick { ok: true, state })
     })
 }
-
 pub fn compare_allowed_place_json(
     store_dir: &Path,
     app: String,

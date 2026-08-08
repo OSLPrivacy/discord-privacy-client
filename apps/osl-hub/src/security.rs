@@ -5197,7 +5197,9 @@ fn validate_allowed_place_record(record: &AllowedPlaceRecord) -> Result<(), Stri
     {
         return Err("OSL Instagram allowed-place kind is invalid".to_owned());
     }
-    if record.app == "x" && !matches!(record.kind.as_str(), "direct_message" | "post") {
+    if record.app == "x"
+        && !matches!(record.kind.as_str(), "direct_message" | "public_post")
+    {
         return Err("OSL X allowed-place kind is invalid".to_owned());
     }
     if record.app == ipc::allowed_places::APP_MESSENGER {
