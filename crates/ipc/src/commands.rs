@@ -18958,6 +18958,70 @@ pub fn cmd_osl_save_bad_message_rule(
     })
 }
 
+/// TASK 1459: AutoScrub's bad-message rule listing. Reuses the same
+/// [`BadMessageRuleDto`] shape and the same
+/// [`crate::bad_message_rules::BadMessageRule`] rule types as normal Scrub's
+/// `cmd_osl_list_bad_message_rules`, but reads AutoScrub's own switch
+/// (`autoscrub_bad_message_rules`), independent of the normal Scrub run.
+pub fn cmd_osl_list_autoscrub_bad_message_rules(
+    state: &AppState,
+) -> Result<Vec<BadMessageRuleDto>, String> {
+    record_activity_on_command_entry();
+    let mut rules: Vec<_> = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .autoscrub_bad_message_rules
+        .values()
+        .map(|rule| BadMessageRuleDto {
+            rule_name: rule.rule_name.clone(),
+            private_word: rule.private_word.clone(),
+        })
+        .collect();
+    rules.sort_by(|a, b| a.rule_name.cmp(&b.rule_name));
+    Ok(rules)
+}
+
+/// TASK 1459: AutoScrub's bad-message rule save. Reuses the same rule-name
+/// and private-word parsing as normal Scrub's `cmd_osl_save_bad_message_rule`
+/// (`crate::bad_message_rules::parse_bad_message_rule_name` /
+/// `parse_private_word`), so a private word is editable under the same
+/// validation on both surfaces. The result is written to AutoScrub's own
+/// `autoscrub_bad_message_rules` map — a switch independent of normal
+/// Scrub's `bad_message_rules` map, so this save never mutates the normal
+/// Scrub run.
+pub fn cmd_osl_save_autoscrub_bad_message_rule(
+    state: &AppState,
+    rule_name: String,
+    private_word: String,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<BadMessageRuleDto, String> {
+    record_activity_on_command_entry();
+    let rule_name = crate::bad_message_rules::parse_bad_message_rule_name(&rule_name)?
+        .name()
+        .to_string();
+    let private_word = crate::bad_message_rules::parse_private_word(&private_word)?;
+    let rule = crate::bad_message_rules::BadMessageRule {
+        rule_name: rule_name.clone(),
+        private_word: private_word.clone(),
+    };
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs
+            .autoscrub_bad_message_rules
+            .insert(rule_name, rule.clone());
+    }
+    persist_app_preferences_now(state, config_dir);
+    Ok(BadMessageRuleDto {
+        rule_name: rule.rule_name,
+        private_word: rule.private_word,
+    })
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct NewFriendDefaultsDto {
     pub account_reach: String,

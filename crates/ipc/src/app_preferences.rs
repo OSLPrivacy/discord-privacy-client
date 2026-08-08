@@ -495,6 +495,12 @@ pub struct AppPreferences {
     pub auto_whitelist_rules: HashMap<String, crate::auto_whitelist_rules::AutoWhitelistChoice>,
     #[serde(default)]
     pub bad_message_rules: HashMap<String, crate::bad_message_rules::BadMessageRule>,
+    /// TASK 1459: AutoScrub's own bad-message rule selections. Reuses the
+    /// normal Scrub [`crate::bad_message_rules::BadMessageRule`] type, but is
+    /// stored in its own map so saving a rule here never touches
+    /// `bad_message_rules` (the normal Scrub run) and vice versa.
+    #[serde(default)]
+    pub autoscrub_bad_message_rules: HashMap<String, crate::bad_message_rules::BadMessageRule>,
     #[serde(default)]
     pub new_friend_defaults: NewFriendDefaults,
     #[serde(default)]
@@ -533,6 +539,7 @@ impl Default for AppPreferences {
             language: default_language_choice(),
             auto_whitelist_rules: HashMap::new(),
             bad_message_rules: HashMap::new(),
+            autoscrub_bad_message_rules: HashMap::new(),
             new_friend_defaults: NewFriendDefaults::default(),
             allowed_place_records: BTreeMap::new(),
             next_generation_message_policy: NextGenerationMessagePolicy::default(),
