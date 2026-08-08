@@ -5182,7 +5182,7 @@ function workspaceContent(): string {
     : launchableHomeApps.filter((app) => app.launchState === "available");
   const homeApps = [...selectedHomeApps, ...roadmapHomeApps.filter((app) => !selectedHomeApps.some((selected) => selected.id === app.id))];
   const modules = [
-    { id: "osl-chats", name: "OSL Chat", available: true },
+    { id: "osl-chats", name: "OSL Chats", available: true },
     { id: "osl-mail", name: "OSL Mail", available: false },
     { id: "osl-notes", name: "OSL Notes", available: false },
     { id: "scrub", name: "Scrub", available: true },
