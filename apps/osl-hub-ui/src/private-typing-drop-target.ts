@@ -21,9 +21,24 @@ export interface DroppedAttachmentFile {
 
 type DropItem = { webkitGetAsEntry?: () => { isDirectory: boolean } | null };
 type DropEvent = Event & {
-  dataTransfer: { files: ArrayLike<DroppedAttachmentFile>; items?: ArrayLike<DropItem> } | null;
+  dataTransfer: { files: ArrayLike<DroppedAttachmentFile>; items?: ArrayLike<DropItem>; types?: ArrayLike<string> } | null;
 };
 type DropTarget = Pick<EventTarget, "addEventListener">;
+
+function carriesFiles(rawEvent: Event): boolean {
+  const transfer = (rawEvent as DropEvent).dataTransfer;
+  if (!transfer) return false;
+  return transfer.files.length > 0 || Array.from(transfer.types ?? []).includes("Files");
+}
+
+export interface PrivateTypingDropOutlineState {
+  readonly outlineVisible: boolean;
+  readonly text: "Drop to attach" | null;
+}
+
+export function privateTypingDropOutlineState(dragOver: boolean): PrivateTypingDropOutlineState {
+  return { outlineVisible: dragOver, text: dragOver ? "Drop to attach" : null };
+}
 
 /** Maps files accepted at the private composer directly to tray records. */
 export function directPrivateTypingDropCommand(
@@ -67,13 +82,35 @@ export function bindPrivateTypingBoxDropTarget(
   typingBox: DropTarget,
   tray: AttachmentTrayActions,
   onDropped: () => void = () => undefined,
+  onOutlineStateChange: (state: PrivateTypingDropOutlineState) => void = () => undefined,
 ): void {
+  let dragDepth = 0;
+  const setOutline = (dragOver: boolean): void => onOutlineStateChange(privateTypingDropOutlineState(dragOver));
+
+  typingBox.addEventListener("dragenter", (rawEvent) => {
+    if (!carriesFiles(rawEvent)) return;
+    rawEvent.preventDefault();
+    dragDepth += 1;
+    setOutline(true);
+  });
   typingBox.addEventListener("dragover", (rawEvent) => {
-    (rawEvent as Event).preventDefault();
+    if (!carriesFiles(rawEvent)) return;
+    rawEvent.preventDefault();
+    if (dragDepth === 0) dragDepth = 1;
+    setOutline(true);
+  });
+  typingBox.addEventListener("dragleave", (rawEvent) => {
+    if (dragDepth === 0) return;
+    rawEvent.preventDefault();
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (dragDepth === 0) setOutline(false);
   });
   typingBox.addEventListener("drop", (rawEvent) => {
     const event = rawEvent as DropEvent;
+    if (!carriesFiles(rawEvent)) return;
     event.preventDefault();
+    dragDepth = 0;
+    setOutline(false);
     const records = directPrivateTypingDropCommand(droppedFiles(event), tray);
     if (records.length) onDropped();
   });

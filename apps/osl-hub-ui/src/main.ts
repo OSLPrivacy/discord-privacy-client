@@ -837,9 +837,6 @@ let oslChatSearch = "";
 let oslChatSendBlockedReason: string | null = null;
 let oslChatAttachments: NativeOverlayPendingAttachment[] = [];
 const oslChatDropTray: OslChatAttachmentTrayState = createOslChatAttachmentTray();
-// Files dropped on the private typing box remain local tray records until the
-// operator explicitly sends them; keep that intake separate from native picks.
-const oslChatPrivateDropTray = createAttachmentTrayActions();
 const oslMailDropTray = createAttachmentTrayActions();
 let buildIntegrityStatus: BuildIntegrityStatus | null = null;
 let startSomethingChoice: "direct" | "group" | "enclave" | null = null;
@@ -5956,9 +5953,6 @@ function oslChatContent(): string {
   const droppedFiles = oslChatDropTray.attachments.length
     ? attachmentTrayMarkup(oslChatDropTray)
     : "";
-  const privateDroppedFiles = oslChatPrivateDropTray.getCards().length
-    ? attachmentTrayScreenMarkup(oslChatPrivateDropTray.getCards())
-    : "";
   const receipt = activeOslChatPersonId
     ? oslChatSenderReceiptMarkup(oslChatMessages.get(activeOslChatPersonId) ?? [])
     : "";
@@ -5983,7 +5977,7 @@ function oslChatContent(): string {
     buildIntegrity: buildIntegrityStatus,
     verificationWarningSurface: oslChatVerificationWarningSurface,
     buildWarning: installedBuildChatWarning,
-  })}${offlineStatus}${receipt}${droppedFiles}${privateDroppedFiles}${attachments}${settings}${startSheet}</main>`;
+  })}${offlineStatus}${receipt}${droppedFiles}${attachments}${settings}${startSheet}</main>`;
 }
 
 /** Browser offline is a reliable negative signal; any other state stays unknown. */
@@ -8990,7 +8984,6 @@ function bindWorkspace(): void {
     if (typeof form.requestSubmit === "function") form.requestSubmit(send);
     else send.click();
   });
-  if (oslChatDraftInput) bindPrivateTypingBoxDropTarget(oslChatDraftInput, oslChatPrivateDropTray, render);
   const oslMailBodyInput = document.querySelector<HTMLTextAreaElement>("#osl-mail-body");
   if (oslMailBodyInput) bindPrivateTypingBoxDropTarget(oslMailBodyInput, oslMailDropTray, render);
   document.querySelector<HTMLInputElement>("#osl-chat-view-once")?.addEventListener("change", (event) => { oslChatViewOnce = (event.currentTarget as HTMLInputElement).checked; });
