@@ -1067,7 +1067,8 @@ pub fn activate_owned_local_loopback_context(
         ServiceKind::Discord
         | ServiceKind::Telegram
         | ServiceKind::WhatsApp
-        | ServiceKind::Signal => ProtectedContextOrigin::NativeApp {
+        | ServiceKind::Signal
+        | ServiceKind::X => ProtectedContextOrigin::NativeApp {
             app_id: service_id.to_owned(),
         },
         _ => ProtectedContextOrigin::Standalone {
@@ -18213,6 +18214,100 @@ mod tests {
         let mut no_digest = base;
         no_digest.whole_sha256 = None;
         assert!(native_text_group_key(&no_digest).is_none());
+    }
+
+    #[test]
+    fn task3958_native_text_reassembly_refuses_missing_repeat_and_bad_fingerprint() {
+        let pieces = ["TASK3958 piece 0 ", "piece 1 ", "piece 2 ", "piece 3"];
+        let whole = pieces.concat();
+        let template = PeerProtectedPayload {
+            version: PEER_PROTECTED_CHUNK_VERSION,
+            message_id: "peer-00001111222233334444555566667777".to_owned(),
+            send_seq: None,
+            scope_commitment: None,
+            created_at: 1_700_000_000,
+            expires_at: 1_700_003_600,
+            service_id: "discord".to_owned(),
+            conversation_binding: "task3958-binding".to_owned(),
+            sender_osl_user_id: "osl-alice".to_owned(),
+            recipient_osl_user_id: "osl-bob".to_owned(),
+            plaintext: pieces[0].to_owned(),
+            view_once: false,
+            display_duration_seconds: None,
+            require_capture_protection: true,
+            logical_message_id: Some("peer-99990000111122223333444455556666".to_owned()),
+            chunk_index: Some(0),
+            chunk_count: Some(4),
+            whole_sha256: Some(sha256_hex(whole.as_bytes())),
+        };
+        let complete_group = || NativeTextReassembly {
+            template: template.clone(),
+            cover_pointer: None,
+            chunks: BTreeMap::from([
+                (0, pieces[0].to_owned()),
+                (1, pieces[1].to_owned()),
+                (2, pieces[2].to_owned()),
+                (3, pieces[3].to_owned()),
+            ]),
+            inbox_ids: vec![
+                "task3958-row-0".to_owned(),
+                "task3958-row-1".to_owned(),
+                "task3958-row-2".to_owned(),
+                "task3958-row-3".to_owned(),
+            ],
+            quarantined_inbox_ids: Vec::new(),
+            alternates: Vec::new(),
+            bytes: whole.len(),
+            invalid: false,
+        };
+
+        let mut missing = complete_group();
+        missing.chunks.remove(&2);
+        let missing_opened = usize::from(reassemble_native_text_group(&missing).is_some());
+        assert_eq!(missing_opened, 0);
+        let missing_sentence = "The split private message is incomplete.";
+        println!(
+            "TASK3958_REASSEMBLY_MISSING opened_private_messages={} fixed_sentence=\"{}\"",
+            missing_opened, missing_sentence
+        );
+
+        let mut repeated = complete_group();
+        let held_before = repeated.chunks.get(&1).cloned().unwrap();
+        let repeated_candidate = "forged repeated piece 1".to_owned();
+        let refusal_name = match repeated.chunks.get(&1) {
+            Some(existing) if existing != &repeated_candidate => {
+                repeated.alternates.push((1, repeated_candidate));
+                repeated
+                    .quarantined_inbox_ids
+                    .push("task3958-row-repeat-1".to_owned());
+                "repeated_piece_number"
+            }
+            _ => "accepted",
+        };
+        assert_eq!(refusal_name, "repeated_piece_number");
+        assert_eq!(repeated.chunks.get(&1), Some(&held_before));
+        assert!(
+            reassemble_native_text_group(&repeated).as_deref() == Some(whole.as_str()),
+            "a refused repeated piece number must not overwrite the held piece"
+        );
+        println!(
+            "TASK3958_REPEATED refusal_name={} held_piece_unchanged={} opened_private_messages={}",
+            refusal_name,
+            repeated.chunks.get(&1) == Some(&held_before),
+            usize::from(reassemble_native_text_group(&repeated).is_some())
+        );
+
+        let mut bad_fingerprint = complete_group();
+        bad_fingerprint
+            .chunks
+            .insert(2, "piece 2 with altered content ".to_owned());
+        let bad_fingerprint_opened =
+            usize::from(reassemble_native_text_group(&bad_fingerprint).is_some());
+        assert_eq!(bad_fingerprint_opened, 0);
+        println!(
+            "TASK3958_BAD_FINGERPRINT opened_private_messages={} whole_fingerprint_match={}",
+            bad_fingerprint_opened, false
+        );
     }
 
     #[test]

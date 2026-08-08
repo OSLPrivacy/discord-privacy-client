@@ -71,19 +71,21 @@ fn desynchronised_pair_heals_by_rehandshaking_without_lowering_its_pins() {
         b"before heal"
     );
 
-    recover_session(&alice_store, &bob_peer).expect("recover alice");
-    recover_session(&bob_store, &alice_peer).expect("recover bob");
+    recover_session(&alice_store, &alice_peer, &bob_peer).expect("recover alice");
+    recover_session(&bob_store, &bob_peer, &alice_peer).expect("recover bob");
     assert!(alice_store
-        .load_pin(&bob_peer)
+        .load_pair_pin(&alice_peer, &bob_peer)
         .expect("alice pin")
         .is_pinned_to_rn());
     assert!(bob_store
-        .load_pin(&alice_peer)
+        .load_pair_pin(&bob_peer, &alice_peer)
         .expect("bob pin")
         .is_pinned_to_rn());
     assert!(matches!(
         ipc::wire_rn::select_wire_version(
-            &alice_store.load_pin(&bob_peer).expect("alice pin"),
+            &alice_store
+                .load_pair_pin(&alice_peer, &bob_peer)
+                .expect("alice pin"),
             PeerCapabilities::Absent,
             RnPolicy::Opportunistic,
         ),

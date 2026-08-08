@@ -384,6 +384,11 @@ description = "Remove the locally sealed activation code from the trusted bundle
 commands.allow = ["clear_hub_activation_code"]
 
 [[permission]]
+identifier = "allow-get-realtime-wakeup-status"
+description = "Read the local lifecycle status of the realtime wake-up pipe without exposing account identifiers or bearer material."
+commands.allow = ["get_realtime_wakeup_status"]
+
+[[permission]]
 identifier = "allow-unlock-hub-password-gate"
 description = "Verify the original constant-time main, stealth, and burn password gate and execute exactly the role's trusted local consequence."
 commands.allow = ["unlock_hub_password_gate"]

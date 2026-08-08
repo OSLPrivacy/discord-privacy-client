@@ -1,0 +1,32 @@
+# Standalone check crate for TASK 3338.
+#
+# `apps/osl-hub` itself does not compile in this tree: `src/lib.rs`,
+# `src/allowed_place_commands.rs` and `src/message_expiry.rs` carry merge damage
+# that predates this task ("this file contains an unclosed delimiter"), so no
+# `-p osl-hub` test target can link. Following the TASK 3406 / TASK 3009
+# precedent, this crate compiles the hub's OWN source files through `#[path]`
+# rather than copying them, so the module under test is byte-for-byte the file
+# `apps/osl-hub/src/lib.rs` declares and the owner check it calls is
+# byte-for-byte gate 3001's.
+#
+# Every dependency pin and default-feature setting below is copied exactly from
+# `apps/osl-hub/Cargo.toml`.
+[package]
+name = "task-3338-shared-delete-action"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.149"
+base64 = "=0.22.1"
+calamine = { version = "=0.36.0", default-features = false }
+flate2 = "=1.1.9"
+pdf-extract = "=0.12.0"
+quick-xml = "=0.41.0"
+tar = "=0.4.46"
+zip = { version = "=8.6.0", default-features = false, features = ["deflate"] }
+lopdf = { version = "=0.42.0", default-features = false }
+
+[workspace]

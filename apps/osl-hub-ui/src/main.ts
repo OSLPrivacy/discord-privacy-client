@@ -12090,3 +12090,74 @@ function setNotificationsMuted(muted: boolean): void {
   notificationsMuted = muted;
   localStorage.setItem(notificationMuteStorageKey, String(muted));
 }
+
+/**
+ * View once is the one gate with two sides, so the Pro page states both.
+ *
+ * 0590 made CREATING a view-once message Pro-only; 0591 kept OPENING one free
+ * and proved a free receiver reveals a Pro sender's view-once text. A Pro page
+ * that lists view once without that split tells a free reader their friend's
+ * message is locked to them, which the broker refutes on every open.
+ */
+const VIEW_ONCE_TIER_SPLIT_NOTE = `<p class="compact-lead onboarding-centered-copy" data-view-once-tier>View once is split by tier: making one needs Pro, opening one is free.</p>`;
+
+function bindNewFriendDefaultControls(): void {
+  document.querySelectorAll<HTMLInputElement>("[data-new-friend-default]").forEach((input) => input.addEventListener("change", () => {
+    if (!input.checked) return;
+    const group = NEW_FRIEND_DEFAULT_GROUPS.find((candidate) => candidate.name === input.dataset.newFriendDefault);
+    if (!group || !group.options.some((option) => option.value === input.value)) return;
+    newFriendDefaultChoices = { ...newFriendDefaultChoices, [group.field]: input.value };
+    render();
+  }));
+  document.querySelector<HTMLButtonElement>("#save-new-friend-default")?.addEventListener("click", () => {
+    savedNewFriendDefaults = { ...newFriendDefaultChoices };
+    localStorage.setItem(newFriendDefaultsStorageKey, JSON.stringify(savedNewFriendDefaults));
+    showToast("New friend defaults saved. Friends you already added did not change");
+    render();
+  });
+  // Reset goes back to the OSL defaults -- the same starting point
+  // NewFriendDefaults::default() uses -- and saves them, so Reset is not a
+  // half-move that leaves a different set of choices on disk than on screen.
+  document.querySelector<HTMLButtonElement>("#reset-new-friend-default")?.addEventListener("click", () => {
+    newFriendDefaultChoices = initialNewFriendDefaults();
+    savedNewFriendDefaults = initialNewFriendDefaults();
+    localStorage.setItem(newFriendDefaultsStorageKey, JSON.stringify(savedNewFriendDefaults));
+    showToast("New friend defaults reset");
+    render();
+  });
+}
+
+const newFriendDefaultsStorageKey = "osl-hub-new-friend-defaults-v1";
+
+function oslFriendPageContent(): string {
+  const friend = activeOslFriend;
+  const row = friend ? homeFriendRows.find((candidate) => candidate.friendId === friend.friendId) ?? null : null;
+  return `<main class="content-viewport osl-friend-page" id="route-heading" tabindex="-1"><header class="osl-friend-page-header"><button class="text-button" type="button" data-route="home">Back</button><h1>${escapeHtml(friend?.username ?? "Friend")}</h1></header>${row ? `<div class="osl-friend-page-summary"><p>OSL ID: ${escapeHtml(row.oslUserId)}</p></div>` : `<div class="empty-state"><strong>This friend could not be found</strong></div>`}</main>`;
+}
+
+/**
+ * Read the saved New friend defaults back, one field at a time, and keep only
+ * values the screen actually offers. A stored string OSL no longer recognizes
+ * falls back to the built-in default rather than being handed to a radio group
+ * that has no such option -- which would render every choice unselected and
+ * leave the screen unable to say what the default is.
+ */
+function readNewFriendDefaults(): NewFriendDefaultChoices {
+  const fallback = initialNewFriendDefaults();
+  let stored: unknown;
+  try {
+    stored = JSON.parse(localStorage.getItem(newFriendDefaultsStorageKey) ?? "{}");
+  } catch {
+    return fallback;
+  }
+  if (typeof stored !== "object" || stored === null || Array.isArray(stored)) return fallback;
+  const record = stored as Record<string, unknown>;
+  const choices = { ...fallback };
+  for (const group of NEW_FRIEND_DEFAULT_GROUPS) {
+    const value = record[group.field];
+    if (typeof value === "string" && group.options.some((option) => option.value === value)) {
+      (choices as Record<string, string>)[group.field] = value;
+    }
+  }
+  return choices;
+}

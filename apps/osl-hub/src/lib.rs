@@ -942,6 +942,9 @@ pub mod pro_marked_deletion_outcomes;
 pub mod shared_marked_deletion_record;
 pub mod osl_chat_danger_row;
 pub mod timed_delete_sweep_job;
+pub mod sync_policy;
+pub mod realtime_wakeup;
+pub mod shared_delete_action;
 
 // The keystore/ipc crates deliberately keep the active-account dir, base-dir
 // override, and unlocked main-password key in process-wide statics (see

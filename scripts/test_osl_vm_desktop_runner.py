@@ -33,6 +33,11 @@ class OslVmDesktopRunnerStaticTests(unittest.TestCase):
         self.assertRegex(self.runner, r"Stderr")
         self.assertRegex(self.runner, r"desktop-runner terminal result identity mismatch")
         self.assertIn("PayloadGzipBase64", self.runner)
+        self.assertIn("PayloadPath", self.runner)
+        self.assertIn("StagedPayloadLeaf", self.runner)
+        self.assertIn("desktop-runner-staged", self.runner)
+        self.assertIn("staged payload leaf name is invalid", self.runner)
+        self.assertIn("staged payload is outside the exact desktop-runner staging root", self.runner)
         self.assertIn("IO.Compression.GzipStream", self.runner)
         self.assertIn("DESKTOP-RUNNER", self.runner)
 

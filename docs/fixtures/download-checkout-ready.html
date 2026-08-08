@@ -1,0 +1,40 @@
+<!doctype html>
+<!--
+  TEST FIXTURE ONLY — not a published page and not linked from the site.
+  TASK 1519: this is what docs/download.html must look like on the day
+  prepaidRedemptionReady() returns true, i.e. the "working purchase button"
+  half of the finish line. scripts/check-download-page-words.mjs is run against
+  it with an injected ready-checkout readiness so both accepted outcomes,
+  working and hidden, are covered by a check that can go red.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Download OSL Hub (checkout-ready fixture)</title>
+  <link rel="stylesheet" href="../site.css">
+</head>
+<body>
+  <main>
+    <h1>Download OSL Hub for Windows</h1>
+
+    <section aria-labelledby="pro-purchase">
+      <h2 id="pro-purchase">Pro</h2>
+      <p id="shared-pricing-facts">5 dollars, one month from code entry, no renewal, no OSL card storage.</p>
+      <p>Nothing renews, and OSL never stores your payment details. Pro is an early-access purchase. Today it unlocks early access to new privacy tools as they reach the beta channel — not the v1 feature set, which is still being finished.</p>
+
+      <h3 id="scrub-tiers">What Free and Pro cover</h3>
+      <ul id="download-scrub-tiers">
+        <li data-tier="free" data-capability="scrub-discovery"><strong>Free — Scrub review.</strong> Scrub review reads an export you already asked a service for and shows you what it found. It is not built yet and arrives at v1. When it lands it stays free: Free OSL keeps working, and reviewing what a service holds on you never costs 5 dollars.</li>
+        <li data-tier="pro" data-capability="scrub-guided-deletion"><strong>Pro — Scrub deletion.</strong> Guided deletion handoff is not built yet and arrives at v1. When it lands, OSL will take you to the page and you confirm each removal yourself — OSL will not delete on your behalf, and a requested deletion is never shown as a verified one.</li>
+        <li data-tier="pro" data-capability="autoscrub"><strong>Pro — Scrub schedules.</strong> AutoScrub repeats an approved deletion plan on a schedule, with strict limits. It is not built yet and arrives at v1. It is also the one optional closed-source module: it is not installed by default and would need your explicit consent to download.</li>
+      </ul>
+      <p>Every Scrub stage listed here is Planned. None of it is included in a purchase today, and no part of it is on sale.</p>
+
+      <div id="download-pro-purchase" data-checkout-buttons="1">
+        <button type="button" id="download-pro-button" data-checkout-url="https://checkout.example.invalid/osl-pro-fixture">Buy Pro</button>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

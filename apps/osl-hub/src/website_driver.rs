@@ -1690,3 +1690,53 @@ mod tests {
         println!("TASK1210 fixture_draft={}", read.text);
     }
 }
+
+fn email_send_expression(recipient: &str, body: Option<&str>, should_send: bool) -> String {
+    let recipient = serde_json::to_string(recipient).unwrap_or_else(|_| "\"\"".to_owned());
+    let body = body
+        .map(|body| serde_json::to_string(body).unwrap_or_else(|_| "\"\"".to_owned()))
+        .unwrap_or_else(|| "null".to_owned());
+    let should_send = if should_send { "true" } else { "false" };
+    format!(
+        r#"
+(async () => {{
+  const recipient = {recipient};
+  const body = {body};
+  const shouldSend = {should_send};
+  const visible = (element) => {{
+    if (!element || element.disabled || element.hidden || element.getAttribute('aria-hidden') === 'true') return false;
+    const style = window.getComputedStyle(element);
+    return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0' && element.getClientRects().length > 0;
+  }};
+  const firstVisible = (selector) => Array.from(document.querySelectorAll(selector)).find(visible);
+  const setText = (element, value) => {{
+    element.focus();
+    if (element.isContentEditable) {{
+      element.textContent = value;
+    }} else {{
+      element.value = value;
+    }}
+    element.dispatchEvent(new InputEvent('input', {{ bubbles: true, inputType: 'insertText', data: value }}));
+    element.dispatchEvent(new Event('change', {{ bubbles: true }}));
+  }};
+  const to = firstVisible('[data-osl-email-to], input[name="to"], input[type="email"], [role="textbox"][aria-label="To"], [aria-label="To"]');
+  const send = firstVisible('[data-osl-email-send], button[type="submit"], button[aria-label="Send"], [role="button"][aria-label="Send"]');
+  if (!to || !send) return false;
+  setText(to, recipient);
+  if (body !== null) {{
+    const bodyElement = firstVisible('[data-osl-email-body-input], textarea[name="body"], textarea[aria-label="Body"], [contenteditable="true"][aria-label="Body"], [role="textbox"][aria-label="Body"]');
+    if (!bodyElement) return false;
+    setText(bodyElement, body);
+  }}
+  if (!shouldSend) return true;
+  send.click();
+  if (window.__oslLastSendPromise && typeof window.__oslLastSendPromise.then === 'function') {{
+    await window.__oslLastSendPromise;
+  }} else {{
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }}
+  return true;
+}})()
+"#
+    )
+}

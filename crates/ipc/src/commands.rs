@@ -4361,15 +4361,18 @@ fn rn_session_store_from_config_dir() -> Result<crate::wire_rn::RnSessionStore, 
 fn select_rn_wire_path_for_send(
     store: &crate::wire_rn::RnSessionStore,
     peer_discord_id: &str,
+    local_identity_x25519: &[u8; 32],
     peer_identity_x25519: &[u8; 32],
     peer_capabilities: keystore::client::PeerCapabilities,
 ) -> Result<RnWirePath, String> {
-    let pin = store.load_pin(peer_identity_x25519).map_err(|e| {
-        format!(
-            "OSL: send refused for peer {peer}: OSL-RN version pin could not be read: {e}",
-            peer = crate::log_id::log_id(peer_discord_id)
-        )
-    })?;
+    let pin = store
+        .load_pair_pin(local_identity_x25519, peer_identity_x25519)
+        .map_err(|e| {
+            format!(
+                "OSL: send refused for peer {peer}: OSL-RN version pin could not be read: {e}",
+                peer = crate::log_id::log_id(peer_discord_id)
+            )
+        })?;
 
     select_rn_wire_path(
         &pin,
@@ -4425,6 +4428,7 @@ mod rn_send_selection_tests {
             select_rn_wire_path_for_send(
                 &store,
                 "123456789012345678",
+                &[0x11u8; 32],
                 &peer,
                 keystore::client::PeerCapabilities::Absent
             ),
@@ -4437,12 +4441,16 @@ mod rn_send_selection_tests {
     fn send_time_selection_refuses_legacy_for_stored_rn_pin() {
         let dir = tempfile::TempDir::new().expect("tempdir");
         let store = crate::wire_rn::RnSessionStore::new(dir.path().join("rn"));
+        let local = [0x41u8; 32];
         let peer = [18u8; 32];
-        store.raise_pin_to_rn(&peer).expect("raise pin");
+        store
+            .raise_pair_pin_to_rn(&local, &peer)
+            .expect("raise pin");
 
         let err = select_rn_wire_path_for_send(
             &store,
             "123456789012345678",
+            &local,
             &peer,
             keystore::client::PeerCapabilities::Absent,
         )
@@ -4458,6 +4466,7 @@ mod rn_send_selection_tests {
     fn send_selection_verify_peer_capabilities_feeds_pre_send_select_wire_version() {
         let dir = tempfile::TempDir::new().expect("tempdir");
         let store = crate::wire_rn::RnSessionStore::new(dir.path().join("rn"));
+        let local = [0x24u8; 32];
         let peer_identity = keystore::generate_identity("b24-peer".to_string());
         let x25519 = STANDARD.encode(peer_identity.x25519_public.as_bytes());
         let ed25519 = STANDARD.encode(peer_identity.ed25519_public.as_bytes());
@@ -4494,6 +4503,7 @@ mod rn_send_selection_tests {
         let absent = select_rn_wire_path_for_send(
             &store,
             "123456789012345678",
+            &local,
             peer_identity.x25519_public.as_bytes(),
             keystore::client::PeerCapabilities::Absent,
         )
@@ -4503,6 +4513,7 @@ mod rn_send_selection_tests {
         let verified_result = select_rn_wire_path_for_send(
             &store,
             "123456789012345678",
+            &local,
             peer_identity.x25519_public.as_bytes(),
             verified,
         );
@@ -4513,6 +4524,7 @@ mod rn_send_selection_tests {
     fn verify_peer_capabilities_feeds_pre_send_select_wire_version() {
         let dir = tempfile::TempDir::new().expect("tempdir");
         let store = crate::wire_rn::RnSessionStore::new(dir.path().join("rn"));
+        let local = [0x25u8; 32];
         let peer_identity = keystore::generate_identity("b24-peer-exact".to_string());
         let x25519 = STANDARD.encode(peer_identity.x25519_public.as_bytes());
         let ed25519 = STANDARD.encode(peer_identity.ed25519_public.as_bytes());
@@ -4553,6 +4565,7 @@ mod rn_send_selection_tests {
         let legacy = select_rn_wire_path_for_send(
             &store,
             "123456789012345678",
+            &local,
             peer_identity.x25519_public.as_bytes(),
             keystore::client::PeerCapabilities::Absent,
         )
@@ -4566,6 +4579,7 @@ mod rn_send_selection_tests {
         let selected = select_rn_wire_path_for_send(
             &store,
             "123456789012345678",
+            &local,
             peer_identity.x25519_public.as_bytes(),
             verified,
         )
@@ -4656,6 +4670,7 @@ mod rn_legacy_fallback_send_path_tests {
     fn gate_off_unpinned_peer_dispatches_legacy_v3_unchanged() {
         let dir = tempfile::TempDir::new().expect("tempdir");
         let store = crate::wire_rn::RnSessionStore::new(dir.path().join("rn"));
+        let local = [0x78u8; 32];
         let peer = [0x79u8; 32];
 
         let raw_selected = crate::wire_rn::select_wire_version(
@@ -4669,6 +4684,7 @@ mod rn_legacy_fallback_send_path_tests {
         let send_path = select_rn_wire_path_for_send(
             &store,
             "900000000000000079",
+            &local,
             &peer,
             keystore::client::PeerCapabilities::Absent,
         )
@@ -4676,11 +4692,12 @@ mod rn_legacy_fallback_send_path_tests {
         assert_eq!(send_path, RnWirePath::LegacyV3);
 
         store
-            .raise_pin_to_rn(&peer)
+            .raise_pair_pin_to_rn(&local, &peer)
             .expect("test should be able to model an existing RN pin");
         let pinned = select_rn_wire_path_for_send(
             &store,
             "900000000000000079",
+            &local,
             &peer,
             keystore::client::PeerCapabilities::Absent,
         );
@@ -4984,6 +5001,7 @@ pub fn cmd_osl_encrypt_message_v2_wire(
             match select_rn_wire_path_for_send(
                 &rn_store,
                 peer_did,
+                self_pk.as_bytes(),
                 recipient.x25519_pub.as_bytes(),
                 peer_capabilities,
             )? {
@@ -5104,7 +5122,7 @@ fn try_encrypt_rn_first_contact_from_state(
         Ok(caps) => caps,
         Err(e) => {
             if store
-                .load_pin(peer_identity.as_bytes())
+                .load_pair_pin(identity.x25519_public.as_bytes(), peer_identity.as_bytes())
                 .map_err(|e| format!("OSL: OSL-RN first contact: {e}"))?
                 .is_pinned_to_rn()
             {
@@ -5115,7 +5133,7 @@ fn try_encrypt_rn_first_contact_from_state(
     };
 
     let pin = store
-        .load_pin(peer_identity.as_bytes())
+        .load_pair_pin(identity.x25519_public.as_bytes(), peer_identity.as_bytes())
         .map_err(|e| format!("OSL: OSL-RN first contact: {e}"))?;
     match crate::wire_rn::select_wire_version(&pin, caps, crate::wire_rn::RnPolicy::Opportunistic)
         .map_err(|e| format!("OSL: OSL-RN first contact: {e}"))?
@@ -5324,7 +5342,7 @@ fn try_encrypt_rn_first_contact_with_bundle(
 
     let peer_identity = *peer_bundle.identity.as_bytes();
     let pin = store
-        .load_pin(&peer_identity)
+        .load_pair_pin(own_identity_public.as_bytes(), &peer_identity)
         .map_err(|e| format!("OSL: OSL-RN first contact: {e}"))?;
     match crate::wire_rn::select_wire_version(&pin, caps, crate::wire_rn::RnPolicy::Opportunistic)
         .map_err(|e| format!("OSL: OSL-RN first contact: {e}"))?
@@ -7248,7 +7266,13 @@ pub fn cmd_osl_decrypt_message_v2(
                         // real symptom. The durable detector decides whether
                         // it is a single bad packet or a desync.
                         let peer = peer.as_bytes();
-                        let _ = record_rn_receive_failure(config_dir.as_deref(), peer);
+                        let local = state
+                            .identity_slot()
+                            .as_ref()
+                            .map(|identity| *identity.x25519_public.as_bytes());
+                        if let Some(local) = local.as_ref() {
+                            let _ = record_rn_receive_failure(config_dir.as_deref(), local, peer);
+                        }
                     }
                     return Err(error);
                 }
@@ -7417,7 +7441,11 @@ fn record_rn_successful_decrypt(config_dir: Option<&Path>, peer: &[u8; 32]) -> R
         .map_err(|e| format!("OSL: RN health state could not be saved: {e}"))
 }
 
-fn record_rn_receive_failure(config_dir: Option<&Path>, peer: &[u8; 32]) -> Result<(), String> {
+fn record_rn_receive_failure(
+    config_dir: Option<&Path>,
+    local: &[u8; 32],
+    peer: &[u8; 32],
+) -> Result<(), String> {
     let dir = match config_dir {
         Some(dir) => dir.to_path_buf(),
         None => keystore::osl_config_dir()
@@ -7426,7 +7454,7 @@ fn record_rn_receive_failure(config_dir: Option<&Path>, peer: &[u8; 32]) -> Resu
     let sessions = crate::wire_rn::RnSessionStore::for_config_dir(&dir)
         .map_err(|e| format!("OSL: cannot open RN session store: {e}"))?;
     if !sessions
-        .load_pin(peer)
+        .load_pair_pin(local, peer)
         .map_err(|e| format!("OSL: RN version pin could not be read: {e}"))?
         .is_pinned_to_rn()
     {
@@ -19592,6 +19620,21 @@ pub struct AllowedPlaceSearchResultDto {
     pub stable_id: String,
     pub place_name: String,
     pub person_name: String,
+    /// TASK 0868 — whether this place is allowed right now, so the Whitelisting
+    /// screen can draw the row's tick from the store instead of guessing.
+    pub allowed: bool,
+}
+
+fn allowed_place_search_result(row: crate::allowed_places::AllowedPlaceRow) -> AllowedPlaceSearchResultDto {
+    AllowedPlaceSearchResultDto {
+        app: row.record.app,
+        account: row.record.account,
+        kind: row.record.kind,
+        stable_id: row.record.stable_id,
+        place_name: row.record.place_name,
+        person_name: row.record.person_name,
+        allowed: row.allowed,
+    }
 }
 
 pub fn cmd_osl_search_allowed_places(
@@ -19599,19 +19642,51 @@ pub fn cmd_osl_search_allowed_places(
     query: String,
 ) -> Result<Vec<AllowedPlaceSearchResultDto>, String> {
     record_activity_on_command_entry();
-    let results = crate::allowed_places::search_allowed_place_records(&app_data_dir, &query)
+    let results = crate::allowed_places::search_allowed_place_rows(&app_data_dir, &query)
         .map_err(|error| format!("OSL: {error}"))?
         .into_iter()
-        .map(|place| AllowedPlaceSearchResultDto {
-            app: place.app,
-            account: place.account,
-            kind: place.kind,
-            stable_id: place.stable_id,
-            place_name: place.place_name,
-            person_name: place.person_name,
-        })
+        .map(allowed_place_search_result)
         .collect();
     Ok(results)
+}
+
+/// TASK 0868 — every place the Whitelisting screen lists, allowed or not.
+///
+/// The screen's rows and its search have to come from the same store, or the
+/// search answers a question about rows the screen is not showing and "Select
+/// all" acts on ids that are not on screen.
+pub fn cmd_osl_list_allowed_places(
+    app_data_dir: PathBuf,
+) -> Result<Vec<AllowedPlaceSearchResultDto>, String> {
+    record_activity_on_command_entry();
+    let results = crate::allowed_places::list_allowed_place_rows(&app_data_dir)
+        .map_err(|error| format!("OSL: {error}"))?
+        .into_iter()
+        .map(allowed_place_search_result)
+        .collect();
+    Ok(results)
+}
+
+/// TASK 0868 — write one row's tick back to the store.
+///
+/// Returns the stable ids that were actually changed, so a Save that could not
+/// find a row says so instead of reporting a write it did not do.
+pub fn cmd_osl_set_allowed_places_allowed(
+    app_data_dir: PathBuf,
+    stable_ids: Vec<String>,
+    allowed: bool,
+) -> Result<Vec<String>, String> {
+    record_activity_on_command_entry();
+    let mut written = Vec::new();
+    for stable_id in stable_ids {
+        let changed =
+            crate::allowed_places::set_allowed_place_allowed(&app_data_dir, &stable_id, allowed)
+                .map_err(|error| format!("OSL: {error}"))?;
+        if changed {
+            written.push(stable_id);
+        }
+    }
+    Ok(written)
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -22813,10 +22888,17 @@ fn direct_chat_security_status(
     let Ok(peer_identity) = rn_peer_identity_from_entry(peer_discord_id, &peer_entry) else {
         return Ok(DirectChatSecurityStatus::refused());
     };
+    let local_identity = {
+        let identity = state.identity_slot();
+        let Some(identity) = identity.as_ref() else {
+            return Ok(DirectChatSecurityStatus::refused());
+        };
+        *identity.x25519_public.as_bytes()
+    };
     let Ok(store) = rn_session_store_from_config_dir() else {
         return Ok(DirectChatSecurityStatus::refused());
     };
-    let pin = match store.load_pin(peer_identity.as_bytes()) {
+    let pin = match store.load_pair_pin(&local_identity, peer_identity.as_bytes()) {
         Ok(pin) => pin,
         Err(_) => return Ok(DirectChatSecurityStatus::refused()),
     };
@@ -23346,6 +23428,7 @@ pub fn cmd_osl_query_friends_tabs(state: &AppState) -> Result<SavedFriendsTabsQu
     })
 }
 
+
 // =====================================================================
 // TASK 0828 - Home "OSL Friends" panel rows.
 //
@@ -23538,6 +23621,7 @@ pub fn cmd_osl_save_home_friend_picture(
     save_saved_friend_request_file_with_dir(&dir, &file)?;
     Ok(row)
 }
+
 
 pub fn cmd_osl_accept_saved_friend_request(
     state: &AppState,
@@ -24607,4 +24691,160 @@ pub fn cmd_osl_burn_both_sides_server_copies(
         choice: "Both Sides".to_string(),
         remote_removal_count: response.deleted_count,
     })
+}
+
+// ---------------------------------------------------------------------------
+// TASK 5031 — the THIS PERSON block.
+//
+// "Rename them, just for me" and "give them a colour, just for me" are local
+// overlays. Everything below reads the other account's profile name from the
+// friend record and the overlay from its own file, and never writes one into
+// the other. `crates/ipc/src/this_person_overlay.rs` holds the rules.
+// ---------------------------------------------------------------------------
+
+use crate::this_person_overlay::{
+    PersonPlaceLabel, SafetyNumberPersonIdentity, ThisPersonOverlay, ThisPersonOverlayError,
+};
+
+/// The THIS PERSON block as the chat-settings modal draws it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ThisPersonBlockDto {
+    pub person_id: String,
+    /// The other account's own profile name, exactly as their record holds it.
+    pub profile_name: String,
+    pub local_rename: Option<String>,
+    pub local_colour: Option<String>,
+    /// The colour actually drawn — the chosen one, or the derived one when the
+    /// operator has chosen none.
+    pub colour: String,
+    pub colour_choices: Vec<String>,
+    /// Said on the setting itself, not only in the docs.
+    pub local_only_sentence: &'static str,
+}
+
+fn this_person_error(error: ThisPersonOverlayError) -> String {
+    error.to_string()
+}
+
+/// The other account's own profile record for `person_id`.
+///
+/// Read-only here on purpose: no command in this block may write to it. A local
+/// rename that edited this record would be visible to every other reader of the
+/// roster as if the person had published that name themselves.
+fn stored_friend_profile_name(app_data_dir: &Path, person_id: &str) -> Result<String, String> {
+    let state = crate::friend_request::load_friend_request_file_state(app_data_dir)
+        .map_err(|error| format!("OSL: {error:?}"))?;
+    state
+        .friends
+        .iter()
+        .find(|friend| friend.remote_identity_id == person_id)
+        .map(|friend| friend.display_name.clone())
+        .ok_or_else(|| ThisPersonOverlayError::UnknownPerson.to_string())
+}
+
+fn this_person_block(
+    app_data_dir: &Path,
+    person_id: &str,
+    overlay: &ThisPersonOverlay,
+) -> Result<ThisPersonBlockDto, String> {
+    let profile_name = stored_friend_profile_name(app_data_dir, person_id)?;
+    let resolved = crate::this_person_overlay::resolve_this_person(person_id, &profile_name, overlay);
+    Ok(ThisPersonBlockDto {
+        person_id: person_id.to_owned(),
+        profile_name,
+        local_rename: overlay.local_rename.clone(),
+        local_colour: overlay.local_colour.clone(),
+        colour: resolved.colour,
+        colour_choices: crate::this_person_overlay::THIS_PERSON_COLOUR_CHOICES
+            .iter()
+            .map(|colour| (*colour).to_owned())
+            .collect(),
+        local_only_sentence: crate::this_person_overlay::THIS_PERSON_LOCAL_ONLY_SENTENCE,
+    })
+}
+
+pub fn cmd_osl_this_person_block(
+    app_data_dir: PathBuf,
+    person_id: String,
+) -> Result<ThisPersonBlockDto, String> {
+    record_activity_on_command_entry();
+    let overlay = crate::this_person_overlay::read_this_person_overlay(&app_data_dir, &person_id)
+        .map_err(this_person_error)?;
+    this_person_block(&app_data_dir, &person_id, &overlay)
+}
+
+/// Save the local rename. `None` (or a blank string) clears it, which restores
+/// the profile name everywhere without touching the local colour.
+pub fn cmd_osl_set_this_person_local_rename(
+    app_data_dir: PathBuf,
+    person_id: String,
+    rename: Option<String>,
+) -> Result<ThisPersonBlockDto, String> {
+    record_activity_on_command_entry();
+    // Refuse first, so an unknown person never leaves an orphan overlay behind.
+    stored_friend_profile_name(&app_data_dir, &person_id)?;
+    let overlay = crate::this_person_overlay::set_this_person_local_rename(
+        &app_data_dir,
+        &person_id,
+        rename.as_deref(),
+    )
+    .map_err(this_person_error)?;
+    this_person_block(&app_data_dir, &person_id, &overlay)
+}
+
+pub fn cmd_osl_clear_this_person_local_rename(
+    app_data_dir: PathBuf,
+    person_id: String,
+) -> Result<ThisPersonBlockDto, String> {
+    cmd_osl_set_this_person_local_rename(app_data_dir, person_id, None)
+}
+
+pub fn cmd_osl_set_this_person_local_colour(
+    app_data_dir: PathBuf,
+    person_id: String,
+    colour: Option<String>,
+) -> Result<ThisPersonBlockDto, String> {
+    record_activity_on_command_entry();
+    stored_friend_profile_name(&app_data_dir, &person_id)?;
+    let overlay = crate::this_person_overlay::set_this_person_local_colour(
+        &app_data_dir,
+        &person_id,
+        colour.as_deref(),
+    )
+    .map_err(this_person_error)?;
+    this_person_block(&app_data_dir, &person_id, &overlay)
+}
+
+/// The three places this person's name and colour are drawn: sidebar row,
+/// thread header, notification. One resolved answer, three surfaces.
+pub fn cmd_osl_this_person_places(
+    app_data_dir: PathBuf,
+    person_id: String,
+) -> Result<Vec<PersonPlaceLabel>, String> {
+    record_activity_on_command_entry();
+    let profile_name = stored_friend_profile_name(&app_data_dir, &person_id)?;
+    let overlay = crate::this_person_overlay::read_this_person_overlay(&app_data_dir, &person_id)
+        .map_err(this_person_error)?;
+    Ok(crate::this_person_overlay::this_person_places(
+        &person_id,
+        &profile_name,
+        &overlay,
+    ))
+}
+
+/// The identity line above the safety number. The profile name is always
+/// present; a local rename can only sit beside it.
+pub fn cmd_osl_this_person_safety_number_identity(
+    app_data_dir: PathBuf,
+    person_id: String,
+) -> Result<SafetyNumberPersonIdentity, String> {
+    record_activity_on_command_entry();
+    let profile_name = stored_friend_profile_name(&app_data_dir, &person_id)?;
+    let overlay = crate::this_person_overlay::read_this_person_overlay(&app_data_dir, &person_id)
+        .map_err(this_person_error)?;
+    Ok(crate::this_person_overlay::safety_number_person_identity(
+        &person_id,
+        &profile_name,
+        &overlay,
+    ))
 }

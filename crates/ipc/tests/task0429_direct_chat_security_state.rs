@@ -167,6 +167,7 @@ fn restarting_test_profile_retains_agreed_state_and_peer_proof() {
     let _config = use_temp_config_dir(dir.path());
 
     let alice = generate_identity("task0429-alice".to_owned());
+    let alice_pub = *alice.x25519_public.as_bytes();
     let bob = generate_identity("task0429-bob".to_owned());
     let bob_prekeys = PrekeyState::new(&bob, PrekeyConfig::default(), 1_786_080_000);
     let signed_pubkeys = signed_live_rn_pubkeys(&bob);
@@ -213,7 +214,7 @@ fn restarting_test_profile_retains_agreed_state_and_peer_proof() {
     let reloaded_store =
         ipc::wire_rn::RnSessionStore::for_config_dir(dir.path()).expect("restart opens RN store");
     let reloaded_pin = reloaded_store
-        .load_pin(bob.x25519_public.as_bytes())
+        .load_pair_pin(&alice_pub, bob.x25519_public.as_bytes())
         .expect("restart loads RN pin");
     let reloaded_session = reloaded_store
         .load_session(bob.x25519_public.as_bytes())

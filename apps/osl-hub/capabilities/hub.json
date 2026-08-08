@@ -58,6 +58,7 @@
     "allow-execute-mass-cleanup-batch",
     "allow-validate-hub-activation-code",
     "allow-clear-hub-activation-code",
+    "allow-get-realtime-wakeup-status",
     "allow-unlock-hub-password-gate",
     "allow-create-hub-osl-identity",
     "allow-import-hub-osl-identity-phrase",

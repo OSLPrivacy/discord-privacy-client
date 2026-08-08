@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>TASK 1362 Message Row Fixture</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 20px; }
+    .osl-chat-message-row { max-width: 600px; margin: 0 auto 12px auto; border: 1px solid #e0e0e0; border-radius: 8px; padding: 12px 16px; background: #fafafa; }
+    .osl-chat-message-reply-reference { display: flex; gap: 8px; padding: 6px 10px; margin-bottom: 8px; border-left: 3px solid #0066cc; background: #eef4ff; font-size: 13px; }
+    .osl-chat-reply-reference-author { font-weight: 600; }
+    .osl-chat-reply-reference-text { color: #555; }
+    .osl-chat-message-header { display: flex; justify-content: space-between; margin-bottom: 6px; font-size: 14px; }
+    .osl-chat-message-author { font-weight: 600; }
+    .osl-chat-message-time { color: #999; }
+    .osl-chat-message-body { font-size: 14px; line-height: 1.5; }
+    .osl-chat-message-controls { margin-top: 8px; }
+    .osl-chat-message-edit { padding: 4px 10px; background: #0066cc; color: white; border: none; border-radius: 4px; font-size: 12px; cursor: pointer; }
+  </style>
+</head>
+<body>
+  
+    <article class="osl-chat-message-row" data-message-id="msg-1" data-own-message="false">
+      
+      <div class="osl-chat-message-header">
+        <span class="osl-chat-message-author">Alice</span>
+        <span class="osl-chat-message-time">3:41:06 PM</span>
+      </div>
+      <div class="osl-chat-message-body">This is the original message</div>
+      <div class="osl-chat-message-controls">
+        
+      </div>
+    </article>
+  
+
+    <article class="osl-chat-message-row" data-message-id="msg-2" data-own-message="true">
+      
+        <div class="osl-chat-message-reply-reference" data-reply-to-id="msg-1">
+          <span class="osl-chat-reply-reference-author">Alice</span>
+          <span class="osl-chat-reply-reference-text">This is the original message</span>
+        </div>
+      
+      <div class="osl-chat-message-header">
+        <span class="osl-chat-message-author">Me</span>
+        <span class="osl-chat-message-time">4:41:06 PM</span>
+      </div>
+      <div class="osl-chat-message-body">This is my reply</div>
+      <div class="osl-chat-message-controls">
+        <button type="button" class="osl-chat-message-edit" data-osl-edit-message="msg-2">Edit</button>
+      </div>
+    </article>
+  
+</body>
+</html>

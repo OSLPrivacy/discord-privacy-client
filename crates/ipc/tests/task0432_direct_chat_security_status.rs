@@ -168,6 +168,7 @@ fn three_fixture_direct_chats_return_safe_security_states_without_key_bytes() {
     let stronger = generate_identity("task0432-stronger".to_owned());
     let pending = generate_identity("task0432-pending".to_owned());
     let refused = generate_identity("task0432-refused".to_owned());
+    let local = generate_identity("task0432-local".to_owned());
     let server = start_pubkeys_server(vec![
         signed_pubkeys_response(&stronger, RN_CAP_WIRE_RN | RN_CAP_WIRE_RN_LIVE),
         signed_pubkeys_response(&pending, 0),
@@ -175,6 +176,7 @@ fn three_fixture_direct_chats_return_safe_security_states_without_key_bytes() {
     ]);
 
     let state = AppState::new();
+    state.install_identity(local.clone());
     *state.keyserver.lock().expect("keyserver lock") = Some(
         KeyServerClient::new(format!("http://127.0.0.1:{server}"))
             .expect("loopback keyserver client"),
@@ -184,7 +186,10 @@ fn three_fixture_direct_chats_return_safe_security_states_without_key_bytes() {
     install_peer(&state, REFUSED_DID, &refused);
     ipc::wire_rn::RnSessionStore::for_config_dir(config_dir.path())
         .expect("RN store")
-        .raise_pin_to_rn(refused.x25519_public.as_bytes())
+        .raise_pair_pin_to_rn(
+            local.x25519_public.as_bytes(),
+            refused.x25519_public.as_bytes(),
+        )
         .expect("seed refused downgrade floor");
 
     let statuses = vec![
