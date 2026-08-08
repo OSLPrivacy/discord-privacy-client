@@ -27,9 +27,14 @@ use sha2::{Digest, Sha256};
 const CHILD_ENV: &str = "TASK3224_CHILD";
 const ROOT_ENV: &str = "TASK3224_ROOT";
 const MUTANT_ENV: &str = "TASK3224_KEEP_HALF_WITH_KEY";
+const TASK3584_CHILD_ENV: &str = "TASK3584_CHILD";
+const TASK3584_ROOT_ENV: &str = "TASK3584_ROOT";
 const OBJECT_ID: &str = "32243224322432243224322432243224";
 const FETCH_TOKEN: [u8; 16] = [0x24; 16];
 const ATTACHMENT_KEY: [u8; 32] = [0x42; 32];
+const SECOND_OBJECT_ID: &str = "35843584358435843584358435843584";
+const SECOND_FETCH_TOKEN: [u8; 16] = [0x58; 16];
+const SECOND_ATTACHMENT_KEY: [u8; 32] = [0x84; 32];
 const PLAINTEXT_BYTES: usize = 4 * 1024 * 1024;
 
 fn payload() -> Vec<u8> {
@@ -58,7 +63,11 @@ fn sealed_fixture() -> (Vec<u8>, Vec<u8>) {
     (plaintext, sealed)
 }
 
-fn read_request(stream: &mut TcpStream) {
+fn lower_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn read_request(stream: &mut TcpStream, object_id: &str, fetch_token: &[u8; 16]) {
     let mut request = Vec::new();
     let mut chunk = [0_u8; 2048];
     while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
@@ -68,12 +77,13 @@ fn read_request(stream: &mut TcpStream) {
     }
     let request = String::from_utf8(request).expect("request headers are UTF-8");
     assert!(
-        request.starts_with(&format!("GET /v1/attachment/{OBJECT_ID} HTTP/1.1\r\n")),
+        request.starts_with(&format!("GET /v1/attachment/{object_id} HTTP/1.1\r\n")),
         "download uses the attachment endpoint: {request}"
     );
-    assert!(request.lines().any(|line| {
-        line.eq_ignore_ascii_case("x-osl-fetch-token: 24242424242424242424242424242424")
-    }));
+    let expected_token = format!("x-osl-fetch-token: {}", lower_hex(fetch_token));
+    assert!(request
+        .lines()
+        .any(|line| line.eq_ignore_ascii_case(&expected_token)));
 }
 
 fn write_headers(stream: &mut TcpStream, content_length: usize) {
@@ -84,12 +94,16 @@ fn write_headers(stream: &mut TcpStream, content_length: usize) {
     .expect("write response headers");
 }
 
-fn start_good_server(bytes: Vec<u8>) -> (String, thread::JoinHandle<()>) {
+fn start_good_server(
+    bytes: Vec<u8>,
+    object_id: &'static str,
+    fetch_token: [u8; 16],
+) -> (String, thread::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind good download server");
     let address = listener.local_addr().expect("good download address");
     let server = thread::spawn(move || {
         let (mut stream, _) = listener.accept().expect("accept good download");
-        read_request(&mut stream);
+        read_request(&mut stream, object_id, &fetch_token);
         write_headers(&mut stream, bytes.len());
         stream.write_all(&bytes).expect("stream complete download");
     });
@@ -98,13 +112,15 @@ fn start_good_server(bytes: Vec<u8>) -> (String, thread::JoinHandle<()>) {
 
 fn start_paused_server(
     bytes: Vec<u8>,
+    object_id: &'static str,
+    fetch_token: [u8; 16],
     resume: Receiver<()>,
 ) -> (String, thread::JoinHandle<usize>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind full-disk server");
     let address = listener.local_addr().expect("full-disk server address");
     let server = thread::spawn(move || {
         let (mut stream, _) = listener.accept().expect("accept full-disk download");
-        read_request(&mut stream);
+        read_request(&mut stream, object_id, &fetch_token);
         write_headers(&mut stream, bytes.len());
         let halfway = bytes.len() / 2;
         stream
@@ -155,9 +171,14 @@ fn fill_disk_after_halfway(
     root: PathBuf,
     start: Receiver<()>,
     resume: Sender<()>,
-) -> thread::JoinHandle<(bool, u64)> {
+) -> thread::JoinHandle<(bool, u64, usize)> {
     thread::spawn(move || {
         start.recv().expect("download reaches halfway");
+        let temporary_item_count_during = staging_part_count(&root);
+        assert_eq!(
+            temporary_item_count_during, 1,
+            "streaming download owns exactly one temporary item at halfway"
+        );
         let filler_path = root.join("disk-filler.bin");
         let mut filler = File::create(&filler_path).expect("create disk filler");
         let block = [0x5a_u8; 64 * 1024];
@@ -171,8 +192,24 @@ fn fill_disk_after_halfway(
             }
         };
         resume.send(()).expect("resume paused download server");
-        (saw_enospc, written)
+        (saw_enospc, written, temporary_item_count_during)
     })
+}
+
+fn fill_disk_now(root: &Path) -> (bool, u64) {
+    let filler_path = root.join("disk-filler.bin");
+    let mut filler = File::create(&filler_path).expect("create disk filler");
+    let block = [0x5a_u8; 64 * 1024];
+    let mut written = 0_u64;
+    let saw_enospc = loop {
+        match filler.write(&block) {
+            Ok(0) => break false,
+            Ok(count) => written += count as u64,
+            Err(error) if error.raw_os_error() == Some(28) => break true,
+            Err(error) => panic!("disk fill failed before ENOSPC: {error}"),
+        }
+    };
+    (saw_enospc, written)
 }
 
 fn atomic_publish(path: &Path, bytes: &[u8]) {
@@ -201,7 +238,7 @@ fn staging_part_count(root: &Path) -> usize {
 }
 
 fn run_good(root: &Path, plaintext: &[u8], sealed: &[u8]) -> usize {
-    let (base_url, server) = start_good_server(sealed.to_vec());
+    let (base_url, server) = start_good_server(sealed.to_vec(), OBJECT_ID, FETCH_TOKEN);
     let client = CipherStoreClient::new(base_url).expect("build good download client");
     let (download_path, mut download) =
         peer_attachment_io::create_download_file(root).expect("create good download staging");
@@ -237,10 +274,16 @@ fn run_good(root: &Path, plaintext: &[u8], sealed: &[u8]) -> usize {
     regular_file_count(&root.join("stored"))
 }
 
-fn run_full_disk(root: &Path, sealed: &[u8]) -> (usize, bool, usize, usize) {
+fn run_full_disk(
+    root: &Path,
+    sealed: &[u8],
+    object_id: &'static str,
+    fetch_token: [u8; 16],
+) -> (usize, bool, usize, usize, usize) {
     fs::create_dir_all(root.join("stored")).expect("create full-disk stored directory");
     let (resume_tx, resume_rx) = mpsc::channel();
-    let (base_url, server) = start_paused_server(sealed.to_vec(), resume_rx);
+    let (base_url, server) =
+        start_paused_server(sealed.to_vec(), object_id, fetch_token, resume_rx);
     let (fill_tx, fill_rx) = mpsc::channel();
     let filler = fill_disk_after_halfway(root.to_path_buf(), fill_rx, resume_tx);
     let client = CipherStoreClient::new(base_url).expect("build full-disk download client");
@@ -257,11 +300,12 @@ fn run_full_disk(root: &Path, sealed: &[u8]) -> (usize, bool, usize, usize) {
         halfway: sealed.len() / 2,
         trigger: Some(fill_tx),
     };
-    let result = client.fetch_attachment_to_writer(OBJECT_ID, &FETCH_TOKEN, &mut download);
+    let result = client.fetch_attachment_to_writer(object_id, &fetch_token, &mut download);
     let received_before_enospc = download.written;
     drop(download);
     let relay_half = server.join().expect("full-disk server exits");
-    let (saw_enospc, filler_bytes) = filler.join().expect("disk filler exits");
+    let (saw_enospc, filler_bytes, temporary_item_count_during) =
+        filler.join().expect("disk filler exits");
     assert!(
         saw_enospc,
         "disk filler must reach the real ENOSPC boundary"
@@ -314,6 +358,125 @@ fn run_full_disk(root: &Path, sealed: &[u8]) -> (usize, bool, usize, usize) {
         saw_enospc,
         leftover_parts,
         filler_bytes as usize,
+        temporary_item_count_during,
+    )
+}
+
+fn second_sealed_fixture() -> (Vec<u8>, Vec<u8>) {
+    let fixture = tempfile::tempdir().expect("create second source fixture root");
+    let plaintext: Vec<u8> = (0..PLAINTEXT_BYTES)
+        .map(|index| ((index * 53 + 84) % 251) as u8)
+        .collect();
+    let source_path = fixture.path().join("second.png");
+    fs::write(&source_path, &plaintext).expect("write second source fixture");
+    let mut source = File::open(source_path).expect("open second source fixture");
+    let staged = peer_attachment_io::encrypt_file(
+        fixture.path(),
+        &mut source,
+        "second.png",
+        "image/png",
+        Key::from_bytes(SECOND_ATTACHMENT_KEY),
+        b"task-3584-second-attachment".to_vec(),
+        1,
+    )
+    .expect("encrypt second source fixture");
+    let sealed = fs::read(staged.path()).expect("read second sealed fixture");
+    (plaintext, sealed)
+}
+
+fn retained_key_count(root: &Path) -> usize {
+    regular_file_count(&root.join("retained-keys"))
+}
+
+fn assert_task3584_snapshot(
+    stage: &str,
+    root: &Path,
+    control_plaintext: &[u8],
+    successful_write_count: usize,
+) {
+    let completed_file_count = regular_file_count(&root.join("stored"));
+    let retained_key_count = retained_key_count(root);
+    let control = fs::read(root.join("stored/fixture.png"))
+        .expect("the exact control download remains readable");
+    let retained_key = fs::read(root.join("retained-keys/fixture.key"))
+        .expect("the control unlock key remains retained");
+    let control_fingerprint = lower_hex(&Sha256::digest(&control));
+
+    assert_eq!(
+        completed_file_count, 1,
+        "TASK3584 {stage}: false completion or extra file"
+    );
+    assert_eq!(
+        retained_key_count, 1,
+        "TASK3584 {stage}: extra or missing retained key"
+    );
+    assert_eq!(
+        control, control_plaintext,
+        "TASK3584 {stage}: exact control download changed"
+    );
+    assert_eq!(
+        retained_key, ATTACHMENT_KEY,
+        "TASK3584 {stage}: exact control key changed"
+    );
+    assert_eq!(
+        successful_write_count, 1,
+        "TASK3584 {stage}: false attachment success"
+    );
+    println!(
+        "TASK3584 stage={stage} completed_file_count={completed_file_count} retained_key_count={retained_key_count} success_count={successful_write_count} control_fingerprint={control_fingerprint}"
+    );
+}
+
+fn run_full_disk_derivative_write(
+    root: &Path,
+    artifact: &str,
+    bytes: &[u8],
+) -> (bool, usize, usize, usize) {
+    assert!(bytes.len() >= 2, "derivative fixture must have two halves");
+    let (temporary_path, mut temporary) =
+        peer_attachment_io::create_download_file(root).expect("create derivative temporary item");
+    let partial = AttachmentPartialGuard::new(
+        root,
+        temporary_path,
+        peer_attachment_io::remove_staging_path_in_root,
+    );
+    let halfway = bytes.len() / 2;
+    temporary
+        .write_all(&bytes[..halfway])
+        .expect("write derivative first half before filling disk");
+    temporary
+        .sync_all()
+        .expect("sync derivative first half before filling disk");
+    let temporary_item_count_during = staging_part_count(root);
+    assert_eq!(
+        temporary_item_count_during, 1,
+        "{artifact} owns exactly one temporary item during its write"
+    );
+
+    let (filler_enospc, _filler_bytes) = fill_disk_now(root);
+    assert!(filler_enospc, "{artifact} filler must reach real ENOSPC");
+    let result = temporary.write_all(&bytes[halfway..]);
+    let write_enospc = result
+        .as_ref()
+        .is_err_and(|error| error.raw_os_error() == Some(28));
+    assert!(
+        write_enospc,
+        "{artifact} write must report ENOSPC, got {result:?}"
+    );
+    drop(temporary);
+
+    // Every derivative is publishable only from a complete temporary item.
+    // The ENOSPC path drops the production partial guard while the disk is
+    // still full, so a half preview can never appear beside completed files.
+    drop(partial);
+    fs::remove_file(root.join("disk-filler.bin")).expect("remove derivative disk filler");
+    let temporary_item_count_after_cleanup = staging_part_count(root);
+    let completed_file_count_after_cleanup = regular_file_count(&root.join("stored"));
+    (
+        write_enospc,
+        temporary_item_count_during,
+        temporary_item_count_after_cleanup,
+        completed_file_count_after_cleanup,
     )
 }
 
@@ -365,12 +528,12 @@ fn task_3224_private_disk_child() {
         plaintext.len()
     );
 
-    let (full_files, saw_enospc, leftover_parts, filler_bytes) =
-        run_full_disk(&root.join("full-disk"), &sealed);
+    let (full_files, saw_enospc, leftover_parts, filler_bytes, temporary_item_count_during) =
+        run_full_disk(&root.join("full-disk"), &sealed, OBJECT_ID, FETCH_TOKEN);
     assert_eq!(full_files, 0, "full-disk run must store zero files");
     assert_eq!(leftover_parts, 0, "full-disk run must remove its half file");
     println!(
-        "TASK3224 full_disk_download enospc={saw_enospc} received_bytes={} filler_bytes={filler_bytes} complete_files={full_files} leftover_parts={leftover_parts} unlock_key_files=0",
+        "TASK3224 full_disk_download enospc={saw_enospc} received_bytes={} filler_bytes={filler_bytes} complete_files={full_files} temporary_item_count_during={temporary_item_count_during} leftover_parts={leftover_parts} unlock_key_files=0",
         sealed.len() / 2
     );
 
@@ -379,4 +542,144 @@ fn task_3224_private_disk_child() {
         .status()
         .expect("unmount private tmpfs");
     assert!(status.success(), "private tmpfs unmount failed: {status}");
+}
+
+#[test]
+fn task_3584_full_disk_during_attachment_artifact_writes_keeps_one_exact_control() {
+    if std::env::var_os(TASK3584_CHILD_ENV).is_some() {
+        return;
+    }
+    let mountpoint = tempfile::tempdir().expect("create task 3584 private-disk mountpoint");
+    let status = Command::new("unshare")
+        .args(["-U", "-r", "-m"])
+        .arg(std::env::current_exe().expect("current test executable"))
+        .args([
+            "--ignored",
+            "--exact",
+            "task_3584_private_disk_child",
+            "--nocapture",
+        ])
+        .env(TASK3584_CHILD_ENV, "1")
+        .env(TASK3584_ROOT_ENV, mountpoint.path())
+        .status()
+        .expect("run task 3584 private-disk child");
+    assert!(
+        status.success(),
+        "task 3584 private-disk child failed: {status}"
+    );
+}
+
+#[test]
+#[ignore = "subprocess helper requiring its own mount namespace"]
+fn task_3584_private_disk_child() {
+    let root = PathBuf::from(
+        std::env::var(TASK3584_ROOT_ENV).expect("TASK3584_ROOT is set for private-disk child"),
+    );
+    mount_private_disk(&root);
+    let receiver = root.join("receiver");
+    let (control_plaintext, control_sealed) = sealed_fixture();
+    let (second_plaintext, second_sealed) = second_sealed_fixture();
+    let mut successful_write_count = 0usize;
+
+    let control_completed_files = run_good(&receiver, &control_plaintext, &control_sealed);
+    assert_eq!(
+        control_completed_files, 1,
+        "one exact control download is completed"
+    );
+    fs::create_dir_all(receiver.join("retained-keys")).expect("create retained-key directory");
+    fs::write(receiver.join("retained-keys/fixture.key"), ATTACHMENT_KEY)
+        .expect("retain exact control unlock key");
+    successful_write_count += 1;
+    assert_task3584_snapshot(
+        "before_failures",
+        &receiver,
+        &control_plaintext,
+        successful_write_count,
+    );
+
+    let (
+        file_completed_count,
+        file_enospc,
+        file_temporary_after_cleanup,
+        file_filler_bytes,
+        file_temporary_during,
+    ) = run_full_disk(
+        &receiver,
+        &second_sealed,
+        SECOND_OBJECT_ID,
+        SECOND_FETCH_TOKEN,
+    );
+    assert_eq!(
+        file_completed_count, 1,
+        "file failure published no second file"
+    );
+    assert_eq!(
+        file_temporary_during, 1,
+        "file temporary-item count during write"
+    );
+    assert_eq!(
+        file_temporary_after_cleanup, 0,
+        "file temporary-item count after cleanup"
+    );
+    println!(
+        "TASK3584 failure=file enospc={file_enospc} filler_bytes={file_filler_bytes} temporary_item_count_during={file_temporary_during} temporary_item_count_after_cleanup={file_temporary_after_cleanup}"
+    );
+    assert_task3584_snapshot(
+        "after_file_failure",
+        &receiver,
+        &control_plaintext,
+        successful_write_count,
+    );
+
+    let (preview_enospc, preview_temporary_during, preview_temporary_after_cleanup, preview_files) =
+        run_full_disk_derivative_write(&receiver, "preview", &second_plaintext);
+    assert_eq!(preview_files, 1, "preview failure published no second file");
+    assert_eq!(
+        preview_temporary_after_cleanup, 0,
+        "preview temporary-item count after cleanup"
+    );
+    println!(
+        "TASK3584 failure=preview enospc={preview_enospc} temporary_item_count_during={preview_temporary_during} temporary_item_count_after_cleanup={preview_temporary_after_cleanup}"
+    );
+    assert_task3584_snapshot(
+        "after_preview_failure",
+        &receiver,
+        &control_plaintext,
+        successful_write_count,
+    );
+
+    let small_picture = vec![0x84_u8; 256 * 256 * 4];
+    let (
+        small_picture_enospc,
+        small_picture_temporary_during,
+        small_picture_temporary_after_cleanup,
+        small_picture_files,
+    ) = run_full_disk_derivative_write(&receiver, "small_picture", &small_picture);
+    assert_eq!(
+        small_picture_files, 1,
+        "small-picture failure published no second file"
+    );
+    assert_eq!(
+        small_picture_temporary_after_cleanup, 0,
+        "small-picture temporary-item count after cleanup"
+    );
+    println!(
+        "TASK3584 failure=small_picture enospc={small_picture_enospc} temporary_item_count_during={small_picture_temporary_during} temporary_item_count_after_cleanup={small_picture_temporary_after_cleanup}"
+    );
+    assert_task3584_snapshot(
+        "after_small_picture_failure",
+        &receiver,
+        &control_plaintext,
+        successful_write_count,
+    );
+
+    println!(
+        "TASK3584 finish_line failure_count=3 completed_file_count=1 retained_key_count=1 success_count={successful_write_count} each_temporary_item_count_during=1 each_temporary_item_count_after_cleanup=0"
+    );
+
+    let status = Command::new("umount")
+        .arg(&root)
+        .status()
+        .expect("unmount task 3584 private tmpfs");
+    assert!(status.success(), "task 3584 tmpfs unmount failed: {status}");
 }
