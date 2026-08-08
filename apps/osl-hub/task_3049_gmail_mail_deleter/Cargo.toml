@@ -1,0 +1,24 @@
+[package]
+name = "task-3049-gmail-mail-deleter"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# A standalone per-task command crate, the pattern `task_3406_place_text/`
+# established and `task_3045_shared_mail_deleter/` carried into mail. It does
+# not copy the Gmail fill-in: `src/main.rs` compiles
+# `../src/gmail_mail_deleter.rs`, `../src/shared_mail_deleter.rs` (TASK 3045),
+# `../src/shared_mail_snapshot.rs` (the mailbox shape gate 3047's reader reads)
+# and `../src/mail_owner_check.rs` (gate 3044) straight out of
+# `apps/osl-hub/src/`, by path.
+#
+# It exists because the `osl-hub` lib still does not parse on this branch:
+# `src/autoscrub_run.rs` carries merge damage that predates this task, and
+# `cargo check --manifest-path apps/osl-hub/Cargo.toml --lib` stops at
+# "error: this file contains an unclosed delimiter --> src/autoscrub_run.rs".
+# This crate is what lets the Gmail deleter be run and checked today, against
+# the same bytes the lib will build once that damage is repaired.
+[dependencies]
+serde = { version = "=1.0.228", features = ["derive"] }
+
+[workspace]

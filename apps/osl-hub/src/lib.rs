@@ -128,6 +128,7 @@ pub(crate) mod firefox_migration_coordinator;
 pub mod friend_account_reach;
 pub mod front_window_grab;
 pub mod follow_active_app_window;
+pub mod gmail_mail_deleter;
 /// GMX Mail's fill-in of the shared mail deleter (TASK 3067).
 pub mod gmx_mail_deleter;
 pub mod hosted_audience;
@@ -1028,6 +1029,7 @@ pub mod service_scope_index;
 pub mod shared_mail_deleter;
 pub mod shared_mail_reader_types;
 #[cfg(not(task3982_focused))]
+pub mod shared_mail_snapshot;
 pub mod shared_mailbox_reader;
 pub mod shared_marked_message_deleter;
 pub mod signal_destination_binding;
