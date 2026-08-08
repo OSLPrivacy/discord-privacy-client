@@ -272,6 +272,8 @@ describe("OSL Chat delivery runtime receive failures", () => {
     );
 
     expect(label.timestampLabel).toBe("11:33 AM");
+    expect(label.dateLabel).toBe(new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" })
+      .format(new Date(1_700_000_001_000)));
   });
 
   it("labels reopened history with the sender-created timestamp, not the decrypt time", () => {
@@ -289,6 +291,8 @@ describe("OSL Chat delivery runtime receive failures", () => {
     }, (epochSeconds) => epochSeconds === 1_700_000_001 ? "11:33 AM" : "12:21 PM");
 
     expect(message?.timestampLabel).toBe("11:33 AM");
+    expect(message?.dateLabel).toBe(new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" })
+      .format(new Date(1_700_000_001_000)));
     expect(message?.reactions).toEqual([{ emoji: "👍", count: 1, mine: true }]);
   });
 });

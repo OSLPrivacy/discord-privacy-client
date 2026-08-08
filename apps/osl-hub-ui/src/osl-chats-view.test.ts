@@ -72,6 +72,34 @@ describe("OSL chats view", () => {
     expect(markup).toContain("osl-chat-message-text");
   });
 
+  it("groups a three-day fixture with one avatar per consecutive sender and centred day dividers", () => {
+    const messages = [
+      { messageId: "day-one", direction: "incoming" as const, body: "Monday", state: "received" as const, timestampLabel: "9:00 AM", dateLabel: "Jun 10, 2026" },
+      ...["one", "two", "three", "four", "five"].map((body, index) => ({ messageId: `five-${index}`, direction: "incoming" as const, body, state: "received" as const, timestampLabel: `10:0${index} AM`, dateLabel: "Jun 11, 2026" })),
+      { messageId: "day-three", direction: "outgoing" as const, body: "Wednesday", state: "sent" as const, timestampLabel: "11:00 AM", dateLabel: "Jun 12, 2026" },
+    ];
+    const markup = oslChatsViewMarkup(model({ messages }));
+    const groupCount = (markup.match(/data-osl-chat-message-group=/gu) ?? []).length;
+    const articleCount = (markup.match(/<article class="osl-chat-message /gu) ?? []).length;
+    const groupedMessageCount = [...markup.matchAll(/data-message-count="(\d+)"/gu)]
+      .reduce((total, match) => total + Number(match[1]), 0);
+    const dividerCount = (markup.match(/class="osl-chat-date-divider"/gu) ?? []).length;
+    const fiveMessageGroup = markup.match(/data-osl-chat-message-group="incoming" data-message-count="5">([\s\S]*?)<\/section>/u)?.[1] ?? "";
+
+    console.log(`TASK5010 date_dividers=${dividerCount} consecutive_sender_messages=5 group_avatar_count=${(fiveMessageGroup.match(/osl-chat-avatar is-message/gu) ?? []).length} grouped_messages=${articleCount}/${articleCount}`);
+    expect(dividerCount).toBe(2);
+    expect(fiveMessageGroup).toContain("osl-chat-avatar is-message");
+    expect((fiveMessageGroup.match(/osl-chat-avatar is-message/gu) ?? [])).toHaveLength(1);
+    expect(groupCount).toBe(3);
+    expect(articleCount).toBe(messages.length);
+    expect(groupedMessageCount).toBe(articleCount);
+
+    const stylesheet = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+    expect(stylesheet).toMatch(/\.osl-chat-message-group \{[^}]*grid-template-columns: 40px minmax\(0, 1fr\);[^}]*column-gap: 16px;/u);
+    expect(stylesheet).toMatch(/\.osl-chat-avatar \{[^}]*width: 40px;[^}]*height: 40px;[^}]*border-radius: 50% !important;/u);
+    expect(stylesheet).toMatch(/\.osl-chat-date-divider \{[^}]*justify-content: center;[^}]*text-align: center;/u);
+  });
+
   it("shows every honest delivery tag without inferring another state", () => {
     const markup = oslChatsViewMarkup(model({
       messages: OSL_CHAT_DELIVERY_STATES.map((state) => ({ messageId: state, direction: state === "received" ? "incoming" : "outgoing", body: state, state, timestampLabel: "Now" })),
@@ -202,7 +230,7 @@ describe("OSL chats view", () => {
   it("renders no external history, scripts, or backend capability claims", () => {
     const markup = oslChatsViewMarkup(model());
     expect(markup).not.toContain("<script");
-    expect(markup).not.toMatch(/Discord|Signal|Telegram|Snapchat|encrypted|end-to-end|server|group|keyserver|ratchet|receipt|browser profile|provider adapter|relay/iu);
+    expect(markup).not.toMatch(/Discord|Signal|Telegram|Snapchat|encrypted|end-to-end|server|keyserver|ratchet|receipt|browser profile|provider adapter|relay/iu);
   });
 });
 

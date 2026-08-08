@@ -170,6 +170,7 @@ export function oslChatHistoryMessages(
       body: row.plaintext,
       state: incoming ? "received" as const : "sent" as const,
       timestampLabel: formatTimestamp(row.createdAt),
+      dateLabel: oslChatDateLabel(row.createdAt),
       reactions: row.reactions,
     };
   });
@@ -186,6 +187,7 @@ export function receivedOslChatBatchMessage(
     body: incoming.plaintext,
     state: incoming.viewOnceConsumed ? "opened" : "received",
     timestampLabel: formatTimestamp(incoming.createdAt),
+    dateLabel: oslChatDateLabel(incoming.createdAt),
   };
 }
 
@@ -202,6 +204,11 @@ export function oslChatOpenRefusalMessage(
     state: "failed",
     timestampLabel,
   };
+}
+
+function oslChatDateLabel(epochSeconds: number): string {
+  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" })
+    .format(new Date(epochSeconds * 1_000));
 }
 
 /**

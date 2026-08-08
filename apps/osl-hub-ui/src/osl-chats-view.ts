@@ -145,6 +145,11 @@ export interface OslChatMessage {
   body: string;
   state: OslChatDeliveryState;
   timestampLabel: string;
+  /**
+   * The local calendar-day caption for this message. It is carried alongside
+   * the quiet time so the thread never has to guess a day from localized text.
+   */
+  dateLabel?: string;
   reactions?: readonly OslChatMessageReaction[];
 }
 
@@ -391,13 +396,46 @@ function oslChatMutualReadiness(friend: OslChatFriend): boolean {
 
 function messageRow(message: OslChatMessage, friend: OslChatFriend, profileDisplayName: string, continuation: boolean): string {
   const author = message.direction === "outgoing" ? profileDisplayName : friend.nickname;
+  const label = deliveryLabel(message.state);
+  const unreadable = oslChatMessageUnreadableNote(message, friend.handshakeConfirmed === true);
   const reactionButtons = [
     ...(message.reactions ?? []).map((reaction) => `<button class="osl-chat-reaction${reaction.mine ? " is-mine" : ""}" type="button" data-osl-chat-reaction="${escapeHtml(message.messageId)}" data-osl-chat-emoji="${escapeHtml(reaction.emoji)}" data-osl-chat-reaction-mine="${reaction.mine ? "true" : "false"}" aria-pressed="${reaction.mine ? "true" : "false"}"><span>${escapeHtml(reaction.emoji)}</span><span>${reaction.count}</span></button>`),
   ].join("");
-  return `<article class="osl-chat-message is-${message.direction}${continuation ? " is-continuation" : ""}" data-message-id="${escapeHtml(message.messageId)}">
-    ${continuation ? '<span class="osl-chat-message-avatar-spacer"></span>' : avatar(author, "is-message")}
-    <div class="osl-chat-message-copy">${continuation ? "" : `<div class="osl-chat-message-meta"><strong>${escapeHtml(author)}</strong><time>${escapeHtml(message.timestampLabel)}</time></div>`}<p class="osl-chat-message-text">${escapeHtml(message.body)}</p>${reactionButtons ? `<div class="osl-chat-reactions">${reactionButtons}</div>` : ""}</div>
+  return `<article class="osl-chat-message is-${message.direction}${continuation ? " is-continuation" : ""}" data-message-id="${escapeHtml(message.messageId)}" data-message-author="${escapeHtml(author)}">
+    <p class="osl-chat-message-text">${escapeHtml(message.body)}</p>
+    ${reactionButtons ? `<div class="osl-chat-reactions">${reactionButtons}</div>` : ""}
+    <footer><time class="osl-chat-message-timestamp">${escapeHtml(message.timestampLabel)}</time><span class="osl-chat-message-state is-${message.state}">${label}</span>${unreadable ? `<span class="osl-chat-message-unreadable">${escapeHtml(unreadable)}</span>` : ""}</footer>
   </article>`;
+}
+
+/** Render consecutive messages from one sender as one visual group. */
+function messageGroups(messages: readonly OslChatMessage[], friend: OslChatFriend, profileDisplayName: string): string {
+  let markup = "";
+  let previous: OslChatMessage | null = null;
+  let group: OslChatMessage[] = [];
+
+  const appendGroup = (): void => {
+    if (!group.length) return;
+    const first = group[0]!;
+    const sender = first.direction === "outgoing" ? profileDisplayName : friend.nickname;
+    markup += `<section class="osl-chat-message-group is-${first.direction}" data-osl-chat-message-group="${first.direction}" data-message-count="${group.length}">
+      ${avatar(sender, "is-message")}<div class="osl-chat-message-group-content"><header class="osl-chat-message-group-meta"><strong>${escapeHtml(sender)}</strong></header>${group.map((message, index) => messageRow(message, friend, profileDisplayName, index > 0)).join("")}</div>
+    </section>`;
+    group = [];
+  };
+
+  for (const message of messages) {
+    if (previous && message.dateLabel && previous.dateLabel && message.dateLabel !== previous.dateLabel) {
+      appendGroup();
+      markup += `<div class="osl-chat-date-divider" role="separator"><span>${escapeHtml(message.dateLabel)}</span></div>`;
+    } else if (previous && message.direction !== previous.direction) {
+      appendGroup();
+    }
+    group.push(message);
+    previous = message;
+  }
+  appendGroup();
+  return markup;
 }
 
 /**
@@ -470,7 +508,7 @@ function activeThread(model: OslChatsViewModel, friend: OslChatFriend): string {
       : "";
   const profileDisplayName = model.profileDisplayName?.trim() || "OSL profile";
   const messages = model.messages.length
-    ? `<p class="osl-chat-date-divider">Today</p>${model.messages.map((message, index, all) => messageRow(message, friend, profileDisplayName, index > 0 && all[index - 1]?.direction === message.direction)).join("")}<div class="osl-chat-typing" aria-label="${escapeHtml(friend.nickname)} is typing">${avatar(friend.nickname, "is-typing")}<span><i></i><i></i><i></i></span></div>`
+    ? `${messageGroups(model.messages, friend, profileDisplayName)}<div class="osl-chat-typing" aria-label="${escapeHtml(friend.nickname)} is typing">${avatar(friend.nickname, "is-typing")}<span><i></i><i></i><i></i></span></div>`
     : '<p class="osl-chat-thread-empty">No messages yet.</p>';
   const warningSurface = model.verificationWarningSurface ?? "conversation-open";
   const handshakeWarning = warningSurface === "none" ? "" : oslChatHandshakeWarning(friend);

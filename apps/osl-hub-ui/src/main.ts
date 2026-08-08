@@ -9319,6 +9319,7 @@ async function openOslChat(personId: string): Promise<void> {
             body: row.plaintext,
             state: incoming ? "received" : "sent",
             timestampLabel: new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date(row.decryptedAt * 1_000)),
+            dateLabel: oslChatDateLabel(row.createdAt),
             reactions: row.reactions,
           };
         });
@@ -9471,6 +9472,11 @@ const oslChatDeliveryHost: OslChatDeliveryHost = {
 
 function oslChatHistoryTimestamp(epochSeconds: number): string {
   return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date(epochSeconds * 1_000));
+}
+
+function oslChatDateLabel(epochSeconds: number): string {
+  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" })
+    .format(new Date(epochSeconds * 1_000));
 }
 
 const oslChatDelivery = createOslChatDeliveryRuntime(oslChatDeliveryHost);
@@ -9653,6 +9659,7 @@ async function sendOslChat(event: SubmitEvent): Promise<void> {
     body: draft,
     state: "sent" as const,
     timestampLabel: oslChatTimestamp(),
+    dateLabel: oslChatDateLabel(Date.now() / 1_000),
     reactions: [],
   }];
   oslChatMessages.set(personId, messages);
