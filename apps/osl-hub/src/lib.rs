@@ -122,39 +122,40 @@ pub mod execution_consent;
 pub mod external_overlay;
 #[cfg(not(task3982_focused))]
 pub(crate) mod firefox_migration_coordinator;
-/// GMX Mail's fill-in of the shared mail deleter (TASK 3067).
-pub mod gmx_mail_deleter;
 #[cfg(feature = "core")]
 #[cfg(not(task3982_focused))]
 pub mod friend_account_reach;
 pub mod front_window_grab;
+/// GMX Mail's fill-in of the shared mail deleter (TASK 3067).
+pub mod gmx_mail_deleter;
 pub mod hosted_audience;
 pub mod hosted_port;
 pub mod hosted_provider_recipe;
 pub mod hosted_session_port;
+pub mod instagram_send;
+pub mod instagram_story;
+/// Fail-closed availability gate for Instagram's desktop story controls.
+pub mod instagram_story_tools;
 pub mod installed_build;
 #[cfg(not(task3982_focused))]
 pub mod installed_build_version;
-pub mod instagram_story;
 pub mod invite_clipboard;
-/// Fail-closed availability gate for Instagram's desktop story controls.
-pub mod instagram_story_tools;
 /// The landing oracle: did this exact text land in the composer? Judged
 /// through channels that did not write it. Pure above its syscall seam, so the
 /// verdict is testable in every build that can compile this crate.
 #[cfg(not(task3982_focused))]
 pub mod landing_oracle;
-/// TASK 3044's mail owner check, in its own module so the shared mail deleter
-/// can reach it without dragging `service_connections`' mail-website plumbing
-/// in. Re-exported from `service_connections`, so every path there still reads.
-pub mod mail_owner_check;
+#[cfg(feature = "core")]
+pub mod look_window;
 /// When the hidden main window may be shown. Pure, and deliberately not behind
 /// `desktop`: the reveal rule is what decides whether the app is visible at all,
 /// so it is testable in every build that can compile this crate.
 pub mod mail_com_mail_deleter;
+/// TASK 3044's mail owner check, in its own module so the shared mail deleter
+/// can reach it without dragging `service_connections`' mail-website plumbing
+/// in. Re-exported from `service_connections`, so every path there still reads.
+pub mod mail_owner_check;
 pub mod main_window_reveal;
-#[cfg(feature = "core")]
-pub mod look_window;
 #[cfg(not(task3982_focused))]
 pub mod messenger_whitelist_kinds;
 pub mod model_pack_install;
@@ -177,27 +178,24 @@ pub mod native_outlook_adapter;
 #[cfg(feature = "core")]
 pub mod native_outlook_desktop_mail_delete;
 pub mod native_signal_adapter;
-pub mod signal_place_reader;
-pub mod signal_surface_finder;
 pub mod native_telegram_adapter;
 #[cfg(not(task3982_focused))]
 pub mod native_whatsapp_adapter;
-pub mod whatsapp_place_reader;
 #[cfg(not(task3982_focused))]
 pub mod native_window_host;
 #[cfg(feature = "core")]
-pub mod osl_chat_drag_drop;
-#[cfg(feature = "core")]
 pub mod osl_chat_attachment_download_permission;
+#[cfg(feature = "core")]
+pub mod osl_chat_drag_drop;
 #[cfg(feature = "core")]
 pub mod osl_chat_file_limits;
 #[cfg(feature = "core")]
 pub mod osl_chat_local_state_key;
+pub mod osl_enclave_role_ability;
+pub mod osl_enclave_roles;
 #[cfg(feature = "core")]
 #[cfg(not(task3982_focused))]
 pub mod osl_mail;
-pub mod osl_enclave_role_ability;
-pub mod osl_enclave_roles;
 #[cfg(feature = "core")]
 #[cfg(not(task3982_focused))]
 pub mod osl_profile;
@@ -221,8 +219,11 @@ pub mod scrub_erasure_tracker;
 pub mod scrub_evidence_manifest;
 #[cfg(not(task3982_focused))]
 pub mod shared_conversation_scroll;
+pub mod signal_place_reader;
+pub mod signal_surface_finder;
 #[cfg(not(task3982_focused))]
 pub mod tor_pref;
+pub mod whatsapp_place_reader;
 pub mod scrub_hosted {
     pub mod aol_mail_deleter;
     #[cfg(not(task3982_focused))]
@@ -350,10 +351,6 @@ pub mod update_state_backup;
 pub mod updates;
 pub mod visual_binding;
 pub mod web_surface_adapter;
-/// Hermetic records for the direct X active-window discovery command.
-pub mod x_window_composer;
-/// Private input box rendered only after X's composer has been recognised.
-pub mod x_private_composer;
 #[cfg(not(task3982_focused))]
 pub mod website_driver;
 pub mod whatsapp_accessibility;
@@ -362,10 +359,14 @@ pub mod whatsapp_qa_host;
 #[cfg(not(task3982_focused))]
 pub mod whatsapp_qa_pairing;
 pub mod whatsapp_qa_transport;
+/// Private input box rendered only after X's composer has been recognised.
+pub mod x_private_composer;
 /// Preparation-only handlers for the five X protected send choices.
 pub mod x_send;
 #[cfg(not(task3982_focused))]
 pub mod x_whitelist;
+/// Hermetic records for the direct X active-window discovery command.
+pub mod x_window_composer;
 
 // Native executable verification is exercised only by Windows callers. Keep
 // its fail-closed types available to cross-platform manifests and tests.
@@ -673,11 +674,11 @@ pub mod realtime_subscription;
 pub mod realtime_wakeup;
 #[cfg(feature = "core")]
 pub mod receipt_emit;
+pub mod right_click_safety;
 pub mod row_who_wrote_it;
 #[cfg(feature = "core")]
 #[cfg(not(task3982_focused))]
 pub mod runtime_switches;
-pub mod right_click_safety;
 // Timed deletion and view-once expiry. Needs `ipc` (sealed-at-rest storage) and
 // `store` (local plaintext cache), so it lives behind `core` like they do.
 pub mod expiry_clock;
@@ -727,10 +728,10 @@ pub mod scrub_imap;
 #[cfg(not(task3982_focused))]
 pub mod scrub_index;
 pub mod scrub_receipt;
-pub mod setting_groups;
 #[cfg(feature = "core")]
 #[cfg(not(task3982_focused))]
 pub mod security;
+pub mod setting_groups;
 #[cfg(all(feature = "core", task3982_focused))]
 pub mod security {
     use std::collections::HashMap;
