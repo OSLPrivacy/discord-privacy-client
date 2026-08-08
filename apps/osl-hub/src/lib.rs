@@ -134,6 +134,8 @@ pub mod native_telegram_adapter;
 pub mod native_whatsapp_adapter;
 pub mod native_window_host;
 #[cfg(feature = "core")]
+pub mod osl_chat_alert_words;
+#[cfg(feature = "core")]
 pub mod osl_chat_drag_drop;
 #[cfg(feature = "core")]
 pub mod osl_chat_file_limits;
