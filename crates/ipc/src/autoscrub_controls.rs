@@ -23,6 +23,7 @@ pub const AUTOSCRUB_STOP_AND_TURN_OFF_COMMAND: &str = "autoscrub_stop_and_turn_o
 pub const AUTOSCRUB_VIEW_ACTIVITY_COMMAND: &str = "autoscrub_view_activity";
 pub const UNKNOWN_COMMAND: &str = "unknown_command";
 pub const SAFE_STEP_PENDING: &str = "safe_step_pending";
+pub const AUTOSCRUB_DELETE_NOT_STARTED_AFTER_STOP: &str = "not_started_after_stop_and_turn_off";
 
 /// The labels are part of the backend-owned control surface.  Renderers can
 /// display these without inventing a second set of names for destructive
@@ -61,6 +62,39 @@ pub struct AutoScrubActivity {
     pub entry_count: usize,
 }
 
+/// One account row in the durable result of a multi-account delete-capable
+/// run.  Accounts after a stop are represented explicitly: omitting them
+/// would make an incomplete record indistinguishable from a shorter plan.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoScrubDeleteRunRow {
+    pub account_id: String,
+    pub delete_called: bool,
+    pub result: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoScrubDeleteRunRecord {
+    pub rows: Vec<AutoScrubDeleteRunRow>,
+    pub row_count: usize,
+    pub stop_and_turn_off_requested: bool,
+}
+
+/// Authority visible to exactly one in-flight account deletion.  Requesting
+/// stop here cannot cancel the current safe step; it is observed only after
+/// that step returns its result and the result has been saved.
+#[derive(Default)]
+pub struct AutoScrubDeleteStepControl {
+    stop_and_turn_off_requested: bool,
+}
+
+impl AutoScrubDeleteStepControl {
+    pub fn stop_and_turn_off(&mut self) {
+        self.stop_and_turn_off_requested = true;
+    }
+}
+
 #[derive(Default)]
 pub struct AutoScrubControlSurface {
     schedules: ScheduleStore,
@@ -70,6 +104,7 @@ pub struct AutoScrubControlSurface {
     safe_steps: BTreeSet<String>,
     turn_off_after_safe_step: BTreeSet<String>,
     activity: Vec<AutoScrubActivityEntry>,
+    last_delete_run: Option<AutoScrubDeleteRunRecord>,
 }
 
 impl AutoScrubControlSurface {
@@ -186,6 +221,86 @@ impl AutoScrubControlSurface {
             entries: self.activity.clone(),
             entry_count: self.activity.len(),
         }
+    }
+
+    /// Executes a reviewed multi-account plan one account at a time.  The
+    /// callback is the sole delete-capable boundary.  If Stop and turn off is
+    /// requested while it handles the current account, its successful result
+    /// is recorded before the schedule is removed, every later account gets
+    /// an explicit not-started row, and the callback is never invoked again.
+    pub fn run_multi_account_delete_capable<F>(
+        &mut self,
+        account_ids: &[String],
+        mut delete_account: F,
+    ) -> Result<AutoScrubDeleteRunRecord, String>
+    where
+        F: FnMut(&str, &mut AutoScrubDeleteStepControl) -> Result<String, String>,
+    {
+        if account_ids.len() < 2 {
+            return Err("AutoScrub delete-capable run requires multiple accounts".to_owned());
+        }
+        let mut unique_accounts = BTreeSet::new();
+        for account_id in account_ids {
+            self.require_schedule(account_id)?;
+            if !unique_accounts.insert(account_id.as_str()) {
+                return Err("AutoScrub delete-capable run has a duplicate account".to_owned());
+            }
+        }
+
+        self.last_delete_run = None;
+        let mut rows = Vec::with_capacity(account_ids.len());
+        for (index, account_id) in account_ids.iter().enumerate() {
+            self.run_now(account_id)?;
+
+            let mut control = AutoScrubDeleteStepControl::default();
+            let safe_result = delete_account(account_id, &mut control)?;
+            rows.push(AutoScrubDeleteRunRow {
+                account_id: account_id.clone(),
+                delete_called: true,
+                result: safe_result,
+            });
+
+            // Save before acting on Stop and turn off.  Even an unexpected
+            // schedule-removal failure cannot erase the safe result we have.
+            self.save_delete_run_record(&rows, control.stop_and_turn_off_requested);
+
+            if control.stop_and_turn_off_requested {
+                self.stop_and_turn_off(account_id)?;
+            }
+            self.complete_safe_step(account_id, || Ok(()))?;
+
+            if control.stop_and_turn_off_requested {
+                rows.extend(account_ids[index + 1..].iter().map(|later_account| {
+                    AutoScrubDeleteRunRow {
+                        account_id: later_account.clone(),
+                        delete_called: false,
+                        result: AUTOSCRUB_DELETE_NOT_STARTED_AFTER_STOP.to_owned(),
+                    }
+                }));
+                self.save_delete_run_record(&rows, true);
+                return self
+                    .last_delete_run
+                    .clone()
+                    .ok_or_else(|| "AutoScrub delete run record was not saved".to_owned());
+            }
+        }
+
+        self.save_delete_run_record(&rows, false);
+        self.last_delete_run
+            .clone()
+            .ok_or_else(|| "AutoScrub delete run record was not saved".to_owned())
+    }
+
+    pub fn last_delete_run_record(&self) -> Option<AutoScrubDeleteRunRecord> {
+        self.last_delete_run.clone()
+    }
+
+    fn save_delete_run_record(&mut self, rows: &[AutoScrubDeleteRunRow], stopped: bool) {
+        self.last_delete_run = Some(AutoScrubDeleteRunRecord {
+            rows: rows.to_vec(),
+            row_count: rows.len(),
+            stop_and_turn_off_requested: stopped,
+        });
     }
 
     fn require_schedule(&self, account_id: &str) -> Result<ScheduleRecord, String> {
@@ -311,4 +426,77 @@ pub fn control_statuses(
                 .map(|status| (schedule.account_id, status))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod task_1475_tests {
+    use super::*;
+    use std::time::{Duration, UNIX_EPOCH};
+
+    const NOW: u64 = 1_786_190_400;
+    const CURRENT_ACCOUNT: &str = "discord-oak-1475";
+    const LATER_ACCOUNT: &str = "telegram-pine-1475";
+    const SAFE_CURRENT_RESULT: &str = "confirmed_deleted_2";
+
+    #[test]
+    fn task_1475_stop_and_turn_off_records_current_safe_result_and_never_calls_later_delete() {
+        let mut surface = AutoScrubControlSurface::new();
+        for account_id in [CURRENT_ACCOUNT, LATER_ACCOUNT] {
+            surface
+                .save_schedule(
+                    account_id,
+                    ScheduleKind::OnlyWhenChosen,
+                    UNIX_EPOCH + Duration::from_secs(NOW),
+                )
+                .expect("each planned account has a saved schedule");
+        }
+
+        let mut delete_calls = Vec::new();
+        let record = surface
+            .run_multi_account_delete_capable(
+                &[CURRENT_ACCOUNT.to_owned(), LATER_ACCOUNT.to_owned()],
+                |account_id, control| {
+                    delete_calls.push(account_id.to_owned());
+                    if account_id == CURRENT_ACCOUNT {
+                        control.stop_and_turn_off();
+                        return Ok(SAFE_CURRENT_RESULT.to_owned());
+                    }
+                    panic!("later account delete call occurred after Stop and turn off");
+                },
+            )
+            .expect("the safe current result is retained while stopping");
+
+        let expected_rows = vec![
+            AutoScrubDeleteRunRow {
+                account_id: CURRENT_ACCOUNT.to_owned(),
+                delete_called: true,
+                result: SAFE_CURRENT_RESULT.to_owned(),
+            },
+            AutoScrubDeleteRunRow {
+                account_id: LATER_ACCOUNT.to_owned(),
+                delete_called: false,
+                result: AUTOSCRUB_DELETE_NOT_STARTED_AFTER_STOP.to_owned(),
+            },
+        ];
+
+        assert_eq!(delete_calls, vec![CURRENT_ACCOUNT]);
+        assert_eq!(record.row_count, 2);
+        assert_eq!(record.rows, expected_rows);
+        assert!(record.stop_and_turn_off_requested);
+        assert_eq!(surface.last_delete_run_record(), Some(record.clone()));
+        assert_eq!(surface.schedule_count(), 1);
+        assert_eq!(
+            surface.schedule(CURRENT_ACCOUNT),
+            Err(ScheduleError::NotFound)
+        );
+        assert!(surface.schedule(LATER_ACCOUNT).is_ok());
+
+        println!("TASK1475_CONTROL=Stop and turn off");
+        println!("TASK1475_SAFE_CURRENT_ACCOUNT={CURRENT_ACCOUNT}");
+        println!("TASK1475_SAFE_CURRENT_RESULT={SAFE_CURRENT_RESULT}");
+        println!("TASK1475_RECORDED_ROWS={}", record.row_count);
+        println!("TASK1475_DELETE_CALLS={}", delete_calls.len());
+        println!("TASK1475_LATER_ACCOUNT_DELETE_CALLS=0");
+        println!("TASK1475_SCHEDULES_AFTER_STOP={}", surface.schedule_count());
+    }
 }

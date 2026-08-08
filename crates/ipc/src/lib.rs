@@ -94,7 +94,6 @@ pub mod scope;
 pub mod scope_blobs_file;
 pub mod scope_ttl_file;
 pub mod screen_words;
-pub mod schedule_storage;
 pub mod server_membership;
 pub mod service_settings_restore;
 pub mod space_roster;
