@@ -186,7 +186,9 @@ jobs:
       # this gate unreadable within a day. The wider check is not dropped -- it
       # runs below, ratcheted, and it can still fail.
       - name: cargo check --manifest-path apps/osl-hub/Cargo.toml --features desktop
-        run: cargo check --manifest-path apps/osl-hub/Cargo.toml --features desktop --locked
+        run: |
+          node scripts/stage-tor-sidecar.mjs --target x86_64-pc-windows-msvc
+          cargo check --manifest-path apps/osl-hub/Cargo.toml --features desktop --locked
       # D-172. The strictly wider `--all-targets` check, run for the first time
       # in this repository's history by run 30928896726, which found that
       # apps/osl-hub/tests/web_surface_a11y_spike.rs has not compiled at all:

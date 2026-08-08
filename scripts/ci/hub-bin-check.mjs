@@ -83,6 +83,7 @@ export const MANIFEST = "apps/osl-hub/Cargo.toml";
 export const BIN_NAME = "osl-privacy-hub";
 export const REQUIRED_FEATURE = "desktop";
 const DIST_INDEX = join(REPO, "apps/osl-hub-ui/dist/index.html");
+const TOR_SIDECAR_STAGE = join(REPO, "scripts", "stage-tor-sidecar.mjs");
 
 // A caller that can choose these can choose the vacuous combination, which is
 // the entire defect. This entry point chooses them.
@@ -259,6 +260,21 @@ function run(mode, argv) {
   }
 
   const args = cargoArgs(mode, { jobs, passthrough });
+  // Tauri validates `bundle.externalBin` during its build script.  Stage the
+  // exact target-suffixed sidecar before cargo takes the app target lock; doing
+  // it here keeps the normal hub-binary gate representative of a ship build.
+  const target = process.platform === "win32"
+    ? "x86_64-pc-windows-msvc"
+    : "x86_64-unknown-linux-gnu";
+  const sidecar = spawnSync(process.execPath, [TOR_SIDECAR_STAGE, "--target", target], {
+    cwd: REPO,
+    encoding: "utf8",
+    stdio: "inherit",
+  });
+  if (sidecar.error || sidecar.status !== 0) {
+    process.stderr.write(`hub-bin-check: could not stage the Tor sidecar${sidecar.error ? `: ${sidecar.error.message}` : ""}\n`);
+    return sidecar.status ?? 9;
+  }
   process.stderr.write(`hub-bin-check: cargo ${args.join(" ")}\n`);
   const result = spawnSync("cargo", args, {
     cwd: REPO,

@@ -313,7 +313,9 @@ build_start=$(date +%s)
 # build failure. Serialization only matters where builds actually contend, so
 # degrade to running unlocked when flock is unavailable, and say so out loud
 # rather than pretending a lock was taken.
-BUILD_CMD="cd '$REPO/apps/osl-hub' && \
+BUILD_CMD="cd '$REPO' && \
+  node scripts/stage-tor-sidecar.mjs --target $TARGET && \
+  cd '$REPO/apps/osl-hub' && \
   TAURI_CONFIG='{\"identifier\":\"$IDENTIFIER\"}' \
   cargo build --features desktop,discord-qa-shell --bin osl-privacy-hub --target $TARGET"
 if command -v flock >/dev/null 2>&1; then

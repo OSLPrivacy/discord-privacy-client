@@ -292,18 +292,64 @@ impl TorPreferenceState {
     }
 }
 
-pub fn arti_proxy_config_from_env() -> Option<ArtiProxyConfig> {
-    let program =
-        std::env::var_os("OSL_ARTI_PROXY_PATH").or_else(|| std::env::var_os("OSL_ARTI_PROXY"))?;
-    let mut config = ArtiProxyConfig::new(program);
-    if let Ok(args) = std::env::var("OSL_ARTI_PROXY_ARGS") {
-        config.args = args
-            .split_whitespace()
-            .filter(|part| !part.is_empty())
-            .map(str::to_owned)
-            .collect();
+/// Locate the Tor sidecar shipped beside the desktop executable.
+///
+/// `OSL_ARTI_PROXY_PATH` remains a deliberate developer override, but an
+/// installed app never needs it: Tauri's `externalBin` entry places
+/// `osl-tor-sidecar` next to the application executable.  Do not fall back to
+/// PATH here.  If a damaged package is missing this exact file, starting Tor
+/// must fail closed rather than accidentally borrowing another application's
+/// `arti` command.
+pub fn arti_proxy_config_from_env_or_bundle(config_dir: &Path) -> Option<ArtiProxyConfig> {
+    if let Some(program) =
+        std::env::var_os("OSL_ARTI_PROXY_PATH").or_else(|| std::env::var_os("OSL_ARTI_PROXY"))
+    {
+        let mut config = ArtiProxyConfig::new(program);
+        if let Ok(args) = std::env::var("OSL_ARTI_PROXY_ARGS") {
+            config.args = args
+                .split_whitespace()
+                .filter(|part| !part.is_empty())
+                .map(str::to_owned)
+                .collect();
+        }
+        return Some(config);
     }
+
+    bundled_arti_proxy_config_from_executable(&std::env::current_exe().ok()?, config_dir)
+}
+
+/// Build the production sidecar configuration from a known packaged app path.
+/// Kept separate from [`arti_proxy_config_from_env_or_bundle`] so package
+/// layout is directly testable without changing the test process executable.
+pub fn bundled_arti_proxy_config_from_executable(
+    application_executable: &Path,
+    config_dir: &Path,
+) -> Option<ArtiProxyConfig> {
+    let package_dir = application_executable.parent()?;
+    let mut config = ArtiProxyConfig::new(package_dir.join(bundled_sidecar_name()));
+    config.args = vec![
+        "--dial-mode".to_owned(),
+        "tor".to_owned(),
+        "--listen".to_owned(),
+        DEFAULT_BUNDLED_SOCKS_LISTEN.to_owned(),
+        "--state-dir".to_owned(),
+        config_dir.join("arti").join("state").display().to_string(),
+        "--cache-dir".to_owned(),
+        config_dir.join("arti").join("cache").display().to_string(),
+    ];
     Some(config)
+}
+
+const DEFAULT_BUNDLED_SOCKS_LISTEN: &str = "127.0.0.1:9150";
+
+#[cfg(target_os = "windows")]
+const fn bundled_sidecar_name() -> &'static str {
+    "osl-tor-sidecar.exe"
+}
+
+#[cfg(not(target_os = "windows"))]
+const fn bundled_sidecar_name() -> &'static str {
+    "osl-tor-sidecar"
 }
 
 fn start_tor_client(config: ArtiProxyConfig) -> Result<TorClientFactory, String> {
@@ -516,6 +562,57 @@ mod tests {
             backend.accept().is_err(),
             "unhealthy Tor must refuse before constructing a store request"
         );
+    }
+
+    #[test]
+    fn packaged_sidecar_is_resolved_without_an_environment_path() {
+        let package = tempfile::tempdir().expect("temporary package layout");
+        let config_dir = tempfile::tempdir().expect("temporary app config");
+        let executable = package.path().join("osl-privacy-hub");
+        let config = bundled_arti_proxy_config_from_executable(&executable, config_dir.path())
+            .expect("an executable parent is a package directory");
+
+        assert_eq!(config.program, package.path().join(bundled_sidecar_name()));
+        assert!(config
+            .args
+            .windows(2)
+            .any(|args| args == ["--dial-mode", "tor"]));
+        let state_dir = config_dir.path().join("arti/state").display().to_string();
+        assert!(config
+            .args
+            .windows(2)
+            .any(|args| args == ["--state-dir", state_dir.as_str()]));
+
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("tauri.conf.json");
+        let config_text = std::fs::read_to_string(manifest).expect("read Tauri package config");
+        assert!(
+            config_text.contains("\"externalBin\": [\n      \"binaries/osl-tor-sidecar\""),
+            "the Tauri package inventory must name the OSL Tor sidecar"
+        );
+    }
+
+    #[test]
+    fn missing_packaged_sidecar_refuses_instead_of_searching_by_name() {
+        let package = tempfile::tempdir().expect("temporary damaged package layout");
+        let config_dir = tempfile::tempdir().expect("temporary app config");
+        let missing = package.path().join(bundled_sidecar_name());
+        let config = bundled_arti_proxy_config_from_executable(
+            &package.path().join("osl-privacy-hub"),
+            config_dir.path(),
+        )
+        .expect("an executable parent is a package directory");
+
+        match TorTransport::start(config) {
+            Err(transport::tor::TorError::Spawn { program, .. }) => {
+                assert_eq!(program, missing, "must attempt only the packaged pathname");
+                assert!(
+                    program.is_absolute(),
+                    "the missing sidecar must not become a PATH lookup"
+                );
+            }
+            Ok(_) => panic!("a package with its sidecar removed must not start Tor"),
+            Err(other) => panic!("expected a named sidecar spawn refusal, got {other}"),
+        }
     }
 
     #[test]

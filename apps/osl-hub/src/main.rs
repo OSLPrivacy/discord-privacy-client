@@ -11652,7 +11652,7 @@ fn main() {
         startup_breadcrumb("setup_step_14b_burn_review_state_managed"); // STARTUP-TRACE
         app.manage(TorPreferenceState::load_with_arti_proxy_config(
             config_dir.join("tor-preference.json"),
-            osl_privacy_hub::tor_pref::arti_proxy_config_from_env(),
+            osl_privacy_hub::tor_pref::arti_proxy_config_from_env_or_bundle(&config_dir),
         ));
         app.manage(ServiceRegistryState::load(
             config_dir.join("service-registry.json"),
