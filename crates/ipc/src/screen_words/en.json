@@ -28,5 +28,14 @@
     "closes_in_template": "Closes in {seconds} seconds",
     "close_aria_label": "Close view once message",
     "empty_copy": "No view-once messages to show."
+  },
+  "view_once_overlay": {
+    "play_aria_label": "Play view once",
+    "close_aria_label": "Close view once overlay",
+    "duration_label": "View duration",
+    "duration_option_seconds_template": "{seconds} seconds",
+    "protected_text_placeholder": "Protected message",
+    "protected_image_alt": "Protected image",
+    "empty_copy": "No view-once item to display."
   }
 }

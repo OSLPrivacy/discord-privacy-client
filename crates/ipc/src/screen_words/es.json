@@ -28,5 +28,14 @@
     "closes_in_template": "Se cierra en {seconds} segundos",
     "close_aria_label": "Cerrar mensaje de una sola vista",
     "empty_copy": "No hay mensajes de una sola vista para mostrar."
+  },
+  "view_once_overlay": {
+    "play_aria_label": "Reproducir una sola vista",
+    "close_aria_label": "Cerrar superposicion de una sola vista",
+    "duration_label": "Duracion de visualizacion",
+    "duration_option_seconds_template": "{seconds} segundos",
+    "protected_text_placeholder": "Mensaje protegido",
+    "protected_image_alt": "Imagen protegida",
+    "empty_copy": "No hay elemento de una sola vista para mostrar."
   }
 }

@@ -1,0 +1,52 @@
+<!doctype html>
+<!--
+  TASK 0564 capture fixture. Dev-server only, deliberately absent from
+  vite.config.ts's rollup inputs, same as view-once-player-screen.html.
+-->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="color-scheme" content="dark" />
+    <title>View once overlay</title>
+    <style>
+      body { margin: 0; background: #0a0a0a; }
+      /* A fake app surface so the overlay is visibly "over the app". */
+      #app { min-height: 100vh; display: grid; place-items: center; padding: 40px; }
+      .fake-app { width: 100%; max-width: 720px; height: 480px; border: 1px solid #2a2a2a; border-radius: 8px; background: linear-gradient(135deg, #141414, #0f0f0f); }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <div class="fake-app" aria-hidden="true"></div>
+    </div>
+    <script type="module">
+      import "@fontsource-variable/inter/wght.css";
+      import "/src/styles.css";
+      import "/src/view-once-overlay.css";
+      import { EMPTY_VIEW_ONCE_OVERLAY, viewOnceOverlayMarkup } from "/src/view-once-overlay.ts";
+
+      // TASK 3161: this fixture no longer has words of its own. It imports
+      // the SAME words file `cmd_osl_read_screen_words` serves in the app,
+      // so a capture here shows what the app actually renders.
+      const { default: enWords } = await import("../../../crates/ipc/src/screen_words/en.json");
+      const words = enWords.view_once_overlay;
+
+      const params = new URLSearchParams(location.search);
+      const fixture = params.get("fixture") === "empty" ? "empty" : "populated";
+      const app = document.querySelector("#app");
+
+      if (fixture === "empty") {
+        app.insertAdjacentHTML("beforeend", viewOnceOverlayMarkup(EMPTY_VIEW_ONCE_OVERLAY, words));
+      } else {
+        const model = {
+          open: true,
+          content: { kind: "text", text: "This protected message disappears after viewing." },
+          durationSeconds: 10,
+          durationChoices: [{ seconds: 5 }, { seconds: 10 }, { seconds: 30 }],
+        };
+        app.insertAdjacentHTML("beforeend", viewOnceOverlayMarkup(model, words));
+      }
+      document.body.dataset.viewOnceOverlayFixture = fixture;
+    </script>
+  </body>
+</html>
