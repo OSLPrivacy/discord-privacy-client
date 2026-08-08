@@ -82,6 +82,7 @@ import {
   loadLinkedServices,
   loadMullvadStatus,
   loadNativeApps,
+  nativeAppTileLabel,
   nativeAppTakeoverRequiresConsent,
   openEmbeddedHomeApp,
   parseDiscordSessionMode,
@@ -5085,7 +5086,7 @@ function homeFriendsPanelMarkup(): string {
 function arrangeTilesContent(): string {
   const launchableApps = homeAppsFromServices(services).filter((app) => app.visibility === "launch");
   const modules = [
-    { id: "osl-chats", name: "OSL Chat", available: true },
+    { id: "osl-chats", name: "OSL Chats", available: true },
     { id: "osl-mail", name: "OSL Mail", available: false },
     { id: "osl-notes", name: "OSL Notes", available: false },
     { id: "scrub", name: "Scrub", available: true },
@@ -5161,20 +5162,27 @@ function workspaceContent(): string {
     if (hidden && !homeEditMode) return "";
     const controls = homeEditMode ? `<span class="tile-edit-controls"><button class="tile-remove" type="button" data-tile-toggle="${escapeHtml(id)}" aria-label="${hidden ? "Show" : "Remove"} ${escapeHtml(id)}">${hidden ? "+" : "−"}</button><span class="tile-keyboard-controls"><button type="button" data-tile-move="${escapeHtml(id)}:-1" ${index === 0 ? "disabled" : ""} aria-label="Move before">←</button><button type="button" data-tile-move="${escapeHtml(id)}:1" ${index === orderedIds.length - 1 ? "disabled" : ""} aria-label="Move after">→</button></span></span>` : "";
     const module = moduleById.get(id as typeof modules[number]["id"]);
-    if (module) return `<article class="app-tile home-module ${module.available ? "" : "module-unavailable"} ${hidden ? "tile-hidden" : ""}" data-tile-id="${module.id}" draggable="${homeEditMode}" data-module-kind="${module.id}"><button class="in-dom-tooltip-anchor" type="button" data-home-module="${module.id}" ${module.available ? "" : "disabled"} aria-label="${escapeHtml(module.available ? module.name : `${module.name}, coming later`)}"><span class="app-logo-plate osl-module-logo" aria-hidden="true">${homeModuleIcon(module.id)}</span><span class="app-tile-copy"><strong>${module.name}</strong></span>${inDomTooltipMarkup(module.available ? module.name : `${module.name} · Coming later`)}</button>${controls}</article>`;
+    if (module) {
+      const moduleState = module.available ? "Ready" : "Unavailable";
+      return `<article class="app-tile home-module ${module.available ? "" : "module-unavailable"} ${hidden ? "tile-hidden" : ""}" data-tile-id="${module.id}" draggable="${homeEditMode}" data-module-kind="${module.id}"><button class="in-dom-tooltip-anchor" type="button" data-home-module="${module.id}" ${module.available ? "" : "disabled"} aria-label="${escapeHtml(`${module.name}, ${moduleState}`)}"><span class="app-logo-plate osl-module-logo" aria-hidden="true">${homeModuleIcon(module.id)}</span><span class="app-tile-copy"><strong>${module.name}</strong><small>${moduleState}</small></span>${inDomTooltipMarkup(`${module.name} · ${moduleState}`)}</button>${controls}</article>`;
+    }
     const app = byId.get(id as HomeAppId);
     if (!app) return "";
     const state = app.linked ? "OSL profile ready" : app.launchState === "available" ? "Set up" : "Unavailable";
     const pending = appLaunchPendingId === app.id;
     const available = app.launchState === "available";
     const disabled = !available || Boolean(appLaunchPendingId);
-    // A disabled carrier stays visible but never becomes a roadmap promise.
-    // Its catalogue-owned evidence is available on hover.
+    // The tile's caption is the app's CLAIM, not a single hardcoded word.
+    // "Coming soon" on every unlaunchable tile collapsed four different states
+    // into one sentence, and said "planned" about surfaces OSL has already built
+    // and driven (D-206) or measured and had refused (D-234). Where the backend
+    // has a current claim for this app, that claim is what the tile says. A
+    // catalog-only future value is rendered as today's factual unavailability.
     const claim = nativeApps.find((candidate) => candidate.id === app.id as NativeAppId);
+    const caption = nativeAppTileLabel(claim?.supportStatus ?? null);
     const unavailableReason = app.unavailableReason ?? claim?.claimNote ?? "This service is unavailable.";
-    const caption = available ? "" : "Unavailable";
     const unavailableTitle = available ? "" : ` title="${escapeHtml(unavailableReason)}"`;
-    return `<article class="app-tile ${available ? "" : "app-unavailable"} ${hidden ? "tile-hidden" : ""} ${pending ? "pending" : ""}" data-tile-id="${app.id}" draggable="${homeEditMode}" data-service-kind="${app.serviceId ?? "none"}" data-launch-state="${app.launchState}" data-claim-status="${claim ? claim.supportStatus : "unavailable"}" aria-disabled="${available ? "false" : "true"}"><button id="home-app-${app.id}" type="button" ${available ? `data-home-app="${app.id}"` : ""} aria-label="${escapeHtml(`${app.displayName}, ${pending ? "Opening" : state}`)}"${unavailableTitle} ${disabled ? "disabled" : ""}><span class="app-logo-plate">${homeAppLogo(app)}</span><span class="app-tile-copy"><strong>${escapeHtml(app.displayName)}</strong>${pending ? "<small>Opening…</small>" : available ? "" : `<small>${caption}</small>`}</span></button>${controls}</article>`;
+    return `<article class="app-tile ${available ? "" : "app-unavailable"} ${hidden ? "tile-hidden" : ""} ${pending ? "pending" : ""}" data-tile-id="${app.id}" draggable="${homeEditMode}" data-service-kind="${app.serviceId ?? "none"}" data-launch-state="${app.launchState}" data-claim-status="${claim ? claim.supportStatus : "unavailable"}" aria-disabled="${available ? "false" : "true"}"><button id="home-app-${app.id}" type="button" ${available ? `data-home-app="${app.id}"` : ""} aria-label="${escapeHtml(`${app.displayName}, ${pending ? "Opening" : state}`)}"${unavailableTitle} ${disabled ? "disabled" : ""}><span class="app-logo-plate">${homeAppLogo(app)}</span><span class="app-tile-copy"><strong>${escapeHtml(app.displayName)}</strong>${pending ? "<small>Opening…</small>" : available ? "" : `<small>${escapeHtml(caption)}</small>`}</span></button>${controls}</article>`;
   };
   const socialIds = new Set(homeApps.filter((app) => app.provider === null).map((app) => app.id));
   const emailIds = new Set(homeApps.filter((app) => app.provider !== null).map((app) => app.id));

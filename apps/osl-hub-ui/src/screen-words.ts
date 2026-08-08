@@ -283,7 +283,7 @@ export function readScreenWords(screenSource: string): string[] {
 }
 
 /** Banned words, plus their plain plural, matched whole and case-blind. */
-export function findBannedWords(text: string): string[] {
+function findLegacyBannedWords(text: string): string[] {
   return BANNED_SCREEN_WORDS.filter((banned) => {
     const escaped = banned.replace(/[/\\^$*+?.()|[\]{}]/gu, "\\$&").replace(/\s+/gu, "\\s+");
     return new RegExp(`\\b${escaped}s?\\b`, "iu").test(text);
@@ -328,7 +328,7 @@ export function checkScreenWords(
     wordCount: words.length,
     presentWords: [...presentWords],
     missingWords: requiredWords.filter((word) => !presentWords.includes(word)),
-    bannedWords: findBannedWords(text),
+    bannedWords: findLegacyBannedWords(text),
   };
 }
 
@@ -491,6 +491,10 @@ export function findPlainEnglishBannedWords(markup: string, extraBanned: readonl
     }
   }
   return hits;
+}
+
+export function findBannedWords(markup: string, extraBanned: readonly string[] = []): BannedWordHit[] {
+  return findPlainEnglishBannedWords(markup, extraBanned);
 }
 
 /**

@@ -374,6 +374,16 @@ export function nativeAppGeneratedLabel(status: NativeAppSupportStatus): string 
   }
 }
 
+/**
+ * Home tiles describe what can be used now. A catalog status may retain the
+ * historical `comingSoon` value for compatibility, but putting that promise
+ * on a tile would turn present capability into a roadmap claim.
+ */
+export function nativeAppTileLabel(status: NativeAppSupportStatus | null): string {
+  if (status === null || status === "comingSoon") return "Unavailable";
+  return nativeAppGeneratedLabel(status);
+}
+
 // The FALLBACK catalog, shown before the backend answers. Rust owns the claim
 // decision (`apps/osl-hub/src/claim_state.rs`); this list is only ever allowed
 // to agree with it, and `services.test.ts` reads the Rust source to check that.
