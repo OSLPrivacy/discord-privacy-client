@@ -195,6 +195,8 @@ pub mod native_window_host;
 #[cfg(feature = "core")]
 pub mod osl_chat_attachment_download_permission;
 #[cfg(feature = "core")]
+pub mod osl_chat_content_name;
+#[cfg(feature = "core")]
 pub mod osl_chat_drag_drop;
 #[cfg(feature = "core")]
 pub mod osl_chat_pro_attachment_send;
