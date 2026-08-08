@@ -600,6 +600,22 @@ pub fn execute_verified_gate_burn(
     app_local_data_dir: &Path,
     service_hosts_shutdown: bool,
 ) -> Result<HubFullCleanupResult, String> {
+    execute_verified_gate_burn_with_key_material_wipe(
+        core,
+        app_config_dir,
+        app_local_data_dir,
+        service_hosts_shutdown,
+        &KeyMaterialWipe::production(),
+    )
+}
+
+fn execute_verified_gate_burn_with_key_material_wipe(
+    core: &HubCoreState,
+    app_config_dir: &Path,
+    app_local_data_dir: &Path,
+    service_hosts_shutdown: bool,
+    key_material: &KeyMaterialWipe,
+) -> Result<HubFullCleanupResult, String> {
     if !service_hosts_shutdown {
         return Err("OSL burn requires every OSL-owned service host to be closed first".to_owned());
     }
@@ -638,11 +654,7 @@ pub fn execute_verified_gate_burn(
 
     let (mut removed_targets, mut failed_targets) =
         purge_fixed_targets(app_config_dir, app_local_data_dir);
-    run_key_material_wipe(
-        &KeyMaterialWipe::production(),
-        &mut removed_targets,
-        &mut failed_targets,
-    );
+    run_key_material_wipe(key_material, &mut removed_targets, &mut failed_targets);
     failed_targets.extend(residual_local_state(app_config_dir, app_local_data_dir));
     dedupe_in_place(&mut removed_targets);
     dedupe_in_place(&mut failed_targets);
@@ -1188,6 +1200,17 @@ impl KeyMaterialWipe {
             }),
             purge_keyring_entry: Box::new(|| {
                 #[cfg(not(test))]
+                let invalidated = keystore::KeystoreBackedAnchor::invalidate_production_for_burn();
+                #[cfg(test)]
+                let invalidated = keystore::KeystoreBackedAnchor::with_service(format!(
+                    "discord-privacy-client/anchor/{}",
+                    test_keyring_namespace()
+                ))
+                .invalidate_registered_for_burn();
+                if invalidated.is_err() {
+                    return KeyMaterialOutcome::Failed;
+                }
+                #[cfg(not(test))]
                 let purged = keystore::KeyringSealer::purge_keyring_entry_namespaced_reporting("");
                 #[cfg(test)]
                 let purged = keystore::KeyringSealer::purge_keyring_entry_namespaced_reporting(
@@ -1383,6 +1406,8 @@ fn normalise_lexical(path: &Path) -> PathBuf {
 pub struct Task3234PowerCutKeyStore {
     tpm: std::sync::Arc<std::sync::atomic::AtomicBool>,
     keyring: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    restore_anchor: Option<std::sync::Arc<keystore::KeystoreBackedAnchor>>,
+    invalidated_anchors: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 #[cfg(feature = "task-3234-test")]
@@ -1391,6 +1416,20 @@ impl Task3234PowerCutKeyStore {
         Self {
             tpm: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(present)),
             keyring: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(present)),
+            restore_anchor: None,
+            invalidated_anchors: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        }
+    }
+
+    pub fn seeded_with_restore_anchor(
+        present: bool,
+        restore_anchor: std::sync::Arc<keystore::KeystoreBackedAnchor>,
+    ) -> Self {
+        Self {
+            tpm: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(present)),
+            keyring: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(present)),
+            restore_anchor: Some(restore_anchor),
+            invalidated_anchors: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
     }
 
@@ -1400,10 +1439,17 @@ impl Task3234PowerCutKeyStore {
             + usize::from(self.keyring.load(Ordering::SeqCst))
     }
 
+    pub fn invalidated_anchor_count(&self) -> usize {
+        self.invalidated_anchors
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     fn wipe(&self) -> KeyMaterialWipe {
         use std::sync::atomic::Ordering;
         let tpm = std::sync::Arc::clone(&self.tpm);
         let keyring = std::sync::Arc::clone(&self.keyring);
+        let restore_anchor = self.restore_anchor.clone();
+        let invalidated_anchors = std::sync::Arc::clone(&self.invalidated_anchors);
         KeyMaterialWipe {
             evict_tpm_key: Box::new(move || {
                 if tpm.swap(false, Ordering::SeqCst) {
@@ -1413,6 +1459,14 @@ impl Task3234PowerCutKeyStore {
                 }
             }),
             purge_keyring_entry: Box::new(move || {
+                if let Some(anchor) = &restore_anchor {
+                    match anchor.invalidate_registered_for_burn() {
+                        Ok(count) => {
+                            invalidated_anchors.fetch_add(count, Ordering::SeqCst);
+                        }
+                        Err(_) => return KeyMaterialOutcome::Failed,
+                    }
+                }
                 if keyring.swap(false, Ordering::SeqCst) {
                     KeyMaterialOutcome::Wiped
                 } else {
@@ -1421,6 +1475,27 @@ impl Task3234PowerCutKeyStore {
             }),
         }
     }
+}
+
+/// Complete the shipping saved-password Burn against isolated persisted-key
+/// material. This is the TASK 3235 integration binding: it executes the real
+/// journal, fixed-root purge, residue check, and completion decision without
+/// ever addressing the host machine's production TPM or keyring entries.
+#[cfg(feature = "task-3234-test")]
+pub fn task_3235_complete_verified_gate_burn(
+    core: &HubCoreState,
+    app_config_dir: &Path,
+    app_local_data_dir: &Path,
+    key_store: &Task3234PowerCutKeyStore,
+) -> Result<HubFullCleanupResult, String> {
+    let wipe = key_store.wipe();
+    execute_verified_gate_burn_with_key_material_wipe(
+        core,
+        app_config_dir,
+        app_local_data_dir,
+        true,
+        &wipe,
+    )
 }
 
 #[cfg(feature = "task-3234-test")]

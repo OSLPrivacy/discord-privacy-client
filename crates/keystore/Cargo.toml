@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# Isolated credential backend for the TASK 3235 burn/restore attack test.
+# Production and ordinary test builds continue to use the platform keyring.
+task-3235-test = []
+
 [dependencies]
 # B1: TPM-sealed identity blob (Windows NCrypt with Microsoft Platform
 # Crypto Provider) plus a `keyring`-crate fallback for systems

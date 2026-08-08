@@ -1,0 +1,10 @@
+{
+  "pre_burn_backup": {
+    "name": "task-3235-old-account-backup",
+    "protected_messages": [
+      "TASK3235 protected message alpha",
+      "TASK3235 protected message beta",
+      "TASK3235 protected message gamma"
+    ]
+  }
+}

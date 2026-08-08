@@ -55,6 +55,7 @@
 
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
+use std::collections::BTreeSet;
 use std::sync::Mutex;
 use store::{AnchorRecord, MonotonicAnchor, StoreError};
 
@@ -62,6 +63,7 @@ use store::{AnchorRecord, MonotonicAnchor, StoreError};
 /// from [`crate::sealer::KeyringSealer`]'s service/user pair so the two
 /// entries never collide.
 const DEFAULT_SERVICE: &str = "discord-privacy-client/anchor";
+const REGISTRY_USER: &str = "osl-anchor-registry-v1";
 
 const RECORD_LEN: usize = 8 + 32;
 
@@ -172,6 +174,81 @@ impl KeystoreBackedAnchor {
         }
     }
 
+    fn registered_users(&self) -> Result<BTreeSet<String>, StoreError> {
+        let Some(raw) = self.backend.get(&self.service, REGISTRY_USER)? else {
+            return Ok(BTreeSet::new());
+        };
+        let mut users = BTreeSet::new();
+        for user in raw.lines() {
+            let decoded = URL_SAFE_NO_PAD.decode(user);
+            if user.is_empty()
+                || user == REGISTRY_USER
+                || !matches!(decoded, Ok(ref bytes) if bytes.len() == 32)
+            {
+                return Err(StoreError::Anchor(
+                    "keystore anchor registry is invalid; refusing burn".to_string(),
+                ));
+            }
+            users.insert(user.to_string());
+        }
+        Ok(users)
+    }
+
+    fn register_user(&self, user: &str) -> Result<(), StoreError> {
+        let mut users = self.registered_users()?;
+        if users.insert(user.to_string()) {
+            let encoded = users.into_iter().collect::<Vec<_>>().join("\n");
+            self.backend.set(&self.service, REGISTRY_USER, &encoded)?;
+        }
+        Ok(())
+    }
+
+    /// Advance every registered store anchor before an account burn removes
+    /// the app directory. The registry and records live in the OS credential
+    /// store, outside any whole-folder backup, so replaying either an account
+    /// export or the complete app-data tree presents an older generation and
+    /// is refused by `MessageStore::open_anchored`.
+    pub fn invalidate_registered_for_burn(&self) -> Result<usize, StoreError> {
+        let _guard = self.lock.lock().expect("keystore anchor mutex poisoned");
+        let users = self.registered_users()?;
+        let mut invalidated = 0usize;
+        for user in users {
+            let Some(raw) = self.backend.get(&self.service, &user)? else {
+                continue;
+            };
+            let current = decode_record(&raw)?;
+            let next = AnchorRecord {
+                generation: current.generation.checked_add(1).ok_or_else(|| {
+                    StoreError::Anchor(
+                        "keystore anchor generation overflow during burn".to_string(),
+                    )
+                })?,
+                // A burn tombstone intentionally cannot bind any restored DB.
+                digest: [0u8; 32],
+            };
+            self.backend
+                .set(&self.service, &user, &encode_record(&next))?;
+            invalidated += 1;
+        }
+        Ok(invalidated)
+    }
+
+    /// Production burn binding. Kept separate from identity-key deletion:
+    /// the anchor service has a different namespace and must survive Burn as
+    /// the external witness that an old local copy is no longer current.
+    pub fn invalidate_production_for_burn() -> Result<usize, StoreError> {
+        Self::production().invalidate_registered_for_burn()
+    }
+
+    /// Isolated keyring-shaped backend for the TASK 3235 integration target.
+    #[cfg(feature = "task-3235-test")]
+    pub fn task_3235_in_memory() -> Self {
+        Self::with_backend(
+            Box::new(Task3235InMemoryKeyring::default()),
+            "task-3235-isolated-anchor".to_string(),
+        )
+    }
+
     /// Round-trip probe analogous to [`crate::sealer::verify_sealer_round_trip`]:
     /// confirms the credential-store backend this instance is bound to can
     /// actually persist and return a value before it is trusted as an
@@ -196,7 +273,10 @@ impl MonotonicAnchor for KeystoreBackedAnchor {
         let user = entry_user(store_id);
         match self.backend.get(&self.service, &user)? {
             None => Ok(None),
-            Some(raw) => Ok(Some(decode_record(&raw)?)),
+            Some(raw) => {
+                self.register_user(&user)?;
+                Ok(Some(decode_record(&raw)?))
+            }
         }
     }
 
@@ -208,6 +288,9 @@ impl MonotonicAnchor for KeystoreBackedAnchor {
     ) -> Result<(), StoreError> {
         let _guard = self.lock.lock().expect("keystore anchor mutex poisoned");
         let user = entry_user(store_id);
+        // Register first. An orphaned registry entry is harmless, whereas an
+        // enrolled anchor omitted from Burn's invalidation set is not.
+        self.register_user(&user)?;
         let current = match self.backend.get(&self.service, &user)? {
             None => None,
             Some(raw) => Some(decode_record(&raw)?),
@@ -220,6 +303,32 @@ impl MonotonicAnchor for KeystoreBackedAnchor {
         }
         self.backend
             .set(&self.service, &user, &encode_record(&next))?;
+        Ok(())
+    }
+}
+
+#[cfg(feature = "task-3235-test")]
+#[derive(Default)]
+struct Task3235InMemoryKeyring {
+    entries: Mutex<std::collections::HashMap<(String, String), String>>,
+}
+
+#[cfg(feature = "task-3235-test")]
+impl AnchorKeyring for Task3235InMemoryKeyring {
+    fn get(&self, service: &str, user: &str) -> Result<Option<String>, StoreError> {
+        Ok(self
+            .entries
+            .lock()
+            .expect("TASK3235 anchor map poisoned")
+            .get(&(service.to_string(), user.to_string()))
+            .cloned())
+    }
+
+    fn set(&self, service: &str, user: &str, value: &str) -> Result<(), StoreError> {
+        self.entries
+            .lock()
+            .expect("TASK3235 anchor map poisoned")
+            .insert((service.to_string(), user.to_string()), value.to_string());
         Ok(())
     }
 }
@@ -378,6 +487,28 @@ mod tests {
         // durable record: generation 3 is exactly what was there before the
         // refused call, byte for byte.
         assert_eq!(anchor.load(store_id).unwrap(), Some(record(3, 0x30)));
+    }
+
+    #[test]
+    fn burn_invalidates_every_registered_anchor_outside_the_app_folder() {
+        let anchor = anchor_on(InMemoryKeyring::default());
+        let first = [0x31u8; 32];
+        let second = [0x32u8; 32];
+        anchor
+            .compare_and_advance(first, None, record(1, 0x11))
+            .unwrap();
+        anchor
+            .compare_and_advance(second, None, record(7, 0x77))
+            .unwrap();
+
+        assert_eq!(anchor.invalidate_registered_for_burn().unwrap(), 2);
+        assert_eq!(anchor.load(first).unwrap(), Some(record(2, 0x00)));
+        assert_eq!(anchor.load(second).unwrap(), Some(record(8, 0x00)));
+
+        let error = anchor
+            .compare_and_advance(first, Some(record(1, 0x11)), record(2, 0x22))
+            .unwrap_err();
+        assert!(matches!(error, StoreError::Anchor(message) if message.contains("stale")));
     }
 
     #[test]
