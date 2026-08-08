@@ -1,0 +1,35 @@
+{
+  "url": "http://127.0.0.1:5173/screenshots/task-0553-timer-overlay-fixture.html",
+  "window": {
+    "width": 1280,
+    "height": 800
+  },
+  "required": [
+    "Days",
+    "Hours",
+    "Minutes",
+    "Seconds"
+  ],
+  "screen": {
+    "hasOverlay": true,
+    "hasScrim": true,
+    "fields": [
+      {
+        "label": "Days",
+        "value": "00"
+      },
+      {
+        "label": "Hours",
+        "value": "00"
+      },
+      {
+        "label": "Minutes",
+        "value": "00"
+      },
+      {
+        "label": "Seconds",
+        "value": "00"
+      }
+    ]
+  }
+}
