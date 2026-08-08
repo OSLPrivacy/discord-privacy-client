@@ -3,5 +3,30 @@
     "title": "Bienvenido a OSL",
     "body": "El chat privado empieza aqui.",
     "primary_button": "Crear cuenta"
+  },
+  "verification_warning": {
+    "heading": "Advertencia de verificacion",
+    "intro": "Elige cuando OSL te recuerda comprobar que una persona es realmente quien dice ser.",
+    "option_every_time_label": "Cada vez",
+    "option_every_time_effect": "OSL te recuerda comprobar a esta persona cada vez que abres el chat.",
+    "option_once_label": "Una vez",
+    "option_once_effect": "OSL te lo recuerda la primera vez que abres el chat y despues queda en silencio.",
+    "option_before_sending_label": "Antes de enviar",
+    "option_before_sending_effect": "OSL te lo recuerda justo antes de enviar, no al abrir el chat.",
+    "option_never_label": "Nunca",
+    "option_never_effect": "OSL nunca te lo recuerda. Aun asi puedes comprobar a una persona tu mismo en cualquier momento.",
+    "what_this_does_label": "Que hace esto",
+    "legend_label": "Cuando avisarme",
+    "reset_button": "Restablecer",
+    "save_button": "Guardar",
+    "state_unsaved_template": "Sin guardar. Restablecer lo devuelve a {choice}.",
+    "state_saved_template": "Guardado. OSL te avisa {choice}."
+  },
+  "view_once_player": {
+    "play_aria_label": "Reproducir mensaje de una sola vista",
+    "tap_to_view_once": "Toca para ver una vez",
+    "closes_in_template": "Se cierra en {seconds} segundos",
+    "close_aria_label": "Cerrar mensaje de una sola vista",
+    "empty_copy": "No hay mensajes de una sola vista para mostrar."
   }
 }

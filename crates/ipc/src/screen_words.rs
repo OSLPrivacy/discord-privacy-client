@@ -53,3 +53,19 @@ pub fn load_screen_words(language: &str, screen: &str) -> Result<ScreenWords, St
         words,
     })
 }
+
+pub fn known_screens() -> Vec<String> {
+    let mut screens: Vec<String> = screen_names(EN_WORDS)
+        .into_iter()
+        .chain(screen_names(ES_WORDS))
+        .collect();
+    screens.sort_unstable();
+    screens.dedup();
+    screens
+}
+
+fn screen_names(raw: &str) -> Vec<String> {
+    let screens: BTreeMap<String, BTreeMap<String, String>> =
+        serde_json::from_str(raw).expect("OSL: bundled screen words file must parse");
+    screens.into_keys().collect()
+}

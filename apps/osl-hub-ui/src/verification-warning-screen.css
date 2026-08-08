@@ -91,3 +91,86 @@
 }
 
 .verification-warning-screen .vw-status[data-saved="false"] { color: var(--warn); }
+
+/* Localized Settings variant used when screen words are supplied. */
+.verification-warning-screen h2 {
+  margin: 0 0 6px;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -.01em;
+}
+
+.vw-intro {
+  margin: 0;
+  max-width: 56ch;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.vw-options {
+  margin: 16px 0 0;
+  padding: 0;
+  border: 0;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+}
+
+.vw-option {
+  display: block;
+  min-height: 0;
+  padding: 11px 13px;
+  border-left: 3px solid transparent;
+}
+
+.vw-option-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.vw-option-head strong {
+  display: inline;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.vw-option .osl-radio-ring { stroke: var(--line); }
+.vw-option.selected {
+  border-left-color: var(--brand);
+  background: var(--panel-2);
+}
+.vw-option.selected .osl-radio-ring { stroke: var(--brand); }
+.vw-option.selected .osl-radio-dot { fill: var(--brand); }
+.vw-option.selected .vw-option-head strong { color: var(--brand); }
+
+.vw-option-effect {
+  display: block;
+  margin-top: 4px;
+  padding-left: 27px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.vw-option.selected .vw-option-effect { color: var(--text); }
+.vw-effect-label {
+  display: block;
+  margin-bottom: 3px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.vw-actions .button {
+  min-width: 92px;
+  justify-content: center;
+}
+
+.vw-state {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}

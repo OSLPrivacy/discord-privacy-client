@@ -54,6 +54,48 @@ export function verificationWarningEffectText(choice: VerificationWarningChoice)
   return EFFECT_TEXT[choice];
 }
 
+const OPTION_WORD_KEY: Record<VerificationWarningChoice, string> = {
+  "every time": "every_time",
+  once: "once",
+  "before sending": "before_sending",
+  never: "never",
+};
+
+function requireWord(words: Record<string, string>, key: string): string {
+  const value = words[key];
+  if (!value) throw new Error(`OSL: missing verification warning screen word '${key}'`);
+  return value;
+}
+
+export function parseVerificationWarningChoice(input: string): VerificationWarningChoice | null {
+  const normalized = input.trim().toLowerCase().replace(/[-_]+/gu, " ").replace(/\s+/gu, " ");
+  return VERIFICATION_WARNING_CHOICES.find((choice) => choice === normalized) ?? null;
+}
+
+export interface VerificationWarningOption {
+  choice: VerificationWarningChoice;
+  label: string;
+  effect: string;
+}
+
+export function verificationWarningOptions(words: Record<string, string>): VerificationWarningOption[] {
+  return VERIFICATION_WARNING_CHOICES.map((choice) => {
+    const key = OPTION_WORD_KEY[choice];
+    return {
+      choice,
+      label: requireWord(words, `option_${key}_label`),
+      effect: requireWord(words, `option_${key}_effect`),
+    };
+  });
+}
+
+export function verificationWarningEffect(
+  choice: VerificationWarningChoice,
+  words: Record<string, string>,
+): string {
+  return requireWord(words, `option_${OPTION_WORD_KEY[choice]}_effect`);
+}
+
 export function initialVerificationWarningScreenState(
   saved: VerificationWarningChoice = DEFAULT_VERIFICATION_WARNING_CHOICE,
 ): VerificationWarningScreenState {
@@ -90,9 +132,39 @@ export function isVerificationWarningSaved(state: VerificationWarningScreenState
   return state.selected === state.saved;
 }
 
+export function verificationWarningHasUnsavedChange(state: VerificationWarningScreenState): boolean {
+  return !isVerificationWarningSaved(state);
+}
+
 const choiceId = (choice: VerificationWarningChoice): string => `verification-warning-${choice.replace(/ /gu, "-")}`;
 
-export function verificationWarningScreenMarkup(state: VerificationWarningScreenState): string {
+export function verificationWarningScreenMarkup(
+  state: VerificationWarningScreenState,
+  words?: Record<string, string>,
+): string {
+  if (words) {
+    const dirty = verificationWarningHasUnsavedChange(state);
+    const options = verificationWarningOptions(words).map((option) => {
+      const selected = state.selected === option.choice;
+      return `<label class="setting-option vw-option${selected ? " selected" : ""}">
+        <input class="sr-only" type="radio" name="verification-warning" value="${option.choice}"${selected ? " checked" : ""}/>
+        <span class="vw-option-head">${choiceRadio()}<strong>${option.label}</strong></span>
+        <small class="vw-option-effect">${option.effect}</small>
+      </label>`;
+    }).join("");
+    const stateTemplate = requireWord(words, dirty ? "state_unsaved_template" : "state_saved_template");
+    return `<section class="settings-section verification-warning-screen" aria-labelledby="verification-warning-heading">
+      <h2 id="verification-warning-heading" tabindex="-1">${requireWord(words, "heading")}</h2>
+      <p class="vw-intro">${requireWord(words, "intro")}</p>
+      <fieldset class="settings-options vw-options"><legend class="sr-only">${requireWord(words, "legend_label")}</legend>${options}</fieldset>
+      <p class="vw-effect" data-verification-warning-effect><span class="vw-effect-label">${requireWord(words, "what_this_does_label")}</span>${verificationWarningEffect(state.selected, words)}</p>
+      <div class="settings-actions vw-actions">
+        <button class="button ghost vw-reset" type="button" data-verification-warning-reset${dirty ? "" : " disabled"}>${requireWord(words, "reset_button")}</button>
+        <button class="button vw-save" type="button" data-verification-warning-save${dirty ? "" : " disabled"}>${requireWord(words, "save_button")}</button>
+      </div>
+      <p class="vw-state" data-verification-warning-state>${stateTemplate.replace("{choice}", state.saved)}</p>
+    </section>`;
+  }
   const choices = VERIFICATION_WARNING_CHOICES.map((choice) => {
     const selected = state.selected === choice;
     return `<label class="vw-choice${selected ? " selected" : ""}" for="${choiceId(choice)}">

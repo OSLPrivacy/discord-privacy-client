@@ -952,7 +952,6 @@ pub mod pro_marked_deletion_outcomes;
 pub mod proton_fake_page;
 pub mod quiet_hours;
 pub mod quiet_hours_notices;
-pub mod realtime_wakeup;
 pub mod shared_delete_action;
 pub mod shared_marked_deletion_record;
 pub mod shared_marked_message_deleter;

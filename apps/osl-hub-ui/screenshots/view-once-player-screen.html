@@ -25,12 +25,18 @@
         viewOncePlayerScreenMarkup,
       } from "/src/view-once-player-screen.ts";
 
+      // TASK 3161: this fixture no longer has words of its own. It imports
+      // the SAME words file `cmd_osl_read_screen_words` serves in the app,
+      // so a capture here shows what the app actually renders.
+      const { default: enWords } = await import("../../../crates/ipc/src/screen_words/en.json");
+      const words = enWords.view_once_player;
+
       const params = new URLSearchParams(location.search);
       const fixture = params.get("fixture") === "empty" ? "empty" : "populated";
       const app = document.querySelector("#app");
 
       if (fixture === "empty") {
-        app.innerHTML = viewOncePlayerScreenMarkup(EMPTY_VIEW_ONCE_PLAYER_SCREEN);
+        app.innerHTML = viewOncePlayerScreenMarkup(EMPTY_VIEW_ONCE_PLAYER_SCREEN, words);
       } else {
         // Fixed fixture clock: a 10 second view-once item opened at t=0 and
         // observed at t=0, so the countdown reads a stable "10" for capture.
@@ -38,7 +44,7 @@
           now: () => 0,
           onClose: () => {},
         });
-        app.innerHTML = viewOncePlayerScreenMarkup({ play: { id: "msg-play" }, open });
+        app.innerHTML = viewOncePlayerScreenMarkup({ play: { id: "msg-play" }, open }, words);
       }
       document.body.dataset.viewOncePlayerFixture = fixture;
     </script>
