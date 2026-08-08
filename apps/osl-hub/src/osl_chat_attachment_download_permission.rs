@@ -17,6 +17,30 @@ use crate::attachment_limits::AttachmentAccountTier;
 
 pub const SHARE_REVOKED_REFUSAL_NAME: &str = "share_revoked";
 
+/// The receiver's authority recorded beside the stored file. Keeping this in
+/// the bound record makes a post-upload permission edit fail closed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoredReceiverPermission {
+    Download,
+    None,
+}
+
+/// Security-relevant metadata persisted for a completed attachment.
+///
+/// The download permission snapshots this entire value when it is minted. A
+/// later database edit therefore cannot relabel a stored object, move it to a
+/// different owner, change its claimed length or kind, or replace the
+/// receiver's permission without invalidating the download.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredRecipientAttachment {
+    pub file_id: String,
+    pub file_name: String,
+    pub byte_length: u64,
+    pub kind: String,
+    pub owner_osl_user_id: String,
+    pub receiver_permission: StoredReceiverPermission,
+}
+
 /// The direct request made by the receiving OSL copy.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecipientAttachmentDownloadRequest {
@@ -41,6 +65,7 @@ pub struct RecipientAttachmentDownloadPermission {
     recipient_osl_user_id: String,
     file_id: String,
     expected_byte_length: u64,
+    expected_stored_attachment: StoredRecipientAttachment,
     fetch_token: [u8; FETCH_TOKEN_BYTES],
     revoked: bool,
 }
@@ -74,6 +99,11 @@ pub enum RecipientAttachmentDownloadError {
     RecipientMismatch,
     InvalidProSendReceipt,
     InvalidReceivedPermission,
+    FileNameChanged,
+    FileSizeChanged,
+    FileKindChanged,
+    FileOwnerChanged,
+    ReceiverPermissionChanged,
     DownloadLengthMismatch { expected: u64, actual: u64 },
     Transfer(CipherStoreError),
 }
@@ -86,6 +116,11 @@ impl RecipientAttachmentDownloadError {
             Self::RecipientMismatch => "recipient_mismatch",
             Self::InvalidProSendReceipt => "invalid_pro_send_receipt",
             Self::InvalidReceivedPermission => "invalid_received_permission",
+            Self::FileNameChanged => "file_name_changed",
+            Self::FileSizeChanged => "file_size_changed",
+            Self::FileKindChanged => "file_kind_changed",
+            Self::FileOwnerChanged => "file_owner_changed",
+            Self::ReceiverPermissionChanged => "receiver_permission_changed",
             Self::DownloadLengthMismatch { .. } => "download_length_mismatch",
             Self::Transfer(_) => "attachment_transfer_failed",
         }
@@ -99,6 +134,11 @@ impl fmt::Display for RecipientAttachmentDownloadError {
             Self::RecipientMismatch => write!(formatter, "recipient_mismatch"),
             Self::InvalidProSendReceipt => write!(formatter, "invalid_pro_send_receipt"),
             Self::InvalidReceivedPermission => write!(formatter, "invalid_received_permission"),
+            Self::FileNameChanged => write!(formatter, "file_name_changed"),
+            Self::FileSizeChanged => write!(formatter, "file_size_changed"),
+            Self::FileKindChanged => write!(formatter, "file_kind_changed"),
+            Self::FileOwnerChanged => write!(formatter, "file_owner_changed"),
+            Self::ReceiverPermissionChanged => write!(formatter, "receiver_permission_changed"),
             Self::DownloadLengthMismatch { expected, actual } => write!(
                 formatter,
                 "download_length_mismatch: expected {expected} bytes, received {actual}"
@@ -129,6 +169,7 @@ impl From<CipherStoreError> for RecipientAttachmentDownloadError {
 /// the Pro uploader introduced at task 0642.
 pub fn grant_recipient_download_from_pro_send(
     report: &ProChunkedUploadReport,
+    stored_attachment: &StoredRecipientAttachment,
     recipient_osl_user_id: impl Into<String>,
     fetch_token: [u8; FETCH_TOKEN_BYTES],
 ) -> Result<RecipientAttachmentDownloadPermission, RecipientAttachmentDownloadError> {
@@ -150,7 +191,14 @@ pub fn grant_recipient_download_from_pro_send(
         &recipient_osl_user_id,
         &completed.file_id,
         completed.total_size_bytes,
-    ) || completed.piece_count as usize != report.finished_pieces.len()
+    )
+        || stored_attachment.file_id != completed.file_id
+        || stored_attachment.byte_length != completed.total_size_bytes
+        || stored_attachment.file_name.is_empty()
+        || stored_attachment.kind.is_empty()
+        || stored_attachment.owner_osl_user_id.is_empty()
+        || stored_attachment.receiver_permission != StoredReceiverPermission::Download
+        || completed.piece_count as usize != report.finished_pieces.len()
         || !receipts_are_ordered
         || recorded_bytes != Some(completed.total_size_bytes)
     {
@@ -161,6 +209,7 @@ pub fn grant_recipient_download_from_pro_send(
         recipient_osl_user_id,
         file_id: completed.file_id.clone(),
         expected_byte_length: completed.total_size_bytes,
+        expected_stored_attachment: stored_attachment.clone(),
         fetch_token,
         revoked: false,
     })
@@ -178,17 +227,26 @@ pub fn grant_recipient_download_from_authenticated_notice(
     recipient_osl_user_id: impl Into<String>,
     file_id: impl Into<String>,
     expected_byte_length: u64,
+    stored_attachment: StoredRecipientAttachment,
     fetch_token: [u8; FETCH_TOKEN_BYTES],
 ) -> Result<RecipientAttachmentDownloadPermission, RecipientAttachmentDownloadError> {
     let recipient_osl_user_id = recipient_osl_user_id.into();
     let file_id = file_id.into();
-    if !valid_permission_target(&recipient_osl_user_id, &file_id, expected_byte_length) {
+    if !valid_permission_target(&recipient_osl_user_id, &file_id, expected_byte_length)
+        || stored_attachment.file_id != file_id
+        || stored_attachment.byte_length != expected_byte_length
+        || stored_attachment.file_name.is_empty()
+        || stored_attachment.kind.is_empty()
+        || stored_attachment.owner_osl_user_id.is_empty()
+        || stored_attachment.receiver_permission != StoredReceiverPermission::Download
+    {
         return Err(RecipientAttachmentDownloadError::InvalidReceivedPermission);
     }
     Ok(RecipientAttachmentDownloadPermission {
         recipient_osl_user_id,
         file_id,
         expected_byte_length,
+        expected_stored_attachment: stored_attachment,
         fetch_token,
         revoked: false,
     })
@@ -217,11 +275,13 @@ pub fn authorize_recipient_attachment_download(
 /// upload limits constrain senders, not recipients.
 pub fn download_pro_attachment_for_recipient(
     permission: &RecipientAttachmentDownloadPermission,
+    stored_attachment: &StoredRecipientAttachment,
     request: &RecipientAttachmentDownloadRequest,
     client: &CipherStoreClient,
     output: &mut impl Write,
 ) -> Result<RecipientAttachmentDownloadReceipt, RecipientAttachmentDownloadError> {
     authorize_recipient_attachment_download(permission, request)?;
+    verify_stored_attachment(permission, stored_attachment)?;
 
     let byte_length =
         client.fetch_attachment_to_writer(&permission.file_id, &permission.fetch_token, output)?;
@@ -237,4 +297,34 @@ pub fn download_pro_attachment_for_recipient(
         byte_length,
         recipient_account_tier: request.account_tier,
     })
+}
+
+fn verify_stored_attachment(
+    permission: &RecipientAttachmentDownloadPermission,
+    candidate: &StoredRecipientAttachment,
+) -> Result<(), RecipientAttachmentDownloadError> {
+    let expected = &permission.expected_stored_attachment;
+
+    // The transport object id is deliberately not reported as a sixth mutable
+    // detail: it is already the lookup key and remains private in the
+    // permission. Treat replacing it as an invalid receipt-shaped record.
+    if candidate.file_id != expected.file_id {
+        return Err(RecipientAttachmentDownloadError::InvalidProSendReceipt);
+    }
+    if candidate.file_name != expected.file_name {
+        return Err(RecipientAttachmentDownloadError::FileNameChanged);
+    }
+    if candidate.byte_length != expected.byte_length {
+        return Err(RecipientAttachmentDownloadError::FileSizeChanged);
+    }
+    if candidate.kind != expected.kind {
+        return Err(RecipientAttachmentDownloadError::FileKindChanged);
+    }
+    if candidate.owner_osl_user_id != expected.owner_osl_user_id {
+        return Err(RecipientAttachmentDownloadError::FileOwnerChanged);
+    }
+    if candidate.receiver_permission != expected.receiver_permission {
+        return Err(RecipientAttachmentDownloadError::ReceiverPermissionChanged);
+    }
+    Ok(())
 }

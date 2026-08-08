@@ -14,6 +14,7 @@ use osl_privacy_hub::osl_chat_attachment_download_permission::{
     authorize_recipient_attachment_download, download_pro_attachment_for_recipient,
     grant_recipient_download_from_authenticated_notice, RecipientAttachmentDownloadError,
     RecipientAttachmentDownloadPermission, RecipientAttachmentDownloadRequest,
+    StoredReceiverPermission, StoredRecipientAttachment,
 };
 use osl_privacy_hub::peer_attachment_io;
 use osl_privacy_hub::security::HubSecurityState;
@@ -700,10 +701,19 @@ fn open_pending_inner(
         return Err(attachment_formats::unsupported_protected_image_message());
     }
     let token = parse_token(&plan.fetch_token)?;
+    let stored_attachment = StoredRecipientAttachment {
+        file_id: plan.object_id.clone(),
+        file_name: plan.original_filename.clone(),
+        byte_length: plan.sealed_size,
+        kind: plan.mime_type.clone(),
+        owner_osl_user_id: plan.sender_osl_user_id.clone(),
+        receiver_permission: StoredReceiverPermission::Download,
+    };
     let permission = grant_recipient_download_from_authenticated_notice(
         plan.recipient_osl_user_id.clone(),
         plan.object_id.clone(),
         plan.sealed_size,
+        stored_attachment.clone(),
         token,
     )
     .map_err(|_| "This private attachment permission is invalid".to_owned())?;
@@ -718,6 +728,7 @@ fn open_pending_inner(
     );
     let fetched = match download_pro_attachment_for_recipient(
         &permission,
+        &stored_attachment,
         &recipient_request,
         &client,
         &mut download,

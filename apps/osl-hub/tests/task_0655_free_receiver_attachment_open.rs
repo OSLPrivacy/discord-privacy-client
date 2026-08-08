@@ -18,6 +18,7 @@ use osl_privacy_hub::attachment_limits::{
 use osl_privacy_hub::osl_chat_attachment_download_permission::{
     download_pro_attachment_for_recipient, grant_recipient_download_from_authenticated_notice,
     grant_recipient_download_from_pro_send, RecipientAttachmentDownloadRequest,
+    StoredReceiverPermission, StoredRecipientAttachment,
 };
 use sha2::{Digest, Sha256};
 
@@ -102,10 +103,18 @@ fn task_0655_free_recipient_opens_pro_file_and_free_upload_still_exits_1() {
             .collect::<Vec<_>>(),
     );
     let expected_fingerprint = Sha256::digest(file_bytes.as_slice());
+    let stored_attachment = StoredRecipientAttachment {
+        file_id: FILE_ID.to_owned(),
+        file_name: "task-0655-pro-file.bin".to_owned(),
+        byte_length: file_length,
+        kind: "application/octet-stream".to_owned(),
+        owner_osl_user_id: "task-0655-pro-sender".to_owned(),
+        receiver_permission: StoredReceiverPermission::Download,
+    };
 
     let pro_report = completed_pro_send(file_length);
     let report_permission =
-        grant_recipient_download_from_pro_send(&pro_report, RECIPIENT_ID, FETCH_TOKEN)
+        grant_recipient_download_from_pro_send(&pro_report, &stored_attachment, RECIPIENT_ID, FETCH_TOKEN)
             .expect("completed Pro upload grants its named recipient");
     assert_eq!(report_permission.expected_byte_length(), file_length);
     assert_eq!(report_permission.file_id(), FILE_ID);
@@ -137,6 +146,7 @@ fn task_0655_free_recipient_opens_pro_file_and_free_upload_still_exits_1() {
         RECIPIENT_ID,
         FILE_ID,
         file_length,
+        stored_attachment.clone(),
         FETCH_TOKEN,
     )
     .expect("authenticated notice restores recipient permission");
@@ -148,7 +158,7 @@ fn task_0655_free_recipient_opens_pro_file_and_free_upload_still_exits_1() {
         CipherStoreClient::new(format!("http://{address}")).expect("receiver fixture client");
     let mut opened = Vec::new();
     let receipt =
-        download_pro_attachment_for_recipient(&permission, &request, &client, &mut opened)
+        download_pro_attachment_for_recipient(&permission, &stored_attachment, &request, &client, &mut opened)
             .expect("Free recipient opens the Pro attachment through recipient permission");
     server.join().expect("receiver fixture completes");
 
