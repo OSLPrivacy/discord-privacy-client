@@ -225,7 +225,12 @@ function Add-Change([string]$Name) {
 
 function New-Password {
   $bytes = [byte[]]::new(24)
-  [Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+  $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+  try {
+    $rng.GetBytes($bytes)
+  } finally {
+    $rng.Dispose()
+  }
   $token = [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+', 'A').Replace('/', 'b')
   return "Osl4950!$token"
 }
