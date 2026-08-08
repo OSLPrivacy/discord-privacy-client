@@ -10505,6 +10505,12 @@ async function toggleOslChatReaction(messageId: string, emoji: string, mine: boo
 }
 
 async function sendOslChatAttachment(): Promise<void> {
+  const person = hubPeople.find((candidate) => candidate.personId === activeOslChatPersonId);
+  if (person?.pendingKeyChange) {
+    showToast(OSL_CHAT_KEY_CHANGED_REFUSAL_REASON);
+    render();
+    return;
+  }
   if (!activeOslChatContext?.scopeApproved || oslChatBusy) return;
   oslChatBusy = true;
   render();
@@ -10537,8 +10543,9 @@ async function sendOslChat(event: SubmitEvent): Promise<void> {
   const person = personId ? hubPeople.find((candidate) => candidate.personId === personId) : null;
   if (!personId || !person || !person.safetyNumberVerified || person.pendingKeyChange) {
     oslChatSendBlockedReason = person?.pendingKeyChange
-      ? "This person’s key changed. Compare the safety number before sending anything."
+      ? OSL_CHAT_KEY_CHANGED_REFUSAL_REASON
       : "This chat is not verified yet. Verify the safety number before sending anything.";
+    if (person?.pendingKeyChange) showToast(OSL_CHAT_KEY_CHANGED_REFUSAL_REASON);
     render();
     return;
   }

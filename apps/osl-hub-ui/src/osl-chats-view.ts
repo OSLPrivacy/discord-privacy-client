@@ -139,6 +139,9 @@ export interface OslChatFriend {
   timeLabel?: string;
 }
 
+/** Exact refusal shown everywhere an unreviewed friend key blocks a send. */
+export const OSL_CHAT_KEY_CHANGED_REFUSAL_REASON = "Sending is blocked until you verify the new safety number.";
+
 export interface OslChatMessage {
   messageId: string;
   direction: OslChatMessageDirection;
@@ -364,9 +367,9 @@ function friendRow(friend: OslChatFriend, activePersonId: string | null, busy: b
   const preview = friend.previewVisible && friend.preview
     ? `<span class="osl-chat-friend-preview">${escapeHtml(friend.preview)}</span>`
     : friendPreview(friend);
-  return `<div class="osl-chat-friend${active ? " is-active" : ""}" data-person-id="${escapeHtml(friend.personId)}">
+  return `<div class="osl-chat-friend${active ? " is-active" : ""}${keyChanged ? " is-key-changed" : ""}" data-person-id="${escapeHtml(friend.personId)}">
     <button class="osl-chat-friend-open" type="button" data-osl-chat-open="${escapeHtml(friend.personId)}" ${active ? 'aria-current="true"' : ""} ${busy ? 'disabled aria-disabled="true"' : ""}>
-      ${avatar(friend.nickname, "", friend.online !== false)}<span class="osl-chat-friend-copy"><strong class="${keyChanged ? "is-key-changed" : ""}">${escapeHtml(friend.nickname)}${keyChanged ? '<span class="osl-chat-key-triangle" aria-label="Key changed">△</span>' : oslVerificationTickMarkup(friend.verificationTwoWay)}</strong>${preview}</span><span class="osl-chat-friend-end"><time class="osl-chat-status-style">${escapeHtml(friend.timeLabel ?? "")}</time>${friend.unreadCount > 0 ? `<b class="osl-chat-unread osl-chat-status-style" aria-label="${friend.unreadCount} unread">${Math.min(friend.unreadCount, 99)}</b>` : ""}</span>
+      ${avatar(friend.nickname, "", friend.online !== false)}<span class="osl-chat-friend-copy"><strong class="${keyChanged ? "is-key-changed" : ""}">${escapeHtml(friend.nickname)}${keyChanged ? '<span class="osl-chat-key-changed-triangle" role="img" aria-label="Safety number changed">⚠</span>' : oslVerificationTickMarkup(friend.verificationTwoWay)}</strong>${preview}</span><span class="osl-chat-friend-end"><time class="osl-chat-status-style">${escapeHtml(friend.timeLabel ?? "")}</time>${friend.unreadCount > 0 ? `<b class="osl-chat-unread osl-chat-status-style" aria-label="${friend.unreadCount} unread">${Math.min(friend.unreadCount, 99)}</b>` : ""}</span>
     </button>
   </div>`;
 }
@@ -533,7 +536,7 @@ function activeThread(model: OslChatsViewModel, friend: OslChatFriend): string {
     ? "Key changed — check before sending"
     : friend.verified ? "Verified · online" : "Not verified yet";
   const keyBanner = keyChanged
-    ? `<aside class="osl-chat-key-banner" role="alert" data-osl-key-changed-banner="true"><span><strong>${escapeHtml(friend.nickname)}’s key changed.</strong><small>Verify before you send anything.</small></span><button type="button" data-osl-chat-settings="${escapeHtml(friend.personId)}">Verify</button></aside>`
+    ? `<aside class="osl-chat-key-banner osl-chat-key-changed-banner" role="alert" data-osl-key-changed-banner="true"><span><strong>Key changed</strong><small>${escapeHtml(OSL_CHAT_KEY_CHANGED_REFUSAL_REASON)}</small></span><button type="button" data-verify-person="${escapeHtml(friend.personId)}">Verify new safety number</button></aside>`
     : "";
   const blocked = model.sendBlockedReason
     ? `<aside class="osl-chat-blocked-panel" role="alert"><strong>Message not sent</strong><p>${escapeHtml(model.sendBlockedReason)}</p><button type="button" data-osl-chat-blocked-close>Back to chat</button></aside>`

@@ -17141,7 +17141,10 @@ code {
 .osl-chat-online { position: absolute; right: -1px; bottom: -1px; width: 10px; height: 10px; border: 2px solid var(--panel); background: var(--safe); }
 .osl-chat-friend-copy strong { font-size: 14px; color: var(--text); }
 .osl-chat-friend-copy strong.is-key-changed { color: var(--warn); }
-.osl-chat-key-triangle { margin-left: 4px; color: var(--warn); font-size: 11px; }
+.osl-chat-key-changed-triangle { margin-left: 4px; color: var(--warn); font-size: 11px; }
+.osl-chat-friend.is-key-changed { border-color: var(--warn); }
+.osl-chat-friend.is-key-changed .osl-chat-friend-copy strong,
+.osl-chat-key-changed-banner { color: var(--warn); }
 .osl-chat-friend-preview { max-width: 190px; margin-top: 3px; color: var(--muted); font-family: var(--font-prose); font-size: 11px; }
 .osl-chat-friend-end { align-self: start; display: grid; justify-items: end; gap: 5px; color: var(--subtle); font: 10px var(--font-mono); }
 .osl-chat-friend-end:empty { display: none; }
