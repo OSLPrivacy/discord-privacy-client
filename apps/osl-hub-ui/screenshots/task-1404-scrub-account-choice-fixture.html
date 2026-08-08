@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
+    <title>OSL Privacy - TASK 1404</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module">
+      import "@fontsource-variable/onest/wght.css";
+      import "../src/styles.css";
+      import "../src/onboarding-controls.css";
+      import fixture from "../src/scrub-account-choice-fixture.json";
+      import {
+        initialScrubAccountChoiceState,
+        scrubAccountChoiceMarkup,
+        toggleScrubAccountTick,
+      } from "../src/scrub-account-choice.ts";
+
+      // Render the screen with exactly one account ticked, matching the finish
+      // line: two accounts, one ticked, Back and Continue visible.
+      const state = toggleScrubAccountTick(
+        initialScrubAccountChoiceState(fixture.accounts),
+        fixture.tickedAccountId,
+      );
+      document.querySelector("#app").innerHTML = scrubAccountChoiceMarkup(state);
+      await document.fonts.ready;
+      document.documentElement.dataset.task1404 = "ready";
+    </script>
+  </body>
+</html>
