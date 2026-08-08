@@ -135,6 +135,9 @@ whatsapp-qa-identity = ["whatsapp-qa-shell"]
 # Fault-injection seam used only by the named TASK 3234 integration target.
 # Normal/default/desktop builds do not include it.
 task-3234-test = ["keystore/task-3235-test"]
+# Hermetic acceptance seam for TASK 0863. It exposes only the file-backed
+# seven-screen reset probe and is absent from normal/default/desktop builds.
+task-0863-test = []
 
 [lib]
 # The package is `osl-hub` so it can be selected with `cargo -p osl-hub`.

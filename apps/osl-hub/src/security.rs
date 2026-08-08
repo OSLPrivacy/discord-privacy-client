@@ -6001,6 +6001,200 @@ fn write_encrypted_json_with_key<T: Serialize>(
     crate::atomic_file::write_recoverable(path, &sealed, "OSL security state")
 }
 
+#[cfg(feature = "task-0863-test")]
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct Task0863ResetObservation {
+    pub group: String,
+    pub settings_at_default: usize,
+    pub other_changed: usize,
+}
+
+#[cfg(feature = "task-0863-test")]
+struct Task0863Harness {
+    dir: std::path::PathBuf,
+    previous_active_account_dir: Option<std::path::PathBuf>,
+    previous_file_key: Option<[u8; 32]>,
+}
+
+#[cfg(feature = "task-0863-test")]
+impl Task0863Harness {
+    fn new(label: &str) -> Result<Self, String> {
+        let base = std::env::temp_dir();
+        let dir = (0..100)
+            .find_map(|attempt| {
+                let nonce = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos();
+                let candidate = base.join(format!(
+                    "osl-task0863-{label}-{}-{nonce}-{attempt}",
+                    std::process::id()
+                ));
+                match std::fs::create_dir(&candidate) {
+                    Ok(()) => Some(candidate),
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => None,
+                    Err(_) => None,
+                }
+            })
+            .ok_or_else(|| "TASK0863 could not allocate fixture directory".to_owned())?;
+        let previous_active_account_dir = keystore::active_account_dir();
+        let previous_file_key = ipc::main_password::get_file_storage_key();
+        keystore::set_active_account_dir(Some(dir.clone()));
+        ipc::main_password::set_file_storage_key(Some([0x86; 32]));
+        Ok(Self {
+            dir,
+            previous_active_account_dir,
+            previous_file_key,
+        })
+    }
+}
+
+#[cfg(feature = "task-0863-test")]
+impl Drop for Task0863Harness {
+    fn drop(&mut self) {
+        keystore::set_active_account_dir(self.previous_active_account_dir.clone());
+        ipc::main_password::set_file_storage_key(self.previous_file_key);
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+#[cfg(feature = "task-0863-test")]
+fn task0863_seed_all_screens(core: &HubCoreState, owner: &str, dir: &Path) -> Result<(), String> {
+    let mut security_preferences = SecurityPreferences::default();
+    security_preferences.version = 2;
+    security_preferences.chat_approval_suggestion = ChatApprovalSuggestionChoice::Off;
+    security_preferences
+        .app_notification_choices
+        .insert("signal".to_owned(), true);
+    security_preferences
+        .look_choices
+        .insert("theme".to_owned(), "dark".to_owned());
+    write_encrypted_json(&dir.join(SECURITY_PREFS_FILE), &security_preferences)?;
+
+    let mut app_preferences = ipc::app_preferences::AppPreferences::default();
+    app_preferences.new_friend_defaults.account_reach =
+        ipc::app_preferences::NewFriendAccountReach::AllSharedChats;
+    app_preferences.privacy_level = ipc::app_preferences::PrivacyLevel::Maximum;
+    app_preferences.next_generation_message_policy =
+        ipc::app_preferences::NextGenerationMessagePolicy::On;
+    app_preferences.message_defaults.timer_seconds = 901;
+    app_preferences
+        .behaviour_choices
+        .insert("sound".to_owned(), "changed".to_owned());
+    ipc::app_preferences::write_app_preferences(
+        &dir.join("app_preferences.json"),
+        &app_preferences,
+    )?;
+    *core
+        .osl
+        .app_preferences
+        .lock()
+        .map_err(|_| "TASK0863 app preference fixture is unavailable".to_owned())? =
+        app_preferences;
+
+    crate::osl_profile::set_active_profile_picture(
+        owner,
+        "data:image/png;base64,iVBORw0KGgo=".to_owned(),
+    )?;
+    Ok(())
+}
+
+#[cfg(feature = "task-0863-test")]
+fn task0863_changed_settings(
+    core: &HubCoreState,
+    owner: &str,
+    dir: &Path,
+) -> Result<[bool; 7], String> {
+    let security_preferences =
+        load_encrypted_json::<SecurityPreferences>(&dir.join(SECURITY_PREFS_FILE))?;
+    let app_preferences = core
+        .osl
+        .app_preferences
+        .lock()
+        .map_err(|_| "TASK0863 app preference fixture is unavailable".to_owned())?;
+    Ok([
+        crate::osl_profile::read_active_profile_picture(owner)?
+            .image
+            .is_some(),
+        app_preferences.new_friend_defaults.account_reach
+            == ipc::app_preferences::NewFriendAccountReach::AllSharedChats,
+        app_preferences.privacy_level == ipc::app_preferences::PrivacyLevel::Maximum,
+        security_preferences.chat_approval_suggestion == ChatApprovalSuggestionChoice::Off
+            && security_preferences.app_notification_choices.get("signal") == Some(&true),
+        app_preferences.next_generation_message_policy
+            == ipc::app_preferences::NextGenerationMessagePolicy::On
+            && app_preferences.message_defaults.timer_seconds == 901,
+        security_preferences.look_choices.get("theme").map(String::as_str) == Some("dark"),
+        app_preferences.behaviour_choices.get("sound").map(String::as_str) == Some("changed"),
+    ])
+}
+
+/// Run the TASK 0863 file-backed acceptance proof through the real reset
+/// function. This symbol exists only with the dedicated test feature.
+#[cfg(feature = "task-0863-test")]
+pub fn task0863_run_per_screen_resets(
+    groups: Vec<String>,
+) -> Result<Vec<Task0863ResetObservation>, String> {
+    const EXPECTED: [&str; 7] = [
+        "Account",
+        "Whitelisting",
+        "Privacy",
+        "Notifications",
+        "Apps and sending",
+        "Look",
+        "Behaviour",
+    ];
+    for expected in EXPECTED {
+        if !groups.iter().any(|group| group == expected) {
+            return Err(format!("TASK0863 fixture missing reset group {expected}"));
+        }
+    }
+    if groups.len() != EXPECTED.len() {
+        return Err("TASK0863 fixture must name exactly seven reset groups".to_owned());
+    }
+
+    let mut observations = Vec::with_capacity(EXPECTED.len());
+    for (reset_index, group) in groups.into_iter().enumerate() {
+        let harness = Task0863Harness::new(&group.to_ascii_lowercase().replace(' ', "-"))?;
+        let core = HubCoreState::default();
+        let security = HubSecurityState::default();
+        *core
+            .osl
+            .identity
+            .lock()
+            .map_err(|_| "TASK0863 identity fixture is unavailable".to_owned())? =
+            Some(keystore::generate_native_identity());
+        let owner = active_user_id(&core)?;
+        task0863_seed_all_screens(&core, &owner, &harness.dir)?;
+        if task0863_changed_settings(&core, &owner, &harness.dir)? != [true; 7] {
+            return Err("TASK0863 fixture did not change one setting on every screen".to_owned());
+        }
+
+        let receipt = reset_setting_group(&core, &security, group.clone())?;
+        if receipt.action != "reset" || receipt.group != group {
+            return Err(format!("TASK0863 reset receipt did not match {group}"));
+        }
+        let changed = task0863_changed_settings(&core, &owner, &harness.dir)?;
+        let settings_at_default = changed.iter().filter(|is_changed| !**is_changed).count();
+        let other_changed = changed
+            .iter()
+            .enumerate()
+            .filter(|(index, is_changed)| *index != reset_index && **is_changed)
+            .count();
+        if changed[reset_index] || settings_at_default != 1 || other_changed != 6 {
+            return Err(format!(
+                "TASK0863 {group} reset was broad: settings_at_default={settings_at_default} other_changed={other_changed}"
+            ));
+        }
+        observations.push(Task0863ResetObservation {
+            group,
+            settings_at_default,
+            other_changed,
+        });
+    }
+    Ok(observations)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
