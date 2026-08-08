@@ -1,0 +1,20 @@
+[package]
+name = "osl-task-4801-pairing"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+base64 = "=0.22.1"
+crypto = { path = "../../../crates/crypto" }
+ipc = { path = "../../../crates/ipc" }
+keystore = { path = "../../../crates/keystore" }
+serde = { version = "=1.0.228", features = ["derive"] }
+sha2 = "=0.10.9"
+zeroize = "=1.9.0"
+
+[dev-dependencies]
+tempfile = "=3.13"
+
+[workspace]
+resolver = "2"

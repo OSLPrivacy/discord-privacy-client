@@ -119,6 +119,7 @@ import {
 import type { PrepaidRedemptionReadiness } from "./lib/prepaid-redemption-readiness.js";
 import { sweepExpiredControlInboxRows } from "./lib/control-inbox-sweep.js";
 import { sweepExpiredSpaceEvents } from "./lib/space-event-sweep.js";
+import { sweepQuietOwnerSuccessions } from "./lib/account-ownership.js";
 
 const MAX_MUTATION_BODY_BYTES = 1024 * 1024;
 const PUBLIC_GET_INGRESS_MAX_PER_MINUTE = 1200;
@@ -253,6 +254,17 @@ export default {
       }
     } catch {
       console.error("[cron] privacy retention sweep failed");
+    }
+    try {
+      const changed = await sweepQuietOwnerSuccessions(env.DB);
+      if (changed.changedRoles > 0 || changed.moderationLogRows > 0) {
+        console.log(
+          `[cron] ownership succession changed ${changed.changedRoles} role row(s) ` +
+          `and wrote ${changed.moderationLogRows} moderation log row(s)`,
+        );
+      }
+    } catch {
+      console.error("[cron] ownership succession sweep failed");
     }
     // Phase 6.4: TTL-sweep expired control_inbox rows. Hourly is
     // fine -- rows expire at 7d so a 1h slack is well within

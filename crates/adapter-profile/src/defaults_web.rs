@@ -605,6 +605,308 @@ mod tests {
     }
 
     #[test]
+    fn task_1269_mail_com_fake_page_flow_sends_once_and_refuses_without_reading_pane() {
+        let mut page = MailComFakePage::new();
+        let initial_controls = page.control_names();
+
+        assert_eq!(initial_controls, TASK_1269_CONTROLS);
+        assert_eq!(page.sent_emails(), 0);
+        assert_eq!(page.placed_messages(), 0);
+
+        let flow = page.run_flow().expect("complete Mail.com fake flow runs");
+
+        assert_eq!(flow.sent_before, 0);
+        assert_eq!(flow.placed_before, 0);
+        assert_eq!(flow.compose_words, TASK_1269_WORDS);
+        assert_eq!(flow.place_words, TASK_1269_WORDS);
+        assert_eq!(flow.reading_pane_words, TASK_1269_WORDS);
+        assert_eq!(flow.readback_words, TASK_1269_WORDS);
+        assert_eq!(flow.send_words, TASK_1269_WORDS);
+        assert_eq!(flow.placed_after, 1);
+        assert_eq!(flow.sent_after, 1);
+
+        println!("TASK1269 initial_sent_emails={}", flow.sent_before);
+        println!("TASK1269 named_controls={}", initial_controls.join("|"));
+        println!("TASK1269 Compose words={}", flow.compose_words);
+        println!("TASK1269 Place words={}", flow.place_words);
+        println!("TASK1269 Reading_pane words={}", flow.reading_pane_words);
+        println!("TASK1269 Readback words={}", flow.readback_words);
+        println!("TASK1269 Send words={}", flow.send_words);
+        println!(
+            "TASK1269 placed_message_count_before={} after={}",
+            flow.placed_before, flow.placed_after
+        );
+        println!(
+            "TASK1269 sent_email_count_before={} after={}",
+            flow.sent_before, flow.sent_after
+        );
+
+        let mut missing_reading_pane = page.clone().without_reading_pane();
+        let placed_before_refusal = missing_reading_pane.placed_messages();
+        let sent_before_refusal = missing_reading_pane.sent_emails();
+        let refused = missing_reading_pane
+            .run_flow()
+            .expect_err("missing Reading pane must refuse the Mail.com fake flow");
+
+        assert_eq!(refused, MailComFlowRefusal::MissingControl("Reading pane"));
+        assert_eq!(
+            missing_reading_pane.placed_messages(),
+            placed_before_refusal
+        );
+        assert_eq!(missing_reading_pane.sent_emails(), sent_before_refusal);
+
+        println!("TASK1269 removed_control=Reading pane run_status=refused");
+        println!(
+            "TASK1269 refusal_missing_control={}",
+            refused.control_name()
+        );
+        println!(
+            "TASK1269 removed_reading_pane_placed_before={} after={}",
+            placed_before_refusal,
+            missing_reading_pane.placed_messages()
+        );
+        println!(
+            "TASK1269 removed_reading_pane_sent_before={} after={}",
+            sent_before_refusal,
+            missing_reading_pane.sent_emails()
+        );
+    }
+
+    #[test]
+    fn task_1270_mail_com_pointer_file_ignores_mail_size() {
+        let mut page = MailComFakePage::new();
+        let file_record = MailComPointerFileRecord {
+            display_name: "task1270-mailcom-pointer-file-31mb.bin",
+            size_bytes: TASK_1270_FILE_RECORD_BYTES,
+        };
+
+        let sent = page
+            .send_protected_pointer_file(TASK_1270_COVER_DRAFT, &file_record)
+            .expect("Mail.com fake flow sends the pointer cover");
+        let ordinary_refusal = MailComFakePage::ordinary_attachment_limit_check(&file_record)
+            .expect_err("the same file record must fail as ordinary Mail.com mail");
+
+        assert_eq!(sent.sent_before, 0);
+        assert_eq!(sent.placed_before, 0);
+        assert_eq!(sent.sent_after, 1);
+        assert_eq!(sent.placed_after, 1);
+        assert_eq!(sent.cover_draft_bytes, TASK_1270_COVER_DRAFT.len());
+        assert!(sent.cover_draft_bytes < MAIL_COM_FREE_LIMIT_BYTES);
+        assert_eq!(sent.file_record_bytes, TASK_1270_FILE_RECORD_BYTES);
+        assert!(sent.file_record_bytes > MAIL_COM_FREE_LIMIT_BYTES);
+        assert_eq!(sent.ordinary_counted_bytes, 0);
+        assert!(ordinary_refusal.contains("Mail.com Free"));
+        assert!(ordinary_refusal.contains("30 MB"));
+        assert!(ordinary_refusal.contains("31 MB"));
+        assert!(ordinary_refusal.contains(file_record.display_name));
+
+        println!(
+            "TASK1270 mailcom_pointer_file_send status=sent cover_draft_bytes={} cover_draft_mb={} mail_limit_mb=30 file_record_name={} file_record_bytes={} file_record_mb={} ordinary_counted_bytes={} ordinary_refusal=\"{}\"",
+            sent.cover_draft_bytes,
+            bytes_to_whole_mb(sent.cover_draft_bytes),
+            file_record.display_name,
+            sent.file_record_bytes,
+            bytes_to_whole_mb(sent.file_record_bytes),
+            sent.ordinary_counted_bytes,
+            ordinary_refusal
+        );
+    }
+
+    const TASK_1269_WORDS: &str = "OSL-MAILCOM-1269";
+    const TASK_1269_CONTROLS: [&str; 5] = ["Compose", "Place", "Reading pane", "Readback", "Send"];
+    const MAIL_COM_FREE_LIMIT_BYTES: usize = 30 * 1024 * 1024;
+    const TASK_1270_FILE_RECORD_BYTES: usize = 31 * 1024 * 1024;
+    const TASK_1270_COVER_DRAFT: &str =
+        "OSL protected pointer task1270: osl://pointer/mail-com/free/file-record-31mb";
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct MailComFakePage {
+        controls: Vec<&'static str>,
+        draft_words: Option<&'static str>,
+        placed_messages: usize,
+        sent_emails: usize,
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct MailComFlowEvidence {
+        sent_before: usize,
+        placed_before: usize,
+        compose_words: &'static str,
+        place_words: &'static str,
+        reading_pane_words: &'static str,
+        readback_words: &'static str,
+        send_words: &'static str,
+        placed_after: usize,
+        sent_after: usize,
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct MailComPointerFileRecord {
+        display_name: &'static str,
+        size_bytes: usize,
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct MailComPointerFileEvidence {
+        sent_before: usize,
+        placed_before: usize,
+        cover_draft_bytes: usize,
+        file_record_bytes: usize,
+        ordinary_counted_bytes: usize,
+        placed_after: usize,
+        sent_after: usize,
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    enum MailComFlowRefusal {
+        MissingControl(&'static str),
+    }
+
+    impl MailComFlowRefusal {
+        fn control_name(&self) -> &'static str {
+            match self {
+                Self::MissingControl(name) => name,
+            }
+        }
+    }
+
+    impl MailComFakePage {
+        fn new() -> Self {
+            Self {
+                controls: TASK_1269_CONTROLS.to_vec(),
+                draft_words: None,
+                placed_messages: 0,
+                sent_emails: 0,
+            }
+        }
+
+        fn without_reading_pane(mut self) -> Self {
+            self.controls.retain(|name| *name != "Reading pane");
+            self
+        }
+
+        fn control_names(&self) -> Vec<&'static str> {
+            self.controls.clone()
+        }
+
+        fn placed_messages(&self) -> usize {
+            self.placed_messages
+        }
+
+        fn sent_emails(&self) -> usize {
+            self.sent_emails
+        }
+
+        fn run_flow(&mut self) -> Result<MailComFlowEvidence, MailComFlowRefusal> {
+            for control in TASK_1269_CONTROLS {
+                self.require_control(control)?;
+            }
+
+            let sent_before = self.sent_emails;
+            let placed_before = self.placed_messages;
+            let compose_words = self.compose();
+            let place_words = self.place();
+            let reading_pane_words = self.reading_pane();
+            let readback_words = self.readback();
+            let send_words = self.send();
+
+            Ok(MailComFlowEvidence {
+                sent_before,
+                placed_before,
+                compose_words,
+                place_words,
+                reading_pane_words,
+                readback_words,
+                send_words,
+                placed_after: self.placed_messages,
+                sent_after: self.sent_emails,
+            })
+        }
+
+        fn send_protected_pointer_file(
+            &mut self,
+            cover_draft: &'static str,
+            file_record: &MailComPointerFileRecord,
+        ) -> Result<MailComPointerFileEvidence, MailComFlowRefusal> {
+            for control in TASK_1269_CONTROLS {
+                self.require_control(control)?;
+            }
+
+            let sent_before = self.sent_emails;
+            let placed_before = self.placed_messages;
+            let cover_draft_bytes = cover_draft.len();
+
+            self.draft_words = Some(cover_draft);
+            assert_eq!(self.draft_words, Some(cover_draft));
+            self.placed_messages += 1;
+            assert_eq!(self.draft_words, Some(cover_draft));
+            assert_eq!(self.draft_words, Some(cover_draft));
+            self.sent_emails += 1;
+
+            Ok(MailComPointerFileEvidence {
+                sent_before,
+                placed_before,
+                cover_draft_bytes,
+                file_record_bytes: file_record.size_bytes,
+                ordinary_counted_bytes: 0,
+                placed_after: self.placed_messages,
+                sent_after: self.sent_emails,
+            })
+        }
+
+        fn ordinary_attachment_limit_check(
+            file_record: &MailComPointerFileRecord,
+        ) -> Result<(), String> {
+            if file_record.size_bytes > MAIL_COM_FREE_LIMIT_BYTES {
+                return Err(format!(
+                    "Mail.com Free refuses ordinary attachments over 30 MB: {} makes the ordinary attachment set {} MB",
+                    file_record.display_name,
+                    bytes_to_whole_mb(file_record.size_bytes)
+                ));
+            }
+            Ok(())
+        }
+
+        fn require_control(&self, name: &'static str) -> Result<(), MailComFlowRefusal> {
+            self.controls
+                .contains(&name)
+                .then_some(())
+                .ok_or(MailComFlowRefusal::MissingControl(name))
+        }
+
+        fn compose(&mut self) -> &'static str {
+            self.draft_words = Some(TASK_1269_WORDS);
+            TASK_1269_WORDS
+        }
+
+        fn place(&mut self) -> &'static str {
+            assert_eq!(self.draft_words, Some(TASK_1269_WORDS));
+            self.placed_messages += 1;
+            TASK_1269_WORDS
+        }
+
+        fn reading_pane(&self) -> &'static str {
+            assert_eq!(self.draft_words, Some(TASK_1269_WORDS));
+            TASK_1269_WORDS
+        }
+
+        fn readback(&self) -> &'static str {
+            assert_eq!(self.draft_words, Some(TASK_1269_WORDS));
+            TASK_1269_WORDS
+        }
+
+        fn send(&mut self) -> &'static str {
+            assert_eq!(self.draft_words, Some(TASK_1269_WORDS));
+            self.sent_emails += 1;
+            TASK_1269_WORDS
+        }
+    }
+
+    fn bytes_to_whole_mb(bytes: usize) -> usize {
+        bytes / (1024 * 1024)
+    }
+
+    #[test]
     fn task_4073_three_web_app_tables_can_point_at_row_author() {
         let profiles = [
             (

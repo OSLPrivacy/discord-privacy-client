@@ -930,6 +930,9 @@ pub mod startup_gate;
 )]
 #[path = "../../../src-tauri/src/bootstrap.rs"]
 pub mod original_bootstrap;
+pub mod device_pairing;
+pub mod quiet_hours;
+pub mod quiet_hours_notices;
 
 // The keystore/ipc crates deliberately keep the active-account dir, base-dir
 // override, and unlocked main-password key in process-wide statics (see

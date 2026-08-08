@@ -205,7 +205,7 @@ export {
 import { initializeThemePreference, themeStorageKey, type ThemeChoice } from "./theme-preference";
 import { inDomTooltipMarkup } from "./in-dom-tooltip";
 import { applyOslChatDraftToElement, firstPartyOslSurfaceContract, OSL_CHAT_MAX_DRAFT_BYTES, oslChatDraftBytes, oslChatHandshakeConfirmed, oslChatsViewMarkup, senderReceiptStateFor, submitsOslChatDraft, type OslChatMessage } from "./osl-chats-view";
-import { createOslChatDeliveryRuntime, mergeOslChatTimeline, oslChatHistoryMessages, receivedOslChatBatchMessage, type OslChatDeliveryHost } from "./osl-chat-runtime";
+import { createOslChatDeliveryRuntime, mergeOslChatTimeline, oslChatHistoryMessages, oslChatOpenRefusalMessage, receivedOslChatBatchMessage, type OslChatDeliveryHost } from "./osl-chat-runtime";
 import { peopleReverificationNoticeMarkup } from "./people-reverification-notice";
 import { parseEnclaveAudience, type EnclaveAudience } from "./osl-collab";
 import { addFriendFailureStatus, bindFriendRemovalControls, bindMainWindowFocusChanges, friendHandshakeDetail, friendHandshakeSummary, friendInviteCardMarkup, friendRemovalButtonMarkup, friendTrustAction, friendVerificationCopy, inviteCopyFailureToast, onboardingPaintDecision, ownedConfirmationSubmitDisabled, RecoveryCaptureGate, removeHubFriend, shouldClearRemovedFriendChat, verificationSubmission, type FriendVerificationCopy } from "./ui-behavior";
@@ -707,6 +707,7 @@ let oslChatBusy = false;
 let oslChatOperationEpoch = 0;
 const oslChatMessages = new Map<string, OslChatMessage[]>();
 const oslChatUnread = new Map<string, number>();
+let lastOslChatOpenRefusal: string | null = null;
 let oslChatVerificationWarningSetting: VerificationWarningSetting = "every-time";
 const oslChatVerificationWarningMemory = new VerificationWarningMemory();
 let oslChatVerificationWarningSurface: VerificationWarningSurface = "none";
@@ -9035,6 +9036,28 @@ function commitOslChatBatch(personId: string, batch: NativeDiscordOverlayOpenedB
   }
 }
 
+async function drainOslChatTextWithRefusal(): Promise<NativeDiscordOverlayOpenedBatch | null> {
+  const before = Date.now();
+  const batch = await openOslChatText();
+  if (batch) {
+    lastOslChatOpenRefusal = null;
+  } else {
+    const failure = lastBackendFailure("open_osl_chat_text");
+    lastOslChatOpenRefusal = failure && failure.at >= before ? failure.message : null;
+  }
+  return batch;
+}
+
+function commitOslChatNotice(personId: string, message: OslChatMessage, background: boolean): void {
+  const messages = [...(oslChatMessages.get(personId) ?? []), message].slice(-200);
+  oslChatMessages.set(personId, messages);
+  if (background) {
+    oslChatUnread.set(personId, Math.min(10_000, (oslChatUnread.get(personId) ?? 0) + 1));
+    void persistOslChatUnread();
+  }
+  renderWhenIdle();
+}
+
 // Delivery lives in ./osl-chat-runtime (T14-A0). This object is the only thing
 // main.ts still owns of it: the binding between the runtime and this module's
 // state. Note what is NOT in the preconditions — the route. A message must
@@ -9056,13 +9079,15 @@ const oslChatDeliveryHost: OslChatDeliveryHost = {
     return context ? { personId, peerOslUserId: context.peerOslUserId, scopeApproved: context.scopeApproved } : null;
   },
   closeContext: () => closeOslChatContext(),
-  drainInbox: () => openOslChatText(),
+  drainInbox: () => drainOslChatTextWithRefusal(),
+  drainRefusal: () => lastOslChatOpenRefusal,
   loadHistory: () => listOslChatHistory(),
   commitBatch: (personId, batch, background) => {
     commitOslChatBatch(personId, batch, background);
     // A conversation drained while the user is reading it renders in place.
     if (!background && batch.messages.length) renderWhenIdle();
   },
+  commitNotice: commitOslChatNotice,
   commitHistory: (personId, rows, context) => {
     const openedViewOnce = (oslChatMessages.get(personId) ?? []).filter((message) => message.state === "opened");
     oslChatMessages.set(personId, mergeOslChatTimeline(
@@ -9141,11 +9166,15 @@ async function refreshOslChat(): Promise<void> {
     return;
   }
   screenshotProtectionEnabled = true;
-  const batch = await openOslChatText();
+  const batch = await drainOslChatTextWithRefusal();
   oslChatAttachments = await listOslChatAttachments() ?? oslChatAttachments;
   // Draining is destructive at the relay. Commit any returned batch to this
   // conversation even if a later UI transition supersedes the render.
   if (batch) commitOslChatBatch(personId, batch, false);
+  if (!batch && lastOslChatOpenRefusal) {
+    const notice = oslChatOpenRefusalMessage(`open-refusal-${Date.now()}`, lastOslChatOpenRefusal, "Now");
+    if (notice) commitOslChatNotice(personId, notice, false);
+  }
   if (epoch === oslChatOperationEpoch) {
     oslChatBusy = false;
     render();

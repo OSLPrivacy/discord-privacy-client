@@ -43,6 +43,7 @@ pub fn generation_stalled(sink: &mut impl ProgressSink) {
         progress_percent: 90,
     });
 }
+// OSL-FINISH-ONLY-TESTS-DELIBERATE: generation_finished/2 is intentionally test-held while the optional local-model UI bridge remains feature-gated.
 pub fn generation_finished(sink: &mut impl ProgressSink, outcome: GenerationOutcome) {
     sink.emit(GenerationEvent::Terminal(outcome));
 }

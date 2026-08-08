@@ -50,28 +50,40 @@ pub const OUTLOOK_DESKTOP_TITLE_READER_COMMAND: &str =
 
 pub const OUTLOOK_DESKTOP_CONTROL_TARGETS: &[OutlookDesktopControlTarget] = &[
     OutlookDesktopControlTarget {
-        name: "Compose",
-        scope: "compose",
+        name: "ribbon New Mail",
+        scope: "ribbon",
         control_type: "Button",
-        ui_names: &["Compose", "New Mail", "New Email"],
+        ui_names: &["New Mail", "New Email"],
     },
     OutlookDesktopControlTarget {
-        name: "Place",
-        scope: "compose",
-        control_type: "Button",
-        ui_names: &["Place"],
-    },
-    OutlookDesktopControlTarget {
-        name: "Readback",
+        name: "body",
         scope: "compose",
         control_type: "Document",
-        ui_names: &["Readback", "Message body", "Body"],
+        ui_names: &["Message body", "Body"],
     },
     OutlookDesktopControlTarget {
         name: "Send",
         scope: "compose",
         control_type: "Button",
         ui_names: &["Send"],
+    },
+    OutlookDesktopControlTarget {
+        name: "reading pane",
+        scope: "mail",
+        control_type: "Pane",
+        ui_names: &["Reading Pane", "Reading pane"],
+    },
+    OutlookDesktopControlTarget {
+        name: "folders",
+        scope: "mail",
+        control_type: "Tree",
+        ui_names: &["Folders", "Folder Pane", "Navigation Pane"],
+    },
+    OutlookDesktopControlTarget {
+        name: "conversation view",
+        scope: "mail",
+        control_type: "List",
+        ui_names: &["Conversation View", "Conversation view", "Message List"],
     },
 ];
 
@@ -88,173 +100,6 @@ pub fn outlook_desktop_control_driver() -> OutlookDesktopControlDriver {
         title_window_classes: OUTLOOK_DESKTOP_TITLE_WINDOW_CLASSES,
         title_reader_command: OUTLOOK_DESKTOP_TITLE_READER_COMMAND,
         targets: outlook_desktop_control_targets(),
-    }
-}
-
-pub const OUTLOOK_DESKTOP_TASK_1287_WORDS: &str = "OSL-OUTLOOK-DESKTOP-1287";
-pub const OUTLOOK_DESKTOP_TASK_1288_SUBJECT: &str = "HELLO";
-pub const OUTLOOK_DESKTOP_TASK_1288_WORDS: &str = "MAPLE-4172";
-
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum OutlookDesktopComposeField {
-    Subject,
-    Body,
-}
-
-impl OutlookDesktopComposeField {
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Subject => "Subject",
-            Self::Body => "Body",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub enum OutlookDesktopFixtureError {
-    MissingControl(String),
-    RequiredControlCannotBeRemoved(String),
-    ComposeNotStarted,
-    ComposeBodyNotFocused(String),
-    MessageNotPlaced,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct OutlookDesktopEmailFixture {
-    controls: Vec<&'static str>,
-    composed_message: Option<String>,
-    focused_field: OutlookDesktopComposeField,
-    subject_text: String,
-    body_text: String,
-    placed_messages: Vec<String>,
-    sent_messages: Vec<String>,
-}
-
-impl Default for OutlookDesktopEmailFixture {
-    fn default() -> Self {
-        Self {
-            controls: OUTLOOK_DESKTOP_CONTROL_TARGETS
-                .iter()
-                .map(|target| target.name)
-                .collect(),
-            composed_message: None,
-            focused_field: OutlookDesktopComposeField::Body,
-            subject_text: OUTLOOK_DESKTOP_TASK_1288_SUBJECT.to_owned(),
-            body_text: String::new(),
-            placed_messages: Vec::new(),
-            sent_messages: Vec::new(),
-        }
-    }
-}
-
-impl OutlookDesktopEmailFixture {
-    pub fn named_control_names(&self) -> Vec<&'static str> {
-        self.controls.clone()
-    }
-
-    pub fn placed_count(&self) -> usize {
-        self.placed_messages.len()
-    }
-
-    pub fn sent_count(&self) -> usize {
-        self.sent_messages.len()
-    }
-
-    pub fn focused_field_name(&self) -> &'static str {
-        self.focused_field.name()
-    }
-
-    pub fn subject_text(&self) -> &str {
-        &self.subject_text
-    }
-
-    pub fn body_text(&self) -> &str {
-        &self.body_text
-    }
-
-    pub fn focus_field(&mut self, field: OutlookDesktopComposeField) {
-        self.focused_field = field;
-    }
-
-    pub fn compose_with_body(
-        &mut self,
-        words: impl Into<String>,
-    ) -> Result<&str, OutlookDesktopFixtureError> {
-        self.require_control("Compose")?;
-        self.focused_field = OutlookDesktopComposeField::Body;
-        self.composed_message = Some(words.into());
-        Ok(self.composed_message.as_deref().unwrap_or_default())
-    }
-
-    pub fn compose(&mut self) -> Result<&str, OutlookDesktopFixtureError> {
-        self.compose_with_body(OUTLOOK_DESKTOP_TASK_1287_WORDS)
-    }
-
-    pub fn place(&mut self) -> Result<&str, OutlookDesktopFixtureError> {
-        self.require_control("Place")?;
-        let message = self
-            .composed_message
-            .as_ref()
-            .ok_or(OutlookDesktopFixtureError::ComposeNotStarted)?;
-        if self.focused_field != OutlookDesktopComposeField::Body {
-            return Err(OutlookDesktopFixtureError::ComposeBodyNotFocused(
-                self.focused_field.name().to_owned(),
-            ));
-        }
-        if self.placed_messages.last() != Some(message) {
-            self.placed_messages.push(message.clone());
-        }
-        self.body_text = message.clone();
-        Ok(self
-            .placed_messages
-            .last()
-            .map(String::as_str)
-            .unwrap_or_default())
-    }
-
-    pub fn readback(&self) -> Result<&str, OutlookDesktopFixtureError> {
-        self.require_control("Readback")?;
-        self.placed_messages
-            .last()
-            .map(String::as_str)
-            .ok_or(OutlookDesktopFixtureError::MessageNotPlaced)
-    }
-
-    pub fn send(&mut self) -> Result<&str, OutlookDesktopFixtureError> {
-        self.require_control("Send")?;
-        let message = self
-            .placed_messages
-            .last()
-            .cloned()
-            .ok_or(OutlookDesktopFixtureError::MessageNotPlaced)?;
-        self.sent_messages.push(message);
-        Ok(self
-            .sent_messages
-            .last()
-            .map(String::as_str)
-            .unwrap_or_default())
-    }
-
-    pub fn remove_control(&mut self, name: &str) -> Result<(), OutlookDesktopFixtureError> {
-        if name == "Send" {
-            return Err(OutlookDesktopFixtureError::RequiredControlCannotBeRemoved(
-                name.to_owned(),
-            ));
-        }
-        let before = self.controls.len();
-        self.controls.retain(|control| *control != name);
-        if self.controls.len() == before {
-            return Err(OutlookDesktopFixtureError::MissingControl(name.to_owned()));
-        }
-        Ok(())
-    }
-
-    fn require_control(&self, name: &str) -> Result<(), OutlookDesktopFixtureError> {
-        if self.controls.contains(&name) {
-            Ok(())
-        } else {
-            Err(OutlookDesktopFixtureError::MissingControl(name.to_owned()))
-        }
     }
 }
 
@@ -414,7 +259,14 @@ mod tests {
                 .iter()
                 .map(|target| target.name)
                 .collect::<Vec<_>>(),
-            vec!["Compose", "Place", "Readback", "Send"]
+            vec![
+                "ribbon New Mail",
+                "body",
+                "Send",
+                "reading pane",
+                "folders",
+                "conversation view",
+            ]
         );
         assert!(driver.title_reader_command.starts_with("powershell.exe "));
         assert!(driver
@@ -438,27 +290,19 @@ mod tests {
 // The mailbox reader is deliberately local and read-only. It adapts Outlook
 // desktop message facts into the shared mailbox reader contract used by Scrub.
 
-#[cfg(feature = "core")]
 use crate::services::{
     open_shared_mailbox_message, read_shared_mailbox_folders, read_shared_mailbox_messages,
     MailboxFolderCandidate, MailboxMessageCandidate, MailboxReaderSnapshot, SharedMailboxFolder,
     SharedMailboxMessage, SharedMailboxMessageSummary,
 };
 
-#[cfg(feature = "core")]
 pub const OUTLOOK_DESKTOP_MAIL_READER_ID: &str = "outlook-desktop-shared-mailbox-reader";
-#[cfg(feature = "core")]
 pub const OUTLOOK_DESKTOP_SERVICE_ID: &str = "outlook";
-#[cfg(feature = "core")]
 pub const OUTLOOK_DESKTOP_SEEDED_OWNER: &str = "osl_task_3053_owner";
-#[cfg(feature = "core")]
 pub const OUTLOOK_DESKTOP_SEEDED_ACCOUNT: &str = "outlook-desktop-scrub";
-#[cfg(feature = "core")]
 pub const OUTLOOK_DESKTOP_SEEDED_SIGNED_IN_ADDRESS: &str = "scrub.owner@example.test";
-#[cfg(feature = "core")]
 pub const OUTLOOK_DESKTOP_MINE_MARKER: &str = "SCRUB-OD-MINE";
 
-#[cfg(feature = "core")]
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct OutlookDesktopMailbox {
     owner_osl_user_id: String,
@@ -467,7 +311,6 @@ pub struct OutlookDesktopMailbox {
     snapshot: MailboxReaderSnapshot,
 }
 
-#[cfg(feature = "core")]
 impl OutlookDesktopMailbox {
     pub fn new(
         owner_osl_user_id: impl Into<String>,
@@ -525,7 +368,6 @@ impl OutlookDesktopMailbox {
     }
 }
 
-#[cfg(feature = "core")]
 pub fn seeded_outlook_desktop_scrub_mailbox() -> OutlookDesktopMailbox {
     OutlookDesktopMailbox::new(
         OUTLOOK_DESKTOP_SEEDED_OWNER,
@@ -582,4 +424,105 @@ pub fn seeded_outlook_desktop_scrub_mailbox() -> OutlookDesktopMailbox {
             ],
         ),
     )
+}
+
+pub const OUTLOOK_DESKTOP_TASK_1286_MARKER: &str = "OSL-OUTLOOK-DESKTOP-1286";
+pub const OUTLOOK_DESKTOP_TASK_1286_COVER_WORDS: &str = "OSL-OUTLOOK-DESKTOP-1286 cover message";
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct OutlookDesktopMappedControl {
+    pub name: &'static str,
+}
+
+pub const OUTLOOK_DESKTOP_TASK_1286_CONTROLS: &[OutlookDesktopMappedControl] = &[
+    OutlookDesktopMappedControl { name: "Place" },
+    OutlookDesktopMappedControl { name: "Read" },
+    OutlookDesktopMappedControl { name: "Send" },
+];
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct OutlookDesktopTask1286Fixture {
+    controls: Vec<&'static str>,
+    placed_messages: Vec<String>,
+    sent_messages: Vec<String>,
+}
+
+impl Default for OutlookDesktopTask1286Fixture {
+    fn default() -> Self {
+        Self {
+            controls: OUTLOOK_DESKTOP_TASK_1286_CONTROLS
+                .iter()
+                .map(|control| control.name)
+                .collect(),
+            placed_messages: Vec::new(),
+            sent_messages: Vec::new(),
+        }
+    }
+}
+
+impl OutlookDesktopTask1286Fixture {
+    pub fn start() -> Self {
+        Self::default()
+    }
+
+    pub fn control_names(&self) -> Vec<&'static str> {
+        self.controls.clone()
+    }
+
+    pub fn placed_message_count(&self) -> usize {
+        self.placed_messages.len()
+    }
+
+    pub fn sent_count(&self) -> usize {
+        self.sent_messages.len()
+    }
+
+    pub fn place(&mut self) -> Result<&'static str, String> {
+        self.require_control("Place")?;
+        self.placed_messages
+            .push(OUTLOOK_DESKTOP_TASK_1286_COVER_WORDS.to_owned());
+        Ok(OUTLOOK_DESKTOP_TASK_1286_COVER_WORDS)
+    }
+
+    pub fn read(&self) -> Result<&str, String> {
+        self.require_control("Read")?;
+        self.placed_messages
+            .last()
+            .map(String::as_str)
+            .ok_or_else(|| "Outlook desktop fixture has no placed cover message".to_owned())
+    }
+
+    pub fn send(&mut self) -> Result<usize, String> {
+        self.require_control("Send")?;
+        let message = self
+            .placed_messages
+            .last()
+            .cloned()
+            .ok_or_else(|| "Outlook desktop fixture has no placed cover message".to_owned())?;
+        self.sent_messages.push(message);
+        Ok(self.sent_messages.len())
+    }
+
+    pub fn remove_control(&mut self, name: &str) -> Result<bool, String> {
+        if name == "Send" {
+            return Err("Outlook desktop fixture refused removing Send".to_owned());
+        }
+        let before = self.controls.len();
+        self.controls.retain(|control| *control != name);
+        Ok(self.controls.len() != before)
+    }
+
+    fn require_control(&self, name: &str) -> Result<(), String> {
+        if self.controls.contains(&name) {
+            Ok(())
+        } else {
+            Err(format!(
+                "Outlook desktop fixture control {name} is unavailable"
+            ))
+        }
+    }
+}
+
+pub fn fake_outlook_desktop_task_1286_fixture() -> OutlookDesktopTask1286Fixture {
+    OutlookDesktopTask1286Fixture::start()
 }

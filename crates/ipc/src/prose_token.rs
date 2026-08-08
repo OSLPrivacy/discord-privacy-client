@@ -9,9 +9,9 @@
 //!     derive this object's cipher-store authority from `P` and the sending
 //!     layer's keys, upload under the client-derived blob id, and encode `P`
 //!     itself as compact chat-like cover text via `encode_token`. The cover
-//!     text is what gets posted to Discord — no `DPC0::` marker, no
-//!     high-entropy base64 blob, and no server-assigned identifier.
-//!   * Receiver: every incoming Discord message in an OSL-enabled
+//!     text is what gets posted to chat and OSL Mail bodies — no `DPC0::`
+//!     marker, no high-entropy base64 blob, and no server-assigned identifier.
+//!   * Receiver: every incoming text message in an OSL-enabled
 //!     scope runs through `decode_token`. If the HMAC tag validates,
 //!     `P` is extracted, the blob id and fetch capability are derived from
 //!     `P` alone, the object is fetched and unframed, and the ciphertext is
@@ -452,6 +452,16 @@ pub struct ProseTokenPointer {
     /// protocol. This is enough to prove the prepared copy still names a
     /// retrievable object; no fetch token or wire bytes are exposed.
     pub blob_id: String,
+}
+
+/// Put an already prepared prose-token cover into the visible body of an OSL
+/// Mail message.
+///
+/// OSL Mail deliberately uses the same visible carrier as the chat surfaces:
+/// the body is the marker-free cover text itself. Wrapping it with extra prose
+/// would change the word stream and make the canonical reader reject it.
+pub fn prose_token_mail_body_from_cover(cover_text: &str) -> String {
+    cover_text.trim().to_owned()
 }
 
 /// Encrypt-and-upload: takes a `DPC0::<base64>` wire string produced by the
@@ -1404,10 +1414,10 @@ pub fn prose_token_bridge_pointer(
     detection_key: &[u8; MAC_KEY_LEN],
     msg: &str,
 ) -> Result<Option<BridgePointer>, ProseTokenError> {
-    let cipher = derive_scope_cipher(scope_input)?;
-    let scoped_detector = scope_bound_detection_key(detection_key, scope_input)?;
-    Ok(stego::decode_token(&cipher, &scoped_detector, msg)
-        .map(|carrier| BridgePointer::from_carrier(&carrier)))
+    let Some(carrier) = prose_token_decode_carrier(scope_input, detection_key, msg)? else {
+        return Ok(None);
+    };
+    Ok(Some(BridgePointer::from_carrier(&carrier)))
 }
 
 /// Rebuild the regular `DPC0::<base64>` receive wire from a fetched bridge
@@ -1422,12 +1432,4 @@ pub fn prose_token_bridge_object_to_wire(object: &[u8]) -> Result<String, ProseT
 /// Derive the token the deployed bridge Worker expects from the carrier seed.
 pub fn bridge_fetch_token_from_seed(seed: &[u8; BRIDGE_SEED_BYTES]) -> [u8; FETCH_TOKEN_BYTES] {
     bridge_fetch_token(seed)
-}
-
-fn bridge_pointer_from_carrier(carrier: &[u8; stego::TOKEN_ID_BYTES]) -> BridgePointer {
-    let (server_blob_id, seed) = bridge_unpack(carrier);
-    BridgePointer {
-        server_blob_id,
-        seed,
-    }
 }
