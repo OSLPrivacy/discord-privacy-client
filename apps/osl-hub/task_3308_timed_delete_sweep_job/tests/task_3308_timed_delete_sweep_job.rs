@@ -12,8 +12,8 @@ use task_3308_timed_delete_sweep_job::timed_delete_sweep_job::{
 };
 use task_3308_timed_delete_sweep_job::{
     run_task_3308_fixture, scan_job_source_for_direct_deletion, scanned_code_line_count,
-    AppMessageBox, DIRECT_DELETION_PATTERNS, DUE_DISCORD_LOCATOR, DUE_WHATSAPP_LOCATOR,
-    FIXTURE_NOW, FIXTURE_WAKE_EVERY_SECONDS, JOB_SOURCE, NOT_DUE_LOCATOR,
+    AppMessageBox, PlantedProtectedParts, DIRECT_DELETION_PATTERNS, DUE_DISCORD_LOCATOR,
+    DUE_WHATSAPP_LOCATOR, FIXTURE_NOW, FIXTURE_WAKE_EVERY_SECONDS, JOB_SOURCE, NOT_DUE_LOCATOR,
 };
 
 fn scratch(name: &str) -> PathBuf {
@@ -224,7 +224,12 @@ fn task_3308_a_due_record_for_an_app_with_no_shared_cleaner_is_refused_not_delet
     cleaners.register(Box::new(discord)).expect("register");
 
     let pass = job
-        .wake(FIXTURE_NOW, &mut work, &mut cleaners)
+        .wake(
+            FIXTURE_NOW,
+            &mut work,
+            &mut cleaners,
+            &mut PlantedProtectedParts::default(),
+        )
         .expect("wake");
     assert_eq!(pass.swept_count(), 0);
     assert_eq!(pass.refused.len(), 1);
@@ -278,7 +283,12 @@ fn task_3308_a_record_the_cleaner_refuses_stays_in_the_store() {
         .expect("register");
 
     let pass = job
-        .wake(FIXTURE_NOW, &mut work, &mut cleaners)
+        .wake(
+            FIXTURE_NOW,
+            &mut work,
+            &mut cleaners,
+            &mut PlantedProtectedParts::default(),
+        )
         .expect("wake");
     assert_eq!(pass.swept_count(), 0);
     assert_eq!(pass.refused.len(), 1);

@@ -19,7 +19,8 @@ use serde::{Deserialize, Serialize};
 pub mod timed_delete_sweep_job;
 
 use timed_delete_sweep_job::{
-    DueTimedDeleteRecord, SharedAppCleaner, SweepClock, SweepWaitOutcome, TimedDeleteWorkSource,
+    DueTimedDeleteRecord, ProtectedPartFetchRefusal, ProtectedPartRemoval, ProtectedPartStore,
+    SharedAppCleaner, SweepClock, SweepWaitOutcome, TimedDeleteWorkSource, PROTECTED_PART_GONE,
 };
 
 /// The job's own source, embedded at compile time so the scan below can never
@@ -197,6 +198,89 @@ impl SharedAppCleaner for AppMessageBox {
             ));
         }
         Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The OSL service's protected parts (TASK 3323's seam, as this run needs it)
+// ---------------------------------------------------------------------------
+
+/// The protected parts the OSL service holds, named by message identity.
+///
+/// TASK 3323 is where this seam is checked properly, on a store that really
+/// keeps the items on disk. All this run needs is a service that answers, so
+/// that the one protected record in the TASK 3308 fixture can be swept.
+#[derive(Debug, Default)]
+pub struct PlantedProtectedParts {
+    /// The identities the service still holds an item for.
+    pub held: Vec<String>,
+    /// Every identity it was asked to let go of, in order.
+    pub remove_calls: Vec<String>,
+}
+
+impl PlantedProtectedParts {
+    /// A service holding one item for each of `identities`.
+    pub fn plant(identities: &[&str]) -> Self {
+        Self {
+            held: identities
+                .iter()
+                .map(|identity| (*identity).to_owned())
+                .collect(),
+            remove_calls: Vec::new(),
+        }
+    }
+
+    fn part_name(record: &DueTimedDeleteRecord) -> String {
+        format!("osl-protected-part:{}", record.identity())
+    }
+
+    fn holds(&self, record: &DueTimedDeleteRecord) -> usize {
+        let identity = record.identity();
+        self.held.iter().filter(|held| *held == &identity).count()
+    }
+}
+
+impl ProtectedPartStore for PlantedProtectedParts {
+    fn stored_part_count(&self, record: &DueTimedDeleteRecord) -> Result<usize, String> {
+        Ok(self.holds(record))
+    }
+
+    fn remove_protected_part(
+        &mut self,
+        record: &DueTimedDeleteRecord,
+    ) -> Result<ProtectedPartRemoval, String> {
+        let identity = record.identity();
+        self.remove_calls.push(identity.clone());
+        let stored_before = self.holds(record);
+        let kept: Vec<String> = self
+            .held
+            .iter()
+            .filter(|held| *held != &identity)
+            .cloned()
+            .collect();
+        self.held = kept;
+        Ok(ProtectedPartRemoval {
+            part_name: Self::part_name(record),
+            stored_before,
+            stored_after: self.holds(record),
+        })
+    }
+
+    fn fetch_protected_part(
+        &self,
+        record: &DueTimedDeleteRecord,
+    ) -> Result<Vec<u8>, ProtectedPartFetchRefusal> {
+        if self.holds(record) == 0 {
+            return Err(ProtectedPartFetchRefusal {
+                code: PROTECTED_PART_GONE,
+                part_name: Self::part_name(record),
+                reason: format!(
+                    "OSL service no longer holds the protected part {}",
+                    Self::part_name(record)
+                ),
+            });
+        }
+        Ok(b"protected".to_vec())
     }
 }
 
@@ -468,9 +552,13 @@ pub fn run_task_3308_fixture(directory: &Path) -> Result<FixtureOutcome, String>
     cleaners.register(Box::new(discord))?;
     cleaners.register(Box::new(whatsapp))?;
 
+    // The one protected record in this fixture has an item on the service.
+    let mut parts =
+        PlantedProtectedParts::plant(&[&format!("discord/dm:task-3308-a/{DUE_DISCORD_LOCATOR}")]);
+
     let job = TimedDeleteSweepJob::new(FIXTURE_WAKE_EVERY_SECONDS)?;
     let mut clock = ScriptedClock::new(&[FIXTURE_NOW, FIXTURE_SECOND_WAKE]);
-    let run = job.run_repeating(&mut clock, &mut store, &mut cleaners)?;
+    let run = job.run_repeating(&mut clock, &mut store, &mut cleaners, &mut parts)?;
 
     let discord_clean_calls = discord_state.borrow().clean_calls.clone();
     let discord_messages_left = discord_state.borrow().messages.clone();

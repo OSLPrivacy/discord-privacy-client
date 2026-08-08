@@ -14,9 +14,18 @@
 //!   per-app cleaners Scrub uses; nothing here may grow a second copy.
 //! * [`TimedDeleteWorkSource`] — the record store, which hands over the records
 //!   and retires the ones this job reported swept.
+//! * [`ProtectedPartStore`] — the OSL service, which holds the protected part
+//!   of a protected message and takes it away again (TASK 3323).
 //!
 //! The one rule that lives here, and only here, is the due rule: a record is
 //! swept when `delete_at_unix_seconds <= now`, and never before.
+//!
+//! TASK 3323 adds the second half of a delete. A protected message is two
+//! things: cover words sitting in the app, and the protected part sitting on
+//! the OSL service. Taking away only the cover words is half a delete, so a due
+//! protected record is only swept once both halves are gone, and the protected
+//! part goes first: if the service will not let go of it, the cover words stay
+//! where they are and the record stays in the store to be tried again.
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -28,6 +37,24 @@ pub const MAX_WAKE_EVERY_SECONDS: u32 = 86_400;
 /// Upper bound on records considered in one wake, so a huge store cannot pin
 /// the job in a single pass.
 pub const MAX_RECORDS_PER_WAKE: usize = 4_096;
+
+/// The word a record carries when the message has a protected part on the OSL
+/// service, as written by TASK 3306/3307.
+pub const PROTECTED: &str = "protected";
+
+/// The name a fetch of an already-taken-away protected part is refused by.
+///
+/// The pointer in the cover words leads here, and once the protected part is
+/// gone the service must say so by this name rather than by returning nothing.
+pub const PROTECTED_PART_GONE: &str = "osl_protected_part_gone";
+
+/// The refusal code for a due record whose protected part the service would not
+/// take away.
+pub const PROTECTED_PART_NOT_REMOVED: &str = "protected_part_not_removed";
+
+/// The refusal code for a service that reported the protected part taken away
+/// while still holding one.
+pub const PROTECTED_PART_STILL_STORED: &str = "protected_part_still_stored";
 
 /// One timed-delete record, in the shape this job needs to route it.
 ///
@@ -57,6 +84,15 @@ impl DueTimedDeleteRecord {
             self.app_id, self.conversation_id, self.message_locator
         )
     }
+
+    /// Whether this message has a protected part held on the OSL service.
+    ///
+    /// The word is carried through from the persisted record untouched, so a
+    /// record that says anything else is treated as an ordinary message with
+    /// nothing stored for it.
+    pub fn is_protected(&self) -> bool {
+        self.protection == PROTECTED
+    }
 }
 
 /// The shared cleaner for one app.
@@ -71,6 +107,67 @@ pub trait SharedAppCleaner {
     ///
     /// Every actual removal happens on the other side of this call.
     fn clean_due_message(&mut self, record: &DueTimedDeleteRecord) -> Result<(), String>;
+}
+
+/// What the OSL service did when it was asked to take away one protected part.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ProtectedPartRemoval {
+    /// The name the service knows the stored protected part by.
+    ///
+    /// The job never works this name out for itself: the service owns the
+    /// mapping from a message to the item it holds for it.
+    pub part_name: String,
+    /// How many protected items the service held for this message before.
+    pub stored_before: usize,
+    /// How many it holds for this message now. Anything but 0 is half a delete.
+    pub stored_after: usize,
+}
+
+/// Why the OSL service refused to hand over a protected part.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProtectedPartFetchRefusal {
+    /// A short machine-readable name for the refusal.
+    pub code: &'static str,
+    /// The protected part that was asked for, by the service's own name for it.
+    pub part_name: String,
+    /// The human-readable refusal.
+    pub reason: String,
+}
+
+impl fmt::Display for ProtectedPartFetchRefusal {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}: {}", self.code, self.reason)
+    }
+}
+
+/// The OSL service, as far as the protected part of a message is concerned.
+///
+/// This job never implements this trait either. The service does, and every
+/// item it holds leaves on the other side of `remove_protected_part`.
+///
+/// `fetch_protected_part` is on the same trait on purpose: the pointer carried
+/// in the cover words is a fetch, so a service that can take the item away but
+/// cannot then refuse the fetch by name has not finished the delete. TASK 3325
+/// checks that refusal from the second machine.
+pub trait ProtectedPartStore {
+    /// How many protected items the service holds for this message right now.
+    fn stored_part_count(&self, record: &DueTimedDeleteRecord) -> Result<usize, String>;
+
+    /// Take away the protected part the service holds for this message.
+    ///
+    /// Asking twice is not an error: a message with nothing stored for it
+    /// reports 0 before and 0 after, so a retried sweep does not get stuck.
+    fn remove_protected_part(
+        &mut self,
+        record: &DueTimedDeleteRecord,
+    ) -> Result<ProtectedPartRemoval, String>;
+
+    /// Read the protected part back, the way the pointer in the cover words
+    /// does. Once it is gone this must be refused by name.
+    fn fetch_protected_part(
+        &self,
+        record: &DueTimedDeleteRecord,
+    ) -> Result<Vec<u8>, ProtectedPartFetchRefusal>;
 }
 
 /// Where the job reads records from, and where it reports swept ones back to.
@@ -177,6 +274,8 @@ pub struct TimedDeleteSweepPass {
     pub refused: Vec<SweepRefusal>,
     /// Records past `MAX_RECORDS_PER_WAKE` that this wake did not look at.
     pub deferred: usize,
+    /// The protected parts this pass had the OSL service take away, in order.
+    pub protected_parts_removed: Vec<ProtectedPartRemoval>,
 }
 
 impl TimedDeleteSweepPass {
@@ -188,6 +287,11 @@ impl TimedDeleteSweepPass {
     /// How many records this pass left in place because they are not yet due.
     pub fn retained_count(&self) -> usize {
         self.retained.len()
+    }
+
+    /// How many protected parts this pass had the service take away.
+    pub fn protected_part_count(&self) -> usize {
+        self.protected_parts_removed.len()
     }
 }
 
@@ -221,6 +325,22 @@ impl TimedDeleteSweepRun {
     /// How many records were swept across the whole run.
     pub fn swept_count(&self) -> usize {
         self.swept().len()
+    }
+
+    /// Every protected part the run had the service take away, in order.
+    pub fn protected_parts_removed(&self) -> Vec<ProtectedPartRemoval> {
+        let mut removals = Vec::new();
+        for pass in &self.passes {
+            for removal in &pass.protected_parts_removed {
+                removals.push(removal.clone());
+            }
+        }
+        removals
+    }
+
+    /// How many protected parts the run had the service take away.
+    pub fn protected_part_count(&self) -> usize {
+        self.protected_parts_removed().len()
     }
 }
 
@@ -279,13 +399,51 @@ impl TimedDeleteSweepJob {
         record.delete_at_unix_seconds <= now
     }
 
-    /// One wake: read the records, keep the ones that are not due, hand every
-    /// due one to the shared cleaner for its app.
+    /// Ask the OSL service to take away the protected part of one due message.
+    ///
+    /// The job does not decide what the item is called or where it lives; it
+    /// only checks the one thing it is entitled to check, that nothing is left
+    /// stored for that message afterwards.
+    fn take_protected_part(
+        &self,
+        record: &DueTimedDeleteRecord,
+        parts: &mut dyn ProtectedPartStore,
+    ) -> Result<ProtectedPartRemoval, SweepRefusal> {
+        let identity = record.identity();
+        let removal = parts
+            .remove_protected_part(record)
+            .map_err(|reason| SweepRefusal {
+                identity: identity.clone(),
+                code: PROTECTED_PART_NOT_REMOVED,
+                reason,
+            })?;
+        if removal.stored_after != 0 {
+            return Err(SweepRefusal {
+                identity,
+                code: PROTECTED_PART_STILL_STORED,
+                reason: format!(
+                    "OSL service still holds {} protected item(s) named {} for this message",
+                    removal.stored_after, removal.part_name
+                ),
+            });
+        }
+        Ok(removal)
+    }
+
+    /// One wake: read the records, keep the ones that are not due, and for every
+    /// due one take the protected part off the OSL service and hand the message
+    /// to the shared cleaner for its app.
+    ///
+    /// The protected part goes first. If the service will not let go of it the
+    /// cover words are left alone and the record stays, because a message whose
+    /// visible half is gone and whose protected half is still stored cannot be
+    /// tried again cleanly.
     pub fn wake(
         &self,
         now: i64,
         work: &mut dyn TimedDeleteWorkSource,
         cleaners: &mut SharedAppCleaners,
+        parts: &mut dyn ProtectedPartStore,
     ) -> Result<TimedDeleteSweepPass, String> {
         let records = work.all_records()?;
         let mut pass = TimedDeleteSweepPass {
@@ -305,7 +463,7 @@ impl TimedDeleteSweepJob {
                 continue;
             }
 
-            let Some(cleaner) = cleaners.cleaner_for(&record.app_id) else {
+            if cleaners.cleaner_for(&record.app_id).is_none() {
                 pass.refused.push(SweepRefusal {
                     identity,
                     code: "no_cleaner_for_app",
@@ -314,6 +472,26 @@ impl TimedDeleteSweepJob {
                         record.app_id
                     ),
                 });
+                continue;
+            }
+
+            // The protected half first, so a service that will not let go never
+            // leaves a message with its cover words gone and its private words
+            // still stored.
+            if record.is_protected() {
+                match self.take_protected_part(record, parts) {
+                    Ok(removal) => pass.protected_parts_removed.push(removal),
+                    Err(refusal) => {
+                        pass.refused.push(refusal);
+                        continue;
+                    }
+                }
+            }
+
+            // Refused just above if it were missing, so this is the same
+            // cleaner, looked up again only because the borrow had to end for
+            // the protected half.
+            let Some(cleaner) = cleaners.cleaner_for(&record.app_id) else {
                 continue;
             };
 
@@ -342,11 +520,12 @@ impl TimedDeleteSweepJob {
         clock: &mut dyn SweepClock,
         work: &mut dyn TimedDeleteWorkSource,
         cleaners: &mut SharedAppCleaners,
+        parts: &mut dyn ProtectedPartStore,
     ) -> Result<TimedDeleteSweepRun, String> {
         let mut run = TimedDeleteSweepRun::default();
         loop {
             let now = clock.now_unix_seconds();
-            let pass = self.wake(now, work, cleaners)?;
+            let pass = self.wake(now, work, cleaners, parts)?;
             run.passes.push(pass);
             if clock.wait_until(self.next_wake_at(now)) == SweepWaitOutcome::Stop {
                 return Ok(run);
