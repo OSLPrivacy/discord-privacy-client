@@ -277,14 +277,70 @@ impl InstagramBrowserPlace {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct InstagramBrowserMachine {
     pub places: Vec<InstagramBrowserPlace>,
+    /// Read-only rows observed on the reviewed browser surface.  Rows retain
+    /// the provider's timestamp and authorship signal so Scrub does not infer
+    /// ownership from message text or from the order returned by the page.
+    pub messages: Vec<InstagramBrowserMessage>,
 }
 
 impl InstagramBrowserMachine {
     pub fn new(places: impl IntoIterator<Item = InstagramBrowserPlace>) -> Self {
         Self {
             places: places.into_iter().collect(),
+            messages: Vec::new(),
         }
     }
+
+    pub fn with_messages(
+        mut self,
+        messages: impl IntoIterator<Item = InstagramBrowserMessage>,
+    ) -> Self {
+        self.messages = messages.into_iter().collect();
+        self
+    }
+}
+
+/// One message observed by the Instagram browser accessibility reader.
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InstagramBrowserMessage {
+    pub place_id: String,
+    pub message_id: String,
+    pub text: String,
+    pub time: i64,
+    pub yours: bool,
+}
+
+impl InstagramBrowserMessage {
+    pub fn new(
+        place_id: impl Into<String>,
+        message_id: impl Into<String>,
+        text: impl Into<String>,
+        time: i64,
+        yours: bool,
+    ) -> Self {
+        Self {
+            place_id: place_id.into(),
+            message_id: message_id.into(),
+            text: text.into(),
+            time,
+            yours,
+        }
+    }
+}
+
+/// A normalized message returned by a consent-gated shared conversation
+/// reader.  `yours` is only the provider-observed authorship signal.
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SharedConversationMessage {
+    pub service_id: String,
+    pub account_id: String,
+    pub place_id: String,
+    pub message_id: String,
+    pub text: String,
+    pub time: i64,
+    pub yours: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
@@ -963,6 +1019,49 @@ pub fn read_instagram_shared_places(
     read_shared_conversation_places(owner_osl_user_id, "instagram", account_id, places)
 }
 
+/// Read messages from one Instagram place already selected by the owner.
+///
+/// The account-level risk agreement is checked before filtering or returning
+/// browser rows.  This keeps an unticked account silent, including when the
+/// caller knows a valid stable place id.
+pub fn read_instagram_shared_messages(
+    owner_osl_user_id: &str,
+    account_id: &str,
+    place_id: &str,
+    browser_machine: &InstagramBrowserMachine,
+) -> Result<Vec<SharedConversationMessage>, String> {
+    validate_owner_osl_user_id(owner_osl_user_id)?;
+    validate_messaging_risk_account_id(account_id)?;
+    validate_conversation_message_place_id(place_id)?;
+    if read_messaging_risk_agreement(owner_osl_user_id, "instagram", account_id)?.is_none() {
+        return Ok(Vec::new());
+    }
+
+    let mut messages = browser_machine
+        .messages
+        .iter()
+        .filter(|message| message.place_id == place_id)
+        .map(|message| {
+            validate_instagram_browser_message(message)?;
+            Ok(SharedConversationMessage {
+                service_id: "instagram".to_owned(),
+                account_id: account_id.to_owned(),
+                place_id: message.place_id.clone(),
+                message_id: message.message_id.clone(),
+                text: message.text.clone(),
+                time: message.time,
+                yours: message.yours,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    messages.sort_by(|left, right| {
+        left.time
+            .cmp(&right.time)
+            .then_with(|| left.message_id.cmp(&right.message_id))
+    });
+    Ok(messages)
+}
+
 pub fn read_shared_mailbox_folders(
     owner_osl_user_id: &str,
     service_id: &str,
@@ -1281,6 +1380,25 @@ fn validate_conversation_place_text(value: &str, label: &str) -> Result<(), Stri
     } else {
         Err(format!("{label} is invalid"))
     }
+}
+
+fn validate_conversation_message_place_id(value: &str) -> Result<(), String> {
+    validate_conversation_place_text(value, "conversation message place id")
+}
+
+fn validate_instagram_browser_message(message: &InstagramBrowserMessage) -> Result<(), String> {
+    validate_conversation_message_place_id(&message.place_id)?;
+    validate_conversation_place_text(&message.message_id, "Instagram message id")?;
+    if message.text.trim() != message.text
+        || message.text.len() > 8_192
+        || message
+            .text
+            .chars()
+            .any(|character| character.is_control() && character != '\n')
+    {
+        return Err("Instagram message text is invalid".to_owned());
+    }
+    Ok(())
 }
 
 fn validate_mailbox_reader_binding(
