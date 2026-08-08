@@ -20,7 +20,9 @@ pub enum StatusEvent {
     /// `port` repeats the port for consumers that do not parse `addr`.
     Listening { addr: String, ip: String, port: u16 },
     /// Progress of the embedded Arti client, tor dial mode only.
-    Bootstrap { state: &'static str },
+    Bootstrap { state: &'static str, percent: u8 },
+    /// The owned Tor route has completed bootstrap and can carry OSL traffic.
+    Ready,
     /// A client connected to the SOCKS listener.
     Accepted { conn: u64, peer: String },
     /// A SOCKS handshake completed and asked us to reach `target`.

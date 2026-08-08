@@ -56,6 +56,10 @@ describe("parseTorSidecarLine", () => {
     expect(parseTorSidecarLine('{"event":"error","message":"boom"}')).toEqual({ event: "error", message: "boom" });
   });
 
+  it("parses the packaged Rust sidecar's scope/detail error shape", () => {
+    expect(parseTorSidecarLine('{"event":"error","scope":"bootstrap","detail":"no route"}')).toEqual({ event: "error", message: "no route" });
+  });
+
   it("drops a blank line rather than throwing", () => {
     expect(parseTorSidecarLine("")).toBeNull();
     expect(parseTorSidecarLine("   ")).toBeNull();
@@ -89,10 +93,10 @@ describe("applyTorSidecarEvent", () => {
     expect(torRouteStatusLabel(next)).toBe("Connecting -- 60%");
   });
 
-  it("flips ready and reports 'Connected'", () => {
+  it("flips ready and reports the one-sentence coverage boundary", () => {
     const ready = applyTorSidecarEvent(initialTorBootStatus(), { event: "ready" });
     expect(ready.ready).toBe(true);
-    expect(torRouteStatusLabel(ready)).toBe("Connected");
+    expect(torRouteStatusLabel(ready)).toBe("Connected — Tor covers OSL's own traffic, not Discord or your browser.");
   });
 
   it("is terminal: a line after ready cannot un-ready the route", () => {
@@ -231,7 +235,7 @@ describe("startTorBootOrchestrator", () => {
     expect(writes).toBe(0);
 
     sidecar.emit('{"event":"ready"}');
-    expect(torRouteStatusLabel(handle.status())).toBe("Connected");
+    expect(torRouteStatusLabel(handle.status())).toBe("Connected — Tor covers OSL's own traffic, not Discord or your browser.");
     const afterReady = attemptNetworkSend(handle.status(), () => {
       writes += 1;
     });

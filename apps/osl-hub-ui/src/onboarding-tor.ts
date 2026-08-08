@@ -12,10 +12,11 @@ export interface TorOnboardingState {
   bootstrapStatus: TorBootStatus | null;
 }
 
-// The shipped default remains Direct until the packaged default-answers tunnel
-// proof passes. The route is still SAVED on Continue, so the backend receives
-// the choice shown on screen.
-export const initialTorOnboardingState = (): TorOnboardingState => ({ choice: "direct", bootstrapStatus: null });
+// TASK 5019: Direct remains the shipped default until the packaged-build 4900
+// default-answer send proof is re-run green over the owned tunnel. The latest
+// adjudicated proof is red, so selecting Tor here would be an unapproved flip.
+export const SHIPPED_CONNECTION_DEFAULT: Exclude<TorChoice, null> = "direct";
+export const initialTorOnboardingState = (): TorOnboardingState => ({ choice: SHIPPED_CONNECTION_DEFAULT, bootstrapStatus: null });
 
 // Direct cancels any Tor attempt. Re-selecting Tor preserves the status stream
 // projection so a radio re-render cannot rewind visible progress.
@@ -95,7 +96,7 @@ export function onboardingTorMarkup(state: TorOnboardingState): string {
   };
 
   return `<section class="tor-onboarding" aria-labelledby="tor-onboarding-heading">
-    <h1 id="tor-onboarding-heading" tabindex="-1" class="tor-title">Choose how OSL connects</h1>
+    <h1 id="tor-onboarding-heading" tabindex="-1" class="tor-title">Connection choice</h1>
     <fieldset class="tor-choice-grid"><legend class="sr-only">Connection route</legend>
       ${card("tor", "Use Tor", torDiagram(), "travel time · 2–6 s")}
       ${card("direct", "Connect directly", directDiagram(), "travel time · under 1 s")}

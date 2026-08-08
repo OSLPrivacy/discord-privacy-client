@@ -44,7 +44,7 @@ export function initialTorBootStatus(): TorBootStatus {
  */
 export function torRouteStatusLabel(status: TorBootStatus): string {
   if (status.failed) return "Failed -- Tor could not connect";
-  if (status.ready) return "Connected";
+  if (status.ready) return "Connected — Tor covers OSL's own traffic, not Discord or your browser.";
   if (status.slow) return "Slow -- still trying";
   return `Connecting -- ${status.percent}%`;
 }
@@ -56,7 +56,9 @@ export function firstRunTorScreenMarkup(status: TorBootStatus): string {
   const label = torRouteStatusLabel(status);
   const actions = status.failed
     ? `<div class="tor-first-run-actions"><button type="button" data-tor-retry>Retry</button><button type="button" data-tor-direct>Direct</button></div>`
-    : "";
+    : status.ready
+      ? `<div class="tor-first-run-actions"><button type="button" data-tor-connected-continue>Continue</button></div>`
+      : "";
   return `<section class="tor-first-run" aria-labelledby="tor-first-run-heading">
     <h1 id="tor-first-run-heading">Connecting with Tor</h1>
     <p class="tor-first-run-status" role="status" aria-live="polite">${label}</p>
@@ -86,7 +88,13 @@ export function parseTorSidecarLine(line: string): TorSidecarEvent | null {
     return { event: "bootstrap", percent: record.percent };
   }
   if (record.event === "ready") return { event: "ready" };
-  if (record.event === "error" && typeof record.message === "string") return { event: "error", message: record.message };
+  if (record.event === "error") {
+    if (typeof record.message === "string") return { event: "error", message: record.message };
+    // The packaged Rust sidecar names failures with scope + detail. Accepting
+    // that real wire shape prevents an actual bootstrap failure becoming a
+    // forever-connecting screen.
+    if (typeof record.detail === "string") return { event: "error", message: record.detail };
+  }
   return null;
 }
 

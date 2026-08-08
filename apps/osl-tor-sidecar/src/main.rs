@@ -83,6 +83,10 @@ async fn run(config: Config, sink: Arc<StatusSink>) -> i32 {
     });
 
     let dialer = Arc::new(Dialer::new(&config));
+    if let Err(detail) = dialer.bootstrap(&sink).await {
+        error_event(&sink, "bootstrap", detail);
+        return 4;
+    }
     let conn_ids = AtomicU64::new(0);
 
     loop {

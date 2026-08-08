@@ -145,6 +145,7 @@ struct SidecarStatusLine {
     addr: Option<String>,
     ip: Option<String>,
     port: Option<u16>,
+    detail: Option<String>,
 }
 
 fn drain_status_stream(
@@ -152,6 +153,7 @@ fn drain_status_stream(
     status_tx: mpsc::SyncSender<Result<SocketAddr, TorError>>,
 ) {
     let mut reported = false;
+    let mut listening = None;
     for line in BufReader::new(stdout).lines() {
         let line = match line {
             Ok(line) => line,
@@ -171,12 +173,29 @@ fn drain_status_stream(
                 return;
             }
         };
-        if reported || status.event != "listening" {
+        if reported {
             continue;
         }
-        let result = reported_socks_addr(status);
-        reported = true;
-        let _ = status_tx.send(result);
+        match status.event.as_str() {
+            "listening" => match reported_socks_addr(status) {
+                Ok(addr) => listening = Some(addr),
+                Err(error) => {
+                    reported = true;
+                    let _ = status_tx.send(Err(error));
+                }
+            },
+            "ready" => {
+                reported = true;
+                let _ = status_tx.send(listening.ok_or(TorError::IncompleteListeningStatus));
+            }
+            "error" => {
+                reported = true;
+                let _ = status_tx.send(Err(TorError::BootstrapFailed(
+                    status.detail.unwrap_or_else(|| "unknown sidecar failure".to_owned()),
+                )));
+            }
+            _ => {}
+        }
     }
 }
 
@@ -263,6 +282,8 @@ pub enum TorError {
     MissingStatusStream,
     #[error("OSL Tor sidecar status stream closed before reporting a listener")]
     StatusStreamClosed,
+    #[error("OSL Tor sidecar bootstrap failed: {0}")]
+    BootstrapFailed(String),
     #[error("failed to read OSL Tor sidecar status")]
     ReadStatus(#[source] io::Error),
     #[error("OSL Tor sidecar emitted invalid JSON status")]
@@ -302,7 +323,7 @@ mod tests {
             "echo '{{\"event\":\"start\",\"pid\":1,\"dial_mode\":\"direct\",\
              \"requested_listen\":\"127.0.0.1:0\"}}'; \
              echo '{{\"event\":\"listening\",\"addr\":\"{addr}\",\"ip\":\"{ip}\",\
-             \"port\":{port}}}'; sleep 30",
+             \"port\":{port}}}'; echo '{{\"event\":\"ready\"}}'; sleep 30",
             ip = addr.ip(),
             port = addr.port(),
         );

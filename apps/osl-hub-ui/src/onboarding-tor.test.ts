@@ -10,17 +10,16 @@ import {
 import { applyTorSidecarEvent, initialTorBootStatus, markTorBootSlow } from "./tor-boot-orchestrator";
 
 describe("Tor onboarding choice", () => {
-  // The shipped default is Direct until the packaged tunnel proof is green.
-  // The route is still saved on Continue, so what the backend receives is what
-  // is on screen.
+  // TASK 5019 keeps Direct shipped until the packaged-build 4900 proof is
+  // green over the tunnel. The current adjudicated proof is red.
   it("starts on Direct and can continue", () => {
     const state = initialTorOnboardingState();
     const markup = onboardingTorMarkup(state);
 
     expect(state.choice).toBe("direct");
     expect(canContinuePastTorChoice(state)).toBe(true);
-    expect(markup).toMatch(/value="direct"[^>]*checked/u);
     expect(markup).not.toMatch(/value="tor"[^>]*checked/u);
+    expect(markup).toMatch(/value="direct"[^>]*checked/u);
     expect(markup).not.toContain("disabled");
   });
 
@@ -29,7 +28,7 @@ describe("Tor onboarding choice", () => {
 
     expect(markup).toContain('value="tor"');
     expect(markup).toContain('value="direct"');
-    expect(markup).toContain(">Choose how OSL connects</h1>");
+    expect(markup).toContain(">Connection choice</h1>");
     expect(markup).toContain('aria-label="Tor"');
     expect(markup).toContain('aria-label="direct"');
     expect(markup).not.toMatch(/recommended|more private|safer/iu);

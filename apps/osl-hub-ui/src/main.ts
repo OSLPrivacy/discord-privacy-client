@@ -30,7 +30,8 @@ import { isTauriRuntime, loadOnboardingPreferences, saveOnboardingPreferences } 
 import { chooseForwardSecrecyMode, initialForwardSecrecyOnboardingState, onboardingForwardSecrecyMarkup, type ForwardSecrecyChoice, type ForwardSecrecyOnboardingState } from "./onboarding-forward-secrecy";
 import { onboardingPasswordRoleContent as passwordRoleContent } from "./password-roles";
 import { backOnboardingPasswordRole, canSetOnboardingPasswordRole, continueOnboardingPasswordRole, skipOnboardingPasswordRole, togglePasswordVisibility, type OnboardingPasswordRoleValues } from "./onboarding-password-role";
-import { chooseTorRoute, initialTorOnboardingState, onboardingTorMarkup, type TorOnboardingState } from "./onboarding-tor";
+import { applyTorBootstrapStatus, chooseTorRoute, initialTorOnboardingState, onboardingTorMarkup, type TorOnboardingState } from "./onboarding-tor";
+import { applyTorSidecarEvent, initialTorBootStatus } from "./tor-boot-orchestrator";
 import { chooseCoverInsertion, initialCoverInsertionChoice, onboardingCoverMarkup, type CoverInsertionChoice } from "./onboarding-cover";
 import { chooseSilentVisibleMode, onboardingSilentVisibleMarkup, type SilentVisibleMode } from "./onboarding-silent-visible";
 import { onboardingCaptureVisibilityMarkup } from "./onboarding-capture-visibility";
@@ -588,6 +589,24 @@ let onboardingRoute: OnboardingRoute = "welcome";
 let onboardingTourStep = 0;
 let replayingOnboardingTour = false;
 let torOnboarding: TorOnboardingState = initialTorOnboardingState();
+
+function beginOnboardingTorBootstrap(): void {
+  torOnboarding = applyTorBootstrapStatus(torOnboarding, initialTorBootStatus());
+  render();
+  void invoke("set_tor_preference", { preference: torOnboarding.choice }).then(() => {
+    torOnboarding = applyTorBootstrapStatus(
+      torOnboarding,
+      applyTorSidecarEvent(initialTorBootStatus(), { event: "ready" }),
+    );
+    render();
+  }).catch((error: unknown) => {
+    torOnboarding = applyTorBootstrapStatus(
+      torOnboarding,
+      applyTorSidecarEvent(initialTorBootStatus(), { event: "error", message: String(error) }),
+    );
+    render();
+  });
+}
 let silentVisibleMode: SilentVisibleMode | null = null;
 // Which of the two insertion styles is highlighted. It starts unset so setup
 // cannot silently accept a default the owner never chose.
@@ -4033,13 +4052,29 @@ function bindOnboarding(): void {
   }));
   document.querySelector<HTMLButtonElement>("[data-tor-choice-continue]")?.addEventListener("click", () => {
     if (torOnboarding.choice === null) return;
-    void invoke("set_tor_preference", { preference: torOnboarding.choice }).then(() => {
+    if (torOnboarding.choice === "tor") {
+      beginOnboardingTorBootstrap();
+      return;
+    }
+    void invoke("set_tor_preference", { preference: "direct" }).then(() => {
       onboardingRoute = "defaults";
       render();
     }).catch(() => {
       // Do not advance: without native persistence the send boundary remains
       // fail-closed, and showing the next step would imply otherwise.
     });
+  });
+  document.querySelector<HTMLButtonElement>("[data-tor-connected-continue]")?.addEventListener("click", () => {
+    onboardingRoute = "defaults";
+    render();
+  });
+  document.querySelector<HTMLButtonElement>("[data-tor-retry]")?.addEventListener("click", beginOnboardingTorBootstrap);
+  document.querySelector<HTMLButtonElement>("[data-tor-direct]")?.addEventListener("click", () => {
+    torOnboarding = chooseTorRoute(torOnboarding, "direct");
+    void invoke("set_tor_preference", { preference: "direct" }).then(() => {
+      onboardingRoute = "defaults";
+      render();
+    }).catch(() => undefined);
   });
   document.querySelectorAll<HTMLInputElement>('input[name="forward-secrecy-mode"]').forEach((input) => input.addEventListener("change", () => {
     if (input.checked && (input.value === "protect-past" || input.value === "keep-group-delivery")) {

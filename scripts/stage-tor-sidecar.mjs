@@ -4,6 +4,7 @@
 import { spawn } from "node:child_process";
 import { copyFile, mkdir, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const SIDE_CAR = "osl-tor-sidecar";
 
@@ -55,7 +56,7 @@ export async function main(argv = process.argv.slice(2)) {
   await stageTorSidecar(options);
 }
 
-if (import.meta.main) {
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch((error) => {
     console.error(`sidecar staging failed: ${error.message}`);
     process.exitCode = 1;
