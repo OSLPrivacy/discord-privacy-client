@@ -9,7 +9,23 @@ export const INSTAGRAM_ATTACHMENT_MAX_BYTES = 8 * 1024 * 1024;
 export interface InstagramAttachmentFile {
   readonly name: string;
   readonly size: number;
+  /** Set by intake adapters when a dropped candidate is a directory. */
+  readonly isDirectory?: boolean;
   arrayBuffer(): Promise<ArrayBuffer>;
+}
+
+export type InstagramAttachmentRefusalName = "17-files" | "over-8-MB" | "folder";
+
+export class InstagramAttachmentRefusal extends Error {
+  constructor(readonly refusalName: InstagramAttachmentRefusalName) {
+    const detail = refusalName === "17-files"
+      ? "tray accepts at most 16 files"
+      : refusalName === "over-8-MB"
+        ? "file must be 1 byte through 8 MiB"
+        : "folders cannot be attached";
+    super(`Instagram attachment refused: ${refusalName} (${detail})`);
+    this.name = "InstagramAttachmentRefusal";
+  }
 }
 
 export interface InstagramAttachmentCard {
@@ -57,9 +73,15 @@ export async function addInstagramAttachments(
 ): Promise<readonly InstagramAttachmentCard[]> {
   if (files.length === 0) throw new Error("Choose at least one Instagram attachment");
   if (tray.cards.length + files.length > INSTAGRAM_ATTACHMENT_TRAY_MAX_FILES) {
-    throw new Error("Instagram attachment tray accepts at most 16 files");
+    throw new InstagramAttachmentRefusal("17-files");
   }
-  if (!files.every(validFile)) throw new Error("Each Instagram attachment must be 1 byte through 8 MiB");
+  if (files.some((file) => file.isDirectory === true)) {
+    throw new InstagramAttachmentRefusal("folder");
+  }
+  if (files.some((file) => file.size > INSTAGRAM_ATTACHMENT_MAX_BYTES)) {
+    throw new InstagramAttachmentRefusal("over-8-MB");
+  }
+  if (!files.every(validFile)) throw new Error("Each Instagram attachment must be a non-empty file");
 
   const added = await Promise.all(files.map(async (file, index) => ({
     id: `instagram-attachment-${String(tray.cards.length + index).padStart(2, "0")}`,
