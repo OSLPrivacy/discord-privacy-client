@@ -270,6 +270,8 @@ import { attachmentTrayScreenMarkup } from "./attachment-tray-screen";
 import { bindPrivateTypingBoxDropTarget } from "./private-typing-drop-target";
 import { burnReviewScreenMarkup, initialBurnReviewScreenState, selectBurnReviewSide, toggleBurnReviewHideOtherPeople, type BurnReviewSide, type BurnReviewScreenState } from "./burn-review-screen";
 import { destructStatusMarkup, type ServerDestructStatus } from "./destruct-status";
+import { discoveryVisibilityBody } from "./discovery-visibility-screen";
+import { DISCOVERY_VISIBILITY_STORAGE_KEY, defaultDiscoveryVisibilityState, readSavedDiscoveryVisibility, selectDiscoveryChoice, serializeDiscoveryVisibility, setDiscoveryReplyToPings, type DiscoveryVisibilityState } from "./discovery-visibility";
 import { offlineCapabilityStatus, type OfflineUnavailableCapability, type OslConnectionState } from "./offline-capability-status";
 import type { NativeDiscordOverlayOpenedBatch } from "./overlay-state";
 import type { NativeOverlayPendingAttachment } from "./overlay-state";
@@ -597,6 +599,8 @@ let settingsSection: SettingsSection = "account";
 // existing Burn dialog, after this page has shown its scope summaries.
 let removeEverythingScreenOpen = false;
 let windowSoundsSettings: WindowSoundsSettings = loadWindowSoundsSettings();
+let discoveryVisibility: DiscoveryVisibilityState = defaultDiscoveryVisibilityState();
+let discoveryVisibilityStatus: string | null = null;
 let activeService: LinkedService | null = null;
 let activeHomeAppId: HomeAppId | null = null;
 let appLaunchPendingId: HomeAppId | null = null;
@@ -1605,6 +1609,7 @@ export async function loadUiPreferences(): Promise<void> {
         Array.isArray(entry) && entry.length === 2 && typeof entry[0] === "string"
         && (entry[1] === "windowsApp" || entry[1] === "browser")));
     }
+    discoveryVisibility = readSavedDiscoveryVisibility(localStorage.getItem(DISCOVERY_VISIBILITY_STORAGE_KEY));
     const selectedAppsRaw = localStorage.getItem(selectedOnboardingAppsStorageKey);
     hasExplicitOnboardingAppSelection = selectedAppsRaw !== null;
     const selectedApps = JSON.parse(selectedAppsRaw ?? "[]") as unknown;
@@ -1618,6 +1623,7 @@ export async function loadUiPreferences(): Promise<void> {
     savedNativeApps.clear();
     detectedAccountChoices.clear();
     detectedAccountOpeningChoices.clear();
+    discoveryVisibility = defaultDiscoveryVisibilityState();
     selectedOnboardingApps.clear();
     hasExplicitOnboardingAppSelection = localStorage.getItem(selectedOnboardingAppsStorageKey) !== null;
   }
@@ -6595,7 +6601,7 @@ function settingsSectionContent(): string {
     ? removeEverythingScreenMarkup()
     : `${identitySettingsContent()}${settingsDivider()}${dataAllowanceSettingsContent()}${settingsDivider()}${passwordSecuritySettingsContent()}${accountAdvancedSettingsContent()}${renderRecoveryStatesSettings()}`;
   if (settingsSection === "apps") return `${serviceAccountsSettingsContent()}${optionalComponentsSettingsContent()}${sendingSettingsContent()}${messageDefaultsSettingsEntry()}`;
-  if (settingsSection === "privacy") return privacySectionSettingsContent();
+  if (settingsSection === "privacy") return `${privacySectionSettingsContent()}${settingsDivider()}${discoverySettingsContent()}`;
   if (settingsSection === "whitelisting") return whitelistingSettingsContent();
   // Legacy name: privacySettingsContent renders the SCRUB screen.
   if (settingsSection === "scrub") return privacySettingsContent();
@@ -6795,6 +6801,34 @@ function whitelistingSettingsContent(): string {
     : `<div class="empty-state compact"><strong>No verified people yet</strong><p>Verify a friend before any chat can be whitelisted.</p></div>`;
   const roster = `<section class="settings-list whitelist-settings" data-settings-whitelisting aria-labelledby="whitelisting-people-title"><header><h2 id="whitelisting-people-title">Who is trusted where</h2><p>${verified.length.toLocaleString("en-US")} verified ${verified.length === 1 ? "person" : "people"} · ${approvedChats.toLocaleString("en-US")} approved ${approvedChats === 1 ? "chat" : "chats"}. A chat is approved from inside that chat; here you can review it or take it back.</p></header>${rows}</section>`;
   return `${whitelistingScreenMarkup(whitelistingScreenState())}${settingsDivider()}${roster}`;
+}
+
+function discoverySettingsContent(): string {
+  const status = discoveryVisibilityStatus
+    ? `<p class="discovery-status" role="status">${escapeHtml(discoveryVisibilityStatus)}</p>`
+    : "";
+  return `${discoveryVisibilityBody(discoveryVisibility)}${status}`;
+}
+
+function bindDiscoveryVisibilityControls(): void {
+  document.querySelectorAll<HTMLInputElement>("[data-discovery-choice]").forEach((input) => input.addEventListener("change", () => {
+    try {
+      discoveryVisibility = selectDiscoveryChoice(discoveryVisibility, input.dataset.discoveryChoice ?? "");
+    } catch (error) {
+      discoveryVisibilityStatus = error instanceof Error ? error.message : String(error);
+      render();
+      return;
+    }
+    discoveryVisibilityStatus = null;
+    localStorage.setItem(DISCOVERY_VISIBILITY_STORAGE_KEY, serializeDiscoveryVisibility(discoveryVisibility));
+    render();
+  }));
+  document.querySelectorAll<HTMLInputElement>("[data-discovery-pings]").forEach((input) => input.addEventListener("change", () => {
+    discoveryVisibility = setDiscoveryReplyToPings(discoveryVisibility, input.checked);
+    discoveryVisibilityStatus = null;
+    localStorage.setItem(DISCOVERY_VISIBILITY_STORAGE_KEY, serializeDiscoveryVisibility(discoveryVisibility));
+    render();
+  }));
 }
 
 function optionalComponentsSettingsContent(): string {
@@ -8870,6 +8904,7 @@ function bindWorkspace(): void {
   bindPasswordVisibility();
   bindLocalProtectedSheet();
   bindSavedAccountControls();
+  bindDiscoveryVisibilityControls();
   document.querySelectorAll<HTMLInputElement>('input[name="window-position"]').forEach((input) => input.addEventListener("change", () => {
     if (!input.checked) return;
     windowSoundsSettings = { ...windowSoundsSettings, position: input.value as WindowPosition };
