@@ -102,6 +102,12 @@ struct TorClientFactory {
     socks_addr: Option<std::net::SocketAddr>,
 }
 
+#[derive(Clone)]
+struct ReadyTorRoute {
+    http: Client,
+    owned_socks_addr: Option<std::net::SocketAddr>,
+}
+
 impl TorClientFactory {
     fn new<F>(store_client: F) -> Self
     where
@@ -125,6 +131,13 @@ impl TorClientFactory {
 
     fn store_client(&self) -> Result<Client, String> {
         (self.store_client)()
+    }
+
+    fn ready_route(&self) -> Result<ReadyTorRoute, String> {
+        self.store_client().map(|http| ReadyTorRoute {
+            http,
+            owned_socks_addr: self.socks_addr,
+        })
     }
 }
 
@@ -227,7 +240,6 @@ impl TorPreferenceState {
 
     pub fn set_preference(&self, preference: TorPreference) -> Result<TorPreference, String> {
         write_preference(&self.path, preference)?;
-        self.update_tor_client_for_preference(preference)?;
         {
             let mut current = self
                 .preference
@@ -235,8 +247,23 @@ impl TorPreferenceState {
                 .map_err(|_| "OSL network preference is unavailable".to_owned())?;
             *current = Some(preference);
         }
+        // Seal before fallible sidecar work. A missing packaged sidecar must
+        // never return an error while the previous clearnet route stays live.
+        match preference {
+            TorPreference::Direct => keystore::egress::permit_clearnet(),
+            TorPreference::Tor => keystore::egress::seal(),
+        }
+        let update = self.update_tor_client_for_preference(preference);
         self.publish_process_route();
+        update?;
         Ok(preference)
+    }
+
+    fn publish_ready_route(route: ReadyTorRoute) {
+        match route.owned_socks_addr {
+            Some(addr) => keystore::egress::route_through_owned_tor(route.http, addr),
+            None => keystore::egress::route_through_tor(route.http),
+        }
     }
 
     /// Push the current choice + tunnel health into the process-wide egress
@@ -249,7 +276,7 @@ impl TorPreferenceState {
     pub fn publish_process_route(&self) {
         match self.preference().ok().flatten() {
             Some(TorPreference::Tor) => match self.ready_tor_client() {
-                Ok(Some(client)) => keystore::egress::route_through_tor(client),
+                Ok(Some(route)) => Self::publish_ready_route(route),
                 // Selected but unhealthy, or the transport state itself is
                 // unreadable. Both are refusals, never a direct fallback.
                 Ok(None) | Err(_) => keystore::egress::seal(),
@@ -261,21 +288,21 @@ impl TorPreferenceState {
     /// Authorize before the caller can construct or send a store request.
     pub fn authorize_store(&self) -> Result<AuthorizedStoreRoute, String> {
         let preference = self.preference()?;
-        let tor_http = if preference == Some(TorPreference::Tor) {
+        let tor_route = if preference == Some(TorPreference::Tor) {
             self.ready_tor_client()?
         } else {
             None
         };
         // Re-publish on every authorization: a tunnel that died since the last
         // send must seal the rest of the process too, not only this command.
-        match (preference, tor_http.clone()) {
-            (Some(TorPreference::Tor), Some(client)) => keystore::egress::route_through_tor(client),
+        match (preference, tor_route.clone()) {
+            (Some(TorPreference::Tor), Some(route)) => Self::publish_ready_route(route),
             (Some(TorPreference::Tor), None) => keystore::egress::seal(),
             _ => keystore::egress::permit_clearnet(),
         }
         let authorization = authorize_network(
             preference,
-            if tor_http.is_some() {
+            if tor_route.is_some() {
                 TunnelState::Ready
             } else {
                 TunnelState::Unavailable
@@ -286,14 +313,14 @@ impl TorPreferenceState {
             NetworkAuthorization::Refused(Refusal::ChoiceRequired) => {
                 Err("Choose a connection route before sending encrypted text".to_owned())
             }
-            NetworkAuthorization::Refused(Refusal::TorUnavailable(_)) => Err(
-                "Tor is selected, but its tunnel is unavailable; no message was sent".to_owned(),
-            ),
+            NetworkAuthorization::Refused(Refusal::TorUnavailable(_)) => {
+                Err(keystore::egress::TOR_UNAVAILABLE.to_owned())
+            }
             NetworkAuthorization::Direct => Ok(AuthorizedStoreRoute::Direct),
             NetworkAuthorization::Tor => Ok(AuthorizedStoreRoute::Tor {
-                http: tor_http.ok_or_else(|| {
-                    "Tor is selected, but its tunnel is unavailable; no message was sent".to_owned()
-                })?,
+                http: tor_route
+                    .ok_or_else(|| keystore::egress::TOR_UNAVAILABLE.to_owned())?
+                    .http,
             }),
         }
     }
@@ -326,7 +353,7 @@ impl TorPreferenceState {
         Ok(())
     }
 
-    fn ready_tor_client(&self) -> Result<Option<Client>, String> {
+    fn ready_tor_client(&self) -> Result<Option<ReadyTorRoute>, String> {
         let mut tor_client = self
             .tor_client
             .lock()
@@ -334,8 +361,8 @@ impl TorPreferenceState {
         let Some(factory) = tor_client.as_ref() else {
             return Ok(None);
         };
-        match factory.store_client() {
-            Ok(client) => Ok(Some(client)),
+        match factory.ready_route() {
+            Ok(route) => Ok(Some(route)),
             Err(_) => {
                 *tor_client = None;
                 Ok(None)
@@ -381,8 +408,8 @@ pub fn bundled_tor_sidecar_path_from_executable(
 /// missing packaged sidecar is a refusal that names the missing file --
 /// never a silent fallback to some other Tor implementation on the machine.
 pub fn resolve_tor_sidecar_program() -> Result<PathBuf, String> {
-    if let Some(program) = std::env::var_os("OSL_ARTI_PROXY_PATH")
-        .or_else(|| std::env::var_os("OSL_ARTI_PROXY"))
+    if let Some(program) =
+        std::env::var_os("OSL_ARTI_PROXY_PATH").or_else(|| std::env::var_os("OSL_ARTI_PROXY"))
     {
         return Ok(program.into());
     }
@@ -590,10 +617,9 @@ mod tests {
     fn removed_packaged_sidecar_refuses_by_its_absolute_name() {
         let package = tempfile::tempdir().expect("temporary damaged package layout");
         let data = tempfile::tempdir().expect("temporary Tor data directory");
-        let missing = bundled_tor_sidecar_path_from_executable(
-            &package.path().join("osl-privacy-hub"),
-        )
-        .expect("a packaged executable has a parent directory");
+        let missing =
+            bundled_tor_sidecar_path_from_executable(&package.path().join("osl-privacy-hub"))
+                .expect("a packaged executable has a parent directory");
 
         let error = packaged_tor_sidecar_config(missing.clone(), data.path())
             .expect_err("a missing package sidecar must not fall back to PATH");
@@ -614,7 +640,7 @@ mod tests {
 
         assert_eq!(
             state.authorize_store().map(|route| route.authorization()),
-            Err("Tor is selected, but its tunnel is unavailable; no message was sent".to_owned())
+            Err(keystore::egress::TOR_UNAVAILABLE.to_owned())
         );
     }
 
@@ -707,7 +733,7 @@ mod tests {
 
         assert_eq!(
             state.authorize_store().map(|route| route.authorization()),
-            Err("Tor is selected, but its tunnel is unavailable; no message was sent".to_owned())
+            Err(keystore::egress::TOR_UNAVAILABLE.to_owned())
         );
         assert!(
             backend.accept().is_err(),

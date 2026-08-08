@@ -2030,8 +2030,10 @@ async fn check_hub_for_updates(
 ) -> Result<HubUpdateCheck, String> {
     let _transition = state.transition.lock().await;
     let current = app.package_info().version.to_string();
-    let Ok(updater) = app.updater() else {
-        return Ok(HubUpdateCheck::CouldNotCheck);
+    let updater = match routed_hub_updater(&app) {
+        Ok(updater) => updater,
+        Err(error) if error == keystore::egress::TOR_UNAVAILABLE => return Err(error),
+        Err(_) => return Ok(HubUpdateCheck::CouldNotCheck),
     };
     match updater.check().await {
         Ok(Some(update)) => {
@@ -2058,9 +2060,7 @@ async fn install_hub_update(
     let expected_version = bounded_version(&expected_version)
         .ok_or_else(|| "The expected update version is invalid".to_owned())?;
     let _transition = state.transition.lock().await;
-    let updater = app
-        .updater()
-        .map_err(|_| "The signed OSL updater is unavailable".to_owned())?;
+    let updater = routed_hub_updater(&app)?;
     let update = match updater.check().await {
         Ok(Some(update)) => update,
         Ok(None) => return Ok(HubUpdateInstall::NoUpdate),
@@ -2076,6 +2076,25 @@ async fn install_hub_update(
         .await
         .map_err(|_| "The update could not be verified and was not installed".to_owned())?;
     app.restart();
+}
+
+fn routed_hub_updater(app: &tauri::AppHandle) -> Result<tauri_plugin_updater::Updater, String> {
+    match keystore::egress::socket_route_decision() {
+        keystore::egress::SocketRouteDecision::Direct => app
+            .updater()
+            .map_err(|_| "The signed OSL updater is unavailable".to_owned()),
+        keystore::egress::SocketRouteDecision::Tor(socks_addr) => {
+            let proxy = url::Url::parse(&format!("socks5h://{socks_addr}"))
+                .map_err(|_| "OSL Tor transport is unavailable".to_owned())?;
+            app.updater_builder()
+                .proxy(proxy)
+                .build()
+                .map_err(|_| "The signed OSL updater is unavailable".to_owned())
+        }
+        keystore::egress::SocketRouteDecision::Refuse => {
+            Err(keystore::egress::TOR_UNAVAILABLE.to_owned())
+        }
+    }
 }
 
 #[tauri::command]

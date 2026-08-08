@@ -8,8 +8,8 @@
 use reqwest::blocking::Client;
 use reqwest::Proxy;
 use serde::Deserialize;
-use std::io::{self, BufRead, BufReader};
-use std::net::SocketAddr;
+use std::io::{self, BufRead, BufReader, Read, Write};
+use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::{mpsc, Mutex};
@@ -207,6 +207,85 @@ pub fn client_for_ready_socks_proxy(socks_addr: SocketAddr) -> Result<Client, To
     build_store_client(socks_addr)
 }
 
+/// Open a raw TCP stream through the exact SOCKS5 listener owned by OSL.
+///
+/// Hostnames are deliberately handed to SOCKS (address type 3), so raw
+/// realtime connections do not leak a DNS lookup before entering Tor.
+pub fn connect_tcp_via_socks(
+    socks_addr: SocketAddr,
+    target_host: &str,
+    target_port: u16,
+    timeout: Duration,
+) -> Result<TcpStream, TorError> {
+    if !socks_addr.ip().is_loopback() {
+        return Err(TorError::NonLoopbackProxy(socks_addr));
+    }
+    if target_host.is_empty() || target_host.as_bytes().len() > u8::MAX as usize {
+        return Err(TorError::InvalidSocksTarget);
+    }
+
+    let mut stream =
+        TcpStream::connect_timeout(&socks_addr, timeout).map_err(TorError::SocksConnect)?;
+    stream
+        .set_read_timeout(Some(timeout))
+        .and_then(|_| stream.set_write_timeout(Some(timeout)))
+        .map_err(TorError::SocksConnect)?;
+    stream
+        .write_all(&[5, 1, 0])
+        .map_err(TorError::SocksConnect)?;
+    let mut method = [0_u8; 2];
+    stream
+        .read_exact(&mut method)
+        .map_err(TorError::SocksConnect)?;
+    if method != [5, 0] {
+        return Err(TorError::SocksRefused);
+    }
+
+    let mut request = vec![5, 1, 0];
+    match target_host.parse::<IpAddr>() {
+        Ok(IpAddr::V4(ip)) => {
+            request.push(1);
+            request.extend_from_slice(&ip.octets());
+        }
+        Ok(IpAddr::V6(ip)) => {
+            request.push(4);
+            request.extend_from_slice(&ip.octets());
+        }
+        Err(_) => {
+            request.push(3);
+            request.push(target_host.len() as u8);
+            request.extend_from_slice(target_host.as_bytes());
+        }
+    }
+    request.extend_from_slice(&target_port.to_be_bytes());
+    stream.write_all(&request).map_err(TorError::SocksConnect)?;
+
+    let mut response = [0_u8; 4];
+    stream
+        .read_exact(&mut response)
+        .map_err(TorError::SocksConnect)?;
+    if response[0] != 5 || response[1] != 0 {
+        return Err(TorError::SocksRefused);
+    }
+    let address_len = match response[3] {
+        1 => 4,
+        4 => 16,
+        3 => {
+            let mut len = [0_u8; 1];
+            stream
+                .read_exact(&mut len)
+                .map_err(TorError::SocksConnect)?;
+            usize::from(len[0])
+        }
+        _ => return Err(TorError::SocksRefused),
+    };
+    let mut bound_address_and_port = vec![0_u8; address_len + 2];
+    stream
+        .read_exact(&mut bound_address_and_port)
+        .map_err(TorError::SocksConnect)?;
+    Ok(stream)
+}
+
 fn build_store_client(socks_addr: SocketAddr) -> Result<Client, TorError> {
     let proxy = Proxy::all(format!("socks5h://{socks_addr}")).map_err(TorError::Proxy)?;
     keystore::blocking_http::off_async_context(|| {
@@ -265,6 +344,12 @@ pub enum TorError {
     Proxy(#[source] reqwest::Error),
     #[error("failed to build Tor-only HTTP client")]
     Client(#[source] reqwest::Error),
+    #[error("failed to connect through OSL's SOCKS tunnel")]
+    SocksConnect(#[source] io::Error),
+    #[error("OSL's SOCKS tunnel refused the connection")]
+    SocksRefused,
+    #[error("the SOCKS target is invalid")]
+    InvalidSocksTarget,
 }
 
 #[cfg(test)]

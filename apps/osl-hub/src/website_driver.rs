@@ -505,6 +505,13 @@ fn open_devtools_websocket(websocket_url: &str) -> Result<TcpStream, WebsiteDriv
         return Err(WebsiteDriverError::ReadFailed);
     }
     let host = url.host_str().ok_or(WebsiteDriverError::ReadFailed)?;
+    let loopback = host
+        .parse::<std::net::IpAddr>()
+        .map(|ip| ip.is_loopback())
+        .unwrap_or(false);
+    if !loopback {
+        return Err(WebsiteDriverError::ReadFailed);
+    }
     let port = url
         .port_or_known_default()
         .ok_or(WebsiteDriverError::ReadFailed)?;
@@ -1033,4 +1040,3 @@ pub struct WebsiteNamedControlRequest {
     pub name: &'static str,
     pub kind: WebsiteControlKind,
 }
-

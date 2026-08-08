@@ -22,6 +22,7 @@
 //! constructor in the product can see: `ipc` depends on `keystore`, `transport`
 //! depends on `keystore`, and the hub depends on all three.
 
+use std::net::SocketAddr;
 use std::sync::{Mutex, OnceLock, PoisonError};
 
 /// The single sentence a refused unrouted constructor reports.
@@ -29,8 +30,7 @@ use std::sync::{Mutex, OnceLock, PoisonError};
 /// It is byte-identical to the refusal `TorPreferenceState::authorize_store`
 /// already returns, so a user cannot tell -- and does not need to tell --
 /// whether the gate or the interlock stopped the send.
-pub const TOR_UNAVAILABLE: &str =
-    "Tor is selected, but its tunnel is unavailable; no message was sent";
+pub const TOR_UNAVAILABLE: &str = "Tor is selected but OSL has no working tunnel";
 
 /// What route this process is permitted to originate traffic on.
 #[derive(Clone, Default)]
@@ -39,7 +39,10 @@ enum Route {
     #[default]
     Clearnet,
     /// Tor is selected and this SOCKS-only client is ready.
-    Tor(reqwest::blocking::Client),
+    Tor {
+        client: reqwest::blocking::Client,
+        owned_socks_addr: Option<SocketAddr>,
+    },
     /// Tor is selected and no tunnel is ready.
     Sealed,
 }
@@ -51,6 +54,16 @@ pub enum DirectClientDecision {
     /// Adopt this already-authorized client rather than building a direct one.
     Adopt(Box<reqwest::blocking::Client>),
     /// Refuse: Tor is selected and its tunnel is unavailable.
+    Refuse,
+}
+
+/// The answer for a raw TCP path that cannot use the shared HTTP client.
+pub enum SocketRouteDecision {
+    /// No Tor choice is in force, so the caller may connect directly.
+    Direct,
+    /// Connect through this exact SOCKS address reported by OSL's sidecar.
+    Tor(SocketAddr),
+    /// Refuse before DNS resolution or a socket write.
     Refuse,
 }
 
@@ -87,7 +100,22 @@ pub fn permit_clearnet() {
 /// Every constructor that would have built a direct client adopts `client`
 /// from here on, so a command nobody routed by hand still leaves over Tor.
 pub fn route_through_tor(client: reqwest::blocking::Client) {
-    store(Route::Tor(client));
+    store(Route::Tor {
+        client,
+        owned_socks_addr: None,
+    });
+}
+
+/// Declare a healthy hub-owned Tor route, including its raw SOCKS endpoint.
+///
+/// HTTP constructors adopt `client`; raw TCP paths use `owned_socks_addr`.
+/// Keeping both in one process-wide decision prevents the two route types from
+/// disagreeing about tunnel health.
+pub fn route_through_owned_tor(client: reqwest::blocking::Client, owned_socks_addr: SocketAddr) {
+    store(Route::Tor {
+        client,
+        owned_socks_addr: Some(owned_socks_addr),
+    });
 }
 
 /// Declare that Tor is selected and no tunnel is ready: refuse all egress that
@@ -111,8 +139,24 @@ pub fn tor_is_selected() -> bool {
 pub fn direct_client_decision() -> DirectClientDecision {
     match load() {
         Route::Clearnet => DirectClientDecision::Build,
-        Route::Tor(client) => DirectClientDecision::Adopt(Box::new(client)),
+        Route::Tor { client, .. } => DirectClientDecision::Adopt(Box::new(client)),
         Route::Sealed => DirectClientDecision::Refuse,
+    }
+}
+
+/// The decision every raw remote TCP connection makes before DNS or connect.
+pub fn socket_route_decision() -> SocketRouteDecision {
+    match load() {
+        Route::Clearnet => SocketRouteDecision::Direct,
+        Route::Tor {
+            owned_socks_addr: Some(addr),
+            ..
+        } => SocketRouteDecision::Tor(addr),
+        Route::Tor {
+            owned_socks_addr: None,
+            ..
+        }
+        | Route::Sealed => SocketRouteDecision::Refuse,
     }
 }
 
@@ -193,6 +237,26 @@ mod tests {
         assert!(matches!(
             direct_client_decision(),
             DirectClientDecision::Adopt(_)
+        ));
+        reset_for_test();
+    }
+
+    #[test]
+    fn raw_tcp_uses_only_the_owned_socks_address() {
+        let _serial = serialized();
+        reset_for_test();
+        let client = std::thread::spawn(|| {
+            reqwest::blocking::Client::builder()
+                .build()
+                .expect("build a client")
+        })
+        .join()
+        .expect("client builder thread");
+        let owned: SocketAddr = "127.0.0.1:43119".parse().unwrap();
+        route_through_owned_tor(client, owned);
+        assert!(matches!(
+            socket_route_decision(),
+            SocketRouteDecision::Tor(addr) if addr == owned
         ));
         reset_for_test();
     }
