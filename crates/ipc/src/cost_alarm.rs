@@ -1,4 +1,8 @@
 //! Whole-service cost projection and named early warnings.
+//!
+//! The ceiling is expressed in integer micro-currency units so the alarm never
+//! depends on floating-point rounding. Storage is a live-byte charge and
+//! transfer is a UTC-day charge, exactly as `usage_counters` records them.
 
 use crate::usage_counters::{ServiceUsageCounters, UsageCounterError, UsageCounterStore};
 use thiserror::Error;
@@ -6,11 +10,15 @@ use thiserror::Error;
 /// Integer price inputs supplied by the service money ceiling policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MoneyCeiling {
+    /// Maximum projected cost, in micro-currency units.
     pub ceiling_micros: u64,
+    /// Cost per stored byte, in micro-currency units.
     pub stored_byte_micros: u64,
+    /// Cost per transferred byte, in micro-currency units.
     pub transferred_byte_micros: u64,
 }
 
+/// A warning is named so operators can route it without parsing prose.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CostWarning {
     HalfCostCeiling,
@@ -43,6 +51,7 @@ pub enum CostAlarmError {
     Overflow,
 }
 
+/// Read the whole ledger and classify its projected cost against the ceiling.
 pub fn check_cost_alarm(
     store: &UsageCounterStore,
     ceiling: MoneyCeiling,
@@ -51,9 +60,11 @@ pub fn check_cost_alarm(
     if ceiling.ceiling_micros == 0 {
         return Err(CostAlarmError::ZeroCeiling);
     }
-    evaluate_cost_alarm(store.read_service_at(unix_seconds)?, ceiling)
+    let usage = store.read_service_at(unix_seconds)?;
+    evaluate_cost_alarm(usage, ceiling)
 }
 
+/// Pure classifier retained for callers that already hold a service snapshot.
 pub fn evaluate_cost_alarm(
     usage: ServiceUsageCounters,
     ceiling: MoneyCeiling,
@@ -61,16 +72,20 @@ pub fn evaluate_cost_alarm(
     if ceiling.ceiling_micros == 0 {
         return Err(CostAlarmError::ZeroCeiling);
     }
-    let projected_cost_micros = usage
+    let stored_cost = usage
         .stored_bytes
         .checked_mul(ceiling.stored_byte_micros)
-        .and_then(|stored| {
-            usage
-                .transferred_bytes_today
-                .checked_mul(ceiling.transferred_byte_micros)
-                .and_then(|transferred| stored.checked_add(transferred))
-        })
         .ok_or(CostAlarmError::Overflow)?;
+    let transferred_cost = usage
+        .transferred_bytes_today
+        .checked_mul(ceiling.transferred_byte_micros)
+        .ok_or(CostAlarmError::Overflow)?;
+    let projected_cost_micros = stored_cost
+        .checked_add(transferred_cost)
+        .ok_or(CostAlarmError::Overflow)?;
+
+    // Compare products to avoid a lossy percentage conversion. The higher
+    // threshold wins, so a 76% fixture has exactly one actionable warning.
     let warning = if projected_cost_micros
         .checked_mul(4)
         .ok_or(CostAlarmError::Overflow)?
@@ -89,6 +104,7 @@ pub fn evaluate_cost_alarm(
     } else {
         None
     };
+
     Ok(CostAlarmReport {
         usage,
         projected_cost_micros,
