@@ -210,6 +210,84 @@ pub struct FriendAccountReachBulkResult {
     pub changed_count: usize,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FriendPageShareConversation {
+    pub storage_key: String,
+    pub conversation_label: String,
+    pub checked: bool,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FriendPageShareAccountChoice {
+    pub service_id: String,
+    pub account_id: String,
+    pub account_label: String,
+    pub checked: bool,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FriendPageShareAction {
+    pub action: String,
+    pub label: String,
+    pub removes_saved_choice: bool,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FriendPageShareData {
+    pub person_id: String,
+    pub accounts: Vec<FriendPageShareAccountChoice>,
+    pub conversations: Vec<FriendPageShareConversation>,
+    pub new_account_rule: String,
+    pub actions: Vec<FriendPageShareAction>,
+}
+
+/// One switchable row of the friend detail sharing page.
+///
+/// `saved` is what is on disk for this friend; `draft` is what the open page
+/// currently shows. They only differ while an unsaved edit is sitting on the
+/// page, which is exactly what `Save` commits and `Cancel` throws away.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FriendPageShareField {
+    pub field: String,
+    pub label: String,
+    pub saved: bool,
+    pub draft: bool,
+    pub dirty: bool,
+}
+
+/// The whole comparable state of one friend's sharing page.
+///
+/// Every action below is scored against this record: run it, diff the record
+/// for the friend it names, and diff the record for every other friend. The
+/// second diff has to be empty.
+///
+/// The new-account rule is carried as an ordinary field row rather than as a
+/// second copy of itself, so one action can never show up as two differences.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FriendPageShareRecord {
+    pub person_id: String,
+    pub fields: Vec<FriendPageShareField>,
+    pub actions: Vec<FriendPageShareAction>,
+}
+
+/// What one friend page action did: the action's own name, the field rows it
+/// moved, and the friend's record as it stands afterwards.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FriendPageShareActionResult {
+    pub person_id: String,
+    pub action: String,
+    pub changed_fields: Vec<String>,
+    pub changed_field_count: usize,
+    pub record: FriendPageShareRecord,
+}
+
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WhatsAppWhitelistKind {
@@ -585,6 +663,26 @@ struct SecurityPreferences {
     /// so it can never outlive one.
     #[serde(default)]
     manual_approved_scope_people: BTreeMap<String, String>,
+    /// Per accepted friend, the owned accounts ticked on the friend detail
+    /// sharing page. Key is `service_id:account_id`; a missing key is unticked,
+    /// so absence fails closed.
+    #[serde(default)]
+    friend_account_reach_choices: BTreeMap<String, BTreeMap<String, bool>>,
+    /// Per accepted friend, conversation rows ticked on the friend detail
+    /// sharing page. Missing means unticked; the actual conversation catalog
+    /// comes from the caller's current account/context inventory.
+    #[serde(default)]
+    friend_conversation_share_choices: BTreeMap<String, BTreeMap<String, bool>>,
+    /// Per accepted friend, whether future local accounts should be shared
+    /// automatically from the friend detail page.
+    #[serde(default)]
+    friend_new_account_share_rules: BTreeMap<String, bool>,
+    /// Per accepted friend, the unsaved edits sitting on their open sharing
+    /// page, keyed by [`FriendPageShareField::field`]. Only fields whose draft
+    /// differs from the saved value are stored, so `Save` and `Cancel` both
+    /// end with this friend's entry gone.
+    #[serde(default)]
+    friend_page_share_drafts: BTreeMap<String, BTreeMap<String, bool>>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -1238,6 +1336,291 @@ fn set_hub_friend_account_reach_bulk(
         changed_count: records.len(),
         accounts: records,
     })
+}
+
+pub fn read_friend_page_share_data(
+    _security: &HubSecurityState,
+    person_id: String,
+    accounts: Vec<FriendAccountReachAccount>,
+    conversations: Vec<FriendPageShareConversation>,
+) -> Result<FriendPageShareData, String> {
+    require_unlocked()?;
+    validate_person_id(&person_id)?;
+    let account_keys = validate_friend_account_reach_accounts(&accounts)?;
+    validate_friend_page_share_conversations(&conversations)?;
+    let prefs =
+        load_encrypted_json::<SecurityPreferences>(&config_dir()?.join(SECURITY_PREFS_FILE))?;
+    Ok(friend_page_share_data_from_preferences(
+        &person_id,
+        accounts,
+        account_keys,
+        conversations,
+        &prefs,
+    ))
+}
+
+pub fn save_friend_page_share_data(
+    security: &HubSecurityState,
+    person_id: String,
+    accounts: Vec<FriendPageShareAccountChoice>,
+    conversations: Vec<FriendPageShareConversation>,
+    new_account_rule: String,
+) -> Result<FriendPageShareData, String> {
+    require_unlocked()?;
+    validate_person_id(&person_id)?;
+    let new_account_rule = parse_friend_page_new_account_rule(&new_account_rule)?;
+    let account_catalog = friend_page_share_account_catalog(&accounts)?;
+    let conversation_catalog = friend_page_share_conversation_catalog(&conversations)?;
+
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL friend share choices are unavailable".to_owned())?;
+    let path = config_dir()?.join(SECURITY_PREFS_FILE);
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
+    prefs.version = 2;
+    set_checked_choices(
+        &mut prefs.friend_account_reach_choices,
+        &person_id,
+        accounts
+            .iter()
+            .map(|account| (friend_page_account_choice_key(account), account.checked)),
+    );
+    set_checked_choices(
+        &mut prefs.friend_conversation_share_choices,
+        &person_id,
+        conversations
+            .iter()
+            .map(|conversation| (conversation.storage_key.clone(), conversation.checked)),
+    );
+    if new_account_rule {
+        prefs
+            .friend_new_account_share_rules
+            .insert(person_id.clone(), true);
+    } else {
+        prefs.friend_new_account_share_rules.remove(&person_id);
+    }
+    write_encrypted_json(&path, &prefs)?;
+    read_friend_page_share_data(security, person_id, account_catalog, conversation_catalog)
+}
+
+pub fn remove_friend_page_share_data(
+    security: &HubSecurityState,
+    person_id: String,
+    accounts: Vec<FriendAccountReachAccount>,
+    conversations: Vec<FriendPageShareConversation>,
+) -> Result<FriendPageShareData, String> {
+    require_unlocked()?;
+    validate_person_id(&person_id)?;
+    let _account_keys = validate_friend_account_reach_accounts(&accounts)?;
+    validate_friend_page_share_conversations(&conversations)?;
+
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL friend share choices are unavailable".to_owned())?;
+    let path = config_dir()?.join(SECURITY_PREFS_FILE);
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
+    let removed = prefs
+        .friend_account_reach_choices
+        .remove(&person_id)
+        .is_some()
+        | prefs
+            .friend_conversation_share_choices
+            .remove(&person_id)
+            .is_some()
+        | prefs
+            .friend_new_account_share_rules
+            .remove(&person_id)
+            .is_some()
+        | prefs.friend_page_share_drafts.remove(&person_id).is_some();
+    if removed {
+        prefs.version = 2;
+        write_encrypted_json(&path, &prefs)?;
+    }
+    read_friend_page_share_data(security, person_id, accounts, conversations)
+}
+
+pub fn cancel_friend_page_share_data(
+    security: &HubSecurityState,
+    person_id: String,
+    accounts: Vec<FriendAccountReachAccount>,
+    conversations: Vec<FriendPageShareConversation>,
+) -> Result<FriendPageShareData, String> {
+    read_friend_page_share_data(security, person_id, accounts, conversations)
+}
+
+/// Read the whole comparable state of one friend's sharing page.
+///
+/// This is the record every friend page action is scored against: run an
+/// action, re-read this for the friend it named, and re-read it for every
+/// other friend. The second read has to come back byte-identical.
+pub fn read_friend_page_share_record(
+    _security: &HubSecurityState,
+    person_id: String,
+    accounts: Vec<FriendAccountReachAccount>,
+    conversations: Vec<FriendPageShareConversation>,
+) -> Result<FriendPageShareRecord, String> {
+    require_unlocked()?;
+    validate_person_id(&person_id)?;
+    let account_keys = validate_friend_account_reach_accounts(&accounts)?;
+    validate_friend_page_share_conversations(&conversations)?;
+    let prefs =
+        load_encrypted_json::<SecurityPreferences>(&config_dir()?.join(SECURITY_PREFS_FILE))?;
+    Ok(friend_page_share_record_from_preferences(
+        &person_id,
+        &accounts,
+        &account_keys,
+        &conversations,
+        &prefs,
+    ))
+}
+
+/// Run one friend page sharing action against exactly one field of exactly one
+/// friend.
+///
+/// Every action names the single row it moves, so "changed exactly one field"
+/// is a property of this function rather than of any particular caller:
+///
+/// * `edit` stages an unsaved draft on one row.
+/// * `save` commits that one row's draft to disk and drops the draft.
+/// * `cancel` throws that one row's draft away and leaves the saved value.
+/// * `remove` clears that one row's saved choice, and refuses without
+///   `confirmed`, so an unconfirmed remove can never reach the disk.
+/// * `newAccountRule` saves the share-future-accounts row; it takes its own
+///   field implicitly and rejects a caller-supplied one.
+///
+/// Writes only ever reach the map entries keyed by `person_id`, so no other
+/// friend's record can move.
+pub fn apply_friend_page_share_action(
+    security: &HubSecurityState,
+    person_id: String,
+    action: String,
+    field: Option<String>,
+    value: Option<bool>,
+    confirmed: bool,
+    accounts: Vec<FriendAccountReachAccount>,
+    conversations: Vec<FriendPageShareConversation>,
+) -> Result<FriendPageShareActionResult, String> {
+    require_unlocked()?;
+    validate_person_id(&person_id)?;
+    let account_keys = validate_friend_account_reach_accounts(&accounts)?;
+    validate_friend_page_share_conversations(&conversations)?;
+    let action = parse_friend_page_share_action(&action)?;
+
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL friend share choices are unavailable".to_owned())?;
+    let path = config_dir()?.join(SECURITY_PREFS_FILE);
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
+    let before = friend_page_share_record_from_preferences(
+        &person_id,
+        &accounts,
+        &account_keys,
+        &conversations,
+        &prefs,
+    );
+
+    let field_name = match action {
+        FriendPageShareActionKind::NewAccountRule => {
+            if field.is_some_and(|named| named != FRIEND_PAGE_NEW_ACCOUNT_RULE_FIELD) {
+                return Err("OSL friend share new-account rule takes no other field".to_owned());
+            }
+            FRIEND_PAGE_NEW_ACCOUNT_RULE_FIELD.to_owned()
+        }
+        _ => field.ok_or_else(|| "OSL friend share action needs one field".to_owned())?,
+    };
+    let row = before
+        .fields
+        .iter()
+        .find(|row| row.field == field_name)
+        .ok_or_else(|| "OSL friend share field is not on this page".to_owned())?
+        .clone();
+
+    match action {
+        FriendPageShareActionKind::Edit => {
+            let value = value.ok_or_else(|| "OSL friend share edit needs a value".to_owned())?;
+            set_friend_page_share_draft(&mut prefs, &person_id, &field_name, value, row.saved);
+        }
+        FriendPageShareActionKind::Save => {
+            let committed = value.unwrap_or(row.draft);
+            write_friend_page_share_saved(&mut prefs, &person_id, &field_name, committed);
+            clear_friend_page_share_draft(&mut prefs, &person_id, &field_name);
+        }
+        FriendPageShareActionKind::Cancel => {
+            clear_friend_page_share_draft(&mut prefs, &person_id, &field_name);
+        }
+        FriendPageShareActionKind::Remove => {
+            if !confirmed {
+                return Err("OSL friend share remove needs confirmation".to_owned());
+            }
+            write_friend_page_share_saved(&mut prefs, &person_id, &field_name, false);
+            clear_friend_page_share_draft(&mut prefs, &person_id, &field_name);
+        }
+        FriendPageShareActionKind::NewAccountRule => {
+            let value = value
+                .ok_or_else(|| "OSL friend share new-account rule needs a value".to_owned())?;
+            write_friend_page_share_saved(&mut prefs, &person_id, &field_name, value);
+            clear_friend_page_share_draft(&mut prefs, &person_id, &field_name);
+        }
+    }
+
+    prefs.version = 2;
+    write_encrypted_json(&path, &prefs)?;
+    let after = friend_page_share_record_from_preferences(
+        &person_id,
+        &accounts,
+        &account_keys,
+        &conversations,
+        &prefs,
+    );
+    let changed_fields = friend_page_share_record_differences(&before, &after);
+    Ok(FriendPageShareActionResult {
+        person_id,
+        action: action.as_str().to_owned(),
+        changed_field_count: changed_fields.len(),
+        changed_fields,
+        record: after,
+    })
+}
+
+/// Name every field row that differs between two records of the same friend
+/// page. An empty result is the "0 differences" a bystanding friend has to
+/// show after somebody else's action.
+pub fn friend_page_share_record_differences(
+    before: &FriendPageShareRecord,
+    after: &FriendPageShareRecord,
+) -> Vec<String> {
+    let mut differences = Vec::new();
+    if before.person_id != after.person_id {
+        differences.push("personId".to_owned());
+    }
+    if before.actions != after.actions {
+        differences.push("actions".to_owned());
+    }
+    let before_rows = before
+        .fields
+        .iter()
+        .map(|row| (row.field.as_str(), row))
+        .collect::<BTreeMap<_, _>>();
+    let after_rows = after
+        .fields
+        .iter()
+        .map(|row| (row.field.as_str(), row))
+        .collect::<BTreeMap<_, _>>();
+    for (field, before_row) in &before_rows {
+        match after_rows.get(field) {
+            Some(after_row) if after_row == before_row => {}
+            _ => differences.push((*field).to_owned()),
+        }
+    }
+    for field in after_rows.keys() {
+        if !before_rows.contains_key(field) {
+            differences.push((*field).to_owned());
+        }
+    }
+    differences
 }
 
 const WHATSAPP_WHITELIST_KINDS: [(&str, &str); 6] = [

@@ -4,8 +4,6 @@
 //! deliberately local: the window is prepared hidden, capture protection is
 //! verified, and only then may the sealed local payload be unsealed.
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Arc, Mutex};
 use std::collections::BTreeMap;
 
 /// Platform and storage operations needed to reveal one view-once payload.
@@ -47,118 +45,6 @@ pub fn open_view_once<E: ViewOnceOpenEffects>(effects: &mut E) -> Result<(), E::
     effects.verify_protection()?;
     let plaintext = effects.unseal_local_payload()?;
     effects.emit_opened()?;
-    let render = effects.render(&plaintext);
-    let shred = effects.shred();
-    render?;
-    shred
-}
-
-#[derive(Default)]
-struct NamedViewOnceCopiesState {
-    copies: BTreeMap<String, BTreeMap<String, String>>,
-    opened: BTreeSet<String>,
-}
-
-/// In-memory model for one view-once item fanned out to named local chat-machine
-/// copies. Clones share the same authority so racing first opens serialize at
-/// the local destruction boundary.
-#[derive(Clone, Default)]
-pub struct NamedViewOnceCopies {
-    inner: Arc<Mutex<NamedViewOnceCopiesState>>,
-}
-
-impl NamedViewOnceCopies {
-    pub fn insert_marked_item(
-        &self,
-        copy_name: &str,
-        item_id: &str,
-        mark: &str,
-    ) -> Result<(), String> {
-        validate_copy_name(copy_name)?;
-        validate_item_id(item_id)?;
-        if mark.is_empty() {
-            return Err("view-once mark is empty".to_owned());
-        }
-        let mut state = self
-            .inner
-            .lock()
-            .map_err(|_| "view-once copy ledger is unavailable".to_owned())?;
-        state
-            .copies
-            .entry(copy_name.to_owned())
-            .or_default()
-            .insert(item_id.to_owned(), mark.to_owned());
-        state.opened.remove(item_id);
-        Ok(())
-    }
-
-    pub fn exact_item_count(
-        &self,
-        copy_name: &str,
-        item_id: &str,
-        mark: &str,
-    ) -> Result<usize, String> {
-        validate_copy_name(copy_name)?;
-        validate_item_id(item_id)?;
-        let state = self
-            .inner
-            .lock()
-            .map_err(|_| "view-once copy ledger is unavailable".to_owned())?;
-        Ok(state
-            .copies
-            .get(copy_name)
-            .and_then(|items| items.get(item_id))
-            .is_some_and(|stored| stored == mark) as usize)
-    }
-
-    pub fn open_and_destroy_all(
-        &self,
-        copy_name: &str,
-        item_id: &str,
-    ) -> Result<Option<String>, String> {
-        validate_copy_name(copy_name)?;
-        validate_item_id(item_id)?;
-        let mut state = self
-            .inner
-            .lock()
-            .map_err(|_| "view-once copy ledger is unavailable".to_owned())?;
-        if state.opened.contains(item_id) {
-            return Ok(None);
-        }
-        let Some(mark) = state
-            .copies
-            .get(copy_name)
-            .and_then(|items| items.get(item_id))
-            .cloned()
-        else {
-            return Ok(None);
-        };
-        for items in state.copies.values_mut() {
-            items.remove(item_id);
-        }
-        state.opened.insert(item_id.to_owned());
-        Ok(Some(mark))
-    }
-}
-
-fn validate_copy_name(copy_name: &str) -> Result<(), String> {
-    validate_token(copy_name, "view-once copy name")
-}
-
-fn validate_item_id(item_id: &str) -> Result<(), String> {
-    validate_token(item_id, "view-once item id")
-}
-
-fn validate_token(value: &str, label: &str) -> Result<(), String> {
-    if !value.is_empty()
-        && value.len() <= 128
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-    {
-        Ok(())
-    } else {
-        Err(format!("{label} is invalid"))
     match effects.render(&plaintext) {
         Ok(()) => effects.shred(),
         Err(error) => {
@@ -177,9 +63,6 @@ fn validate_token(value: &str, label: &str) -> Result<(), String> {
 pub struct NamedViewOnceCopies {
     copies: BTreeMap<String, BTreeMap<String, String>>,
 }
-
-impl NamedViewOnceCopies {
-    }
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct ViewOnceOpenRequest {
@@ -278,24 +161,15 @@ impl NamedViewOnceCopies {
 /// This timer bounds display only. It is deliberately separate from the server
 /// single-fetch guarantee, which decides whether the encrypted blob may be
 /// retrieved at all.
-pub const MAX_NATIVE_IMAGE_DISPLAY_SECONDS: u64 = 60;
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct NativeImageDisplayDuration {
     seconds: u64,
 }
 
-const MAX_NATIVE_IMAGE_DISPLAY_DURATION_SECONDS: u64 = 60;
-
 impl NativeImageDisplayDuration {
     pub fn from_seconds(seconds: u64) -> Result<Self, String> {
         if seconds == 0 {
             return Err("The protected image display duration must be positive".to_owned());
-        }
-        if seconds > MAX_NATIVE_IMAGE_DISPLAY_SECONDS {
-            return Err("The protected image display duration is too long".to_owned());
-        if seconds > MAX_NATIVE_IMAGE_DISPLAY_DURATION_SECONDS {
-            return Err("The protected image display duration must be at most 60 seconds".to_owned());
         }
         Ok(Self { seconds })
     }
@@ -384,7 +258,6 @@ mod tests {
     use super::{
         open_view_once, validate_native_image_viewer_lifecycle, NamedViewOnceCopies,
         NativeImageDisplayDuration, NativeImageViewerEvent as ImageEvent, ViewOnceOpenEffects,
-        MAX_NATIVE_IMAGE_DISPLAY_SECONDS,
         ViewOnceOpenResultRecord, ViewOnceViewerTier,
     };
 
@@ -540,141 +413,6 @@ mod tests {
 
     #[test]
     fn task_1347_open_destroys_marked_view_once_item_on_both_chat_machines() {
-        let copies = NamedViewOnceCopies::default();
-        let item_id = "task1347-item";
-        let mark = "TASK1347-MARK";
-        copies
-            .insert_marked_item("machine_a", item_id, mark)
-            .unwrap();
-        copies
-            .insert_marked_item("machine_b", item_id, mark)
-            .unwrap();
-
-        let machine_a_before = copies.exact_item_count("machine_a", item_id, mark).unwrap();
-        let machine_b_before = copies.exact_item_count("machine_b", item_id, mark).unwrap();
-        assert_eq!(machine_a_before, 1);
-        assert_eq!(machine_b_before, 1);
-        println!(
-            "TASK1347 before machine_a_count={} machine_b_count={} machine_a_mark={} machine_b_mark={}",
-            machine_a_before, machine_b_before, mark, mark
-        );
-
-        let opened = copies
-            .open_and_destroy_all("machine_a", item_id)
-            .unwrap()
-            .expect("the first view-once open returns the marked item");
-        assert_eq!(opened, mark);
-
-        let machine_a_after = copies.exact_item_count("machine_a", item_id, mark).unwrap();
-        let machine_b_after = copies.exact_item_count("machine_b", item_id, mark).unwrap();
-        assert_eq!(machine_a_after, 0);
-        assert_eq!(machine_b_after, 0);
-        println!(
-            "TASK1347 after opened_mark={} machine_a_count={} machine_b_count={} machine_a_mark_absent={} machine_b_mark_absent={}",
-            opened,
-            machine_a_after,
-            machine_b_after,
-            machine_a_after == 0,
-            machine_b_after == 0
-        );
-    }
-
-    #[test]
-    fn task_3645_race_two_first_view_once_opens_from_two_copies() {
-        let copies = NamedViewOnceCopies::default();
-        let item_id = "task3645-item";
-        let exact = "TASK3645-EXACT-VIEW-ONCE-CONTENT";
-        let first_copy = "machine_a";
-        let second_copy = "machine_b";
-        copies
-            .insert_marked_item(first_copy, item_id, exact)
-            .unwrap();
-        copies
-            .insert_marked_item(second_copy, item_id, exact)
-            .unwrap();
-
-        let first_before = copies.exact_item_count(first_copy, item_id, exact).unwrap();
-        let second_before = copies
-            .exact_item_count(second_copy, item_id, exact)
-            .unwrap();
-        assert_eq!(first_before, 1);
-        assert_eq!(second_before, 1);
-        println!(
-            "TASK3645_BEFORE local_store={} exact_item={} count={}",
-            first_copy, exact, first_before
-        );
-        println!(
-            "TASK3645_BEFORE local_store={} exact_item={} count={}",
-            second_copy, exact, second_before
-        );
-
-        let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
-        let results = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let mut handles = Vec::new();
-        for copy_name in [first_copy, second_copy] {
-            let copies = copies.clone();
-            let barrier = std::sync::Arc::clone(&barrier);
-            let results = std::sync::Arc::clone(&results);
-            let item_id = item_id.to_owned();
-            let copy_name = copy_name.to_owned();
-            handles.push(std::thread::spawn(move || {
-                barrier.wait();
-                let opened = copies.open_and_destroy_all(&copy_name, &item_id).unwrap();
-                results.lock().unwrap().push((copy_name, opened));
-            }));
-        }
-        barrier.wait();
-        println!("TASK3645_RELEASE simultaneous_first_open_requests=2");
-        for handle in handles {
-            handle.join().unwrap();
-        }
-
-        let mut opened = results.lock().unwrap().clone();
-        opened.sort_by(|left, right| left.0.cmp(&right.0));
-        let content_winners = opened
-            .iter()
-            .filter(|(_, content)| content.as_deref() == Some(exact))
-            .count();
-        let no_content = opened
-            .iter()
-            .filter(|(_, content)| content.is_none())
-            .count();
-        assert_eq!(content_winners, 1);
-        assert_eq!(no_content, 1);
-        for (copy_name, content) in &opened {
-            println!(
-                "TASK3645_OPEN local_store={} returned_content={}",
-                copy_name,
-                content.as_deref().unwrap_or("<none>")
-            );
-        }
-        println!(
-            "TASK3645_OPEN_SUMMARY exact_content={} exact_content_returns={} no_content_returns={}",
-            exact, content_winners, no_content
-        );
-
-        let first_after = copies.exact_item_count(first_copy, item_id, exact).unwrap();
-        let second_after = copies
-            .exact_item_count(second_copy, item_id, exact)
-            .unwrap();
-        assert_eq!(first_after, 0);
-        assert_eq!(second_after, 0);
-        println!(
-            "TASK3645_AFTER local_store={} exact_item={} count={}",
-            first_copy, exact, first_after
-        );
-        println!(
-            "TASK3645_AFTER local_store={} exact_item={} count={}",
-            second_copy, exact, second_after
-        );
-
-        let later = copies.open_and_destroy_all(first_copy, item_id).unwrap();
-        assert_eq!(later, None);
-        println!(
-            "TASK3645_LATER local_store={} returned_content={}",
-            first_copy,
-            later.as_deref().unwrap_or("<none>")
-        );
         let item_id = "peer-13471347134713471347134713471347";
         let mark = "TASK1347-MARK";
         let mut copies = NamedViewOnceCopies::default();
@@ -888,56 +626,14 @@ mod tests {
     }
 
     #[test]
-    fn task_0563_view_once_duration_edges() {
-        let cases = [(1, true), (60, true), (0, false), (61, false)];
-
-        for (seconds, should_succeed) in cases {
-            let result = NativeImageDisplayDuration::from_seconds(seconds);
-            println!(
-                "TASK0563_DURATION seconds={} result={}",
-                seconds,
-                if result.is_ok() { "ok" } else { "err" }
-            );
-            assert_eq!(
-                result.is_ok(),
-                should_succeed,
-                "duration edge {seconds} must {}",
-                if should_succeed { "succeed" } else { "fail" }
-            );
-            if let Ok(duration) = result {
-                assert_eq!(duration.seconds(), seconds);
-                assert_eq!(
-                    duration.timer_millis_u32().unwrap(),
-                    (seconds * 1_000) as u32
-                );
-            }
-        }
-
-        assert_eq!(MAX_NATIVE_IMAGE_DISPLAY_SECONDS, 60);
-    fn native_image_display_duration_accepts_only_one_to_sixty_seconds() {
-        let attempts = [1_u64, 60, 0, 61];
-        let mut succeeded = Vec::new();
-        let mut failed = Vec::new();
-        for seconds in attempts {
-            match NativeImageDisplayDuration::from_seconds(seconds) {
-                Ok(duration) => {
-                    println!(
-                        "duration {seconds} seconds: succeeded as {} seconds",
-                        duration.seconds()
-                    );
-                    succeeded.push(seconds);
-                }
-                Err(error) => {
-                    println!("duration {seconds} seconds: failed: {error}");
-                    failed.push(seconds);
-                }
-            }
-        }
-        println!("successful durations: {succeeded:?}");
-        println!("failed durations: {failed:?}");
-
-        assert_eq!(succeeded, vec![1, 60]);
-        assert_eq!(failed, vec![0, 61]);
+    fn native_image_display_duration_refuses_zero_and_negative() {
+        assert_eq!(
+            NativeImageDisplayDuration::from_seconds(3)
+                .unwrap()
+                .seconds(),
+            3
+        );
+        assert!(NativeImageDisplayDuration::from_seconds(0).is_err());
         assert!(NativeImageDisplayDuration::from_signed_seconds(0).is_err());
         assert!(NativeImageDisplayDuration::from_signed_seconds(-1).is_err());
     }

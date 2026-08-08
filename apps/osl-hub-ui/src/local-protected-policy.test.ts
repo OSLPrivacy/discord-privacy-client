@@ -35,11 +35,17 @@ describe("local protected context policy", () => {
     expect(prepare).toContain("Copied safely; nothing was sent.");
   });
 
-  it("fails closed before decrypt and saves the toggle only for this context", () => {
-    const opening = functionSource("openLocalProtectedCapsule", "changeLocalDecryptDisplay");
-    const change = functionSource("changeLocalDecryptDisplay", "copyLocalProtectedCapsule");
+  it("fails closed before decrypt and no longer carries a control of its own", () => {
+    const opening = functionSource("openLocalProtectedCapsule", "copyLocalProtectedCapsule");
     expect(opening.indexOf("!localProtectedSheet.decryptDisplayEnabled")).toBeLessThan(opening.indexOf("decryptLocalProtectedText(contextToken, capsule)"));
-    expect(change).toContain("saveActiveContextSecurity(contextToken, localProtectedSheet.ttlSeconds, input.checked)");
-    expect(change).toContain('localProtectedSheet.openedPlaintext = ""');
+    // EXPECTED VALUE CHANGED (TASK 4501). This sheet used to own one of four
+    // controls over a single per-scope setting, with its own handler writing
+    // `input.checked` straight into it. Four controls is four answers to "is
+    // this protected right now"; there is one now, and it is the eye. The sheet
+    // still READS the setting and still fails closed on it, asserted above --
+    // it just no longer decides it.
+    expect(source).not.toContain("changeLocalDecryptDisplay");
+    expect(source).not.toContain('id="local-decrypt-display"');
+    expect(source).not.toContain("saveActiveContextSecurity(contextToken, localProtectedSheet.ttlSeconds, input.checked)");
   });
 });

@@ -34,7 +34,7 @@ describe("Enclave honest states", () => {
     expect(markup).toContain("osl-enclave-state--stale-roster");
     expect(markup).toContain("Posting is unavailable until membership is current.");
     expect(markup).toContain("osl-enclave-state--burn-queued");
-    expect(markup).toContain("2 removal requests are queued for the server.");
+    expect(markup).toContain("2 removal requests are queued for the enclave.");
     expect(markup).toContain("osl-enclave-state--removal-unconfirmed");
     expect(markup).toContain("may retain content they already have");
     expect(markup).toContain("osl-enclave-state--ack-unconfirmed");

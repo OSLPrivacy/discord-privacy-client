@@ -14,6 +14,10 @@ import {
   utf8Length,
 } from "./overlay-state";
 import { shouldPollDiscordOverlay } from "./discord-qa-receive-policy";
+import {
+  nativeOverlayReceiveStatusText,
+  PROTECTED_MESSAGE_COULD_NOT_BE_OPENED,
+} from "./native-overlay-status";
 
 function readRelative(relativePath: string): string {
   return readFileSync(fileURLToPath(new URL(relativePath, import.meta.url)), "utf8");
@@ -386,7 +390,14 @@ describe("trusted composer overlay", () => {
     expect(html).toContain("This composer belongs to OSL, not Discord");
     expect(html).toContain('id="protected-view-once"');
     expect(html).toContain('id="protected-ttl"');
-    expect(html).toContain('id="protected-decrypt-display"');
+    // TASK 4501. The paint-over window used to carry its own "show decrypted
+    // text" tick box here. It was one of four controls over a single per-scope
+    // setting -- fully working, defaulting to on, and out of reach only because
+    // `.overlay-runtime-controls` carries a `hidden` mark -- so the moment
+    // anybody tidied that box a second answer to "is this protected right now"
+    // would have appeared. The eye on the Discord strip is the one control now,
+    // and this renderer only follows the setting it publishes.
+    expect(html).not.toContain('id="protected-decrypt-display"');
     expect(html).toContain('id="current-expiry"');
     expect(html).toContain('id="protected-send-mode" aria-label="Send behavior"');
     expect(html).toContain('<option value="button">Manual</option>');
@@ -579,7 +590,7 @@ describe("trusted composer overlay", () => {
     // The handle is held to the id shape the rest of this path already uses.
     expect(parseNativeDiscordOverlayOpened({ ...opened, messageId: "not-a-peer-id" })).toBeNull();
     const pendingViewOnce = { messageId: "peer-0123456789abcdef0123456789abcdef", expiresAt: prepared.expiresAt, displayDurationSeconds: 15, personToPersonE2ee: true };
-    const batch = { messages: [opened], pendingViewOnce: [pendingViewOnce], acknowledgments: [acknowledgment], fetched: 2, decryptDisplayEnabled: true, deferredRows: 0, unrecognizedWireRows: 0 };
+    const batch = { messages: [opened], pendingViewOnce: [pendingViewOnce], acknowledgments: [acknowledgment], fetched: 2, decryptDisplayEnabled: true, deferredRows: 0, unrecognizedWireRows: 0, contentGoneRows: 0 };
     expect(parseNativeDiscordOverlayOpenedBatch(batch)).toEqual(batch);
     expect(parseNativeDiscordOverlayOpenedBatch({ ...batch, pendingViewOnce: [{ ...pendingViewOnce, displayDurationSeconds: 61 }] })).toBeNull();
     // A batch that cannot say whether opening was switched on, or how many rows it
@@ -591,11 +602,15 @@ describe("trusted composer overlay", () => {
     expect(parseNativeDiscordOverlayOpenedBatch(batchWithoutDeferred)).toBeNull();
     const { unrecognizedWireRows: _unrecognized, ...batchWithoutUnrecognized } = batch;
     expect(parseNativeDiscordOverlayOpenedBatch(batchWithoutUnrecognized)).toBeNull();
+    const { contentGoneRows: _gone, ...batchWithoutGone } = batch;
+    expect(parseNativeDiscordOverlayOpenedBatch(batchWithoutGone)).toBeNull();
     expect(parseNativeDiscordOverlayOpenedBatch({ ...batch, decryptDisplayEnabled: false })?.decryptDisplayEnabled).toBe(false);
     expect(parseNativeDiscordOverlayOpenedBatch({ ...batch, deferredRows: 3 })?.deferredRows).toBe(3);
     expect(parseNativeDiscordOverlayOpenedBatch({ ...batch, deferredRows: -1 })).toBeNull();
     expect(parseNativeDiscordOverlayOpenedBatch({ ...batch, unrecognizedWireRows: 1 })?.unrecognizedWireRows).toBe(1);
     expect(parseNativeDiscordOverlayOpenedBatch({ ...batch, unrecognizedWireRows: -1 })).toBeNull();
+    expect(parseNativeDiscordOverlayOpenedBatch({ ...batch, contentGoneRows: 1 })?.contentGoneRows).toBe(1);
+    expect(parseNativeDiscordOverlayOpenedBatch({ ...batch, contentGoneRows: -1 })).toBeNull();
     expect(parseNativeDiscordOverlayState({ ...state, scopeApproved: false })).toBeNull();
     const { discordMarkerAvailable: _marker, ...stateWithoutMarkerAvailability } = state;
     expect(parseNativeDiscordOverlayState(stateWithoutMarkerAvailability)).toBeNull();
@@ -856,11 +871,19 @@ describe("trusted composer overlay", () => {
     expect(visibility).toContain("row.plaintextHidden = !visible");
     expect(visibility).not.toContain('body.textContent = ""');
     expect(save).toContain("applyDecryptDisplayVisibility(decryptDisplayEnabled)");
-    expect(save).toContain("applyDecryptDisplayVisibility(false)");
-    expect(save.indexOf("applyDecryptDisplayVisibility(false)")).toBeLessThan(
-      save.indexOf("await setNativeDiscordOverlaySecurity"),
+    // EXPECTED VALUE CHANGED (TASK 4501). This save belongs to the expiry
+    // control, and the tick box that used to sit beside it is gone: there is
+    // exactly one show-private-words control in the app and it is the eye. With
+    // nothing here deciding a new value there is nothing to speculatively hide,
+    // so the stored value is carried through unchanged instead. The
+    // hide-before-save ordering this pair of assertions existed for now belongs
+    // to the eye and is asserted on its own path in
+    // discord-qa-transcript-visibility.test.ts.
+    expect(save).toContain(
+      "setNativeDiscordOverlaySecurity(requestedTtl as NativeOverlayTtlSeconds, decryptDisplayEnabled)",
     );
-    expect(save).toContain("applyDecryptDisplayVisibility(previousDecrypt)");
+    expect(save).not.toContain("decryptDisplay.checked");
+    expect(save).not.toContain("applyDecryptDisplayVisibility(false)");
     // EXPECTED VALUE CHANGED: the eye-on branch used to be the single statement
     // `if (decryptDisplayEnabled) requestRealtimeDrain()`. Switching the eye on
     // now also claims one bounded transcript read -- the edge that puts the
@@ -1207,9 +1230,28 @@ describe("trusted composer overlay", () => {
     expect(poll).not.toMatch(/if \(!batch\.decryptDisplayEnabled\) \{[\s\S]{0,400}?\breturn\b/u);
     // Status text stays a fixed sentence plus a count -- never a fragment of what
     // arrived.
-    expect(poll).toContain('status.textContent = "OSL could not reach the protected message store. Retrying.";');
-    expect(poll).toContain('status.textContent = "Decrypted text is off for this conversation.";');
+    const statusSource = readRelative("./native-overlay-status.ts");
+    expect(statusSource).toContain('return "OSL could not reach the protected message store. Retrying.";');
+    expect(poll).toContain("const statusText = nativeOverlayReceiveStatusText(opened, batch);");
+    expect(source).toContain("nativeOverlayReceiveStatusText(opened, batch)");
+    expect(statusSource).toContain('return "Decrypted text is off for this conversation.";');
     expect(poll).not.toMatch(/status\.textContent = `[^`]*\$\{(?:message|opened)\.plaintext/u);
+  });
+
+  it("puts the fixed refusal sentence on screen when recognized protected content is gone", () => {
+    const openedPrivateMessages = 0;
+    const batch = {
+      deferredRows: 0,
+      contentGoneRows: 1,
+      unrecognizedWireRows: 0,
+      decryptDisplayEnabled: true,
+    };
+
+    const screenText = nativeOverlayReceiveStatusText(openedPrivateMessages, batch);
+
+    console.info(`TASK4011_UI_OPENED_PRIVATE_MESSAGES=${openedPrivateMessages}`);
+    console.info(`TASK4011_UI_SCREEN_TEXT=${screenText}`);
+    expect(screenText).toBe(PROTECTED_MESSAGE_COULD_NOT_BE_OPENED);
   });
 
   it("keeps view-once text pending until an explicit reveal gesture", () => {

@@ -52,6 +52,11 @@ import {
   normalizeHomeTileArrangement,
   toggleHomeTileVisibility,
 } from "./home-tile-arrangement";
+import {
+  emailRowTiles,
+  renderCircularTileRow,
+  socialRowTiles,
+} from "./home-social-email-rows";
 import { peopleDestinationHeaderMarkup } from "./people-destination-header";
 import { lastBackendFailure, recordBackendFailure } from "./backend-failure";
 import { unlockAttemptWarning } from "./unlock-attempts";
@@ -4907,10 +4912,9 @@ function workspaceContent(): string {
     const claimTitle = claim ? ` title="${escapeHtml(claim.claimNote)}"` : "";
     return `<article class="app-tile ${available ? "" : "app-unavailable"} ${hidden ? "tile-hidden" : ""} ${pending ? "pending" : ""}" data-tile-id="${app.id}" draggable="${homeEditMode}" data-service-kind="${app.serviceId ?? "none"}" data-launch-state="${app.launchState}" data-claim-status="${claim ? claim.supportStatus : "comingSoon"}" aria-disabled="${available ? "false" : "true"}"><button id="home-app-${app.id}" type="button" ${available ? `data-home-app="${app.id}"` : ""} aria-label="${escapeHtml(`${app.displayName}, ${pending ? "Opening" : state}`)}"${claimTitle} ${disabled ? "disabled" : ""}><span class="app-logo-plate">${homeAppLogo(app)}</span><span class="app-tile-copy"><strong>${escapeHtml(app.displayName)}</strong>${pending ? "<small>Opening…</small>" : available ? "" : `<small>${escapeHtml(caption)}</small>`}</span></button>${controls}</article>`;
   };
-  const socialIds = new Set(homeApps.filter((app) => app.provider === null).map((app) => app.id));
-  const emailIds = new Set(homeApps.filter((app) => app.provider !== null).map((app) => app.id));
-  const socialTiles = orderedIds.filter((id) => socialIds.has(id as HomeAppId)).map(renderHomeTile).join("");
-  const emailTiles = orderedIds.filter((id) => emailIds.has(id as HomeAppId)).map(renderHomeTile).join("");
+  const tileArrangement = { order: homeTileOrder, hidden: [...hiddenHomeTiles] };
+  const socialTiles = renderCircularTileRow(socialRowTiles(homeApps, tileArrangement), homeEditMode);
+  const emailTiles = renderCircularTileRow(emailRowTiles(homeApps, tileArrangement), homeEditMode);
   const oslTiles = orderedIds.filter((id) => moduleById.has(id as typeof modules[number]["id"])).map(renderHomeTile).join("");
   const organizeButton = (label: string) => `<button class="home-section-action in-dom-tooltip-anchor" data-edit-home type="button" aria-label="${homeEditMode ? "Finish arranging" : `Customize ${label}`}">${homeCommandIcon("organize")}${inDomTooltipMarkup(homeEditMode ? "Done" : `Customize ${label}`)}</button>`;
   const oslSection = oslTiles ? `<section class="home-app-section home-osl-section"><div class="app-grid" aria-label="OSL tools">${oslTiles}</div></section>` : "";
@@ -7976,6 +7980,17 @@ function bindWorkspace(): void {
   document.querySelectorAll<HTMLButtonElement>("[data-home-app]").forEach((button) => button.addEventListener("click", () => {
     if (appLaunchPendingId) return;
     const appId = button.dataset.homeApp as HomeAppId;
+    if (!homeAppsFromServices(services).some((candidate) => candidate.id === appId)) return;
+    const intent = ++navigationIntentEpoch;
+    appLaunchPendingId = appId;
+    renderNow();
+    void openHomeAppFromLauncher(appId, intent);
+  }));
+  // The circular SOCIAL/EMAIL tiles (home-social-email-rows.ts) open the
+  // Strip over their own carrier the same way the app launcher does.
+  document.querySelectorAll<HTMLButtonElement>("[data-open-strip]").forEach((button) => button.addEventListener("click", () => {
+    if (appLaunchPendingId) return;
+    const appId = button.dataset.openStrip as HomeAppId;
     if (!homeAppsFromServices(services).some((candidate) => candidate.id === appId)) return;
     const intent = ++navigationIntentEpoch;
     appLaunchPendingId = appId;

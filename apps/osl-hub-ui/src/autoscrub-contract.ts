@@ -34,8 +34,6 @@ export type AutoscrubUnattendedRunResult =
   | AutoscrubUnattendedRunStarted;
 
 
-export type AutoScrubRunPhase = "reviewRequired" | "running" | "stopping" | "blocked" | "complete" | "failed";
-export type AutoScrubQuitGuardState = "notRequested" | "confirming" | "checking" | "estimated" | "stopped" | "unknown" | "refused";
 export type AutoScrubRunPhase = "reviewRequired" | "running" | "stopping" | "blocked" | "skipped" | "complete" | "failed";
 export type AutoScrubQuitGuardState = "notRequested" | "checking" | "estimated" | "stopped" | "unknown" | "refused";
 export type AutoScrubDisplayTone = "neutral" | "working" | "warning" | "blocked";
@@ -141,8 +139,6 @@ export function createAutoscrubUnattendedContract(
 const serviceIds: readonly ServiceId[] = [
   "discord", "telegram", "email", "signal", "whatsapp",
 ];
-const phases: readonly AutoScrubRunPhase[] = ["reviewRequired", "running", "stopping", "blocked", "complete", "failed"];
-const quitGuardStates: readonly AutoScrubQuitGuardState[] = ["notRequested", "confirming", "checking", "estimated", "stopped", "unknown", "refused"];
 const phases: readonly AutoScrubRunPhase[] = ["reviewRequired", "running", "stopping", "blocked", "skipped", "complete", "failed"];
 const quitGuardStates: readonly AutoScrubQuitGuardState[] = ["notRequested", "checking", "estimated", "stopped", "unknown", "refused"];
 const outcomes: readonly AutoScrubRunSummary["lastOutcome"][] = ["none", "prepared", "confirmed", "held", "unknown"];
@@ -232,9 +228,7 @@ function sha256Hex(value: unknown): value is string {
 }
 
 function parseRun(raw: unknown): AutoScrubRunSummary {
-  if (!exactRecord(raw, ["runId", "serviceId", "accountId", "phase", "reviewedItemCount", "remainingItemCount", "stopRequested", "mutationAllowed", "lastOutcome", "accountActions"])) {
-  if (!exactRecord(raw, ["runId", "serviceId", "phase", "reviewedItemCount", "remainingItemCount", "paceMilliseconds", "stopRequested", "mutationAllowed", "lastOutcome"])) {
-  if (!exactRecord(raw, ["runId", "serviceId", "accountId", "phase", "reviewedItemCount", "remainingItemCount", "stopRequested", "mutationAllowed", "lastOutcome"])) {
+  if (!exactRecord(raw, ["runId", "serviceId", "accountId", "phase", "reviewedItemCount", "remainingItemCount", "paceMilliseconds", "stopRequested", "mutationAllowed", "lastOutcome", "accountActions"])) {
     throw new Error("invalid AutoScrub run");
   }
   if (!boundedText(raw.runId, 80)
@@ -313,8 +307,7 @@ function parseStopConfirmation(raw: unknown): AutoScrubStopConfirmationState {
 }
 
 export function parseAutoScrubFleetStatus(raw: unknown): AutoScrubFleetStatus {
-  if (!exactRecord(raw, ["contract", "openRunCount", "globalStopRequested", "stopConfirmation", "unattendedExecutionAllowed", "quitGuard", "runs"])
-  if (!exactRecord(raw, ["contract", "openRunCount", "globalStopRequested", "unattendedExecutionAllowed", "quitGuard", "fleetActions", "runs"])
+  if (!exactRecord(raw, ["contract", "openRunCount", "globalStopRequested", "stopConfirmation", "unattendedExecutionAllowed", "quitGuard", "fleetActions", "runs"])
     || raw.contract !== "autoscrubRunFleet.v1"
     || !boundedCount(raw.openRunCount, 2)
     || typeof raw.globalStopRequested !== "boolean"
@@ -349,8 +342,7 @@ export function parseAutoScrubFleetStatus(raw: unknown): AutoScrubFleetStatus {
 }
 
 export function parseAutoScrubReviewedRunRequest(raw: unknown): AutoScrubReviewedRunRequest {
-  if (!exactRecord(raw, ["serviceId", "accountId", "reviewToken", "planDigest", "reviewedItemCount", "paceMilliseconds", "consent"])
-  if (!exactRecord(raw, ["runId", "serviceId", "accountId", "reviewToken", "planDigest", "reviewedItemCount", "consent", "riskAgreement"])
+  if (!exactRecord(raw, ["runId", "serviceId", "accountId", "reviewToken", "planDigest", "reviewedItemCount", "paceMilliseconds", "consent", "riskAgreement"])
     || !opaqueIdentifier(raw.runId, 64)
     || !serviceIds.includes(raw.serviceId as ServiceId)
     || !opaqueIdentifier(raw.accountId, 64)
@@ -360,7 +352,6 @@ export function parseAutoScrubReviewedRunRequest(raw: unknown): AutoScrubReviewe
     || raw.reviewedItemCount < 1
     || !boundedCount(raw.paceMilliseconds, 86_400_000)
     || raw.paceMilliseconds < 500
-    || raw.consent !== "reviewedBatchOnly") {
     || raw.consent !== "reviewedBatchOnly"
     || raw.riskAgreement !== true) {
     throw new Error("invalid AutoScrub reviewed run request");
@@ -402,7 +393,7 @@ export function projectAutoScrubFleetStatus(status: AutoScrubFleetStatus | null)
       stopAvailable: false,
     };
   }
-  if (status.stopConfirmation.required || status.quitGuard.state === "confirming") {
+  if (status.stopConfirmation.required) {
     return {
       label: "Confirm stop",
       detail: "Choose Keep scanning or Stop now.",

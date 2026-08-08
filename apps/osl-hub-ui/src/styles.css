@@ -4394,6 +4394,13 @@ code {
 .app-tile-copy small { display: block; }
 .app-tile-copy strong { overflow: hidden; font-size: 11px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .app-tile-copy small { margin-top: 2px; color: var(--subtle); font-size: 11px; }
+
+/* TASK 5008: Home's SOCIAL/EMAIL rows of circular brand tiles. */
+.circular-tile { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 0; border: 0; background: transparent; }
+.circular-tile-button { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 0; border: 0; background: transparent; color: var(--text); cursor: pointer; }
+.circular-tile-plate { width: min(58px, 100%); aspect-ratio: 1; border-radius: 50%; border: 1px solid var(--line); display: grid; place-items: center; background: var(--panel-2); color: var(--brand); }
+.circular-tile-label { overflow: hidden; font-size: 11px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.circular-tile.tile-hidden { opacity: .42; }
 .app-tile.app-unavailable { opacity: .42; }
 .app-tile.app-unavailable button { cursor: not-allowed; }
 .app-tile.app-unavailable .app-logo-plate { filter: grayscale(1); }

@@ -35,7 +35,7 @@ export function oslEnclaveStateMarkup(state: OslEnclaveState): string {
   }
 
   if (burnRequestsQueued > 0) {
-    notices.push(`<section class="osl-enclave-state osl-enclave-state--burn-queued" role="status"><strong>Removal request queued</strong><p>${countLine(burnRequestsQueued, "1 removal request is queued for the server.", "{count} removal requests are queued for the server.")}</p></section>`);
+    notices.push(`<section class="osl-enclave-state osl-enclave-state--burn-queued" role="status"><strong>Removal request queued</strong><p>${countLine(burnRequestsQueued, "1 removal request is queued for the enclave.", "{count} removal requests are queued for the enclave.")}</p></section>`);
   }
 
   if (state.removalUnconfirmed) {

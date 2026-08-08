@@ -207,7 +207,24 @@ pub struct AutoScrubSwitchRefusal {
 }
 
 impl AutoScrubSwitchRefusal {
-    fn pro_code_required(command: &str, account_id: &str) -> Self {
+    /// A refusal in this shape for a reason this module does not itself own.
+    /// Task 1457's schedule surface uses it so a schedule refusal reads exactly
+    /// like a switch refusal.
+    pub fn new(
+        command: impl Into<String>,
+        account_id: impl Into<String>,
+        reason: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            command: command.into(),
+            account_id: account_id.into(),
+            reason: reason.into(),
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn pro_code_required(command: &str, account_id: &str) -> Self {
         Self {
             command: command.to_string(),
             account_id: account_id.to_string(),
@@ -230,7 +247,7 @@ impl AutoScrubSwitchRefusal {
         }
     }
 
-    fn unknown_account(command: &str, account_id: &str) -> Self {
+    pub(crate) fn unknown_account(command: &str, account_id: &str) -> Self {
         Self {
             command: command.to_string(),
             account_id: account_id.to_string(),

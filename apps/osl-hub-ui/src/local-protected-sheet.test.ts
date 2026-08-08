@@ -89,8 +89,13 @@ describe("local protected side sheet", () => {
     expect(readyMarkup).not.toContain("<Rose>");
     expect(readyMarkup).not.toContain("<private>");
     const openMarkup = localProtectedSheetMarkup({ ...ready, pane: "open" });
-    expect(openMarkup).toContain('id="local-decrypt-display"');
-    expect(openMarkup).toContain("Only for this local chat.");
+    // TASK 4501. This sheet used to carry its own "Show decrypted text" tick
+    // box, one of four controls over a single per-scope setting. Four controls
+    // is four answers to "is this protected right now"; the blueprint says one,
+    // and that one is the eye. The sheet still READS the setting -- it refuses
+    // to open text while it is off -- but it no longer decides it.
+    expect(openMarkup).not.toContain('id="local-decrypt-display"');
+    expect(openMarkup).not.toContain("Show decrypted text");
     expect(localProtectedSheetMarkup(ready, "manual")).toContain("Encrypt & prepare");
     expect(localProtectedSheetMarkup(ready, "manual")).toContain("OSL does not copy or send.");
     expect(localProtectedSheetMarkup(ready, "manual")).toContain("Copy to clipboard");
