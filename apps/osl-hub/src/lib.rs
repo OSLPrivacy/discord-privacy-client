@@ -246,6 +246,8 @@ pub mod claim_state;
 #[cfg(feature = "core")]
 pub mod cleanup;
 #[cfg(feature = "core")]
+pub mod burn_job_fence;
+#[cfg(feature = "core")]
 pub mod core_bridge;
 #[cfg(feature = "core")]
 pub mod deadman;
