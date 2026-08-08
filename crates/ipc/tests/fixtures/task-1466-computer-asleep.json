@@ -1,0 +1,12 @@
+{
+  "accounts": [
+    {
+      "accountId": "discord-maple",
+      "label": "Discord Maple",
+      "approved": true,
+      "availability": "sleeping",
+      "nextRunUnixSecs": 1786190399
+    }
+  ],
+  "activeAccountId": null
+}

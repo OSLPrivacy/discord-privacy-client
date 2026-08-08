@@ -151,7 +151,6 @@ fn decide_scheduled_tick(queue: &ScheduledRunnerQueue, now_unix_secs: i64) -> Ru
         .accounts
         .iter()
         .filter(|a| a.approved)
-        .filter(|a| a.availability == AccountAvailability::Available)
         .filter(|a| a.next_run_unix_secs.is_some_and(|t| t <= now_unix_secs))
         .collect();
     due.sort_by(|a, b| {
@@ -159,13 +158,34 @@ fn decide_scheduled_tick(queue: &ScheduledRunnerQueue, now_unix_secs: i64) -> Ru
             .cmp(&b.next_run_unix_secs)
             .then_with(|| a.account_id.cmp(&b.account_id))
     });
-    match due.first() {
+    match due
+        .iter()
+        .find(|account| account.availability == AccountAvailability::Available)
+    {
         Some(account) => RunnerDecision::Start {
             account_id: account.account_id.clone(),
         },
-        None => RunnerDecision::NoAction {
-            reason_code: REASON_NOT_DUE,
-            detail: "no approved, available account is due yet".to_owned(),
+        None => match due
+            .iter()
+            .find(|account| account.availability == AccountAvailability::Sleeping)
+        {
+            Some(_) => RunnerDecision::NoAction {
+                reason_code: REASON_ACCOUNT_SLEEPING,
+                detail: "paused for sleep".to_owned(),
+            },
+            None if due
+                .iter()
+                .any(|account| account.availability == AccountAvailability::Unavailable) =>
+            {
+                RunnerDecision::NoAction {
+                    reason_code: REASON_ACCOUNT_UNAVAILABLE,
+                    detail: "paused because the due account is unavailable".to_owned(),
+                }
+            }
+            None => RunnerDecision::NoAction {
+                reason_code: REASON_NOT_DUE,
+                detail: "no approved, available account is due yet".to_owned(),
+            },
         },
     }
 }
@@ -278,8 +298,8 @@ mod tests {
         assert_eq!(
             decision,
             RunnerDecision::NoAction {
-                reason_code: REASON_NOT_DUE,
-                detail: "no approved, available account is due yet".to_owned(),
+                reason_code: REASON_ACCOUNT_UNAVAILABLE,
+                detail: "paused because the due account is unavailable".to_owned(),
             }
         );
     }
@@ -466,10 +486,7 @@ mod tests {
     }
 
     #[test]
-    fn a_sleeping_account_is_skipped_but_does_not_block_other_accounts_next_schedule() {
-        // Sleep pauses only the sleeping account; it must not stop the
-        // runner from picking up a different account whose own schedule
-        // is due next.
+    fn a_sleeping_due_account_reports_pause_activity_when_nothing_else_can_start() {
         let q = queue(vec![account(
             "acct-sleepy",
             true,
@@ -483,8 +500,8 @@ mod tests {
         assert_eq!(
             decision,
             RunnerDecision::NoAction {
-                reason_code: REASON_NOT_DUE,
-                detail: "no approved, available account is due yet".to_owned(),
+                reason_code: REASON_ACCOUNT_SLEEPING,
+                detail: "paused for sleep".to_owned(),
             }
         );
     }
