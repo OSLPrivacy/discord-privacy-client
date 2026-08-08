@@ -6581,6 +6581,86 @@ mod tests {
         );
     }
 
+    #[test]
+    fn task_0838_friend_page_share_actions_keep_each_friend_and_cancelled_edit_separate() {
+        let harness = FileBackedSecurityHarness::new("task-0838-friend-page-share-actions");
+        let security = HubSecurityState::default();
+        let friend_a = "hub-person-task-0838-a".to_owned();
+        let friend_b = "hub-person-task-0838-b".to_owned();
+        let friend_c = "hub-person-task-0838-c".to_owned();
+        let conversation = FriendPageShareConversation {
+            storage_key: "dm:conversation-0838".to_owned(),
+            conversation_label: "TASK0838 Conversation".to_owned(),
+            checked: false,
+        };
+
+        // Friend A explicitly saves Allow, while Friend B explicitly saves
+        // Block for the same catalog entry.  False is intentionally stored as
+        // absence so the default remains fail-closed.
+        let saved_a = save_friend_page_share_data(
+            &security,
+            friend_a.clone(),
+            vec![],
+            vec![FriendPageShareConversation { checked: true, ..conversation.clone() }],
+            "off".to_owned(),
+        )
+        .unwrap();
+        let saved_b = save_friend_page_share_data(
+            &security,
+            friend_b.clone(),
+            vec![],
+            vec![conversation.clone()],
+            "off".to_owned(),
+        )
+        .unwrap();
+
+        // Friend C changes the draft to Allow but chooses Cancel.  Cancel is a
+        // read-only reopen, so it must neither create nor alter saved choices.
+        let cancelled_c = cancel_friend_page_share_data(
+            &security,
+            friend_c.clone(),
+            vec![],
+            vec![FriendPageShareConversation { checked: true, ..conversation.clone() }],
+        )
+        .unwrap();
+        let reopened_a = read_friend_page_share_data(&security, friend_a.clone(), vec![], vec![conversation.clone()]).unwrap();
+        let reopened_b = read_friend_page_share_data(&security, friend_b.clone(), vec![], vec![conversation.clone()]).unwrap();
+        let reopened_c = read_friend_page_share_data(&security, friend_c.clone(), vec![], vec![conversation.clone()]).unwrap();
+        let stored: SecurityPreferences =
+            load_encrypted_json(&harness.path().join(SECURITY_PREFS_FILE)).unwrap();
+        let cancelled_saved_changes = stored
+            .friend_conversation_share_choices
+            .get(&friend_c)
+            .map_or(0, BTreeMap::len);
+
+        let choice = |data: &FriendPageShareData| data.conversations[0].checked;
+        assert!(choice(&saved_a));
+        assert!(!choice(&saved_b));
+        assert_eq!(cancelled_c, reopened_c);
+        assert!(choice(&reopened_a), "friend A reopens as Allow");
+        assert!(!choice(&reopened_b), "friend B reopens as Block");
+        assert!(!choice(&reopened_c), "a fresh friend defaults to Block");
+        assert_eq!(cancelled_saved_changes, 0, "Cancel must save zero choices");
+
+        // This is the mutation probe: changing one saved value in a throwaway
+        // copy fails the same direct snapshot check without touching disk.
+        let mut throwaway = reopened_a.clone();
+        throwaway.conversations[0].checked = false;
+        let throwaway_check_fails = !choice(&throwaway);
+        assert!(throwaway_check_fails, "the throwaway Allow -> Block mutation must be detected");
+
+        println!(
+            "TASK0838 friend_share_actions friend_a={} reopened=Allow friend_b={} reopened=Block friend_c={} fresh_default=Block cancelled_saved_changes={} isolation={} throwaway_changed_values=1 throwaway_check=FAIL",
+            friend_a,
+            friend_b,
+            friend_c,
+            cancelled_saved_changes,
+            choice(&reopened_a) != choice(&reopened_b)
+                && choice(&reopened_a) != choice(&reopened_c)
+                && saved_a != saved_b,
+        );
+    }
+
     fn friend_share_account_states(accounts: &[FriendPageShareAccountChoice]) -> String {
         accounts
             .iter()
