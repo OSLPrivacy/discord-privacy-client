@@ -138,6 +138,19 @@ pub struct WebsiteConversationDiscovery {
     pub composer: String,
 }
 
+/// Live UI state for OSL's private draft mounted over a verified Messenger
+/// composer. Private text remains in OSL's box; Messenger's own composer is
+/// locked and kept empty until a later send step deliberately places cover.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessengerPrivateComposerState {
+    pub locked: bool,
+    pub private_box_visible: bool,
+    pub private_bytes: usize,
+    pub counter_text: String,
+    pub messenger_composer_characters: usize,
+}
+
 /// Classifies an already-open browser conversation from canonical service URL
 /// routing and accessibility evidence.  Unknown URL shapes, service claims,
 /// inactive conversations, and inaccessible/non-textbox composers all fail
@@ -472,6 +485,47 @@ impl RealBrowserWebsiteDriver {
         let snapshot = read_browser_conversation_snapshot(&websocket_url)?;
         discover_messenger_browser_conversation(&snapshot)
     }
+
+    /// Mount OSL's locked private drafting box over the composer identified by
+    /// the Messenger discovery gate. The discovery is passed explicitly so a
+    /// similarly named textbox from another service cannot authorize the UI.
+    pub fn install_messenger_private_composer(
+        &mut self,
+        page: &WebsitePage,
+        discovery: &WebsiteConversationDiscovery,
+    ) -> Result<MessengerPrivateComposerState, WebsiteDriverError> {
+        if discovery.place_kind != "messenger:direct_message"
+            || discovery.composer.trim().is_empty()
+        {
+            return Err(WebsiteDriverError::PageUnavailable);
+        }
+        let websocket_url = self.page_websocket_url(page)?;
+        let composer_name = serde_json::to_string(&discovery.composer)
+            .map_err(|_| WebsiteDriverError::ReadFailed)?;
+        let expression = INSTALL_MESSENGER_PRIVATE_COMPOSER_EXPRESSION
+            .replace("__OSL_COMPOSER_NAME__", &composer_name);
+        read_messenger_private_composer_state(&websocket_url, &expression)
+    }
+
+    /// Update only OSL's private box and return its live UTF-8 byte count.
+    pub fn write_messenger_private_text(
+        &mut self,
+        page: &WebsitePage,
+        text: &str,
+    ) -> Result<MessengerPrivateComposerState, WebsiteDriverError> {
+        let websocket_url = self.page_websocket_url(page)?;
+        let text = serde_json::to_string(text).map_err(|_| WebsiteDriverError::ReadFailed)?;
+        let expression = WRITE_MESSENGER_PRIVATE_TEXT_EXPRESSION.replace("__OSL_TEXT__", &text);
+        read_messenger_private_composer_state(&websocket_url, &expression)
+    }
+
+    /// Clear OSL's private box while Messenger's locked composer remains empty.
+    pub fn clear_messenger_private_text(
+        &mut self,
+        page: &WebsitePage,
+    ) -> Result<MessengerPrivateComposerState, WebsiteDriverError> {
+        self.write_messenger_private_text(page, "")
+    }
 }
 
 impl WebsiteDriver for RealBrowserWebsiteDriver {
@@ -652,6 +706,14 @@ fn read_browser_conversation_snapshot(
     websocket_url: &str,
 ) -> Result<WebsiteConversationBrowserSnapshot, WebsiteDriverError> {
     let value = evaluate_target(websocket_url, BROWSER_CONVERSATION_SNAPSHOT_EXPRESSION)?;
+    serde_json::from_value(value).map_err(|_| WebsiteDriverError::ReadFailed)
+}
+
+fn read_messenger_private_composer_state(
+    websocket_url: &str,
+    expression: &str,
+) -> Result<MessengerPrivateComposerState, WebsiteDriverError> {
+    let value = evaluate_target(websocket_url, expression)?;
     serde_json::from_value(value).map_err(|_| WebsiteDriverError::ReadFailed)
 }
 
@@ -849,6 +911,80 @@ fn read_websocket_text_message(stream: &mut TcpStream) -> Result<Vec<u8>, Websit
         }
     }
 }
+
+const INSTALL_MESSENGER_PRIVATE_COMPOSER_EXPRESSION: &str = r#"
+(() => {
+  const expectedName = __OSL_COMPOSER_NAME__;
+  if (document.getElementById('osl-messenger-private-composer')) {
+    return window.__oslMessengerPrivateComposerState?.() || null;
+  }
+  const compact = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+  const nameOf = (element) => compact(
+    element.getAttribute('aria-label') || element.getAttribute('placeholder') || element.getAttribute('title')
+  );
+  const candidates = document.querySelectorAll(
+    '[data-osl-messenger-composer="active"], [data-osl-composer], [contenteditable="true"][role="textbox"], textarea[role="textbox"], input[role="textbox"], [role="textbox"]'
+  );
+  const composer = Array.from(candidates).find((element) =>
+    nameOf(element) === expectedName && !element.disabled && !element.readOnly
+  );
+  if (!composer) return null;
+
+  const contentEditableComposer = composer.isContentEditable;
+  const composerValue = () => contentEditableComposer ? composer.textContent : composer.value;
+  const clearMessenger = () => {
+    if (contentEditableComposer) composer.textContent = '';
+    else composer.value = '';
+    composer.dispatchEvent(new Event('input', { bubbles: true }));
+  };
+  const messengerCharacters = () => Array.from(composerValue() || '').length;
+  clearMessenger();
+  composer.setAttribute('data-osl-private-lock', 'true');
+  composer.setAttribute('aria-disabled', 'true');
+  composer.style.pointerEvents = 'none';
+  if (contentEditableComposer) composer.setAttribute('contenteditable', 'false');
+  else composer.readOnly = true;
+
+  const box = document.createElement('section');
+  box.id = 'osl-messenger-private-composer';
+  box.setAttribute('role', 'group');
+  box.setAttribute('aria-label', 'OSL private message');
+  box.style.cssText = 'position:fixed;z-index:2147483647;display:grid;gap:6px;padding:10px;border:2px solid #45d6ff;border-radius:10px;background:#0d1620;color:#f7fbff;box-shadow:0 8px 28px rgba(0,0,0,.45)';
+  const rect = composer.getBoundingClientRect();
+  box.style.left = `${Math.max(8, rect.left)}px`;
+  box.style.top = `${Math.max(8, rect.top)}px`;
+  box.style.width = `${Math.max(240, rect.width)}px`;
+  box.innerHTML = '<strong aria-label="Locked private draft">🔒 Private draft</strong><textarea id="osl-messenger-private-text" rows="3" autocomplete="off" spellcheck="true" aria-describedby="osl-messenger-private-count"></textarea><output id="osl-messenger-private-count" aria-live="polite">0 bytes</output>';
+  document.body.append(box);
+
+  const privateText = box.querySelector('#osl-messenger-private-text');
+  const count = box.querySelector('#osl-messenger-private-count');
+  const update = () => {
+    clearMessenger();
+    count.textContent = `${new TextEncoder().encode(privateText.value).length} bytes`;
+  };
+  privateText.addEventListener('input', update);
+  window.__oslMessengerPrivateComposerState = () => ({
+    locked: composer.getAttribute('data-osl-private-lock') === 'true',
+    privateBoxVisible: document.body.contains(box),
+    privateBytes: new TextEncoder().encode(privateText.value).length,
+    counterText: count.textContent,
+    messengerComposerCharacters: messengerCharacters()
+  });
+  update();
+  return window.__oslMessengerPrivateComposerState();
+})()
+"#;
+
+const WRITE_MESSENGER_PRIVATE_TEXT_EXPRESSION: &str = r#"
+(() => {
+  const privateText = document.getElementById('osl-messenger-private-text');
+  if (!privateText || !window.__oslMessengerPrivateComposerState) return null;
+  privateText.value = __OSL_TEXT__;
+  privateText.dispatchEvent(new Event('input', { bubbles: true }));
+  return window.__oslMessengerPrivateComposerState();
+})()
+"#;
 
 const BROWSER_CONVERSATION_SNAPSHOT_EXPRESSION: &str = r#"
 (() => {
