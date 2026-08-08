@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Decoy workspace</title>
+  </head>
+  <body>
+    <div id="app"><section class="decoy-workspace"><h1 id="route-heading">Workspace</h1><p>No recent items.</p><button class="button ghost" id="close-decoy" type="button">Close</button></section></div>
+    <script type="module">
+      globalThis.process = { env: { VITEST: "true" } };
+      const { __oslHubUiTest } = await import("/src/main.ts");
+      __oslHubUiTest.reset({ route: "onboarding", onboardingRoute: "decoy", coreReady: true });
+      __oslHubUiTest.renderRouteShell("onboarding");
+      document.documentElement.dataset.task0380 = "ready";
+    </script>
+  </body>
+</html>
