@@ -257,6 +257,13 @@ import {
 } from "./discord-headless-qa-adapter";
 import type { SecureLocalStore } from "./secure-local-store";
 import { createOslChatSecureLocalStore } from "./osl-chat-secure-store";
+import {
+  oslChatNotificationPreview,
+  oslChatNotificationSettingsMarkup,
+  readOslChatNotificationSettings,
+  setOslChatNotificationSwitch,
+  type OslChatNotificationSwitch,
+} from "./osl-chat-notification-settings";
 
 export type Route = "onboarding" | "home" | "arrange-tiles" | "inbox" | "people" | "privacy" | "scrub" | "activity" | "connections" | "service" | "settings" | "mullvad" | "osl-chat" | "osl-mail" | "osl-mail-status" | "osl-notes-status" | "osl-servers" | "signal-qa";
 
@@ -1090,7 +1097,8 @@ function isPersistedOslChatNotification(item: unknown): item is AppNotification 
   return typeof item === "object" && item !== null
     && typeof (item as AppNotification).id === "string" && (item as AppNotification).id.length <= 96
     && typeof (item as AppNotification).title === "string" && (item as AppNotification).title.length <= 120
-    && (item as AppNotification).detail === "New encrypted message"
+    && typeof (item as AppNotification).detail === "string" && (item as AppNotification).detail.length <= 1_000
+    && ((item as AppNotification).id.startsWith("received-") || (item as AppNotification).detail === "New encrypted message")
     && typeof (item as AppNotification).createdAt === "string" && (item as AppNotification).createdAt.length <= 32;
 }
 
@@ -5890,8 +5898,8 @@ export function oslChatSenderReceiptMarkup(messages: readonly OslChatMessage[]):
 function oslChatFriendSettingsMarkup(person: HubPerson): string {
   const isActive = activeOslChatPersonId === person.personId;
   const approved = isActive && activeOslChatContext?.scopeApproved === true;
-  const muted = oslChatMutedPeople.has(person.personId);
-  return `<dialog class="friends-dialog osl-chat-settings-dialog" id="osl-chat-settings-dialog" aria-labelledby="osl-chat-settings-title"><div class="friends-dialog-card"><header><div><span>Encrypted chat</span><h2 id="osl-chat-settings-title">${escapeHtml(person.alias ?? "Verified friend")}</h2></div><button class="icon-button" id="osl-chat-settings-close" type="button" aria-label="Close chat settings">×</button></header><div class="settings-list">${peerIntegrityMarkup("unknown")}<label class="setting-line interactive"><span><strong>Mute notifications</strong><small>Messages still arrive without creating a local alert.</small></span><input id="osl-chat-mute-toggle" type="checkbox" ${muted ? "checked" : ""}/></label><label class="setting-line interactive"><span><strong>Message previews</strong><small>Hide previews on this device.</small></span><input id="osl-chat-preview-toggle" type="checkbox" ${chatPreviewHidingVisible(oslChatPreviewsVisible) ? "checked" : ""}/></label><div class="setting-line"><span><strong>Chat permission</strong><small>${approved ? "This friend may exchange encrypted OSL messages with you." : "Open this friend to configure its exact chat permission."}</small></span>${isActive ? `<button class="button compact ${approved ? "danger" : "primary"}" id="osl-chat-permission-toggle" type="button" ${oslChatBusy ? "disabled" : ""}>${approved ? "Revoke" : "Enable"}</button>` : `<button class="button compact" data-osl-chat-open="${escapeHtml(person.personId)}" type="button">Open chat</button>`}</div></div></div></dialog>`;
+  const notificationSettings = readOslChatNotificationSettings(localStorage, person.personId);
+  return `<dialog class="friends-dialog osl-chat-settings-dialog" id="osl-chat-settings-dialog" aria-labelledby="osl-chat-settings-title"><div class="friends-dialog-card"><header><div><span>Encrypted chat</span><h2 id="osl-chat-settings-title">${escapeHtml(person.alias ?? "Verified friend")}</h2></div><button class="icon-button" id="osl-chat-settings-close" type="button" aria-label="Close chat settings">×</button></header><div class="settings-list">${peerIntegrityMarkup("unknown")}${oslChatNotificationSettingsMarkup(notificationSettings)}<div class="setting-line"><span><strong>Chat permission</strong><small>${approved ? "This friend may exchange encrypted OSL messages with you." : "Open this friend to configure its exact chat permission."}</small></span>${isActive ? `<button class="button compact ${approved ? "danger" : "primary"}" id="osl-chat-permission-toggle" type="button" ${oslChatBusy ? "disabled" : ""}>${approved ? "Revoke" : "Enable"}</button>` : `<button class="button compact" data-osl-chat-open="${escapeHtml(person.personId)}" type="button">Open chat</button>`}</div></div></div></dialog>`;
 }
 
 function oslServersContent(): string {
@@ -7293,7 +7301,7 @@ function setNotificationAppPreference(id: ServiceId, enabled: boolean): void {
 function visibleAppNotifications(): AppNotification[] {
   return (appNotifications ?? []).filter((item) => {
     if (item.appId && notificationAppPreferences[item.appId] === false) return false;
-    return item.detail === "New encrypted message" ? notificationChatActivity : notificationSecurityActivity;
+    return isPersistedOslChatNotification(item) ? notificationChatActivity : notificationSecurityActivity;
   });
 }
 
@@ -8598,6 +8606,13 @@ function bindWorkspace(): void {
   const oslChatSettingsDialog = document.querySelector<HTMLDialogElement>("#osl-chat-settings-dialog");
   if (oslChatSettingsDialog && !oslChatSettingsDialog.open) oslChatSettingsDialog.showModal();
   document.querySelector<HTMLButtonElement>("#osl-chat-settings-close")?.addEventListener("click", () => { oslChatSettingsPersonId = null; render(); });
+  document.querySelectorAll<HTMLInputElement>("[data-osl-chat-notification-switch]").forEach((input) => input.addEventListener("change", (event) => {
+    const personId = oslChatSettingsPersonId;
+    const key = input.dataset.oslChatNotificationSwitch as OslChatNotificationSwitch | undefined;
+    if (!personId || !key) return;
+    setOslChatNotificationSwitch(localStorage, personId, key, (event.currentTarget as HTMLInputElement).checked);
+    render();
+  }));
   document.querySelector<HTMLInputElement>("#osl-chat-mute-toggle")?.addEventListener("change", (event) => {
     const personId = oslChatSettingsPersonId;
     if (!personId) return;
@@ -9791,7 +9806,7 @@ export function persistOslChatUnread(): Promise<void> {
 }
 
 function persistOslChatNotifications(): void {
-  const metadata = (appNotifications ?? []).filter((item) => item.detail === "New encrypted message").slice(0, 20);
+  const metadata = (appNotifications ?? []).filter(isPersistedOslChatNotification).slice(0, 20);
   void persistSensitiveOslChatJson(oslChatNotificationStorageKey, encodeOslChatNotifications(metadata));
 }
 
@@ -9800,7 +9815,7 @@ function recordAppNotification(notification: AppNotification): void {
 }
 
 function mergePersistedOslChatNotifications(items: AppNotification[] | null): AppNotification[] {
-  const chat = (appNotifications ?? []).filter((item) => item.detail === "New encrypted message");
+  const chat = (appNotifications ?? []).filter(isPersistedOslChatNotification);
   const merged = [...chat, ...(items ?? [])];
   return merged.filter((item, index) => merged.findIndex((candidate) => candidate.id === item.id) === index).slice(0, 20);
 }
@@ -9830,20 +9845,24 @@ async function setNotificationScopeSuggestions(enabled: boolean): Promise<void> 
 
 function commitOslChatBatch(personId: string, batch: NativeDiscordOverlayOpenedBatch, background: boolean): void {
   const messages = pruneExpiredOslChatMessages(oslChatMessages.get(personId) ?? [], nowUnixSeconds());
+  const notificationSettings = readOslChatNotificationSettings(localStorage, personId);
+  const senderName = hubPeople.find((person) => person.personId === personId)?.alias ?? "Verified friend";
   for (const acknowledgment of batch.acknowledgments) {
     const message = messages.find((candidate) => candidate.messageId === acknowledgment.messageId);
     if (message) message.state = acknowledgment.status;
   }
   for (const incoming of batch.messages) {
     const localMessageId = `received-${crypto.randomUUID()}`;
-    messages.push(receivedOslChatBatchMessage(localMessageId, incoming, oslChatHistoryTimestamp));
+    const received = receivedOslChatBatchMessage(localMessageId, incoming, oslChatHistoryTimestamp);
+    messages.push(received);
     if (background) {
       oslChatUnread.set(personId, Math.min(10_000, (oslChatUnread.get(personId) ?? 0) + 1));
-      if (notificationsEnabled && notificationChatActivity && !oslChatMutedPeople.has(personId)) {
+      const notification = oslChatNotificationPreview(notificationSettings, senderName, received.body);
+      if (notificationsEnabled && notificationChatActivity && !oslChatMutedPeople.has(personId) && notification) {
         recordAppNotification({
           id: localMessageId,
-          title: "OSL Chat",
-          detail: "New encrypted message",
+          title: notification.title,
+          detail: notification.messagePreview,
           createdAt: "Now",
         });
       }
