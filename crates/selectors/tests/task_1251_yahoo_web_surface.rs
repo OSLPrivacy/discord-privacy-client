@@ -264,6 +264,14 @@ mod adapters {
     }
 }
 
+// x.rs inside web_surface_adapter imports crate::row_who_wrote_it. That module
+// is osl-hub's, and this test hosts osl-hub source inside the selectors crate,
+// so it has to be pulled in here too -- exactly as `adapters` and `sha2` above
+// already are. It arrived on the RC after this test was written, which is why
+// the test compiled on its own lane and not once merged.
+#[path = "../../../apps/osl-hub/src/row_who_wrote_it.rs"]
+mod row_who_wrote_it;
+
 #[path = "../../../apps/osl-hub/src/web_surface_adapter/mod.rs"]
 mod web_surface_adapter;
 
