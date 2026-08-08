@@ -10601,9 +10601,17 @@ code {
 
 .osl-chat-page-header > :last-child { justify-self: end; }
 
-
-
-
+.server-channel-sidebar { display: grid; grid-template-columns: 56px minmax(0, 1fr); min-height: 236px; margin: 20px 0; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--panel); }
+.server-list { padding: 10px 8px; background: var(--panel-2); border-right: 1px solid var(--line); }
+.server-list ul, .channel-list { margin: 0; padding: 0; list-style: none; }
+.server-list li + li { margin-top: 9px; }
+.enclave-server-button { width: 38px; height: 38px; padding: 0; border: 0; border-radius: 12px; background: var(--panel); color: var(--muted); font: 700 11px/1 var(--font-ui); cursor: pointer; }
+.enclave-server-button.is-selected { background: var(--brand); color: var(--brand-ink); }
+.channel-sidebar { padding: 15px 14px; }
+.channel-sidebar h2 { margin: 0 0 12px; font-size: 14px; }
+.channel-list { display: grid; gap: 3px; }
+.enclave-channel-button { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 8px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font: inherit; text-align: left; cursor: pointer; }
+.enclave-channel-button:hover, .enclave-channel-button:focus-visible { background: var(--panel-2); color: var(--text); outline: none; }
 .osl-chat-approval { min-height: 48px; padding: 8px 12px; border: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 
 
