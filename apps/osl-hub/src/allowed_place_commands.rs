@@ -46,6 +46,15 @@ pub enum AllowedPlaceCommandJson {
         app: String,
         checked: Vec<&'static str>,
     },
+    Tick {
+        ok: bool,
+        state: security::AllowedPlaceDirectionState,
+    },
+    Compare {
+        ok: bool,
+        #[serde(flatten)]
+        direction: security::AllowedPlaceDirectionState,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -149,6 +158,47 @@ pub fn allowed_place_allowed_json(
     })
 }
 
+pub fn allowed_place_tick_json(
+    store_dir: &Path,
+    app: String,
+    kind: String,
+    first_account: String,
+    second_account: String,
+) -> Result<AllowedPlaceCommandJson, String> {
+    with_headless_store(store_dir, |security| {
+        let state = security::compare_allowed_place_direction_state(
+            security,
+            app,
+            kind,
+            first_account,
+            second_account,
+        )?;
+        Ok(AllowedPlaceCommandJson::Tick { ok: true, state })
+    })
+}
+
+pub fn compare_allowed_place_json(
+    store_dir: &Path,
+    app: String,
+    kind: String,
+    first_account: String,
+    second_account: String,
+) -> Result<AllowedPlaceCommandJson, String> {
+    with_headless_store(store_dir, |security| {
+        let direction = security::compare_allowed_place_direction_state(
+            security,
+            app,
+            kind,
+            first_account,
+            second_account,
+        )?;
+        Ok(AllowedPlaceCommandJson::Compare {
+            ok: true,
+            direction,
+        })
+    })
+}
+
 fn run_allowed_place_command(
     command: &str,
     args: &[String],
@@ -162,8 +212,22 @@ fn run_allowed_place_command(
         "x-permissions" => x_permissions_json(),
         "x-send" => x_send_json(),
         "x-permission-check" => x_permission_check_json(),
+        "tick" => allowed_place_tick_json(
+            &parsed.store,
+            parsed.required("app")?,
+            parsed.required("kind")?,
+            parsed.required("first-account")?,
+            parsed.required("second-account")?,
+        ),
+        "compare" => compare_allowed_place_json(
+            &parsed.store,
+            parsed.required("app")?,
+            parsed.required("kind")?,
+            parsed.required("first-account")?,
+            parsed.required("second-account")?,
+        ),
         _ => Err(
-            "usage: --allowed-place <add|remove|list|allowed|x-permissions|x-send|x-permission-check> --store <dir> [--app <app> --account <account> --kind <kind> --stable-id <stable-id>]"
+            "usage: --allowed-place <add|remove|list|allowed|x-permissions|x-send|x-permission-check|tick|compare> --store <dir> [--app <app> --account <account> --kind <kind> --stable-id <stable-id> --first-account <account> --second-account <account>]"
                 .to_owned(),
         ),
     }

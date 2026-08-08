@@ -274,6 +274,10 @@ pub struct AllowedPlaceDirectionState {
     pub second_to_first_stable_id: String,
     pub first_to_second_allowed: bool,
     pub second_to_first_allowed: bool,
+    /// Number of reciprocal allowance records currently saved (0, 1, or 2).
+    pub saved_directions: usize,
+    /// `visible` only when both reciprocal allowance records are present.
+    pub verification_state: String,
     pub state: String,
 }
 
@@ -1958,10 +1962,18 @@ pub fn compare_allowed_place_direction_state(
     let second_to_first_allowed = prefs
         .allowed_places
         .contains_key(&second_to_first_stable_id);
-    let state = match (first_to_second_allowed, second_to_first_allowed) {
-        (true, true) => "two-way",
-        (true, false) | (false, true) => "one-way",
-        (false, false) => "none",
+    let saved_directions =
+        usize::from(first_to_second_allowed) + usize::from(second_to_first_allowed);
+    let state = match saved_directions {
+        2 => "two-way",
+        1 => "one-way",
+        _ => "none",
+    }
+    .to_owned();
+    let verification_state = if saved_directions == 2 {
+        "visible"
+    } else {
+        "hidden"
     }
     .to_owned();
     Ok(AllowedPlaceDirectionState {
@@ -1973,6 +1985,8 @@ pub fn compare_allowed_place_direction_state(
         second_to_first_stable_id,
         first_to_second_allowed,
         second_to_first_allowed,
+        saved_directions,
+        verification_state,
         state,
     })
 }
@@ -4927,7 +4941,7 @@ fn validate_allowed_place_record(record: &AllowedPlaceRecord) -> Result<(), Stri
     if record.app == "instagram"
         && !matches!(
             record.kind.as_str(),
-            "direct_message" | "group_chat" | "channel"
+            "direct_message" | "group_chat" | "public_post"
         )
     {
         return Err("OSL Instagram allowed-place kind is invalid".to_owned());
