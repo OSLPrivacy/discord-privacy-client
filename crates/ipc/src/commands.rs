@@ -19037,6 +19037,52 @@ pub fn cmd_osl_save_bad_message_rule(
     })
 }
 
+/// TASK 1460: the read-only answer to "Test these rules".
+///
+/// `deleted_count` and `deletion_call_count` are reported next to the matches
+/// so the rules page can show what would be marked *and* that nothing was
+/// removed to find it out.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct BadMessagePreviewDto {
+    pub scanned_message_count: usize,
+    pub match_count: usize,
+    pub matches: Vec<crate::bad_message_preview::BadMessagePreviewMatch>,
+    pub deleted_count: usize,
+    pub deletion_call_count: usize,
+    pub read_call_count: usize,
+}
+
+/// Run the saved bad-message rules over `messages` as a find-only preview.
+pub fn cmd_osl_preview_bad_message_rules(
+    state: &AppState,
+    messages: Vec<crate::bad_message_preview::PreviewMessage>,
+) -> Result<BadMessagePreviewDto, String> {
+    record_activity_on_command_entry();
+    let rules: Vec<crate::bad_message_rules::BadMessageRule> = {
+        let prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        let mut rules: Vec<_> = prefs.bad_message_rules.values().cloned().collect();
+        rules.sort_by(|a, b| a.rule_name.cmp(&b.rule_name));
+        rules
+    };
+    if rules.is_empty() {
+        return Err("OSL: no saved bad-message rules to test".to_string());
+    }
+
+    let connection = crate::bad_message_preview::FixtureServiceConnection::new(messages);
+    let preview = crate::bad_message_preview::preview_bad_message_rules(&rules, &connection)?;
+    Ok(BadMessagePreviewDto {
+        scanned_message_count: preview.scanned_message_count,
+        match_count: preview.match_count(),
+        matches: preview.matches,
+        deleted_count: preview.deleted_count,
+        deletion_call_count: connection.deletion_call_count(),
+        read_call_count: connection.read_call_count(),
+    })
+}
+
 /// TASK 1459: AutoScrub's bad-message rule listing. Reuses the same
 /// [`BadMessageRuleDto`] shape and the same
 /// [`crate::bad_message_rules::BadMessageRule`] rule types as normal Scrub's
