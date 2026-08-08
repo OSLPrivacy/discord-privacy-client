@@ -1,0 +1,24 @@
+{
+  "files": [
+    {
+      "kind": "path_parts",
+      "name": "reports/../..\\outside\\escape.txt"
+    },
+    {
+      "kind": "reserved_windows",
+      "name": "CON.txt"
+    },
+    {
+      "kind": "very_long",
+      "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.txt"
+    },
+    {
+      "kind": "lookalike_a",
+      "name": "café.txt"
+    },
+    {
+      "kind": "lookalike_b",
+      "name": "café.txt"
+    }
+  ]
+}
