@@ -3984,6 +3984,25 @@ code {
   color: var(--text);
 }
 
+.update-versions {
+  display: flex;
+  gap: 20px;
+  margin: 0;
+}
+
+.update-versions dt {
+  margin: 0 0 2px;
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.update-versions dd {
+  margin: 0;
+  font-weight: 600;
+}
+
 /* Dialogs and transient feedback */
 
 .unlock-dialog {

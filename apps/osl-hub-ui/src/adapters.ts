@@ -599,10 +599,9 @@ export async function loadBuildIntegrityStatus(): Promise<BuildIntegrityStatus |
 }
 
 export async function listOslChatHistory(): Promise<OslChatHistoryRow[] | null> {
-export async function listOslChatHistory(hideOthersMessages = false): Promise<OslChatHistoryRow[] | null> {
   if (!isTauriRuntime()) return null;
   try {
-    const value = await invoke<unknown>("list_osl_chat_history", { hideOthersMessages });
+    const value = await invoke<unknown>("list_osl_chat_history");
     if (!Array.isArray(value) || value.length > 200) return null;
     const rows = value.map((entry) => {
       if (!isRecord(entry)
@@ -649,6 +648,8 @@ export function parseOslChatBurnResult(raw: unknown): OslChatBurnResult | null {
     || raw.localCleanupComplete !== true
     || raw.recipientCopiesDeleted !== false) return null;
   return raw as unknown as OslChatBurnResult;
+}
+
 export function parseInstalledBuildChatWarning(raw: unknown): InstalledBuildChatWarning | null {
   if (raw === null || raw === undefined) return null;
   if (!isRecord(raw)
@@ -671,6 +672,8 @@ export async function loadInstalledBuildChatWarningStatus(): Promise<InstalledBu
       parseInstalledBuildChatWarning(await invoke<unknown>("installed_build_chat_warning_status")),
       "the installed-build warning did not match the expected shape");
   } catch (error) { recordBackendFailure("installed_build_chat_warning_status", error); return null; }
+}
+
 export async function addOslChatReaction(messageId: string, emoji: string): Promise<OslChatReactionResult | null> {
   return updateOslChatReaction("add_osl_chat_reaction", messageId, emoji);
 }

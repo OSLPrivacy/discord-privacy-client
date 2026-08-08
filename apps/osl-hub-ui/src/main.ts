@@ -466,9 +466,6 @@ let onboardingRoute: OnboardingRoute = "welcome";
 let onboardingTourStep = 0;
 let replayingOnboardingTour = false;
 let torOnboarding: TorOnboardingState = initialTorOnboardingState();
-// Which of the two insertion styles is highlighted. Nothing is persisted yet:
-// only "insert on send" is built, so this is the screen's own state.
-let coverInsertion: CoverInsertionChoice = initialCoverInsertionChoice();
 let silentVisibleMode: SilentVisibleMode | null = null;
 // Which of the two insertion styles is highlighted. It starts unset so setup
 // cannot silently accept a default the owner never chose.
@@ -1972,13 +1969,7 @@ function onboardingSetupNavigationMarkup(): string {
 function renderOnboarding(): void {
   onboardingRoute = onboardingRouteForBuild(onboardingRoute);
   persistCurrentOnboardingRoute();
-  const setupScreen = ["pro", "forward-secrecy", "privacy", "defaults", "tor", "sending", "cover", "silent-visible", "passwords", "burnpass", "browser", "detected", "install", "apps", "mullvad"].includes(onboardingRoute);
-  const setupScreen = ["pro", "forward-secrecy", "privacy", "defaults", "tor", "sending", "cover", "visibility", "passwords", "burnpass", "browser", "detected", "install", "apps", "mullvad"].includes(onboardingRoute);
-  const setupNavigation = setupScreen
-    ? `<div class="setup-footer onboarding-actions onboarding-nav"><button class="button ghost onboarding-back" id="onboarding-back" type="button">Back</button></div>`
-    : "";
   const setupNavigation = isSetupOnboardingRoute(onboardingRoute) ? setupOnboardingNavigationMarkup() : "";
-  const setupNavigation = onboardingSetupNavigationMarkup();
   const markup = onboardingShellMarkup(setupNavigation);
   lastWorkspaceMarkup = null;
   lastWorkspaceViewKey = "";
@@ -3104,7 +3095,6 @@ function mullvadSetupContent(): string {
       : "Mullvad or Windows App Installer was not found";
   const action = found
     ? `<button class="mv-action" id="found-session-mullvad" type="button" ${mullvadBusy ? "disabled" : ""}>${mullvadBusy ? "Checking…" : "Found session"}</button>`
-    ? `<button class="mv-action" id="open-mullvad" type="button" ${mullvadBusy ? "disabled" : ""}>${mullvadBusy ? "Opening…" : "found session"}</button>`
     : availability === "installable"
       ? `<button class="mv-action" id="install-mullvad" type="button" ${mullvadBusy ? "disabled" : ""}>${mullvadBusy ? "Starting…" : "install"}</button>`
       : "";
@@ -3199,6 +3189,8 @@ async function saveSendingSetupDraft(): Promise<void> {
     windowCaptureEnabled,
     forwardSecrecyMode,
   });
+}
+
 type QuickTourScreen = "setup" | "tour-card" | "app-selection" | "home";
 type QuickTourControl = "Back" | "Next" | "Choose apps" | "Set card";
 type QuickTourControlResult = {
@@ -3559,7 +3551,6 @@ function bindOnboarding(): void {
   document.querySelector<HTMLButtonElement>("[data-forward-secrecy-continue]")?.addEventListener("click", () => {
     if (forwardSecrecyOnboarding.choice === null) return;
     const selectedForwardSecrecyMode = forwardSecrecyOnboarding.choice === "protect-past" ? "protectPast" : "keepGroupDelivery";
-    void saveOnboardingPreferences({ onboardingComplete: false, setup, coverInsertion, showPlaintextPreview: true, windowCaptureEnabled, forwardSecrecyMode: selectedForwardSecrecyMode }).then((saved) => {
     void saveOnboardingPreferences({ onboardingComplete: false, setup, showPlaintextPreview: true, windowCaptureEnabled, rnWirePolicyRequested, forwardSecrecyMode: selectedForwardSecrecyMode }).then((saved) => {
       forwardSecrecyMode = saved.forwardSecrecyMode;
       rnWirePolicyRequested = saved.rnWirePolicyRequested;
@@ -3613,6 +3604,7 @@ function bindOnboarding(): void {
     if (silentVisibleMode === null) return;
     onboardingRoute = "passwords";
     render();
+  });
   document.querySelector("#continue-cover-draft")?.addEventListener("click", () => {
     if (!coverInsertion) return;
     onboardingRoute = "mullvad";
@@ -3797,7 +3789,6 @@ async function completeSixStepOnboarding(): Promise<void> {
   const completedSetup = balancedFirstRunSetup(setup);
   if (!canCompleteSetup(completedSetup)) throw new Error("setup missing required sending consent");
   setup = completedSetup;
-  const saved = await saveOnboardingPreferences({ onboardingComplete: true, setup, coverInsertion, showPlaintextPreview: true, windowCaptureEnabled, forwardSecrecyMode });
   const saved = await saveOnboardingPreferences({ onboardingComplete: true, setup, showPlaintextPreview: true, windowCaptureEnabled, rnWirePolicyRequested, forwardSecrecyMode });
   setup = saved.setup;
   coverInsertion = saved.coverInsertion;
@@ -5279,7 +5270,6 @@ function oslChatContent(): string {
     buildIntegrity: buildIntegrityStatus,
     verificationWarningSurface: oslChatVerificationWarningSurface,
     buildWarning: installedBuildChatWarning,
-    verificationWarningSurface: oslChatVerificationWarningSurface,
   })}${offlineStatus}${receipt}${attachments}${settings}</main>`;
 }
 
@@ -5463,30 +5453,19 @@ async function provisionOslMailFromProfile(): Promise<void> {
 }
 
 async function sendOslMailForm(form: HTMLFormElement, choice: OslMailSendChoice): Promise<void> {
-  const recipient = form.querySelector<HTMLInputElement>("#osl-mail-to")?.value ?? "";
-  const subject = form.querySelector<HTMLInputElement>("#osl-mail-subject")?.value ?? "";
-  const body = form.querySelector<HTMLTextAreaElement>("#osl-mail-body")?.value ?? "";
-  if (choice !== "Send") {
-    oslMailError = OSL_MAIL_NAMED_SEND_REQUIRED;
-    render();
-    return;
-  }
-async function sendOslMailForm(form: HTMLFormElement): Promise<void> {
   escapeAuditSendAttempts += 1;
   const recipient = form.querySelector<HTMLInputElement>("#osl-mail-to")?.value ?? "";
   const subject = form.querySelector<HTMLInputElement>("#osl-mail-subject")?.value ?? "";
   const body = form.querySelector<HTMLTextAreaElement>("#osl-mail-body")?.value ?? "";
   oslMailComposeDraft = { to: recipient, subject, body };
-  if (!recipient.endsWith("@oslprivacy.com")) {
-    oslMailError = "External outbound mail is unavailable in v1";
+  if (choice !== "Send") {
+    oslMailError = OSL_MAIL_NAMED_SEND_REQUIRED;
     render();
     return;
   }
   const result = await sendOslMailWithChoice(choice, recipient, subject, body);
   oslMailSendReceipt = result.outcome === "sent" ? result.receipt : null;
   oslMailError = result.outcome === "sent" ? null : result.reason;
-  oslMailSendReceipt = await sendOslMail(recipient, subject, body);
-  oslMailError = oslMailSendReceipt ? null : "Send was refused";
   if (oslMailSendReceipt) oslMailComposeDraft = { to: "", subject: "", body: "" };
   if (route === "osl-mail") render();
 }
@@ -6282,7 +6261,6 @@ async function changeSendingMode(mode: SendMode): Promise<void> {
   };
   render();
   try {
-    const saved = await saveOnboardingPreferences({ onboardingComplete: true, setup, coverInsertion, showPlaintextPreview: true, windowCaptureEnabled, forwardSecrecyMode });
     const saved = await saveOnboardingPreferences({ onboardingComplete: true, setup, showPlaintextPreview: true, windowCaptureEnabled, rnWirePolicyRequested, forwardSecrecyMode });
     setup = saved.setup;
     windowCaptureEnabled = saved.windowCaptureEnabled;
@@ -9687,7 +9665,7 @@ function updateBannerMarkup(): string {
 function updateDialogMarkup(): string {
   if (updateStatus.state !== "available" && updateStatus.state !== "installing") return "";
   const notes = updateStatus.notes ? escapeHtml(updateStatus.notes) : "No release notes were provided.";
-  return `<dialog class="unlock-dialog update-dialog" id="update-dialog" aria-labelledby="update-dialog-title"><div class="unlock-card"><p class="eyebrow">OSL update</p><h2 id="update-dialog-title">Install ${escapeHtml(updateStatus.next)}?</h2><p class="update-notes">${notes}</p><p class="quiet-note">OSL will download, verify, install, and restart. Unsaved work may be lost. Nothing installs until you click Install & restart.</p><div class="control-row unlock-actions"><button class="button ghost" data-update-close>Not now</button><button class="button" data-update-read>Read more on GitHub</button><button class="button primary" data-update-install ${updateStatus.state === "installing" ? "disabled" : ""}>${updateStatus.state === "installing" ? "Installing…" : "Install & restart"}</button></div></div></dialog>`;
+  return `<dialog class="unlock-dialog update-dialog" id="update-dialog" aria-labelledby="update-dialog-title"><div class="unlock-card"><p class="eyebrow">OSL update</p><h2 id="update-dialog-title">Update OSL</h2><dl class="update-versions"><div><dt>Current version</dt><dd data-update-current>${escapeHtml(updateStatus.current)}</dd></div><div><dt>New version</dt><dd data-update-next>${escapeHtml(updateStatus.next)}</dd></div></dl><p class="update-notes" data-update-notes>${notes}</p><p class="quiet-note">OSL will download, verify, install, and restart. Unsaved work may be lost. Nothing downloads until you click Update now.</p><div class="control-row unlock-actions"><button class="button ghost" data-update-close>Not now</button><button class="button" data-update-read>Read more on GitHub</button><button class="button primary" data-update-install ${updateStatus.state === "installing" ? "disabled" : ""}>${updateStatus.state === "installing" ? "Installing…" : "Update now"}</button></div></div></dialog>`;
 }
 
 function updateSettingsContent(): string {
@@ -10712,8 +10690,6 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
         scopeApproved: patch.activeOslChatScopeApproved ?? true,
       }
     : null;
-  activeOslChatPersonId = null;
-  activeOslChatContext = null;
   oslChatBusy = false;
   serviceAccountPickerOpen = false;
   friendsDialogOpen = false;
@@ -10947,9 +10923,9 @@ function longRunningButtonAuditForTest(): BusyButtonAuditRow[] {
       render: () => mullvadSetupContent(),
     },
     {
-      action: "open Mullvad",
-      button: "#open-mullvad",
-      marker: 'id="open-mullvad"',
+      action: "found Mullvad session",
+      button: "#found-session-mullvad",
+      marker: 'id="found-session-mullvad"',
       setup: () => { mullvadStatus.availability = "installed"; },
       setRunning: () => { mullvadBusy = true; },
       render: () => mullvadSetupContent(),
@@ -11183,11 +11159,13 @@ export const __oslHubUiTest = {
   },
   flushRenderForTest(): void {
     renderNow();
+  },
   renderOnboardingSetupShell(destination: OnboardingRoute): string {
     route = "onboarding";
     onboardingRoute = onboardingRouteForBuild(destination);
     renderOnboarding();
     return root.innerHTML;
+  },
   renderOnboardingCaptureShell(destination: OnboardingRoute): string {
     route = "onboarding";
     onboardingRoute = onboardingRouteForBuild(destination);
@@ -11361,6 +11339,7 @@ export const __oslHubUiTest = {
     onboardingRoute = "tutorial";
     onboardingTourStep = step;
     return onboardingContent();
+  },
   renderOnboardingShellForTest(destination: OnboardingRoute): string {
     route = "onboarding";
     onboardingRoute = onboardingRouteForBuild(destination);
@@ -11401,6 +11380,7 @@ export const __oslHubUiTest = {
   setBrowserFootprintForTest(hydration: BrowserFootprintHydration): void {
     browserFootprintOwner = core.readiness.activeOslUserId;
     applyNativeBrowserFootprint(hydration);
+  },
   setDeleteChoicesForTest(choices: DeleteChoices | null): void {
     deleteChoices = choices;
   },
@@ -11429,6 +11409,7 @@ export const __oslHubUiTest = {
     route = "onboarding";
     onboardingRoute = "silent-visible";
     return silentVisibleSetupContent();
+  },
   confirmMullvadFoundSession(): boolean {
     return confirmMullvadFoundSession();
   },
@@ -11463,6 +11444,7 @@ export const __oslHubUiTest = {
   },
   longRunningButtonAudit(): BusyButtonAuditRow[] {
     return longRunningButtonAuditForTest();
+  },
   escapeAuditComposerScreens(): readonly string[] {
     return ["osl-chat", "osl-mail-compose"];
   },
@@ -11692,23 +11674,18 @@ export const __oslHubUiTest = {
       torChoice: torOnboarding.choice,
     };
   },
+  /** Render the update screen with an arbitrary version pair, for TASK 3177. */
+  renderUpdateScreenForTest(current: string, next: string, notes: string): string {
+    updateStatus = { state: "available", current, next, notes };
+    return updateDialogMarkup();
+  },
+  /** Press "Update now" the same way `bindUpdateControls` does, so a test can
+   * confirm the download call only fires after this and not before. */
+  pressUpdateNowForTest(): Promise<void> {
+    return installUpdateAfterClick();
+  },
 };
 
-const skipAutoBootstrap = Boolean(
-  (globalThis as { __OSL_HUB_SKIP_AUTO_BOOTSTRAP?: unknown }).__OSL_HUB_SKIP_AUTO_BOOTSTRAP,
-);
-
-if (!runningUnderVitest && !skipAutoBootstrap) {
-  const desktopWindow = getCurrentWindow();
-  bindWindowLifecycleRealignment(
-    window,
-    desktopWindow,
-    document,
-    scheduleNativeHostRealignment,
-  );
-  void bindMainWindowFocusChanges(
-    (handler) => desktopWindow.onFocusChanged(handler),
-    {
 if (!runningUnderVitest) {
   if (fixedNoRecoverySecretFixture) {
     applyOslHubUiTestState({
