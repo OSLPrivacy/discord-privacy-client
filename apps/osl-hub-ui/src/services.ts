@@ -230,6 +230,20 @@ export interface LinkedService {
   accounts: LinkedAccount[];
 }
 
+export type DetectedAccountOpenChoiceKind = "windowsApp" | "browser";
+
+export interface DetectedAccountOpenChoice {
+  kind: DetectedAccountOpenChoiceKind;
+  label: string;
+}
+
+export interface DetectedAccount {
+  serviceId: ServiceId;
+  accountId: string;
+  accountLabel: string;
+  openChoices: DetectedAccountOpenChoice[];
+}
+
 /** Non-sensitive catalog data for the fixed OSL Privacy home grid. */
 export interface HomeAppCatalogEntry {
   id: HomeAppId;
@@ -463,6 +477,38 @@ export async function loadLinkedServices(): Promise<LinkedService[]> {
     return parsed ?? [];
   }
   return parseLinkedServices(previewRegistry) ?? [];
+}
+
+export function parseDetectedAccounts(raw: unknown): DetectedAccount[] | null {
+  if (!Array.isArray(raw) || raw.length > 50) return null;
+  const seen = new Set<string>();
+  const accounts: DetectedAccount[] = [];
+  for (const candidate of raw) {
+    if (!isExactRecord(candidate, ["serviceId", "accountId", "accountLabel", "openChoices"])
+      || !serviceIds.includes(candidate.serviceId as ServiceId)
+      || typeof candidate.accountId !== "string" || !/^[a-z0-9][a-z0-9_-]{0,79}$/.test(candidate.accountId)
+      || !isDisplayString(candidate.accountLabel, 80) || !Array.isArray(candidate.openChoices)
+      || candidate.openChoices.length === 0 || candidate.openChoices.length > 2) return null;
+    const key = `${candidate.serviceId}:${candidate.accountId}`;
+    if (seen.has(key)) return null;
+    const choices: DetectedAccountOpenChoice[] = [];
+    const kinds = new Set<DetectedAccountOpenChoiceKind>();
+    for (const choice of candidate.openChoices) {
+      if (!isExactRecord(choice, ["kind", "label"])
+        || (choice.kind !== "windowsApp" && choice.kind !== "browser")
+        || !isDisplayString(choice.label, 80) || kinds.has(choice.kind)) return null;
+      kinds.add(choice.kind);
+      choices.push({ kind: choice.kind, label: choice.label });
+    }
+    seen.add(key);
+    accounts.push({ serviceId: candidate.serviceId as ServiceId, accountId: candidate.accountId, accountLabel: candidate.accountLabel, openChoices: choices });
+  }
+  return accounts;
+}
+
+export async function loadDetectedAccounts(): Promise<DetectedAccount[]> {
+  if (isTauriRuntime()) return parseDetectedAccounts(await invoke<unknown>("list_detected_accounts")) ?? [];
+  return [];
 }
 
 export async function loadHomeAppCatalog(): Promise<HomeAppCatalogEntry[]> {

@@ -1195,6 +1195,17 @@ async fn list_linked_services(
 }
 
 #[tauri::command]
+async fn list_detected_accounts(
+    state: State<'_, ServiceRegistryState>,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<Vec<DetectedAccountDescriptor>, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    state.list_detected_accounts_with_open_choices(&owner)
+}
+
+#[tauri::command]
 fn get_core_readiness(state: State<'_, HubCoreState>) -> CoreReadiness {
     core_bridge::readiness(&state)
 }

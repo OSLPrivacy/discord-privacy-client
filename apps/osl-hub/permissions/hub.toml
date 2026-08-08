@@ -329,6 +329,11 @@ description = "Read the static demo service and account registry."
 commands.allow = ["list_linked_services"]
 
 [[permission]]
+identifier = "allow-list-detected-accounts"
+description = "Read the current owner's detected accounts and their local opening choices."
+commands.allow = ["list_detected_accounts"]
+
+[[permission]]
 identifier = "allow-create-service-account"
 description = "Create local metadata for one fresh isolated service profile; stores no credentials or cookies."
 commands.allow = ["create_service_account"]

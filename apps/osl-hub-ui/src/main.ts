@@ -59,6 +59,7 @@ import { unlockAttemptWarning } from "./unlock-attempts";
 import { chatPreviewHidingVisible } from "./entitlement-gates";
 import { entitlementCopy } from "./entitlement-copy";
 import { entitlementView } from "./entitlement-view";
+import { chooseDetectedAccountOpening, detectedOpeningChoiceKey } from "./detected-account-opening";
 import { bindProtectedTextBoxShortcutGuards } from "./protected-box-shortcuts";
 import {
   escapeHtml,
@@ -80,6 +81,7 @@ import {
   installNativeApp,
   installMullvad,
   loadLinkedServices,
+  loadDetectedAccounts,
   loadMullvadStatus,
   loadNativeApps,
   nativeAppTileLabel,
@@ -104,6 +106,7 @@ import {
   type HomeAppCatalogEntry,
   type HomeAppId,
   type LinkedService,
+  type DetectedAccount,
   type MullvadStatus,
   type NativeApp,
   type NativeAppId,
@@ -589,6 +592,8 @@ let browserFootprintOwner: string | null = null;
 let savedAccountMode: SavedAccountMode = "ask";
 let savedNativeApps = new Set<NativeAppId>();
 let detectedAccountChoices = new Map<string, "native" | "osl">();
+let detectedAccounts: DetectedAccount[] = [];
+let detectedAccountOpeningChoices = new Map<string, "windowsApp" | "browser">();
 let discordSessionMode: DiscordSessionMode = "existingSession";
 let telegramSessionMode: NativeSessionMode = "existingSession";
 let signalSessionMode: NativeSessionMode = "existingSession";
@@ -842,6 +847,7 @@ const hiddenHomeTilesStorageKey = "osl-home-tile-hidden-v1";
 const savedAccountModeStorageKey = "osl-saved-account-mode-v1";
 const savedNativeAppsStorageKey = "osl-saved-native-apps-v1";
 const detectedAccountChoicesStorageKey = "osl-detected-account-choices-v1";
+const detectedAccountOpeningChoicesStorageKey = "osl-detected-account-opening-choices-v1";
 const HOME_TILE_ARRANGEMENT_REFUSAL = "Home must keep at least one tile visible.";
 const discordSessionModeStorageKey = "osl-discord-session-mode-v1";
 const telegramSessionModeStorageKey = "osl-telegram-session-mode-v1";
@@ -1489,6 +1495,12 @@ export async function loadUiPreferences(): Promise<void> {
         && typeof entry[0] === "string"
         && (entry[1] === "native" || entry[1] === "osl")));
     }
+    const openingChoices = JSON.parse(localStorage.getItem(detectedAccountOpeningChoicesStorageKey) ?? "[]") as unknown;
+    if (Array.isArray(openingChoices)) {
+      detectedAccountOpeningChoices = new Map(openingChoices.filter((entry): entry is [string, "windowsApp" | "browser"] =>
+        Array.isArray(entry) && entry.length === 2 && typeof entry[0] === "string"
+        && (entry[1] === "windowsApp" || entry[1] === "browser")));
+    }
     const selectedAppsRaw = localStorage.getItem(selectedOnboardingAppsStorageKey);
     hasExplicitOnboardingAppSelection = selectedAppsRaw !== null;
     const selectedApps = JSON.parse(selectedAppsRaw ?? "[]") as unknown;
@@ -1501,6 +1513,7 @@ export async function loadUiPreferences(): Promise<void> {
     notificationAppPreferences = {};
     savedNativeApps.clear();
     detectedAccountChoices.clear();
+    detectedAccountOpeningChoices.clear();
     selectedOnboardingApps.clear();
     hasExplicitOnboardingAppSelection = localStorage.getItem(selectedOnboardingAppsStorageKey) !== null;
   }
@@ -2508,6 +2521,14 @@ function persistDetectedAccountChoices(): void {
   localStorage.setItem(detectedAccountChoicesStorageKey, JSON.stringify([...detectedAccountChoices]));
 }
 
+function persistDetectedAccountOpeningChoices(): void {
+  const validKeys = new Set(detectedAccounts.map(detectedOpeningChoiceKey));
+  for (const key of detectedAccountOpeningChoices.keys()) {
+    if (!validKeys.has(key)) detectedAccountOpeningChoices.delete(key);
+  }
+  localStorage.setItem(detectedAccountOpeningChoicesStorageKey, JSON.stringify([...detectedAccountOpeningChoices]));
+}
+
 function selectedInstalledNativeApp(appId: HomeAppId): NativeAppId | undefined {
   const app = { id: appId };
   const service = services.find((candidate) => homeAppsFromServices([candidate]).some((app) => app.id === appId));
@@ -2522,18 +2543,24 @@ function selectedInstalledNativeApp(appId: HomeAppId): NativeAppId | undefined {
 
 function detectedAppsContent(): string {
   const installed = selectedNativeApps().filter((app) => app.availability === "installed");
-  const accountChoices = services.flatMap((service) => service.accounts.map((account) => {
-    const key = detectedAccountChoiceKey(service.id, account.id);
-    const mode = detectedAccountChoices.get(key) ?? "native";
-    return `<div class="native-mode-setting account-opening-choice" role="radiogroup" aria-label="${escapeHtml(service.displayName)} ${escapeHtml(account.label)} opening"><strong>${escapeHtml(service.displayName)} · ${escapeHtml(account.label)}</strong><div><button type="button" role="radio" aria-checked="${mode === "native"}" class="native-mode-option ${mode === "native" ? "selected" : ""}" data-service-current-session="${escapeHtml(key)}" data-detected-account-choice="native">Current desktop session · provider-wide</button><button type="button" role="radio" aria-checked="${mode === "osl"}" class="native-mode-option ${mode === "osl" ? "selected" : ""}" data-service-current-session="${escapeHtml(key)}" data-detected-account-choice="osl">Use isolated OSL profile · this account</button></div></div>`;
-  })).join("");
+  const accountChoices = detectedAccounts.map((account) => {
+    const key = detectedOpeningChoiceKey(account);
+    const selected = detectedAccountOpeningChoices.get(key);
+    const choices = account.openChoices.map((choice) => {
+      const isSelected = selected === choice.kind;
+      const label = choice.kind === "windowsApp" ? `Windows app · ${choice.label}` : `Browser · ${choice.label}`;
+      return `<button type="button" role="radio" aria-checked="${isSelected}" class="native-mode-option ${isSelected ? "selected" : ""}" data-detected-account-opening="${escapeHtml(key)}" data-detected-account-opening-choice="${choice.kind}">${escapeHtml(label)}</button>`;
+    }).join("");
+    return `<div class="native-mode-setting account-opening-choice" role="radiogroup" aria-label="${escapeHtml(account.accountLabel)} opening"><strong>${escapeHtml(account.accountLabel)}</strong><div>${choices}</div></div>`;
+  }).join("");
   const rows = installed.length
     ? installed.map((app) => `<label class="saved-account-app"><span>${nativeAppLogo(app)}<span><strong>${escapeHtml(app.displayName)}</strong><small>Installed on this PC</small></span></span><input type="checkbox" data-saved-native="${app.id}" ${app.id === "discord" || savedNativeApps.has(app.id) ? "checked" : ""} ${app.id === "discord" ? "disabled" : ""}/></label>`).join("")
     : `<div class="empty-state"><strong>No selected desktop apps were detected</strong><p>OSL can still use isolated web profiles.</p></div>`;
   const discordChoices = installed.some((app) => app.id === "discord")
     ? nativeSessionModeSettingChoices("discord", "Discord")
     : "";
-  return `<h1 id="route-heading" tabindex="-1">Use installed apps</h1><p class="compact-lead onboarding-centered-copy">Choose detected desktop apps.</p>${discordChoices}${accountChoices}<div class="setup-list">${rows}</div><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-detected-apps" type="button">Continue</button></div>`;
+  const detectedLead = detectedAccounts.length ? "Choose how each detected account opens." : "Choose detected desktop apps.";
+  return `<h1 id="route-heading" tabindex="-1">Use installed apps</h1><p class="compact-lead onboarding-centered-copy">${detectedLead}</p>${discordChoices}${accountChoices}<div class="setup-list">${rows}</div><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-detected-apps" type="button">Continue</button></div>`;
 }
 
 function installMissingAppsContent(): string {
@@ -2650,6 +2677,16 @@ function bindSavedAccountControls(): void {
     const choice = button.dataset.detectedAccountChoice === "osl" ? "osl" : "native";
     detectedAccountChoices.set(key, choice);
     persistDetectedAccountChoices();
+    render();
+  }));
+  document.querySelectorAll<HTMLButtonElement>("[data-detected-account-opening]").forEach((button) => button.addEventListener("click", () => {
+    const key = button.dataset.detectedAccountOpening ?? "";
+    const choice = button.dataset.detectedAccountOpeningChoice;
+    if (!key || (choice !== "windowsApp" && choice !== "browser")) return;
+    const account = detectedAccounts.find((candidate) => detectedOpeningChoiceKey(candidate) === key);
+    if (!account) return;
+    detectedAccountOpeningChoices = chooseDetectedAccountOpening(detectedAccountOpeningChoices, account, choice);
+    persistDetectedAccountOpeningChoices();
     render();
   }));
   // A `[data-saved-account-mode]` click binding used to sit here. No markup in
@@ -11011,6 +11048,7 @@ async function bootstrap(): Promise<void> {
     }
     const preferencesRequest = withNativeDeadline(loadOnboardingPreferences(), "Load OSL preferences", bootPreferenceDeadlineMs).catch(() => null);
     const servicesRequest = withNativeDeadline(loadLinkedServices(), "Load apps", bootSupportDeadlineMs).catch(() => null);
+    const detectedAccountsRequest = withNativeDeadline(loadDetectedAccounts(), "Load detected accounts", bootSupportDeadlineMs).catch(() => null);
     const nativeAppsRequest = savedAccountMode === "use"
       ? withNativeDeadline(loadNativeApps(), "Load selected Windows apps", bootSupportDeadlineMs).catch(() => null)
       : Promise.resolve(null);
@@ -11073,11 +11111,15 @@ async function bootstrap(): Promise<void> {
     if (route === "onboarding" && onboardingRoute === "mullvad") void refreshMullvadSetup();
     startReadyWorkspaceLoads();
     void refreshBuildIntegrityStatus();
-    void Promise.all([servicesRequest, nativeAppsRequest, licenseRequest, browserCompanionRequest, browserProfilesRequest]).then(([linkedServices, nativeCatalog, currentLicenseState, currentBrowserCompanionStatus, profiles]) => {
+    void Promise.all([servicesRequest, detectedAccountsRequest, nativeAppsRequest, licenseRequest, browserCompanionRequest, browserProfilesRequest]).then(([linkedServices, loadedDetectedAccounts, nativeCatalog, currentLicenseState, currentBrowserCompanionStatus, profiles]) => {
       if (attempt !== bootstrapEpoch) return;
       if (linkedServices) {
         services = linkedServices;
         linkedServicesChecked = true;
+      }
+      if (loadedDetectedAccounts) {
+        detectedAccounts = loadedDetectedAccounts;
+        persistDetectedAccountOpeningChoices();
       }
       if (nativeCatalog && isCompleteNativeCatalog(nativeCatalog)) {
         nativeApps = nativeCatalog;
@@ -11391,6 +11433,8 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   oslMailComposeDraft = { to: "", subject: "", body: "" };
   escapeAuditSendAttempts = 0;
   services = patch.services ?? [];
+  detectedAccounts = [];
+  detectedAccountOpeningChoices.clear();
   linkedServicesChecked = patch.servicesChecked ?? patch.services !== undefined;
   hubPeople = (patch.hubPeople ?? []).map(testHubPerson);
   oslChatDraft = patch.oslChatDraft ?? "";
@@ -12085,6 +12129,20 @@ export const __oslHubUiTest = {
   setBrowserFootprintForTest(hydration: BrowserFootprintHydration): void {
     browserFootprintOwner = core.readiness.activeOslUserId;
     applyNativeBrowserFootprint(hydration);
+  },
+  setDetectedAccountsForTest(accounts: DetectedAccount[]): void {
+    detectedAccounts = accounts;
+    persistDetectedAccountOpeningChoices();
+  },
+  chooseDetectedAccountOpeningForTest(account: DetectedAccount, choice: "windowsApp" | "browser"): void {
+    if (!account.openChoices.some((candidate) => candidate.kind === choice)) return;
+    detectedAccountOpeningChoices = chooseDetectedAccountOpening(detectedAccountOpeningChoices, account, choice);
+    persistDetectedAccountOpeningChoices();
+  },
+  renderDetectedAppsForTest(): string {
+    route = "onboarding";
+    onboardingRoute = "detected";
+    return detectedAppsContent();
   },
   setDeleteChoicesForTest(choices: DeleteChoices | null): void {
     deleteChoices = choices;

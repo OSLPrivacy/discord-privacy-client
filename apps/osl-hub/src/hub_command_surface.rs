@@ -513,6 +513,7 @@ macro_rules! hub_tauri_commands {
             get_scrub_index_status,
             cancel_scrub_index,
             list_linked_services,
+            list_detected_accounts,
             get_core_readiness,
             list_core_features,
             get_hub_license_state,
