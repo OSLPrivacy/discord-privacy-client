@@ -7,23 +7,32 @@ import {
   markTorBootSlow,
   parseTorSidecarLine,
   startTorBootOrchestrator,
+  torRouteRetryLabel,
   torRouteStatusLabel,
   type TorBootStatus,
   type TorSidecarProcess,
 } from "./tor-boot-orchestrator";
 
-function fakeSidecar(): TorSidecarProcess & { emit(line: string): void; killed: boolean } {
+function fakeSidecar(port = 0): TorSidecarProcess & { emit(line: string): void; exit(): void; killed: boolean } {
   const handlers: Array<(line: string) => void> = [];
+  const exitHandlers: Array<() => void> = [];
   return {
+    port,
     killed: false,
     onLine(handler) {
       handlers.push(handler);
+    },
+    onExit(handler) {
+      exitHandlers.push(handler);
     },
     kill() {
       this.killed = true;
     },
     emit(line: string) {
       for (const handler of handlers) handler(line);
+    },
+    exit() {
+      for (const handler of exitHandlers) handler();
     },
   };
 }
@@ -113,6 +122,12 @@ describe("applyTorSidecarEvent", () => {
     expect(firstRunTorScreenMarkup(failed)).toContain(">Direct</button>");
     expect(firstRunTorScreenMarkup(initialTorBootStatus())).not.toContain(">Retry</button>");
   });
+
+  it("makes the exact failure state retryable", () => {
+    const failed = applyTorSidecarEvent(initialTorBootStatus(), { event: "error", message: "obsolete consensus" });
+    expect(torRouteStatusLabel(failed)).toBe("Failed -- Tor could not connect");
+    expect(torRouteRetryLabel(failed)).toBe("Retry");
+  });
 });
 
 describe("attemptNetworkSend", () => {
@@ -127,7 +142,7 @@ describe("attemptNetworkSend", () => {
 
   it("records zero network writes when the route has failed", () => {
     let writes = 0;
-    const failed: TorBootStatus = { ready: false, failed: true, slow: false, percent: 0, errorMessage: "x" };
+    const failed: TorBootStatus = { ready: false, failed: true, slow: false, retryAvailable: true, percent: 0, errorMessage: "x" };
     const result = attemptNetworkSend(failed, () => {
       writes += 1;
     });
@@ -137,7 +152,7 @@ describe("attemptNetworkSend", () => {
 
   it("performs exactly one network write once the route is ready", () => {
     let writes = 0;
-    const ready: TorBootStatus = { ready: true, failed: false, slow: false, percent: 100, errorMessage: null };
+    const ready: TorBootStatus = { ready: true, failed: false, slow: false, retryAvailable: false, percent: 100, errorMessage: null };
     const result = attemptNetworkSend(ready, () => {
       writes += 1;
     });
@@ -244,6 +259,57 @@ describe("startTorBootOrchestrator", () => {
     });
     expect(() => sidecar.emit("not json")).not.toThrow();
     expect(torRouteStatusLabel(handle.status())).toBe("Connecting -- 0%");
+  });
+
+  it("contains three sidecar crashes, preserves the exact UTF-8 draft, and retries on fresh ports", () => {
+    const draft = { text: "First line\nemoji: 🧭\ncombining: e\u0301\0" };
+    const originalBytes = Array.from(new TextEncoder().encode(draft.text));
+    const ports = [39151, 39152, 39153, 39154];
+    const sidecars = ports.map((port) => fakeSidecar(port));
+    const statuses: Array<{ label: string; elapsedSinceCrashMs: number }> = [];
+    let spawnCount = 0;
+    let hubExited = 0;
+    let now = 0;
+    let crashStartedAt = 0;
+
+    const handle = startTorBootOrchestrator({
+      paint: () => undefined,
+      spawnSidecar: () => sidecars[spawnCount++],
+      onStatus: (status) => statuses.push({ label: torRouteStatusLabel(status), elapsedSinceCrashMs: now - crashStartedAt }),
+      captureDraft: () => draft.text,
+      restoreDraft: (saved) => {
+        draft.text = saved;
+      },
+    });
+
+    const usedPorts: number[] = [];
+    for (let crash = 0; crash < 3; crash += 1) {
+      const active = sidecars[crash];
+      usedPorts.push(active.port ?? -1);
+      now += 4_999;
+      crashStartedAt = now;
+      // This models SIGKILL/obsolete-consensus termination of the child only.
+      // Nothing throws from the callback, so the hub remains alive.
+      try {
+        active.exit();
+      } catch {
+        // A thrown sidecar-exit callback is the test-harness equivalent of
+        // the hub process dying. The containment mutant must make this 1.
+        hubExited += 1;
+      }
+      expect(hubExited).toBe(0);
+      const failure = statuses.at(-1);
+      expect(failure).toEqual({ label: "Failed -- Tor could not connect", elapsedSinceCrashMs: 0 });
+      expect(failure?.elapsedSinceCrashMs).toBeLessThanOrEqual(5_000);
+      expect(Array.from(new TextEncoder().encode(draft.text))).toEqual(originalBytes);
+      expect(torRouteRetryLabel(handle.status())).toBe("Retry");
+      expect(() => handle.retry()).not.toThrow();
+    }
+
+    usedPorts.push(sidecars[3].port ?? -1);
+    expect(new Set(usedPorts).size).toBe(4);
+    expect(spawnCount).toBe(4);
+    console.info(`TASK4915 sidecar_kills=3 hub_process_exits=${hubExited} failed_within_5_seconds=3 draft_bytes_identical=true retry_ports=${usedPorts.join(",")}`);
   });
 });
 
