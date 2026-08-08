@@ -76,6 +76,7 @@ impl PreparedXCover {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum XCoverPreparationError {
     UnknownChoice(String),
+    RefusedSendFieldValue(&'static str),
 }
 
 impl fmt::Display for XCoverPreparationError {
@@ -85,6 +86,9 @@ impl fmt::Display for XCoverPreparationError {
                 f,
                 "unknown X send choice {choice:?}; expected Manual, Double Enter, Single Enter, Instant, or Match typing"
             ),
+            Self::RefusedSendFieldValue(value) => {
+                write!(f, "refused X send field value {value}")
+            }
         }
     }
 }
@@ -102,6 +106,59 @@ pub fn prepare_x_cover(
         XSendChoice::SingleEnter => prepare_single_enter_cover(cover_text),
         XSendChoice::Instant => prepare_instant_cover(cover_text),
         XSendChoice::MatchTyping => prepare_match_typing_cover(cover_text),
+    }
+}
+
+/// UI-facing state for X's send button.
+///
+/// Pressing this control only prepares the cover selected in the composer. It
+/// deliberately has no website-driver dependency and therefore cannot post to
+/// X as a side effect. The separately reviewed placement flow is the only code
+/// allowed to put prepared text in a provider composer.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct XSendButton {
+    selected_choice: XSendChoice,
+}
+
+/// Fields that must still be present when a selected cover is prepared.
+///
+/// The private text remains inside OSL. `composer_name` is only the accessible
+/// name discovered for the provider composer; this boundary does not write to
+/// that composer or press its Send control.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct XSendFields<'a> {
+    pub private_text: &'a str,
+    pub composer_name: Option<&'a str>,
+    pub cover_text: &'a str,
+}
+
+impl XSendButton {
+    /// Connect the button to one of the exact choices shown by the composer.
+    pub fn for_selected_choice(choice_name: &str) -> Result<Self, XCoverPreparationError> {
+        Ok(Self {
+            selected_choice: XSendChoice::from_name(choice_name)?,
+        })
+    }
+
+    /// Prepare the selected cover. This is intentionally not named `send`:
+    /// success means preparation only, never a provider post.
+    pub fn prepare_selected_cover(
+        &self,
+        fields: XSendFields<'_>,
+    ) -> Result<PreparedXCover, XCoverPreparationError> {
+        if fields.private_text.trim().is_empty() {
+            return Err(XCoverPreparationError::RefusedSendFieldValue("empty-text"));
+        }
+        if fields
+            .composer_name
+            .filter(|name| !name.trim().is_empty())
+            .is_none()
+        {
+            return Err(XCoverPreparationError::RefusedSendFieldValue(
+                "missing-composer",
+            ));
+        }
+        prepare_x_cover(self.selected_choice.name(), fields.cover_text)
     }
 }
 
@@ -127,7 +184,9 @@ fn prepare_match_typing_cover(cover_text: &str) -> Result<PreparedXCover, XCover
 
 #[cfg(test)]
 mod tests {
-    use super::{prepare_x_cover, XCoverPreparationError, XSendChoice};
+    use super::{
+        prepare_x_cover, XCoverPreparationError, XSendButton, XSendChoice, XSendFields,
+    };
 
     #[test]
     fn task_1107_all_five_x_choices_prepare_covers_and_unknown_fails() {
@@ -159,5 +218,38 @@ mod tests {
         println!("TASK1107 unknown_choice_failures=1 error={unknown}");
 
         assert_eq!(prepared_count, 5);
+    }
+
+    #[test]
+    fn task_1108_each_x_send_button_choice_prepares_without_posting() {
+        const COVER: &str = "x-prepared-cover-1108";
+        let mut prepared_count = 0usize;
+
+        for choice in XSendChoice::ALL {
+            let button = XSendButton::for_selected_choice(choice.name())
+                .expect("every rendered choice connects to the send button");
+            let prepared = button
+                .prepare_selected_cover(XSendFields {
+                    private_text: "private text stays in OSL",
+                    composer_name: Some("Post"),
+                    cover_text: COVER,
+                })
+                .expect("pressing the button prepares the selected cover");
+
+            assert_eq!(prepared.choice, choice);
+            assert_eq!(prepared.cover_text, COVER);
+            assert_eq!(prepared.cover_bytes, COVER.len());
+            // PreparedXCover has no sent/posted state and the button has no
+            // provider control or driver, so this path cannot post.
+            prepared_count += 1;
+            println!(
+                "TASK1108 choice={} prepared_cover_bytes={} posted=false",
+                choice.name(),
+                prepared.cover_bytes
+            );
+        }
+
+        assert_eq!(prepared_count, XSendChoice::ALL.len());
+        println!("TASK1108 prepared_cover_count={prepared_count} posted_count=0");
     }
 }
