@@ -163,6 +163,41 @@ export interface OslChatMessageReaction {
   mine: boolean;
 }
 
+export interface OslChatReactionToggleResult {
+  emoji: string;
+  added: boolean;
+  removed: boolean;
+}
+
+/**
+ * TASK 5011. Pure reducer for a reaction chip tap: applies the server's
+ * add/remove result to the message's reaction list so the tapped chip's
+ * count moves by exactly one and its "mine" mark flips with it.
+ */
+export function applyOslChatReactionToggle(
+  reactions: readonly OslChatMessageReaction[],
+  result: OslChatReactionToggleResult,
+): OslChatMessageReaction[] {
+  const next = [...reactions];
+  const index = next.findIndex((reaction) => reaction.emoji === result.emoji);
+  if (result.removed) {
+    if (index >= 0) {
+      const current = next[index]!;
+      const count = Math.max(0, current.count - 1);
+      if (count === 0) next.splice(index, 1);
+      else next[index] = { ...current, count, mine: false };
+    }
+  } else if (result.added) {
+    if (index >= 0) {
+      const current = next[index]!;
+      next[index] = { ...current, count: current.count + 1, mine: true };
+    } else {
+      next.push({ emoji: result.emoji, count: 1, mine: true });
+    }
+  }
+  return next;
+}
+
 export interface OslChatBuildWarning {
   kind: "changedBuild";
   reason: "changed" | "corruptProof";

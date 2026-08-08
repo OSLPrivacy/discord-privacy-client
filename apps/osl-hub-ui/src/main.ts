@@ -247,7 +247,7 @@ import { accentChoices, appearanceSettingsMarkup, avatarChoices, backgroundChoic
 import { applyLookState, defaultLookState, loadLookState, lookScreenMarkup, lookStorageKey, saveLookState, type LookMode, type LookState } from "./look-screen";
 import { inDomTooltipMarkup } from "./in-dom-tooltip";
 import { coverWritingControlsMarkup } from "./cover-writing-controls";
-import { applyOslChatDraftToElement, firstPartyOslSurfaceContract, OSL_CHAT_KEY_CHANGED_REFUSAL_REASON, OSL_CHAT_MAX_DRAFT_BYTES, oslChatDraftBytes, oslChatHandshakeConfirmed, oslChatsViewMarkup, senderReceiptStateFor, submitsOslChatDraft, type OslChatMessage } from "./osl-chats-view";
+import { applyOslChatDraftToElement, applyOslChatReactionToggle, firstPartyOslSurfaceContract, OSL_CHAT_KEY_CHANGED_REFUSAL_REASON, OSL_CHAT_MAX_DRAFT_BYTES, oslChatDraftBytes, oslChatHandshakeConfirmed, oslChatsViewMarkup, senderReceiptStateFor, submitsOslChatDraft, type OslChatMessage } from "./osl-chats-view";
 import { createOslChatDeliveryRuntime, mergeOslChatTimeline, oslChatHistoryMessages, oslChatOpenRefusalMessage, pruneExpiredOslChatMessages, receivedOslChatBatchMessage, type OslChatDeliveryHost } from "./osl-chat-runtime";
 import { attachChatProfileAppearanceModal } from "./chat-profile-appearance-modal";
 import { OslProfilePaneState, seededProfilePaneRecords, type ScopedProfileRecord } from "./osl-profile-pane";
@@ -10686,24 +10686,7 @@ async function toggleOslChatReaction(messageId: string, emoji: string, mine: boo
   const messages = [...(oslChatMessages.get(personId) ?? [])];
   const message = messages.find((candidate) => candidate.messageId === result.messageId);
   if (!message) return;
-  const reactions = [...(message.reactions ?? [])];
-  const index = reactions.findIndex((reaction) => reaction.emoji === result.emoji);
-  if (result.removed) {
-    if (index >= 0) {
-      const current = reactions[index]!;
-      const count = Math.max(0, current.count - 1);
-      if (count === 0) reactions.splice(index, 1);
-      else reactions[index] = { ...current, count, mine: false };
-    }
-  } else if (result.added) {
-    if (index >= 0) {
-      const current = reactions[index]!;
-      reactions[index] = { ...current, count: current.count + 1, mine: true };
-    } else {
-      reactions.push({ emoji: result.emoji, count: 1, mine: true });
-    }
-  }
-  message.reactions = reactions;
+  message.reactions = applyOslChatReactionToggle(message.reactions ?? [], result);
   oslChatMessages.set(personId, messages);
   render();
 }
