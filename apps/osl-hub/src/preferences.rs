@@ -1212,6 +1212,7 @@ mod tests {
             "scrub",
             "discord",
             "telegram",
+            "instagram",
             "signal",
             "gmail",
             "whatsapp",
@@ -1231,19 +1232,27 @@ mod tests {
             moved
                 .visible_tiles
                 .iter()
-                .take(5)
+                .take(6)
                 .map(String::as_str)
                 .collect::<Vec<_>>(),
-            vec!["discord", "telegram", "signal", "gmail", "whatsapp"]
+            vec!["discord", "telegram", "instagram", "signal", "gmail", "whatsapp"]
         );
         assert_eq!(
             dragged
                 .visible_tiles
                 .iter()
-                .take(6)
+                .take(7)
                 .map(String::as_str)
                 .collect::<Vec<_>>(),
-            vec!["scrub", "discord", "telegram", "signal", "gmail", "whatsapp"]
+            vec![
+                "scrub",
+                "discord",
+                "telegram",
+                "instagram",
+                "signal",
+                "gmail",
+                "whatsapp"
+            ]
         );
         assert_eq!(hidden.hidden_tiles, vec!["telegram"]);
         assert!(shown.hidden_tiles.is_empty());

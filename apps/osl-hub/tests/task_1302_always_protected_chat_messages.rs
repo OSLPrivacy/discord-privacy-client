@@ -46,7 +46,9 @@ fn message_command_has_one_protected_send_path_and_no_unprotected_flag() {
     println!(
         "TASK1302_PROTECTED_SEND_PATH_COUNT={protected_send_path_count} paths={protected_paths:?}"
     );
-    println!("TASK1302_UNPROTECTED_FLAG_COUNT={unprotected_flag_count} flags={unprotected_flags:?}");
+    println!(
+        "TASK1302_UNPROTECTED_FLAG_COUNT={unprotected_flag_count} flags={unprotected_flags:?}"
+    );
 
     assert_eq!(
         protected_send_path_count, 1,

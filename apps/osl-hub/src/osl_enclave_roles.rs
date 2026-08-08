@@ -337,6 +337,30 @@ impl EnclaveRelayActionBudget {
         actions.push_back(now_unix_seconds);
         EnclaveRelayLimitResolution::allow_by_relay()
     }
+
+    /// How many actions this role has spent inside the trailing hour, without
+    /// spending one. The TASK 4858 ability view needs this to say how far past
+    /// the role's budget an action is; it must not record anything.
+    pub fn recorded_action_count(&self, role_name: &str, now_unix_seconds: u64) -> usize {
+        self.action_unix_seconds
+            .get(role_name)
+            .map(|actions| {
+                actions
+                    .iter()
+                    .filter(|recorded_at| recorded_at.saturating_add(3600) > now_unix_seconds)
+                    .count()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Record an action the role already spent, so a screen can be built from
+    /// a member's real recent history.
+    pub fn record_spent_action(&mut self, role_name: &str, at_unix_seconds: u64) {
+        self.action_unix_seconds
+            .entry(role_name.to_owned())
+            .or_default()
+            .push_back(at_unix_seconds);
+    }
 }
 
 impl EnclaveRoleCatalog {

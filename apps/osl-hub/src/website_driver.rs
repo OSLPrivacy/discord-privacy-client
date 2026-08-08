@@ -1740,3 +1740,66 @@ fn email_send_expression(recipient: &str, body: Option<&str>, should_send: bool)
 "#
     )
 }
+
+const CLICK_NAMED_CONTROL_EXPRESSION: &str = r#"
+(() => {
+  const wanted = __OSL_CONTROL_NAME__;
+  const compact = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+  const visible = (element) => {
+    if (!element || element.hidden || element.getAttribute('aria-hidden') === 'true') return false;
+    const style = window.getComputedStyle(element);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse' || style.opacity === '0') return false;
+    return element.getClientRects().length > 0;
+  };
+  const enabled = (element) => !element.disabled && element.getAttribute('aria-disabled') !== 'true';
+  const labelledBy = (element) => compact(
+    (element.getAttribute('aria-labelledby') || '')
+      .split(/\s+/)
+      .map((id) => document.getElementById(id))
+      .filter(Boolean)
+      .map((label) => label.innerText || label.textContent || '')
+      .join(' ')
+  );
+  const controlName = (element) => {
+    const candidates = [
+      element.getAttribute('aria-label'),
+      labelledBy(element),
+      element.getAttribute('title'),
+      element.getAttribute('value'),
+      element.value,
+      element.innerText || element.textContent,
+      element.getAttribute('name'),
+      element.id
+    ];
+    for (const candidate of candidates) {
+      const name = compact(candidate);
+      if (name) return name;
+    }
+    return '';
+  };
+  const matches = [];
+  const disabled = [];
+  for (const element of document.querySelectorAll('button, input[type="button"], input[type="submit"], input[type="reset"], [role="button"]')) {
+    if (!visible(element) || controlName(element) !== wanted) continue;
+    if (enabled(element)) {
+      matches.push(element);
+    } else {
+      disabled.push(element);
+    }
+  }
+  if (matches.length === 0 && disabled.length > 0) return 'disabled';
+  if (matches.length !== 1) return 'not_found';
+  matches[0].click();
+  return 'pressed';
+})()
+"#;
+
+fn place_text_in_first_named_editable(
+    websocket_url: &str,
+    text: &str,
+) -> Result<BrowserTextPlacementResult, WebsiteDriverError> {
+    let text = serde_json::to_string(text).map_err(|_| WebsiteDriverError::TextPlacementFailed)?;
+    let expression = PLACE_TEXT_EXPRESSION.replace("__OSL_TEXT__", &text);
+    let value = evaluate_target(websocket_url, &expression)?;
+    serde_json::from_value(value).map_err(|_| WebsiteDriverError::TextPlacementFailed)
+}

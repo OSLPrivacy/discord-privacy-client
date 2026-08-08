@@ -58,7 +58,10 @@ fn unlock_fixed_fixture_capture_has_required_screen_tree_and_nonblank_png() {
 
     let output = Command::new("bash")
         .arg(root.join("scripts/qa/osl-unlock-fixed-screen-capture.sh"))
-        .env("OSL_UNLOCK_SCREEN_OUT", root.join("evidence/task-0355-unlock-screen"))
+        .env(
+            "OSL_UNLOCK_SCREEN_OUT",
+            root.join("evidence/task-0355-unlock-screen"),
+        )
         .env("OSL_UNLOCK_SCREEN_SIZE", "1024x768x24")
         .output()
         .expect("Unlock fixed-screen capture script can be launched");

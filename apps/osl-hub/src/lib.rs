@@ -945,6 +945,8 @@ pub mod timed_delete_sweep_job;
 pub mod sync_policy;
 pub mod realtime_wakeup;
 pub mod shared_delete_action;
+pub mod osl_enclave_role_ability;
+pub mod osl_enclave_roles;
 
 // The keystore/ipc crates deliberately keep the active-account dir, base-dir
 // override, and unlocked main-password key in process-wide statics (see

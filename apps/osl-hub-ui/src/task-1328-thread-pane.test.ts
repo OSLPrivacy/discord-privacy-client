@@ -110,3 +110,40 @@ describe("TASK 1328 thread pane", () => {
     expect(markup).toContain('class="osl-thread-reply-send"');
   });
 });
+
+const FIXTURE_DIR = path.resolve("screenshots/artifacts");
+
+const FIXTURE_PATH = path.join(FIXTURE_DIR, "task-1328-thread-pane-fixture.html");
+
+function model(overrides: Partial<OslChatThreadPaneModel> = {}): OslChatThreadPaneModel {
+  return {
+    parent: {
+      messageId: "parent-1",
+      author: "Rose",
+      body: "What time works for everyone?",
+      timestampLabel: "10:00",
+    },
+    replies: [
+      {
+        replyId: "reply-1",
+        author: "You",
+        body: "How about 2pm?",
+        timestampLabel: "10:05",
+      },
+      {
+        replyId: "reply-2",
+        author: "Sam",
+        body: "2pm works for me.",
+        timestampLabel: "10:07",
+      },
+    ],
+    replyDraft: "",
+    busy: false,
+    ...overrides,
+  };
+}
+
+function screenshotHtml(markup: string): string {
+  const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"/><title>TASK 1328 Thread pane</title><style>${styles.replaceAll("</style", "<\\/style")}</style><style>html,body,#app{width:100%;height:100%;margin:0;background:#080c0d;overflow:hidden}.app-frame{width:100%;height:100%}</style></head><body><div id="app">${markup}</div></body></html>`;
+}

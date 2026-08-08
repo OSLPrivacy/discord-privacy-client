@@ -6,6 +6,7 @@ import {
   siGmail,
   siGmx,
   siGooglechrome,
+  siInstagram,
   siMaildotcom,
   siMessenger,
   siOpera,
@@ -13,6 +14,7 @@ import {
   siTelegram,
   siTuta,
   siWhatsapp,
+  siX,
 } from "simple-icons";
 import type { SimpleIcon } from "simple-icons";
 import type { BrowserImportId, ServiceId } from "./services";
@@ -20,8 +22,10 @@ import type { BrowserImportId, ServiceId } from "./services";
 const serviceIcons: Partial<Record<ServiceId | "signal", SimpleIcon>> = {
   discord: siDiscord,
   telegram: siTelegram,
+  instagram: siInstagram,
   signal: siSignal,
   whatsapp: siWhatsapp,
+  x: siX,
   messenger: siMessenger,
 };
 

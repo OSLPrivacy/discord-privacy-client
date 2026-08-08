@@ -2353,3 +2353,33 @@ function isBoundedBase64(value: unknown): value is string {
   if (typeof value !== "string" || value.length === 0 || value.length > HUB_ATTACHMENT_B64_MAX_CHARACTERS || value.length % 4 !== 0) return false;
   return /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(value);
 }
+
+export async function loadWebsiteLiveRunProgress(pageUrl: string): Promise<WebsiteLiveRunProgress | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    return checkedBackendResponse("read_protected_email_live_run_progress",
+      parseWebsiteLiveRunProgress(await invoke<unknown>("read_protected_email_live_run_progress", { request: { pageUrl } })),
+      "the live run progress did not match the expected shape");
+  } catch (error) { recordBackendFailure("read_protected_email_live_run_progress", error); return null; }
+}
+
+function parseWebsiteLiveRunProgress(value: unknown): WebsiteLiveRunProgress | null {
+  if (!isRecord(value)
+    || !exact(value, ["activeAccount", "currentPlace", "messagesChecked", "matches", "scrolls", "waits", "changes"])
+    || typeof value.activeAccount !== "string"
+    || typeof value.currentPlace !== "string"
+    || !Number.isSafeInteger(value.messagesChecked) || Number(value.messagesChecked) < 0
+    || !Number.isSafeInteger(value.matches) || Number(value.matches) < 0
+    || !Number.isSafeInteger(value.scrolls) || Number(value.scrolls) < 0
+    || !Number.isSafeInteger(value.waits) || Number(value.waits) < 0
+    || !Number.isSafeInteger(value.changes) || Number(value.changes) < 0) return null;
+  return {
+    activeAccount: value.activeAccount,
+    currentPlace: value.currentPlace,
+    messagesChecked: value.messagesChecked,
+    matches: value.matches,
+    scrolls: value.scrolls,
+    waits: value.waits,
+    changes: value.changes,
+  };
+}

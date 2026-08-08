@@ -40,10 +40,7 @@ fn task_0418_exact_same_permitted_delete_command_replay_is_refused() {
 
     let replay_refusal =
         delete_prepared_with_grant(&mut mailbox, &mut grant, context, &prepared).unwrap_err();
-    assert_eq!(
-        replay_refusal,
-        ImapPolicyError::SingleUseAuthorityRequired
-    );
+    assert_eq!(replay_refusal, ImapPolicyError::SingleUseAuthorityRequired);
     assert_eq!(mailbox.deleted_count(), 1);
 
     println!(

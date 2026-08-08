@@ -6185,3 +6185,7 @@ pub(crate) mod tests {
         .is_err());
     }
 }
+
+const INSTAGRAM_CANDIDATES: &[ExecutableCandidate] = &[];
+
+const X_CANDIDATES: &[ExecutableCandidate] = &[];

@@ -133,6 +133,7 @@ fn canonical_service_id(service: ServiceKind) -> &'static str {
     match service {
         ServiceKind::Discord => "discord",
         ServiceKind::Telegram => "telegram",
+        ServiceKind::Instagram => "instagram",
         ServiceKind::WhatsApp => "whatsapp",
         ServiceKind::Email => "email",
         ServiceKind::Signal => "signal",

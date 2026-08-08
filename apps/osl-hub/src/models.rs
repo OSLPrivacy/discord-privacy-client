@@ -658,11 +658,14 @@ mod tests {
 pub enum ServiceKind {
     Discord,
     Telegram,
+    Instagram,
     #[serde(rename = "whatsapp")]
     WhatsApp,
     Messenger,
     Email,
     Signal,
+    X,
+    Messenger,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Eq, Hash, PartialEq, Serialize)]
