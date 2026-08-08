@@ -273,7 +273,7 @@ import { acceptedFriendPageActionsMarkup } from "./friend-page-actions";
 import { friendPictureMarkup } from "./friend-picture";
 import { runRecoveryReveal, submitsRecoveryReveal } from "./recovery-reveal";
 import { addLegacyPhraseWrap, initialAccountRecoveryFlow, legacyMarkerRecoveryRefused, legacyRecoveryMigrationMarkup, recoveryScreenMarkup, submitRecoveredPassword, submitRecoveryPhrase, type AccountRecoveryDependencies, type AccountRecoveryFlow, type LegacyRecoveryMigration, type RecoveryMigrationDependencies } from "./account-recovery";
-import { RECOVERY_SHOW_ANYWAY_ACKNOWLEDGEMENT, recoveryKitReducer, recoveryKitSecretCardsMarkup, recoveryKitView, visibleRecoverySecrets, type RecoveryKitAction, type RecoveryKitState, type RecoveryKitView } from "./recovery-kit";
+import { RECOVERY_SHOW_ANYWAY_ACKNOWLEDGEMENT, acknowledgementAccepted, recoveryKitReducer, recoveryKitSecretCardsMarkup, recoveryKitView, visibleRecoverySecrets, type RecoveryKitAction, type RecoveryKitSecrets, type RecoveryKitState, type RecoveryKitView } from "./recovery-kit";
 import { applyRecoveryWordRetypeResult, everyRecoveryWordAnswered, initialRecoveryWordCheckState, recoveryWordCheckContinueDisabled, recoveryWordCheckMarkup, recoveryWordRetypeRequest, setRecoveryWordCheckAnswer, type RecoveryWordCheckState } from "./recovery-word-check";
 import { resumeOnboardingRoute } from "./onboarding-resume";
 import { createRecoveryKitUnsavedFlag } from "./recovery-kit-flag";
@@ -3225,7 +3225,7 @@ function recoveryExitsMarkup(view: RecoveryKitView): string {
       return `<button class="signin-unlock osl-continue" id="retry-recovery-protection" type="button"><span class="signin-unlock-label">${escapeHtml(exit.label)}</span></button>`;
     }
     if (exit.id === "show-anyway") {
-      return `<div class="recovery-show-anyway"><label for="recovery-show-anyway-ack">${escapeHtml(view.acknowledgementPrompt ?? "")}</label><input id="recovery-show-anyway-ack" type="text" maxlength="32" autocomplete="off" autocapitalize="none" spellcheck="false"/><button class="signin-unlock osl-continue" id="recovery-show-anyway" type="button"><span class="signin-unlock-label">${escapeHtml(exit.label)}</span></button></div>`;
+      return `<div class="recovery-show-anyway"><label for="recovery-show-anyway-ack">${escapeHtml(view.acknowledgementPrompt ?? "")}</label><input id="recovery-show-anyway-ack" type="text" maxlength="32" autocomplete="off" autocapitalize="none" spellcheck="false"/><button class="signin-unlock osl-continue" id="recovery-show-anyway" type="button" disabled aria-disabled="true"><span class="signin-unlock-label">${escapeHtml(exit.label)}</span></button></div>`;
     }
     if (exit.id === "remind-me-later") {
       return `<button class="signin-unlock osl-continue" id="recovery-remind-later" type="button"><span class="signin-unlock-label">${escapeHtml(exit.label)}</span></button>`;
@@ -3847,8 +3847,19 @@ function bindOnboarding(): void {
     render();
   });
   // T15-A7: the two exits that make the refusal escapable.
-  document.querySelector<HTMLButtonElement>("#recovery-show-anyway")?.addEventListener("click", () => {
-    const typed = document.querySelector<HTMLInputElement>("#recovery-show-anyway-ack")?.value ?? "";
+  const recoveryShowAnywayAcknowledgement = document.querySelector<HTMLInputElement>("#recovery-show-anyway-ack");
+  const recoveryShowAnyway = document.querySelector<HTMLButtonElement>("#recovery-show-anyway");
+  const syncRecoveryShowAnyway = (): void => {
+    if (!recoveryShowAnyway) return;
+    const disabled = !acknowledgementAccepted(recoveryShowAnywayAcknowledgement?.value ?? "");
+    recoveryShowAnyway.disabled = disabled;
+    if (disabled) recoveryShowAnyway.setAttribute("aria-disabled", "true");
+    else recoveryShowAnyway.removeAttribute("aria-disabled");
+  };
+  recoveryShowAnywayAcknowledgement?.addEventListener("input", syncRecoveryShowAnyway);
+  syncRecoveryShowAnyway();
+  recoveryShowAnyway?.addEventListener("click", () => {
+    const typed = recoveryShowAnywayAcknowledgement?.value ?? "";
     if (applyRecoveryKitAction({ kind: "show-anyway", acknowledgement: typed }) === "rejected") {
       showToast(`Type “${RECOVERY_SHOW_ANYWAY_ACKNOWLEDGEMENT}” exactly to see your recovery kit without proven capture resistance`);
       return;
@@ -12477,7 +12488,9 @@ type OslHubUiTestStatePatch = {
   activeOslChatPersonId?: string | null;
   activeOslChatScopeApproved?: boolean;
   oslChatDraft?: string;
-  recoveryBundle?: { userId: string; identityPhrase: string | null; passwordPhrase: string } | null;
+  /** Seed one-shot recovery material so focused UI tests can exercise the
+   * warning controls without creating an account first. */
+  recoveryBundle?: RecoveryKitSecrets | null;
   recoveryKitUnsaved?: boolean;
   recoveryCaptureProven?: boolean;
 };
@@ -12641,6 +12654,11 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   hubIdentitiesLoad = patch.hubIdentitiesLoad ?? (patch.hubIdentities ? "loaded" : "pending");
   identityListRefreshInFlight = false;
   privateEnclaveAudiences = parsedEnclaveAudiences(patch.enclaveAudienceRecords ?? []);
+  recoveryBundle = patch.recoveryBundle ?? null;
+  recoverySavedAcknowledged = false;
+  recoveryNoSecretAcknowledged = false;
+  recoveryShownWithoutProtection = false;
+  recoveryCaptureGate.invalidate();
   notificationsEnabled = patch.notificationsEnabled ?? false;
   notificationAppPreferences = { ...patch.notificationAppPreferences };
   notificationChatActivity = patch.notificationChatActivity ?? true;
