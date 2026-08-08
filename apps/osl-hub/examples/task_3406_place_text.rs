@@ -1,3 +1,47 @@
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SharedTextPlacementReceipt {
+    pub placed_bytes: usize,
+    pub readback_bytes: usize,
+    pub clear_bytes: usize,
+}
+
+/// Provider-neutral composer actions for an already-discovered text box.
+pub trait SharedTextActions {
+    fn read_back_text(&mut self) -> Result<String, String>;
+    fn place_text(&mut self, text: &str) -> Result<(), String>;
+    fn clear_text(&mut self) -> Result<(), String>;
+}
+
+/// Place exact text, prove the read-back byte-for-byte, and clear it without
+/// invoking any provider send control.
+pub fn place_read_back_and_clear(
+    actions: &mut impl SharedTextActions,
+    mark: &str,
+) -> Result<SharedTextPlacementReceipt, String> {
+    if mark.is_empty() {
+        return Err("marked text must contain at least one byte".to_owned());
+    }
+    let before_readback = actions.read_back_text()?;
+    if !before_readback.is_empty() {
+        return Err(format!("composer was not empty before placement: {before_readback:?}"));
+    }
+    actions.place_text(mark)?;
+    let readback = actions.read_back_text()?;
+    if readback.as_bytes() != mark.as_bytes() {
+        return Err(format!("readback did not equal placed mark {mark:?}: {readback:?}"));
+    }
+    actions.clear_text()?;
+    let clear_readback = actions.read_back_text()?;
+    if !clear_readback.is_empty() {
+        return Err(format!("composer clear left {} bytes: {clear_readback:?}", clear_readback.len()));
+    }
+    Ok(SharedTextPlacementReceipt {
+        placed_bytes: mark.len(),
+        readback_bytes: readback.len(),
+        clear_bytes: clear_readback.len(),
+    })
+}
+
 #[cfg(any(target_os = "windows", test))]
 #[derive(Debug, PartialEq, Eq)]
 enum ReadbackComparison {
