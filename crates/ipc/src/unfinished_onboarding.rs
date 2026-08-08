@@ -13,8 +13,11 @@ use serde::{Deserialize, Serialize};
 use crate::AppState;
 
 pub const RECOVERY_KIT_STATUS_FILE: &str = "recovery_kit_status.json";
+pub const ONBOARDING_RESTART_FILE: &str = "onboarding_restart.json";
 const STATUS_VERSION: u32 = 1;
 const MAX_STATUS_BYTES: u64 = 4 * 1024;
+const RESTART_VERSION: u32 = 1;
+const MAX_RESTART_BYTES: u64 = 4 * 1024;
 
 const UNFINISHED_KEY_ARTIFACTS: &[&str] = &[
     "identity.json",
@@ -71,6 +74,284 @@ pub struct AccountUsabilitySnapshot {
     pub account_name: String,
     pub usable_account_count: usize,
     pub usable_key_count: usize,
+}
+
+/// A setup page that is safe to paint before an unfinished account has been
+/// unlocked. `Unlock` is deliberately not a member of this type, so callers
+/// cannot persist it as an unfinished-account destination.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+pub enum SafeOnboardingRestartPage {
+    #[serde(rename = "create")]
+    CreateAccount,
+    #[serde(rename = "recovery")]
+    Recovery,
+    #[serde(rename = "recovery-check")]
+    RecoveryCheck,
+    #[serde(rename = "pro")]
+    Pro,
+    #[serde(rename = "forward-secrecy")]
+    ForwardSecrecy,
+    #[serde(rename = "privacy")]
+    Privacy,
+    #[serde(rename = "defaults")]
+    Defaults,
+    #[serde(rename = "tor")]
+    Tor,
+    #[serde(rename = "sending")]
+    Sending,
+    #[serde(rename = "cover")]
+    Cover,
+    #[serde(rename = "silent-visible")]
+    SilentVisible,
+    #[serde(rename = "visibility")]
+    Visibility,
+    #[serde(rename = "passwords")]
+    Passwords,
+    #[serde(rename = "burnpass")]
+    BurnPass,
+    #[serde(rename = "mullvad")]
+    Mullvad,
+    #[serde(rename = "browser")]
+    Browser,
+    #[serde(rename = "detected")]
+    Detected,
+    #[serde(rename = "install")]
+    Install,
+    #[serde(rename = "apps")]
+    Apps,
+}
+
+impl SafeOnboardingRestartPage {
+    pub fn route(self) -> &'static str {
+        match self {
+            Self::CreateAccount => "create",
+            Self::Recovery => "recovery",
+            Self::RecoveryCheck => "recovery-check",
+            Self::Pro => "pro",
+            Self::ForwardSecrecy => "forward-secrecy",
+            Self::Privacy => "privacy",
+            Self::Defaults => "defaults",
+            Self::Tor => "tor",
+            Self::Sending => "sending",
+            Self::Cover => "cover",
+            Self::SilentVisible => "silent-visible",
+            Self::Visibility => "visibility",
+            Self::Passwords => "passwords",
+            Self::BurnPass => "burnpass",
+            Self::Mullvad => "mullvad",
+            Self::Browser => "browser",
+            Self::Detected => "detected",
+            Self::Install => "install",
+            Self::Apps => "apps",
+        }
+    }
+
+    pub fn page_name(self) -> &'static str {
+        match self {
+            Self::CreateAccount => "Create account",
+            Self::Recovery => "Recovery",
+            Self::RecoveryCheck => "Recovery check",
+            Self::Pro => "Pro",
+            Self::ForwardSecrecy => "Forward secrecy",
+            Self::Privacy => "Privacy",
+            Self::Defaults => "Defaults",
+            Self::Tor => "Tor",
+            Self::Sending => "Sending",
+            Self::Cover => "Cover",
+            Self::SilentVisible => "Silent or visible",
+            Self::Visibility => "Visibility",
+            Self::Passwords => "Passwords",
+            Self::BurnPass => "Burn password",
+            Self::Mullvad => "Mullvad",
+            Self::Browser => "Browser",
+            Self::Detected => "Detected apps",
+            Self::Install => "Install apps",
+            Self::Apps => "Choose apps",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum OnboardingRestartPage {
+    Safe(SafeOnboardingRestartPage),
+    Unlock,
+}
+
+impl OnboardingRestartPage {
+    pub fn route(self) -> &'static str {
+        match self {
+            Self::Safe(page) => page.route(),
+            Self::Unlock => "unlock",
+        }
+    }
+
+    pub fn page_name(self) -> &'static str {
+        match self {
+            Self::Safe(page) => page.page_name(),
+            Self::Unlock => "Unlock",
+        }
+    }
+
+    pub fn is_unlock(self) -> bool {
+        matches!(self, Self::Unlock)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum OnboardingRestartState {
+    Unfinished { page: SafeOnboardingRestartPage },
+    Complete,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OnboardingRestartDocument {
+    version: u32,
+    state: OnboardingRestartKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    page: Option<SafeOnboardingRestartPage>,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum OnboardingRestartKind {
+    Unfinished,
+    Complete,
+}
+
+/// Persist only the non-secret route name needed to resume an unfinished
+/// setup. The type excludes `Unlock`, while the strict serialized allowlist
+/// makes an injected or future unknown route fall back to Create account.
+pub fn record_safe_onboarding_restart_page(
+    directory: &Path,
+    page: SafeOnboardingRestartPage,
+) -> Result<(), String> {
+    if page != SafeOnboardingRestartPage::CreateAccount && !account_files_exist(directory) {
+        return Err("OSL onboarding restart page has unmet account prerequisites".to_owned());
+    }
+    write_onboarding_restart_document(directory, OnboardingRestartState::Unfinished { page })
+}
+
+/// Mark the setup spine complete. Selection still verifies both canonical
+/// account files before it can return Unlock, so a stale completion marker
+/// cannot paint an unlock screen over a partial account.
+pub fn record_completed_onboarding(directory: &Path) -> Result<(), String> {
+    if !account_files_exist(directory) {
+        return Err("OSL completed onboarding marker has unmet account prerequisites".to_owned());
+    }
+    write_onboarding_restart_document(directory, OnboardingRestartState::Complete)
+}
+
+/// Choose the cold-start page without decrypting account data.
+///
+/// Missing, malformed, oversized, symlinked, unsupported, or internally
+/// inconsistent unfinished state always returns Create account. The only
+/// paths to Unlock are an explicit completed marker with both canonical files,
+/// or a legacy account that predates both unfinished-state files.
+pub fn choose_onboarding_restart_page(directory: &Path) -> OnboardingRestartPage {
+    let create = OnboardingRestartPage::Safe(SafeOnboardingRestartPage::CreateAccount);
+    let path = directory.join(ONBOARDING_RESTART_FILE);
+    match read_onboarding_restart_document(&path) {
+        RestartDocumentRead::Valid(OnboardingRestartState::Unfinished { page }) => {
+            if page == SafeOnboardingRestartPage::CreateAccount || account_files_exist(directory) {
+                OnboardingRestartPage::Safe(page)
+            } else {
+                create
+            }
+        }
+        RestartDocumentRead::Valid(OnboardingRestartState::Complete)
+            if account_files_exist(directory) =>
+        {
+            OnboardingRestartPage::Unlock
+        }
+        RestartDocumentRead::Missing
+            if account_files_exist(directory)
+                && !directory.join(RECOVERY_KIT_STATUS_FILE).exists() =>
+        {
+            // Compatibility for accounts completed before gate 3609. A 3609
+            // status without the public restart marker is ambiguous while
+            // locked, so it takes the safe Create-account fallback instead.
+            OnboardingRestartPage::Unlock
+        }
+        RestartDocumentRead::Valid(_)
+        | RestartDocumentRead::Missing
+        | RestartDocumentRead::Invalid => create,
+    }
+}
+
+fn account_files_exist(directory: &Path) -> bool {
+    is_regular_nonsymlink(&directory.join("identity.json"))
+        && is_regular_nonsymlink(&directory.join("password_marker.json"))
+}
+
+fn is_regular_nonsymlink(path: &Path) -> bool {
+    std::fs::symlink_metadata(path)
+        .map(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
+        .unwrap_or(false)
+}
+
+fn write_onboarding_restart_document(
+    directory: &Path,
+    state: OnboardingRestartState,
+) -> Result<(), String> {
+    std::fs::create_dir_all(directory)
+        .map_err(|_| "OSL onboarding restart directory could not be created".to_owned())?;
+    let (kind, page) = match state {
+        OnboardingRestartState::Unfinished { page } => {
+            (OnboardingRestartKind::Unfinished, Some(page))
+        }
+        OnboardingRestartState::Complete => (OnboardingRestartKind::Complete, None),
+    };
+    let encoded = serde_json::to_vec(&OnboardingRestartDocument {
+        version: RESTART_VERSION,
+        state: kind,
+        page,
+    })
+    .map_err(|_| "OSL onboarding restart page could not be encoded".to_owned())?;
+    if encoded.len() as u64 > MAX_RESTART_BYTES {
+        return Err("OSL onboarding restart page exceeds its storage limit".to_owned());
+    }
+    crate::recoverable_file::write_recoverable(&directory.join(ONBOARDING_RESTART_FILE), &encoded)
+        .map_err(|_| "OSL onboarding restart page could not be committed".to_owned())
+}
+
+enum RestartDocumentRead {
+    Missing,
+    Valid(OnboardingRestartState),
+    Invalid,
+}
+
+fn read_onboarding_restart_document(path: &Path) -> RestartDocumentRead {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return RestartDocumentRead::Missing
+        }
+        Err(_) => return RestartDocumentRead::Invalid,
+    };
+    if !metadata.is_file()
+        || metadata.file_type().is_symlink()
+        || metadata.len() > MAX_RESTART_BYTES
+    {
+        return RestartDocumentRead::Invalid;
+    }
+    let encoded = match std::fs::read(path) {
+        Ok(encoded) if encoded.len() as u64 <= MAX_RESTART_BYTES => encoded,
+        _ => return RestartDocumentRead::Invalid,
+    };
+    match serde_json::from_slice::<OnboardingRestartDocument>(&encoded) {
+        Ok(OnboardingRestartDocument {
+            version: RESTART_VERSION,
+            state: OnboardingRestartKind::Unfinished,
+            page: Some(page),
+        }) => RestartDocumentRead::Valid(OnboardingRestartState::Unfinished { page }),
+        Ok(OnboardingRestartDocument {
+            version: RESTART_VERSION,
+            state: OnboardingRestartKind::Complete,
+            page: None,
+        }) => RestartDocumentRead::Valid(OnboardingRestartState::Complete),
+        _ => RestartDocumentRead::Invalid,
+    }
 }
 
 pub fn read_setup_status(
