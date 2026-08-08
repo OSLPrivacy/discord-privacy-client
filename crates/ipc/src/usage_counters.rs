@@ -9,6 +9,7 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBe
 use sha2::{Digest, Sha256};
 use std::fmt;
 use std::path::Path;
+use std::time::Duration;
 use thiserror::Error;
 
 const DATABASE_FILE: &str = "person_usage.sqlite";
@@ -143,6 +144,13 @@ pub struct PersonUsageCounters {
     pub messages_sent_today: u64,
 }
 
+/// Aggregate live storage and UTC-day transfer use across the service.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ServiceUsageCounters {
+    pub stored_bytes: u64,
+    pub transferred_bytes_today: u64,
+}
+
 /// Operations disabled by the stop-one-account command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccountAction {
@@ -179,6 +187,10 @@ impl UsageCounterStore {
     pub fn open(app_data_dir: &Path) -> Result<Self> {
         std::fs::create_dir_all(app_data_dir)?;
         let conn = Connection::open(app_data_dir.join(DATABASE_FILE))?;
+        // Upload admission uses BEGIN IMMEDIATE. Give simultaneous upload
+        // workers time to serialize at that boundary instead of surfacing a
+        // transient SQLITE_BUSY as a quota decision.
+        conn.busy_timeout(Duration::from_secs(10))?;
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;
              PRAGMA foreign_keys = ON;
@@ -259,6 +271,24 @@ impl UsageCounterStore {
             } else {
                 0
             },
+        })
+    }
+
+    /// Sum live storage and this UTC day's sent/fetched bytes across the
+    /// service from the per-person source of truth.
+    pub fn read_service_at(&self, unix_seconds: i64) -> Result<ServiceUsageCounters> {
+        let day = utc_day(unix_seconds)?;
+        let (stored_bytes, transferred_bytes): (i64, i64) = self.conn.query_row(
+            "SELECT COALESCE(SUM(stored_bytes), 0),
+                    COALESCE(SUM(CASE WHEN sent_day = ?1 THEN bytes_sent ELSE 0 END), 0)
+                    + COALESCE(SUM(CASE WHEN fetched_day = ?1 THEN bytes_fetched ELSE 0 END), 0)
+               FROM person_usage",
+            params![day],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        Ok(ServiceUsageCounters {
+            stored_bytes: as_u64(stored_bytes)?,
+            transferred_bytes_today: as_u64(transferred_bytes)?,
         })
     }
 
