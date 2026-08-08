@@ -30,6 +30,8 @@ pub struct RecoverySetupState {
     pub recovery_confirmed_at_unix_seconds: Option<i64>,
 }
 
+pub use ipc::unfinished_onboarding::AccountUsabilitySnapshot;
+
 /// Returns whether the current account has a recovery kit that still needs to
 /// be saved. Missing state is the safe legacy value: no kit has been produced.
 pub fn recovery_kit_unsaved() -> Result<bool, String> {
@@ -39,6 +41,61 @@ pub fn recovery_kit_unsaved() -> Result<bool, String> {
 pub fn recovery_setup_state() -> Result<RecoverySetupState, String> {
     let key = active_file_key()?;
     load_recovery_setup_state(&active_recovery_kit_status_path()?, &key)
+}
+
+/// Whether this account may use or publish its canonical identity key.
+///
+/// Accounts created before the recovery-confirmation record existed have no
+/// status file and remain usable for compatibility. Once the file exists, the
+/// recorded recovery-word confirmation is the authority: an unsaved or
+/// interrupted setup fails closed.
+pub fn account_allows_key_use() -> Result<bool, String> {
+    let path = active_recovery_kit_status_path()?;
+    if !path.exists() {
+        let directory = path
+            .parent()
+            .ok_or_else(|| "OSL active identity storage is unavailable".to_owned())?;
+        // Existing accounts have a password marker. A key created before the
+        // password step has neither that marker nor encrypted recovery status
+        // and must not be published during a restart in the middle of setup.
+        return Ok(!directory.join("identity.json").is_file()
+            || directory.join("password_marker.json").is_file());
+    }
+    let key = active_file_key()?;
+    Ok(load_recovery_setup_state(&path, &key)?
+        .recovery_confirmed_at_unix_seconds
+        .is_some())
+}
+
+/// True only for the durable state produced by a new account that has not yet
+/// passed recovery-word confirmation. Missing state is legacy, not unfinished.
+pub fn account_is_unfinished() -> Result<bool, String> {
+    let path = active_recovery_kit_status_path()?;
+    if !path.exists() {
+        let directory = path
+            .parent()
+            .ok_or_else(|| "OSL active identity storage is unavailable".to_owned())?;
+        return Ok(directory.join("identity.json").is_file()
+            && !directory.join("password_marker.json").exists());
+    }
+    let key = active_file_key()?;
+    Ok(load_recovery_setup_state(&path, &key)?
+        .recovery_confirmed_at_unix_seconds
+        .is_none())
+}
+
+pub fn account_usability_snapshot() -> Result<AccountUsabilitySnapshot, String> {
+    let directory = keystore::osl_config_dir()
+        .map_err(|_| "OSL active identity storage is unavailable".to_owned())?;
+    let key = active_file_key()?;
+    account_usability_snapshot_at(&directory, &key)
+}
+
+pub(crate) fn account_usability_snapshot_at(
+    directory: &Path,
+    key: &[u8; 32],
+) -> Result<AccountUsabilitySnapshot, String> {
+    ipc::unfinished_onboarding::account_usability_snapshot(directory, key)
 }
 
 /// Records that a recovery kit was produced but has not been confirmed saved.
@@ -85,6 +142,31 @@ pub fn record_recovery_word_confirmation(
     state.recovery_confirmed_at_unix_seconds = Some(ipc::main_password::now_unix_secs_pub());
     write_recovery_setup_state(&active_recovery_kit_status_path()?, &state, &key)?;
     Ok(state)
+}
+
+/// The message the owner sees when setup is finished without the recovery-word
+/// confirmation. It names the step, not the internal record.
+pub const SETUP_NEEDS_RECOVERY_CONFIRMATION: &str =
+    "Confirm your recovery words before finishing setup";
+
+/// TASK 0453: the native precondition for completing normal account setup.
+///
+/// Setup completion is a native write, so the renderer route order is not a
+/// gate: clearing WebView storage, replaying an old bundle, or calling
+/// `save_onboarding_preferences` directly all reach the same command. This is
+/// the check that stands behind all of them, and it reads the encrypted,
+/// account-scoped confirmation record written by gate 0452 -- the only place
+/// the retype outcome survives a cache clear.
+///
+/// Fails closed: a locked main password or unreadable status file is a refusal,
+/// not a pass, because neither can show that the words were ever confirmed.
+pub fn require_recovery_word_confirmation() -> Result<i64, String> {
+    // A read failure keeps its own reason ("main password must be unlocked",
+    // "status is malformed"): it is still a refusal, and the owner cannot act
+    // on it if it is relabelled as a missing confirmation.
+    recovery_setup_state()?
+        .recovery_confirmed_at_unix_seconds
+        .ok_or_else(|| SETUP_NEEDS_RECOVERY_CONFIRMATION.to_owned())
 }
 
 fn active_file_key() -> Result<[u8; 32], String> {
@@ -189,6 +271,15 @@ pub(crate) fn write_recovery_kit_status_with_confirmation(
         &RecoverySetupState { kit_unsaved, recovery_confirmed_at_unix_seconds },
         key,
     )
+}
+
+#[cfg(test)]
+pub(crate) fn write_recovery_setup_state_for_test(
+    directory: &Path,
+    state: &RecoverySetupState,
+    key: &[u8; 32],
+) -> Result<(), String> {
+    write_recovery_setup_state(&directory.join(RECOVERY_KIT_STATUS_FILE), state, key)
 }
 
 #[cfg(test)]

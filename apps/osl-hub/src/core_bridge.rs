@@ -49,7 +49,11 @@ impl HubCoreState {
     }
 
     pub fn register_after_local_bootstrap(&self) {
-        crate::original_bootstrap::register_after_local_bootstrap(&self.osl);
+        // A newly-created identity is not a usable account until the owner has
+        // confirmed its recovery words. Do not publish that provisional key.
+        if crate::account_recovery::account_allows_key_use().unwrap_or(false) {
+            crate::original_bootstrap::register_after_local_bootstrap(&self.osl);
+        }
     }
 }
 
@@ -416,11 +420,13 @@ pub fn unlock_main_password(
         // sealed identity, prove its current public keys to Cloudflare before
         // returning a protection-ready state. A client object alone is not a
         // successful registration.
-        ipc::commands::ensure_keyserver_registered(
-            &state.osl,
-            &ipc::commands::resolve_keyserver_base_url(&config_dir),
-            None,
-        );
+        if crate::account_recovery::account_allows_key_use().unwrap_or(false) {
+            ipc::commands::ensure_keyserver_registered(
+                &state.osl,
+                &ipc::commands::resolve_keyserver_base_url(&config_dir),
+                None,
+            );
+        }
 
         // An existing device password can legitimately be unlocked before a
         // new isolated OSL Privacy identity is created/imported. Do not deadlock that
