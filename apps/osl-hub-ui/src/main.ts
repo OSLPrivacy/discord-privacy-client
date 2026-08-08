@@ -13414,6 +13414,10 @@ export const __oslHubUiTest = {
   loadRecoveryKitReminder(): Promise<boolean> {
     return recoveryKitUnsavedFlag.load();
   },
+  setRecoveryKitReminderForCapture(unsaved: boolean): Promise<boolean> {
+    return recoveryKitUnsavedFlag.set(unsaved);
+  },
+  /** Observe the recovery reducer state without exposing or mutating secrets. */
   recoveryKitSnapshot(): {
     onboardingRoute: OnboardingRoute;
     bundle: typeof recoveryBundle;
