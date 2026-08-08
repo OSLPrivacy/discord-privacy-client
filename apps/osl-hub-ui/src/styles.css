@@ -6871,9 +6871,24 @@ code {
 
 .identity-create-form { margin-top: 14px; }
 
-
-
-
+.public-name-page {
+  margin-top: 16px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  display: grid;
+  gap: 12px;
+  background: var(--panel);
+}
+.public-name-page header h3,
+.public-name-page header p,
+.public-name-page .form-status { margin: 0; }
+.public-name-page header p,
+.public-name-page .form-status { margin-top: 4px; color: var(--muted); font-size: 12px; }
+.public-name-page label { display: grid; gap: 6px; font-size: 12px; font-weight: 650; }
+.public-name-page input { width: min(100%, 420px); }
+.public-name-page .settings-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.public-name-page[data-public-name-phase="ready"] { border-color: var(--brand); }
 
 .recovery-import {
   margin-top: 16px;

@@ -289,6 +289,7 @@ import {
   setOslChatNotificationSwitch,
   type OslChatNotificationSwitch,
 } from "./osl-chat-notification-settings";
+import { PublicNamePageController } from "./public-name-page";
 
 export type Route = "onboarding" | "home" | "arrange-tiles" | "inbox" | "people" | "privacy" | "scrub" | "activity" | "connections" | "service" | "settings" | "mullvad" | "osl-chat" | "osl-mail" | "osl-mail-status" | "osl-notes-status" | "osl-servers" | "signal-qa";
 
@@ -721,6 +722,7 @@ let homeTileArrangementNotice = "";
 let friendCode: string | null = null;
 let friendDisplayId: string | null = null;
 let claimedOslUsername: string | null = null;
+const publicNamePage = new PublicNamePageController();
 let oslMailLoading = false;
 let oslMailStatus: OslMailStatus | null = null;
 let oslMailThreads: OslMailThreadSummary[] = [];
@@ -7537,7 +7539,7 @@ function identitySettingsContent(): string {
   const messageRecovery = forwardSecrecyMode === "protectPast"
     ? "Protect past messages. Restart begins a fresh chain and late messages are lost."
     : "Keep group delivery as today. A persisted snapshot can recover prior message keys.";
-  return `<h2>Account</h2><p>One active identity on this device.</p>${identityStorageProtectionMarkup(classifyIdentityStorageProtection(identityStorageMethod))}<div class="identity-list">${identities}</div><div class="setting-line"><span><strong>Message recovery</strong><small>${messageRecovery}</small></span>${statusTag(forwardSecrecyMode === "protectPast" ? "Protect past" : "Keep delivery")}</div>${recovery}<form class="inline-form identity-create-form" id="identity-slot-form"><input id="identity-slot-label" maxlength="80" placeholder="New identity label" required/><button class="button primary">Create identity</button></form><details class="recovery-import settings-disclosure"><summary>Recover another identity</summary><form id="identity-recover-form" class="setup-surface"><input id="identity-recover-label" maxlength="80" placeholder="Identity label" required/><textarea id="identity-recover-phrase" rows="3" placeholder="12-word recovery phrase" required></textarea><button class="button">Recover identity</button></form></details>${activationSettingsContent()}`;
+  return `<h2>Account</h2><p>One active identity on this device.</p>${identityStorageProtectionMarkup(classifyIdentityStorageProtection(identityStorageMethod))}<div class="identity-list">${identities}</div>${publicNamePage.render()}<div class="setting-line"><span><strong>Message recovery</strong><small>${messageRecovery}</small></span>${statusTag(forwardSecrecyMode === "protectPast" ? "Protect past" : "Keep delivery")}</div>${recovery}<form class="inline-form identity-create-form" id="identity-slot-form"><input id="identity-slot-label" maxlength="80" placeholder="New identity label" required/><button class="button primary">Create identity</button></form><details class="recovery-import settings-disclosure"><summary>Recover another identity</summary><form id="identity-recover-form" class="setup-surface"><input id="identity-recover-label" maxlength="80" placeholder="Identity label" required/><textarea id="identity-recover-phrase" rows="3" placeholder="12-word recovery phrase" required></textarea><button class="button">Recover identity</button></form></details>${activationSettingsContent()}`;
 }
 
 /**
@@ -9255,6 +9257,39 @@ function bindWorkspace(): void {
     hubIdentitiesLoad = "pending";
     render();
     void refreshIdentitySlots(true);
+  });
+  const publicNameInput = document.querySelector<HTMLInputElement>("#public-name-input");
+  const syncPublicNameControls = (): void => {
+    const section = document.querySelector<HTMLElement>(".public-name-page");
+    const status = document.querySelector<HTMLElement>("#public-name-status");
+    const check = document.querySelector<HTMLButtonElement>("#public-name-check");
+    const claim = document.querySelector<HTMLButtonElement>("#public-name-claim");
+    const cancel = document.querySelector<HTMLButtonElement>("#public-name-cancel");
+    if (section) {
+      section.dataset.publicNamePhase = publicNamePage.phase;
+      section.dataset.proofName = publicNamePage.proofName ?? "";
+    }
+    if (status) status.textContent = publicNamePage.message;
+    if (check) check.disabled = !publicNamePage.canCheck;
+    if (claim) claim.disabled = !publicNamePage.canClaim;
+    if (cancel) cancel.disabled = publicNamePage.busy;
+  };
+  publicNameInput?.addEventListener("input", () => {
+    void publicNamePage.enterName(publicNameInput.value).then(syncPublicNameControls);
+    syncPublicNameControls();
+  });
+  document.querySelector<HTMLButtonElement>("#public-name-check")?.addEventListener("click", async () => {
+    await publicNamePage.checkName();
+    render();
+  });
+  document.querySelector<HTMLButtonElement>("#public-name-claim")?.addEventListener("click", async () => {
+    const claim = await publicNamePage.claimName();
+    if (claim) claimedOslUsername = claim.username;
+    render();
+  });
+  document.querySelector<HTMLButtonElement>("#public-name-cancel")?.addEventListener("click", async () => {
+    await publicNamePage.cancel();
+    render();
   });
   document.querySelector<HTMLFormElement>("#identity-slot-form")?.addEventListener("submit", (event) => void createAdditionalIdentity(event));
   document.querySelector<HTMLFormElement>("#identity-recover-form")?.addEventListener("submit", (event) => void recoverAdditionalIdentity(event));

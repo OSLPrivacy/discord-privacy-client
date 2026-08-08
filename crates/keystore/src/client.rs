@@ -1049,6 +1049,17 @@ impl KeyServerClient {
         username: &str,
         friend_code: &str,
     ) -> Result<UsernameClaimResponse> {
+        let proof = self.prepare_public_name_proof(identity, username)?;
+        self.claim_username_with_public_name_proof(identity, username, friend_code, proof)
+    }
+
+    /// Build the short-lived proof used by the public-name confirmation page.
+    /// The renderer receives only a success result; this value stays native.
+    pub fn prepare_public_name_proof(
+        &self,
+        identity: &Identity,
+        username: &str,
+    ) -> Result<PublicNameProof> {
         if !is_normalized_username(username) {
             return Err(Error::Transport(
                 "username must already be normalized".into(),
@@ -1066,6 +1077,37 @@ impl KeyServerClient {
         let public_name_proof =
             PublicNameProof::from_account_proof(identity, username, account_proof)
                 .map_err(|error| Error::Transport(format!("username proof refused: {error}")))?;
+        Ok(public_name_proof)
+    }
+
+    /// Consume a proof prepared for this exact identity and public name.
+    pub fn claim_username_with_public_name_proof(
+        &self,
+        identity: &Identity,
+        username: &str,
+        friend_code: &str,
+        public_name_proof: PublicNameProof,
+    ) -> Result<UsernameClaimResponse> {
+        if !is_normalized_username(username) {
+            return Err(Error::Transport(
+                "username must already be normalized".into(),
+            ));
+        }
+        if public_name_proof.public_name != username
+            || public_name_proof.account_proof.e.owner_user_id != identity.user_id
+        {
+            return Err(Error::Transport(
+                "username proof does not match this identity and name".into(),
+            ));
+        }
+        let service_account_id = identity.discord_snowflake.as_deref().ok_or_else(|| {
+            Error::Transport("username claim requires a Discord account proof".into())
+        })?;
+        if public_name_proof.account_proof.platform_id != service_account_id {
+            return Err(Error::Transport(
+                "username proof does not match the connected Discord account".into(),
+            ));
+        }
         let request_id = URL_SAFE_NO_PAD.encode(crypto::random::random_bytes(32));
         let timestamp_ms = unix_timestamp_ms();
         let message = username_claim_msg(

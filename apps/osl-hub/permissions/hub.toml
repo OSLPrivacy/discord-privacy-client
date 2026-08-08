@@ -874,6 +874,21 @@ description = "Check bounded public username availability metadata without grant
 commands.allow = ["get_hub_username_status"]
 
 [[permission]]
+identifier = "allow-check-hub-public-name"
+description = "Create one short-lived native account proof for the exact normalized public name entered in Account settings; no proof bytes are returned to the webview."
+commands.allow = ["check_hub_public_name"]
+
+[[permission]]
+identifier = "allow-cancel-hub-public-name-check"
+description = "Discard the one in-memory public-name proof held for Account settings without changing any directory row."
+commands.allow = ["cancel_hub_public_name_check"]
+
+[[permission]]
+identifier = "allow-claim-checked-hub-username"
+description = "Consume the native proof created for the exact same public name and unlocked owner; refuse when that matching check has not succeeded."
+commands.allow = ["claim_checked_hub_username"]
+
+[[permission]]
 identifier = "allow-verify-hub-friend-safety-number"
 description = "Record explicit out-of-band verification of one friend's safety number."
 commands.allow = ["verify_hub_friend_safety_number"]

@@ -956,6 +956,12 @@ mod tests {
         "add_hub_friend",
         "create_one_use_invite_link",
         "claim_hub_username",
+        // All three use the username-directory client, whose constructor
+        // consults keystore::egress before it can open a route. Cancel is
+        // native in-memory state only.
+        "check_hub_public_name",
+        "cancel_hub_public_name_check",
+        "claim_checked_hub_username",
         "get_hub_username_status",
         "add_hub_friend_by_username",
         "get_osl_profile",

@@ -489,11 +489,33 @@ fn username_claim_carries_public_name_proof_from_named_app_account() {
     ]);
 
     let client = KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap();
+    let proof = client
+        .prepare_public_name_proof(&identity, "rust_0312")
+        .expect("exact public-name proof is prepared");
+    let mismatch = client
+        .claim_username_with_public_name_proof(
+            &identity,
+            "other_0312",
+            "OSLFR1.mock-invite-for-rust-0312",
+            proof.clone(),
+        )
+        .expect_err("one name cannot consume another name's proof");
+    assert_eq!(
+        mismatch.to_string(),
+        "HTTP transport error: username proof does not match this identity and name"
+    );
+    println!("TASK0313_NATIVE_MISMATCH_REFUSAL={mismatch}");
     let claimed = client
-        .claim_username(&identity, "rust_0312", "OSLFR1.mock-invite-for-rust-0312")
+        .claim_username_with_public_name_proof(
+            &identity,
+            "rust_0312",
+            "OSLFR1.mock-invite-for-rust-0312",
+            proof,
+        )
         .expect("mock worker accepts public-name proof claim");
     assert_eq!(claimed.username, "rust_0312");
     assert_eq!(claimed.user_id, "osl1_owner");
+    println!("TASK0313_NATIVE_MATCHING_CLAIM_NAME={}", claimed.username);
 
     let challenge_request = String::from_utf8(rx.recv().unwrap()).unwrap();
     assert!(challenge_request

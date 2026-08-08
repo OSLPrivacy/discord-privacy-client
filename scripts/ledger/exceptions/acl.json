@@ -1,13 +1,7 @@
 {
   "note": "ACL ledger dead-issuer ratchet. Adding an entry here is an admission that the issuer does not ship in a production entry.  2026-08-04: three registered-but-granted-nowhere commands added after D-159 gave ledger 3 that direction. Each is DEAD (zero reachable callers), which is what this list records. A LIVE break -- a reachable caller invoking a command that does not exist -- is NEVER excepted; see D-137.",
-  "highWaterMark": 15,
+  "highWaterMark": 14,
   "entries": [
-    {
-      "id": "dead-issuer:claim_hub_username:apps/osl-hub-ui/src/adapters.ts:936",
-      "class": "accepted",
-      "reason": "claim_hub_username is in an exported adapter function that no production entry imports; this issuer does not ship.",
-      "citation": "apps/osl-hub-ui/src/adapters.ts:936"
-    },
     {
       "id": "dead-issuer:host_osl_lan_room:apps/osl-hub-ui/src/osl-collab.ts:69",
       "class": "accepted",
@@ -77,8 +71,8 @@
     {
       "id": "registered-but-granted-to-no-webview:claim_hub_username",
       "class": "accepted",
-      "reason": "DEAD, not a live break. Registered on the IPC surface, granted nowhere, and its only caller is claimHubUsername in adapters.ts -- an exported function with ZERO importers outside its own module, already recorded in this file's dead-issuer set. R-002 RETRACTED 'claim_hub_username is a live break on the onboarding path' to LATENT, and this is that latent state measured from the other side. The ACL rejecting it is CORRECT while nothing reachable calls it; granting it would widen the main webview's authority for a feature that does not exist yet.",
-      "citation": "apps/osl-hub-ui/src/adapters.ts:936"
+      "reason": "The legacy raw claim remains registered but has no renderer issuer and is deliberately granted nowhere. Account settings uses claim_checked_hub_username instead, whose native handler consumes a proof prepared for the exact same public name and owner. The ACL rejecting a direct legacy invoke is required.",
+      "citation": "apps/osl-hub/src/main.rs"
     },
     {
       "id": "registered-but-granted-to-no-webview:get_osl_profile",

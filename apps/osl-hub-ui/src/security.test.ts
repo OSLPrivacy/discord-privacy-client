@@ -555,14 +555,15 @@ describe("bundled preview security boundary", () => {
       "allow-export-hub-friend-code",
       "allow-add-hub-friend",
       // Local, read-only username lookup used by the add-friend-by-username
-      // flow (adapters.ts `get_hub_username_status`). The Rust handler
-      // (apps/osl-hub/src/main.rs) requires an unlocked active identity,
-      // validates the username, and resolves it through the in-process
-      // `lookup_username` helper — there is no network, keyserver, or
-      // cross-app reach, so it stays inside the local main-window boundary
-      // this test protects. The write-side siblings (`claim_hub_username`,
-      // `add_hub_friend_by_username`) are deliberately NOT granted here.
+      // flow (adapters.ts `get_hub_username_status`). The public-name page has
+      // a narrower write path: Check creates one native-only proof for one
+      // exact name and owner, Cancel destroys it, and checked Claim consumes
+      // it. `claim_hub_username` and `add_hub_friend_by_username` remain
+      // deliberately ungranted, so a raw legacy claim invoke is still refused.
       "allow-get-hub-username-status",
+      "allow-check-hub-public-name",
+      "allow-cancel-hub-public-name-check",
+      "allow-claim-checked-hub-username",
       "allow-verify-hub-friend-safety-number",
       "allow-remove-hub-friend",
       "allow-list-hub-people",

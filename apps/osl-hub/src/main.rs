@@ -1084,9 +1084,16 @@ async fn cancel_scrub_index(
         .map_err(|_| "Scrub cancellation was interrupted".to_owned())?
 }
 
+struct PendingHubPublicNameProof {
+    owner_user_id: String,
+    username: String,
+    proof: keystore::PublicNameProof,
+}
+
 #[derive(Default)]
 struct HubAccountSessionState {
     transition: tokio::sync::Mutex<()>,
+    public_name_proof: tokio::sync::Mutex<Option<PendingHubPublicNameProof>>,
 }
 
 #[derive(Default)]
@@ -6440,6 +6447,14 @@ struct HubUsernameStatus {
     owned_by_active_identity: bool,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HubPublicNameCheck {
+    username: String,
+    available: bool,
+    proof_ready: bool,
+}
+
 fn valid_osl_username(value: &str) -> bool {
     keystore::client::is_normalized_username(value)
 }
@@ -6504,6 +6519,111 @@ async fn claim_hub_username(
         .cloned()
         .ok_or_else(|| "Unlock an OSL identity before claiming a username".to_owned())?;
     claim_username(&core, &identity, &username)
+}
+
+/// Prepare one short-lived proof for one exact public name. The proof itself
+/// stays native; the renderer receives only whether this exact name is ready.
+#[tauri::command]
+async fn check_hub_public_name(
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    username: String,
+) -> Result<HubPublicNameCheck, String> {
+    let _session = session.transition.lock().await;
+    *session.public_name_proof.lock().await = None;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    if !valid_osl_username(&username) {
+        return Err("OSL username is invalid".to_owned());
+    }
+    if lookup_username(&username)?.is_some_and(|existing| existing != owner) {
+        return Ok(HubPublicNameCheck {
+            username,
+            available: false,
+            proof_ready: false,
+        });
+    }
+    let identity = core
+        .osl
+        .identity
+        .lock()
+        .map_err(|_| "OSL identity state is unavailable".to_owned())?
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| "Unlock an OSL identity before checking a public name".to_owned())?;
+    if identity.user_id != owner {
+        return Err("The active OSL identity changed during the public-name check".to_owned());
+    }
+    let proof = username_directory_client()?
+        .prepare_public_name_proof(&identity, &username)
+        .map_err(|error| format!("OSL public-name proof failed: {error}"))?;
+    *session.public_name_proof.lock().await = Some(PendingHubPublicNameProof {
+        owner_user_id: owner,
+        username: username.clone(),
+        proof,
+    });
+    Ok(HubPublicNameCheck {
+        username,
+        available: true,
+        proof_ready: true,
+    })
+}
+
+/// Clear the only proof the checked Claim command can consume.
+#[tauri::command]
+async fn cancel_hub_public_name_check(
+    session: State<'_, HubAccountSessionState>,
+) -> Result<bool, String> {
+    let _session = session.transition.lock().await;
+    *session.public_name_proof.lock().await = None;
+    Ok(true)
+}
+
+/// Claim only after Check name prepared a proof for this exact name and the
+/// same unlocked owner. A raw invoke before that point is refused here even if
+/// a caller bypasses the disabled renderer control.
+#[tauri::command]
+async fn claim_checked_hub_username(
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    username: String,
+) -> Result<HubUsernameClaim, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    if !valid_osl_username(&username) {
+        return Err("OSL username is invalid".to_owned());
+    }
+    let pending = {
+        let mut slot = session.public_name_proof.lock().await;
+        let matches = slot
+            .as_ref()
+            .is_some_and(|proof| proof.owner_user_id == owner && proof.username == username);
+        if !matches {
+            return Err("Check this exact public name before claiming it".to_owned());
+        }
+        slot.take().expect("matching public-name proof was checked")
+    };
+    let identity = core
+        .osl
+        .identity
+        .lock()
+        .map_err(|_| "OSL identity state is unavailable".to_owned())?
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| "Unlock an OSL identity before claiming a username".to_owned())?;
+    if identity.user_id != owner {
+        return Err("The active OSL identity changed before the public-name claim".to_owned());
+    }
+    let friend_code = security::export_friend_code(&core)?.friend_code;
+    let claimed = username_directory_client()?
+        .claim_username_with_public_name_proof(&identity, &username, &friend_code, pending.proof)
+        .map_err(|error| format!("OSL username claim failed: {error}"))?;
+    if claimed.username != username || claimed.user_id != identity.user_id {
+        return Err("OSL username directory returned an invalid claim binding".to_owned());
+    }
+    Ok(HubUsernameClaim {
+        username: claimed.username,
+        osl_user_id: claimed.user_id,
+    })
 }
 
 #[tauri::command]
