@@ -117,6 +117,8 @@ pub mod screen_words;
 pub mod server_membership;
 pub mod service_settings_restore;
 pub mod space_roster;
+#[cfg(test)]
+mod task_0465_password_reset_e2e;
 // Unit a45: encrypted UI-side storage contract (checklist A6). Defines the
 // `SecureLocalStore` trait + `SealedStore` reference impl; does not migrate
 // any caller yet (`apps/osl-hub-ui/src/main.ts` localStorage call sites and
