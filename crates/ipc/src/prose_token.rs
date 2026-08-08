@@ -122,7 +122,32 @@ pub const BRIDGE_ID_BYTES: usize = 8;
 /// Whatever the id leaves over in the carrier becomes secret seed material.
 /// 96 bits, freshly drawn per message, and it never crosses the network —
 /// only its HKDF output does.
-const BRIDGE_SEED_BYTES: usize = stego::TOKEN_ID_BYTES - BRIDGE_ID_BYTES;
+pub const BRIDGE_SEED_BYTES: usize = stego::TOKEN_ID_BYTES - BRIDGE_ID_BYTES;
+
+/// Fresh carrier entropy selected outside the encryption layer.
+///
+/// AI cover writing supplies this from public length/shape constraints only;
+/// the ordinary path continues to draw it from the operating system. Either
+/// way, the receiver sees the same canonical pointer format.
+#[derive(Clone, Copy)]
+pub struct ProseTokenCoverSeed([u8; BRIDGE_SEED_BYTES]);
+
+impl ProseTokenCoverSeed {
+    pub fn from_entropy(entropy: &[u8]) -> Result<Self, ProseTokenError> {
+        if entropy.len() < BRIDGE_SEED_BYTES {
+            return Err(ProseTokenError::BadCoverSeed);
+        }
+        let mut seed = [0u8; BRIDGE_SEED_BYTES];
+        let hk = Hkdf::<Sha256>::new(None, entropy);
+        hk.expand(b"osl/ai-cover-seed/v1", &mut seed)
+            .map_err(|_| ProseTokenError::BadCoverSeed)?;
+        Ok(Self(seed))
+    }
+
+    pub fn into_bytes(self) -> [u8; BRIDGE_SEED_BYTES] {
+        self.0
+    }
+}
 
 /// The bridge's read capability, derived from carrier material alone so the
 /// receiver needs no key material and no roundtrip — the same property the
@@ -250,6 +275,8 @@ pub enum ProseTokenError {
     ObjectTooLarge,
     #[error("transport object framing was malformed")]
     MalformedObject,
+    #[error("AI cover entropy was too short")]
+    BadCoverSeed,
 }
 
 impl From<crypto::Error> for ProseTokenError {
@@ -542,14 +569,39 @@ pub fn prose_token_send_with_writer(
 ) -> Result<ProseTokenSendOutput, ProseTokenError> {
     let base_url = crate::cipher_store_client::resolve_cipher_store_base_url(config_dir)?;
     let client = CipherStoreClient::new(base_url)?;
-    prose_token_send_with_client_and_writer(
+    prose_token_send_with_client_inner(
         &client,
         scope_input,
         detection_key,
         keys,
         dpc0_wire,
         ttl_seconds,
+        None,
         writer,
+    )
+}
+
+/// Direct-route send with entropy selected by the verified local cover writer.
+pub fn prose_token_send_with_cover_seed(
+    config_dir: &std::path::Path,
+    scope_input: &ScopeInput,
+    detection_key: &[u8; MAC_KEY_LEN],
+    keys: ProseTokenSendKeys<'_>,
+    dpc0_wire: &str,
+    ttl_seconds: u32,
+    cover_seed: ProseTokenCoverSeed,
+) -> Result<ProseTokenSendOutput, ProseTokenError> {
+    let base_url = crate::cipher_store_client::resolve_cipher_store_base_url(config_dir)?;
+    let client = CipherStoreClient::new(base_url)?;
+    prose_token_send_with_client_inner(
+        &client,
+        scope_input,
+        detection_key,
+        keys,
+        dpc0_wire,
+        ttl_seconds,
+        Some(cover_seed),
+        ProseTokenCoverWriter::Baseline,
     )
 }
 
@@ -568,13 +620,36 @@ pub fn prose_token_send_with_client(
     dpc0_wire: &str,
     ttl_seconds: u32,
 ) -> Result<ProseTokenSendOutput, ProseTokenError> {
-    prose_token_send_with_client_and_writer(
+    prose_token_send_with_client_inner(
         client,
         scope_input,
         detection_key,
         keys,
         dpc0_wire,
         ttl_seconds,
+        None,
+        ProseTokenCoverWriter::Baseline,
+    )
+}
+
+/// Routed send with entropy selected by the verified local cover writer.
+pub fn prose_token_send_with_client_and_cover_seed(
+    client: &CipherStoreClient,
+    scope_input: &ScopeInput,
+    detection_key: &[u8; MAC_KEY_LEN],
+    keys: ProseTokenSendKeys<'_>,
+    dpc0_wire: &str,
+    ttl_seconds: u32,
+    cover_seed: ProseTokenCoverSeed,
+) -> Result<ProseTokenSendOutput, ProseTokenError> {
+    prose_token_send_with_client_inner(
+        client,
+        scope_input,
+        detection_key,
+        keys,
+        dpc0_wire,
+        ttl_seconds,
+        Some(cover_seed),
         ProseTokenCoverWriter::Baseline,
     )
 }
@@ -591,6 +666,28 @@ pub fn prose_token_send_with_client_and_writer(
     keys: ProseTokenSendKeys<'_>,
     dpc0_wire: &str,
     ttl_seconds: u32,
+    writer: ProseTokenCoverWriter,
+) -> Result<ProseTokenSendOutput, ProseTokenError> {
+    prose_token_send_with_client_inner(
+        client,
+        scope_input,
+        detection_key,
+        keys,
+        dpc0_wire,
+        ttl_seconds,
+        None,
+        writer,
+    )
+}
+
+fn prose_token_send_with_client_inner(
+    client: &CipherStoreClient,
+    scope_input: &ScopeInput,
+    detection_key: &[u8; MAC_KEY_LEN],
+    keys: ProseTokenSendKeys<'_>,
+    dpc0_wire: &str,
+    ttl_seconds: u32,
+    cover_seed: Option<ProseTokenCoverSeed>,
     writer: ProseTokenCoverWriter,
 ) -> Result<ProseTokenSendOutput, ProseTokenError> {
     let body = dpc0_wire
@@ -619,10 +716,15 @@ pub fn prose_token_send_with_client_and_writer(
 
     // Fresh per message, so two messages in one conversation share no
     // store-visible value and the store cannot link them by id or token.
-    let seed_bytes = crypto::random::random_bytes(BRIDGE_SEED_BYTES);
-    let seed: [u8; BRIDGE_SEED_BYTES] = seed_bytes
-        .try_into()
-        .expect("random seed length is fixed by BRIDGE_SEED_BYTES");
+    let seed = match cover_seed {
+        Some(seed) => seed.0,
+        None => {
+            let seed_bytes = crypto::random::random_bytes(BRIDGE_SEED_BYTES);
+            seed_bytes
+                .try_into()
+                .expect("random seed length is fixed by BRIDGE_SEED_BYTES")
+        }
+    };
     let fetch_token = bridge_fetch_token(&seed);
 
     // The token must be chosen before the upload — it rides in the upload's

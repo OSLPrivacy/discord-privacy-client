@@ -46,8 +46,6 @@ export const SENDER_FILTER_SOURCE_FILES = Object.freeze({
     //   c6fe0626b t16-b2  POST /v1/license/redeem                +156/-0
     //   f647db9ab T6-K1   export the Archive durable object       +48/-0
     //   05526e9ae T5-K4   GET /v1/username-bucket/:bucket        +250/-0
-    //   184f5bee0 T13-E5  POST /v1/ai/generate                   +144/-0
-    //   890c6013e T13-F6  POST /v1/credits/spend                 +144/-0
     //   169b2bebb T21-C5  GET/POST /v1/space-events              +384/-0
     //   9260ed07c T6-K6   GET /v1/devices/:user_id               +208/-0
     //   2d6ef259a merge bk7 into fix/conf (pure union)             +0/-0

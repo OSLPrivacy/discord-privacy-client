@@ -46,11 +46,10 @@ pub mod telegram_attachment_tray;
 // #[tauri::command] and tauri only arrives with that feature. The command
 // wrapper now lives in main.rs (the macro's __cmd__* helpers must sit beside
 // the invoke_handler), so nothing here needs tauri: cover_ai is a
-// non-optional dependency and credits/ai_consent are ungated. The gate had
+// non-optional dependency and credits are ungated. The gate had
 // outlived its reason and broke the default-feature build, because
 // broker.rs takes `&crate::ai_carrier::AiCarrierState` unconditionally.
 pub mod ai_carrier;
-pub mod ai_consent;
 #[cfg(feature = "core")]
 #[cfg(not(task3982_focused))]
 pub mod app_own_names;

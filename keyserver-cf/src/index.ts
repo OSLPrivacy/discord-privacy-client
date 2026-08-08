@@ -35,8 +35,6 @@
 import type { Env } from "./env.js";
 import { handleAccountOwnershipChallenge } from "./endpoints/account-ownership-challenge.js";
 import { handleAccountOwnershipProof } from "./endpoints/account-ownership-proof.js";
-import { handleAiGenerate } from "./endpoints/ai-generate.js";
-import { handleCreditSpend } from "./endpoints/credits.js";
 import { handleCheckout } from "./endpoints/checkout.js";
 import { handleStripeDonationSession } from "./endpoints/donation-stripe.js";
 import { handleCheckoutClaim } from "./endpoints/checkout-claim.js";
@@ -477,8 +475,6 @@ async function dispatch(
   }
 
   if (method === "POST") {
-    if (path === "/v1/ai/generate") return await handleAiGenerate(request, env);
-    if (path === "/v1/credits/spend") return await handleCreditSpend(request, env);
     if (path === "/v1/update-attempts") {
       return withCors(await handleUpdateAttemptRecord(request, env), request);
     }

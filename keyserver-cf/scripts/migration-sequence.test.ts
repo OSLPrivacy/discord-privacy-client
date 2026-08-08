@@ -466,6 +466,6 @@ describe("it accepts", () => {
 // records: a checker satisfied by the presence of a string cannot tell a live
 // call from a commented-out one. The wiring is proved BEHAVIOURALLY instead, in
 // the lane's mutation table: with a fourth duplicate on disk, and again with a
-// recorded exception removed, `npx vitest run test/unit/credits.test.ts` — an
+// recorded exception removed — an
 // ordinary worker-pool spec that touches none of this — exits 1 with the rule's
 // own message. That is the whole worker pool refusing, and no string can fake it.

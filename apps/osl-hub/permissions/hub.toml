@@ -14,6 +14,11 @@ description = "Set the session-only, per-conversation opt-in for optional AI car
 commands.allow = ["set_ai_carrier_preview_enabled"]
 
 [[permission]]
+identifier = "allow-set-ai-covertext-selected"
+description = "Choose the verified on-device AI cover writer for subsequent protected carriers; no message text crosses this command."
+commands.allow = ["set_ai_covertext_selected"]
+
+[[permission]]
 identifier = "allow-build-integrity-status"
 description = "Read the already-computed startup build-integrity verdict; it copies a status value and performs no I/O, no network operation and no key access."
 commands.allow = ["build_integrity_status"]

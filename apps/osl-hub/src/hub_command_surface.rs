@@ -667,6 +667,7 @@ macro_rules! hub_tauri_commands {
             get_onboarding_preferences,
             ai_carrier_status,
             set_ai_carrier_preview_enabled,
+            set_ai_covertext_selected,
             build_integrity_status,
             list_hub_app_notifications,
             set_hub_notifications_enabled,

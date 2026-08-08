@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import fs from "node:fs";
 
 const source = fs.readFileSync(new URL("./main.ts", import.meta.url), "utf8");
+const coverControls = fs.readFileSync(new URL("./cover-writing-controls.ts", import.meta.url), "utf8");
 const overlay = fs.readFileSync(new URL("./overlay.ts", import.meta.url), "utf8");
 const styles = fs.readFileSync(new URL("./styles.css", import.meta.url), "utf8");
 const native = fs.readFileSync(new URL("../../osl-hub/src/main.rs", import.meta.url), "utf8");
@@ -30,6 +31,9 @@ describe("Discord QA header strip", () => {
     expect(production).toContain('coverWritingControlsMarkup("discord"');
     expect(production).toContain('covertextId: "native-discord-covertext"');
     expect(production).toContain('aiCovertextId: "native-discord-ai-covertext"');
+    expect(production).toContain("aiAvailable: true");
+    expect(coverControls).toContain("<button${covertextId}");
+    expect(coverControls).toContain("<button${aiCovertextId}");
     expect(production).not.toContain("discord-qa-control");
     // Transcript visibility remains QA-only; the shipping branch shares only
     // the two cover-writing buttons with the other composer surfaces.

@@ -954,6 +954,7 @@ mod tests {
         "get_hub_revocation_status",
         "ai_carrier_status",
         "set_ai_carrier_preview_enabled",
+        "set_ai_covertext_selected",
         "build_integrity_status",
         "verify_peer_build_integrity",
         "list_bad_message_rules",

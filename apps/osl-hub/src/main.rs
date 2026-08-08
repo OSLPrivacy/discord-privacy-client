@@ -4,7 +4,8 @@
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use osl_privacy_hub::account_recovery;
 use osl_privacy_hub::ai_carrier::{
-    ai_carrier_status_for, set_ai_carrier_preview_enabled_for, AiCarrierState,
+    ai_carrier_status_for, set_ai_carrier_preview_enabled_for, set_ai_covertext_selected_for,
+    AiCarrierState,
 };
 use osl_privacy_hub::autoscrub_run::{self, AutoScrubFleetStatus, AutoScrubReviewedRunRequest};
 use osl_privacy_hub::broker::{
@@ -9943,6 +9944,14 @@ fn set_ai_carrier_preview_enabled(
 }
 
 #[tauri::command]
+fn set_ai_covertext_selected(
+    state: tauri::State<'_, AiCarrierState>,
+    selected: bool,
+) -> Result<osl_privacy_hub::ai_carrier::AiCarrierStatus, String> {
+    set_ai_covertext_selected_for(&state, selected)
+}
+
+#[tauri::command]
 fn build_integrity_status(state: tauri::State<'_, BuildIntegrity>) -> BuildIntegrity {
     *state.inner()
 }
@@ -10408,7 +10417,9 @@ fn main() {
         app.manage(WhatsAppQaProtectionState::default());
         app.manage(LocalCoverState::default());
         startup_breadcrumb("setup_step_31_local_cover_state_managed"); // STARTUP-TRACE
-        app.manage(AiCarrierState::default());
+        let ai_carrier = AiCarrierState::default();
+        let _ = ai_carrier.ensure_bundled_local_model(&config_dir.join("cover-model"));
+        app.manage(ai_carrier);
         app.manage(ChatCaptureProtectionState::default());
         // Evaluate the bundled signed manifest once per launch, before the UI
         // can present a local integrity verdict.
@@ -11030,7 +11041,11 @@ mod tauri_command_acl_tests {
 
     #[test]
     fn t13_td8_ai_carrier_command_is_reachable_from_the_shipping_binary() {
-        assert_registered_and_acl_granted(&["ai_carrier_status", "set_ai_carrier_preview_enabled"]);
+        assert_registered_and_acl_granted(&[
+            "ai_carrier_status",
+            "set_ai_carrier_preview_enabled",
+            "set_ai_covertext_selected",
+        ]);
     }
 
     #[test]

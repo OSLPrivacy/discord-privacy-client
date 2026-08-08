@@ -4,15 +4,13 @@ export type UiProGate = Readonly<{
   reason: string;
 }>;
 
-export type AiCarrier = "word-bank" | "local-ai" | "cloud";
+export type AiCarrier = "word-bank" | "local-ai";
 export type AiCarrierRequest = Exclude<AiCarrier, "word-bank">;
-export type CloudGenerationConsent = "granted" | "declined" | "unavailable";
 
 export interface AiCarrierEntitlement {
   readonly access: "free" | "pro" | "offlineGrace";
   readonly requestedCarrier: AiCarrierRequest;
   readonly localModelAvailable: boolean;
-  readonly cloudConsent: CloudGenerationConsent;
 }
 
 /**
@@ -83,9 +81,5 @@ export function aiCarrierForEntitlement(input: AiCarrierEntitlement): AiCarrier 
   const hasProEntitlement = input.access === "pro" || input.access === "offlineGrace";
   if (!hasProEntitlement) return "word-bank";
 
-  if (input.requestedCarrier === "local-ai") {
-    return input.localModelAvailable ? "local-ai" : "word-bank";
-  }
-
-  return input.cloudConsent === "granted" ? "cloud" : "word-bank";
+  return input.localModelAvailable ? "local-ai" : "word-bank";
 }

@@ -935,9 +935,11 @@ const onboardingBranchStorageKey = "osl-onboarding-branch-v1";
 const experimentalSendConsentStorageKey = "osl-experimental-send-consent-v1";
 const rnWirePolicyStorageKey = "osl-rn-wire-policy-requested-v1";
 // No cover-writing choice is active until the operator presses one of the two
-// shared buttons.  TASK 3520 wires this plain choice to the built-in wordbank;
-// the adjacent AI choice remains unavailable until its writer is finished.
+// shared buttons. TASK 3520 wires the plain choice to the built-in wordbank.
 let nativeDiscordCovertextEnabled = false;
+// The verified pack is bundled and materialized during Rust startup. The
+// command still re-checks readiness before it accepts the selection.
+let nativeDiscordAiCovertextSelected = false;
 const oslChatPreviewStorageKey = "osl-chat-previews-visible-v1";
 const oslChatMutedStorageKey = "osl-chat-muted-people-v1";
 const oslChatUnreadStorageKey = "osl-chat-unread-v1";
@@ -4959,7 +4961,7 @@ function nativeDiscordHeaderControls(): string {
   const composerUnreachableNotice = nativeDiscordComposerUnreachableNotice();
   if (!discordQaShell) {
     const inactive = nativeDiscordProtectionActive ? "" : "disabled";
-    return `<div class="native-discord-header-controls" aria-label="Discord privacy controls">${composerUnreachableNotice}<button class="header-protection-control burn in-dom-tooltip-anchor" data-open-burn="chat" type="button" ${inactive}>Burn${inDomTooltipMarkup("Burn this local OSL chat")}</button>${coverWritingControlsMarkup("discord", { covertextEnabled: nativeDiscordCovertextEnabled, covertextId: "native-discord-covertext", aiCovertextId: "native-discord-ai-covertext" })}</div>`;
+    return `<div class="native-discord-header-controls" aria-label="Discord privacy controls">${composerUnreachableNotice}<button class="header-protection-control burn in-dom-tooltip-anchor" data-open-burn="chat" type="button" ${inactive}>Burn${inDomTooltipMarkup("Burn this local OSL chat")}</button>${coverWritingControlsMarkup("discord", { covertextEnabled: nativeDiscordCovertextEnabled, aiAvailable: true, aiSelected: nativeDiscordAiCovertextSelected, covertextId: "native-discord-covertext", aiCovertextId: "native-discord-ai-covertext" })}</div>`;
   }
   const context = peerProtectedSheet.context;
   const verifiedPeer = context
@@ -9137,9 +9139,21 @@ function bindWorkspace(): void {
   document.querySelector<HTMLButtonElement>("#native-discord-covertext")?.addEventListener("click", () => {
     void invoke<boolean>("select_native_discord_covertext_writer").then((confirmed) => {
       nativeDiscordCovertextEnabled = confirmed;
+      if (nativeDiscordAiCovertextSelected) {
+        void invoke("set_ai_covertext_selected", { selected: false });
+        nativeDiscordAiCovertextSelected = false;
+      }
       render();
       showToast(nativeDiscordCovertextEnabled ? "Covertext wordbank selected" : "Covertext did not change");
     }).catch(() => showToast("Covertext did not change"));
+  });
+  document.querySelector<HTMLButtonElement>("#native-discord-ai-covertext")?.addEventListener("click", () => {
+    const requested = !nativeDiscordAiCovertextSelected;
+    void invoke<{ localModelReady: boolean; aiCovertextSelected: boolean }>("set_ai_covertext_selected", { selected: requested }).then((status) => {
+      nativeDiscordAiCovertextSelected = status.localModelReady && status.aiCovertextSelected;
+      render();
+      showToast(nativeDiscordAiCovertextSelected ? "AI Covertext will write the next cover on this device" : "Covertext will use the built-in writer");
+    }).catch(() => showToast("AI Covertext could not start the local model"));
   });
   document.querySelector<HTMLButtonElement>("#discord-qa-run-test")?.addEventListener("click", () => {
     void runDiscordQaOneClick();

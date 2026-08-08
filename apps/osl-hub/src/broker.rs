@@ -1989,6 +1989,7 @@ pub fn prepare_peer_prose_text_with_capture_and_store_client(
         Some(store_client),
         None,
         ipc::prose_token::ProseTokenCoverWriter::Baseline,
+        None,
     )
     .map(|envelope| envelope.prepared)
 }
@@ -2115,6 +2116,7 @@ fn prepare_peer_prose_text_inner(
         None,
         None,
         ipc::prose_token::ProseTokenCoverWriter::Baseline,
+        None,
     )
 }
 
@@ -2165,6 +2167,7 @@ fn prepare_peer_prose_text_inner_with_chunk(
     store_client: Option<&ipc::cipher_store_client::CipherStoreClient>,
     send_order: Option<AuthenticatedSenderOrder>,
     cover_writer: ipc::prose_token::ProseTokenCoverWriter,
+    cover_seed: Option<ipc::prose_token::ProseTokenCoverSeed>,
 ) -> Result<PreparedPeerProseEnvelope, String> {
     let manual = broker.manual_peer_for(context_token)?;
     let verified = security::require_manual_peer_scope_approved(
@@ -2230,8 +2233,19 @@ fn prepare_peer_prose_text_inner_with_chunk(
     // route. All the route decides is which HTTP client carries the upload:
     // `store_client` is Some only once the Tor gate has authorized a route, and
     // a selected-but-unhealthy Tor never reaches here at all.
-    let uploaded = if let Some(store_client) = store_client {
-        ipc::prose_token::prose_token_send_with_client_and_writer(
+    let uploaded = match (store_client, cover_seed) {
+        (Some(store_client), Some(cover_seed)) => {
+            ipc::prose_token::prose_token_send_with_client_and_cover_seed(
+                store_client,
+                &manual.scope,
+                &detection_key,
+                send_keys,
+                &encrypted,
+                ttl_seconds,
+                cover_seed,
+            )
+        }
+        (Some(store_client), None) => ipc::prose_token::prose_token_send_with_client_and_writer(
             store_client,
             &manual.scope,
             &detection_key,
@@ -2239,9 +2253,17 @@ fn prepare_peer_prose_text_inner_with_chunk(
             &encrypted,
             ttl_seconds,
             cover_writer,
-        )
-    } else {
-        ipc::prose_token::prose_token_send_with_writer(
+        ),
+        (None, Some(cover_seed)) => ipc::prose_token::prose_token_send_with_cover_seed(
+            &dir,
+            &manual.scope,
+            &detection_key,
+            send_keys,
+            &encrypted,
+            ttl_seconds,
+            cover_seed,
+        ),
+        (None, None) => ipc::prose_token::prose_token_send_with_writer(
             &dir,
             &manual.scope,
             &detection_key,
@@ -2249,7 +2271,7 @@ fn prepare_peer_prose_text_inner_with_chunk(
             &encrypted,
             ttl_seconds,
             cover_writer,
-        )
+        ),
     }
     // D-144: the user-facing sentence stays byte-identical, but the cause is no
     // longer thrown away. `map_err(|_| ...)` here cost D-127 a bisect: the word
@@ -4443,6 +4465,25 @@ fn prepare_peer_inbox_text_with_route_clients(
             created_at: now,
             expires_at,
         };
+        // The model boundary receives counts only. Derive them here while the
+        // private chunk is already inside the trusted encryption path, then
+        // discard the text-facing view before asking the local writer.
+        let character_count = chunk_plaintext.chars().count();
+        let hard_line_character_counts = chunk_plaintext
+            .split('\n')
+            .map(|line| u32::try_from(line.chars().count()))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| "The private message shape is too large".to_owned())?;
+        let cover_shape = crate::bundled_model_pack::CoverShapeConstraints::new(
+            character_count,
+            hard_line_character_counts,
+        )
+        .map_err(|_| "The private message shape is too large".to_owned())?;
+        let cover_seed = ai_carrier
+            .next_cover_entropy(&cover_shape)?
+            .map(|entropy| ipc::prose_token::ProseTokenCoverSeed::from_entropy(&entropy))
+            .transpose()
+            .map_err(|_| "The local AI cover writer could not produce a cover".to_owned())?;
         #[cfg(feature = "discord-qa-shell")]
         record_fixed_discord_qa_broker_stage(
             is_fixed_discord_qa_probe,
@@ -4462,6 +4503,7 @@ fn prepare_peer_inbox_text_with_route_clients(
             store_client,
             Some(send_order.clone()),
             cover_writer,
+            cover_seed,
         );
         #[cfg(feature = "discord-qa-shell")]
         if let Err(error) = &encrypted_result {
