@@ -1,4 +1,10 @@
-use serde::Serialize;
+//! Bad-message rule choices and persistent selections for a local review run.
+//!
+//! The scanner can suggest matches, but the stored decision remains a possible
+//! match so downstream deletion/review flows cannot treat a rule hit as proof.
+
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -48,13 +54,7 @@ const BAD_MESSAGE_RULE_CHOICES: [BadMessageRuleChoice; 6] = [
 
 pub fn list_bad_message_rules() -> Vec<BadMessageRuleChoice> {
     BAD_MESSAGE_RULE_CHOICES.to_vec()
-//! Persistent selections for a local bad-message review run.
-//!
-//! The scanner can suggest matches, but the stored decision remains a possible
-//! match so downstream deletion/review flows cannot treat a rule hit as proof.
-
-use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+}
 
 const STORE_DIR: &str = "bad-message-rules-v1";
 const MAX_RUN_ID_BYTES: usize = 64;
@@ -70,8 +70,6 @@ pub enum BadMessageMatchTreatment {
 }
 
 impl BadMessageMatchTreatment {
-    }
-
     pub fn as_str(self) -> &'static str {
         match self {
             Self::PossibleMatch => "possible_match",
@@ -222,7 +220,7 @@ fn validate_token(value: &str, max_bytes: usize, name: &str) -> Result<(), Strin
 
 #[cfg(test)]
 mod tests {
-    use super::list_bad_message_rules;
+    use super::*;
 
     #[test]
     fn bad_message_rules_command_lists_all_six_choices_with_plain_explanations() {
@@ -263,7 +261,6 @@ mod tests {
 
         assert!(rules.iter().all(|rule| !rule.id.is_empty()));
         assert!(rules.iter().all(|rule| !rule.explanation.is_empty()));
-    use super::*;
     }
 
 

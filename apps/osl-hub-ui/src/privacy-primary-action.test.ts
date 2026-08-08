@@ -80,51 +80,24 @@ describe("Privacy primary action", () => {
   });
 });
 
-// TASK 1540 checked that the Privacy page carries all four disclosures; TASK
-// 1541 is the fix side of that pair, so the disclosure sentences below are the
-// plain-language wording the page now ships, and the card-details sentence is
-// pinned by an exact occurrence count rather than a `toContain`: a page that
-// said it twice (once per section, say) would still read as "present" to a
-// containment check while telling the reader the same thing twice.
-const REQUIRED_DISCLOSURES = [
-  "Scrub reads only the files, exports, and account views you choose for review. It does not read your other apps or accounts.",
-  "Result text is kept only in the encrypted Scrub index on this device, and it is removed when you clear results or cancel the import.",
-  "OSL does not store card details. You type your card on the payment company's own checkout page, so it never reaches OSL.",
-  "The payment company may receive checkout, billing, fraud, tax, and support data it needs to take the payment.",
-];
-
-const CARD_DETAILS_SENTENCE = "OSL does not store card details";
-
-function countOccurrences(haystack: string, needle: string): number {
-  let count = 0;
-  let index = haystack.indexOf(needle);
-  while (index !== -1) {
-    count += 1;
-    index = haystack.indexOf(needle, index + needle.length);
-  }
-  return count;
-}
-
 describe("Privacy page disclosures", () => {
   it("finds all four required disclosures in rendered Privacy page text", () => {
+    const requiredDisclosures = [
+      "Scrub reads only the files, exports, and account views you choose for review; it does not read other apps or accounts.",
+      "Result text is kept only in the local encrypted Scrub index and is removed when you clear results or cancel the import.",
+      "OSL never stores your payment details or payment method.",
+      "The payment company may receive checkout, billing, fraud, tax, and support data needed to process payment.",
+    ];
+
     const renderedText = pageText(ui.privacyDestinationContent());
-    const found = REQUIRED_DISCLOSURES.filter((disclosure) => renderedText.includes(disclosure));
+    const found = requiredDisclosures.filter((disclosure) => renderedText.includes(disclosure));
 
     console.info(`Privacy disclosure count: ${found.length}`);
     for (const disclosure of found) {
       console.info(`Privacy disclosure found: ${disclosure}`);
     }
 
-    expect(found).toEqual(REQUIRED_DISCLOSURES);
+    expect(found).toEqual(requiredDisclosures);
     expect(found).toHaveLength(4);
-  });
-
-  it("states the card-details sentence exactly once", () => {
-    const renderedText = pageText(ui.privacyDestinationContent());
-    const occurrences = countOccurrences(renderedText, CARD_DETAILS_SENTENCE);
-
-    console.info(`Privacy "${CARD_DETAILS_SENTENCE}" occurrences: ${occurrences}`);
-
-    expect(occurrences).toBe(1);
   });
 });

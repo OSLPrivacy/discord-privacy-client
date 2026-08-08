@@ -40,6 +40,7 @@ pub mod attachment_wire;
 pub mod auto_whitelist_rules;
 pub mod autoscrub_account_switches;
 pub mod autoscrub_pro_gate;
+pub mod autoscrub_schedule_accounts;
 pub mod bad_message_rules;
 pub mod both_sides_burn_progress;
 pub mod build_switch_metadata;

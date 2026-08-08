@@ -103,8 +103,6 @@ pub struct OslMailForwardReceipt {
     pub deliveries: Vec<OslMailForwardDelivery>,
 }
 
-}
-
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OslMailForwardResult {
@@ -114,6 +112,8 @@ pub struct OslMailForwardResult {
     pub no_osl_warnings: Vec<String>,
     pub warning: Option<String>,
     pub required_confirmation: Option<String>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MailDraftControl {
     pub name: String,
@@ -608,6 +608,10 @@ fn normalize_forward_recipients(recipients: Vec<String>) -> Result<Vec<String>, 
     }
     if normalized.is_empty() {
         return Err("OSL Mail protected forward needs at least one recipient".to_owned());
+    }
+    Ok(normalized)
+}
+
 fn protected_forward_confirmation(no_osl_recipients: &[String]) -> String {
     format!("CONFIRM NO-OSL FORWARD: {}", no_osl_recipients.join(","))
 }
@@ -631,7 +635,6 @@ fn normalize_forward_recipient(recipient: &str) -> Result<String, String> {
     Ok(normalized)
 }
 
-fn valid_forward_address(address: &str) -> bool {
 fn valid_forward_email_address(address: &str) -> bool {
     let Some((local, domain)) = address.split_once('@') else {
         return false;
@@ -652,6 +655,14 @@ fn no_osl_forward_confirmation(no_osl_recipients: &[String]) -> String {
         "{NO_OSL_FORWARD_CONFIRMATION_PREFIX}{}",
         no_osl_recipients.join(",")
     )
+}
+
+/// The stricter address check used by the protected-forward recipient list.
+fn valid_forward_address(address: &str) -> bool {
+    let Some((local, domain)) = address.split_once('@') else {
+        return false;
+    };
+    !local.is_empty()
         && local.len() <= 64
         && !domain.is_empty()
         && domain.len() <= 253
@@ -687,6 +698,8 @@ fn no_osl_forward_confirmation(no_osl_recipients: &[String]) -> String {
                     .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
         })
         && domain.contains('.')
+}
+
 fn normalized_recipient_control_name(name: &str) -> Option<&'static str> {
     let mut value = name.trim();
     if let Some(stripped) = value.strip_suffix(':') {
@@ -1012,6 +1025,9 @@ mod tests {
         assert_eq!(no_osl_protected_file_records, 0);
         assert!(!format!("{no_osl_delivery:?}").contains(&protected_text));
         assert!(!format!("{no_osl_delivery:?}").contains(&protected_file));
+    }
+
+    #[test]
     fn task1294_direct_forward_plan_returns_osl_and_no_osl_recipient_lists() {
         let plan = plan_protected_forward(vec![
             "alice@oslprivacy.com".to_owned(),

@@ -13,9 +13,6 @@ use serde::Serialize;
 #[serde(rename_all = "camelCase")]
 pub struct SharedPlaceMessage {
     pub message_id: String,
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SharedPlaceMessage {
-    pub id: String,
     pub text: String,
 }
 
@@ -23,9 +20,6 @@ impl SharedPlaceMessage {
     pub fn new(message_id: impl Into<String>, text: impl Into<String>) -> Self {
         Self {
             message_id: message_id.into(),
-    pub fn new(id: impl Into<String>, text: impl Into<String>) -> Self {
-        Self {
-            id: id.into(),
             text: text.into(),
         }
     }
@@ -140,7 +134,6 @@ pub struct SharedConversationScrollRead {
     pub action_log: Vec<SharedConversationScrollActionLog>,
     pub stop_reason: SharedConversationScrollStop,
     pub stopped_on_page_number: Option<usize>,
-    pub stop_reason: SharedConversationScrollStop,
 }
 
 impl SharedConversationScrollRead {
@@ -218,41 +211,6 @@ where
     P: SharedConversationScrollablePlace,
     G: SharedConversationScrollGate + ?Sized,
 {
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SharedConversationScrollStop {
-    EndOfPlace,
-    PageLimitReached,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SharedConversationPageLog {
-    pub page_number: usize,
-    pub messages_on_screen: usize,
-    pub new_messages_read: usize,
-    pub cumulative_messages_read: usize,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SharedConversationScrollRead {
-    pub messages: Vec<SharedPlaceMessage>,
-    pub page_log: Vec<SharedConversationPageLog>,
-    pub stop_reason: SharedConversationScrollStop,
-}
-
-impl SharedConversationScrollRead {
-    pub fn message_count(&self) -> usize {
-        self.messages.len()
-    }
-
-    pub fn page_count(&self) -> usize {
-        self.page_log.len()
-    }
-}
-
-pub fn read_shared_conversation_messages_one_page_at_a_time(
-    place: &mut impl SharedConversationScrollablePlace,
-    page_limit: usize,
-) -> Result<SharedConversationScrollRead, String> {
     if page_limit == 0 {
         return Err("shared conversation scroll page limit must be at least one".to_owned());
     }
@@ -264,9 +222,6 @@ pub fn read_shared_conversation_messages_one_page_at_a_time(
 
     for page_number in 1..=page_limit {
         action_log.push(pace.paced_action(SharedConversationScrollActionKind::Open, page_number));
-    let mut seen_message_ids = HashSet::new();
-
-    for page_number in 1..=page_limit {
         let screen = place.read_current_screen()?;
         let messages_on_screen = screen.len();
         let mut new_messages_read = 0usize;
@@ -310,8 +265,6 @@ pub fn read_shared_conversation_messages_one_page_at_a_time(
             }
         }
 
-        });
-
         if page_number == page_limit {
             return Ok(SharedConversationScrollRead {
                 messages,
@@ -319,7 +272,6 @@ pub fn read_shared_conversation_messages_one_page_at_a_time(
                 action_log,
                 stop_reason: SharedConversationScrollStop::PageLimitReached,
                 stopped_on_page_number: None,
-                stop_reason: SharedConversationScrollStop::PageLimitReached,
             });
         }
 
@@ -330,34 +282,6 @@ pub fn read_shared_conversation_messages_one_page_at_a_time(
                 action_log,
                 stop_reason: SharedConversationScrollStop::NoNewMessages,
                 stopped_on_page_number: None,
-                stop_reason: SharedConversationScrollStop::NoNewMessages,
-    let mut seen_ids = std::collections::BTreeSet::new();
-    let mut page_log = Vec::new();
-
-    loop {
-        let page_number = page_log.len() + 1;
-        let screen = place.read_current_screen()?;
-        let messages_on_screen = screen.len();
-        let before = messages.len();
-
-        for message in screen {
-            if seen_ids.insert(message.id.clone()) {
-                messages.push(message);
-            }
-        }
-
-        page_log.push(SharedConversationPageLog {
-            page_number,
-            messages_on_screen,
-            new_messages_read: messages.len() - before,
-            cumulative_messages_read: messages.len(),
-        });
-
-        if page_log.len() >= page_limit {
-            return Ok(SharedConversationScrollRead {
-                messages,
-                page_log,
-                stop_reason: SharedConversationScrollStop::PageLimitReached,
             });
         }
 
@@ -371,9 +295,6 @@ pub fn read_shared_conversation_messages_one_page_at_a_time(
             });
         }
         action_log.push(pace.paced_action(SharedConversationScrollActionKind::Scroll, page_number));
-                stop_reason: SharedConversationScrollStop::EndOfPlace,
-            });
-        }
     }
 
     unreachable!("the loop always returns from its page-limit branch");
@@ -394,10 +315,7 @@ mod tests {
     use super::{
         read_shared_conversation_messages_one_page_at_a_time, SharedConversationScrollGateState,
         SharedConversationScrollStop, SharedConversationScrollablePlace, SharedPlaceMessage,
-        read_shared_conversation_messages_one_page_at_a_time, SharedConversationScrollStop,
-        SharedConversationScrollablePlace, SharedPlaceMessage,
     };
-    use super::*;
 
     struct FixedPagePlace {
         messages: Vec<SharedPlaceMessage>,
@@ -413,12 +331,6 @@ mod tests {
                     .map(|index| {
                         SharedPlaceMessage::new(
                             format!("task-3003-message-{index:03}"),
-        fn with_messages(total_messages: usize, page_size: usize) -> Self {
-            Self {
-                messages: (1..=total_messages)
-                    .map(|index| {
-                        SharedPlaceMessage::new(
-                            format!("message-{index:03}"),
                             format!("test message {index:03}"),
                         )
                     })
@@ -446,8 +358,6 @@ mod tests {
             }
             self.scrolls += 1;
             self.current_page += 1;
-            self.current_page += 1;
-            self.scrolls += 1;
             Ok(true)
         }
     }
@@ -469,7 +379,6 @@ mod tests {
             .all(|entry| entry.messages_on_screen == 40
                 && entry.new_messages_read == 40
                 && entry.gate_after_page == SharedConversationScrollGateState::Running));
-            .all(|entry| entry.messages_on_screen == 40 && entry.new_messages_read == 40));
     }
 
     #[test]

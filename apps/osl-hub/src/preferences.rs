@@ -4,14 +4,11 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
-use crate::models::{
-    default_home_tile_order, is_default_home_tile, HomeTileArrangementAction,
-    HomeTileArrangementInput, HomeTileArrangementRead, OnboardingPreferences,
 use crate::claim_state::{self, Surface};
 use crate::models::{
-    default_home_tile_order, is_default_home_tile, HomeTileArrangementInput,
-    HomeTileArrangementRead, HomeTileCapabilityFacts, HomeTileData, OnboardingPreferences,
-    DEFAULT_HOME_TILE_ORDER,
+    default_home_tile_order, is_default_home_tile, HomeTileArrangementAction,
+    HomeTileArrangementInput, HomeTileArrangementRead, HomeTileCapabilityFacts, HomeTileData,
+    OnboardingPreferences, DEFAULT_HOME_TILE_ORDER,
 };
 
 const PREVIEW_STATE_VERSION: u8 = 1;
@@ -29,8 +26,6 @@ struct PreferencesDocument {
 }
 
 impl Default for PreferencesDocument {
-    }
-
     fn default() -> Self {
         Self {
             version: PREVIEW_STATE_VERSION,

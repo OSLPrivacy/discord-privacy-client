@@ -58,6 +58,11 @@ function renderLock(input: {
     '\n  return `<div class="native-discord-header-controls',
   );
   const build = new Function(
+    // TASK 4501 put the build discriminator below the eye so the shipping strip
+    // can carry the app's one show-private-words control. That branch now falls
+    // inside this evaluated region, so the region's free variable has to be
+    // supplied: `true` keeps the QA strip -- the one this test is about.
+    "discordQaShell",
     "nativeDiscordProtectionActive",
     "discordQaComposerBusy",
     "discordQaComposerRefusal",
@@ -67,8 +72,9 @@ function renderLock(input: {
     "verifiedPeer",
     "lock",
     "escapeHtml",
-    `const openPlaceAllowed = true;\n${block}\nreturn { composerLockState, composerProtectionLabel, composerControl, composerRefusalNotice };`,
+    `${block}\nreturn { composerLockState, composerProtectionLabel, composerControl, composerRefusalNotice };`,
   ) as (
+    discordQaShell: boolean,
     protectionActive: boolean,
     busy: boolean,
     refusal: { message: string; reason: string } | null,
@@ -80,6 +86,7 @@ function renderLock(input: {
     escapeHtml: (value: string) => string,
   ) => LockMarkup;
   return build(
+    true,
     input.protectionActive ?? false,
     input.busy ?? false,
     input.refusal ?? null,
@@ -298,7 +305,7 @@ describe("Discord QA lock refusal is visible and explained", () => {
     // The composer-less lock-visibility gate stays inert.
     expect(source).toContain("let discordMarkerAvailable = true;");
     expect(headerControls).toContain(
-      "const composerControl = openPlaceAllowed && (discordMarkerAvailable || nativeDiscordProtectionActive)",
+      "const composerControl = discordMarkerAvailable || nativeDiscordProtectionActive",
     );
   });
 });

@@ -11,12 +11,10 @@ pub mod allowed_place_commands;
 pub mod adapter_profile_boot;
 pub mod adapters;
 #[cfg(feature = "core")]
-pub mod allowed_place_commands;
 #[cfg(feature = "core")]
 pub mod attachment_formats;
 pub mod attachment_limits;
 #[cfg(feature = "core")]
-pub mod attachment_limits;
 #[cfg(feature = "core")]
 pub mod attachment_partial_guard;
 pub mod attachment_scan;
@@ -43,7 +41,6 @@ pub mod autoscrub_bridge;
 pub mod autoscrub_run;
 pub mod background_priority;
 #[cfg(feature = "core")]
-pub mod bad_message_rules;
 pub mod browser_companion;
 // The persistent footprint store is sealed with `ipc`'s process key, so it
 // belongs to the same runtime boundary as the other core storage modules.
@@ -102,10 +99,19 @@ pub mod hosted_session_port;
 pub mod installed_build_version;
 pub mod installed_build;
 pub mod invite_clipboard;
+// The iCloud Mail half of the shared mailbox reader (TASK 3071), and the iCloud
+// fill-in of the shared mail deleter (TASK 3073). Both are pure and free of this
+// crate's mail-website plumbing, so they are testable in every build that can
+// compile this crate.
+pub mod icloud_mail_deleter;
+pub mod icloud_mailbox_reader;
 /// The landing oracle: did this exact text land in the composer? Judged
 /// through channels that did not write it. Pure above its syscall seam, so the
 /// verdict is testable in every build that can compile this crate.
 pub mod landing_oracle;
+// The shared mail owner check (TASK 3044), carried out of `service_connections`
+// by TASK 3045 so the shared mail deleter can reach it on its own.
+pub mod mail_owner_check;
 /// When the hidden main window may be shown. Pure, and deliberately not behind
 /// `desktop`: the reveal rule is what decides whether the app is visible at all,
 /// so it is testable in every build that can compile this crate.
@@ -143,6 +149,13 @@ pub mod preferences;
 pub mod privacy_scan;
 #[cfg(feature = "core")]
 pub mod pro_context_cover;
+// Pure decision boundary: no store handle, no tauri, so it stays ungated and
+// is checkable without the desktop build.
+pub mod pro_marked_deletion;
+// TASK 1451: records the per-message outcome of an accepted deletion (1449).
+// Also a pure decision boundary: given attempt results, it never opens a
+// locator or a store handle itself.
+pub mod pro_marked_deletion_outcomes;
 pub mod proprietary_module_boundary;
 pub mod proprietary_module_lifecycle;
 pub mod scrub_erasure;
@@ -163,7 +176,6 @@ pub mod scrub_hosted {
     pub mod x_web;
     pub mod yahoo_mail;
 }
-pub mod messenger_whitelist_kinds;
 #[cfg(feature = "core")]
 pub mod remove_everything;
 #[cfg(all(feature = "core", feature = "desktop"))]
@@ -191,7 +203,6 @@ pub mod service_connections;
 #[cfg(feature = "core")]
 pub mod server_records;
 #[cfg(feature = "core")]
-pub mod service_connections;
 pub mod service_host;
 #[cfg(feature = "core")]
 pub mod services;
@@ -306,7 +317,6 @@ pub mod native_surface_capture;
 pub mod hub_command_surface;
 pub mod imap_verify;
 #[cfg(feature = "core")]
-pub mod runtime_switches;
 pub mod scrub_imap;
 #[cfg(feature = "core")]
 pub mod scrub_index;
@@ -320,8 +330,10 @@ pub mod sensitive_warning;
 pub mod service_burn_selection;
 #[cfg(feature = "core")]
 pub mod service_scope_index;
-pub mod shared_conversation_scroll;
+pub mod shared_mail_deleter;
+pub mod shared_mail_reader_types;
 pub mod shared_mailbox_reader;
+pub mod shared_marked_message_deleter;
 pub mod signal_destination_binding;
 #[cfg(feature = "core")]
 pub mod signal_extra_device_sender;

@@ -34,14 +34,8 @@ export type AutoscrubUnattendedRunResult =
   | AutoscrubUnattendedRunStarted;
 
 
-// TASK 1442: these two aliases each arrived twice from the lane merge, in two
-// different widths, which made the whole module fail to compile with
-// TS2300/TS2322. Each is now declared once, as the union of both copies: the
-// phase list keeps gate 1441's "skipped", and the quit-guard list keeps
-// "confirming" -- both spellings are the ones the runtime tables below and
-// `projectAutoScrubFleetStatus` already use.
 export type AutoScrubRunPhase = "reviewRequired" | "running" | "stopping" | "blocked" | "skipped" | "complete" | "failed";
-export type AutoScrubQuitGuardState = "notRequested" | "confirming" | "checking" | "estimated" | "stopped" | "unknown" | "refused";
+export type AutoScrubQuitGuardState = "notRequested" | "checking" | "estimated" | "stopped" | "unknown" | "refused";
 export type AutoScrubDisplayTone = "neutral" | "working" | "warning" | "blocked";
 export type AutoScrubRunActionKind = "openAccount" | "tryAgainAfterSignIn" | "skipThisAccount" | "stopAllScanning";
 
@@ -146,7 +140,7 @@ const serviceIds: readonly ServiceId[] = [
   "discord", "telegram", "email", "signal", "whatsapp",
 ];
 const phases: readonly AutoScrubRunPhase[] = ["reviewRequired", "running", "stopping", "blocked", "skipped", "complete", "failed"];
-const quitGuardStates: readonly AutoScrubQuitGuardState[] = ["notRequested", "confirming", "checking", "estimated", "stopped", "unknown", "refused"];
+const quitGuardStates: readonly AutoScrubQuitGuardState[] = ["notRequested", "checking", "estimated", "stopped", "unknown", "refused"];
 const outcomes: readonly AutoScrubRunSummary["lastOutcome"][] = ["none", "prepared", "confirmed", "held", "unknown"];
 const MAX_RETAINED_FLEET_RUNS = 8;
 const runActions: Readonly<Record<AutoScrubRunActionKind, AutoScrubRunAction["label"]>> = {
@@ -399,7 +393,7 @@ export function projectAutoScrubFleetStatus(status: AutoScrubFleetStatus | null)
       stopAvailable: false,
     };
   }
-  if (status.stopConfirmation.required || status.quitGuard.state === "confirming") {
+  if (status.stopConfirmation.required) {
     return {
       label: "Confirm stop",
       detail: "Choose Keep scanning or Stop now.",

@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { checkedBackendResponse, lastBackendFailure, recordBackendFailure, recordInvalidBackendResponse } from "./backend-failure";
 import { burnNativeDiscordOverlayChat, captureC4NativeReceipt, clearC4NativeReceiptEvidence, getNativeDiscordOverlayQaDiagnostic, getNativeDiscordOverlayState, listNativeDiscordOverlayAttachments, openNativeDiscordOverlayAttachment, openNativeDiscordOverlayText, prepareNativeDiscordOverlayText, revealNativeDiscordOverlayViewOnce, selectNativeDiscordOverlayAttachment, sendNativeDiscordOverlayCarrier, sendNativeDiscordQaAtomicText, sendNativeDiscordQaProbe, setNativeDiscordOverlaySecurity, type NativeDiscordCarrierLayout, type NativeDiscordCarrierMode, type NativeDiscordCarrierSendOutcome } from "./native-overlay-adapter";
+import { nativeOverlayReceiveStatusText } from "./native-overlay-status";
 import { boundedProtectedDraft, MAX_PROTECTED_DRAFT_BYTES, NATIVE_OVERLAY_TTL_OPTIONS, overlayExpiryDelayMs, PROTECTED_DRAFT_WARNING_BYTES, type NativeOverlayTtlSeconds, type NativeSurfaceCapture, utf8Length } from "./overlay-state";
 import { OverlaySendGesture, type OverlaySendGestureResult, type OverlaySendMode } from "./overlay-send-gesture";
 import { CoarseTypingRate } from "./coarse-typing-rate";
@@ -49,7 +50,12 @@ const ttl = requireElement<HTMLSelectElement>("#protected-ttl");
 const viewOnce = requireElement<HTMLInputElement>("#protected-view-once");
 const sendMode = requireElement<HTMLSelectElement>("#protected-send-mode");
 const placementMode = requireElement<HTMLSelectElement>("#protected-placement-mode");
-const decryptDisplay = requireElement<HTMLInputElement>("#protected-decrypt-display");
+// TASK 4501: the paint-over window used to carry its own "show decrypted text"
+// tick box here. It was a fourth control over the one per-scope setting, fully
+// working and out of reach only because `.overlay-runtime-controls` carries
+// `hidden` -- so tidying that box would have put a second answer to "is this
+// protected right now" back on screen. The eye on the Discord strip is the one
+// control now; this renderer only *follows* `decryptDisplayEnabled`.
 const currentExpiry = requireElement<HTMLElement>("#current-expiry");
 const prepare = requireElement<HTMLButtonElement>("#prepare-protected");
 const chooseAttachment = requireElement<HTMLButtonElement>("#choose-attachment");
@@ -1095,7 +1101,6 @@ function refreshControls(): void {
   sendMode.disabled = sendBusy || !overlayReady;
   placementMode.disabled = sendBusy || !overlayReady || !discordMarkerAvailable;
   ttl.disabled = sendBusy || securityBusy || !overlayReady;
-  decryptDisplay.disabled = sendBusy || securityBusy || !overlayReady;
   viewOnce.disabled = sendBusy || !overlayReady || !viewOnceEnabled;
 }
 
@@ -1458,14 +1463,10 @@ async function drainReceived(): Promise<void> {
     const attachments = attachmentsEnabled ? await listNativeDiscordOverlayAttachments() : [];
     if (!attachments) throw new Error("invalid attachment response");
     for (const attachment of attachments) appendPendingAttachment(attachment);
-    // A deferred row keeps the poll brisk on purpose: backing off while the store
-    // is unreachable is how a transient outage turns into a ten-second-deep hole.
-        // Fixed sentences only, and only ever about counts and states -- never a
+    // Fixed sentences only, and only ever about counts and states -- never a
     // fragment of what arrived.
-    if (opened > 0) status.textContent = `${opened} private ${opened === 1 ? "message" : "messages"} received through OSL.`;
-    else if (batch.deferredRows > 0) status.textContent = "OSL could not reach the protected message store. Retrying.";
-    else if (batch.unrecognizedWireRows > 0) status.textContent = "A protected message needs a newer version of OSL to open.";
-    else if (!batch.decryptDisplayEnabled) status.textContent = "Decrypted text is off for this conversation.";
+    const statusText = nativeOverlayReceiveStatusText(opened, batch);
+    if (statusText !== null) status.textContent = statusText;
   } catch (error) {
     // This was the last swallowed failure in the file: a bare `catch` that only
     // doubled the poll interval, so even the one error the backend did return was
@@ -1986,24 +1987,16 @@ async function saveSecurity(): Promise<void> {
     return;
   }
   const previousTtl = confirmedTtlSeconds;
-  const previousDecrypt = decryptDisplayEnabled;
-  const requestedDecrypt = decryptDisplay.checked;
-  if (!requestedDecrypt) {
-    // Hiding is immediate and conservative; a failed save restores the exact
-    // prior visibility below. Do not allow a receive poll to race the toggle.
-    decryptDisplayEnabled = false;
-    applyDecryptDisplayVisibility(false);  }
+  // TASK 4501: this is the expiry control's save, and nothing else. The one
+  // show-private-words control is the eye, so the current per-scope value is
+  // carried through here unchanged -- never re-decided from a second tick box.
   securityBusy = true;
   refreshControls();
   status.textContent = "Saving protection…";
-  const saved = await setNativeDiscordOverlaySecurity(requestedTtl as NativeOverlayTtlSeconds, decryptDisplay.checked);
+  const saved = await setNativeDiscordOverlaySecurity(requestedTtl as NativeOverlayTtlSeconds, decryptDisplayEnabled);
   securityBusy = false;
   if (!saved) {
     ttl.value = String(previousTtl);
-    decryptDisplay.checked = previousDecrypt;
-    decryptDisplayEnabled = previousDecrypt;
-    applyDecryptDisplayVisibility(previousDecrypt);
-    if (previousDecrypt) requestRealtimeDrain();
     status.textContent = "That change was not saved. The previous protection stays active.";
     refreshControls();
     return;
@@ -2014,7 +2007,6 @@ async function saveSecurity(): Promise<void> {
   attachmentsEnabled = saved.attachmentsEnabled;
   discordMarkerAvailable = saved.discordMarkerAvailable;
   ttl.value = String(saved.ttlSeconds);
-  decryptDisplay.checked = saved.decryptDisplayEnabled;
   currentExpiry.textContent = `Current: ${expiryLabel(saved.ttlSeconds)}`;
   // Existing non-view-once plaintext stays in this bounded DOM lifetime and
   // is revealed synchronously before polling resumes. No message is reopened.
@@ -2067,7 +2059,6 @@ async function refreshProtectedDisplayVisibility(): Promise<void> {
   applyVerifiedCarrierRows(state.visibleCarrierRows);
   rehydrateScope = state.friendLabel;
   decryptDisplayEnabled = state.decryptDisplayEnabled;
-  decryptDisplay.checked = state.decryptDisplayEnabled;
   applyDecryptDisplayVisibility(decryptDisplayEnabled);
   refreshControls();
   if (decryptDisplayEnabled) {
@@ -2081,7 +2072,6 @@ async function refreshProtectedDisplayVisibility(): Promise<void> {
 }
 
 ttl.addEventListener("change", () => void saveSecurity());
-decryptDisplay.addEventListener("change", () => void saveSecurity());
 
 // Readiness must be self-healing. `overlayReady` can only be set by a successful
 // `initializeOverlay`, and the backend announces a verified session once, at its
@@ -2148,8 +2138,7 @@ async function initializeOverlay(): Promise<void> {
     currentExpiry.textContent = `Current: ${expiryLabel(state.ttlSeconds)}`;
     overlayReady = true;
     decryptDisplayEnabled = state.decryptDisplayEnabled;
-    decryptDisplay.checked = state.decryptDisplayEnabled;
-    applyDecryptDisplayVisibility(decryptDisplayEnabled);
+      applyDecryptDisplayVisibility(decryptDisplayEnabled);
     viewOnceEnabled = state.viewOnceEnabled;
     attachmentsEnabled = state.attachmentsEnabled;
     discordMarkerAvailable = state.discordMarkerAvailable;
@@ -2313,7 +2302,6 @@ void document.fonts.ready.then(() => {
 void listen<boolean>(PROTECTED_DISPLAY_VISIBILITY_CHANGED_EVENT, ({ payload }) => {
   if (discordQaShell && typeof payload === "boolean") {
     decryptDisplayEnabled = payload;
-    decryptDisplay.checked = payload;
     applyDecryptDisplayVisibility(payload);
     if (payload) {
       requestRealtimeDrain();

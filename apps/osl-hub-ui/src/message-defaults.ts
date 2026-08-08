@@ -254,6 +254,7 @@ export function messageDefaultsScreenMarkup(state: MessageDefaultsScreenState): 
     + `<header class="msg-def-head">`
     + `<h1 id="route-heading" tabindex="-1">${MESSAGE_DEFAULTS_TITLE}</h1>`
     + `<p class="msg-def-intro">Protected messages start with the four choices below. You can still change any of them on a single message before you send it.</p>`
+    + `<p class="msg-def-receipts">Read receipts stay off unless you and the other person both turn them on.</p>`
     + "</header>"
     + `<div class="msg-def-groups">${groups}</div>`
     + `<footer class="msg-def-actions">`

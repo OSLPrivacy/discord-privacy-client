@@ -1,5 +1,4 @@
 import type { LocalLoopbackContext } from "./adapters";
-import { placementFailureNoticeMarkup, type PlacementFailureNotice } from "./placement-failure";
 import { COVER_MESSAGE_BOX_RULE, PROTECTED_TEXT_BOX_RULE } from "./protected-box-shortcuts";
 import type { SendMode } from "./state";
 
@@ -18,12 +17,6 @@ export interface LocalProtectedSheetModel {
   capsule: string;
   openedPlaintext: string;
   status: string;
-  /**
-   * TASK 3426. Set when OSL tried to put this draft into another app's message
-   * box and could not. Optional so callers that never place keep their existing
-   * models; `null` and absent both mean "nothing failed".
-   */
-  placementFailure?: PlacementFailureNotice | null;
 }
 
 export const LOCAL_CHAT_LABEL_MAX_LENGTH = 48;
@@ -79,7 +72,6 @@ export function blankLocalProtectedModel(open = false): LocalProtectedSheetModel
     capsule: "",
     openedPlaintext: "",
     status: "",
-    placementFailure: null,
   };
 }
 
@@ -144,10 +136,7 @@ export function localProtectedSheetMarkup(model: LocalProtectedSheetModel, sendM
       : "OSL copies encrypted text only. You choose where to paste it and press Send yourself.";
   const resultCopyLabel = manualMode ? "Copy to clipboard" : "Copy again";
   const resultHint = manualMode ? "Select and place this encrypted text yourself, or copy only by pressing the button." : "Review the destination before you send.";
-  // TASK 3426: a failed placement is announced directly above the person's own
-  // text, so the sentence and the draft it is about are read together.
-  const placementFailure = placementFailureNoticeMarkup(model.placementFailure ?? null);
-  const write = `${placementFailure}<form id="local-protect-form" class="local-protected-form">
+  const write = `<form id="local-protect-form" class="local-protected-form">
       <label for="local-protected-draft">Message</label>
       <textarea id="local-protected-draft" maxlength="1000" data-max-bytes="${maxCopyPayloadBytes}" data-osl-protected-box-rule="${PROTECTED_TEXT_BOX_RULE}" rows="5" autocomplete="off" spellcheck="true" aria-describedby="local-protected-draft-bytes" placeholder="Write privately">${escapeHtml(boundedDraft.value)}</textarea>
       <small id="local-protected-draft-bytes" class="local-draft-bytes" aria-live="polite">${draftLimitNotice}</small>
@@ -163,7 +152,6 @@ export function localProtectedSheetMarkup(model: LocalProtectedSheetModel, sendM
       <textarea id="local-capsule-input" maxlength="262144" rows="6" autocomplete="off" spellcheck="false" placeholder="Paste here yourself"></textarea>
       <button class="local-primary" type="submit" ${model.busy ? "disabled" : ""}>${model.busy ? "Opening…" : "Open locally"}</button>
     </form>
-    <label class="local-decrypt-display"><span><strong>Show decrypted text</strong><small>Only for this local chat.</small></span><input id="local-decrypt-display" type="checkbox" ${model.decryptDisplayEnabled ? "checked" : ""}/></label>
     ${model.openedPlaintext ? `<section class="local-plaintext-result"><span>On this device</span><p>${escapeHtml(model.openedPlaintext)}</p></section>` : ""}`;
 
   return `<aside class="local-protected-sheet ready" aria-labelledby="local-protected-title">
