@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>Account</title>
+  </head>
+  <body>
+    <main id="app"></main>
+    <script type="module">
+      import "/src/styles.css";
+      import "/src/account-screen.css";
+      import { accountScreenState, renderAccountScreen } from "/src/account-screen.ts";
+      import { ACCOUNT_SCREEN_SECRETS, ACCOUNT_SCREEN_SETTINGS } from "/src/account-screen-data.ts";
+
+      // The real Account route mounts this renderer into its workspace frame.
+      // The fixture uses the same renderer and the fixed, non-empty test data,
+      // whose secret values are deliberately reduced to facts before markup.
+      const state = accountScreenState(ACCOUNT_SCREEN_SECRETS, ACCOUNT_SCREEN_SETTINGS);
+      document.querySelector("#app").innerHTML =
+        `<div class="account-screen-stage">${renderAccountScreen(state)}</div>`;
+      document.documentElement.dataset.task0794 = "ready";
+    </script>
+  </body>
+</html>
