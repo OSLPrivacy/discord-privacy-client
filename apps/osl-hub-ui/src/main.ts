@@ -251,7 +251,7 @@ import {
 import type { SecureLocalStore } from "./secure-local-store";
 import { createOslChatSecureLocalStore } from "./osl-chat-secure-store";
 
-export type Route = "onboarding" | "home" | "arrange-tiles" | "inbox" | "people" | "privacy" | "scrub" | "activity" | "connections" | "service" | "settings" | "mullvad" | "osl-chat" | "osl-mail" | "osl-servers" | "signal-qa";
+export type Route = "onboarding" | "home" | "arrange-tiles" | "inbox" | "people" | "privacy" | "scrub" | "activity" | "connections" | "service" | "settings" | "mullvad" | "osl-chat" | "osl-mail" | "osl-mail-status" | "osl-notes-status" | "osl-servers" | "signal-qa";
 
 /**
  * The colour a status chip is allowed to claim, resolved from the word printed
@@ -4809,7 +4809,7 @@ function nativeDiscordHeaderControls(): string {
 
 function trustedHeader(): string {
   // Service controls stay compact; deeper setup remains progressively disclosed.
-  if (route === "home" || route === "arrange-tiles" || route === "inbox" || route === "people" || route === "privacy" || route === "scrub" || route === "activity" || route === "connections" || route === "osl-chat" || route === "osl-mail") return homeHeader();
+  if (route === "home" || route === "arrange-tiles" || route === "inbox" || route === "people" || route === "privacy" || route === "scrub" || route === "activity" || route === "connections" || route === "osl-chat" || route === "osl-mail" || route === "osl-mail-status" || route === "osl-notes-status") return homeHeader();
   if (route === "mullvad") {
     return `<div class="trusted-stack"><header class="workspace-header mullvad-host-header"><button class="button compact" id="mullvad-return" type="button">${mullvadReturnRoute === "onboarding" ? "Back to setup" : "Back to Home"}</button><div class="service-context"><span><strong>Mullvad</strong><small>Existing session · capture resistance does not cover Mullvad</small></span></div></header></div>`;
   }
@@ -5189,6 +5189,8 @@ function workspaceContent(): string {
   if (route === "connections") return connectionsDestinationContent();
   if (route === "osl-chat") return oslChatContent();
   if (route === "osl-mail") return oslMailContent();
+  if (route === "osl-mail-status") return outOfReleaseStatusContent("OSL Mail");
+  if (route === "osl-notes-status") return outOfReleaseStatusContent("OSL Notes");
   if (route === "osl-servers") return oslServersContent();
   if (route === "settings") return settingsContent();
   if (route === "service" && activeService) return serviceContent();
@@ -5225,7 +5227,7 @@ function workspaceContent(): string {
     if (hidden && !homeEditMode) return "";
     const controls = homeEditMode ? `<span class="tile-edit-controls"><button class="tile-remove" type="button" data-tile-toggle="${escapeHtml(id)}" aria-label="${hidden ? "Show" : "Remove"} ${escapeHtml(id)}">${hidden ? "+" : "−"}</button><span class="tile-keyboard-controls"><button type="button" data-tile-move="${escapeHtml(id)}:-1" ${index === 0 ? "disabled" : ""} aria-label="Move before">←</button><button type="button" data-tile-move="${escapeHtml(id)}:1" ${index === orderedIds.length - 1 ? "disabled" : ""} aria-label="Move after">→</button></span></span>` : "";
     const module = moduleById.get(id as typeof modules[number]["id"]);
-    if (module) return `<article class="app-tile home-module ${module.available ? "" : "module-unavailable"} ${hidden ? "tile-hidden" : ""}" data-tile-id="${module.id}" draggable="${homeEditMode}" data-module-kind="${module.id}"><button class="in-dom-tooltip-anchor" type="button" data-home-module="${module.id}" ${module.available ? "" : "disabled"} aria-label="${escapeHtml(`${module.name}, ${module.generatedLabel}`)}"><span class="app-logo-plate osl-module-logo" aria-hidden="true">${homeModuleIcon(module.id)}</span><span class="app-tile-copy"><strong>${module.name}</strong><small data-generated-capability-label>${module.generatedLabel}</small></span>${inDomTooltipMarkup(`${module.name} · ${module.generatedLabel}`)}</button>${controls}</article>`;
+    if (module) return `<article class="app-tile home-module ${module.available ? "" : "module-unavailable"} ${hidden ? "tile-hidden" : ""}" data-tile-id="${module.id}" draggable="${homeEditMode}" data-module-kind="${module.id}"><button class="in-dom-tooltip-anchor" type="button" data-home-module="${module.id}" aria-label="${escapeHtml(`${module.name}, ${module.generatedLabel}`)}"><span class="app-logo-plate osl-module-logo" aria-hidden="true">${homeModuleIcon(module.id)}</span><span class="app-tile-copy"><strong>${module.name}</strong><small data-generated-capability-label>${module.generatedLabel}</small></span>${inDomTooltipMarkup(`${module.name} · ${module.generatedLabel}`)}</button>${controls}</article>`;
     const app = byId.get(id as HomeAppId);
     if (!app) return "";
     const pending = appLaunchPendingId === app.id;
@@ -5695,6 +5697,11 @@ function oslChatFriendSettingsMarkup(person: HubPerson): string {
 
 function oslServersContent(): string {
   return oslServersViewMarkup((label) => statusTag(label), ownerRoleEditorMarkup(ownerRoleEditor.snapshot()));
+}
+
+/** The feature blueprints remain in the build, but these Home links must not imply a release commitment. */
+function outOfReleaseStatusContent(name: "OSL Mail" | "OSL Notes"): string {
+  return `<main class="content-viewport unavailable-status-page" aria-labelledby="route-heading" data-release-status="not-in-this-release"><section class="native-app-card unavailable-status-card"><h1 id="route-heading" tabindex="-1">${name}</h1><p>${name} is not in this release and is not being built for it.</p><button class="button" data-route="home" type="button">Back to Home</button></section></main>`;
 }
 
 function homeModuleIcon(id: "osl-chats" | "osl-mail" | "osl-servers" | "scrub" | "activity" | "osl-notes"): string {
@@ -9432,8 +9439,10 @@ function openHomeModule(id: string): void {
   if (id === "osl-chats") {
     inboxPrimaryAction();
   } else if (id === "osl-mail") {
-    route = "osl-mail";
-    void refreshOslMail();
+    route = "osl-mail-status";
+    render();
+  } else if (id === "osl-notes") {
+    route = "osl-notes-status";
     render();
   } else if (id === "osl-servers") {
     route = "osl-servers";
@@ -9444,8 +9453,6 @@ function openHomeModule(id: string): void {
   } else if (id === "activity") {
     route = "activity";
     render();
-  } else {
-    showToast("OSL Notes is planned for a later release");
   }
 }
 

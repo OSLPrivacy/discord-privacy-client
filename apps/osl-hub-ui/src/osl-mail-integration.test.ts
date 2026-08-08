@@ -60,19 +60,20 @@ function renderedTile(markup: string, tileId: string): string {
 }
 
 describe("OSL Mail Home integration", () => {
-  it("renders the first-party Home tile as coming later while keeping the route", async () => {
+  it("renders the first-party Home tile as an honest release-status link while keeping the blueprint route", async () => {
     const { __oslHubUiTest } = await loadUi();
     __oslHubUiTest.reset({ route: "home" });
     const tile = renderedTile(__oslHubUiTest.renderWorkspaceContent("home"), "osl-mail");
 
     expect(tile).toMatch(/class="[^"]*\bapp-tile\b[^"]*\bhome-module\b[^"]*\bmodule-unavailable\b/u);
     expect(tile).toContain('data-module-kind="osl-mail"');
-    expect(tile).toMatch(/<button\b[^>]*\bdisabled\b/u);
-    expect(tile).toContain('aria-label="OSL Mail, coming later"');
-    expect(tile).toContain("OSL Mail · Coming later");
+    expect(tile).not.toMatch(/<button\b[^>]*\bdisabled\b/u);
+    expect(tile).toContain('aria-label="OSL Mail, Not started"');
+    expect(tile).toContain("OSL Mail · Not started");
     expect(visibleText(tile)).toMatch(/\bOSL Mail\b/u);
     expect(main).toContain('route = "osl-mail"');
     expect(main).toContain('if (route === "osl-mail") return oslMailContent()');
+    expect(main).toContain('route = "osl-mail-status"');
   });
 
   it("calls each registered reading wrapper without coercing a refusal to an empty inbox", () => {
