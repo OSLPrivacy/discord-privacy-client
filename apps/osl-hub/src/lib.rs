@@ -745,6 +745,7 @@ pub mod native_surface_capture;
 #[cfg(not(task3982_focused))]
 pub mod hub_command_surface;
 pub mod imap_verify;
+pub mod instagram_marked_message_deleter;
 #[cfg(not(task3982_focused))]
 pub mod scrub_imap;
 #[cfg(feature = "core")]
