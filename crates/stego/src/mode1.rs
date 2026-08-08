@@ -412,6 +412,34 @@ pub fn encode_shrunk_token_word_bank(
     }
 }
 
+/// Encode the compact shared-key handle over the grown word bank (task
+/// 0076): a third, independent layer over the fixed-width word-bank codec.
+///
+/// The base word bank ([`encode_shrunk_token_word_bank`] with
+/// `capitalise = false`) draws each cover word from 64 slots, six bits per
+/// word. The grown bank ([`crate::word_bank_grown`]) is a dedicated 256-word
+/// list — eight bits per word — built from its own vocabulary rather than
+/// growing the bigram model's, so it never perturbs the arithmetic token
+/// path's measured entropy. `grow = false` restores the exact 64-word,
+/// six-bit form; `grow = true` spends the wider bank, so the same 80-bit
+/// handle+detector needs `ceil(80 / 8) = 10` words instead of
+/// `ceil(80 / 6) = 14`.
+pub fn encode_shrunk_token_grown_bank(
+    mac_key: &[u8],
+    id: &[u8; SHRUNK_TOKEN_ID_BYTES],
+    grow: bool,
+) -> String {
+    let tag = compute_shrunk_token_tag(mac_key, id);
+    let bits = shrunk_token_payload_bits(id, &tag);
+    if grow {
+        let words = crate::word_bank_grown::grown_bank_decode_bits(&bits, SHRUNK_TOKEN_PAYLOAD_BITS);
+        crate::word_bank_grown::render_grown_words(&words)
+    } else {
+        let words = crate::bigram::legacy_wide_decode_bits(&bits, SHRUNK_TOKEN_PAYLOAD_BITS);
+        crate::bigram::render_words(&words)
+    }
+}
+
 /// Try to decode a Discord message as an OSL prose-token. Returns the
 /// 160-bit carrier seed iff the recovered detection tag verifies under
 /// `mac_key`.
@@ -454,6 +482,12 @@ pub fn decode_shrunk_token(mac_key: &[u8], msg: &str) -> Option<[u8; SHRUNK_TOKE
     // lowercase paths would silently discard. Each path is gated by the same
     // 16-bit detector, so the extra attempts cost only HMAC comparisons.
     if let Some(id) = decode_shrunk_token_cap_wide(mac_key, msg) {
+        return Some(id);
+    }
+    // Grown-bank covers (task 0076): a disjoint 256-word vocabulary, so it is
+    // tried before the plain 64-word bank to avoid relying on overlap between
+    // the two lists.
+    if let Some(id) = decode_shrunk_token_grown_bank(mac_key, msg) {
         return Some(id);
     }
     decode_shrunk_token_plain_wide(mac_key, msg)
@@ -518,6 +552,24 @@ fn decode_shrunk_token_cap_wide(mac_key: &[u8], msg: &str) -> Option<[u8; SHRUNK
     let canonical_bits = shrunk_token_payload_bits(&id, &expected);
     let canonical_words =
         crate::bigram::cap_wide_decode_bits(&canonical_bits, SHRUNK_TOKEN_PAYLOAD_BITS);
+    if words != canonical_words {
+        return None;
+    }
+    Some(id)
+}
+
+/// Decode a grown-bank cover (task 0076).
+fn decode_shrunk_token_grown_bank(mac_key: &[u8], msg: &str) -> Option<[u8; SHRUNK_TOKEN_ID_BYTES]> {
+    let words = crate::word_bank_grown::parse_grown_words(msg)?;
+    let bits = crate::word_bank_grown::grown_bank_encode_words(&words, SHRUNK_TOKEN_PAYLOAD_BITS);
+    let (id, tag) = split_shrunk_payload(&bits)?;
+    let expected = compute_shrunk_token_tag(mac_key, &id);
+    if !constant_time_eq_shrunk_token(&tag, &expected) {
+        return None;
+    }
+    let canonical_bits = shrunk_token_payload_bits(&id, &expected);
+    let canonical_words =
+        crate::word_bank_grown::grown_bank_decode_bits(&canonical_bits, SHRUNK_TOKEN_PAYLOAD_BITS);
     if words != canonical_words {
         return None;
     }
