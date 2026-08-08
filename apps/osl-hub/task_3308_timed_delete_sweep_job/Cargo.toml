@@ -1,0 +1,22 @@
+[package]
+name = "task-3308-timed-delete-sweep-job"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# The osl-hub library crate cannot be compiled in this worktree (pre-existing
+# merge damage in src/autoscrub_run.rs and duplicated items in
+# src/message_expiry.rs, both present in HEAD and unrelated to TASK 3308), so
+# the check for the sweep job follows the standalone-command precedent set by
+# apps/osl-hub/task_3406_place_text and TASK 3009: this crate compiles the hub's
+# own source file through #[path], it does not copy it.
+
+[dependencies]
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.149"
+
+[[bin]]
+name = "task-3308-timed-delete-sweep-job"
+path = "src/main.rs"
+
+[workspace]

@@ -440,6 +440,10 @@ pub mod expiry_clock;
 #[cfg(feature = "core")]
 #[cfg(feature = "core")]
 pub mod message_expiry;
+// The repeating job that sweeps timed-delete records whose time has passed. It
+// is dependency-free on purpose: it only routes due records to the shared
+// cleaner for their app and holds no deleting code of its own.
+pub mod timed_delete_sweep_job;
 // View-once payloads are opened only after the native viewer proves capture
 // protection; the module is dependency-free so its ordering tests run on all
 // supported build hosts.
