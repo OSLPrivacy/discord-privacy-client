@@ -237,6 +237,9 @@ import { burnRevocationReceipt, type BurnRevocationReceipt } from "./burn-revoca
 import { senderReceiptStatus } from "./receipt-status";
 import { attachmentProgressMarkup, parseAttachmentProgressEvent, type AttachmentProgressEvent } from "./attachment-progress";
 import { attachOslChatComposerDragAndDrop, attachmentTrayMarkup, createOslChatAttachmentTray, type OslChatAttachmentTrayState } from "./chat-attachment-drop";
+import { createAttachmentTrayActions } from "./attachment-tray-actions";
+import { attachmentTrayScreenMarkup } from "./attachment-tray-screen";
+import { bindPrivateTypingBoxDropTarget } from "./private-typing-drop-target";
 import { initialBurnReviewScreenState, type BurnReviewScreenState } from "./burn-review-screen";
 import { destructStatusMarkup, type ServerDestructStatus } from "./destruct-status";
 import { offlineCapabilityStatus, type OfflineUnavailableCapability, type OslConnectionState } from "./offline-capability-status";
@@ -779,6 +782,7 @@ let oslChatSearch = "";
 let oslChatSendBlockedReason: string | null = null;
 let oslChatAttachments: NativeOverlayPendingAttachment[] = [];
 const oslChatDropTray: OslChatAttachmentTrayState = createOslChatAttachmentTray();
+const oslMailDropTray = createAttachmentTrayActions();
 let buildIntegrityStatus: BuildIntegrityStatus | null = null;
 const attachmentProgressByContext = new Map<string, AttachmentProgressEvent>();
 let privacyScanResult: LocalPrivacyScanResult | PersistedLocalPrivacyScanResult | null = null;
@@ -5753,6 +5757,7 @@ function oslMailContent(): string {
     error: oslMailError,
     threadSyncUnavailable: oslMailThreadSyncUnavailable,
     composeDraft: oslMailComposeDraft,
+    attachmentTrayMarkup: oslMailDropTray.getCards().length ? attachmentTrayScreenMarkup(oslMailDropTray.getCards()) : "",
   });
 }
 
@@ -8439,6 +8444,8 @@ function bindWorkspace(): void {
     if (typeof form.requestSubmit === "function") form.requestSubmit(send);
     else send.click();
   });
+  const oslMailBodyInput = document.querySelector<HTMLTextAreaElement>("#osl-mail-body");
+  if (oslMailBodyInput) bindPrivateTypingBoxDropTarget(oslMailBodyInput, oslMailDropTray, render);
   document.querySelector<HTMLInputElement>("#osl-chat-view-once")?.addEventListener("change", (event) => { oslChatViewOnce = (event.currentTarget as HTMLInputElement).checked; });
   document.querySelector<HTMLFormElement>("[data-osl-chat-compose]")?.addEventListener("submit", (event) => void sendOslChat(event));
   document.querySelector<HTMLButtonElement>("#osl-chat-attach")?.addEventListener("click", () => void sendOslChatAttachment());
