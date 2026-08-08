@@ -52,6 +52,27 @@ function countWord(text: string, stem: string): number {
   return [...text.matchAll(pattern)].length;
 }
 
+/**
+ * A bare count tells you the scan failed but not what to fix, so every hit is
+ * reported with the visible words either side of it - enough to name the label
+ * a person would actually read ("Server settings", "Create server").
+ */
+function serverWordSightings(screens: string[]): string[] {
+  const pattern = /(?<![\p{L}\p{N}])[Ss]ervers?(?![\p{L}\p{N}])/gu;
+  const sightings: string[] = [];
+  for (const screen of screens) {
+    const text = visibleText(screen);
+    for (const hit of text.matchAll(pattern)) {
+      const from = Math.max(0, hit.index - 40);
+      const to = Math.min(text.length, hit.index + hit[0].length + 40);
+      const lead = from > 0 ? "..." : "";
+      const tail = to < text.length ? "..." : "";
+      sightings.push(`${lead}${text.slice(from, to).trim()}${tail}`);
+    }
+  }
+  return sightings;
+}
+
 function functionSource(name: string, nextName: string): string {
   const start = mainSource.indexOf(`function ${name}`);
   const end = mainSource.indexOf(`function ${nextName}`, start + 1);
@@ -146,21 +167,60 @@ describe("TASK 4853 - Chats and Enclaves word scan", () => {
    * protocol names may stay"). 17 is the true, currently measured floor.
    */
   it("prints 0 uses of server/servers and at least 17 uses of enclave/enclaves", () => {
-    const text = chatsAndEnclavesScreens().map(visibleText).join(" ");
+    const screens = chatsAndEnclavesScreens();
+    const text = screens.map(visibleText).join(" ");
 
     const serverHits = countWord(text, "[Ss]erver");
     const enclaveHits = countWord(text, "[Ee]nclave");
+    const sightings = serverWordSightings(screens);
 
     console.info(`SERVER/SERVERS HITS: ${serverHits}`);
     console.info(`ENCLAVE/ENCLAVES HITS: ${enclaveHits}`);
+    for (const sighting of sightings) {
+      console.error(`SERVER WORD ON A VISIBLE SCREEN: ${sighting}`);
+    }
 
+    expect(
+      sightings,
+      `a visible Chats/Enclaves screen still says server: ${JSON.stringify(sightings)}`,
+    ).toEqual([]);
     expect(serverHits).toBe(0);
     expect(enclaveHits).toBeGreaterThanOrEqual(17);
   });
 
+  /**
+   * Measured as a delta against the live corpus rather than an absolute count,
+   * so this stays a test of the detector: if a real screen regresses, the scan
+   * above is the one that goes red and names it, not this one.
+   */
   it("fails when a person-facing screen adds the word server back", () => {
-    const text = chatsAndEnclavesScreens().map(visibleText).join(" ") + " Create server";
+    const screens = chatsAndEnclavesScreens();
+    const before = countWord(screens.map(visibleText).join(" "), "[Ss]erver");
+    const after = countWord([...screens, "Create server"].map(visibleText).join(" "), "[Ss]erver");
 
-    expect(countWord(text, "[Ss]erver")).toBe(1);
+    expect(after).toBe(before + 1);
+  });
+
+  /**
+   * TASK 4853b: a failure has to name the label a person reads, not just count
+   * it - "expected 1 to be +0" does not tell anyone which screen to fix. This
+   * plants the legacy "Server settings" label back onto the Enclave settings
+   * list and asserts the scan reports that exact string.
+   */
+  it("names the offending label when the Enclave settings screen says Server settings", () => {
+    const planted = [
+      ...chatsAndEnclavesScreens(),
+      '<section class="settings-list" aria-label="OSL Enclaves"><div class="setting-line">'
+        + "<span><strong>Server settings</strong><small>Rename this server and choose who may join.</small></span>"
+        + "</div></section>",
+    ];
+
+    const baseline = serverWordSightings(chatsAndEnclavesScreens()).length;
+    const sightings = serverWordSightings(planted);
+    const fromPlantedScreen = sightings.slice(baseline);
+
+    expect(fromPlantedScreen).toHaveLength(2);
+    expect(fromPlantedScreen[0]).toContain("Server settings");
+    expect(fromPlantedScreen.join(" ")).toContain("Rename this server");
   });
 });
