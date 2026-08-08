@@ -164,6 +164,7 @@ import {
 } from "./core";
 import { checkHubForUpdates, installHubUpdate, openHubReleasesPage, openHubSourceRepository, type UpdateStatus } from "./updates";
 import { createDiscordQaGeometryKeeper } from "./discord-qa-geometry";
+import { composerLockAvailability } from "./composer-protection-trace";
 import { browserLogo, serviceLogo, providerLogo } from "./logos";
 import { activateLocalLoopbackContext, activateManualPeerContext, activateNativeManualPeerContext, activateOslChatContext, addOslChatReaction, addOslFriend, addOslFriendByUsername, answerHubChatApprovalSuggestion, backBurnReview, burnActiveHubContext, burnHubServiceAccount, captureProtectionEnforced, closeOslChatContext, copyHubFriendInvite, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubRevocationStatus, getHubServiceBurnReadiness, getOslUsernameStatus, isHubPlaintext, isNormalizedOslUsername, listHubIdentities, listHubPeople, listOslChatHistory, loadActiveContextSecurity, loadAppNotifications, loadBuildIntegrityStatus, loadFriendProfile, loadInstalledBuildChatWarningStatus, openOslChatText, openPeerProseText, peerIsVerified, prepareLocalProtectedText, prepareOslChatText, preparePeerProseText, recoverHubIdentitySlot, removeOslChatReaction, saveActiveContextSecurity, saveBurnReviewState, revokeActiveHubFriendScope, setActiveHubFriendPermission, setActiveHubFriendReach, setHubChatApprovalSuggestionChoice, setHubFriendNickname, setLocalProtectedSheetOpen, setNativeDiscordProtectedOverlayOpen, setNativeDiscordProtectedOverlayOpenForQa, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, viewHubRecoveryPhrase, type AppNotification, type BuildIntegrityStatus, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type InstalledBuildChatWarning, type LocalPrivacyScanResult, type ManualPeerContext, type PersistedLocalPrivacyScanResult } from "./adapters";
 import { blankLocalProtectedModel, isLocalTtlSeconds, loadOrCreateLocalConversationId, localProtectedSheetMarkup, validLocalChatLabel, type LocalProtectedPane, type LocalProtectedSheetModel } from "./local-protected-sheet";
@@ -5126,12 +5127,18 @@ function nativeDiscordHeaderControls(): string {
   const composerRefusedMark = composerRefusal
     ? `<span class="discord-qa-composer-refused-mark" aria-hidden="true">!</span>`
     : "";
-  // Pages with no message composer (e.g. Friends) report discordMarkerAvailable
-  // false; the lock is hidden there. Protection already open stays shown so it
-  // always has a control to turn back off, even if the view changes under it.
-  const composerControl = openPlaceAllowed && (discordMarkerAvailable || nativeDiscordProtectionActive)
-    ? `<button class="discord-qa-icon-control composer ${nativeDiscordProtectionActive ? "locked" : "unlocked"}${composerRefusal ? " composer-refused" : ""}" id="discord-qa-toggle-composer" type="button" aria-pressed="${nativeDiscordProtectionActive}" aria-label="${composerProtectionLabel}" title="${composerProtectionLabel}" ${discordQaComposerBusy ? "disabled" : ""} data-lock-state="${composerLockState}"${composerRefusal ? ' aria-invalid="true"' : ""}>${lock}${composerRefusedMark}</button>`
-    : "";
+  // Keep a missing-composer lock visible and explain why it is unavailable.
+  // An already-open protected composer stays operable after navigation so the
+  // operator can always turn protection back off.
+  const composerAvailability = composerLockAvailability(
+    openPlaceAllowed && discordMarkerAvailable,
+    nativeDiscordProtectionActive,
+  );
+  const composerUnavailable = composerAvailability.unavailable;
+  const composerControlLabel = composerUnavailable
+    ? `Protected composer unavailable — ${composerAvailability.reason}`
+    : composerProtectionLabel;
+  const composerControl = `<button class="discord-qa-icon-control composer ${nativeDiscordProtectionActive ? "locked" : "unlocked"}${composerRefusal ? " composer-refused" : ""}${composerAvailability.className}" id="discord-qa-toggle-composer" type="button" aria-pressed="${nativeDiscordProtectionActive}" aria-label="${composerControlLabel}" title="${composerControlLabel}" ${discordQaComposerBusy || composerAvailability.disabled ? "disabled" : ""} data-lock-state="${composerLockState}"${composerRefusal ? ' aria-invalid="true"' : ""}>${lock}${composerRefusedMark}</button>`;
   // Persistent, plain-language refusal in the header strip — the one surface
   // that draws above the borrowed native Discord window. It stays until the
   // next operator attempt or a successful open, so a reason can no longer be

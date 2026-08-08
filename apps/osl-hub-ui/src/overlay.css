@@ -312,7 +312,9 @@ body { padding: 0; }
 }
 
 /* The one-pixel cyan boundary: OSL's "protection is on" indicator, and the only
-   persistent OSL cue on this surface.
+   persistent OSL cue on this surface. It exists only while
+   `.composer-protection-active` is on the composer itself; lock-off removes its
+   pixels without removing or hiding the composer DOM.
 
    It is not decoration. This ring is drawn only by OSL's own protected window,
    which is the window that encrypts what is typed into it — so seeing the ring
@@ -323,18 +325,13 @@ body { padding: 0; }
    seamless: it was removed once for that reason and the operator immediately
    asked where their "OSL is on" indicator had gone.
 
-   It used to carry a second meaning as well — "the lock is engaged" — because
-   `#write-pane` was `display: none` whenever `data-osl-lock-engaged="false"`.
-   That rule is gone (see the note where it used to be, above `.composer-box`):
-   the lock is encryption only and may not decide whether the composer exists.
-   The ring's remaining meaning is the one above, and it is the load-bearing one.
+   The lock still never controls whether the composer exists: its visual state
+   is a class on the composer, not a `data-osl-lock-engaged` CSS rule. This
+   leaves Discord's composer reachable whenever the native window gives it room.
 
-   Known cosmetic caveat: the ring traces OSL's own composer *window*, which is
-   sized to the measured native composer rect but does not match it exactly
-   (measured live: window 620,904,1356,962 against Discord's composer at roughly
-   620,900,1355,951). The few pixels of disagreement are why it can read as a
-   box floating around the message field rather than a border on it. That is a
-   geometry problem in the window sizing, not a reason to delete the cue. */
+   Both the steady ring and the one-shot SVG trace are children of this exact
+   `.composer-box`; the overlay window may be natively resized, but neither cue
+   is independently sized to the window. */
 .composer-box::after {
   content: "";
   position: absolute;
@@ -344,10 +341,55 @@ body { padding: 0; }
   border-radius: inherit;
   pointer-events: none;
   z-index: 3;
+  opacity: 0;
+}
+
+.composer-box.composer-protection-active::after {
+  opacity: 1;
 }
 
 .composer-box:focus-within::after {
   border-color: rgba(73, 214, 255, .72);
+}
+
+/* This SVG is a child of the actual measured composer box, rather than a
+   window-sized decoration. The rect uses CSS pixel geometry (including the
+   same 8px radius as its parent), so a wide measured composer does not stretch
+   a viewBox radius into a false, oversized curve. */
+.composer-protection-trace {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.composer-protection-trace rect {
+  x: .5px;
+  y: .5px;
+  width: calc(100% - 1px);
+  height: calc(100% - 1px);
+  rx: 8px;
+  ry: 8px;
+  fill: none;
+  stroke: #49d6ff;
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  opacity: 0;
+}
+
+.composer-protection-trace.composer-protection-tracing rect {
+  animation: composer-protection-trace 700ms ease-out 1 both;
+  animation-iteration-count: 1;
+}
+
+@keyframes composer-protection-trace {
+  from { stroke-dashoffset: 1; opacity: 1; }
+  to { stroke-dashoffset: 0; opacity: 0; }
 }
 
 /* A failed send has to be SEEN, not just announced.

@@ -10443,6 +10443,7 @@ code {
 
 
 .discord-qa-icon-control.composer.locked { color: #3dd68c; /* colour.safe — design: lock is GREEN when locked, not blue */ border-color: #26543c; /* colour.safeBorderDim2 */ }
+.discord-qa-icon-control.composer.composer-unavailable { color: #8a8f98; border-color: rgba(138, 143, 152, .45); }
 
 
 

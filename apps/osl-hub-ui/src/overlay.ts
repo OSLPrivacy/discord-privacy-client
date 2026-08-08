@@ -13,6 +13,7 @@ import { boundedProtectedDraft, MAX_PROTECTED_DRAFT_BYTES, NATIVE_OVERLAY_TTL_OP
 import { OverlaySendGesture, type OverlaySendGestureResult, type OverlaySendMode } from "./overlay-send-gesture";
 import { CoarseTypingRate } from "./coarse-typing-rate";
 import { TwoStepBurnConfirmation } from "./two-step-burn";
+import { ComposerProtectionTraceController } from "./composer-protection-trace";
 import { shouldPollDiscordOverlay } from "./discord-qa-receive-policy";
 import { recordDiscordQaSendStage } from "./discord-qa-send-stage";
 import {
@@ -52,6 +53,8 @@ function requireElement<T extends Element>(selector: string): T {
 }
 
 const draft = requireElement<HTMLTextAreaElement>("#protected-draft");
+const composerBox = requireElement<HTMLElement>(".composer-box");
+const composerProtectionTrace = requireElement<SVGSVGElement>(".composer-protection-trace");
 const counter = requireElement<HTMLElement>("#draft-bytes");
 const friendLabel = requireElement<HTMLElement>("#friend-label");
 const ttl = requireElement<HTMLSelectElement>("#protected-ttl");
@@ -233,7 +236,24 @@ let activeVisualRecipe: DiscordVisualRecipe | null = null;
 // weight and the transcript read itself measures none of those. Content-free:
 // an image data URL, four rectangles, a colour and four font facts.
 let activeNativeSurface: NativeSurfaceCapture | undefined;
-let lockEngaged = true;
+let lockEngaged = false;
+const composerProtectionTraceController = new ComposerProtectionTraceController();
+let appliedComposerTraceCount = 0;
+
+function renderComposerProtection(engaged: boolean, traceCount: number): void {
+  composerBox.classList.toggle("composer-protection-active", engaged);
+  if (!engaged) {
+    composerProtectionTrace.classList.remove("composer-protection-tracing");
+    return;
+  }
+  if (traceCount === appliedComposerTraceCount) return;
+  appliedComposerTraceCount = traceCount;
+  composerProtectionTrace.classList.remove("composer-protection-tracing");
+  // Removing and re-adding the class after a layout read starts this one CSS
+  // animation once for the new reducer sequence number, never for duplicates.
+  void composerProtectionTrace.getBoundingClientRect();
+  composerProtectionTrace.classList.add("composer-protection-tracing");
+}
 
 // ---- OSL Strip (the 44px chip bar) ----------------------------------------
 // Declared here, before the first `applyLockEngaged(true)` below runs at module
@@ -253,7 +273,9 @@ let stripRevealRetryTimer: number | undefined;
  * business and nothing else's.
  */
 function applyLockEngaged(engaged: boolean): void {
+  const protection = composerProtectionTraceController.applyLockEngaged(engaged, discordMarkerAvailable);
   lockEngaged = engaged;
+  renderComposerProtection(protection.engaged, protection.traceCount);
   document.documentElement.dataset.oslLockEngaged = String(engaged);
   // Lock down: OSL owns no message box, the operator is typing into Discord's
   // own again, and whatever caret this renderer was given belongs to an
@@ -324,7 +346,9 @@ function focusEngagedProtectedDraft(): void {
   }
 }
 
-applyLockEngaged(true);
+// A retained overlay starts with no protection pixels. A verified state event
+// is the only authority that may raise the protected-composer edge.
+applyLockEngaged(false);
 
 function discordComposerPlaceholder(friend: string): string {
   const normalized = friend.replace(/\s+/gu, " ").trim().replace(/^@/u, "");
@@ -2080,6 +2104,7 @@ async function refreshProtectedDisplayVisibility(): Promise<void> {
     caretGrantedForEngagement = false;
     return;
   }
+  discordMarkerAvailable = state.discordMarkerAvailable;
   applyLockEngaged(state.lockEngaged ?? true);
   applyDiscordVisualRecipe(state.visualRecipe);
   applyNativeSurfaceCapture(state.nativeSurface);
@@ -2138,6 +2163,7 @@ async function initializeOverlay(): Promise<void> {
     overlayInitRetryMs = 250;
     // Verified: nothing left to poll for until this session ends.
     cancelOverlayInit();
+    discordMarkerAvailable = state.discordMarkerAvailable;
     applyLockEngaged(state.lockEngaged ?? true);
     applyDiscordVisualRecipe(state.visualRecipe);
     applyNativeSurfaceCapture(state.nativeSurface);
@@ -2384,11 +2410,15 @@ void listen<boolean>(NATIVE_DISCORD_COMPOSER_BAND_SURRENDERED_EVENT, ({ payload 
   // state this renderer has always been in and the one an operator can see.
   if (typeof payload !== "boolean") return;
   document.documentElement.dataset.oslComposerBandSurrendered = String(payload);
-  // The composer is no longer on screen, so whatever caret this renderer was
-  // given belongs to an engagement it can no longer serve. Same reasoning as the
-  // lock coming down in applyLockEngaged(): the next raise is a fresh one and
-  // gets its own grant.
   if (payload) caretGrantedForEngagement = false;
+  applyLockEngaged(!payload);
+  // This native edge is also the retained-session lock edge. With rows still
+  // painted, lowering the lock keeps this WebView alive but moves its window
+  // off the measured composer rectangle; no session-discard event follows.
+  // Conversely, a `false` edge means the guard has put the window back on the
+  // detected composer for a raised lock. Driving the same idempotent controller
+  // here removes every protection pixel on off and produces only one trace even
+  // when the session announcement repeats the same on state immediately after.
 });
 
 // The WebView is retained so the lock toggle can show it instantly. Nothing
@@ -2396,6 +2426,9 @@ void listen<boolean>(NATIVE_DISCORD_COMPOSER_BAND_SURRENDERED_EVENT, ({ payload 
 // rendered plaintext row, the sampled native surface and the ready state are
 // all discarded here. Nothing is logged, hashed or persisted on this path.
 function discardProtectedSession(): void {
+  // Session discard is a real protection-off edge for this retained renderer:
+  // clear the trace and outline without removing the composer DOM.
+  applyLockEngaged(false);
   overlayReady = false;
   setBusy(true);
   draft.value = "";

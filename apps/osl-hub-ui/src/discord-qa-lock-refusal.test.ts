@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import fs from "node:fs";
+import { composerLockAvailability } from "./composer-protection-trace";
 
 const source = fs.readFileSync(new URL("./main.ts", import.meta.url), "utf8");
 
@@ -67,6 +68,7 @@ function renderLock(input: {
     "verifiedPeer",
     "lock",
     "escapeHtml",
+    "composerLockAvailability",
     `const openPlaceAllowed = true;\n${block}\nreturn { composerLockState, composerProtectionLabel, composerControl, composerRefusalNotice };`,
   ) as (
     protectionActive: boolean,
@@ -78,6 +80,7 @@ function renderLock(input: {
     verifiedPeer: unknown,
     lock: string,
     escapeHtml: (value: string) => string,
+    availability: typeof composerLockAvailability,
   ) => LockMarkup;
   return build(
     input.protectionActive ?? false,
@@ -89,6 +92,7 @@ function renderLock(input: {
     {},
     "<svg></svg>",
     escapeHtmlStub,
+    composerLockAvailability,
   );
 }
 
@@ -298,7 +302,9 @@ describe("Discord QA lock refusal is visible and explained", () => {
     // The composer-less lock-visibility gate stays inert.
     expect(source).toContain("let discordMarkerAvailable = true;");
     expect(headerControls).toContain(
-      "const composerControl = openPlaceAllowed && (discordMarkerAvailable || nativeDiscordProtectionActive)",
+      "const composerAvailability = composerLockAvailability(",
     );
+    expect(headerControls).toContain("openPlaceAllowed && discordMarkerAvailable");
+    expect(headerControls).toContain("discordQaComposerBusy || composerAvailability.disabled");
   });
 });
