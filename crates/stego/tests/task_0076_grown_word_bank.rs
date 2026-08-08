@@ -97,9 +97,7 @@ fn task_0076_grown_bank_switch_shrinks_word_count() {
         .expect("on handle addresses the private message");
 
     println!("TASK0076 payload_bits={SHRUNK_TOKEN_PAYLOAD_BITS}");
-    println!(
-        "TASK0076 bank_size_off={BANK_SIZE_OFF} bank_word_bits_off={BANK_WORD_BITS_OFF}"
-    );
+    println!("TASK0076 bank_size_off={BANK_SIZE_OFF} bank_word_bits_off={BANK_WORD_BITS_OFF}");
     println!(
         "TASK0076 bank_size_on={} bank_word_bits_on={}",
         word_bank_grown::GROWN_BANK_SIZE,

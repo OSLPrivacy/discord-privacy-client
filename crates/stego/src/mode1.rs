@@ -432,11 +432,38 @@ pub fn encode_shrunk_token_grown_bank(
     let tag = compute_shrunk_token_tag(mac_key, id);
     let bits = shrunk_token_payload_bits(id, &tag);
     if grow {
-        let words = crate::word_bank_grown::grown_bank_decode_bits(&bits, SHRUNK_TOKEN_PAYLOAD_BITS);
+        let words =
+            crate::word_bank_grown::grown_bank_decode_bits(&bits, SHRUNK_TOKEN_PAYLOAD_BITS);
         crate::word_bank_grown::render_grown_words(&words)
     } else {
         let words = crate::bigram::legacy_wide_decode_bits(&bits, SHRUNK_TOKEN_PAYLOAD_BITS);
         crate::bigram::render_words(&words)
+    }
+}
+
+/// Encode the compact shared-key handle with the fourth and final shrinking
+/// layer: one keyed bit per word chooses the correct grown-bank spelling or
+/// its deterministic misspelling.
+///
+/// [`crate::misspell::MisspellingChoice::Off`] reproduces the task-0076
+/// grown-bank cover byte for byte (8 bits per word, 10 words for this 80-bit
+/// payload). `On` uses 512 distinct written forms (9 bits per word, 9 words).
+/// The typed switch defaults to `Off` because a human still needs to judge
+/// whether the generated mistakes look natural.
+pub fn encode_shrunk_token_misspellings(
+    mac_key: &[u8],
+    id: &[u8; SHRUNK_TOKEN_ID_BYTES],
+    choice: crate::misspell::MisspellingChoice,
+) -> String {
+    let tag = compute_shrunk_token_tag(mac_key, id);
+    let bits = shrunk_token_payload_bits(id, &tag);
+    if choice.is_on() {
+        let forms = crate::misspell::misspell_decode_bits(&bits, SHRUNK_TOKEN_PAYLOAD_BITS);
+        crate::misspell::render_misspelled_forms(&forms)
+    } else {
+        let words =
+            crate::word_bank_grown::grown_bank_decode_bits(&bits, SHRUNK_TOKEN_PAYLOAD_BITS);
+        crate::word_bank_grown::render_grown_words(&words)
     }
 }
 
@@ -482,6 +509,13 @@ pub fn decode_shrunk_token(mac_key: &[u8], msg: &str) -> Option<[u8; SHRUNK_TOKE
     // lowercase paths would silently discard. Each path is gated by the same
     // 16-bit detector, so the extra attempts cost only HMAC comparisons.
     if let Some(id) = decode_shrunk_token_cap_wide(mac_key, msg) {
+        return Some(id);
+    }
+    // Misspelling covers (task 0077) are parsed before the grown bank because
+    // their 512-form alphabet includes every correctly spelled grown-bank
+    // word as well. The exact form sequence is regenerated after the keyed
+    // detector verifies, so non-canonical or ordinary text is still refused.
+    if let Some(id) = decode_shrunk_token_misspellings(mac_key, msg) {
         return Some(id);
     }
     // Grown-bank covers (task 0076): a disjoint 256-word vocabulary, so it is
@@ -558,8 +592,32 @@ fn decode_shrunk_token_cap_wide(mac_key: &[u8], msg: &str) -> Option<[u8; SHRUNK
     Some(id)
 }
 
+/// Decode a misspelling-layer cover (task 0077).
+fn decode_shrunk_token_misspellings(
+    mac_key: &[u8],
+    msg: &str,
+) -> Option<[u8; SHRUNK_TOKEN_ID_BYTES]> {
+    let forms = crate::misspell::parse_misspelled_forms(msg)?;
+    let bits = crate::misspell::misspell_encode_words(&forms, SHRUNK_TOKEN_PAYLOAD_BITS);
+    let (id, tag) = split_shrunk_payload(&bits)?;
+    let expected = compute_shrunk_token_tag(mac_key, &id);
+    if !constant_time_eq_shrunk_token(&tag, &expected) {
+        return None;
+    }
+    let canonical_bits = shrunk_token_payload_bits(&id, &expected);
+    let canonical_forms =
+        crate::misspell::misspell_decode_bits(&canonical_bits, SHRUNK_TOKEN_PAYLOAD_BITS);
+    if forms != canonical_forms {
+        return None;
+    }
+    Some(id)
+}
+
 /// Decode a grown-bank cover (task 0076).
-fn decode_shrunk_token_grown_bank(mac_key: &[u8], msg: &str) -> Option<[u8; SHRUNK_TOKEN_ID_BYTES]> {
+fn decode_shrunk_token_grown_bank(
+    mac_key: &[u8],
+    msg: &str,
+) -> Option<[u8; SHRUNK_TOKEN_ID_BYTES]> {
     let words = crate::word_bank_grown::parse_grown_words(msg)?;
     let bits = crate::word_bank_grown::grown_bank_encode_words(&words, SHRUNK_TOKEN_PAYLOAD_BITS);
     let (id, tag) = split_shrunk_payload(&bits)?;
@@ -577,7 +635,10 @@ fn decode_shrunk_token_grown_bank(mac_key: &[u8], msg: &str) -> Option<[u8; SHRU
 }
 
 /// Decode a capitalisation-off (plain lowercase) word-bank cover (task 0075).
-fn decode_shrunk_token_plain_wide(mac_key: &[u8], msg: &str) -> Option<[u8; SHRUNK_TOKEN_ID_BYTES]> {
+fn decode_shrunk_token_plain_wide(
+    mac_key: &[u8],
+    msg: &str,
+) -> Option<[u8; SHRUNK_TOKEN_ID_BYTES]> {
     let words = crate::bigram::parse_words(msg)?;
     let bits = crate::bigram::legacy_wide_encode_words(&words, SHRUNK_TOKEN_PAYLOAD_BITS);
     let (id, tag) = split_shrunk_payload(&bits)?;
