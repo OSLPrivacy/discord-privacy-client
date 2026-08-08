@@ -5431,7 +5431,6 @@ mod tauri_registration_surface_tests {
         for command in commands {
             assert_registered_and_granted(&handlers, &permissions, &capability, command);
         }
-        );
         assert_each_registration_surface_is_required(
             &handlers,
             &permissions,

@@ -11,11 +11,7 @@ pub mod allowed_place_commands;
 pub mod adapter_profile_boot;
 pub mod adapters;
 #[cfg(feature = "core")]
-pub mod allowed_place_commands;
-#[cfg(feature = "core")]
 pub mod attachment_formats;
-pub mod attachment_limits;
-#[cfg(feature = "core")]
 pub mod attachment_limits;
 #[cfg(feature = "core")]
 pub mod attachment_partial_guard;
@@ -42,8 +38,6 @@ pub mod autoscrub_bridge;
 #[cfg(feature = "core")]
 pub mod autoscrub_run;
 pub mod background_priority;
-#[cfg(feature = "core")]
-pub mod bad_message_rules;
 pub mod browser_companion;
 // The persistent footprint store is sealed with `ipc`'s process key, so it
 // belongs to the same runtime boundary as the other core storage modules.
@@ -163,7 +157,6 @@ pub mod scrub_hosted {
     pub mod x_web;
     pub mod yahoo_mail;
 }
-pub mod messenger_whitelist_kinds;
 #[cfg(feature = "core")]
 pub mod remove_everything;
 #[cfg(all(feature = "core", feature = "desktop"))]
@@ -190,8 +183,6 @@ pub mod secure_disk_backend;
 pub mod service_connections;
 #[cfg(feature = "core")]
 pub mod server_records;
-#[cfg(feature = "core")]
-pub mod service_connections;
 pub mod service_host;
 #[cfg(feature = "core")]
 pub mod services;
@@ -305,8 +296,6 @@ pub mod native_surface_capture;
 #[cfg(feature = "core")]
 pub mod hub_command_surface;
 pub mod imap_verify;
-#[cfg(feature = "core")]
-pub mod runtime_switches;
 pub mod scrub_imap;
 #[cfg(feature = "core")]
 pub mod scrub_index;
@@ -320,7 +309,6 @@ pub mod sensitive_warning;
 pub mod service_burn_selection;
 #[cfg(feature = "core")]
 pub mod service_scope_index;
-pub mod shared_conversation_scroll;
 pub mod shared_mailbox_reader;
 pub mod signal_destination_binding;
 #[cfg(feature = "core")]

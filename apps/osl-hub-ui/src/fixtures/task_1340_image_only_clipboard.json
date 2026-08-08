@@ -1,0 +1,11 @@
+{
+  "description": "TASK 1340 negative-control fixture: image clipboard payloads only, no plain text and no unsupported clipboard object. Pointing the check at this file must make the check FAIL, because a run with nothing non-image in it proves nothing about non-image clipboard content.",
+  "payloads": [
+    {
+      "name": "png-control",
+      "kind": "image",
+      "media_type": "image/png",
+      "bytes_hex": "89504e470d0a1a0a5441534b31333430"
+    }
+  ]
+}
