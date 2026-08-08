@@ -1,0 +1,88 @@
+/* TASK 4760 - the consent gate in front of "Anyone". Layout only; every colour
+   comes from the palette in styles.css. The three sentences are never smaller
+   or fainter than the Turn on button that acts on them, and the greyed button
+   is greyed by more than colour alone so it reads as unavailable either way. */
+
+.discovery-anyone-gate {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-width: 640px;
+  margin: 24px auto;
+  padding: 20px 24px 24px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  color: var(--text);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.dag-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.dag-header h1 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 21px;
+  line-height: 1.2;
+}
+
+.dag-close {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* The three sentences. Full-strength text, never a footnote. */
+.dag-sentences {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--warn);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+}
+
+.dag-sentence {
+  margin: 0;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.dag-tick {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: start;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line-soft);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.dag-footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.dag-back,
+.dag-turn-on {
+  min-width: 110px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.dag-turn-on:disabled {
+  opacity: .45;
+  filter: grayscale(1);
+  cursor: not-allowed;
+}
