@@ -73,6 +73,7 @@ import { entitlementCopy } from "./entitlement-copy";
 import { entitlementView } from "./entitlement-view";
 import { chooseDetectedAccountOpening, detectedOpeningChoiceKey } from "./detected-account-opening";
 import { bindProtectedTextBoxShortcutGuards } from "./protected-box-shortcuts";
+import { attachmentTierLimit } from "./attachment-tier-limit";
 import {
   escapeHtml,
   closeEmbeddedServiceHost,
@@ -6027,11 +6028,9 @@ function oslChatContent(): string {
   });
   const settingsPerson = oslChatSettingsPersonId ? hubPeople.find((person) => person.personId === oslChatSettingsPersonId) ?? null : null;
   const settings = settingsPerson ? oslChatFriendSettingsMarkup(settingsPerson) : "";
-  const attachmentCreation = pro
-    ? `<button class="button compact" id="osl-chat-attach" type="button" ${oslChatBusy ? "disabled" : ""}>Choose file</button>`
-    : `<span class="quiet-note">Pro is required to make an attachment.</span>`;
+  const attachmentLimit = attachmentTierLimit(licenseState.access);
   const attachments = activeOslChatContext?.scopeApproved
-    ? `<section class="osl-chat-attachments" aria-label="Encrypted attachments"><header><strong>Attachments</strong>${attachmentCreation}</header>${pro ? [...attachmentProgressByContext.values()].map((event) => attachmentProgressMarkup(event, torOnboarding.choice)).join("") : ""}${oslChatAttachments.length ? oslChatAttachments.map((item) => `<button class="setting-line" data-osl-chat-attachment="${escapeHtml(item.attachmentId)}" type="button"><span><strong>${escapeHtml(item.originalFilename)}</strong><small>${item.viewOnce ? "View once · " : ""}${item.plaintextSize.toLocaleString("en-US")} bytes</small></span>${statusTag("Open")}</button>`).join("") : `<p>No pending attachments.</p>`}<small>Opening a received view-once item is free. Images open in OSL's capture-resistant viewer. Other supported files open temporarily in their Windows viewer, which may allow capture.</small></section>`
+    ? `<section class="osl-chat-attachments" aria-label="Encrypted attachments"><header><strong>Attachments</strong><button class="button compact" id="osl-chat-attach" type="button" ${oslChatBusy ? "disabled" : ""}>Choose file</button></header><small>${attachmentLimit.tierLabel} · ${attachmentLimit.perFileLimitLabel} per file</small>${[...attachmentProgressByContext.values()].map((event) => attachmentProgressMarkup(event, torOnboarding.choice)).join("")}${oslChatAttachments.length ? oslChatAttachments.map((item) => `<button class="setting-line" data-osl-chat-attachment="${escapeHtml(item.attachmentId)}" type="button" ${oslChatBusy ? "disabled" : ""}><span><strong>${escapeHtml(item.originalFilename)}</strong><small>${item.viewOnce ? "View once · " : ""}${item.plaintextSize.toLocaleString("en-US")} bytes</small></span>${statusTag("Open")}</button>`).join("") : `<p>No pending attachments.</p>`}<small>Opening a received view-once item is free. Images open in OSL's capture-resistant viewer. Other supported files open temporarily in their Windows viewer, which may allow capture.</small></section>`
     : "";
   const droppedFiles = oslChatDropTray.attachments.length
     ? attachmentTrayMarkup(oslChatDropTray)
@@ -6055,7 +6054,7 @@ function oslChatContent(): string {
     conversationFilter: oslChatFilter,
     searchQuery: oslChatSearch,
     sendBlockedReason: oslChatSendBlockedReason,
-    attachmentAvailable: Boolean(activeOslChatContext?.scopeApproved && pro),
+    attachmentAvailable: Boolean(activeOslChatContext?.scopeApproved),
     deletionUnconfirmed: oslChatDeletionUnconfirmed,
     buildIntegrity: buildIntegrityStatus,
     verificationWarningSurface: oslChatVerificationWarningSurface,
@@ -13098,6 +13097,33 @@ export const __oslHubUiTest = {
    * protection recommendation really renders (homeStatusSnapshot, task 0825). */
   setHomeNotificationsOpenForTest(open: boolean): void {
     homeNotificationsOpen = open;
+  },
+  /** Set up the approved OSL Chat attachment surface without opening a picker. */
+  seedApprovedOslChatAttachmentPicker(): void {
+    const person = testHubPerson({
+      personId: "attachment-tier-test-peer",
+      alias: "Attachment tier test peer",
+      safetyNumberVerified: true,
+    });
+    route = "osl-chat";
+    hubPeople = [person];
+    activeOslChatPersonId = person.personId;
+    activeOslChatContext = {
+      contextToken: "attachment-tier-test-context",
+      serviceId: "osl-chat",
+      accountId: "local",
+      personId: person.personId,
+      peerOslUserId: person.oslUserId,
+      scopeApproved: true,
+    };
+    oslChatAttachments = [];
+  },
+  setLicenseAccess(access: HubLicenseState["access"]): void {
+    licenseState = { ...licenseState, access };
+  },
+  renderOslChatAttachmentPicker(): string {
+    route = "osl-chat";
+    return oslChatContent();
   },
   renderSettingsSection(section: SettingsSection): string {
     route = "settings";
