@@ -115,6 +115,7 @@ export async function buildReleaseInstaller(options) {
 
   await run("npm", ["ci", "--prefix", "apps/osl-hub-ui"], { cwd: root });
   await run("npm", ["run", "--prefix", "apps/osl-hub-ui", "build"], { cwd: root });
+  await run("node", ["scripts/stage-tor-sidecar.mjs", "--target", "x86_64-pc-windows-msvc", "--release"], { cwd: root });
   await run("npm", TAURI_BUILD_ARGS, { cwd: join(root, "apps/osl-hub") });
 
   const bundles = await listExeFiles(bundleDir);

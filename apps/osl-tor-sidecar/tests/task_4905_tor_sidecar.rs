@@ -53,12 +53,14 @@ impl Sidecar {
     /// Read the next stdout line and require it to be one JSON object.
     fn next_json(&mut self) -> Value {
         let mut line = String::new();
-        let got = self.reader.read_line(&mut line).expect("read sidecar stdout");
+        let got = self
+            .reader
+            .read_line(&mut line)
+            .expect("read sidecar stdout");
         assert!(got > 0, "sidecar stdout closed before the expected event");
         let trimmed = line.trim_end_matches('\n').to_string();
-        let parsed = serde_json::from_str::<Value>(&trimmed).unwrap_or_else(|error| {
-            panic!("stdout line is not JSON ({error}): {trimmed:?}")
-        });
+        let parsed = serde_json::from_str::<Value>(&trimmed)
+            .unwrap_or_else(|error| panic!("stdout line is not JSON ({error}): {trimmed:?}"));
         self.lines.push(trimmed);
         parsed
     }
@@ -77,7 +79,11 @@ impl Sidecar {
                         .to_string();
                 }
                 "listening" => {
-                    let ip: IpAddr = event["ip"].as_str().expect("ip").parse().expect("ip parses");
+                    let ip: IpAddr = event["ip"]
+                        .as_str()
+                        .expect("ip")
+                        .parse()
+                        .expect("ip parses");
                     let port =
                         u16::try_from(event["port"].as_u64().expect("port")).expect("port fits");
                     return (ip, port, requested);
@@ -163,7 +169,8 @@ fn socks_connect_reaches_fixture_exactly_once() {
 
     // Hand-rolled SOCKS5 CONNECT: greeting, no-auth, IPv4 request.
     let mut conn = TcpStream::connect((ip, port)).expect("connect to sidecar SOCKS port");
-    conn.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    conn.set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
     conn.write_all(&[0x05, 0x01, 0x00]).expect("send greeting");
     let mut method = [0u8; 2];
     conn.read_exact(&mut method).expect("read method choice");
@@ -201,12 +208,17 @@ fn socks_connect_reaches_fixture_exactly_once() {
     assert_eq!(prose, 0, "stdout must contain 0 prose log lines");
     let events: Vec<String> = lines
         .iter()
-        .map(|line| serde_json::from_str::<Value>(line).expect("json line")["event"]
-            .as_str()
-            .expect("event tag")
-            .to_string())
+        .map(|line| {
+            serde_json::from_str::<Value>(line).expect("json line")["event"]
+                .as_str()
+                .expect("event tag")
+                .to_string()
+        })
         .collect();
-    assert!(events.iter().any(|e| e == "connect_ok"), "missing connect_ok in {events:?}");
+    assert!(
+        events.iter().any(|e| e == "connect_ok"),
+        "missing connect_ok in {events:?}"
+    );
 }
 
 /// The sidecar's own source is 400-650 non-test lines, contains no test

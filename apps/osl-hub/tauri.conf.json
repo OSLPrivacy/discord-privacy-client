@@ -30,6 +30,9 @@
   },
   "bundle": {
     "active": true,
+    "externalBin": [
+      "binaries/osl-tor-sidecar"
+    ],
     "targets": [
       "nsis"
     ],

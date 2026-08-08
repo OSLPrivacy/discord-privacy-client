@@ -334,6 +334,16 @@ pub const TOR_SIDECAR_FILE_NAME: &str = if cfg!(windows) {
 pub fn bundled_tor_sidecar_path() -> Result<PathBuf, String> {
     let exe = std::env::current_exe()
         .map_err(|_| "OSL could not resolve its own executable path".to_owned())?;
+    bundled_tor_sidecar_path_from_executable(&exe)
+}
+
+/// Locate the sidecar in a concrete package layout. Keeping this separate
+/// from [`bundled_tor_sidecar_path`] lets the package contract be exercised
+/// without changing the test process executable.
+pub fn bundled_tor_sidecar_path_from_executable(
+    application_executable: &Path,
+) -> Result<PathBuf, String> {
+    let exe = application_executable;
     let dir = exe
         .parent()
         .ok_or_else(|| "OSL executable has no parent directory".to_owned())?;
@@ -372,8 +382,26 @@ pub fn resolve_arti_proxy_config(tor_data_dir: &Path) -> Result<ArtiProxyConfig,
         return Ok(config);
     }
     let program = resolve_tor_sidecar_program()?;
+    packaged_arti_proxy_config(program, tor_data_dir)
+}
+
+/// Build the production sidecar configuration from a known packaged sidecar.
+/// The child is explicitly kept in Tor mode: direct mode exists solely for
+/// hermetic SOCKS tests and must never be selected by the application.
+pub fn packaged_arti_proxy_config(
+    program: PathBuf,
+    tor_data_dir: &Path,
+) -> Result<ArtiProxyConfig, String> {
+    if !program.is_file() {
+        return Err(format!(
+            "OSL refuses to start Tor: the packaged {TOR_SIDECAR_FILE_NAME} is missing at {}",
+            program.display()
+        ));
+    }
     let mut config = ArtiProxyConfig::new(program);
     config.args = vec![
+        "--dial-mode".to_owned(),
+        "tor".to_owned(),
         "--listen".to_owned(),
         config.socks_addr.to_string(),
         "--state-dir".to_owned(),
@@ -496,6 +524,48 @@ mod tests {
             ),
             NetworkAuthorization::Direct,
         );
+    }
+
+    #[test]
+    fn packaged_sidecar_config_is_found_without_an_environment_override() {
+        let package = tempfile::tempdir().expect("temporary package layout");
+        let data = tempfile::tempdir().expect("temporary Tor data directory");
+        let executable = package.path().join("osl-privacy-hub");
+        let sidecar = bundled_tor_sidecar_path_from_executable(&executable)
+            .expect("a packaged executable has a parent directory");
+        std::fs::write(&sidecar, b"sidecar fixture").expect("write packaged sidecar");
+
+        let config = packaged_arti_proxy_config(sidecar.clone(), data.path())
+            .expect("the packaged sidecar is found by its package path");
+        assert_eq!(config.program, sidecar);
+        assert!(config
+            .args
+            .windows(2)
+            .any(|args| args == ["--dial-mode", "tor"]));
+
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("tauri.conf.json");
+        let config_text = std::fs::read_to_string(manifest).expect("read Tauri package config");
+        assert!(
+            config_text.contains("\"externalBin\": [\n      \"binaries/osl-tor-sidecar\""),
+            "the package inventory must name the OSL Tor sidecar"
+        );
+    }
+
+    #[test]
+    fn removed_packaged_sidecar_refuses_by_its_absolute_name() {
+        let package = tempfile::tempdir().expect("temporary damaged package layout");
+        let data = tempfile::tempdir().expect("temporary Tor data directory");
+        let missing = bundled_tor_sidecar_path_from_executable(
+            &package.path().join("osl-privacy-hub"),
+        )
+        .expect("a packaged executable has a parent directory");
+
+        let error = packaged_arti_proxy_config(missing.clone(), data.path())
+            .expect_err("a missing package sidecar must not fall back to PATH");
+        assert!(missing.is_absolute());
+        assert!(error.contains("OSL refuses to start Tor"));
+        assert!(error.contains(TOR_SIDECAR_FILE_NAME));
+        assert!(error.contains(&missing.display().to_string()));
     }
 
     #[test]

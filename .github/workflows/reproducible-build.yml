@@ -210,6 +210,10 @@ jobs:
           }
           $env:TAURI_SIGNING_PRIVATE_KEY = $signingKey
           $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""
+          node scripts/stage-tor-sidecar.mjs --target x86_64-pc-windows-msvc --release
+          if ($LASTEXITCODE -ne 0) {
+            throw "could not stage the OSL Tor sidecar"
+          }
           Push-Location apps/osl-hub
           try {
             tauri build --features desktop

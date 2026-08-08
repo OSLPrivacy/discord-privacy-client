@@ -9912,9 +9912,9 @@ fn main() {
             config_dir.join("preview-preferences.json"),
         ));
         startup_breadcrumb("setup_step_14_preview_state_managed"); // STARTUP-TRACE
-        app.manage(TorPreferenceState::load_with_arti_proxy_config(
+        app.manage(TorPreferenceState::load_with_arti_proxy_resolution(
             config_dir.join("tor-preference.json"),
-            osl_privacy_hub::tor_pref::arti_proxy_config_from_env(),
+            osl_privacy_hub::tor_pref::resolve_arti_proxy_config(&local_data_dir).map_err(Some),
         ));
         app.manage(ServiceRegistryState::load(
             config_dir.join("service-registry.json"),
