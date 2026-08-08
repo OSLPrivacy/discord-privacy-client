@@ -201,6 +201,20 @@ const SERVICES: &[ServiceManifest] = &[
         allowed_hosts: &["signal.org"],
         launch_active: false,
     },
+    ServiceManifest {
+        id: "x",
+        display_name: "X",
+        initial_url: "https://x.com/messages",
+        allowed_hosts: &["x.com"],
+        launch_active: false,
+    },
+    ServiceManifest {
+        id: "messenger",
+        display_name: "Facebook Messenger",
+        initial_url: "https://www.facebook.com/messages/",
+        allowed_hosts: &["www.facebook.com"],
+        launch_active: false,
+    },
 ];
 
 const EMAIL_GMAIL: ServiceManifest = ServiceManifest {

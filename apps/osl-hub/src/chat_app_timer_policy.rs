@@ -18,20 +18,10 @@ pub struct AcceptedChatAppTimer {
     pub limit_hours: u32,
 }
 
-pub const CHAT_APP_TIMER_POLICIES: [ChatAppTimerPolicy; 6] = [
+pub const CHAT_APP_TIMER_POLICIES: [ChatAppTimerPolicy; 4] = [
     ChatAppTimerPolicy {
         app_id: "snapchat",
         display_name: "Snapchat",
-        limit_hours: 24,
-    },
-    ChatAppTimerPolicy {
-        app_id: "x",
-        display_name: "X",
-        limit_hours: 24,
-    },
-    ChatAppTimerPolicy {
-        app_id: "messenger",
-        display_name: "Messenger",
         limit_hours: 24,
     },
     ChatAppTimerPolicy {

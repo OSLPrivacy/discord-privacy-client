@@ -152,6 +152,8 @@ fn compiled_manifest() -> MassCleanupCapabilityManifest {
             ],
         ),
         (Service::Signal, &[]),
+        (Service::X, &[Action::DeleteConversationForSelf]),
+        (Service::Messenger, &[Action::DeleteConversationForSelf]),
     ];
 
     MassCleanupCapabilityManifest {

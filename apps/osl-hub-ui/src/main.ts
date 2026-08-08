@@ -829,13 +829,16 @@ let rnWirePolicyRequested = false;
 const autoScrubServiceLabels: Record<ServiceId, string> = {
   discord: "Discord",
   telegram: "Telegram",
+  instagram: "Instagram",
   email: "Email",
   signal: "Signal",
   whatsapp: "WhatsApp",
+  x: "X",
+  messenger: "Messenger",
 };
 const supportedNativeAppIds = new Set<NativeAppId>(["discord"]);
 const importedFirefoxHomeAppIds = new Set<HomeAppId>([
-  "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud", "tuta",
+  "messenger", "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud", "tuta",
 ]);
 const friendsDialogPageSize = 24;
 const friendScopeRenderLimit = 16;
@@ -2146,7 +2149,7 @@ function chooseAppsOnboardingContent(): string {
     ? `<div class="onboarding-app-grid onboarding-app-choices" role="group" aria-label="${label}">${items.map((app) => {
       const available = app.launchState === "available";
       const selected = available && selectedOnboardingApps.has(app.id);
-      const action = available ? `data-onboarding-app-choice="${app.id}" aria-pressed="${selected}"` : `disabled aria-disabled="true"`;
+      const action = available ? `data-onboarding-app-choice="${app.id}" aria-pressed="${selected}"` : `data-onboarding-app-not-built="${app.id}" aria-disabled="false"`;
       return `<button type="button" class="onboarding-app ${selected ? "selected" : ""} ${available ? "" : "unavailable"}" ${action}><span class="app-logo-plate">${homeAppLogo(app)}</span><span><strong>${escapeHtml(app.displayName)}</strong>${available ? "" : "<small>Coming soon</small>"}</span></button>`;
     }).join("")}</div>`
     : `<p class="saved-account-truth">None</p>`;
@@ -2371,7 +2374,7 @@ function discordQaHostStatusMarkup(): string {
 }
 
 function defaultBrowserCompanionEligible(appId: HomeAppId | null): appId is HomeAppId {
-  return appId !== null && ["gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud", "tuta"].includes(appId);
+  return appId !== null && ["messenger", "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud", "tuta"].includes(appId);
 }
 
 function browserSessionModeChoices(): string {
@@ -3367,6 +3370,11 @@ function bindOnboarding(): void {
     localStorage.setItem(selectedOnboardingAppsStorageKey, JSON.stringify([...selectedOnboardingApps]));
     onboardingConnectAppId = null;
     render();
+  }));
+  document.querySelectorAll<HTMLButtonElement>("[data-onboarding-app-not-built]").forEach((button) => button.addEventListener("click", () => {
+    const appId = button.dataset.onboardingAppNotBuilt as HomeAppId;
+    const app = homeAppsFromServices(services).find((candidate) => candidate.id === appId);
+    showToast(`${app?.displayName ?? "This app"} isn't built yet`);
   }));
   document.querySelector<HTMLButtonElement>("#continue-app-choice")?.addEventListener("click", async () => {
     // D-190: `ensureNativeCatalogForAppChoice` sets `nativeCatalogRefusal` on every
@@ -11157,11 +11165,13 @@ export const __oslHubUiTest = {
   },
   flushRenderForTest(): void {
     renderNow();
+  },
   renderOnboardingSetupShell(destination: OnboardingRoute): string {
     route = "onboarding";
     onboardingRoute = onboardingRouteForBuild(destination);
     renderOnboarding();
     return root.innerHTML;
+  },
   renderOnboardingCaptureShell(destination: OnboardingRoute): string {
     route = "onboarding";
     onboardingRoute = onboardingRouteForBuild(destination);

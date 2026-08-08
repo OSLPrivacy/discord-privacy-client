@@ -33,7 +33,11 @@ const sorted = (values: readonly string[]) => [...values].sort();
 const unique = (values: readonly string[]) => sorted([...new Set(values)]);
 const serviceIds = unique([...ruling.chat_carriers, "email"]);
 const homeAppIds = unique([...ruling.chat_carriers, ...ruling.email_carriers]);
-const nativeAppIds = unique([...ruling.chat_carriers, ...ruling.native_email_carriers]);
+const browserOnlyChatCarriers = ["messenger"] as const;
+const nativeAppIds = unique([
+  ...ruling.chat_carriers.filter((id) => !(browserOnlyChatCarriers as readonly string[]).includes(id)),
+  ...ruling.native_email_carriers,
+]);
 const ownerRestoredChatApps = unique(ruling.owner_rulings?.flatMap((entry) => entry.surfaces) ?? []);
 const nonSignalMessagingRiskServiceIds = unique([...ruling.chat_carriers.filter((id) => id !== "signal"), "email"]);
 const legacyTimerSurfaceIds = unique([...ruling.cut_surfaces, ...ownerRestoredChatApps]);
@@ -255,7 +259,7 @@ describe("surface ruling synchronization", () => {
     const pricing = JSON.parse(source("data/pricing.json")) as { surface_policy: { surface_ruling: Ruling } };
 
     const checkedLists: CheckedList[] = [
-      { name: "ruling chat carriers", actual: ruling.chat_carriers, expected: ["discord", "signal", "whatsapp", "telegram", "instagram"] },
+      { name: "ruling chat carriers", actual: ruling.chat_carriers, expected: ["discord", "signal", "whatsapp", "telegram", "instagram", "x", "messenger"] },
       { name: "ruling email carriers", actual: ruling.email_carriers, expected: ["gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud", "tuta"] },
       { name: "ruling native_email_carriers", actual: ruling.native_email_carriers, expected: ["outlook"] },
       { name: "ruling first-party non-carriers", actual: ruling.first_party_surfaces, expected: ["osl-chats", "osl-mail"] },
@@ -266,8 +270,8 @@ describe("surface ruling synchronization", () => {
       { name: "Rust EmailProvider enum", actual: rustEnum(modelsRs, "EmailProvider"), expected: ruling.email_carriers },
       { name: "Rust NativeAppId enum", actual: rustEnum(nativeAppsRs, "NativeAppId"), expected: nativeAppIds },
       { name: "Rust NATIVE_APPS manifest", actual: rustNativeAppRefs(nativeAppsRs.slice(nativeAppsRs.indexOf("const NATIVE_APPS"), nativeAppsRs.indexOf("#[cfg(any(target_os = \"windows\", test))]", nativeAppsRs.indexOf("const NATIVE_APPS")))), expected: nativeAppIds },
-      { name: "Rust FirefoxServiceId enum", actual: rustEnum(nativeAppsRs, "FirefoxServiceId"), expected: ruling.email_carriers },
-      { name: "Rust FIREFOX_SERVICES allowlist", actual: [...nativeAppsRs.slice(nativeAppsRs.indexOf("const FIREFOX_SERVICES"), nativeAppsRs.indexOf("fn manifest")).matchAll(/FirefoxServiceId::([A-Z][A-Za-z0-9]*)/g)].map((match) => rustVariantId(match[1])), expected: ruling.email_carriers },
+      { name: "Rust FirefoxServiceId enum", actual: rustEnum(nativeAppsRs, "FirefoxServiceId"), expected: [...browserOnlyChatCarriers, ...ruling.email_carriers] },
+      { name: "Rust FIREFOX_SERVICES allowlist", actual: [...nativeAppsRs.slice(nativeAppsRs.indexOf("const FIREFOX_SERVICES"), nativeAppsRs.indexOf("fn manifest")).matchAll(/FirefoxServiceId::([A-Z][A-Za-z0-9]*)/g)].map((match) => rustVariantId(match[1])), expected: [...browserOnlyChatCarriers, ...ruling.email_carriers] },
       { name: "Rust service_host SERVICES", actual: quotedValues(serviceHostRs.slice(serviceHostRs.indexOf("const SERVICES"), serviceHostRs.indexOf("const EMAIL_GMAIL"))), expected: serviceIds },
       { name: "Rust mass_cleanup manifest", actual: rustServiceAliasRefs(rustFunctionBody(massCleanupRs, "compiled_manifest")), expected: serviceIds },
       { name: "TS ServiceId union", actual: tsUnion(servicesTs, "ServiceId"), expected: serviceIds },
@@ -276,7 +280,7 @@ describe("surface ruling synchronization", () => {
       { name: "TS NativeAppId union", actual: tsUnion(servicesTs, "NativeAppId"), expected: nativeAppIds },
       { name: "TS services.ts serviceIds", actual: tsConstArray(servicesTs, "serviceIds"), expected: serviceIds },
       { name: "TS services.ts emailProviders", actual: tsConstArray(servicesTs, "emailProviders"), expected: ruling.email_carriers },
-      { name: "TS services.ts firefoxServiceIds", actual: tsConstArray(servicesTs, "firefoxServiceIds"), expected: ruling.email_carriers },
+      { name: "TS services.ts firefoxServiceIds", actual: tsConstArray(servicesTs, "firefoxServiceIds"), expected: [...browserOnlyChatCarriers, ...ruling.email_carriers] },
       { name: "TS homeAppDefinitions", actual: [...servicesTs.matchAll(/homeApp\("([a-z][a-z0-9]*)"/g)].map((match) => match[1]), expected: homeAppIds },
       { name: "TS autoscrub serviceIds", actual: tsConstArray(autoscrubTs, "serviceIds"), expected: serviceIds },
       { name: "TS service-guide serviceIds", actual: tsConstSet(serviceGuideTs, "serviceIds"), expected: serviceIds },

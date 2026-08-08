@@ -139,12 +139,10 @@ export function createAutoscrubUnattendedContract(
 }
 
 const serviceIds: readonly ServiceId[] = [
-  "discord", "telegram", "instagram", "email", "signal", "whatsapp",
+  "discord", "telegram", "instagram", "email", "signal", "whatsapp", "x", "messenger",
 ];
-const phases: readonly AutoScrubRunPhase[] = ["reviewRequired", "running", "stopping", "blocked", "complete", "failed"];
-const quitGuardStates: readonly AutoScrubQuitGuardState[] = ["notRequested", "confirming", "checking", "estimated", "stopped", "unknown", "refused"];
 const phases: readonly AutoScrubRunPhase[] = ["reviewRequired", "running", "stopping", "blocked", "skipped", "complete", "failed"];
-const quitGuardStates: readonly AutoScrubQuitGuardState[] = ["notRequested", "checking", "estimated", "stopped", "unknown", "refused"];
+const quitGuardStates: readonly AutoScrubQuitGuardState[] = ["notRequested", "confirming", "checking", "estimated", "stopped", "unknown", "refused"];
 const outcomes: readonly AutoScrubRunSummary["lastOutcome"][] = ["none", "prepared", "confirmed", "held", "unknown"];
 const MAX_RETAINED_FLEET_RUNS = 8;
 const runActions: Readonly<Record<AutoScrubRunActionKind, AutoScrubRunAction["label"]>> = {
@@ -313,8 +311,7 @@ function parseStopConfirmation(raw: unknown): AutoScrubStopConfirmationState {
 }
 
 export function parseAutoScrubFleetStatus(raw: unknown): AutoScrubFleetStatus {
-  if (!exactRecord(raw, ["contract", "openRunCount", "globalStopRequested", "stopConfirmation", "unattendedExecutionAllowed", "quitGuard", "runs"])
-  if (!exactRecord(raw, ["contract", "openRunCount", "globalStopRequested", "unattendedExecutionAllowed", "quitGuard", "fleetActions", "runs"])
+  if (!exactRecord(raw, ["contract", "openRunCount", "globalStopRequested", "stopConfirmation", "unattendedExecutionAllowed", "quitGuard", "fleetActions", "runs"])
     || raw.contract !== "autoscrubRunFleet.v1"
     || !boundedCount(raw.openRunCount, 2)
     || typeof raw.globalStopRequested !== "boolean"

@@ -1,8 +1,8 @@
 use std::fs;
 
 use osl_privacy_hub::installed_build::{
-    CHANGED_BUILD_CHAT_WARNING, INSTALLED_BUILD_RECORD_FILE, InstalledBuildWarningReason,
     installed_build_chat_warning, store_and_read_installed_build_record,
+    InstalledBuildWarningReason, CHANGED_BUILD_CHAT_WARNING, INSTALLED_BUILD_RECORD_FILE,
 };
 
 #[test]

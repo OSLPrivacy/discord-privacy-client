@@ -117,6 +117,8 @@ pub enum Surface {
     Whatsapp,
     Telegram,
     Instagram,
+    X,
+    Messenger,
     // Native email carrier — Outlook desktop, which has a `NativeAppId` variant.
     OutlookDesktop,
     // Email carriers on the web — the eight with legal analysis, plus Tuta.
@@ -434,6 +436,24 @@ pub const SURFACE_CLAIMS: &[SurfaceClaim] = &[
         authority: "TASK 4256 catalogue restore; TASK 4264/4265 own send and readiness proofs",
         reason: "No Instagram carrier is wired in this build. Instagram is restored to the catalog, but it cannot send, read as Ready, or claim protected delivery until its own proofs pass.",
     },
+    SurfaceClaim {
+        surface: Surface::X,
+        carrier: CarrierEvidence::BuiltNeverProvenLive,
+        delivery: DeliveryEvidence::NeverProvenLive,
+        blockers: &[],
+        matrix: MatrixPosition::NoCapabilityClaim,
+        authority: "TASK 4255/4261 catalogue restore; own send and readiness proofs pending",
+        reason: "X is back in the catalogue at its fixed official messages URL, but its live carry and delivery proofs have not passed, so OSL cannot send through it or mark it Ready.",
+    },
+    SurfaceClaim {
+        surface: Surface::Messenger,
+        carrier: CarrierEvidence::NotBuilt,
+        delivery: DeliveryEvidence::NeverProvenLive,
+        blockers: &[],
+        matrix: MatrixPosition::NoCapabilityClaim,
+        authority: "TASK 4257/4261 catalogue restore; own send and readiness proofs pending",
+        reason: "No Messenger carrier is wired in this build. Messenger is restored to the catalog, but it cannot send, read as Ready, or claim protected delivery until its own proofs pass.",
+    },
     // ---- Native email carrier ---------------------------------------------
     SurfaceClaim {
         surface: Surface::OutlookDesktop,
@@ -677,6 +697,8 @@ impl Surface {
             Self::Whatsapp => "whatsapp",
             Self::Telegram => "telegram",
             Self::Instagram => "instagram",
+            Self::X => "x",
+            Self::Messenger => "messenger",
             Self::OutlookDesktop | Self::OutlookWeb => "outlook",
             Self::Gmail => "gmail",
             Self::Proton => "proton",
@@ -917,6 +939,7 @@ mod tests {
             Surface::Whatsapp => Some(NativeAppId::Whatsapp),
             Surface::Telegram => Some(NativeAppId::Telegram),
             Surface::Instagram => Some(NativeAppId::Instagram),
+            Surface::X => Some(NativeAppId::X),
             Surface::OutlookDesktop => Some(NativeAppId::Outlook),
             _ => None,
         }

@@ -8,13 +8,13 @@ const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
 const localProtectedSheetSource = readFileSync(new URL("./local-protected-sheet.ts", import.meta.url), "utf8");
 
 const originalAppRoster = [
-  "discord", "telegram", "instagram", "signal", "whatsapp",
+  "discord", "telegram", "instagram", "signal", "whatsapp", "x", "messenger",
   "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud", "tuta",
 ] as const;
 const unsupportedOriginalApps = originalAppRoster.filter((id) => id !== "discord");
 
 function linkedServiceFixture(): unknown[] {
-  const ids = ["discord", "telegram", "instagram", "email", "signal", "whatsapp"];
+  const ids = ["discord", "telegram", "instagram", "email", "signal", "whatsapp", "x", "messenger"];
   return ids.map((id, sidebarOrder) => ({
     id,
     displayName: id,

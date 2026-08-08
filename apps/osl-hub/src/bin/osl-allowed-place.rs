@@ -6,9 +6,10 @@ fn main() {
         .iter()
         .any(|arg| arg == osl_privacy_hub::allowed_place_commands::ALLOWED_PLACE_CLI_FLAG)
     {
-        args.insert(1, OsString::from(
-            osl_privacy_hub::allowed_place_commands::ALLOWED_PLACE_CLI_FLAG,
-        ));
+        args.insert(
+            1,
+            OsString::from(osl_privacy_hub::allowed_place_commands::ALLOWED_PLACE_CLI_FLAG),
+        );
     }
     let Some(result) = osl_privacy_hub::allowed_place_commands::run_allowed_place_cli(args) else {
         println!(

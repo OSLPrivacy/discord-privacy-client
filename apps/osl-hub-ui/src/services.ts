@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { isTauriRuntime } from "./preferences";
 
-export type ServiceId = "discord" | "telegram" | "instagram" | "email" | "signal" | "whatsapp";
+export type ServiceId = "discord" | "telegram" | "instagram" | "email" | "signal" | "whatsapp" | "x" | "messenger";
 export type ConnectionState = "demoLinked" | "notLinked";
 export type EmailProvider = "gmail" | "outlook" | "proton" | "tuta" | "yahoo" | "aol" | "gmx" | "maildotcom" | "icloud";
 export type ServiceCategory = "consumer" | "enterprise";
@@ -10,7 +10,7 @@ export type OfferedEmailProvider = "gmail" | "outlook" | "proton" | "yahoo" | "a
 export type HomeAppId = Exclude<ServiceId, "email"> | OfferedEmailProvider;
 export type HomeAppVisibility = "launch" | "later";
 export type HomeAppSection = "social" | "email" | "later";
-export type NativeAppId = "discord" | "telegram" | "instagram" | "signal" | "whatsapp" | "outlook";
+export type NativeAppId = "discord" | "telegram" | "instagram" | "signal" | "whatsapp" | "outlook" | "x";
 export type NativeSessionMode = "dedicated" | "existingSession";
 export type DiscordSessionMode = NativeSessionMode;
 export type NativeDiscordTakeover = "borrowExisting" | "quitAndRelaunch";
@@ -340,14 +340,14 @@ export const AndroidSurface = {
   },
 };
 
-const serviceIds: readonly ServiceId[] = ["discord", "telegram", "instagram", "email", "signal", "whatsapp"];
+const serviceIds: readonly ServiceId[] = ["discord", "telegram", "instagram", "email", "signal", "whatsapp", "x", "messenger"];
 const connectionStates: readonly ConnectionState[] = ["demoLinked", "notLinked"];
 const emailProviders: readonly EmailProvider[] = ["gmail", "outlook", "proton", "tuta", "yahoo", "aol", "gmx", "maildotcom", "icloud"];
 const maxAccountsPerService = 10;
-const nativeAppIds: readonly NativeAppId[] = ["discord", "telegram", "instagram", "signal", "whatsapp", "outlook"];
+const nativeAppIds: readonly NativeAppId[] = ["discord", "telegram", "instagram", "signal", "whatsapp", "outlook", "x"];
 const browserImportIds: readonly BrowserImportId[] = ["chrome", "edge", "firefox", "brave", "opera", "duckduckgo"];
 const firefoxServiceIds: readonly HomeAppId[] = [
-  "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud", "tuta",
+  "messenger", "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud", "tuta",
 ];
 const nativeAppSupportStatuses: readonly NativeAppSupportStatus[] = [
   "available", "beta", "experimental", "comingSoon", "externallyBlocked", "noClaim",
@@ -397,6 +397,7 @@ const nativePreviewApps: readonly NativeApp[] = [
   // apart.
   { id: "whatsapp", displayName: "WhatsApp", availability: "installable", supportStatus: "comingSoon", carrierEvidence: "measuredAndRefused", deliveryEvidence: "neverProvenLive", claimBlockers: ["send-input-generalisation"], claimNote: "OSL measured WhatsApp's composer against the live client and the write did not land: the value reaches the accessibility layer and the message document stays empty. This is a refused technique, not unfinished work, so nothing is proven here.", statusPage: { capability: "carrier write capability was measured and refused", generatedLabel: "Coming later", explanation: "OSL measured WhatsApp's composer against the live client and the write did not land: the value reaches the accessibility layer and the message document stays empty. This is a refused technique, not unfinished work, so nothing is proven here." }, protectedMode: "unavailable", isolatedProfileAvailable: false, supportsOverlay: false },
   { id: "outlook", displayName: "Outlook", availability: "unavailable", supportStatus: "comingSoon", carrierEvidence: "notBuilt", deliveryEvidence: "notDeliverable", claimBlockers: [], claimNote: "No Outlook desktop carrier is wired. There is no adapter to prove and nothing is sent through Outlook today.", statusPage: { capability: "no carrier capability is wired", generatedLabel: "Coming later", explanation: "No Outlook desktop carrier is wired. There is no adapter to prove and nothing is sent through Outlook today." }, protectedMode: "unavailable", isolatedProfileAvailable: false, supportsOverlay: false },
+  { id: "x", displayName: "X", availability: "unavailable", supportStatus: "comingSoon", carrierEvidence: "builtNeverProvenLive", deliveryEvidence: "neverProvenLive", claimBlockers: ["web-surface-legal-review"], claimNote: "X is back in the catalogue at its fixed official messages URL, but its live carry and delivery proofs have not passed, so OSL cannot send through it or mark it Ready.", statusPage: { capability: "carrier capability is wired but not live-proven", generatedLabel: "Coming later", explanation: "X is back in the catalogue at its fixed official messages URL, but its live carry and delivery proofs have not passed, so OSL cannot send through it or mark it Ready." }, protectedMode: "unavailable", isolatedProfileAvailable: false, supportsOverlay: false },
 ];
 
 interface HomeAppDefinition {
@@ -418,6 +419,8 @@ const homeAppDefinitions: readonly HomeAppDefinition[] = [
   homeApp("instagram", "Instagram", "instagram", null, "launch", "comingSoon"),
   homeApp("signal", "Signal", "signal", null, "launch", "comingSoon"),
   homeApp("whatsapp", "WhatsApp", "whatsapp", null, "launch", "comingSoon"),
+  homeApp("x", "X", "x", null, "launch", "comingSoon"),
+  homeApp("messenger", "Messenger", "messenger", null, "launch", "comingSoon"),
   homeApp("gmail", "Gmail", "email", "gmail", "launch", "comingSoon"),
   homeApp("outlook", "Outlook", "email", "outlook", "launch", "comingSoon"),
   homeApp("proton", "Proton Mail", "email", "proton", "launch", "comingSoon"),
@@ -436,6 +439,8 @@ const previewRegistry: unknown = [
   service("email", "Email", "EM", 3, "consumer", "available"),
   service("signal", "Signal", "SG", 4, "consumer", "available"),
   service("whatsapp", "WhatsApp", "WA", 5, "consumer", "available"),
+  service("x", "X", "X", 6, "consumer", "comingSoon"),
+  service("messenger", "Facebook Messenger", "MS", 7, "consumer", "available"),
 ];
 
 export async function loadLinkedServices(): Promise<LinkedService[]> {

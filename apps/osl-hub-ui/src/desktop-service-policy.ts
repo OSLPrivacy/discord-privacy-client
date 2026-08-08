@@ -14,6 +14,8 @@ export type DesktopServiceId =
   | "instagram"
   | "signal"
   | "whatsapp"
+  | "x"
+  | "messenger"
   | "outlook"
   | "proton"
   | "tuta"
@@ -162,6 +164,8 @@ export const desktopServicePolicies: readonly DesktopServicePolicy[] = [
   policy("instagram", "packagedWeb"),
   policy("signal", "verified"),
   policy("whatsapp", "verified"),
+  policy("x", "browserOnly"),
+  policy("messenger", "browserOnly"),
   policy("outlook", "verified"),
   policy("proton", "candidate"),
   policy("tuta", "candidate"),

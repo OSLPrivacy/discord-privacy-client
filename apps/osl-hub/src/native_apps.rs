@@ -40,6 +40,7 @@ pub enum NativeAppId {
     Signal,
     Whatsapp,
     Outlook,
+    X,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
@@ -289,6 +290,7 @@ pub enum FirefoxServiceId {
     Gmx,
     Maildotcom,
     Icloud,
+    Messenger,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
@@ -396,6 +398,7 @@ const WHATSAPP_CANDIDATES: &[ExecutableCandidate] = &[ExecutableCandidate {
 }];
 
 const INSTAGRAM_CANDIDATES: &[ExecutableCandidate] = &[];
+const X_CANDIDATES: &[ExecutableCandidate] = &[];
 
 // Classic Outlook is a signed Win32 desktop application. Restrict discovery
 // to Microsoft's documented Click-to-Run Office16 layout; never use the
@@ -632,6 +635,18 @@ const NATIVE_APPS: &[NativeAppManifest] = &[
         publisher: Some(ExecutablePublisher::Microsoft),
         store_package_family_name: None,
     },
+    NativeAppManifest {
+        id: NativeAppId::X,
+        display_name: "X",
+        adapter_service: AdapterService::X,
+        adapter_surface: AdapterSurface::FixedOfficialWebOrigin,
+        adapter_support: SupportLevel::ComingSoon,
+        package_id: "",
+        package_source: "unavailable",
+        candidates: X_CANDIDATES,
+        publisher: None,
+        store_package_family_name: None,
+    },
 ];
 
 #[cfg(any(target_os = "windows", test))]
@@ -804,6 +819,7 @@ const FIREFOX_SERVICES: &[(FirefoxServiceId, &str)] = &[
     (FirefoxServiceId::Gmx, "https://www.gmx.com/"),
     (FirefoxServiceId::Maildotcom, "https://www.mail.com/"),
     (FirefoxServiceId::Icloud, "https://www.icloud.com/mail/"),
+    (FirefoxServiceId::Messenger, "https://www.facebook.com/messages/"),
 ];
 
 fn manifest(id: NativeAppId) -> &'static NativeAppManifest {
@@ -814,6 +830,7 @@ fn manifest(id: NativeAppId) -> &'static NativeAppManifest {
         NativeAppId::Instagram => &NATIVE_APPS[3],
         NativeAppId::Whatsapp => &NATIVE_APPS[4],
         NativeAppId::Outlook => &NATIVE_APPS[5],
+        NativeAppId::X => &NATIVE_APPS[6],
     }
 }
 
@@ -847,6 +864,7 @@ pub(crate) const fn claim_surface(id: NativeAppId) -> crate::claim_state::Surfac
         NativeAppId::Whatsapp => Surface::Whatsapp,
         NativeAppId::Instagram => Surface::Instagram,
         NativeAppId::Outlook => Surface::OutlookDesktop,
+        NativeAppId::X => Surface::X,
     }
 }
 
@@ -875,7 +893,8 @@ fn native_app_protected_mode(id: NativeAppId) -> NativeAppProtectedMode {
         | NativeAppId::Instagram
         | NativeAppId::Signal
         | NativeAppId::Whatsapp
-        | NativeAppId::Outlook => NativeAppProtectedMode::Unavailable,
+        | NativeAppId::Outlook
+        | NativeAppId::X => NativeAppProtectedMode::Unavailable,
     }
 }
 
@@ -3061,7 +3080,8 @@ pub(crate) mod tests {
                 NativeAppId::Signal
                 | NativeAppId::Instagram
                 | NativeAppId::Whatsapp
-                | NativeAppId::Outlook => {
+                | NativeAppId::Outlook
+                | NativeAppId::X => {
                     assert_eq!(status.support_status, NativeAppSupportStatus::ComingSoon);
                     assert_eq!(status.protected_mode, NativeAppProtectedMode::Unavailable);
                 }
@@ -3211,6 +3231,7 @@ pub(crate) mod tests {
             NativeAppId::Whatsapp => CarrySeam::Uia2Substrate,
             NativeAppId::Instagram => CarrySeam::NoCarryPath,
             NativeAppId::Outlook => CarrySeam::NoCarryPath,
+            NativeAppId::X => CarrySeam::NoCarryPath,
         }
     }
 
@@ -4476,6 +4497,7 @@ pub(crate) mod tests {
                 NativeAppId::Signal => "signal",
                 NativeAppId::Whatsapp => "whatsapp",
                 NativeAppId::Outlook => "outlook",
+                NativeAppId::X => "x",
             }
         }
 
@@ -4490,6 +4512,7 @@ pub(crate) mod tests {
                 NativeAppId::Signal => Some("src/native_signal_adapter.rs"),
                 NativeAppId::Whatsapp => Some("src/native_whatsapp_adapter.rs"),
                 NativeAppId::Outlook => None,
+                NativeAppId::X => None,
             }
         }
 

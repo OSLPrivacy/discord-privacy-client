@@ -1891,6 +1891,8 @@ pub fn service_kind_from_id(service_id: &str) -> Option<ServiceKind> {
         "whatsapp" => ServiceKind::WhatsApp,
         "email" => ServiceKind::Email,
         "signal" => ServiceKind::Signal,
+        "x" => ServiceKind::X,
+        "messenger" => ServiceKind::Messenger,
         _ => return None,
     })
 }
@@ -3147,7 +3149,7 @@ pub fn service_descriptor(id: ServiceKind) -> ServiceDescriptor {
         .expect("every ServiceKind has a descriptor")
 }
 
-fn service_descriptors() -> [ServiceDescriptor; 6] {
+fn service_descriptors() -> [ServiceDescriptor; 8] {
     use ServiceCategory::Consumer;
     use ServiceLaunchState::Available;
     [
@@ -3188,6 +3190,15 @@ fn service_descriptors() -> [ServiceDescriptor; 6] {
         // only through the separately spawned, OSL-owned native profile; the
         // web host remains disabled in `service_host`.
         descriptor(ServiceKind::Signal, "Signal", "SG", 80, Consumer, Available),
+        descriptor(ServiceKind::X, "X", "X", 90, Consumer, Available),
+        descriptor(
+            ServiceKind::Messenger,
+            "Facebook Messenger",
+            "MS",
+            100,
+            Consumer,
+            Available,
+        ),
     ]
 }
 
