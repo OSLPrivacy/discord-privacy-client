@@ -4,7 +4,7 @@
  * composer from quietly missing the local-only intake path.
  */
 import type { AttachmentTrayActions } from "./attachment-tray-actions";
-import { bindPrivateTypingBoxDropTarget } from "./private-typing-drop-target";
+import { bindPrivateTypingBoxDropTarget, type PrivateTypingDropOutlineState } from "./private-typing-drop-target";
 
 export const OSL_PRIVATE_TYPING_DROP_COMPOSER_VIEWS = [
   { viewId: "osl-chat", composerSelector: "#osl-chat-draft" },
@@ -25,9 +25,20 @@ export function registerPrivateTypingDropIntake(
   find: (selector: string) => DropTarget | null,
   trayFor: (view: OslPrivateTypingDropComposerView) => AttachmentTrayActions,
   onDropped: () => void,
+  onOutlineStateChange: (
+    view: OslPrivateTypingDropComposerView,
+    state: PrivateTypingDropOutlineState,
+  ) => void = () => undefined,
 ): void {
   for (const view of directPrivateTypingDropComposerViews()) {
     const target = find(view.composerSelector);
-    if (target) bindPrivateTypingBoxDropTarget(target, trayFor(view), onDropped);
+    if (target) {
+      bindPrivateTypingBoxDropTarget(
+        target,
+        trayFor(view),
+        onDropped,
+        (state) => onOutlineStateChange(view, state),
+      );
+    }
   }
 }
