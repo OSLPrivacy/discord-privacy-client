@@ -20,6 +20,7 @@ fn main() -> ExitCode {
 }
 
 fn run(kind: &str) -> Result<(), String> {
+    parse_messenger_whitelist_kind(kind)?;
     let state = AppState::new();
     let kind = parse_messenger_whitelist_kind(kind)?.id();
     let rule_key = format!("messenger:{kind}");

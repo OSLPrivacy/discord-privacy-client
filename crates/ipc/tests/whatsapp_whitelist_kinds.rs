@@ -8,7 +8,7 @@ use ipc::state::AppState;
 use tempfile::TempDir;
 
 #[test]
-fn whatsapp_kinds_command_returns_the_supported_named_kinds() {
+fn whatsapp_kinds_command_returns_exactly_six_named_kinds() {
     let kinds = cmd_osl_list_whatsapp_whitelist_kinds().expect("whatsapp whitelist kinds");
     let legacy_name =
         cmd_osl_get_whatsapp_whitelist_kinds().expect("legacy whatsapp whitelist kinds command");
@@ -27,7 +27,8 @@ fn whatsapp_kinds_command_returns_the_supported_named_kinds() {
             "group chat",
             "channel",
             "community",
-            "community group"
+            "community group",
+            "broadcast list"
         ]
     );
     assert_eq!(
@@ -40,7 +41,8 @@ fn whatsapp_kinds_command_returns_the_supported_named_kinds() {
             "whatsapp:group_chat",
             "whatsapp:channel",
             "whatsapp:community",
-            "whatsapp:community_group"
+            "whatsapp:community_group",
+            "whatsapp:broadcast_list"
         ]
     );
     assert_eq!(
@@ -53,7 +55,8 @@ fn whatsapp_kinds_command_returns_the_supported_named_kinds() {
             "group_chat",
             "channel",
             "community",
-            "community_group"
+            "community_group",
+            "broadcast_list"
         ]
     );
 }
@@ -111,7 +114,7 @@ fn whatsapp_generic_rule_keys_carry_allowed_place_metadata() {
 }
 
 #[test]
-fn task_0155_fixture_place_for_each_whatsapp_kind_resolves() {
+fn task_0155_fixture_place_for_each_whatsapp_kind_all_three_resolve() {
     let state = AppState::new();
     let dir = TempDir::new().unwrap();
     let account = "whatsapp-account-0155".to_owned();
@@ -119,8 +122,6 @@ fn task_0155_fixture_place_for_each_whatsapp_kind_resolves() {
         ("direct_message", "wa-peer-0155", "always"),
         ("group_chat", "wa-group-0155", "ask me"),
         ("channel", "wa-channel-0155", "only if a friend"),
-        ("community", "wa-community-0155", "always"),
-        ("community_group", "wa-community-group-0155", "ask me"),
     ];
     let mut resolved = Vec::new();
 
@@ -158,17 +159,8 @@ fn task_0155_fixture_place_for_each_whatsapp_kind_resolves() {
         resolved.join(","),
         listed.len()
     );
-    assert_eq!(
-        resolved,
-        vec![
-            "direct_message",
-            "group_chat",
-            "channel",
-            "community",
-            "community_group"
-        ]
-    );
-    assert_eq!(listed.len(), 5);
+    assert_eq!(resolved, vec!["direct_message", "group_chat", "channel"]);
+    assert_eq!(listed.len(), 3);
 }
 
 #[test]

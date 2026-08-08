@@ -605,15 +605,17 @@ pub enum WhatsAppWhitelistKind {
     Channel,
     Community,
     CommunityGroup,
+    BroadcastList,
 }
 
 impl WhatsAppWhitelistKind {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::DirectMessage,
         Self::GroupChat,
         Self::Channel,
         Self::Community,
         Self::CommunityGroup,
+        Self::BroadcastList,
     ];
 
     pub fn id(self) -> &'static str {
@@ -623,6 +625,7 @@ impl WhatsAppWhitelistKind {
             Self::Channel => "channel",
             Self::Community => "community",
             Self::CommunityGroup => "community_group",
+            Self::BroadcastList => "broadcast_list",
         }
     }
 
@@ -633,6 +636,7 @@ impl WhatsAppWhitelistKind {
             Self::Channel => "channel",
             Self::Community => "community",
             Self::CommunityGroup => "community group",
+            Self::BroadcastList => "broadcast list",
         }
     }
 
@@ -643,6 +647,7 @@ impl WhatsAppWhitelistKind {
             Self::Channel => "whatsapp:channel",
             Self::Community => "whatsapp:community",
             Self::CommunityGroup => "whatsapp:community_group",
+            Self::BroadcastList => "whatsapp:broadcast_list",
         }
     }
 

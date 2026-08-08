@@ -107,7 +107,7 @@ fn direct_new_place_command_allows_when_rule_is_always() {
 }
 
 #[test]
-fn whatsapp_kinds_command_returns_the_supported_named_kinds() {
+fn whatsapp_kinds_command_returns_exactly_six_named_kinds() {
     let kinds = cmd_osl_get_whatsapp_whitelist_kinds().unwrap();
     let ids: Vec<String> = kinds.iter().map(|kind| kind.id.clone()).collect();
     let names: Vec<String> = kinds.iter().map(|kind| kind.name.clone()).collect();
@@ -115,7 +115,7 @@ fn whatsapp_kinds_command_returns_the_supported_named_kinds() {
     println!("whatsapp whitelist kinds count: {}", kinds.len());
     println!("whatsapp whitelist kinds: {}", names.join(", "));
 
-    assert_eq!(kinds.len(), 5);
+    assert_eq!(kinds.len(), 6);
     assert_eq!(
         ids,
         vec![
@@ -123,7 +123,8 @@ fn whatsapp_kinds_command_returns_the_supported_named_kinds() {
             "group_chat",
             "channel",
             "community",
-            "community_group"
+            "community_group",
+            "broadcast_list"
         ]
     );
     assert_eq!(
@@ -133,7 +134,8 @@ fn whatsapp_kinds_command_returns_the_supported_named_kinds() {
             "group chat",
             "channel",
             "community",
-            "community group"
+            "community group",
+            "broadcast list"
         ]
     );
 }
