@@ -205,6 +205,9 @@ import { burnFeatureClaimsMarkup } from "./feature-claims";
 import { burnRevocationReceipt, type BurnRevocationReceipt } from "./burn-revocation-receipt";
 import { senderReceiptStatus } from "./receipt-status";
 import { attachmentProgressMarkup, parseAttachmentProgressEvent, type AttachmentProgressEvent } from "./attachment-progress";
+import { createAttachmentTrayActions } from "./attachment-tray-actions";
+import { attachmentTrayScreenMarkup } from "./attachment-tray-screen";
+import { bindPrivateTypingBoxDropTarget } from "./private-typing-drop-target";
 import { destructStatusMarkup, type ServerDestructStatus } from "./destruct-status";
 import { offlineCapabilityStatus, type OfflineUnavailableCapability, type OslConnectionState } from "./offline-capability-status";
 import type { NativeDiscordOverlayOpenedBatch } from "./overlay-state";
@@ -675,6 +678,8 @@ let oslChatPreviewsVisible = true;
 let oslChatMutedPeople = new Set<string>();
 let oslChatSettingsPersonId: string | null = null;
 let oslChatAttachments: NativeOverlayPendingAttachment[] = [];
+// A drop is only local intake. Explicit send remains a separate operation.
+const oslChatDropTray = createAttachmentTrayActions();
 const attachmentProgressByContext = new Map<string, AttachmentProgressEvent>();
 let privacyScanResult: LocalPrivacyScanResult | PersistedLocalPrivacyScanResult | null = null;
 let privacyScanFileName: string | null = null;
@@ -5042,6 +5047,9 @@ function oslChatContent(): string {
   const attachments = activeOslChatContext?.scopeApproved && pro
     ? `<section class="osl-chat-attachments" aria-label="Encrypted attachments"><header><strong>Attachments</strong><button class="button compact" id="osl-chat-attach" type="button" ${oslChatBusy ? "disabled" : ""}>Choose file</button></header>${attachmentProgressMarkupForActiveChat()}${oslChatAttachments.length ? oslChatAttachments.map((item) => `<button class="setting-line" data-osl-chat-attachment="${escapeHtml(item.attachmentId)}" type="button"><span><strong>${escapeHtml(item.originalFilename)}</strong><small>${item.viewOnce ? "View once · " : ""}${item.plaintextSize.toLocaleString("en-US")} bytes</small></span>${statusTag("Open")}</button>`).join("") : `<p>No pending attachments.</p>`}<small>Images open in OSL's capture-resistant viewer. Other supported files open temporarily in their Windows viewer, which may allow capture.</small></section>`
     : "";
+  const droppedFiles = oslChatDropTray.getCards().length
+    ? attachmentTrayScreenMarkup(oslChatDropTray.getCards())
+    : "";
   const receipt = activeOslChatPersonId
     ? oslChatSenderReceiptMarkup(oslChatMessages.get(activeOslChatPersonId) ?? [])
     : "";
@@ -5055,7 +5063,7 @@ function oslChatContent(): string {
     viewOnce: oslChatViewOnce,
     homeLogoUrl: oslVectorLogoUrl,
     deletionUnconfirmed: oslChatDeletionUnconfirmed,
-  })}${offlineStatus}${receipt}${attachments}${settings}</main>`;
+  })}${offlineStatus}${receipt}${droppedFiles}${attachments}${settings}</main>`;
 }
 
 const OFFLINE_CAPABILITIES: readonly OfflineUnavailableCapability[] = [
@@ -7579,6 +7587,7 @@ function bindWorkspace(): void {
     // ready, not busy) are carried on the button by the view.
     setOslChatDraft(oslChatDraftInput.value, false);
   });
+  if (oslChatDraftInput) bindPrivateTypingBoxDropTarget(oslChatDraftInput, oslChatDropTray, render);
   document.querySelector<HTMLInputElement>("#osl-chat-view-once")?.addEventListener("change", (event) => { oslChatViewOnce = (event.currentTarget as HTMLInputElement).checked; });
   document.querySelector<HTMLFormElement>("[data-osl-chat-compose]")?.addEventListener("submit", (event) => void sendOslChat(event));
   document.querySelector<HTMLButtonElement>("#osl-chat-attach")?.addEventListener("click", () => void sendOslChatAttachment());
