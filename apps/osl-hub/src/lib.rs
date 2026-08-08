@@ -208,6 +208,8 @@ pub mod peer_attachment_io;
 #[cfg(not(task3982_focused))]
 pub mod preferences;
 #[cfg(not(task3982_focused))]
+pub mod place_text;
+#[cfg(not(task3982_focused))]
 pub mod privacy_scan;
 pub mod irreversible_actions;
 #[cfg(feature = "core")]

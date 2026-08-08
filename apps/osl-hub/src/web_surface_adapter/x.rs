@@ -7,6 +7,10 @@
 
 use super::WebSurfaceBackend;
 use crate::adapters::*;
+use crate::place_text::{
+    place_text_exact_read_back_and_clear, ExactTextPlacementError, ExactTextPlacementReceipt,
+    PlaceTextActions,
+};
 use crate::row_who_wrote_it::{
     accept_published_row_batch, SharedRowWhoWroteIt, SharedRowWhoWroteItBatch,
     SharedRowWhoWroteItError, SharedRowWhoWroteItEvidence,
@@ -290,6 +294,20 @@ impl<D: XSurfaceDriver> XWebBackend<D> {
             attested_at_ms: snapshot.bound_at_ms,
             ttl_ms: 30_000,
         }
+    }
+}
+
+impl<D> XWebBackend<D>
+where
+    D: XSurfaceDriver + PlaceTextActions<Error = AdapterRefusal>,
+{
+    /// Exercise X's composer through the shared placement transaction. This
+    /// never sends and always clears after a successful exact read-back.
+    pub fn place_text_exact_read_back_and_clear(
+        &self,
+        marked_bytes: &[u8],
+    ) -> Result<ExactTextPlacementReceipt, ExactTextPlacementError<AdapterRefusal>> {
+        place_text_exact_read_back_and_clear(&self.driver, marked_bytes)
     }
 }
 
