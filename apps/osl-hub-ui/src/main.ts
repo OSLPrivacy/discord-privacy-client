@@ -212,6 +212,7 @@ import { applyOslChatDraftToElement, firstPartyOslSurfaceContract, OSL_CHAT_MAX_
 import { createOslChatDeliveryRuntime, mergeOslChatTimeline, oslChatHistoryMessages, oslChatOpenRefusalMessage, receivedOslChatBatchMessage, type OslChatDeliveryHost } from "./osl-chat-runtime";
 import { peopleReverificationNoticeMarkup } from "./people-reverification-notice";
 import { discordQaWhitelistButtonMarkup } from "./discord-qa-whitelist-button";
+import { connectDiscordQaWhitelistButton, discordQaOpenPlace } from "./discord-qa-whitelist-place";
 import { parseEnclaveAudience, type EnclaveAudience } from "./osl-collab";
 import { addFriendByNameBoxMarkup, addFriendFailureStatus, bindAddFriendByNameForm, bindFriendRemovalControls, bindMainWindowFocusChanges, friendHandshakeDetail, friendHandshakeSummary, friendInviteCardMarkup, friendRemovalButtonMarkup, friendTrustAction, friendVerificationCopy, friendWideWhitelistButtonsMarkup, inviteCopyFailureToast, onboardingPaintDecision, ownedConfirmationSubmitDisabled, RecoveryCaptureGate, removeHubFriend, shouldClearRemovedFriendChat, verificationSubmission, type FriendVerificationCopy, type PendingFriendRequestEntry } from "./ui-behavior";
 import { runRecoveryReveal, submitsRecoveryReveal } from "./recovery-reveal";
@@ -8588,10 +8589,22 @@ function bindWorkspace(): void {
   document.querySelector<HTMLButtonElement>("#discord-qa-open-composer")?.addEventListener("click", () => {
     void openDiscordQaComposer();
   });
-  document.querySelector<HTMLButtonElement>("#discord-qa-whitelist-toggle")?.addEventListener("click", (event) => {
-    const requested = (event.currentTarget as HTMLButtonElement).dataset.whitelistNext === "allow";
-    void setDiscordQaWhitelistPermission(requested);
-  });
+  const whitelistToggle = document.querySelector<HTMLButtonElement>("#discord-qa-whitelist-toggle");
+  if (whitelistToggle) {
+    connectDiscordQaWhitelistButton(whitelistToggle, () => {
+      const active = activeVerifiedDiscordQaPeer();
+      return active
+        ? discordQaOpenPlace({
+            serviceId: active.context.serviceId,
+            accountId: active.context.accountId,
+            personId: active.person.personId,
+          })
+        : null;
+    }, {
+      onCommand: (_command, allowed) => void setDiscordQaWhitelistPermission(allowed),
+      onError: () => showToast("Whitelist change failed closed"),
+    });
+  }
   document.querySelector<HTMLButtonElement>("#discord-qa-whitelist-roster")?.addEventListener("click", () => {
     whitelistRosterOpen = !whitelistRosterOpen;
     render();
