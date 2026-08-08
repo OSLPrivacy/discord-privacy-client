@@ -873,6 +873,34 @@ impl RealBrowserWebsiteDriver {
         }
     }
 
+    /// Test-only fault injection for exercising the exact browser read-back
+    /// refusal after a successful named-composer placement.
+    #[cfg(test)]
+    fn replace_named_composer_byte_after_placement_for_test(
+        &mut self,
+        page: &WebsitePage,
+        composer_name: &str,
+        placed_text: &str,
+        byte_index: usize,
+        replacement: u8,
+    ) -> Result<(), WebsiteDriverError> {
+        if byte_index >= placed_text.len() || placed_text.as_bytes()[byte_index] == replacement {
+            return Err(WebsiteDriverError::TextPlacementFailed);
+        }
+        let websocket_url = self.page_websocket_url(page)?;
+        let placed_text =
+            serde_json::to_string(placed_text).map_err(|_| WebsiteDriverError::ReadFailed)?;
+        let expression =
+            named_composer_expression(CORRUPT_NAMED_COMPOSER_BYTE_EXPRESSION, composer_name, None)?
+                .replace("__OSL_PLACED_TEXT__", &placed_text)
+                .replace("__OSL_BYTE_INDEX__", &byte_index.to_string())
+                .replace("__OSL_REPLACEMENT_BYTE__", &replacement.to_string());
+        match evaluate_target(&websocket_url, &expression)? {
+            serde_json::Value::Bool(true) => Ok(()),
+            _ => Err(WebsiteDriverError::TextPlacementFailed),
+        }
+    }
+
     /// Place a marked fixture, read it back byte-for-byte, then leave the
     /// composer empty.  The action is shared by website surfaces; the caller
     /// supplies only the previously discovered composer name.
@@ -882,7 +910,23 @@ impl RealBrowserWebsiteDriver {
         composer_name: &str,
         fixture: &str,
     ) -> Result<WebsiteExactTextPlacementReceipt, WebsiteDriverError> {
+        self.place_composer_text_exactly_and_clear_after_placement(
+            page,
+            composer_name,
+            fixture,
+            |_| Ok(()),
+        )
+    }
+
+    fn place_composer_text_exactly_and_clear_after_placement(
+        &mut self,
+        page: &WebsitePage,
+        composer_name: &str,
+        fixture: &str,
+        after_placement: impl FnOnce(&mut Self) -> Result<(), WebsiteDriverError>,
+    ) -> Result<WebsiteExactTextPlacementReceipt, WebsiteDriverError> {
         self.place_text_in_named_composer(page, composer_name, fixture)?;
+        after_placement(self)?;
 
         // Once a write has happened, always attempt the clear before returning
         // a failed exactness check. A mismatched browser read-back must never
@@ -2730,6 +2774,83 @@ mod tests {
         println!("TASK1133 search_decoy_bytes={}", search_after.len());
     }
 
+    #[test]
+    fn task_1134_instagram_refuses_one_changed_placed_byte_and_restores_exact_readback() {
+        const FIXTURE: &str = "instagram-text-1134";
+        const CHANGED_BYTE_INDEX: usize = 0;
+        const CHANGED_BYTE: u8 = b'x';
+        const COMPOSER_NAME: &str = "Message Maya";
+        let instagram = Task1131Page::spawn(
+            "Instagram — task 1134 placement fixture",
+            r#"<main data-osl-service="instagram" data-osl-instagram-place-kind="direct_message">
+                  <textarea aria-label="Search messages"></textarea>
+                  <textarea aria-label="Message Maya" data-osl-instagram-composer="active"></textarea>
+                </main>"#,
+        );
+        let mut driver =
+            RealBrowserWebsiteDriver::launch().expect("launch task 1134 fixture browser");
+        let page = driver
+            .find_page(WebsitePageRequest {
+                url: instagram.url(),
+            })
+            .expect("open task 1134 Instagram fixture");
+        driver.read_page(&page).expect("wait for task 1134 fixture");
+
+        let baseline = driver
+            .place_instagram_composer_text_exactly_and_clear(&page, FIXTURE)
+            .expect("baseline Instagram placement must have exact browser read-back");
+        assert!(baseline.matches_fixture_bytes(FIXTURE.as_bytes()));
+        println!("TASK1134 text={FIXTURE} result_count=1 result_name={FIXTURE}");
+
+        let discovery = driver
+            .discover_instagram_window(&page)
+            .expect("read task 1134 Instagram composer")
+            .expect("active task 1134 Instagram composer");
+        assert_eq!(discovery.active_composer, COMPOSER_NAME);
+        let mut changed = FIXTURE.as_bytes().to_vec();
+        changed[CHANGED_BYTE_INDEX] = CHANGED_BYTE;
+        assert_eq!(changed, b"xnstagram-text-1134");
+        assert_eq!(
+            changed
+                .iter()
+                .zip(FIXTURE.as_bytes())
+                .filter(|(actual, expected)| actual != expected)
+                .count(),
+            1,
+            "fault injection must alter exactly one placed byte"
+        );
+        let changed_refusal = driver.place_composer_text_exactly_and_clear_after_placement(
+            &page,
+            &discovery.active_composer,
+            FIXTURE,
+            |driver| {
+                driver.replace_named_composer_byte_after_placement_for_test(
+                    &page,
+                    &discovery.active_composer,
+                    FIXTURE,
+                    CHANGED_BYTE_INDEX,
+                    CHANGED_BYTE,
+                )
+            },
+        );
+        assert_eq!(
+            changed_refusal,
+            Err(WebsiteDriverError::TextReadbackMismatch),
+            "the changed placed byte must be refused by the named read-back error"
+        );
+        println!("TASK1134 changed_placed_byte=x result=refused refusal_name=TextReadbackMismatch");
+
+        let restored = driver
+            .place_instagram_composer_text_exactly_and_clear(&page, FIXTURE)
+            .expect("restored Instagram placement must have the same exact browser read-back");
+        assert!(restored.matches_fixture_bytes(FIXTURE.as_bytes()));
+        assert_eq!(
+            restored, baseline,
+            "restored result must equal the baseline result"
+        );
+        println!("TASK1134 restored_text={FIXTURE} result_count=1 result_name={FIXTURE}");
+    }
+
     struct Task1131Page {
         listener_addr: String,
         running: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -2916,6 +3037,28 @@ __OSL_NAMED_COMPOSER_COMMON__
   composer.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward', data: null }));
   composer.dispatchEvent(new Event('change', { bubbles: true }));
   return valueOf(composer) === '';
+})()
+"#;
+
+#[cfg(test)]
+const CORRUPT_NAMED_COMPOSER_BYTE_EXPRESSION: &str = r#"
+(() => {
+__OSL_NAMED_COMPOSER_COMMON__
+  const placed = __OSL_PLACED_TEXT__;
+  const byteIndex = __OSL_BYTE_INDEX__;
+  const replacement = __OSL_REPLACEMENT_BYTE__;
+  if (valueOf(composer) !== placed) return false;
+  const bytes = new TextEncoder().encode(placed);
+  if (byteIndex >= bytes.length || bytes[byteIndex] === replacement) return false;
+  bytes[byteIndex] = replacement;
+  const changed = new TextDecoder().decode(bytes);
+  composer.focus();
+  if (composer.isContentEditable) composer.textContent = changed;
+  else composer.value = changed;
+  composer.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: changed }));
+  composer.dispatchEvent(new Event('change', { bubbles: true }));
+  const changedBytes = new TextEncoder().encode(valueOf(composer));
+  return changedBytes.length === bytes.length && changedBytes.every((byte, index) => byte === bytes[index]);
 })()
 "#;
 
