@@ -1,0 +1,425 @@
+{
+  "schema": "osl-tested-limits-v1",
+  "schema_version": 1,
+  "record_id": "osl-known-problems",
+  "written_for": "TASK 1523 — the audit page must name every known problem",
+  "$comment": "The limits record. Every entry here is a known problem OSL has already established about itself. cap: rows are copied verbatim from the capability registry, matrix: rows verbatim from the versioned public support matrix, and finding: rows are written here with the file that establishes them. audit.html and tested-limits.html must name every entry; scripts/check-audit-page-words.mjs fails when the counts differ.",
+  "authorities": [
+    {
+      "id": "capability_registry",
+      "path": "data/pricing.json",
+      "pointer": "/capability_registry",
+      "rule": "every capability whose status is not Available is a known problem and must appear here as cap:<id>, with its status and public_note copied exactly"
+    },
+    {
+      "id": "support_matrix",
+      "path": "docs/status/support-matrix.json",
+      "pointer": "/versioned_public_support_matrix/entries",
+      "rule": "every matrix entry with claim_allowed false must appear here as matrix:<id>, with its support_boundary copied exactly"
+    }
+  ],
+  "limits": [
+    {
+      "id": "cap:per-message-sealing",
+      "title": "Per-message hybrid sealing",
+      "status": "Beta",
+      "problem": "Working. Every direct message is sealed to the recipient keys with a fresh key of its own, combining X25519 with post-quantum ML-KEM-768. Proven on test builds against a real conversation, not yet on a numbered release build.",
+      "source": "data/pricing.json#/capability_registry",
+      "evidence": [
+        "data/pricing.json"
+      ]
+    },
+    {
+      "id": "cap:cover-carrier-text",
+      "title": "Cover text carrier",
+      "status": "Planned",
+      "problem": "Not yet. The readable text never reaches the connected service, but what the service currently receives is an obvious encrypted block rather than an innocuous-looking message. The natural-language cover mode is switched off in the current build because the post-quantum wire is too large for it.",
+      "source": "data/pricing.json#/capability_registry",
+      "evidence": [
+        "data/pricing.json"
+      ]
+    },
+    {
+      "id": "cap:protected-text",
+      "title": "Protected text send and read",
+      "status": "Beta",
+      "problem": "Working on Discord. Sending and reading protected text is proven on test builds. Discord is the only connector qualified so far.",
+      "source": "data/pricing.json#/capability_registry",
+      "evidence": [
+        "data/pricing.json"
+      ]
+    },
+    {
+      "id": "cap:image-send",
+      "title": "Encrypted image sending",
+      "status": "Planned",
+      "problem": "Not in the shipping app yet. The encryption for images is written and the picker accepts PNG and JPEG, but nothing in the released app drives it end to end. This is not part of what a Pro purchase gives you today.",
+      "source": "data/pricing.json#/capability_registry",
+      "evidence": [
+        "data/pricing.json"
+      ]
+    },
+    {
+      "id": "cap:file-send",
+      "title": "Non-image file sending",
+      "status": "Planned",
+      "problem": "Not yet. Only PNG and JPEG are offered; other file types are not supported.",
+      "source": "data/pricing.json#/capability_registry",
+      "evidence": [
+        "data/pricing.json"
+      ]
+    },
+    {
+      "id": "cap:group-protection",
+      "title": "Group chat and server channel protection",
+      "status": "Planned",
+      "problem": "Not yet. Group and channel protection is switched off in the shipping app, and the messages it would build carry no signature identifying the sender. Treat anything you write in a group or channel as unprotected.",
+      "source": "data/pricing.json#/capability_registry",
+      "evidence": [
+        "data/pricing.json"
+      ]
+    },
+    {
+      "id": "cap:ratchet",
+      "title": "Old-message protection",
+      "status": "Planned",
+      "problem": "Not yet. The mechanism that would keep old messages safe if a key is later stolen is written and tested but deliberately switched off pending independent review.",
+      "source": "data/pricing.json#/capability_registry",
+      "evidence": [
+        "data/pricing.json"
+      ]
+    },
+    {
+      "id": "cap:attachment-privacy-guard",
+      "title": "Attachment Privacy Guard",
+      "status": "Planned",
+      "problem": "Not yet. Stripping hidden details out of a file before encrypting it is written but nothing in the shipping app calls it. Assume a file you send still carries its original details.",
+      "source": "data/pricing.json#/capability_registry",
+      "evidence": [
+        "data/pricing.json"
+      ]
+    },
+    {
+      "id": "cap:exposure-warning",
+      "title": "Before-send warning",
+      "status": "Planned",
+      "problem": "Not yet. The detection code exists and is tested, but nothing in the shipping app calls it, so OSL does not warn you today.",
+      "source": "data/pricing.json#/capability_registry",
+      "evidence": [
+        "data/pricing.json"
+      ]
+    },
+    {
+      "id": "cap:expiry",
+      "title": "Timed expiry",
+      "status": "Planned",
+      "problem": "Not yet. Timed deletion is not wired into the shipping app.",
+      "source": "data/pricing.json#/capability_registry",
+      "evidence": [
+        "data/pricing.json"
+      ]
+    },
+    {
+      "id": "cap:view-once",
+      "title": "View once",
+      "status": "Planned",
+      "problem": "Not yet. Components are built; the production wiring and the two-party consent it requires are incomplete.",
+      "source": "data/pricing.json#/capability_registry",
+      "evidence": [
+        "data/pricing.json"
+      ]
+    },
+    {
+      "id": "cap:burn",
+      "title": "Burn",
+      "status": "Planned",
+      "problem": "Not yet as a peer action. When it lands, burn deletes OSL local and server-side state and asks the other side to delete too. It does not destroy anyone ability to decrypt what the service already holds, and it cannot recall a screenshot.",
+      "source": "data/pricing.json#/capability_registry",
+      "evidence": [
+        "data/pricing.json"
+      ]
+    },
+    {
+      "id": "cap:link-protection",
+      "title": "Link protection",
+      "status": "Planned",
+      "problem": "Not yet. This is a design intention with no code behind it.",
+      "source": "data/pricing.json#/capability_registry",
+      "evidence": [
+        "data/pricing.json"
+      ]
+    },
+    {
+      "id": "cap:scrub-discovery",
+      "title": "Scrub discovery",
+      "status": "Planned",
+      "problem": "Not yet. Current source can fall back to generic JSON when a provider parser refuses an export, so provider identity, archive inventory, media bytes and completeness are not reliably bound. Google, Discord, Meta, X and WhatsApp exports are not qualified end to end.",
+      "source": "data/pricing.json#/capability_registry",
+      "evidence": [
+        "data/pricing.json"
+      ]
+    },
+    {
+      "id": "cap:scrub-guided-deletion",
+      "title": "Guided deletion handoff",
+      "status": "Planned",
+      "problem": "Not yet, and further off than a dependency on discovery would suggest. The part of the app that would actually carry out a guided deletion is not connected: it holds every candidate and does not open the page, choose the delete action, confirm it, or check that it worked. When it does land, OSL will take you to the page and you confirm each removal yourself — OSL will not delete on your behalf.",
+      "source": "data/pricing.json#/capability_registry",
+      "evidence": [
+        "data/pricing.json"
+      ]
+    },
+    {
+      "id": "cap:autoscrub",
+      "title": "AutoScrub",
+      "status": "Planned",
+      "problem": "Not yet. What exists is switched-off interface scaffolding, not a working engine — the app itself says it is unavailable in this build. AutoScrub is also the one optional closed-source module, it is not installed by default, and it would need your explicit consent to download.",
+      "source": "data/pricing.json#/capability_registry",
+      "evidence": [
+        "data/pricing.json"
+      ]
+    },
+    {
+      "id": "cap:ai-carrier-text",
+      "title": "AI-generated carrier text",
+      "status": "Planned",
+      "problem": "Not yet. Opt-in AI-written cover text. Cloud generation is never end-to-end private, because the service has to see the text it is working on.",
+      "source": "data/pricing.json#/capability_registry",
+      "evidence": [
+        "data/pricing.json"
+      ]
+    },
+    {
+      "id": "cap:processing-credits",
+      "title": "Processing credits",
+      "status": "Planned",
+      "problem": "Not yet, and not on sale. Credits would be bought separately and never renew.",
+      "source": "data/pricing.json#/capability_registry",
+      "evidence": [
+        "data/pricing.json"
+      ]
+    },
+    {
+      "id": "cap:pro-expiry-enforcement",
+      "title": "Automatic Pro expiry",
+      "status": "Planned",
+      "problem": "Not yet. A purchased code currently unlocks Pro without a redemption clock, so the month does not yet start when you enter the code.",
+      "source": "data/pricing.json#/capability_registry",
+      "evidence": [
+        "data/pricing.json"
+      ]
+    },
+    {
+      "id": "cap:exposure-comparison",
+      "title": "Country exposure comparison",
+      "status": "Illustration",
+      "problem": "A drawing, not a measurement. The homepage comparison summarises published agency and company practice. It is not a scan of your device, and this site never shows a live protection score.",
+      "source": "data/pricing.json#/capability_registry",
+      "evidence": [
+        "data/pricing.json"
+      ]
+    },
+    {
+      "id": "cap:website-scrub",
+      "title": "Website Scrub",
+      "status": "Illustration",
+      "problem": "Illustration only. The website does not scan browser history, read browser data, or access local account data.",
+      "source": "data/pricing.json#/capability_registry",
+      "evidence": [
+        "data/pricing.json"
+      ]
+    },
+    {
+      "id": "cap:product-animations",
+      "title": "Product animations",
+      "status": "Illustration",
+      "problem": "Drawings, not recordings. Every animated scene on this site illustrates intended behaviour rather than showing the app running.",
+      "source": "data/pricing.json#/capability_registry",
+      "evidence": [
+        "data/pricing.json"
+      ]
+    },
+    {
+      "id": "matrix:signal_desktop_public",
+      "title": "Signal — Signal Desktop native Windows adapter",
+      "status": "coming_soon",
+      "problem": "Signal has QA foundations only; OSL must refuse support claims until a complete adapter contract and two-peer exact-build proof exist.",
+      "source": "docs/status/support-matrix.json#/versioned_public_support_matrix/entries",
+      "evidence": [
+        "docs/status/support-matrix.json",
+        "docs/design/osl-master-decision-2026-07-26.md"
+      ]
+    },
+    {
+      "id": "matrix:whatsapp_windows_public",
+      "title": "WhatsApp — WhatsApp for Windows adapter",
+      "status": "coming_soon",
+      "problem": "WhatsApp needs its own runtime proof; OSL must refuse support claims until a complete adapter contract and two-peer exact-build proof exist.",
+      "source": "docs/status/support-matrix.json#/versioned_public_support_matrix/entries",
+      "evidence": [
+        "docs/status/support-matrix.json",
+        "docs/design/osl-master-decision-2026-07-26.md"
+      ]
+    },
+    {
+      "id": "matrix:telegram_desktop_public",
+      "title": "Telegram — Telegram Desktop native Windows adapter",
+      "status": "externally_blocked",
+      "problem": "This status records OSL's release gate and never a technical block in Telegram's client. Telegram Desktop cannot be listed as supported until a signed-client UI Automation probe proves stable, text-exposed message rows on an actual conversation surface AND OSL's own adapter proves live delivery: the probe half was measured on 2026-08-04 and is met; the delivery half is not, and it is the half that keeps the label.",
+      "source": "docs/status/support-matrix.json#/versioned_public_support_matrix/entries",
+      "evidence": [
+        "docs/status/support-matrix.json",
+        "docs/reports/telegram-adapter-verdict.md"
+      ]
+    },
+    {
+      "id": "matrix:osl_mail_public",
+      "title": "OSL Mail — OSL Mail for Outlook-connected mailboxes",
+      "status": "unsupported",
+      "problem": "Outlook is scoped as OSL Mail, not Outlook chat support; protected inline replies must refuse until a separate OSL Mail gate proves mailbox binding, recipient authority, safe send behavior, draft handling, and runtime support.",
+      "source": "docs/status/support-matrix.json#/versioned_public_support_matrix/entries",
+      "evidence": [
+        "docs/status/support-matrix.json",
+        "docs/reports/outlook-osl-mail-verdict.md"
+      ]
+    },
+    {
+      "id": "finding:key-substitution",
+      "title": "Key substitution after a reinstall",
+      "status": "Open critical finding",
+      "problem": "The safety number you compare with a friend covers only the signing key, so a key server that swapped a recipient's encryption keys would not change the number you check. Until the whole key bundle is covered, the verification ceremony does not protect the keys that decrypt messages.",
+      "source": "docs/THREAT_MODEL.md",
+      "evidence": [
+        "docs/THREAT_MODEL.md"
+      ]
+    },
+    {
+      "id": "finding:no-outside-cryptographic-review",
+      "title": "No outside cryptographic review has been paid for",
+      "status": "Open",
+      "problem": "The encryption that ships is a custom construction, and no outside firm has been commissioned to examine it. A paid third-party cryptographic review is a prerequisite for v1 stable, not something that has happened.",
+      "source": "docs/THREAT_MODEL.md#audit-status-v1-alpha-vs-v1-stable",
+      "evidence": [
+        "docs/THREAT_MODEL.md",
+        "docs/security/osl-audit-2026-07-26-codex.md"
+      ]
+    },
+    {
+      "id": "finding:osl-rn-unreviewed",
+      "title": "OSL-RN is unreviewed research and carries no real traffic",
+      "status": "Planned",
+      "problem": "The next-generation ratchet crate is reachable only from its own tests, has had no outside cryptographic review, and the shipping runtime keeps its gate closed, so no real message goes through it.",
+      "source": "crates/osl-ratchet-next/DESIGN.md",
+      "evidence": [
+        "crates/osl-ratchet-next/DESIGN.md",
+        "Cargo.toml"
+      ]
+    },
+    {
+      "id": "finding:no-code-signing",
+      "title": "The Windows build is not code signed",
+      "status": "Open",
+      "problem": "The Windows executable is not signed, so Windows may show an unknown-publisher or reputation warning. The minisign updater key and the published checksum are the only build-integrity anchors today.",
+      "source": "docs/release/code-signing-decision.md",
+      "evidence": [
+        "docs/release/code-signing-decision.md",
+        "docs/download.html"
+      ]
+    },
+    {
+      "id": "finding:rebuild-scope",
+      "title": "Rebuilding a release compares the program, not the installer",
+      "status": "Open",
+      "problem": "The rebuild guide compares the application executable inside the installer and deliberately does not compare the installer bytes or the updater signature, so a match proves the program came from the published source and nothing more.",
+      "source": "docs/release/verify-the-build-yourself.md",
+      "evidence": [
+        "docs/release/verify-the-build-yourself.md"
+      ]
+    },
+    {
+      "id": "finding:device-removal-detection",
+      "title": "Device-removal detection is Windows-only and unmeasured",
+      "status": "Open",
+      "problem": "The removal trigger is Windows-only, it cannot see a removal while the machine is suspended or hibernating, and its delivery delay has never been measured on a virtual machine, so no deadline is promised.",
+      "source": "docs/design/device-removal-detection-limits.md",
+      "evidence": [
+        "docs/design/device-removal-detection-limits.md"
+      ]
+    },
+    {
+      "id": "finding:timed-delete-research-only",
+      "title": "Recorded delete-for-everyone windows are research, not proof",
+      "status": "Research only",
+      "problem": "The saved per-service delete-for-everyone windows are looked-up limits from each provider, and the record says outright that it does not prove timed delete works in OSL.",
+      "source": "proof/research/timed-delete-limits.txt",
+      "evidence": [
+        "proof/research/timed-delete-limits.txt"
+      ]
+    },
+    {
+      "id": "finding:hosted-workspace-unavailable",
+      "title": "Hosted Android workspace is unavailable",
+      "status": "Planned",
+      "problem": "A hosted Android workspace is not offered here. It would need its own threat model, its own explicit consent, and a fresh review before any claim about it changed.",
+      "source": "apps/osl-hub-ui/src/android-workspace.test.ts",
+      "evidence": [
+        "apps/osl-hub-ui/src/android-workspace.test.ts",
+        "apps/osl-hub-ui/src/main.ts"
+      ]
+    },
+    {
+      "id": "finding:autoscrub-account-risk",
+      "title": "AutoScrub drives the service interface and can cost you the account",
+      "status": "Planned",
+      "problem": "AutoScrub works by driving the service's own interface. That may break the service's rules and could terminate your account, so it is never installed without your explicit consent to that risk.",
+      "source": "apps/osl-hub-ui/src/component-consent.ts",
+      "evidence": [
+        "apps/osl-hub-ui/src/component-consent.ts",
+        "apps/osl-hub-ui/src/component-consent.test.ts"
+      ]
+    },
+    {
+      "id": "finding:pro-is-not-cloud-consent",
+      "title": "Buying Pro is not consent to cloud processing",
+      "status": "Open",
+      "problem": "Pro on its own never turns on cloud generation. A cloud request is refused with cloud-consent-required until you give a separate, explicit consent, and basic encryption and the word-bank carrier never depend on Pro.",
+      "source": "apps/osl-hub-ui/src/cover-generation-eligibility.test.ts",
+      "evidence": [
+        "apps/osl-hub-ui/src/cover-generation-eligibility.test.ts",
+        "docs/design/pro-activation-onboarding.md"
+      ]
+    },
+    {
+      "id": "finding:no-redemption-record",
+      "title": "A Pro code has no redemption clock",
+      "status": "Open",
+      "problem": "No redemption record exists yet, so the keyserver cannot start a month when you enter a code and cannot return an account to Free by itself.",
+      "source": "data/pricing.json#/required_phrases",
+      "evidence": [
+        "data/pricing.json",
+        "docs/design/osl-master-decision-2026-07-26.md"
+      ]
+    },
+    {
+      "id": "finding:metadata-visible",
+      "title": "The connected service still sees who and when",
+      "status": "Open",
+      "problem": "A connected service receives an encrypted block instead of your words, but it still sees who you talk to, when, and how often, and OSL cannot hide that.",
+      "source": "docs/design/osl-public-claim-allowlist.md#a2",
+      "evidence": [
+        "docs/design/osl-public-claim-allowlist.md",
+        "docs/THREAT_MODEL.md"
+      ]
+    },
+    {
+      "id": "finding:burn-cannot-reach-the-service-copy",
+      "title": "Burn cannot reach the copy the service holds",
+      "status": "Planned",
+      "problem": "Burn erases OSL's own local copy and may ask the other side to delete theirs. The encrypted block the service already stored stays readable to anyone holding the recipient's long-term keys, and no burn recalls a screenshot.",
+      "source": "docs/design/osl-public-claim-allowlist.md#d",
+      "evidence": [
+        "docs/design/osl-public-claim-allowlist.md"
+      ]
+    }
+  ]
+}
