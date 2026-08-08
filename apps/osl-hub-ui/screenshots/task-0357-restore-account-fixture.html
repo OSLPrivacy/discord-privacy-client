@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
+    <title>OSL Privacy - TASK 0357</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module">
+      globalThis.process = { env: { VITEST: "true" } };
+      const { __oslHubUiTest } = await import("/src/main.ts");
+      __oslHubUiTest.reset({ route: "onboarding", onboardingRoute: "import" });
+      document.querySelector("#app").innerHTML = __oslHubUiTest.renderOnboardingCaptureShell("import");
+      document.documentElement.dataset.task0357 = "ready";
+    </script>
+  </body>
+</html>
