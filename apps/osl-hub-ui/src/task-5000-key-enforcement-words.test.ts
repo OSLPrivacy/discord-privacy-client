@@ -117,4 +117,12 @@ describe("TASK 5000 - the check goes red when the words move", () => {
     expect(() => checkKeyEnforcementWords(without))
       .toThrowError(/KEY row does not show the KEY words: read a thread/u);
   });
+
+  it("checks an extra KEY-tagged row instead of ignoring it", () => {
+    const extra = `${dump}row: invented permission | KEY | another sentence\n`;
+    expect(() => checkKeyEnforcementWords(extra))
+      .toThrowError(/KEY row does not show the KEY words: invented permission/u);
+    expect(() => checkKeyEnforcementWords(extra))
+      .toThrowError(/expected 40 permission rows on screen, found 41/u);
+  });
 });

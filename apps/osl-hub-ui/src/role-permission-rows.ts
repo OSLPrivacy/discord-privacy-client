@@ -385,6 +385,26 @@ export function checkKeyEnforcementWords(dump: string): KeyEnforcementReport {
   let keyRowsShowing = 0;
   let nonKeyRowsShowingKey = 0;
 
+  // Classify every row the screen actually drew before matching it back to
+  // the catalogue. That way an extra or reordered row cannot evade the KEY
+  // placement check merely because it sits outside the catalogue loop.
+  for (const shown of rowLines) {
+    if (shown.tag === "KEY") {
+      if (shown.sentence === keySentence) {
+        keyRowsShowing += 1;
+      } else {
+        problems.push(`KEY row does not show the KEY words: ${shown.words} shows "${shown.sentence}"`);
+      }
+    } else if ((shown.tag === "RELAY" || shown.tag === "TRUST") && shown.sentence === keySentence) {
+      nonKeyRowsShowingKey += 1;
+      problems.push(`${shown.tag} row shows the KEY words: ${shown.words}`);
+    }
+  }
+
+  if (rowLines.length !== ROLE_PERMISSION_ROWS.length) {
+    problems.push(`expected ${ROLE_PERMISSION_ROWS.length} permission rows on screen, found ${rowLines.length}`);
+  }
+
   for (const [index, catalogueRow] of ROLE_PERMISSION_ROWS.entries()) {
     const shown = rowLines[index];
     if (shown === undefined) {
@@ -398,16 +418,9 @@ export function checkKeyEnforcementWords(dump: string): KeyEnforcementReport {
     if (catalogueRow.tag === "KEY") {
       if (shown.tag !== "KEY") {
         problems.push(`catalogue KEY row carries the wrong tag on screen: ${catalogueRow.words} found \`${shown.tag}\``);
-        continue;
       }
-      if (shown.sentence === keySentence) {
-        keyRowsShowing += 1;
-      } else {
-        problems.push(`KEY row does not show the KEY words: ${catalogueRow.words} shows "${shown.sentence}"`);
-      }
-    } else if (shown.sentence === keySentence) {
-      nonKeyRowsShowingKey += 1;
-      problems.push(`${catalogueRow.tag} row shows the KEY words: ${catalogueRow.words}`);
+    } else if (shown.tag !== catalogueRow.tag) {
+      problems.push(`catalogue ${catalogueRow.tag} row carries the wrong tag on screen: ${catalogueRow.words} found \`${shown.tag}\``);
     }
   }
 
