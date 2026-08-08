@@ -17,6 +17,8 @@ pub enum AllowedPlaceStoreError {
     Invalid(String),
     #[error("allowed-place stable_id is invalid: {stable_id}")]
     InvalidStableId { stable_id: String },
+    #[error("stable ID required")]
+    StableIdRequired,
     #[error("allowed place is not allowed: {stable_id}")]
     NotAllowed { stable_id: String },
     #[error(transparent)]
@@ -146,6 +148,9 @@ impl AllowedPlaceRecord {
     }
 
     pub fn validate(&self) -> Result<()> {
+        if self.stable_id.is_empty() {
+            return Err(AllowedPlaceStoreError::StableIdRequired);
+        }
         for (field, value) in [
             ("app", self.app.as_str()),
             ("account", self.account.as_str()),
@@ -536,6 +541,9 @@ pub fn remove_allowed_place_record(
     app_data_dir: impl AsRef<Path>,
     stable_id: impl AsRef<str>,
 ) -> Result<bool> {
+    if stable_id.as_ref().is_empty() {
+        return Err(AllowedPlaceStoreError::StableIdRequired);
+    }
     validate_field(stable_id.as_ref(), "stable_id")?;
     std::fs::create_dir_all(app_data_dir.as_ref())?;
     let conn = Connection::open(allowed_places_db_path(app_data_dir))?;
@@ -1074,6 +1082,3 @@ pub fn allowed_place_summary(app_data_dir: impl AsRef<Path>) -> Result<AllowedPl
         places: places.max(0) as usize,
     })
 }
-
-
-
