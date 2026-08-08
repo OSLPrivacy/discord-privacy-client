@@ -156,6 +156,118 @@ pub struct WebsitePageText {
     pub controls: WebsitePageControls,
 }
 
+/// The browser and accessibility facts required to identify a direct-message
+/// conversation.  These are deliberately explicit: a page title or a URL on
+/// its own is not evidence that a writable conversation is open.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebsiteConversationBrowserSnapshot {
+    pub url: String,
+    pub title: String,
+    pub accessibility: WebsiteConversationAccessibility,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebsiteConversationAccessibility {
+    /// The service that exposed these accessibility facts.  It must agree with
+    /// the canonical URL service before a place is returned.
+    pub service: String,
+    pub active_conversation: bool,
+    pub composer: Option<WebsiteComposerAccessibility>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebsiteComposerAccessibility {
+    pub role: String,
+    pub name: String,
+    pub accessible: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WebsiteConversationDiscovery {
+    pub browser_title: String,
+    pub place_kind: String,
+    pub composer: String,
+}
+
+/// Classifies an already-open browser conversation from canonical service URL
+/// routing and accessibility evidence.  Unknown URL shapes, service claims,
+/// inactive conversations, and inaccessible/non-textbox composers all fail
+/// closed.
+pub fn discover_browser_conversation(
+    snapshot: &WebsiteConversationBrowserSnapshot,
+) -> Result<WebsiteConversationDiscovery, WebsiteDriverError> {
+    if snapshot.title.trim().is_empty() {
+        return Err(WebsiteDriverError::PageUnavailable);
+    }
+    let (service, place_kind) =
+        conversation_service_for_url(&snapshot.url).ok_or(WebsiteDriverError::PageUnavailable)?;
+    let accessibility = &snapshot.accessibility;
+    let composer = accessibility
+        .composer
+        .as_ref()
+        .filter(|composer| composer.accessible)
+        .filter(|composer| composer.role.eq_ignore_ascii_case("textbox"))
+        .filter(|composer| !composer.name.trim().is_empty())
+        .filter(|composer| !composer.name.to_ascii_lowercase().contains("search"))
+        .ok_or(WebsiteDriverError::PageUnavailable)?;
+
+    if accessibility.service != service || !accessibility.active_conversation {
+        return Err(WebsiteDriverError::PageUnavailable);
+    }
+
+    Ok(WebsiteConversationDiscovery {
+        browser_title: snapshot.title.clone(),
+        place_kind: place_kind.to_owned(),
+        composer: composer.name.clone(),
+    })
+}
+
+/// Messenger-only wrapper for callers that must never accept a conversation
+/// discovered in a different browser service.
+pub fn discover_messenger_browser_conversation(
+    snapshot: &WebsiteConversationBrowserSnapshot,
+) -> Result<WebsiteConversationDiscovery, WebsiteDriverError> {
+    let discovery = discover_browser_conversation(snapshot)?;
+    (discovery.place_kind == "messenger:direct_message")
+        .then_some(discovery)
+        .ok_or(WebsiteDriverError::PageUnavailable)
+}
+
+fn conversation_service_for_url(url: &str) -> Option<(&'static str, &'static str)> {
+    let parsed = url::Url::parse(url).ok()?;
+    if parsed.scheme() != "https" {
+        return None;
+    }
+    let normalized_host = parsed
+        .host_str()?
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    let host = normalized_host
+        .strip_prefix("www.")
+        .unwrap_or(&normalized_host);
+    let path = parsed.path().trim_end_matches('/');
+    let conversation_id = |prefix: &str| {
+        path.strip_prefix(prefix)
+            .filter(|id| !id.is_empty() && !id.contains('/'))
+    };
+
+    match host {
+        "messenger.com" if conversation_id("/t/").is_some() => {
+            Some(("messenger", "messenger:direct_message"))
+        }
+        "facebook.com" if conversation_id("/messages/t/").is_some() => {
+            Some(("messenger", "messenger:direct_message"))
+        }
+        "instagram.com" if conversation_id("/direct/t/").is_some() => {
+            Some(("instagram", "instagram:direct_message"))
+        }
+        _ => None,
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WebsiteSelectedEmail {
     pub page: WebsitePage,
@@ -592,6 +704,17 @@ impl RealBrowserWebsiteDriver {
     ) -> Result<InstagramPrivateComposerState, WebsiteDriverError> {
         self.write_instagram_private_text(page, "")
     }
+
+    /// Reads the active page's URL and accessibility tree facts before
+    /// classifying a Messenger direct-message conversation.
+    pub fn discover_messenger_conversation(
+        &mut self,
+        page: &WebsitePage,
+    ) -> Result<WebsiteConversationDiscovery, WebsiteDriverError> {
+        let websocket_url = self.page_websocket_url(page)?;
+        let snapshot = read_browser_conversation_snapshot(&websocket_url)?;
+        discover_messenger_browser_conversation(&snapshot)
+    }
 }
 
 impl WebsiteDriver for RealBrowserWebsiteDriver {
@@ -1014,6 +1137,13 @@ fn press_named_button(
     }
 }
 
+fn read_browser_conversation_snapshot(
+    websocket_url: &str,
+) -> Result<WebsiteConversationBrowserSnapshot, WebsiteDriverError> {
+    let value = evaluate_target(websocket_url, BROWSER_CONVERSATION_SNAPSHOT_EXPRESSION)?;
+    serde_json::from_value(value).map_err(|_| WebsiteDriverError::ReadFailed)
+}
+
 fn read_selected_email_snapshot(
     websocket_url: &str,
 ) -> Result<BrowserSelectedEmailSnapshot, WebsiteDriverError> {
@@ -1346,6 +1476,55 @@ fn valid_email_recipient(recipient: &str) -> bool {
                 .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
     })
 }
+
+const BROWSER_CONVERSATION_SNAPSHOT_EXPRESSION: &str = r#"
+(() => {
+  const compact = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+  const visible = (element) => {
+    if (!element || element.hidden || element.getAttribute('aria-hidden') === 'true') return false;
+    const style = window.getComputedStyle(element);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+    return element.getClientRects().length > 0;
+  };
+  const host = location.hostname.replace(/\.$/, '').toLowerCase().replace(/^www\./, '');
+  const service = host === 'messenger.com' || host === 'facebook.com' ? 'messenger' :
+    host === 'instagram.com' ? 'instagram' : '';
+  const composerName = (element) => compact(
+    element.getAttribute('aria-label') || element.getAttribute('placeholder') || element.getAttribute('title')
+  );
+  const composer = Array.from(document.querySelectorAll(
+    '[data-osl-composer], [contenteditable="true"][role="textbox"], textarea[aria-label], input[aria-label][role="textbox"], [role="textbox"]'
+  )).find((element) => {
+    const name = composerName(element);
+    return visible(element) &&
+      !element.disabled &&
+      !element.readOnly &&
+      element.getAttribute('role') === 'textbox' &&
+      name &&
+      !/search/i.test(name);
+  });
+  const activeConversation = Array.from(document.querySelectorAll(
+    '[data-osl-active-conversation="true"], [data-active-conversation="true"], [role="main"]'
+  )).some((element) => visible(element) && (
+    element.getAttribute('data-osl-active-conversation') === 'true' ||
+    element.getAttribute('data-active-conversation') === 'true' ||
+    (composer && element.contains(composer))
+  ));
+  return {
+    url: location.href,
+    title: document.title,
+    accessibility: {
+      service,
+      activeConversation,
+      composer: composer ? {
+        role: composer.getAttribute('role') || '',
+        name: composerName(composer),
+        accessible: visible(composer)
+      } : null
+    }
+  };
+})()
+"#;
 
 const PAGE_SNAPSHOT_EXPRESSION: &str = r#"
 (() => {
