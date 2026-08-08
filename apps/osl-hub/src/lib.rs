@@ -236,6 +236,7 @@ pub mod scrub_hosted {
     pub mod proton_mail_deleter;
     pub mod reader;
     pub mod verify_surface;
+    pub mod x_thread;
     pub mod x_web;
     #[cfg(not(task3982_focused))]
     pub mod yahoo_mail;
