@@ -23,6 +23,13 @@ EXPECTED_TEMPORARY_UNINSTALL_SECTION_NAMES = (
     "logs",
     "crash dumps",
 )
+EXPECTED_WINDOWS_UNINSTALL_SECTION_NAMES = (
+    "OSL-owned browser records",
+    "Windows registry keys",
+    "scheduled jobs",
+    "startup entries",
+    "background services",
+)
 
 
 def load_contract() -> dict:
@@ -49,6 +56,14 @@ def load_temporary_uninstall_inventory() -> dict:
     return json.loads(match.group(1))
 
 
+def load_windows_uninstall_inventory() -> dict:
+    document = CONTRACT_PATH.read_text(encoding="utf-8")
+    match = re.search(r"```json windows-uninstall-inventory\n(.*?)\n```", document, re.DOTALL)
+    if match is None:
+        raise ValueError("Windows uninstall inventory JSON block is missing")
+    return json.loads(match.group(1))
+
+
 def uninstall_places(uninstall_map: dict) -> list[dict]:
     places = uninstall_map["places"]
     if not isinstance(places, list):
@@ -60,6 +75,13 @@ def temporary_uninstall_sections(inventory: dict) -> list[dict]:
     sections = inventory["sections"]
     if not isinstance(sections, list):
         raise ValueError("temporary uninstall inventory sections must be a list")
+    return sections
+
+
+def windows_uninstall_sections(inventory: dict) -> list[dict]:
+    sections = inventory["sections"]
+    if not isinstance(sections, list):
+        raise ValueError("Windows uninstall inventory sections must be a list")
     return sections
 
 
@@ -104,6 +126,39 @@ def print_temporary_uninstall_inventory() -> int:
         if len(marked) != 1:
             ok = False
     return 0 if ok else 1
+
+
+def windows_uninstall_inventory_is_complete(sections: list[dict]) -> bool:
+    names = [section.get("name") for section in sections]
+    if names != list(EXPECTED_WINDOWS_UNINSTALL_SECTION_NAMES):
+        return False
+    for section in sections:
+        records = section.get("records")
+        if not isinstance(records, list) or not records:
+            return False
+        if section.get("count") != len(records):
+            return False
+        for record in records:
+            if not isinstance(record, dict):
+                return False
+            if not all(record.get(field) for field in ("name", "locations", "ownership", "uninstall_action", "source")):
+                return False
+    return True
+
+
+def windows_uninstall_inventory_exit_code(sections: list[dict]) -> int:
+    return 0 if windows_uninstall_inventory_is_complete(sections) else 1
+
+
+def print_windows_uninstall_inventory() -> int:
+    sections = windows_uninstall_sections(load_windows_uninstall_inventory())
+    print(f"TASK3699_WINDOWS_UNINSTALL_SECTION_COUNT={len(sections)}")
+    for index, section in enumerate(sections, start=1):
+        print(
+            "TASK3699_WINDOWS_UNINSTALL_SECTION"
+            f"[{index}]={section.get('name', '')} COUNT={section.get('count', '')}"
+        )
+    return windows_uninstall_inventory_exit_code(sections)
 
 
 class BurnAndUninstallContractTest(unittest.TestCase):
@@ -152,6 +207,25 @@ class BurnAndUninstallContractTest(unittest.TestCase):
             self.assertTrue(marked[0]["locations"], f"{section['name']} marked item must list locations")
             self.assertTrue(marked[0]["source"], f"{section['name']} marked item must name source")
 
+    def test_windows_uninstall_inventory_names_every_owned_section(self) -> None:
+        sections = windows_uninstall_sections(load_windows_uninstall_inventory())
+        self.assertEqual(
+            [section["name"] for section in sections],
+            list(EXPECTED_WINDOWS_UNINSTALL_SECTION_NAMES),
+        )
+        self.assertTrue(windows_uninstall_inventory_is_complete(sections))
+
+    def test_windows_uninstall_inventory_refuses_every_single_section_omission(self) -> None:
+        sections = windows_uninstall_sections(load_windows_uninstall_inventory())
+        for omitted_index, omitted_name in enumerate(EXPECTED_WINDOWS_UNINSTALL_SECTION_NAMES):
+            with self.subTest(omitted=omitted_name):
+                incomplete = sections[:omitted_index] + sections[omitted_index + 1 :]
+                self.assertEqual(
+                    windows_uninstall_inventory_exit_code(incomplete),
+                    1,
+                    f"omitting {omitted_name} must make the direct inventory exit 1",
+                )
+
     def test_uninstall_footprint_names_every_osl_write_place(self) -> None:
         places = uninstall_places(load_uninstall_footprint_map())
         self.assertEqual([place["name"] for place in places], list(EXPECTED_UNINSTALL_PLACE_NAMES))
@@ -166,4 +240,6 @@ if __name__ == "__main__":
         raise SystemExit(print_uninstall_footprint_map())
     if sys.argv[1:] == ["--print-temporary-uninstall-inventory"]:
         raise SystemExit(print_temporary_uninstall_inventory())
+    if sys.argv[1:] == ["--print-windows-uninstall-inventory"]:
+        raise SystemExit(print_windows_uninstall_inventory())
     unittest.main()
