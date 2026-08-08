@@ -12176,6 +12176,16 @@ code {
    launcher rules above and was one cause of structural-home.md bug 1. The
    launcher layout in the "Home launcher" section is the only Home tile
    system now; do not add `.home-dashboard` tile overrides below it. */
+.home-dashboard .home-app-section:not(.home-osl-section) .app-logo-plate,
+.home-dashboard .home-app-section:not(.home-osl-section) .app-tile[data-service-kind] .app-logo-plate {
+  border-radius: 50%;
+  background: var(--service);
+  color: white;
+}
+.home-dashboard .home-app-section:not(.home-osl-section) .app-logo-plate .company-logo,
+.home-dashboard .home-app-section:not(.home-osl-section) .app-logo-plate svg { filter: none; }
+.home-dashboard .home-app-section:not(.home-osl-section) .app-tile[data-service-kind="x"] .app-logo-plate,
+.home-dashboard .home-app-section:not(.home-osl-section) .app-tile[data-service-kind="snapchat"] .app-logo-plate { color: #090909; }
 .home-dashboard .module-unavailable { opacity: .42; }
 .home-dashboard .app-tile > button:first-child:hover .app-logo-plate { opacity: .78; transform: scale(1.04); }
 /* The operator's profile name. It is the one arbitrary-length string the Home

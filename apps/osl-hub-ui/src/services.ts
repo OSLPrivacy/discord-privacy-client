@@ -412,7 +412,13 @@ interface HomeAppDefinition {
   unavailableReason: string | null;
 }
 
-const homeAppDefinitions: readonly HomeAppDefinition[] = [
+/**
+ * The hour-30 shipped-services snapshot is the only Home roster.  Home reads
+ * this data through `homeAppsFromServices`; its renderer never names a carrier
+ * or mail service.  Removing a failed carrier here therefore removes its tile
+ * everywhere the catalog is rebuilt.
+ */
+const shippedHomeServices: readonly HomeAppDefinition[] = [
   homeApp("discord", "Discord", "discord"),
   homeApp("telegram", "Telegram", "telegram", null, "launch", "unavailable", "OSL has a live composer carry receipt, but delivery back to OSL has never been proven and the support records conflict."),
   homeApp("signal", "Signal", "signal", null, "launch", "unavailable", "Signal's adapter refuses synthesised input, the only technique shown to land text, and no live send-and-receive proof exists."),
@@ -1216,7 +1222,13 @@ export function parseFirefoxStatus(raw: unknown): FirefoxStatus {
  */
 export function homeAppsFromServices(services: readonly LinkedService[]): HomeAppCatalogEntry[] {
   const byId = new Map(services.map((service) => [service.id, service]));
-  return homeAppDefinitions.map((definition) => {
+  // Before the native registry has answered, retain the shipped snapshot as a
+  // harmless loading catalog.  Once it has answered, a carrier absent from the
+  // registry is absent from Home -- no view-level exception can resurrect it.
+  const definitions = services.length === 0
+    ? shippedHomeServices
+    : shippedHomeServices.filter((definition) => definition.serviceId !== null && byId.has(definition.serviceId));
+  return definitions.map((definition) => {
     const service = definition.serviceId ? byId.get(definition.serviceId) : undefined;
     const accounts = service?.accounts.filter((account) => definition.provider === null || account.provider === definition.provider) ?? [];
     const accountCount = accounts.length;
