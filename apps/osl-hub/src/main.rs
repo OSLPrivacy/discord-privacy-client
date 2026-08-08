@@ -640,6 +640,21 @@ fn set_hub_screenshot_protection(app: tauri::AppHandle, enabled: bool) -> Result
 }
 
 #[tauri::command]
+async fn reset_hub_setting_group(
+    caller: tauri::WebviewWindow,
+    core: State<'_, HubCoreState>,
+    security_state: State<'_, HubSecurityState>,
+    session: State<'_, HubAccountSessionState>,
+    group: String,
+) -> Result<security::ResetSettingGroupRecord, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may reset settings".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    security::reset_setting_group(&core, &security_state, group)
+}
+
+#[tauri::command]
 fn save_onboarding_preferences(
     state: State<'_, PreviewState>,
     preferences: OnboardingPreferences,

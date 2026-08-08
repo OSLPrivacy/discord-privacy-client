@@ -689,6 +689,7 @@ pub mod scrub_imap;
 #[cfg(not(task3982_focused))]
 pub mod scrub_index;
 pub mod scrub_receipt;
+pub mod setting_groups;
 #[cfg(feature = "core")]
 #[cfg(not(task3982_focused))]
 pub mod security;

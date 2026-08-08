@@ -303,6 +303,15 @@ pub struct LookChoiceRecord {
     pub value: String,
 }
 
+/// Receipt for a reset constrained to one Settings screen.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResetSettingGroupRecord {
+    pub action: String,
+    pub group: String,
+    pub settings_defaulted: usize,
+}
+
 /// The minimum friend state needed to create a manual peer-messaging lease.
 /// Key material stays in the original core; callers receive only stable local
 /// and public identity identifiers.
@@ -1696,6 +1705,111 @@ pub fn list_look_choices(_security: &HubSecurityState) -> Result<Vec<LookChoiceR
     require_unlocked()?;
     let prefs = load_security_preferences()?;
     Ok(look_choice_records(&prefs))
+}
+
+/// Restore only the preferences owned by one named Settings screen.
+pub fn reset_setting_group(
+    core: &HubCoreState,
+    security: &HubSecurityState,
+    group: String,
+) -> Result<ResetSettingGroupRecord, String> {
+    crate::setting_groups::validate_saved_settings_group(&group)?;
+    require_unlocked()?;
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL setting reset state is unavailable".to_owned())?;
+    let settings_defaulted = crate::setting_groups::SAVED_SETTING_GROUPS
+        .iter()
+        .filter(|entry| entry.group == group)
+        .count();
+
+    match group.as_str() {
+        "Account" => {
+            let owner = active_user_id(core)?;
+            crate::osl_profile::clear_active_profile_picture(&owner)?;
+        }
+        "Notifications" | "Look" => {
+            let path = config_dir()?.join(SECURITY_PREFS_FILE);
+            let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
+            prefs.version = 2;
+            if group == "Notifications" {
+                prefs.chat_approval_suggestion = ChatApprovalSuggestionChoice::default();
+                prefs.app_notification_choices.clear();
+            } else {
+                prefs.look_choices.clear();
+            }
+            write_encrypted_json(&path, &prefs)?;
+        }
+        "Whitelisting" | "Privacy" | "Apps and sending" | "Behaviour" => {
+            let dir = config_dir()?;
+            let app_preferences_path = dir.join("app_preferences.json");
+            let mut app_preferences = core
+                .osl
+                .app_preferences
+                .lock()
+                .map_err(|_| "OSL app preference state is unavailable".to_owned())?;
+            let previous_app_preferences = app_preferences.clone();
+            let mut next_app_preferences = previous_app_preferences.clone();
+            let defaults = ipc::app_preferences::AppPreferences::default();
+            next_app_preferences.version = ipc::app_preferences::APP_PREFERENCES_VERSION;
+
+            match group.as_str() {
+                "Whitelisting" => {
+                    next_app_preferences.new_friend_defaults = defaults.new_friend_defaults;
+                    next_app_preferences.auto_whitelist_rules.clear();
+                }
+                "Privacy" => {
+                    next_app_preferences.privacy_level = defaults.privacy_level;
+                    next_app_preferences.privacy_level_rule_sets.clear();
+                    next_app_preferences.verification_warning = defaults.verification_warning;
+                }
+                "Apps and sending" => {
+                    next_app_preferences.next_generation_message_policy =
+                        defaults.next_generation_message_policy;
+                    next_app_preferences.message_defaults = defaults.message_defaults;
+                    next_app_preferences.rn_wire_policy_requested = false;
+                }
+                "Behaviour" => next_app_preferences.behaviour_choices.clear(),
+                _ => unreachable!("validated Settings group"),
+            }
+
+            ipc::app_preferences::write_app_preferences(&app_preferences_path, &next_app_preferences)?;
+
+            if group == "Whitelisting" {
+                let auto_rules_path = dir.join("auto_whitelist_rules.json");
+                let mut auto_rules = core
+                    .osl
+                    .auto_whitelist_rules
+                    .lock()
+                    .map_err(|_| "OSL automatic allow-rule state is unavailable".to_owned())?;
+                let next_auto_rules = ipc::auto_whitelist_rules::AutoWhitelistRules::default();
+                if let Err(error) = ipc::auto_whitelist_rules::write_auto_whitelist_rules(
+                    &auto_rules_path,
+                    &next_auto_rules,
+                ) {
+                    let _ = ipc::app_preferences::write_app_preferences(
+                        &app_preferences_path,
+                        &previous_app_preferences,
+                    );
+                    return Err(error);
+                }
+                *auto_rules = next_auto_rules;
+            }
+
+            *app_preferences = next_app_preferences;
+            if group == "Apps and sending" {
+                core.osl.set_rn_wire_in_enabled(false);
+            }
+        }
+        _ => unreachable!("validated Settings group"),
+    }
+
+    Ok(ResetSettingGroupRecord {
+        action: "reset".to_owned(),
+        group,
+        settings_defaulted,
+    })
 }
 
 pub fn compare_allowed_place_direction_state(

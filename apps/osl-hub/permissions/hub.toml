@@ -1188,6 +1188,11 @@ description = "List the saved bounded local OSL visual look choices for this dev
 commands.allow = ["list_hub_look_choices"]
 
 [[permission]]
+identifier = "allow-reset-hub-setting-group"
+description = "Reset only the persisted settings owned by one exact named Settings screen from the trusted local OSL window."
+commands.allow = ["reset_hub_setting_group"]
+
+[[permission]]
 identifier = "allow-save-scrub-setup"
 description = "Save the local Scrub setup account count, automatic schedule, and notice setting selected during trusted setup."
 commands.allow = ["save_scrub_setup"]

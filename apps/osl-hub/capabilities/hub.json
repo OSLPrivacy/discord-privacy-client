@@ -230,6 +230,7 @@
     "allow-set-hub-look-choice",
     "allow-get-hub-look-choice",
     "allow-list-hub-look-choices",
+    "allow-reset-hub-setting-group",
     "allow-save-scrub-setup",
     "allow-check-hub-password-reset-phrase",
     "allow-set-hub-friend-account-reach-choice",
