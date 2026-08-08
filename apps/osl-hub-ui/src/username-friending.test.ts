@@ -6,6 +6,8 @@ vi.mock("./preferences", () => ({ isTauriRuntime: () => true }));
 
 import {
   addOslFriendByUsername,
+  cancelOslPublicNameCheck,
+  checkOslPublicName,
   claimOslUsername,
   getOslUsernameStatus,
   isNormalizedOslUsername,
@@ -25,9 +27,24 @@ describe("username friending adapter", () => {
   it("claims only a strictly parsed matching response", async () => {
     invoke.mockResolvedValue({ username: "alice_01", oslUserId: "user-1" });
     expect(await claimOslUsername("alice_01")).toEqual({ username: "alice_01", oslUserId: "user-1" });
-    expect(invoke).toHaveBeenCalledWith("claim_hub_username", { username: "alice_01" });
+    expect(invoke).toHaveBeenCalledWith("claim_checked_hub_username", { username: "alice_01" });
     expect(parseHubUsernameClaim({ username: "Alice", oslUserId: "user-1" })).toBeNull();
     expect(await claimOslUsername("Alice")).toBeNull();
+  });
+
+  it("accepts only an exact checked proof result and acknowledges Cancel", async () => {
+    invoke.mockResolvedValueOnce({ username: "alice_01", available: true, proofReady: true });
+    await expect(checkOslPublicName("alice_01")).resolves.toEqual({
+      username: "alice_01", available: true, proofReady: true,
+    });
+    expect(invoke).toHaveBeenCalledWith("check_hub_public_name", { username: "alice_01" });
+
+    invoke.mockResolvedValueOnce({ username: "bob_02", available: true, proofReady: true });
+    await expect(checkOslPublicName("alice_01")).resolves.toBeNull();
+
+    invoke.mockResolvedValueOnce(true);
+    await expect(cancelOslPublicNameCheck()).resolves.toBe(true);
+    expect(invoke).toHaveBeenCalledWith("cancel_hub_public_name_check");
   });
 
   it("preserves safety-number verification after username resolution", async () => {

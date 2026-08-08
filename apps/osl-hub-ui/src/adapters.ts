@@ -134,6 +134,7 @@ export function peerIsVerified(person: Pick<HubPerson, "safetyNumberVerified" | 
 }
 export interface HubUsernameClaim { username: string; oslUserId: string; }
 export interface HubUsernameStatus { username: string; ownedByActiveIdentity: boolean; }
+export interface HubPublicNameCheck { username: string; available: boolean; proofReady: boolean; }
 export interface HubAddFriendResult {
   disposition: "added" | "already_present" | "key_change_requires_verification";
   personId: string;
@@ -957,11 +958,37 @@ export function parseHubAddFriendResult(raw: unknown): HubAddFriendResult | null
 export async function claimOslUsername(username: string): Promise<HubUsernameClaim | null> {
   if (!isTauriRuntime() || !isNormalizedOslUsername(username)) return null;
   try {
-    const parsed = parseHubUsernameClaim(await invoke<unknown>("claim_hub_username", { username }));
-    return checkedBackendResponse("claim_hub_username",
+    const parsed = parseHubUsernameClaim(await invoke<unknown>("claim_checked_hub_username", { username }));
+    return checkedBackendResponse("claim_checked_hub_username",
       parsed?.username === username ? parsed : null,
       "the username claim did not match the expected shape");
-  } catch (error) { recordBackendFailure("claim_hub_username", error); return null; }
+  } catch (error) { recordBackendFailure("claim_checked_hub_username", error); return null; }
+}
+
+export async function checkOslPublicName(username: string): Promise<HubPublicNameCheck | null> {
+  if (!isTauriRuntime() || !isNormalizedOslUsername(username)) return null;
+  try {
+    const raw = await invoke<unknown>("check_hub_public_name", { username });
+    const parsed = isRecord(raw)
+      && exact(raw, ["username", "available", "proofReady"])
+      && raw.username === username
+      && typeof raw.available === "boolean"
+      && typeof raw.proofReady === "boolean"
+      && (!raw.proofReady || raw.available)
+      ? raw as unknown as HubPublicNameCheck
+      : null;
+    return checkedBackendResponse("check_hub_public_name", parsed,
+      "the public-name proof result did not match the expected shape");
+  } catch (error) { recordBackendFailure("check_hub_public_name", error); return null; }
+}
+
+export async function cancelOslPublicNameCheck(): Promise<boolean> {
+  if (!isTauriRuntime()) return false;
+  try {
+    return checkedBackendResponse("cancel_hub_public_name_check",
+      await invoke<unknown>("cancel_hub_public_name_check") === true ? true : null,
+      "the public-name cancellation was not acknowledged") === true;
+  } catch (error) { recordBackendFailure("cancel_hub_public_name_check", error); return false; }
 }
 
 export async function getOslUsernameStatus(username: string): Promise<HubUsernameStatus | null> {
