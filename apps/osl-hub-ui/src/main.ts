@@ -7,6 +7,7 @@ import "@fontsource-variable/source-sans-3/wght.css";
 import "./styles.css";
 import "./local-protected-sheet.css";
 import "./friend-invite.css";
+import "./friend-page.css";
 import "./recovery-screen.css";
 import "./onboarding-mullvad.css";
 import { invoke } from "@tauri-apps/api/core";
