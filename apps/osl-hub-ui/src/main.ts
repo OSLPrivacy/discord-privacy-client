@@ -853,6 +853,9 @@ type DesktopCtaSurface = "desktop" | "phone-demo" | "mobile-companion";
 type DesktopCtaRoute = "desktop-app" | "phone-companion";
 let oslChatSecureStore: OslChatSecureStore | null = null;
 let rnWirePolicyRequested = false;
+// Grafted with homeTopBarPage() from lane/d; the `let` it reads was invisible
+// to a graft that only recognised function/const/class declarations.
+let profileSettingsFocus = false;
 const autoScrubServiceLabels: Record<ServiceId, string> = {
   discord: "Discord",
   telegram: "Telegram",
@@ -5280,7 +5283,6 @@ function oslChatContent(): string {
     buildIntegrity: buildIntegrityStatus,
     verificationWarningSurface: oslChatVerificationWarningSurface,
     buildWarning: installedBuildChatWarning,
-    verificationWarningSurface: oslChatVerificationWarningSurface,
   })}${offlineStatus}${receipt}${attachments}${settings}</main>`;
 }
 
