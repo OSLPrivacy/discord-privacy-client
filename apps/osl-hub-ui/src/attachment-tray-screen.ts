@@ -21,7 +21,6 @@ const escapeHtml = (value: string): string => value.replace(/[&<>"']/gu, (charac
 export function isAttachmentTrayPicture(type: string): boolean {
   return /^image\/[a-z0-9.+-]+$/iu.test(type);
 }
-
 export function attachmentTraySizeLabel(size: number): string {
   if (size < 1_024) return `${size} B`;
   const units = ["KB", "MB", "GB"] as const;
