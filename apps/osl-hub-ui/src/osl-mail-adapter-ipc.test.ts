@@ -21,6 +21,12 @@ beforeEach(() => {
       case "osl_mail_get_status":
       case "osl_mail_provision":
         return { available: true, provisioned: true, address: "member@oslprivacy.com", unreadCount: 0, retentionSeconds: 604_800 };
+      case "osl_mail_list_threads":
+        return [];
+      case "osl_mail_retrieve_thread":
+        return { threadId: ID, retrievalId: ID, expiresAt: 1, messages: [{ messageId: ID, from: "sender@oslprivacy.com", to: ["member@oslprivacy.com"], subject: "", body: "ciphertext opened locally", receivedAt: 1, transit: "oslE2ee" }] };
+      case "osl_mail_acknowledge_retrieval":
+        return { retrievalId: ID, deletedMessageIds: [ID], deletedAt: 1, receiptSha256: RECEIPT, serverDeleteConfirmed: true };
       case "osl_mail_send":
         return { clientMessageId: ID, acceptedAt: 1, recipient: "member@oslprivacy.com", transit: "oslE2ee", receiptSha256: RECEIPT };
       case "osl_mail_burn":
@@ -50,23 +56,29 @@ describe("OSL Mail renderer IPC contract", () => {
     });
   });
 
-  it("uses only registered command names and camelCase argument shapes", async () => {
+  it("uses all registered command names and camelCase argument shapes", async () => {
     await oslMailAdapter.loadOslMailStatus();
     await oslMailAdapter.provisionOslMail("member");
+    await oslMailAdapter.listOslMailThreads();
+    await oslMailAdapter.retrieveOslMailThread(ID);
+    await oslMailAdapter.acknowledgeOslMailRetrieval(ID, [ID]);
     await oslMailAdapter.sendOslMail("member@oslprivacy.com", "subject", "body");
     await oslMailAdapter.burnOslMailbox("member@oslprivacy.com", "member@oslprivacy.com");
 
     expect(mocks.invoke.mock.calls).toEqual([
       ["osl_mail_get_status", {}],
       ["osl_mail_provision", { username: "member" }],
+      ["osl_mail_list_threads"],
+      ["osl_mail_retrieve_thread", { threadId: ID }],
+      ["osl_mail_acknowledge_retrieval", { retrievalId: ID, messageIds: [ID] }],
       ["osl_mail_send", { recipient: "member@oslprivacy.com", subject: "subject", body: "body" }],
       ["osl_mail_burn", { address: "member@oslprivacy.com", confirmation: "member@oslprivacy.com" }],
     ]);
   });
 
-  it("does not expose unregistered read or deletion commands until the bridge exists", () => {
-    expect(oslMailAdapter).not.toHaveProperty("listOslMailThreads");
-    expect(oslMailAdapter).not.toHaveProperty("retrieveOslMailThread");
-    expect(oslMailAdapter).not.toHaveProperty("acknowledgeOslMailRetrieval");
+  it("exposes the three registered read and acknowledgement wrappers", () => {
+    expect(oslMailAdapter).toHaveProperty("listOslMailThreads");
+    expect(oslMailAdapter).toHaveProperty("retrieveOslMailThread");
+    expect(oslMailAdapter).toHaveProperty("acknowledgeOslMailRetrieval");
   });
 });

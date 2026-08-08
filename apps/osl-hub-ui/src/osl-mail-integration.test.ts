@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 
 const main = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
@@ -22,9 +22,10 @@ vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: mocks.getCurrentWin
 // or calls pure exported helpers, and the stubbed `localStorage` is emptied
 // before each test -- which is exactly the state a fresh import would have seen.
 const localStore = new Map<string, string>();
-let ui: typeof import("./main");
+let ui: typeof import("./main") | undefined;
 
-beforeAll(async () => {
+async function loadUi(): Promise<typeof import("./main")> {
+  if (ui) return ui;
   vi.stubGlobal("localStorage", {
     getItem: (key: string) => localStore.get(key) ?? null,
     setItem: (key: string, value: string) => { localStore.set(key, value); },
@@ -37,7 +38,8 @@ beforeAll(async () => {
   vi.stubGlobal("cancelAnimationFrame", () => undefined);
   vi.resetModules();
   ui = await import("./main");
-}, 300_000);
+  return ui;
+}
 
 afterAll(() => {
   vi.unstubAllGlobals();
@@ -58,8 +60,8 @@ function renderedTile(markup: string, tileId: string): string {
 }
 
 describe("OSL Mail Home integration", () => {
-  it("renders the first-party Home tile as coming later while keeping the route", () => {
-    const { __oslHubUiTest } = ui;
+  it("renders the first-party Home tile as coming later while keeping the route", async () => {
+    const { __oslHubUiTest } = await loadUi();
     __oslHubUiTest.reset({ route: "home" });
     const tile = renderedTile(__oslHubUiTest.renderWorkspaceContent("home"), "osl-mail");
 
@@ -73,11 +75,13 @@ describe("OSL Mail Home integration", () => {
     expect(main).toContain('if (route === "osl-mail") return oslMailContent()');
   });
 
-  it("does not call the missing thread-list bridge or coerce failures to an empty inbox", () => {
-    expect(main).not.toContain("listOslMailThreads,");
-    expect(main).not.toContain("listOslMailThreads()");
-    expect(main).not.toContain("retrieveOslMailThread,");
-    expect(main).not.toContain("acknowledgeOslMailRetrieval,");
+  it("calls each registered reading wrapper without coercing a refusal to an empty inbox", () => {
+    expect(main).toContain("listOslMailThreads,");
+    expect(main).toContain("const threads = await listOslMailThreads();");
+    expect(main).toContain("retrieveOslMailThread,");
+    expect(main).toContain("await retrieveOslMailThread(threadId)");
+    expect(main).toContain("acknowledgeOslMailRetrieval,");
+    expect(main).toContain("await acknowledgeOslMailRetrieval(oslMailActiveThread.retrievalId");
     expect(main).not.toMatch(/listOslMailThreads\(\)\s*\?\?\s*\[\]/u);
     expect(main).toContain("oslMailThreadSyncUnavailable");
   });

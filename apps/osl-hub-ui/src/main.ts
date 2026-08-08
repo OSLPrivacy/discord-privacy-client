@@ -188,9 +188,13 @@ import { oslMailStage, type OslMailStage } from "./desktop-service-policy";
 import { webSurfaceLabel, type WebSurfaceCapability } from "./web-surface-label";
 import { homeOverallStatus, homeProtectionState } from "./home-protection-state";
 import {
+  OSL_MAIL_NAMED_SEND_REQUIRED,
+  acknowledgeOslMailRetrieval,
   burnOslMailbox,
+  listOslMailThreads,
   loadOslMailStatus,
   provisionOslMail,
+  retrieveOslMailThread,
   sendOslMailWithChoice,
   type OslMailSendChoice,
   type OslMailBurnReceipt,
@@ -5727,8 +5731,13 @@ async function refreshOslMail(): Promise<void> {
   oslMailThreads = [];
   oslMailActiveThread = null;
   if (status?.provisioned) {
-    oslMailThreadSyncUnavailable = true;
-    oslMailError = "Inbox sync is unavailable in this build; messages are not being reported as empty";
+    const threads = await listOslMailThreads();
+    if (threads) {
+      oslMailThreads = threads;
+    } else {
+      oslMailThreadSyncUnavailable = true;
+      oslMailError = "Inbox sync was refused; messages are not being reported as empty";
+    }
   }
   oslMailLoading = false;
   if (route === "osl-mail") render();
@@ -5743,9 +5752,9 @@ async function provisionOslMailFromProfile(): Promise<void> {
   oslMailStatus = await provisionOslMail(claimedOslUsername);
   oslMailThreads = [];
   oslMailActiveThread = null;
-  oslMailThreadSyncUnavailable = Boolean(oslMailStatus?.provisioned);
+  oslMailThreadSyncUnavailable = false;
   if (!oslMailStatus) oslMailError = "Mailbox setup was refused";
-  else if (oslMailThreadSyncUnavailable) oslMailError = "Inbox sync is unavailable in this build; messages are not being reported as empty";
+  else if (oslMailStatus.provisioned) await refreshOslMail();
   if (route === "osl-mail") render();
 }
 
@@ -8514,13 +8523,15 @@ function bindWorkspace(): void {
     render();
   });
   document.querySelectorAll<HTMLButtonElement>("[data-mail-thread]").forEach((button) => button.addEventListener("click", async () => {
-    oslMailActiveThread = null;
-    oslMailError = "Message retrieval is unavailable in this build";
+    const threadId = button.dataset.mailThread ?? "";
+    oslMailActiveThread = await retrieveOslMailThread(threadId);
+    oslMailError = oslMailActiveThread ? null : "Message retrieval was refused";
     render();
   }));
   document.querySelector<HTMLButtonElement>("#osl-mail-ack")?.addEventListener("click", async () => {
-    oslMailDeleteReceipt = null;
-    oslMailError = "Server deletion requests are unavailable in this build";
+    if (!oslMailActiveThread) return;
+    oslMailDeleteReceipt = await acknowledgeOslMailRetrieval(oslMailActiveThread.retrievalId, oslMailActiveThread.messages.map((message) => message.messageId));
+    oslMailError = oslMailDeleteReceipt ? null : "Retrieval acknowledgement was refused";
     render();
   });
   document.querySelector<HTMLFormElement>("#osl-mail-compose-form")?.addEventListener("submit", (event) => {
