@@ -31,6 +31,7 @@ use crate::service_host::ActiveServiceHost;
 use serde::Deserialize;
 #[cfg(feature = "discord-qa-shell")]
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::sync::Mutex;
 
 pub fn build_review_ui_identity_binding_verifier(
@@ -296,6 +297,102 @@ where
     let product_send_authority =
         require_native_discord_product_send_authority(composer, scope_binding, layout)?;
     place(product_send_authority)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhotoPostImageInput {
+    pub image_id: String,
+    pub png_bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageCopyForCommand {
+    pub image_copy_id: String,
+    pub png_bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageCopyCommandResult {
+    pub image_copy_ids: Vec<String>,
+    pub image_copies: Vec<ImageCopyForCommand>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageHiddenProviderPostResult {
+    pub image_copy_ids: Vec<String>,
+    pub provider_post_count: usize,
+}
+
+/// Prepare image-hidden copies, require their quality read-back, and hand only
+/// those copies to the provider boundary. The source bytes are consumed by the
+/// preparation step and are never exposed to `provider_post`.
+pub fn direct_photo_post_after_image_quality_check<CheckQuality, ProviderPost>(
+    images: Vec<PhotoPostImageInput>,
+    pointer: [u8; stego::IMAGE_HIDDEN_POINTER_BYTES],
+    check_mark: [u8; stego::IMAGE_HIDDEN_CHECK_MARK_BYTES],
+    check_quality: CheckQuality,
+    provider_post: ProviderPost,
+) -> Result<ImageHiddenProviderPostResult, String>
+where
+    CheckQuality: FnOnce(&ImageCopyCommandResult) -> Result<(), String>,
+    ProviderPost: FnOnce(&ImageCopyCommandResult) -> Result<usize, String>,
+{
+    let copies = image_hidden_photo_command_copies("direct-post", images, pointer, check_mark)?;
+    check_quality(&copies)?;
+    let provider_post_count = provider_post(&copies)?;
+    Ok(ImageHiddenProviderPostResult {
+        image_copy_ids: copies.image_copy_ids,
+        provider_post_count,
+    })
+}
+
+fn image_hidden_photo_command_copies(
+    command: &'static str,
+    images: Vec<PhotoPostImageInput>,
+    pointer: [u8; stego::IMAGE_HIDDEN_POINTER_BYTES],
+    check_mark: [u8; stego::IMAGE_HIDDEN_CHECK_MARK_BYTES],
+) -> Result<ImageCopyCommandResult, String> {
+    let image_copies = images
+        .into_iter()
+        .map(|image| {
+            let png_bytes =
+                stego::encode_png_hidden_pointer_bytes(&image.png_bytes, pointer, check_mark)
+                    .map_err(|error| format!("OSL image hiding failed: {error}"))?;
+            let image_copy_id = image_copy_id(command, &image.image_id, &png_bytes);
+            Ok(ImageCopyForCommand {
+                image_copy_id,
+                png_bytes,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let image_copy_ids = image_copies
+        .iter()
+        .map(|copy| copy.image_copy_id.clone())
+        .collect();
+    Ok(ImageCopyCommandResult {
+        image_copy_ids,
+        image_copies,
+    })
+}
+
+fn image_copy_id(command: &str, image_id: &str, png_bytes: &[u8]) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"OSL image-copy command v1");
+    digest.update(command.as_bytes());
+    digest.update([0]);
+    digest.update(image_id.as_bytes());
+    digest.update([0]);
+    digest.update(png_bytes);
+    let digest = digest.finalize();
+    format!("image-copy-{}", hex_prefix(&digest, 12))
+}
+
+fn hex_prefix(bytes: &[u8], count: usize) -> String {
+    let mut out = String::with_capacity(count * 2);
+    for byte in bytes.iter().take(count) {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
 }
 
 #[cfg(any(test, feature = "discord-qa-shell"))]
