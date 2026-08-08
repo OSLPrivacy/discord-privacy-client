@@ -34,6 +34,7 @@ import { chooseCoverInsertion, initialCoverInsertionChoice, onboardingCoverMarku
 import { chooseSilentVisibleMode, onboardingSilentVisibleMarkup, type SilentVisibleMode } from "./onboarding-silent-visible";
 import { onboardingCaptureVisibilityMarkup } from "./onboarding-capture-visibility";
 import { continueButton } from "./onboarding-controls";
+import { identityChoiceMarkup, privateContactLinkMarkup, type IdentityDiscoveryChoice } from "./onboarding-identity";
 import { CLEAN_FILES_CHOICES, initialBeforeSendChecks, onboardingBeforeSendMarkup, type BeforeSendChecks, type CleanFilesChoice } from "./onboarding-before-send";
 import { firstTimedDeleteWarningMarkup, initialDeleteChoices, onboardingDeleteMarkup, timedDeleteContinueAllowed, type DeleteChoices } from "./onboarding-delete";
 import { onboardingSendingMarkup } from "./onboarding-sending";
@@ -153,7 +154,7 @@ import { createDiscordQaGeometryKeeper } from "./discord-qa-geometry";
 import { browserLogo, serviceLogo, providerLogo } from "./logos";
 import { activateLocalLoopbackContext, activateManualPeerContext, activateNativeManualPeerContext, activateOslChatContext, addOslChatReaction, addOslFriend, addOslFriendByUsername, answerHubChatApprovalSuggestion, burnActiveHubContext, burnHubServiceAccount, captureProtectionEnforced, closeOslChatContext, copyHubFriendInvite, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubRevocationStatus, getHubServiceBurnReadiness, getOslUsernameStatus, isHubPlaintext, isNormalizedOslUsername, listHubIdentities, listHubPeople, listOslChatHistory, loadActiveContextSecurity, loadAppNotifications, loadBuildIntegrityStatus, loadFriendProfile, loadInstalledBuildChatWarningStatus, openOslChatText, openPeerProseText, peerIsVerified, prepareLocalProtectedText, prepareOslChatText, preparePeerProseText, recoverHubIdentitySlot, removeOslChatReaction, saveActiveContextSecurity, revokeActiveHubFriendScope, setActiveHubFriendPermission, setActiveHubFriendReach, setHubChatApprovalSuggestionChoice, setHubFriendNickname, setLocalProtectedSheetOpen, setNativeDiscordProtectedOverlayOpen, setNativeDiscordProtectedOverlayOpenForQa, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, viewHubRecoveryPhrase, type AppNotification, type BuildIntegrityStatus, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type InstalledBuildChatWarning, type LocalPrivacyScanResult, type ManualPeerContext, type PersistedLocalPrivacyScanResult } from "./adapters";
 import { blankLocalProtectedModel, isLocalTtlSeconds, loadOrCreateLocalConversationId, localProtectedSheetMarkup, validLocalChatLabel, type LocalProtectedPane, type LocalProtectedSheetModel } from "./local-protected-sheet";
-import { createOslFriendRequestByOslName } from "./adapters";
+import { claimOslUsername, createHubPrivateContactLink, createOslFriendRequestByOslName, type HubPrivateContactLink } from "./adapters";
 import { blankPeerProtectedModel, boundedPeerProtectedDraft, peerProtectedDraftByteFeedback, peerProtectedSheetMarkup, type PeerProtectedPane, type PeerProtectedSheetModel } from "./peer-protected-sheet";
 import { peerIntegrityMarkup } from "./peer-integrity";
 import oslLogoUrl from "../../osl-hub/icons/icon-cyan.png";
@@ -344,7 +345,7 @@ const NATIVE_DISCORD_COMPOSER_UNREACHABLE_EVENT = "osl://native-discord-composer
 // warning.
 const NATIVE_DISCORD_COMPOSER_UNREACHABLE_REASONS = ["zorder-band", "keyboard-focus", "session-ended"] as const;
 type NativeDiscordComposerUnreachableReason = (typeof NATIVE_DISCORD_COMPOSER_UNREACHABLE_REASONS)[number];
-const onboardingRouteValues = ["pro", "welcome", "create", "import", "unlock", "keylost", "account-recovery", "recovery", "mullvad", "sending", "defaults", "tor", "forward-secrecy", "cover", "silent-visible", "visibility", "passwords", "burnpass", "privacy", "tutorial", "detected", "install", "apps", "browser", "decoy"] as const;
+const onboardingRouteValues = ["pro", "welcome", "create", "import", "unlock", "keylost", "account-recovery", "recovery", "identity-choice", "private-link", "mullvad", "sending", "defaults", "tor", "forward-secrecy", "cover", "silent-visible", "visibility", "passwords", "burnpass", "privacy", "tutorial", "detected", "install", "apps", "browser", "decoy"] as const;
 type OnboardingRoute = typeof onboardingRouteValues[number];
 // Derived, never re-declared: the Settings sections ARE the Settings home
 // choices. A hand-copied union here once drifted from settings-home.ts (it
@@ -879,6 +880,7 @@ const completedBrowserImportsStorageKey = "osl-browser-import-sources-v1";
 const browserImportPendingStorageKey = "osl-browser-import-pending-v1";
 const mullvadSetupRouteStorageKey = "osl-mullvad-setup-route-v1";
 const onboardingResumeStorageKey = "osl-onboarding-resume-v1";
+const identityDiscoveryChoiceStorageKey = "osl-identity-discovery-choice-v1";
 const onboardingBranchStorageKey = "osl-onboarding-branch-v1";
 const experimentalSendConsentStorageKey = "osl-experimental-send-consent-v1";
 const rnWirePolicyStorageKey = "osl-rn-wire-policy-requested-v1";
@@ -887,6 +889,15 @@ const oslChatPreviewStorageKey = "osl-chat-previews-visible-v1";
 const oslChatMutedStorageKey = "osl-chat-muted-people-v1";
 const oslChatUnreadStorageKey = "osl-chat-unread-v1";
 const oslChatNotificationStorageKey = "osl-chat-notifications-v1";
+function storedIdentityDiscoveryChoice(): IdentityDiscoveryChoice | null {
+  const stored = localStorage.getItem(identityDiscoveryChoiceStorageKey);
+  return stored === "public-name" || stored === "private-link" ? stored : null;
+}
+let identityDiscoveryChoice: IdentityDiscoveryChoice | null = storedIdentityDiscoveryChoice();
+let privateContactLink: HubPrivateContactLink | null = null;
+let privateContactLinkBusy = false;
+let privateContactLinkError = "";
+let identityChoiceError = "";
 type OslChatSecureStore = Pick<SecureLocalStore, "getItem" | "setItem">;
 type BrowserImportStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 type MullvadSetupRoute = "found-session" | "no-mullvad";
@@ -1406,7 +1417,9 @@ export function desktopCtaHandoffRoute(surface: DesktopCtaSurface): DesktopCtaRo
 function pendingOnboardingRoute(): OnboardingRoute | null {
   const resumed = recoveryKitUnsavedFlag.unsaved()
     ? "recovery"
-    : resumeOnboardingRoute(localStorage, onboardingResumeStorageKey);
+    : identityDiscoveryChoice === null
+      ? "identity-choice"
+      : resumeOnboardingRoute(localStorage, onboardingResumeStorageKey);
   return resumed === null ? null : onboardingRouteForBuild(resumed);
 }
 
@@ -1422,7 +1435,9 @@ async function persistRecoveryKitUnsaved(unsaved: boolean): Promise<boolean> {
 }
 
 function persistCurrentOnboardingRoute(): void {
-  if (onboardingRoute === "pro"
+  if (onboardingRoute === "identity-choice"
+    || onboardingRoute === "private-link"
+    || onboardingRoute === "pro"
     || onboardingRoute === "privacy"
     || onboardingRoute === "defaults"
     || onboardingRoute === "tor"
@@ -2070,7 +2085,7 @@ function dockOnboardingBackControl(): void {
 }
 
 function onboardingSetupNavigationMarkup(): string {
-  return ["pro", "forward-secrecy", "privacy", "defaults", "tor", "sending", "cover", "silent-visible", "visibility", "passwords", "burnpass", "browser", "detected", "install", "apps", "mullvad"].includes(onboardingRoute)
+  return ["identity-choice", "private-link", "pro", "forward-secrecy", "privacy", "defaults", "tor", "sending", "cover", "silent-visible", "visibility", "passwords", "burnpass", "browser", "detected", "install", "apps", "mullvad"].includes(onboardingRoute)
     ? `<div class="setup-footer onboarding-actions onboarding-nav"><button class="button ghost onboarding-back" id="onboarding-back" type="button">Back</button></div>`
     : "";
 }
@@ -2124,6 +2139,12 @@ function onboardingContent(): string {
   }
   if (onboardingRoute === "import") return importIdentityForm();
   if (onboardingRoute === "recovery") return recoveryContent();
+  if (onboardingRoute === "identity-choice") return identityChoiceMarkup(identityChoiceError);
+  if (onboardingRoute === "private-link") return privateContactLinkMarkup({
+    busy: privateContactLinkBusy,
+    linkValue: privateContactLink?.linkValue ?? null,
+    error: privateContactLinkError,
+  });
   if (onboardingRoute === "tutorial") return tutorialContent();
   if (onboardingRoute === "detected") return detectedAppsContent();
   if (onboardingRoute === "install") return installMissingAppsContent();
@@ -3343,6 +3364,7 @@ function scrubCategoryChooserMarkup(compact = false): string {
 }
 
 function previousSetupRoute(current: OnboardingRoute): OnboardingRoute {
+  if (current === "private-link") return "identity-choice";
   return onboardingRouteForBuild(previousOnboardingRoute(current, onboardingBranch) ?? "welcome");
 }
 
@@ -3440,6 +3462,64 @@ function chooseAppsFromQuickTour(): QuickTourControlResult {
   return quickTourControlResult("Choose apps", true);
 }
 
+function rememberIdentityDiscoveryChoice(choice: IdentityDiscoveryChoice): void {
+  identityDiscoveryChoice = choice;
+  localStorage.setItem(identityDiscoveryChoiceStorageKey, choice);
+}
+
+function identityChoiceOrProRoute(): OnboardingRoute {
+  return onboardingRouteForBuild(identityDiscoveryChoice === null ? "identity-choice" : "pro");
+}
+
+async function chooseNoPublicName(): Promise<void> {
+  if (privateContactLinkBusy) return;
+  onboardingRoute = "private-link";
+  privateContactLink = null;
+  privateContactLinkError = "";
+  privateContactLinkBusy = true;
+  render();
+  const created = await createHubPrivateContactLink();
+  privateContactLinkBusy = false;
+  if (!created) {
+    privateContactLinkError = "OSL could not create a private link. Nothing was published.";
+    render();
+    return;
+  }
+  privateContactLink = created;
+  rememberIdentityDiscoveryChoice("private-link");
+  render();
+}
+
+async function submitPublicName(form: HTMLFormElement): Promise<void> {
+  const input = form.querySelector<HTMLInputElement>("#public-name-input");
+  const username = input?.value.trim() ?? "";
+  if (!isNormalizedOslUsername(username)) {
+    identityChoiceError = "Use 3–30 lowercase letters, numbers, or underscores.";
+    render();
+    return;
+  }
+  form.setAttribute("aria-busy", "true");
+  if (input) input.disabled = true;
+  const claimed = await claimOslUsername(username);
+  if (!claimed) {
+    identityChoiceError = "That public name could not be claimed. Try another, or continue with no public name.";
+    render();
+    return;
+  }
+  claimedOslUsername = claimed.username;
+  identityChoiceError = "";
+  rememberIdentityDiscoveryChoice("public-name");
+  onboardingRoute = onboardingRouteForBuild("pro");
+  render();
+}
+
+function continueFromPrivateContactLink(): boolean {
+  if (!privateContactLink || identityDiscoveryChoice !== "private-link") return false;
+  onboardingRoute = onboardingRouteForBuild("pro");
+  render();
+  return true;
+}
+
 function bindOnboarding(): void {
   document.querySelectorAll<HTMLButtonElement>("[data-onboarding]").forEach((button) => button.addEventListener("click", () => {
     handleOnboardingRouteAction(button.dataset.onboarding);
@@ -3462,6 +3542,24 @@ function bindOnboarding(): void {
   bindPasswordVisibility();
   bindPasswordForm();
   bindImportForm();
+  document.querySelector<HTMLFormElement>("#public-name-form")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void submitPublicName(event.currentTarget as HTMLFormElement);
+  });
+  document.querySelector<HTMLButtonElement>("#choose-no-public-name")?.addEventListener("click", () => void chooseNoPublicName());
+  document.querySelector<HTMLButtonElement>("#retry-private-contact-link")?.addEventListener("click", () => void chooseNoPublicName());
+  document.querySelector<HTMLButtonElement>("#copy-private-contact-link")?.addEventListener("click", async () => {
+    if (!privateContactLink) return;
+    try {
+      await navigator.clipboard.writeText(privateContactLink.linkValue);
+      showToast("Private link copied");
+    } catch {
+      showToast("Couldn’t copy the private link. Select it instead.");
+    }
+  });
+  document.querySelector<HTMLButtonElement>("#continue-private-contact-link")?.addEventListener("click", () => {
+    continueFromPrivateContactLink();
+  });
   document.querySelector<HTMLButtonElement>("#retry-recovery-protection")?.addEventListener("click", async () => {
     await proveRecoveryCaptureProtection();
     render();
@@ -3503,7 +3601,7 @@ function bindOnboarding(): void {
     if (applyRecoveryKitAction({ kind: "continue" }) !== "leave-recovery") return;
     resetOnboardingBranch();
     resetOnboardingConnections();
-    onboardingRoute = onboardingRouteForBuild("passwords");
+    onboardingRoute = identityChoiceOrProRoute();
     render();
   });
   // T15-A7: the two exits that make the refusal escapable.
@@ -3520,7 +3618,7 @@ function bindOnboarding(): void {
     showToast("OSL will ask again every time it opens until you save your recovery kit");
     resetOnboardingBranch();
     resetOnboardingConnections();
-    onboardingRoute = onboardingRouteForBuild("passwords");
+    onboardingRoute = identityChoiceOrProRoute();
     render();
   });
   const recoveryRevealForm = document.querySelector<HTMLFormElement>("#recovery-reveal-form");
@@ -4003,6 +4101,7 @@ function balancedFirstRunSetup(state: SetupState): SetupState {
 async function completeSixStepOnboarding(): Promise<void> {
   const completedSetup = balancedFirstRunSetup(setup);
   if (!canCompleteSetup(completedSetup)) throw new Error("setup missing required sending consent");
+  if (identityDiscoveryChoice === null) throw new Error("setup missing identity discovery choice");
   setup = completedSetup;
   const saved = await saveOnboardingPreferences({ onboardingComplete: true, setup, coverInsertion, showPlaintextPreview: true, windowCaptureEnabled, rnWirePolicyRequested, forwardSecrecyMode });
   setup = saved.setup;
@@ -4340,7 +4439,7 @@ function bindPasswordForm(): void {
           core = await loadCoreIntegration();
           services = await loadLinkedServices().catch(() => services);
           passwordRoleStatus = await loadHubPasswordRoleStatus().catch(() => null);
-          onboardingRoute = onboardingRouteForBuild("passwords");
+          onboardingRoute = identityChoiceOrProRoute();
           showToast("Account created. Continue setup.");
           render();
           return;
@@ -4469,7 +4568,7 @@ function bindImportForm(): void {
       core = refreshedCore;
       if (core.readiness.bootstrapStatus === "ready" && core.readiness.unlocked) {
         resetOnboardingBranch();
-        onboardingRoute = onboardingRouteForBuild("passwords");
+        onboardingRoute = identityChoiceOrProRoute();
         showToast("Account recovered. Continue setup.");
         render();
         return;
@@ -11482,6 +11581,7 @@ type OslHubUiTestStatePatch = {
   hubIdentities?: HubIdentitySlot[];
   hubIdentitiesLoad?: IdentityListLoad;
   bootstrapStatus?: BootstrapStatus;
+  identityDiscoveryChoice?: IdentityDiscoveryChoice | null;
   enclaveAudienceRecords?: unknown[];
   buildIntegrityStatus?: BuildIntegrityStatus | null;
   activeOslChatPersonId?: string | null;
@@ -11566,6 +11666,13 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   onboardingComplete = patch.onboardingComplete ?? false;
   onboardingTourStep = patch.onboardingTourStep ?? 0;
   replayingOnboardingTour = false;
+  identityDiscoveryChoice = patch.identityDiscoveryChoice === undefined
+    ? storedIdentityDiscoveryChoice()
+    : patch.identityDiscoveryChoice;
+  privateContactLink = null;
+  privateContactLinkBusy = false;
+  privateContactLinkError = "";
+  identityChoiceError = "";
   setup = { ...defaultSetup, ...patch.setup };
   silentVisibleMode = patch.silentVisibleMode ?? null;
   coverInsertion = patch.coverInsertion ?? initialCoverInsertionChoice();
@@ -12340,6 +12447,27 @@ export const __oslHubUiTest = {
     onboardingRoute = onboardingRouteForBuild(destination);
     const setupNavigation = isSetupOnboardingRoute(onboardingRoute) ? setupOnboardingNavigationMarkup() : "";
     return onboardingShellMarkup(setupNavigation);
+  },
+  /** Drive TASK 0311 through the same handlers the two setup buttons use. */
+  chooseNoPublicName(): Promise<void> {
+    return chooseNoPublicName();
+  },
+  continueFromPrivateContactLink(): boolean {
+    return continueFromPrivateContactLink();
+  },
+  finishOnboarding(): Promise<void> {
+    return completeSixStepOnboarding();
+  },
+  identityDiscoverySnapshot(): {
+    choice: IdentityDiscoveryChoice | null;
+    linkCreated: boolean;
+    route: OnboardingRoute;
+  } {
+    return {
+      choice: identityDiscoveryChoice,
+      linkCreated: privateContactLink !== null,
+      route: onboardingRoute,
+    };
   },
   /**
    * Supply the account-recovery back end. The shipping build has none (no Tauri

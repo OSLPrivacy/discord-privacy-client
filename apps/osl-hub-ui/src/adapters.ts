@@ -164,6 +164,12 @@ export function peerIsVerified(person: Pick<HubPerson, "safetyNumberVerified" | 
 }
 export interface HubUsernameClaim { username: string; oslUserId: string; }
 export interface HubUsernameStatus { username: string; ownedByActiveIdentity: boolean; }
+export interface HubPrivateContactLink {
+  personId: string;
+  linkValue: string;
+  usesAllowed: 1;
+  usesRecorded: 0;
+}
 export interface HubAddFriendResult {
   disposition: "added" | "already_present" | "key_change_requires_verification";
   personId: string;
@@ -1236,6 +1242,31 @@ export function parseHubUsernameClaim(raw: unknown): HubUsernameClaim | null {
   if (!isRecord(raw) || !exact(raw, ["username", "oslUserId"])) return null;
   if (!isNormalizedOslUsername(raw.username) || !safePlaintext(raw.oslUserId, 180)) return null;
   return raw as unknown as HubUsernameClaim;
+}
+
+export function parseHubPrivateContactLink(raw: unknown): HubPrivateContactLink | null {
+  if (!isRecord(raw) || !exact(raw, ["personId", "linkValue", "usesAllowed", "usesRecorded"])) return null;
+  if (!safePlaintext(raw.personId, 180)
+    || typeof raw.linkValue !== "string"
+    || !/^OSLCL1\.[A-Za-z0-9_-]{43}$/u.test(raw.linkValue)
+    || raw.usesAllowed !== 1
+    || raw.usesRecorded !== 0) return null;
+  return raw as unknown as HubPrivateContactLink;
+}
+
+/** Create one opaque, one-use capability for the currently unlocked identity. */
+export async function createHubPrivateContactLink(): Promise<HubPrivateContactLink | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    return checkedBackendResponse(
+      "create_hub_private_contact_link",
+      parseHubPrivateContactLink(await invoke<unknown>("create_hub_private_contact_link")),
+      "the private contact link did not match the expected one-use shape",
+    );
+  } catch (error) {
+    recordBackendFailure("create_hub_private_contact_link", error);
+    return null;
+  }
 }
 
 export function parseHubAddFriendResult(raw: unknown): HubAddFriendResult | null {

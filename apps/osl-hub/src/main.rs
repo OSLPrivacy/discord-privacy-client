@@ -6100,6 +6100,25 @@ async fn copy_hub_friend_invite(
     }
 }
 
+/// Create one opaque contact capability for the unlocked identity. The owner
+/// binding stays in encrypted local state; the setup page receives the opaque
+/// link but deliberately does not render the stable person ID in this DTO.
+#[tauri::command]
+async fn create_hub_private_contact_link(
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<ipc::private_contact_link::PrivateContactLinkDto, String> {
+    let _session = session.transition.lock().await;
+    let person_id = active_unlocked_osl_user_id(&core)?;
+    let directory = keystore::osl_base_dir()
+        .map_err(|_| "OSL private contact link storage is unavailable".to_owned())?;
+    ipc::private_contact_link::create_private_contact_link(
+        &directory,
+        &person_id,
+        browser_consent_now_unix_ms(),
+    )
+}
+
 #[cfg(windows)]
 fn write_windows_clipboard_text(value: &str) -> Result<(), String> {
     use std::{ptr, thread, time::Duration};

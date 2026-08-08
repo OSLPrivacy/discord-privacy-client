@@ -728,6 +728,7 @@ macro_rules! hub_tauri_commands {
             export_hub_friend_code,
             copy_hub_friend_invite,
             add_hub_friend,
+            create_hub_private_contact_link,
             claim_hub_username,
             get_hub_username_status,
             add_hub_friend_by_username,
@@ -1842,6 +1843,26 @@ mod tauri_registration_surface_tests {
             &permissions,
             &capability,
             &["view_hub_recovery_phrase"],
+        );
+    }
+
+    /// TASK 0311 — choosing no public name must reach the one-use private-link
+    /// primitive through the shipping webview. Handler registration alone is
+    /// insufficient: Tauri rejects the call unless both ACL surfaces agree.
+    #[test]
+    fn create_hub_private_contact_link_is_registered_and_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_registered_and_granted(
+            &handlers,
+            &permissions,
+            &capability,
+            "create_hub_private_contact_link",
+        );
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &["create_hub_private_contact_link"],
         );
     }
 
