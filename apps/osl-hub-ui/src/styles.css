@@ -12027,6 +12027,7 @@ code {
 
 
 .tile-edit-controls .tile-remove { width: 26px; height: 26px; border: 0; background: var(--danger); color: white; font-size: 18px; line-height: 1; }
+.tile-edit-controls .tile-restore { background: #16803a; }
 
 
 

@@ -659,4 +659,48 @@ describe("home interaction regressions", () => {
     expect(source).toContain("serviceAccountPickerOpen = true");
     expect(source).toContain("data-service-account");
   });
+
+  it("TASK5009 tune edit mode hides, restores, and reloads the Home layout", () => {
+    const { __oslHubUiTest } = ui;
+    __oslHubUiTest.reset({ route: "home", coreReady: true, storageMethod: "tpm-pcp" });
+    const ids = __oslHubUiTest.homeTileIdsForTest();
+    expect(ids.length).toBeGreaterThan(2);
+
+    __oslHubUiTest.setHomeEditModeForTest(true);
+    const editBefore = __oslHubUiTest.renderWorkspaceContent("home");
+    const redMinuses = [...editBefore.matchAll(/class="tile-remove "[^>]*data-tile-visibility="shown"[^>]*>−<\/button>/gu)].length;
+    console.info(`TASK5009 edit_shown=${renderedTileIds(editBefore).length} red_minuses=${redMinuses}`);
+    expect(redMinuses).toBe(ids.length);
+
+    __oslHubUiTest.toggleHomeTileForTest(ids[0]!);
+    __oslHubUiTest.toggleHomeTileForTest(ids[1]!);
+    __oslHubUiTest.setHomeEditModeForTest(false);
+    const afterHide = __oslHubUiTest.renderWorkspaceContent("home");
+    console.info(`TASK5009 after_hide_shown=${renderedTileIds(afterHide).length} hidden=${ids.slice(0, 2).join(",")}`);
+    expect(renderedTileIds(afterHide)).toHaveLength(ids.length - 2);
+
+    __oslHubUiTest.setHomeEditModeForTest(true);
+    const editHidden = __oslHubUiTest.renderWorkspaceContent("home");
+    const greenPluses = [...editHidden.matchAll(/class="tile-remove tile-restore"[^>]*data-tile-visibility="hidden"[^>]*>\+<\/button>/gu)].length;
+    console.info(`TASK5009 hidden_green_pluses=${greenPluses}`);
+    expect(greenPluses).toBe(2);
+
+    __oslHubUiTest.toggleHomeTileForTest(ids[0]!);
+    __oslHubUiTest.setHomeEditModeForTest(false);
+    __oslHubUiTest.reloadHomeTilesForTest();
+    const afterRestart = __oslHubUiTest.renderWorkspaceContent("home");
+    const hiddenAfterRestart = ids.filter((id) => !renderedTileIds(afterRestart).includes(id));
+    console.info(`TASK5009 restart_shown=${renderedTileIds(afterRestart).length} restart_hidden=${hiddenAfterRestart.join(",")}`);
+    expect(hiddenAfterRestart).toEqual([ids[1]!]);
+
+    __oslHubUiTest.reset({ route: "home", coreReady: true, storageMethod: "tpm-pcp", activeOslUserId: "second-profile" });
+    const secondProfileShown = renderedTileIds(__oslHubUiTest.renderWorkspaceContent("home")).length;
+    __oslHubUiTest.reset({ route: "home", coreReady: true, storageMethod: "tpm-pcp" });
+    const firstProfileShown = renderedTileIds(__oslHubUiTest.renderWorkspaceContent("home")).length;
+    console.info(`TASK5009 profile_first_shown=${firstProfileShown} profile_second_shown=${secondProfileShown}`);
+    expect(firstProfileShown).toBe(ids.length - 1);
+    expect(secondProfileShown).toBe(ids.length);
+    expect(source).toContain("socialTiles");
+    expect(source).toContain("emailTiles");
+  });
 });

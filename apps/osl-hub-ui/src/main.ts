@@ -721,6 +721,7 @@ let hiddenServices = new Set<string>();
 let homeEditMode = false;
 let homeTileOrder: string[] = [];
 let hiddenHomeTiles = new Set<string>();
+let homeTilePreferenceOwner: string | null = null;
 let draggingHomeTileId: string | null = null;
 let homeTileArrangementNotice = "";
 let friendCode: string | null = null;
@@ -1585,10 +1586,7 @@ export async function loadUiPreferences(): Promise<void> {
     if (Array.isArray(order)) sidebarOrder = order.filter((id): id is string => typeof id === "string").slice(0, 20);
     const hidden = JSON.parse(localStorage.getItem(hiddenStorageKey) ?? "[]") as unknown;
     if (Array.isArray(hidden)) hiddenServices = new Set(hidden.filter((id): id is string => typeof id === "string").slice(0, 20));
-    const tileOrder = JSON.parse(localStorage.getItem(homeTileOrderStorageKey) ?? "[]") as unknown;
-    if (Array.isArray(tileOrder)) homeTileOrder = tileOrder.filter((id): id is string => typeof id === "string").slice(0, 32);
-    const hiddenTiles = JSON.parse(localStorage.getItem(hiddenHomeTilesStorageKey) ?? "[]") as unknown;
-    if (Array.isArray(hiddenTiles)) hiddenHomeTiles = new Set(hiddenTiles.filter((id): id is string => typeof id === "string").slice(0, 32));
+    loadHomeTilePreferences();
     const notificationApps = JSON.parse(localStorage.getItem(notificationAppsStorageKey) ?? "{}") as unknown;
     if (typeof notificationApps === "object" && notificationApps !== null && !Array.isArray(notificationApps)) {
       notificationAppPreferences = Object.fromEntries(Object.entries(notificationApps).filter(([, enabled]) => typeof enabled === "boolean").slice(0, 20)) as Partial<Record<ServiceId, boolean>>;
@@ -1765,8 +1763,36 @@ function applyNativeBrowserFootprint(hydration: BrowserFootprintHydration): void
 }
 
 function saveHomeTilePreferences(): void {
-  localStorage.setItem(homeTileOrderStorageKey, JSON.stringify(homeTileOrder));
-  localStorage.setItem(hiddenHomeTilesStorageKey, JSON.stringify([...hiddenHomeTiles]));
+  const { orderKey, hiddenKey } = homeTilePreferenceStorageKeys();
+  localStorage.setItem(orderKey, JSON.stringify(homeTileOrder));
+  localStorage.setItem(hiddenKey, JSON.stringify([...hiddenHomeTiles]));
+}
+
+function homeTilePreferenceStorageKeys(owner = core.readiness.activeOslUserId): { orderKey: string; hiddenKey: string } {
+  if (!owner) return { orderKey: homeTileOrderStorageKey, hiddenKey: hiddenHomeTilesStorageKey };
+  const suffix = `:${encodeURIComponent(owner)}`;
+  return { orderKey: `${homeTileOrderStorageKey}${suffix}`, hiddenKey: `${hiddenHomeTilesStorageKey}${suffix}` };
+}
+
+function loadHomeTilePreferences(): void {
+  const owner = core.readiness.activeOslUserId;
+  const { orderKey, hiddenKey } = homeTilePreferenceStorageKeys(owner);
+  const tileOrder = JSON.parse(localStorage.getItem(orderKey) ?? "[]") as unknown;
+  const hiddenTiles = JSON.parse(localStorage.getItem(hiddenKey) ?? "[]") as unknown;
+  homeTileOrder = Array.isArray(tileOrder) ? tileOrder.filter((id): id is string => typeof id === "string").slice(0, 32) : [];
+  hiddenHomeTiles = new Set(Array.isArray(hiddenTiles) ? hiddenTiles.filter((id): id is string => typeof id === "string").slice(0, 32) : []);
+  homeTilePreferenceOwner = owner;
+}
+
+function syncHomeTilePreferencesForActiveProfile(): void {
+  if (homeTilePreferenceOwner === core.readiness.activeOslUserId) return;
+  try {
+    loadHomeTilePreferences();
+  } catch {
+    homeTileOrder = [];
+    hiddenHomeTiles.clear();
+    homeTilePreferenceOwner = core.readiness.activeOslUserId;
+  }
 }
 
 function compactFriendId(value: string): string {
@@ -5548,6 +5574,7 @@ function arrangeTilesContent(): string {
 }
 
 function workspaceContent(): string {
+  syncHomeTilePreferencesForActiveProfile();
   if (route === "mullvad") return `<main class="content-viewport host-viewport native-host-open" id="route-heading" tabindex="-1" aria-label="Your existing Mullvad window is open inside OSL"><span class="sr-only">Mullvad remains a separate foreign application. OSL does not read its account or VPN state.</span></main>`;
   if (route === "inbox") return inboxDestinationContent();
   if (route === "people") return peopleDestinationContent();
@@ -12166,6 +12193,7 @@ type OslHubUiTestStatePatch = {
   silentVisibleMode?: SilentVisibleMode | null;
   coverInsertion?: CoverInsertionChoice | null;
   coreReady?: boolean;
+  activeOslUserId?: string | null;
   storageMethod?: string | null;
   services?: LinkedService[];
   servicesChecked?: boolean;
@@ -12253,7 +12281,7 @@ function browserAccountFinderSnapshotForTest(): {
   };
 }
 
-function applyTestCoreState(ready: boolean, storageMethod: string | null, bootstrapStatus?: BootstrapStatus): void {
+function applyTestCoreState(ready: boolean, storageMethod: string | null, bootstrapStatus?: BootstrapStatus, activeOslUserId?: string | null): void {
   core = structuredClone(unavailableCoreIntegration);
   core.readiness = {
     ...core.readiness,
@@ -12264,7 +12292,7 @@ function applyTestCoreState(ready: boolean, storageMethod: string | null, bootst
     bootstrapAttempted: ready,
     passwordGateRequired: !ready,
     unlocked: ready,
-    activeOslUserId: ready ? "test-osl-user" : null,
+    activeOslUserId: ready ? activeOslUserId ?? "test-osl-user" : null,
     bootstrapStatus: bootstrapStatus ?? (ready ? "ready" : "notAttempted"),
     storageMethod,
   };
@@ -12385,7 +12413,10 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   mullvadSetupRoute = parseMullvadSetupRoute(localStorage.getItem(mullvadSetupRouteStorageKey));
   mullvadSetupNotice = "";
   mullvadBusy = false;
-  applyTestCoreState(patch.coreReady ?? false, patch.storageMethod ?? null, patch.bootstrapStatus);
+  applyTestCoreState(patch.coreReady ?? false, patch.storageMethod ?? null, patch.bootstrapStatus, patch.activeOslUserId);
+  homeEditMode = false;
+  homeTilePreferenceOwner = null;
+  syncHomeTilePreferencesForActiveProfile();
 }
 
 export type BusyButtonAuditRow = {
@@ -12846,6 +12877,16 @@ export const __oslHubUiTest = {
   },
   homeTileIdsForTest(): string[] {
     return currentHomeTileIds();
+  },
+  setHomeEditModeForTest(enabled: boolean): void {
+    homeEditMode = enabled;
+  },
+  toggleHomeTileForTest(id: string): void {
+    toggleHomeTile(id);
+  },
+  reloadHomeTilesForTest(): void {
+    homeTilePreferenceOwner = null;
+    syncHomeTilePreferencesForActiveProfile();
   },
   /** The route a Home launcher tile actually opens, so a test can pin it. */
   openHomeModuleForTest(id: string): Route {
