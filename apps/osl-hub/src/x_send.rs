@@ -185,7 +185,8 @@ fn prepare_match_typing_cover(cover_text: &str) -> Result<PreparedXCover, XCover
 #[cfg(test)]
 mod tests {
     use super::{
-        prepare_x_cover, XCoverPreparationError, XSendButton, XSendChoice, XSendFields,
+        prepare_x_cover, PreparedXCover, XCoverPreparationError, XSendButton, XSendChoice,
+        XSendFields,
     };
 
     #[test]
@@ -252,5 +253,85 @@ mod tests {
         assert_eq!(prepared_count, XSendChoice::ALL.len());
         println!("TASK1108 prepared_cover_count={prepared_count} posted_count=0");
     }
-}
 
+    #[test]
+    fn task_1109_empty_text_and_missing_composer_fail_closed_for_every_choice() {
+        const MARKER: &str = "x-send-1109";
+        const COMPOSER: &str = "Post";
+
+        let good_button = XSendButton::for_selected_choice(XSendChoice::Manual.name())
+            .expect("the good fixture uses a named choice");
+        let good_cover = good_button
+            .prepare_selected_cover(XSendFields {
+                private_text: MARKER,
+                composer_name: Some(COMPOSER),
+                cover_text: MARKER,
+            })
+            .expect("good private text and a discovered composer prepare one cover");
+        let sent_covers: Vec<PreparedXCover> = vec![good_cover];
+        let sent_covers_before_refusals = sent_covers.clone();
+
+        assert_eq!(sent_covers.len(), 1);
+        assert_eq!(sent_covers[0].cover_text, MARKER);
+        println!(
+            "TASK1109 good_text={MARKER} sent_cover_count={} sent_cover={}",
+            sent_covers.len(),
+            sent_covers[0].cover_text
+        );
+
+        let mut refusal_count = 0usize;
+        for choice in XSendChoice::ALL {
+            let button = XSendButton::for_selected_choice(choice.name())
+                .expect("every rendered choice connects to the send button");
+
+            let empty_text = button
+                .prepare_selected_cover(XSendFields {
+                    private_text: "",
+                    composer_name: Some(COMPOSER),
+                    cover_text: MARKER,
+                })
+                .expect_err("empty private text must not prepare a cover");
+            assert_eq!(
+                empty_text,
+                XCoverPreparationError::RefusedSendFieldValue("empty-text")
+            );
+            assert!(empty_text.to_string().contains("empty-text"));
+            refusal_count += 1;
+            println!(
+                "TASK1109 choice={} changed_send_field_value=empty-text refused_by_name=empty-text sent_cover_count={}",
+                choice.name(),
+                sent_covers.len()
+            );
+
+            let missing_composer = button
+                .prepare_selected_cover(XSendFields {
+                    private_text: MARKER,
+                    composer_name: None,
+                    cover_text: MARKER,
+                })
+                .expect_err("a missing composer must not prepare a cover");
+            assert_eq!(
+                missing_composer,
+                XCoverPreparationError::RefusedSendFieldValue("missing-composer")
+            );
+            assert!(missing_composer.to_string().contains("missing-composer"));
+            refusal_count += 1;
+            println!(
+                "TASK1109 choice={} changed_send_field_value=missing-composer refused_by_name=missing-composer sent_cover_count={}",
+                choice.name(),
+                sent_covers.len()
+            );
+        }
+
+        assert_eq!(refusal_count, 10);
+        assert_eq!(sent_covers, sent_covers_before_refusals);
+        assert_eq!(sent_covers.len(), 1);
+        assert_eq!(sent_covers[0].cover_text, MARKER);
+        println!("TASK1109 refusal_count={refusal_count}");
+        println!(
+            "TASK1109 final_sent_cover_count={} final_sent_cover={} unchanged=true",
+            sent_covers.len(),
+            sent_covers[0].cover_text
+        );
+    }
+}
