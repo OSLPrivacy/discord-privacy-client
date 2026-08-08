@@ -22,6 +22,11 @@ export interface AiCarrierEntitlement {
  */
 export const uiProGates = [
   {
+    id: "view-once-message-creation",
+    enforcement: "native",
+    reason: "Native protected-message preparation checks the active entitlement before creating view-once content; opening remains free.",
+  },
+  {
     id: "encrypted-attachments",
     enforcement: "native",
     reason: "Native attachment transport checks the active entitlement before send or open.",
