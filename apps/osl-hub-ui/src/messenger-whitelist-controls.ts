@@ -66,6 +66,23 @@ export function messengerWhitelistControlsMarkup(
     + `</section>`;
 }
 
+/** Only an already-allowed Messenger community may render community controls. */
+export function messengerCommunityControlsVisible(place: MessengerAllowedPlace): boolean {
+  return place.app === "messenger" && place.kind === "community" && place.allowed;
+}
+
+/**
+ * Community controls are deliberately a distinct surface from DM controls.
+ * A group chat must not inherit community scope merely because it is allowed.
+ */
+export function messengerCommunityControlsMarkup(place: MessengerAllowedPlace): string {
+  if (!messengerCommunityControlsVisible(place)) return "";
+  const community = escapeHtml(place.placeName);
+  return `<section class="messenger-community-controls" data-messenger-community-controls data-messenger-place-id="${escapeHtml(place.stableId)}" aria-label="Messenger community protection">`
+    + `<label><input type="checkbox" data-messenger-community-toggle="${escapeHtml(place.stableId)}" checked/> Allow OSL in ${community}</label>`
+    + `</section>`;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
