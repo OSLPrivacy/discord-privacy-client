@@ -538,7 +538,7 @@ export function renderAccountScreen(state: AccountScreenState, lastRequest: stri
   return [
     `<section class="account-screen" aria-label="Account">`,
     `<header class="account-screen-header">`,
-    `<h2 class="account-screen-heading">${ACCOUNT_SCREEN_TITLE}</h2>`,
+    `<h1 class="account-screen-heading">${ACCOUNT_SCREEN_TITLE}</h1>`,
     `<p class="account-screen-intro">${ACCOUNT_CONTROL_IDS.length} controls. The five that stand for a secret show that it is set and nothing else, and Reset is offered only where putting the control back costs nothing.</p>`,
     `</header>`,
     `<ul class="account-controls">${controls.map(controlMarkup).join("")}</ul>`,
@@ -554,6 +554,9 @@ export function renderAccountScreen(state: AccountScreenState, lastRequest: stri
     `<p class="account-status" role="status" data-changed="${changedAccountControls(state).length}">`,
     `${escapeHtml(accountStatusLine(state))}${lastRequest ? ` ${escapeHtml(lastRequest)}` : ""}</p>`,
     `</section>`,
+    `<nav class="account-screen-links" aria-label="Account links">`,
+    `<span>Profile</span><span>Sign out</span><span>Delete account</span>`,
+    `</nav>`,
     `</section>`,
   ].join("");
 }
