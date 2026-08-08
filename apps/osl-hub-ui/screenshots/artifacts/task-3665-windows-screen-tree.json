@@ -1,0 +1,43 @@
+{
+  "schema": "osl-task-3665-windows-screen-tree-v1",
+  "machine": "oslclean1606m",
+  "invocationId": "task-3665-20260808195822",
+  "payloadSha256": "4258ea3feb6653cc194983da4183d9cf0bb94d12a4e6bf93b0d2c8f832420b49",
+  "privateWorkspaceRecordCountBeforeUnlock": 1,
+  "privateWorkspaceName": "MAPLE-STEALTH-3665",
+  "enteredStealthPassword": "stealth-3665",
+  "screenTree": [
+    {
+      "depth": 0,
+      "controlType": "ControlType.Pane",
+      "name": "Decoy workspace",
+      "automationId": "721490"
+    },
+    {
+      "depth": 0,
+      "controlType": "ControlType.Pane",
+      "name": "Workspace",
+      "automationId": "393832"
+    },
+    {
+      "depth": 0,
+      "controlType": "ControlType.Pane",
+      "name": "No recent items.",
+      "automationId": "196786"
+    },
+    {
+      "depth": 0,
+      "controlType": "ControlType.Pane",
+      "name": "Close",
+      "automationId": "262218"
+    }
+  ],
+  "windowTitles": [
+    ""
+  ],
+  "counts": {
+    "OSL": 0,
+    "privateWorkspaceName": 0,
+    "decoyWorkspace": 1
+  }
+}

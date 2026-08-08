@@ -643,6 +643,9 @@ describe("D80 unlock screen renders one credential input", () => {
       await harness.submit();
 
       expect(__oslHubUiTest.snapshot().onboardingRoute).toBe(expectedRoute);
+      if (outcome === "decoy") {
+        expect((globalThis.document as unknown as { title: string }).title).toBe("Decoy workspace");
+      }
     }
   }, 30_000);
 

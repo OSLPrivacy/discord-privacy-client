@@ -1597,6 +1597,10 @@ async fn unlock_hub_password_gate(
             let _ = app.state::<MullvadWindowHostState>().restore();
             let _ = app.state::<BrowserCompanionState>().terminate();
             app.state::<HubBrokerState>().clear()?;
+            app.get_webview_window("main")
+                .ok_or_else(|| "Decoy workspace window is unavailable".to_owned())?
+                .set_title("")
+                .map_err(|_| "Decoy workspace window could not be made private".to_owned())?;
             startup_gate::enter_stealth_landing(&app.state::<HubCoreState>());
             Ok(HubGateUnlockResult::decoy(verification))
         }

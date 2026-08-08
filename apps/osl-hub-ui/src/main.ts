@@ -41,6 +41,7 @@ import { CLEAN_FILES_CHOICES, initialBeforeSendChecks, onboardingBeforeSendMarku
 import { firstTimedDeleteWarningMarkup, initialDeleteChoices, onboardingDeleteMarkup, timedDeleteContinueAllowed, type DeleteChoices } from "./onboarding-delete";
 import { onboardingSendingMarkup } from "./onboarding-sending";
 import { continuePasswordSetup } from "./password-setup-continue";
+import { enterDecoyDocument } from "./stealth-surface";
 import { renderRecoveryStatesSettings } from "./recovery-states";
 import {
   initialCleanDeviceRestoreState,
@@ -4631,6 +4632,10 @@ function bindPasswordForm(): void {
           passwordRoleStatus = null;
           route = "onboarding";
           onboardingRoute = "decoy";
+          // The native shell title is cleared by the trusted command before it
+          // returns. Give the accessibility document one neutral name so a
+          // screen-tree dump identifies the decoy without naming the product.
+          enterDecoyDocument(document);
           await settleUnlockTransition();
           render();
           return;
