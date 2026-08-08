@@ -2590,11 +2590,49 @@ function renderAbout() {
   const vval = document.createElement("div");
   vval.className = "osl-field-value";
   const vspan = document.createElement("span");
-  vspan.textContent = "Beta 1.0";
+  vspan.textContent = "—";
   vval.appendChild(vspan);
   ver.appendChild(vlab);
   ver.appendChild(vval);
   pane.appendChild(ver);
+
+  const checkBtn = document.createElement("button");
+  checkBtn.className = "osl-row-btn osl-row-btn-remove";
+  checkBtn.style.cssText = "padding:8px 16px;margin-top:8px;";
+  checkBtn.textContent = "Check for updates";
+  pane.appendChild(checkBtn);
+
+  const status = document.createElement("p");
+  status.style.cssText = "margin:12px 0 0 0;font-size:14px;color:#dbdee1;min-height:20px;";
+  status.textContent = "";
+  pane.appendChild(status);
+
+  async function doCheck() {
+    checkBtn.disabled = true;
+    status.textContent = "Checking…";
+    const res = await oslInvoke("osl_check_for_updates", {});
+    if (!res.ok) {
+      status.textContent = "Couldn't check for updates: " + res.error;
+      checkBtn.disabled = false;
+      return;
+    }
+    const v = res.value || {};
+    if (v.current) vspan.textContent = v.current;
+    if (v.status === "up_to_date") {
+      status.textContent = "You are up to date";
+      checkBtn.disabled = false;
+    } else if (v.status === "update_available") {
+      status.textContent = "Update available: " + v.next;
+      checkBtn.disabled = false;
+    } else {
+      status.textContent = "Couldn't check for updates" + (v.message ? ": " + v.message : ".");
+      checkBtn.disabled = false;
+    }
+  }
+
+  checkBtn.addEventListener("click", (e) => { e.stopPropagation(); doCheck(); });
+
+  doCheck();
   const desc = document.createElement("p");
   desc.style.fontSize = "14px";
   desc.style.lineHeight = "1.5";

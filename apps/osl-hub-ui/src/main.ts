@@ -11988,3 +11988,56 @@ function homeScrubRunCardMarkup(run: AutoScrubRunSummary): string {
 function openAutoScrubRuns(): readonly AutoScrubRunSummary[] {
   return autoScrubFleetStatus?.runs.filter((run) => OPEN_AUTO_SCRUB_RUN_PHASES.includes(run.phase)) ?? [];
 }
+
+// One roster tick box changed: issue exactly one group-member add or remove
+// command for that row's person, then re-read the stored list so the ticks
+// shown are the rows that were actually written.
+async function applyWhitelistRosterTick(memberId: string, ticked: boolean): Promise<void> {
+  const groupId = whitelistRosterGroupId();
+  if (!groupId || discordQaHeaderBusy) {
+    showToast("Whitelist change stopped: the group is unavailable");
+    render();
+    return;
+  }
+  discordQaHeaderBusy = "whitelist";
+  render();
+  const outcome = await applyGroupMemberTick(
+    { add: addGroupMemberPermission, remove: removeGroupMemberPermission },
+    groupId,
+    memberId,
+    ticked,
+  );
+  await refreshWhitelistRosterMemberPermissions();
+  discordQaHeaderBusy = null;
+  showToast(outcome.status === "added"
+    ? "Group member allowed"
+    : outcome.status === "removed"
+      ? "Group member removed"
+      : `Whitelist change failed closed: ${outcome.reason}`);
+  render();
+}
+
+async function refreshAutoWhitelistSavedChoices(): Promise<void> {
+  try {
+    autoWhitelistSavedChoices = await loadSavedAutoWhitelistChoices((command, args) => invoke(command, args));
+  } catch {
+    autoWhitelistSavedChoices = {};
+  }
+  render();
+}
+
+async function refreshWhitelistRosterMemberPermissions(): Promise<void> {
+  const groupId = whitelistRosterGroupId();
+  whitelistRosterMemberPermissions = groupId ? await listGroupMemberPermissions(groupId) : null;
+}
+
+// The permission store's group identity for the open roster: the active
+// protected context's service and account, folded into the backend's
+// [A-Za-z0-9_-]{1,128} id charset. No context means no group, and every tick
+// is refused rather than written somewhere unnamed.
+function whitelistRosterGroupId(): string | null {
+  const context = activeVerifiedDiscordQaPeer()?.context ?? null;
+  if (!context) return null;
+  const groupId = `group-${context.serviceId}-${context.accountId}`.replace(/[^A-Za-z0-9_-]/g, "-");
+  return groupId.length <= 128 ? groupId : null;
+}

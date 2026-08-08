@@ -936,6 +936,11 @@ pub mod quiet_hours;
 pub mod quiet_hours_notices;
 pub mod proton_fake_page;
 pub mod shared_web_reader_shape;
+pub mod shared_marked_message_deleter;
+pub mod pro_marked_deletion;
+pub mod pro_marked_deletion_outcomes;
+pub mod shared_marked_deletion_record;
+pub mod osl_chat_danger_row;
 
 // The keystore/ipc crates deliberately keep the active-account dir, base-dir
 // override, and unlocked main-password key in process-wide statics (see

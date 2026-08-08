@@ -6,7 +6,6 @@
 //! those inputs encrypted and deterministically reproduce findings from disk.
 
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashSet};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use crate::attachment_scan::{
@@ -141,6 +140,10 @@ impl From<MessageOwnerCheckError> for FoundMessageRecordError {
                 Self::MissingSignedInAccountSender
             }
             MessageOwnerCheckError::InvalidSender => Self::InvalidField,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OrdinaryAttachmentSetItem {
     pub display_name: String,
@@ -921,6 +924,8 @@ fn normalized_sender(
         return Err(MessageOwnerCheckError::InvalidSender);
     }
     Ok(sender)
+}
+
 fn valid_email_burn_identity(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= MAX_EMAIL_BURN_ID_BYTES

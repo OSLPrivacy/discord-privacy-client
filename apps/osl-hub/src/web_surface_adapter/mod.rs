@@ -69,6 +69,9 @@ impl fmt::Display for WebPlacementCommandRefusal {
 /// GMX Mail target map. Kept as service-local data until a live GMX backend
 /// proves the fixed-origin controls against a signed-in account.
 pub mod gmx;
+/// Mail.com target map. Kept as service-local data until a live Mail.com
+/// backend proves the fixed-origin controls against a signed-in account.
+pub mod maildotcom;
 /// Outlook on the web target map.  Kept separate from the installed Outlook
 /// Win32 driver so web selectors cannot be mistaken for desktop controls.
 pub mod outlook;

@@ -141,6 +141,8 @@ pub struct NamedPlacesReport {
     pub row_count: usize,
     pub approved_count: usize,
     pub look_only_refused_count: usize,
+    pub repeated_rows: Vec<NamedPlace>,
+    pub unused_place_rows: Vec<NamedPlace>,
     pub invalid_source_tasks: Vec<String>,
     pub missing_rows: Vec<NamedPlace>,
     pub unexpected_rows: Vec<NamedPlace>,
@@ -151,6 +153,8 @@ impl NamedPlacesReport {
         self.row_count == EXPECTED_ROW_COUNT
             && self.approved_count == EXPECTED_APPROVED_COUNT
             && self.look_only_refused_count == EXPECTED_LOOK_ONLY_REFUSED_COUNT
+            && self.repeated_rows.is_empty()
+            && self.unused_place_rows.is_empty()
             && self.invalid_source_tasks.is_empty()
             && self.missing_rows.is_empty()
             && self.unexpected_rows.is_empty()
@@ -175,6 +179,10 @@ pub fn named_places_from_json(input: &str) -> Result<Vec<NamedPlace>, String> {
 
 pub fn validate_named_places(rows: &[NamedPlace]) -> NamedPlacesReport {
     let source_tasks: BTreeSet<&str> = EXPECTED_SOURCE_TASKS.into_iter().collect();
+    let expected_places: BTreeSet<&str> = EXPECTED_PLACE_ROWS
+        .into_iter()
+        .map(|(_source_task, place, _disposition)| place)
+        .collect();
     let expected: BTreeSet<NamedPlace> = EXPECTED_PLACE_ROWS
         .into_iter()
         .map(
@@ -188,6 +196,10 @@ pub fn validate_named_places(rows: &[NamedPlace]) -> NamedPlacesReport {
         )
         .collect();
     let actual: BTreeSet<NamedPlace> = rows.iter().cloned().collect();
+    let mut observed_counts = BTreeMap::<NamedPlace, usize>::new();
+    for row in rows {
+        *observed_counts.entry(row.clone()).or_default() += 1;
+    }
 
     NamedPlacesReport {
         row_count: rows.len(),
@@ -199,6 +211,15 @@ pub fn validate_named_places(rows: &[NamedPlace]) -> NamedPlacesReport {
             .iter()
             .filter(|row| row.disposition == PlaceDisposition::LookOnlyRefused)
             .count(),
+        repeated_rows: observed_counts
+            .into_iter()
+            .filter_map(|(row, count)| (count > 1).then_some(row))
+            .collect(),
+        unused_place_rows: rows
+            .iter()
+            .filter(|row| !expected_places.contains(row.place.as_str()))
+            .cloned()
+            .collect(),
         invalid_source_tasks: rows
             .iter()
             .filter(|row| !source_tasks.contains(row.source_task.as_str()))

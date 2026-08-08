@@ -79,3 +79,54 @@ describe("task 4326 OSL Mail I-have-taken-it command", () => {
     expect(dropped).toBe(0);
   });
 });
+
+async function createIdentity(userId: string): Promise<Identity> {
+  const ed = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]) as CryptoKeyPair;
+  const edRaw = await crypto.subtle.exportKey("raw", ed.publicKey) as ArrayBuffer;
+  const x = await crypto.subtle.generateKey({ name: "X25519" }, true, ["deriveBits"]) as CryptoKeyPair;
+  const xRaw = await crypto.subtle.exportKey("raw", x.publicKey) as ArrayBuffer;
+  await env.DB.prepare(
+    `INSERT INTO users(user_id,ik_x25519_pub,ik_ed25519_pub,ik_mlkem768_pub,ik_x25519_signature,registered_at,ik_ratchet_initial_pub,identity_lookup_enabled)
+     VALUES (?,?,?,?,?,?,?,1)`,
+  ).bind(
+    userId,
+    base64Encode(new Uint8Array(xRaw)),
+    base64Encode(new Uint8Array(edRaw)),
+    "mlkem",
+    "signature",
+    new Date().toISOString(),
+    null,
+  ).run();
+  return { userId, signingKey: ed.privateKey };
+}
+
+async function provisionActiveMailbox(userId: string, username: string): Promise<void> {
+  await env.DB.prepare(
+    `INSERT INTO mail_address_epochs(address, username, user_id, address_epoch, state, created_at)
+     VALUES (?, ?, ?, 1, 'active', ?)`,
+  ).bind(`${username}@oslprivacy.com`, username, userId, new Date().toISOString()).run();
+}
+
+async function signedMailRead(
+  operation: "LIST" | "FETCH" | "ACK",
+  identity: Identity,
+  fields: Record<string, unknown>,
+): Promise<Response> {
+  const body: Record<string, unknown> = {
+    user_id: identity.userId,
+    request_id: randomRequestId(),
+    timestamp_ms: Date.now(),
+    ...fields,
+  };
+  const signature = await crypto.subtle.sign({ name: "Ed25519" }, identity.signingKey, mailSignedMessage(operation, body));
+  body.signature_b64 = base64Encode(new Uint8Array(signature));
+  return await handleMailRead(
+    new Request("https://test/v1/mail/read", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+    env,
+    operation,
+  );
+}

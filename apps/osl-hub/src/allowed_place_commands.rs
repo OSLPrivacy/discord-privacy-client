@@ -610,3 +610,8 @@ mod tests {
         }
     }
 }
+
+pub struct AllowedPlaceCliResult {
+    pub stdout: String,
+    pub exit_code: i32,
+}

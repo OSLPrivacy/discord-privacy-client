@@ -20881,3 +20881,8 @@ ok i will weekend again with you",
         ipc::main_password::set_file_storage_key(None);
     }
 }
+
+pub enum RehydratedRowPoster {
+    SelfAccount,
+    PeerAccount,
+}

@@ -1436,3 +1436,42 @@ mod tests {
         );
     }
 }
+
+pub const ICLOUD_CONTROL_NAMES: [&str; 4] = ["Compose", "Place", "Readback", "Send"];
+
+const GMAIL_CONTROL_REQUESTS: [WebsiteNamedControlRequest; 6] = [
+    WebsiteNamedControlRequest {
+        name: "compose",
+        kind: WebsiteControlKind::Button,
+    },
+
+const ICLOUD_CONTROL_REQUESTS: [WebsiteNamedControlRequest; 4] = [
+    WebsiteNamedControlRequest {
+        name: "Compose",
+        kind: WebsiteControlKind::Button,
+    },
+
+pub struct IcloudEmailFlowControls {
+    pub compose: WebsiteNamedControl,
+    pub place: WebsiteNamedControl,
+    pub readback: WebsiteNamedControl,
+    pub send: WebsiteNamedControl,
+}
+
+fn required_control(
+    controls: &[WebsiteNamedControl],
+    name: &'static str,
+    kind: WebsiteControlKind,
+) -> Result<WebsiteNamedControl, ServiceConnectionError> {
+    controls
+        .iter()
+        .find(|control| control.name == name && control.kind == kind)
+        .cloned()
+        .ok_or(ServiceConnectionError::MissingNamedTarget(name))
+}
+
+pub fn validate_icloud_control_mapping(
+    mapping: &[WebsiteNamedControlRequest],
+) -> Result<(), ServiceControlMappingError> {
+    validate_required_control_names(mapping, &ICLOUD_CONTROL_NAMES)
+}
