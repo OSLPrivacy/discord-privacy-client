@@ -6,6 +6,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
 pub const ALLOWED_PLACE_CLI_FLAG: &str = "--allowed-place";
+pub const X_ALLOWED_TEXT_PERMISSIONS: &[&str] = &["placing"];
+pub const X_SEND_PERMISSION: &str = "sending";
+pub const X_SEND_CHECK_PERMISSION: &str = "checking a send";
 
 const HEADLESS_ALLOWED_PLACE_FILE_KEY: [u8; 32] = [0xA7; 32];
 static HEADLESS_ALLOWED_PLACE_LOCK: Mutex<()> = Mutex::new(());
@@ -32,6 +35,16 @@ pub enum AllowedPlaceCommandJson {
         ok: bool,
         allowed: bool,
         query: AllowedPlaceQuery,
+    },
+    XPermissions {
+        ok: bool,
+        app: String,
+        allowed: Vec<&'static str>,
+    },
+    XPermissionCheck {
+        ok: bool,
+        app: String,
+        checked: Vec<&'static str>,
     },
 }
 
@@ -146,11 +159,46 @@ fn run_allowed_place_command(
         "remove" => remove_allowed_place_json(&parsed.store, parsed.required("stable-id")?),
         "list" => list_allowed_places_json(&parsed.store),
         "allowed" => allowed_place_allowed_json(&parsed.store, parsed.query()?),
+        "x-permissions" => x_permissions_json(),
+        "x-send" => x_send_json(),
+        "x-permission-check" => x_permission_check_json(),
         _ => Err(
-            "usage: --allowed-place <add|remove|list|allowed> --store <dir> [--app <app> --account <account> --kind <kind> --stable-id <stable-id>]"
+            "usage: --allowed-place <add|remove|list|allowed|x-permissions|x-send|x-permission-check> --store <dir> [--app <app> --account <account> --kind <kind> --stable-id <stable-id>]"
                 .to_owned(),
         ),
     }
+}
+
+fn x_permissions_json() -> Result<AllowedPlaceCommandJson, String> {
+    Ok(AllowedPlaceCommandJson::XPermissions {
+        ok: true,
+        app: "x".to_owned(),
+        allowed: X_ALLOWED_TEXT_PERMISSIONS.to_vec(),
+    })
+}
+
+fn x_send_json() -> Result<AllowedPlaceCommandJson, String> {
+    Err(format!(
+        "OSL X send refused: missing permission {X_SEND_PERMISSION}"
+    ))
+}
+
+fn x_permission_check_json() -> Result<AllowedPlaceCommandJson, String> {
+    x_permission_check_for(X_ALLOWED_TEXT_PERMISSIONS)?;
+    Ok(AllowedPlaceCommandJson::XPermissionCheck {
+        ok: true,
+        app: "x".to_owned(),
+        checked: X_ALLOWED_TEXT_PERMISSIONS.to_vec(),
+    })
+}
+
+fn x_permission_check_for(permissions: &[&str]) -> Result<(), String> {
+    if permissions.contains(&X_SEND_PERMISSION) || permissions.contains(&X_SEND_CHECK_PERMISSION) {
+        return Err(format!(
+            "OSL X permission guard failed: X allowed permissions must not include {X_SEND_PERMISSION} or {X_SEND_CHECK_PERMISSION} until a real X send has been watched"
+        ));
+    }
+    Ok(())
 }
 
 fn with_headless_store<T>(

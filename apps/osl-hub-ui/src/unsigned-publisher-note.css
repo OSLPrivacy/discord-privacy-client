@@ -1,0 +1,128 @@
+/* TASK 1603 - the unsigned / unknown-publisher install note. Layout only; every
+   colour comes from the palette in styles.css so the note follows the theme.
+
+   Two rules the note depends on: the warning names are never smaller or fainter
+   than the body text around them, so neither warning can be skimmed past, and
+   the checksum blocks stay monospaced and selectable so the value can be
+   compared character for character. */
+
+.unsigned-publisher-note {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 20px 24px 24px;
+  max-width: 720px;
+  color: var(--text);
+  background: var(--bg);
+}
+
+.upn-header h1 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 21px;
+  line-height: 1.2;
+}
+
+.upn-lead {
+  margin: 8px 0 0;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.upn-subhead {
+  margin: 6px 0 0;
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.upn-warnings,
+.upn-limits {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.upn-warning {
+  padding: 12px 14px 13px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--warn);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+/* The warning name carries the same weight Windows gives it: full-strength
+   text, never muted. */
+.upn-warning-name {
+  margin: 0;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.upn-warning-detail {
+  margin: 6px 0 0;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.upn-not-proof {
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.55;
+}
+
+.upn-check-lead,
+.upn-compare,
+.upn-expected-label {
+  margin: 0;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.upn-command,
+.upn-expected,
+.upn-checksum-line {
+  margin: 0;
+  padding: 10px 12px;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  user-select: text;
+}
+
+.upn-expected code,
+.upn-checksum-line code {
+  word-break: break-all;
+}
+
+.upn-limits li {
+  padding-left: 14px;
+  border-left: 2px solid var(--line-soft);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.upn-compare code,
+.upn-expected-label code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}

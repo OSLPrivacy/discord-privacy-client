@@ -113,6 +113,7 @@ pub mod credits;
 #[cfg(feature = "core")]
 pub mod diagnostics;
 pub mod discord_carrier_geometry;
+pub mod discord_receive_wakeup;
 #[cfg(feature = "desktop")]
 pub mod entitlement_refresh;
 pub mod execution_consent;

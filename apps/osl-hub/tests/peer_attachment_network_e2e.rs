@@ -2333,6 +2333,41 @@ fn active_free_or_pro_account_tier_controls_attachment_size_check() {
     });
 }
 
+#[test]
+fn task_0048_free_26_mb_attachment_message_before_upload() {
+    let _serial = fixture_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let relay = RelayServer::start();
+    let storage = TestStorage::new("task0048-free-too-large-message");
+    let (alice, _bob) = verified_pair(&storage, &relay);
+
+    set_account_tier(&alice.core, keystore::LicenseState::Free, "Unconfigured");
+    alice.activate();
+    let result = osl_privacy_hub::broker::begin_osl_chat_attachment(
+        &alice.core,
+        &alice.broker,
+        "fixture-video.mp4".to_owned(),
+        26_000_000,
+        false,
+    );
+    let message = result.expect_err("26 MB must be refused for Free before upload");
+    println!("TASK0048 free_26mb_message={message}");
+    assert_eq!(
+        message,
+        "This file is 26 MB (26,000,000 bytes). Free limit is 25 MB (25,000,000 bytes). Pro limit is 1 GB (1,000,000,000 bytes). Upgrade to Pro to send this file."
+    );
+    assert_eq!(message.matches("Upgrade").count(), 1);
+    relay.counts(|counts| {
+        let upload_requests = counts.direct_uploads
+            + counts.sessions
+            + u32::try_from(counts.parts.len()).unwrap_or(u32::MAX)
+            + counts.completes;
+        println!("TASK0048 upload_calls={upload_requests}");
+        assert_eq!(upload_requests, 0);
+    });
+}
+
 /// The **multipart** upload route, which only engages above 26 MiB.
 ///
 /// This drives `CipherStoreClient::upload_attachment_file` — the real product

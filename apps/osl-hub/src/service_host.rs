@@ -979,7 +979,7 @@ impl ServiceHostState {
         account_id: &str,
         page_url: &Url,
     ) -> Result<ActiveServiceHost, ServiceHostError> {
-        use crate::website_driver::{RealBrowserWebsiteDriver, WebsiteDriver};
+        use crate::website_driver::{RealBrowserWebsiteDriver, WebsiteDriver, WebsitePageRequest};
 
         if !local_test_page_supported(page_url) {
             return Err(ServiceHostError::NavigationDenied);
@@ -993,7 +993,9 @@ impl ServiceHostState {
         let mut driver = RealBrowserWebsiteDriver::launch()
             .map_err(|error| ServiceHostError::Runtime(format!("{error:?}")))?;
         let page = driver
-            .find_page(page_url)
+            .find_page(WebsitePageRequest {
+                url: page_url.to_string(),
+            })
             .map_err(|error| ServiceHostError::Runtime(format!("{error:?}")))?;
         let snapshot = driver
             .read_page(&page)
@@ -1003,7 +1005,7 @@ impl ServiceHostState {
             WebsiteDriverReport {
                 kind: driver.kind().as_str(),
                 fake: false,
-                page_url: snapshot.url,
+                page_url: snapshot.page.url,
                 page_title: snapshot.title,
             },
         )?;

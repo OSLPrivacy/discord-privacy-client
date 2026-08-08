@@ -1,0 +1,310 @@
+[
+  {
+    "role": "RootWebArea",
+    "name": "Install note"
+  },
+  {
+    "role": "region",
+    "name": "OSL is not code signed"
+  },
+  {
+    "role": "heading",
+    "name": "The two warnings Windows shows"
+  },
+  {
+    "role": "list",
+    "name": "The two warnings Windows shows"
+  },
+  {
+    "role": "heading",
+    "name": "Check the download yourself"
+  },
+  {
+    "role": "heading",
+    "name": "What checking the hash does not do"
+  },
+  {
+    "role": "list",
+    "name": "What checking the hash does not do"
+  },
+  {
+    "role": "heading",
+    "name": "OSL is not code signed"
+  },
+  {
+    "role": "StaticText",
+    "name": "The two warnings Windows shows"
+  },
+  {
+    "role": "StaticText",
+    "name": "Neither warning is proof that this installer is unsafe; both of them report a signature that is missing, not something Windows found inside the file."
+  },
+  {
+    "role": "StaticText",
+    "name": "Check the download yourself"
+  },
+  {
+    "role": "StaticText",
+    "name": "What you can check is that the file on your disk is the file this release published. Open PowerShell in the folder you downloaded OSL-2.0.0.exe into and run this exact command:"
+  },
+  {
+    "role": "StaticText",
+    "name": "Expected "
+  },
+  {
+    "role": "StaticText",
+    "name": " value for OSL-2.0.0.exe:"
+  },
+  {
+    "role": "StaticText",
+    "name": "The release's signed "
+  },
+  {
+    "role": "StaticText",
+    "name": " lists the same value in lower case:"
+  },
+  {
+    "role": "StaticText",
+    "name": "Compare it character for character. If it does not match, delete the file and download it again from the release page, and do not run the copy you have. The longer check, which also verifies the Minisign signature over that list, is written out in "
+  },
+  {
+    "role": "StaticText",
+    "name": "."
+  },
+  {
+    "role": "StaticText",
+    "name": "What checking the hash does not do"
+  },
+  {
+    "role": "StaticText",
+    "name": "OSL is not code signed"
+  },
+  {
+    "role": "StaticText",
+    "name": "OSL Privacy is built without a Windows code-signing certificate, so the installer you download is unsigned. Windows has no publisher name to read out of it, and it tells you so twice."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "The two warnings Windows shows"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Neither warning is proof that this installer is unsafe; both of them report a signature "
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "that is missing, not something Windows found inside the file."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Check the download yourself"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "What you can check is that the file on your disk is the file this release published. Open PowerShell in "
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "the folder you downloaded OSL-2.0.0.exe into and run this exact command:"
+  },
+  {
+    "role": "StaticText",
+    "name": "Get-FileHash -Algorithm SHA256 -LiteralPath .\\OSL-2.0.0.exe"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Expected "
+  },
+  {
+    "role": "StaticText",
+    "name": "Hash"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": " value for OSL-2.0.0.exe:"
+  },
+  {
+    "role": "StaticText",
+    "name": "43000EDD176D560D77F0EC9D288F08F463ABFBDA04A8AC4388FC73167567A7BD"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "The release's signed "
+  },
+  {
+    "role": "StaticText",
+    "name": "SHA256SUMS.txt"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": " lists the same value in lower case:"
+  },
+  {
+    "role": "StaticText",
+    "name": "43000edd176d560d77f0ec9d288f08f463abfbda04a8ac4388fc73167567a7bd  OSL-2.0.0.exe"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Compare it character for character. If it does not match, delete the file and download it again from the "
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "release page, and do not run the copy you have. The longer check, which also verifies the Minisign "
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "signature over that list, is written out in "
+  },
+  {
+    "role": "StaticText",
+    "name": "docs/release/verify-your-download.md"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "What checking the hash does not do"
+  },
+  {
+    "role": "StaticText",
+    "name": "A matching hash tells you the bytes on your disk are the bytes this release published, and nothing more."
+  },
+  {
+    "role": "StaticText",
+    "name": "It does not remove either warning. For as long as OSL is unsigned, both of them come up on every release, on every machine, however many people have already installed it."
+  },
+  {
+    "role": "StaticText",
+    "name": "On Windows 11 with Smart App Control switched on, an unsigned installer is blocked outright rather than warned about, and no checksum changes that."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "OSL is not code signed"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "OSL Privacy is built without a Windows code-signing certificate, so the installer you download is "
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "unsigned. Windows has no publisher name to read out of it, and it tells you so twice."
+  },
+  {
+    "role": "StaticText",
+    "name": " — Microsoft Defender SmartScreen, the moment you open the installer."
+  },
+  {
+    "role": "StaticText",
+    "name": "This is the unsigned-app warning. SmartScreen shows it for a file that carries no code signature and that it holds no record of. Getting to the installer from here means pressing More info and then Run anyway."
+  },
+  {
+    "role": "StaticText",
+    "name": " — the User Account Control box that asks for permission to install."
+  },
+  {
+    "role": "StaticText",
+    "name": "This is the unknown-publisher warning. Where a signed installer names the company that signed it, OSL's installer leaves that line reading Unknown, because there is no signature to read a name from."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Get-FileHash -Algorithm SHA256 -LiteralPath .\\OSL-2.0.0.exe"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Hash"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "43000EDD176D560D77F0EC9D288F08F463ABFBDA04A8AC4388FC73167567A7BD"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "SHA256SUMS.txt"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "43000edd176d560d77f0ec9d288f08f463abfbda04a8ac4388fc73167567a7bd  OSL-2.0.0.exe"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "docs/release/verify-your-download.md"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "A matching hash tells you the bytes on your disk are the bytes this release published, and nothing "
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "more."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "It does not remove either warning. For as long as OSL is unsigned, both of them come up on every "
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "release, on every machine, however many people have already installed it."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "On Windows 11 with Smart App Control switched on, an unsigned installer is blocked outright rather "
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "than warned about, and no checksum changes that."
+  },
+  {
+    "role": "StaticText",
+    "name": "“Windows protected your PC”"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": " — Microsoft Defender SmartScreen, the moment you open the "
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "installer."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "This is the unsigned-app warning. SmartScreen shows it for a file that carries no code signature "
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "and that it holds no record of. Getting to the installer from here means pressing More info and "
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "then Run anyway."
+  },
+  {
+    "role": "StaticText",
+    "name": "“Unknown publisher”"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": " — the User Account Control box that asks for permission to install."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "This is the unknown-publisher warning. Where a signed installer names the company that signed "
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "it, OSL's installer leaves that line reading Unknown, because there is no signature to read a name "
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "from."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "“Windows protected your PC”"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "“Unknown publisher”"
+  }
+]

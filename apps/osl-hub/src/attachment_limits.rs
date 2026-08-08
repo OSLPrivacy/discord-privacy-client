@@ -158,3 +158,47 @@ mod tests {
         }
     }
 }
+
+pub fn free_too_large_attachment_message(size_bytes: u64) -> String {
+    format!(
+        "This file is {}. Free limit is 25 MB (25,000,000 bytes). Pro limit is 1 GB (1,000,000,000 bytes). Upgrade to Pro to send this file.",
+        size_with_exact_bytes(size_bytes)
+    )
+}
+
+fn grouped_decimal(value: u64) -> String {
+    let text = value.to_string();
+    let first_group = text.len() % 3;
+    let mut grouped = String::with_capacity(text.len() + text.len() / 3);
+    let mut index = 0;
+    if first_group != 0 {
+        grouped.push_str(&text[..first_group]);
+        index = first_group;
+    }
+    while index < text.len() {
+        if !grouped.is_empty() {
+            grouped.push(',');
+        }
+        grouped.push_str(&text[index..index + 3]);
+        index += 3;
+    }
+    grouped
+}
+
+fn size_with_exact_bytes(bytes: u64) -> String {
+    if bytes >= 1_000_000_000 && bytes % 1_000_000_000 == 0 {
+        format!(
+            "{} GB ({} bytes)",
+            bytes / 1_000_000_000,
+            grouped_decimal(bytes)
+        )
+    } else if bytes >= 1_000_000 && bytes % 1_000_000 == 0 {
+        format!(
+            "{} MB ({} bytes)",
+            bytes / 1_000_000,
+            grouped_decimal(bytes)
+        )
+    } else {
+        format!("{} bytes", grouped_decimal(bytes))
+    }
+}

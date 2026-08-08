@@ -3,19 +3,10 @@
 //! Higher-level readers call these narrow verbs instead of accepting message
 //! bodies or provider state from the renderer.
 
-use core::fmt;
-//! Real website driver contract and browser-backed implementation.
-//!
-//! The implementation that talks to a browser lives behind this interface. The
-//! backend job list is fixed here so higher-level website work cannot smuggle in
-//! generic browser automation verbs.
-//! Real website driver contract and browser-backed open email identity read.
-
 use base64::Engine;
-use serde::Deserialize;
-use sha2::{Digest, Sha256};
-
+use core::fmt;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     fs,
     io::{Read, Write},
@@ -25,15 +16,15 @@ use std::{
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+use url::Url;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WebsiteDriverJob {
     FindPage,
     ReadPage,
     PlaceText,
+    ReadEditableBox,
     PressNamedControl,
-    ReadSelectedEmailIdentity,
-    SendEmailDraft,
 }
 
 impl WebsiteDriverJob {
@@ -42,25 +33,19 @@ impl WebsiteDriverJob {
             Self::FindPage => "find_page",
             Self::ReadPage => "read_page",
             Self::PlaceText => "place_text",
+            Self::ReadEditableBox => "read_editable_box",
             Self::PressNamedControl => "press_named_control",
-//! Real browser-backed website driver.
-//!
-//! This driver is intentionally small: it starts a real Chromium-family
-//! browser with an isolated profile, opens a target through Chrome DevTools
-//! HTTP, and reads page metadata back from that browser. Tests may define their
-//! own fakes, but production-facing app code should construct this driver when
-//! it needs website automation evidence.
+        }
+    }
+}
 
-use serde::Deserialize;
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use url::Url;
-
-const DRIVER_START_TIMEOUT: Duration = Duration::from_secs(10);
-const PAGE_READ_TIMEOUT: Duration = Duration::from_secs(5);
+pub const WEBSITE_DRIVER_JOBS: [WebsiteDriverJob; 5] = [
+    WebsiteDriverJob::FindPage,
+    WebsiteDriverJob::ReadPage,
+    WebsiteDriverJob::PlaceText,
+    WebsiteDriverJob::ReadEditableBox,
+    WebsiteDriverJob::PressNamedControl,
+];
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum WebsiteDriverKind {
@@ -73,22 +58,9 @@ impl WebsiteDriverKind {
         match self {
             Self::RealBrowser => "realBrowser",
             Self::FakeTestBrowser => "fakeTestBrowser",
-            Self::ReadSelectedEmailIdentity => "read_selected_email_identity",
-            Self::SendEmailDraft => "send_email_draft",
         }
     }
 }
-
-pub const WEBSITE_DRIVER_JOBS: [WebsiteDriverJob; 4] = [
-    WebsiteDriverJob::FindPage,
-    WebsiteDriverJob::ReadPage,
-    WebsiteDriverJob::PlaceText,
-    WebsiteDriverJob::PressNamedControl,
-pub const WEBSITE_DRIVER_JOBS: [WebsiteDriverJob; 3] = [
-    WebsiteDriverJob::FindPage,
-    WebsiteDriverJob::ReadSelectedEmailIdentity,
-    WebsiteDriverJob::SendEmailDraft,
-];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WebsitePageRequest {
@@ -98,16 +70,7 @@ pub struct WebsitePageRequest {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WebsitePage {
     pub url: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WebsiteSelectedEmail {
-    pub page: WebsitePage,
-    pub message_id: String,
-    pub body: String,
-    pub conversation_identity: String,
-    target_id: Option<String>,
-    target_id: Option<String>,
+    pub target_id: Option<String>,
 }
 
 impl WebsitePage {
@@ -119,6 +82,36 @@ impl WebsitePage {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WebsiteControlKind {
+    EditableBox,
+    Button,
+    VisibleMessageArea,
+}
+
+impl WebsiteControlKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::EditableBox => "editableBox",
+            Self::Button => "button",
+            Self::VisibleMessageArea => "visibleMessageArea",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WebsiteNamedControlRequest {
+    pub name: &'static str,
+    pub kind: WebsiteControlKind,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WebsiteNamedControl {
+    pub page: WebsitePage,
+    pub name: String,
+    pub kind: WebsiteControlKind,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WebsiteTextPlacement {
     pub page: WebsitePage,
@@ -127,9 +120,10 @@ pub struct WebsiteTextPlacement {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WebsiteNamedControl {
+pub struct WebsiteEditableBoxRead {
     pub page: WebsitePage,
-    pub name: String,
+    pub editable_box_name: String,
+    pub text: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -144,6 +138,7 @@ pub struct WebsitePlacementProof {
     pub editable_box_name: String,
     pub utf16_units: usize,
     pub placed_sha256: String,
+    pub readback_text: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -164,8 +159,28 @@ pub struct WebsitePageText {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WebsiteSelectedEmail {
     pub page: WebsitePage,
+    pub message_id: String,
     pub body: String,
     pub conversation_identity: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WebsiteSelectedEmailIdentity {
+    pub page: WebsitePage,
+    pub thread_identity: String,
+    pub folder_identity: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WebsiteEmailDraft {
+    pub recipient: String,
+    pub body: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WebsiteEmailSendReceipt {
+    pub page: WebsitePage,
+    pub recipient: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -202,70 +217,55 @@ pub struct WebsitePageControls {
     pub editable_boxes: Vec<String>,
     pub buttons: Vec<String>,
     pub visible_message_areas: Vec<String>,
-pub struct WebsiteSelectedEmailIdentity {
-    pub page: WebsitePage,
-    pub thread_identity: String,
-    pub folder_identity: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WebsiteEmailDraft {
-    pub recipient: String,
-    pub body: Option<String>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WebsiteEmailSendReceipt {
-    pub page: WebsitePage,
-    pub recipient: String,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WebsiteDriverError {
-    PageNotFound,
-    ReadFailed,
-    NoSelectedMessage,
     BrowserUnavailable,
     BrowserLaunchFailed,
     BrowserConnectionFailed,
     PageNotFound,
+    PageUnavailable,
     ReadFailed,
+    NoSelectedMessage,
     TextPlacementFailed,
     NamedControlNotFound,
     NamedControlDisabled,
+    MissingNamedControl(String),
     MalformedRecipient,
+    InvalidUrl,
 }
 
 impl fmt::Display for WebsiteDriverError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::PageNotFound => "website page was not found",
-            Self::ReadFailed => "website page could not be read",
-            Self::NoSelectedMessage => "no selected message",
-            Self::BrowserUnavailable => "website browser executable was not found",
-            Self::BrowserLaunchFailed => "website browser could not be launched",
-            Self::BrowserConnectionFailed => "website browser connection failed",
-            Self::PageNotFound => "website page was not found",
-            Self::ReadFailed => "website page could not be read",
-            Self::TextPlacementFailed => "website text could not be placed",
-            Self::NamedControlNotFound => "website named control was not found",
-            Self::NamedControlDisabled => "Send disabled",
-            Self::MalformedRecipient => "malformed recipient",
-        })
+        match self {
+            Self::BrowserUnavailable => f.write_str("website browser executable was not found"),
+            Self::BrowserLaunchFailed => f.write_str("website browser could not be launched"),
+            Self::BrowserConnectionFailed => f.write_str("website browser connection failed"),
+            Self::PageNotFound => f.write_str("website page was not found"),
+            Self::PageUnavailable => f.write_str("website page is unavailable"),
+            Self::ReadFailed => f.write_str("website page could not be read"),
+            Self::NoSelectedMessage => f.write_str("no selected message"),
+            Self::TextPlacementFailed => f.write_str("website text could not be placed"),
+            Self::NamedControlNotFound => f.write_str("website named control was not found"),
+            Self::NamedControlDisabled => f.write_str("Send disabled"),
+            Self::MissingNamedControl(name) => {
+                write!(f, "website named control was not found: {name}")
+            }
+            Self::MalformedRecipient => f.write_str("malformed recipient"),
+            Self::InvalidUrl => f.write_str("website URL is invalid"),
+        }
     }
 }
 
 impl std::error::Error for WebsiteDriverError {}
 
 pub trait WebsiteDriver {
-    fn find_page(&mut self, request: WebsitePageRequest)
-        -> Result<WebsitePage, WebsiteDriverError>;
-
-    fn read_selected_email(
-        &mut self,
-        page: &WebsitePage,
-    ) -> Result<WebsiteSelectedEmail, WebsiteDriverError>;
     const JOBS: &'static [WebsiteDriverJob] = &WEBSITE_DRIVER_JOBS;
+
+    fn kind(&self) -> WebsiteDriverKind {
+        WebsiteDriverKind::RealBrowser
+    }
 
     fn find_page(&mut self, request: WebsitePageRequest)
         -> Result<WebsitePage, WebsiteDriverError>;
@@ -274,23 +274,101 @@ pub trait WebsiteDriver {
         &mut self,
         placement: WebsiteTextPlacement,
     ) -> Result<WebsitePlacementProof, WebsiteDriverError>;
-    fn read_selected_email(
+    fn read_editable_box(
         &mut self,
-        page: &WebsitePage,
-    ) -> Result<WebsiteSelectedEmail, WebsiteDriverError>;
-    fn read_mailbox(
-        &mut self,
-        page: &WebsitePage,
-    ) -> Result<WebsiteMailboxRead, WebsiteDriverError>;
-    fn read_live_run_progress(
-        &mut self,
-        page: &WebsitePage,
-    ) -> Result<WebsiteLiveRunProgress, WebsiteDriverError>;
-    fn place_text(&mut self, placement: WebsiteTextPlacement) -> Result<(), WebsiteDriverError>;
+        _page: &WebsitePage,
+        _editable_box_name: &str,
+    ) -> Result<WebsiteEditableBoxRead, WebsiteDriverError> {
+        Err(WebsiteDriverError::NamedControlNotFound)
+    }
     fn press_named_control(
         &mut self,
         control: WebsiteNamedControl,
     ) -> Result<(), WebsiteDriverError>;
+
+    fn read_named_controls(
+        &mut self,
+        page: &WebsitePage,
+        required: &[WebsiteNamedControlRequest],
+    ) -> Result<Vec<WebsiteNamedControl>, WebsiteDriverError> {
+        let snapshot = self.read_page(page)?;
+        required
+            .iter()
+            .map(|request| {
+                let present = match request.kind {
+                    WebsiteControlKind::EditableBox => snapshot
+                        .controls
+                        .editable_boxes
+                        .iter()
+                        .any(|name| name == request.name),
+                    WebsiteControlKind::Button => snapshot
+                        .controls
+                        .buttons
+                        .iter()
+                        .any(|name| name == request.name),
+                    WebsiteControlKind::VisibleMessageArea => snapshot
+                        .controls
+                        .visible_message_areas
+                        .iter()
+                        .any(|name| name == request.name),
+                };
+                if present {
+                    Ok(WebsiteNamedControl {
+                        page: page.clone(),
+                        name: request.name.to_owned(),
+                        kind: request.kind,
+                    })
+                } else {
+                    Err(WebsiteDriverError::MissingNamedControl(
+                        request.name.to_owned(),
+                    ))
+                }
+            })
+            .collect()
+    }
+
+    fn read_selected_email(
+        &mut self,
+        _page: &WebsitePage,
+    ) -> Result<WebsiteSelectedEmail, WebsiteDriverError> {
+        Err(WebsiteDriverError::NoSelectedMessage)
+    }
+
+    fn read_selected_email_identity(
+        &mut self,
+        _page: &WebsitePage,
+    ) -> Result<WebsiteSelectedEmailIdentity, WebsiteDriverError> {
+        Err(WebsiteDriverError::NoSelectedMessage)
+    }
+
+    fn read_mailbox(
+        &mut self,
+        _page: &WebsitePage,
+    ) -> Result<WebsiteMailboxRead, WebsiteDriverError> {
+        Err(WebsiteDriverError::ReadFailed)
+    }
+
+    fn read_live_run_progress(
+        &mut self,
+        _page: &WebsitePage,
+    ) -> Result<WebsiteLiveRunProgress, WebsiteDriverError> {
+        Err(WebsiteDriverError::ReadFailed)
+    }
+
+    fn send_email_draft(
+        &mut self,
+        page: &WebsitePage,
+        draft: WebsiteEmailDraft,
+    ) -> Result<WebsiteEmailSendReceipt, WebsiteDriverError> {
+        if !valid_email_recipient(&draft.recipient) {
+            return Err(WebsiteDriverError::MalformedRecipient);
+        }
+        Ok(WebsiteEmailSendReceipt {
+            page: page.clone(),
+            recipient: draft.recipient,
+        })
+    }
+
     fn send_after_successful_placement(
         &mut self,
         command: WebsiteSendCommand,
@@ -301,85 +379,14 @@ pub trait WebsiteDriver {
         self.press_named_control(WebsiteNamedControl {
             page,
             name: send_control_name.clone(),
+            kind: WebsiteControlKind::Button,
         })?;
         Ok(WebsiteSendReceipt {
             placement_proof,
             send_control_name,
             send_pressed: true,
         })
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct WebsitePage {
-    pub target_id: String,
-    pub url: String,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct WebsitePageSnapshot {
-    pub title: String,
-    pub url: String,
-}
-
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum WebsiteControlKind {
-    EditableBox,
-    Button,
-    VisibleMessageArea,
-}
-
-impl WebsiteControlKind {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::EditableBox => "editableBox",
-            Self::Button => "button",
-            Self::VisibleMessageArea => "visibleMessageArea",
-        }
     }
-}
-
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub struct WebsiteNamedControlRequest {
-    pub name: &'static str,
-    pub kind: WebsiteControlKind,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct WebsiteNamedControl {
-    pub name: String,
-    pub kind: WebsiteControlKind,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub enum WebsiteDriverError {
-    BrowserUnavailable,
-    BrowserLaunchFailed(String),
-    DevToolsUnavailable(String),
-    PageUnavailable,
-    MissingNamedControl(String),
-    InvalidUrl,
-}
-
-pub trait WebsiteDriver {
-    fn kind(&self) -> WebsiteDriverKind;
-    fn find_page(&mut self, url: &Url) -> Result<WebsitePage, WebsiteDriverError>;
-    fn read_page(&self, page: &WebsitePage) -> Result<WebsitePageSnapshot, WebsiteDriverError>;
-    fn read_named_controls(
-        &self,
-        _page: &WebsitePage,
-        _required: &[WebsiteNamedControlRequest],
-    ) -> Result<Vec<WebsiteNamedControl>, WebsiteDriverError> {
-        Err(WebsiteDriverError::PageUnavailable)
-    }
-
-    fn read_selected_email_identity(
-        &mut self,
-        page: &WebsitePage,
-    ) -> Result<WebsiteSelectedEmailIdentity, WebsiteDriverError>;
-
-    fn send_email_draft(
-        &mut self,
-        page: &WebsitePage,
-        draft: WebsiteEmailDraft,
-    ) -> Result<WebsiteEmailSendReceipt, WebsiteDriverError>;
 }
 
 pub struct RealBrowserWebsiteDriver {
@@ -394,6 +401,7 @@ pub struct RealBrowserWebsiteDriver {
 struct DevtoolsTarget {
     id: String,
     title: String,
+    url: String,
     #[serde(rename = "type")]
     target_type: String,
     #[serde(rename = "webSocketDebuggerUrl")]
@@ -411,14 +419,25 @@ struct BrowserPageSnapshot {
 struct BrowserTextPlacementResult {
     placed: bool,
     readback: String,
-    child: Child,
-    profile_dir: PathBuf,
-    devtools_base: String,
-    client: reqwest::blocking::Client,
-    executable: PathBuf,
+}
+
+#[derive(Deserialize)]
+struct BrowserEditableBoxReadResult {
+    found: bool,
+    text: String,
+}
+
+#[derive(Deserialize)]
 struct BrowserSelectedEmailSnapshot {
+    message_id: String,
     body: String,
     conversation_identity: String,
+}
+
+#[derive(Deserialize)]
+struct BrowserSelectedEmailIdentitySnapshot {
+    thread_identity: String,
+    folder_identity: String,
 }
 
 #[derive(Deserialize)]
@@ -436,9 +455,13 @@ struct BrowserMailboxMessageSnapshot {
     sender: String,
     owner_marker: String,
     yours: bool,
-struct BrowserSelectedEmailIdentitySnapshot {
-    thread_identity: String,
-    folder_identity: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NamedButtonPress {
+    Pressed,
+    Disabled,
+    NotFound,
 }
 
 impl RealBrowserWebsiteDriver {
@@ -467,31 +490,6 @@ impl RealBrowserWebsiteDriver {
             .arg("--no-first-run")
             .arg(format!("--remote-debugging-port={port}"))
             .arg(format!("--user-data-dir={}", profile_dir.display()))
-        let executable = find_browser_executable().ok_or(WebsiteDriverError::BrowserUnavailable)?;
-        Self::launch_with_executable(executable)
-    }
-
-    pub fn executable(&self) -> &Path {
-        &self.executable
-    }
-
-    fn launch_with_executable(executable: PathBuf) -> Result<Self, WebsiteDriverError> {
-        let port = reserve_loopback_port()?;
-        let profile_dir = unique_profile_dir();
-        fs::create_dir_all(&profile_dir).map_err(|error| {
-            WebsiteDriverError::BrowserLaunchFailed(format!(
-                "profile directory could not be created: {error}"
-            ))
-        })?;
-
-        let mut child = Command::new(&executable)
-            .arg("--headless=new")
-            .arg("--no-sandbox")
-            .arg("--disable-gpu")
-            .arg("--no-first-run")
-            .arg("--no-default-browser-check")
-            .arg(format!("--user-data-dir={}", profile_dir.display()))
-            .arg(format!("--remote-debugging-port={port}"))
             .arg("about:blank")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -539,52 +537,19 @@ impl RealBrowserWebsiteDriver {
             .find(|target| target.target_type == "page" && &target.id == target_id)
             .and_then(|target| target.web_socket_debugger_url)
             .ok_or(WebsiteDriverError::ReadFailed)
-            .map_err(|error| WebsiteDriverError::BrowserLaunchFailed(error.to_string()))?;
-
-        let client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(2))
-            .build()
-            .map_err(|error| WebsiteDriverError::DevToolsUnavailable(error.to_string()))?;
-        let devtools_base = format!("http://127.0.0.1:{port}");
-        let deadline = Instant::now() + DRIVER_START_TIMEOUT;
-        while Instant::now() < deadline {
-            if child.try_wait().ok().flatten().is_some() {
-                let _ = fs::remove_dir_all(&profile_dir);
-                return Err(WebsiteDriverError::BrowserLaunchFailed(
-                    "browser exited before DevTools became available".to_owned(),
-                ));
-            }
-            if client
-                .get(format!("{devtools_base}/json/version"))
-                .send()
-                .and_then(|response| response.error_for_status())
-                .is_ok()
-            {
-                return Ok(Self {
-                    child,
-                    profile_dir,
-                    devtools_base,
-                    client,
-                    executable,
-                });
-            }
-            thread::sleep(Duration::from_millis(50));
-        }
-
-        let _ = child.kill();
-        let _ = child.wait();
-        let _ = fs::remove_dir_all(&profile_dir);
-        Err(WebsiteDriverError::DevToolsUnavailable(
-            "timed out waiting for browser DevTools".to_owned(),
-        ))
     }
 }
 
 impl WebsiteDriver for RealBrowserWebsiteDriver {
+    fn kind(&self) -> WebsiteDriverKind {
+        WebsiteDriverKind::RealBrowser
+    }
+
     fn find_page(
         &mut self,
         request: WebsitePageRequest,
     ) -> Result<WebsitePage, WebsiteDriverError> {
+        Url::parse(&request.url).map_err(|_| WebsiteDriverError::InvalidUrl)?;
         let encoded_url =
             url::form_urlencoded::byte_serialize(request.url.as_bytes()).collect::<String>();
         let target = self
@@ -603,10 +568,6 @@ impl WebsiteDriver for RealBrowserWebsiteDriver {
     }
 
     fn read_page(&mut self, page: &WebsitePage) -> Result<WebsitePageText, WebsiteDriverError> {
-    fn read_selected_email_identity(
-        &mut self,
-        page: &WebsitePage,
-    ) -> Result<WebsiteSelectedEmailIdentity, WebsiteDriverError> {
         let target_id = page
             .target_id
             .as_ref()
@@ -620,7 +581,7 @@ impl WebsiteDriver for RealBrowserWebsiteDriver {
                 .find(|target| target.target_type == "page" && &target.id == target_id)
                 .ok_or(WebsiteDriverError::ReadFailed)?;
 
-            if !target.title.is_empty() {
+            if target.url == page.url && !target.title.is_empty() {
                 let websocket_url = target
                     .web_socket_debugger_url
                     .ok_or(WebsiteDriverError::ReadFailed)?;
@@ -631,14 +592,6 @@ impl WebsiteDriver for RealBrowserWebsiteDriver {
                     text: snapshot.text,
                     controls: snapshot.controls,
                 });
-            if let Some(websocket_url) = target.web_socket_debugger_url {
-                if let Ok(snapshot) = read_selected_email_identity_snapshot(&websocket_url) {
-                    return Ok(WebsiteSelectedEmailIdentity {
-                        page: page.clone(),
-                        thread_identity: snapshot.thread_identity,
-                        folder_identity: snapshot.folder_identity,
-                    });
-                }
             }
 
             if std::time::Instant::now() >= deadline {
@@ -666,211 +619,99 @@ impl WebsiteDriver for RealBrowserWebsiteDriver {
             editable_box_name: placement.editable_box_name,
             utf16_units: placement.text.encode_utf16().count(),
             placed_sha256: sha256_hex(placement.text.as_bytes()),
+            readback_text: result.readback,
         })
-    fn read_selected_email(
-        &mut self,
-        page: &WebsitePage,
-    ) -> Result<WebsiteSelectedEmail, WebsiteDriverError> {
-    fn send_email_draft(
-        &mut self,
-        page: &WebsitePage,
-        draft: WebsiteEmailDraft,
-    ) -> Result<WebsiteEmailSendReceipt, WebsiteDriverError> {
-        let recipient_is_valid = valid_email_recipient(&draft.recipient);
-        let target_id = page
-            .target_id
-            .as_ref()
-            .ok_or(WebsiteDriverError::ReadFailed)?;
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-
-        loop {
-            let target = self
-                .devtools_targets()?
-                .into_iter()
-                .find(|target| target.target_type == "page" && &target.id == target_id)
-                .ok_or(WebsiteDriverError::ReadFailed)?;
-
-            if !target.title.is_empty() {
-                let websocket_url = target
-                    .web_socket_debugger_url
-                    .ok_or(WebsiteDriverError::ReadFailed)?;
-                if let Ok(snapshot) = read_selected_email_snapshot(&websocket_url) {
-                    return Ok(WebsiteSelectedEmail {
-                        page: page.clone(),
-                        body: snapshot.body,
-                        conversation_identity: snapshot.conversation_identity,
-                    });
-                }
-            }
-
-            if let Some(websocket_url) = target.web_socket_debugger_url {
-                if let Ok(sent) = evaluate_target(
-                    &websocket_url,
-                    &email_send_expression(
-                        &draft.recipient,
-                        draft.body.as_deref(),
-                        recipient_is_valid,
-                    ),
-                ) {
-                    if sent.as_bool() == Some(true) {
-                        break;
-                    }
-                }
-            }
-            if std::time::Instant::now() >= deadline {
-                return Err(WebsiteDriverError::ReadFailed);
-            }
-            thread::sleep(Duration::from_millis(100));
-        }
-    }
-
-    fn read_live_run_progress(
-        &mut self,
-        page: &WebsitePage,
-    ) -> Result<WebsiteLiveRunProgress, WebsiteDriverError> {
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-
-        loop {
-            if let Ok(websocket_url) = self.page_websocket_url(page) {
-                if let Ok(progress) = read_live_run_progress_snapshot(&websocket_url) {
-                    return Ok(progress);
-                }
-            }
-
-            if std::time::Instant::now() >= deadline {
-                return Err(WebsiteDriverError::ReadFailed);
-            }
-            thread::sleep(Duration::from_millis(100));
-        }
-    }
-
-    fn read_mailbox(
-        &mut self,
-        page: &WebsitePage,
-    ) -> Result<WebsiteMailboxRead, WebsiteDriverError> {
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-
-        loop {
-            if let Ok(websocket_url) = self.page_websocket_url(page) {
-                if let Ok(snapshot) = read_mailbox_snapshot(&websocket_url) {
-                    return Ok(WebsiteMailboxRead {
-                        page: page.clone(),
-                        folders: snapshot.folders,
-                        messages: snapshot
-                            .messages
-                            .into_iter()
-                            .map(|message| WebsiteMailboxMessage {
-                                folder: message.folder,
-                                subject: message.subject,
-                                time: message.time,
-                                sender: message.sender,
-                                owner_marker: message.owner_marker,
-                                yours: message.yours,
-                            })
-                            .collect(),
-                    });
-                }
-            }
-
-            if std::time::Instant::now() >= deadline {
-                return Err(WebsiteDriverError::ReadFailed);
-            }
-            thread::sleep(Duration::from_millis(100));
-        }
-    }
-
-    fn place_text(&mut self, placement: WebsiteTextPlacement) -> Result<(), WebsiteDriverError> {
-        let websocket_url = self.page_websocket_url(&placement.page)?;
-        let text =
-            serde_json::to_string(&placement.text).map_err(|_| WebsiteDriverError::ReadFailed)?;
-        let expression = PLACE_TEXT_EXPRESSION.replace("__OSL_TEXT__", &text);
-        match evaluate_target(&websocket_url, &expression)? {
-            serde_json::Value::Bool(true) => Ok(()),
-            _ => Err(WebsiteDriverError::TextPlacementFailed),
-        }
     }
 
     fn press_named_control(
         &mut self,
         control: WebsiteNamedControl,
     ) -> Result<(), WebsiteDriverError> {
+        if control.kind != WebsiteControlKind::Button {
+            return Err(WebsiteDriverError::NamedControlNotFound);
+        }
         let websocket_url = self.page_websocket_url(&control.page)?;
-        let pressed = press_named_button(&websocket_url, &control.name)?;
-        pressed
-            .then_some(())
-            .ok_or(WebsiteDriverError::NamedControlNotFound)
         match press_named_button(&websocket_url, &control.name)? {
             NamedButtonPress::Pressed => Ok(()),
             NamedButtonPress::Disabled => Err(WebsiteDriverError::NamedControlDisabled),
             NamedButtonPress::NotFound => Err(WebsiteDriverError::NamedControlNotFound),
         }
-    fn kind(&self) -> WebsiteDriverKind {
-        WebsiteDriverKind::RealBrowser
     }
 
-    fn find_page(&mut self, url: &Url) -> Result<WebsitePage, WebsiteDriverError> {
-        let encoded: String =
-            url::form_urlencoded::byte_serialize(url.as_str().as_bytes()).collect();
-        let target: DevToolsTarget = self
-            .client
-            .put(format!("{}/json/new?{encoded}", self.devtools_base))
-            .send()
-            .and_then(|response| response.error_for_status())
-            .map_err(|error| WebsiteDriverError::DevToolsUnavailable(error.to_string()))?
-            .json()
-            .map_err(|error| WebsiteDriverError::DevToolsUnavailable(error.to_string()))?;
-        if target.id.is_empty() {
-            return Err(WebsiteDriverError::PageUnavailable);
+    fn read_editable_box(
+        &mut self,
+        page: &WebsitePage,
+        editable_box_name: &str,
+    ) -> Result<WebsiteEditableBoxRead, WebsiteDriverError> {
+        let websocket_url = self.page_websocket_url(page)?;
+        let result = read_named_editable_box(&websocket_url, editable_box_name)?;
+        if !result.found {
+            return Err(WebsiteDriverError::NamedControlNotFound);
         }
-        Ok(WebsitePage {
-            target_id: target.id,
-            url: url.to_string(),
-        })
-    }
-
-    fn read_page(&self, page: &WebsitePage) -> Result<WebsitePageSnapshot, WebsiteDriverError> {
-        let deadline = Instant::now() + PAGE_READ_TIMEOUT;
-        let placeholder_title = Url::parse(&page.url)
-            .ok()
-            .and_then(|url| url.host_str().map(str::to_owned));
-        while Instant::now() < deadline {
-            let targets: Vec<DevToolsTarget> = self
-                .client
-                .get(format!("{}/json/list", self.devtools_base))
-                .send()
-                .and_then(|response| response.error_for_status())
-                .map_err(|error| WebsiteDriverError::DevToolsUnavailable(error.to_string()))?
-                .json()
-                .map_err(|error| WebsiteDriverError::DevToolsUnavailable(error.to_string()))?;
-            if let Some(target) = targets.iter().find(|target| target.id == page.target_id) {
-                if target.url == page.url
-                    && !target.title.is_empty()
-                    && Some(target.title.as_str()) != placeholder_title.as_deref()
-                {
-                    return Ok(WebsitePageSnapshot {
-                        title: target.title.clone(),
-                        url: target.url.clone(),
-                    });
-                }
-            }
-            thread::sleep(Duration::from_millis(50));
-        }
-        Err(WebsiteDriverError::PageUnavailable)
-        let name =
-            serde_json::to_string(&control.name).map_err(|_| WebsiteDriverError::ReadFailed)?;
-        let expression = CLICK_NAMED_CONTROL_EXPRESSION.replace("__OSL_CONTROL_NAME__", &name);
-        match evaluate_target(&websocket_url, &expression)? {
-            serde_json::Value::Bool(true) => Ok(()),
-            _ => Err(WebsiteDriverError::NamedControlNotFound),
-        }
-    }
-        if !recipient_is_valid {
-            return Err(WebsiteDriverError::MalformedRecipient);
-        }
-        Ok(WebsiteEmailSendReceipt {
+        Ok(WebsiteEditableBoxRead {
             page: page.clone(),
-            recipient: draft.recipient,
+            editable_box_name: editable_box_name.to_owned(),
+            text: result.text,
         })
+    }
+
+    fn read_selected_email(
+        &mut self,
+        page: &WebsitePage,
+    ) -> Result<WebsiteSelectedEmail, WebsiteDriverError> {
+        let websocket_url = self.page_websocket_url(page)?;
+        let snapshot = read_selected_email_snapshot(&websocket_url)?;
+        Ok(WebsiteSelectedEmail {
+            page: page.clone(),
+            message_id: snapshot.message_id,
+            body: snapshot.body,
+            conversation_identity: snapshot.conversation_identity,
+        })
+    }
+
+    fn read_selected_email_identity(
+        &mut self,
+        page: &WebsitePage,
+    ) -> Result<WebsiteSelectedEmailIdentity, WebsiteDriverError> {
+        let websocket_url = self.page_websocket_url(page)?;
+        let snapshot = read_selected_email_identity_snapshot(&websocket_url)?;
+        Ok(WebsiteSelectedEmailIdentity {
+            page: page.clone(),
+            thread_identity: snapshot.thread_identity,
+            folder_identity: snapshot.folder_identity,
+        })
+    }
+
+    fn read_mailbox(
+        &mut self,
+        page: &WebsitePage,
+    ) -> Result<WebsiteMailboxRead, WebsiteDriverError> {
+        let websocket_url = self.page_websocket_url(page)?;
+        let snapshot = read_mailbox_snapshot(&websocket_url)?;
+        Ok(WebsiteMailboxRead {
+            page: page.clone(),
+            folders: snapshot.folders,
+            messages: snapshot
+                .messages
+                .into_iter()
+                .map(|message| WebsiteMailboxMessage {
+                    folder: message.folder,
+                    subject: message.subject,
+                    time: message.time,
+                    sender: message.sender,
+                    owner_marker: message.owner_marker,
+                    yours: message.yours,
+                })
+                .collect(),
+        })
+    }
+
+    fn read_live_run_progress(
+        &mut self,
+        page: &WebsitePage,
+    ) -> Result<WebsiteLiveRunProgress, WebsiteDriverError> {
+        let websocket_url = self.page_websocket_url(page)?;
+        read_live_run_progress_snapshot(&websocket_url)
     }
 }
 
@@ -878,8 +719,6 @@ impl Drop for RealBrowserWebsiteDriver {
     fn drop(&mut self) {
         let _ = self.browser.kill();
         let _ = self.browser.wait();
-        let _ = self.child.kill();
-        let _ = self.child.wait();
         let _ = fs::remove_dir_all(&self.profile_dir);
     }
 }
@@ -904,6 +743,70 @@ fn wait_for_devtools(
         }
         thread::sleep(Duration::from_millis(100));
     }
+}
+
+fn read_named_editable_box(
+    websocket_url: &str,
+    name: &str,
+) -> Result<BrowserEditableBoxReadResult, WebsiteDriverError> {
+    let name = serde_json::to_string(name).map_err(|_| WebsiteDriverError::ReadFailed)?;
+    let expression = format!(
+        r#"
+(() => {{
+  const wanted = {name};
+  const compact = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+  const visible = (element) => {{
+    if (!element || element.hidden || element.getAttribute('aria-hidden') === 'true') return false;
+    const style = window.getComputedStyle(element);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse' || style.opacity === '0') return false;
+    return element.getClientRects().length > 0;
+  }};
+  const enabled = (element) => !element.disabled && !element.readOnly && element.getAttribute('aria-disabled') !== 'true';
+  const labelledBy = (element) => compact(
+    (element.getAttribute('aria-labelledby') || '')
+      .split(/\s+/)
+      .map((id) => document.getElementById(id))
+      .filter(Boolean)
+      .map((label) => label.innerText || label.textContent || '')
+      .join(' ')
+  );
+  const controlName = (element) => {{
+    const candidates = [
+      element.getAttribute('aria-label'),
+      labelledBy(element),
+      element.getAttribute('title'),
+      element.getAttribute('placeholder'),
+      element.getAttribute('name'),
+      element.id
+    ];
+    for (const candidate of candidates) {{
+      const name = compact(candidate);
+      if (name) return name;
+    }}
+    return '';
+  }};
+  const editable = (element) => {{
+    if (!enabled(element)) return false;
+    if (element.isContentEditable) return true;
+    const tag = element.tagName.toLowerCase();
+    if (tag === 'textarea') return true;
+    if (tag !== 'input') return element.getAttribute('role') === 'textbox' || element.getAttribute('role') === 'searchbox';
+    const type = (element.getAttribute('type') || 'text').toLowerCase();
+    return !['button', 'checkbox', 'color', 'file', 'hidden', 'image', 'radio', 'range', 'reset', 'submit'].includes(type);
+  }};
+  const read = (element) => element.isContentEditable ? (element.innerText || element.textContent || '') : String(element.value || '');
+  const matches = [];
+  for (const element of document.querySelectorAll('input, textarea, [contenteditable=""], [contenteditable="true"], [role="textbox"], [role="searchbox"]')) {{
+    if (!visible(element) || !editable(element) || controlName(element) !== wanted) continue;
+    matches.push(element);
+  }}
+  if (matches.length !== 1) return {{ found: false, text: '' }};
+  return {{ found: true, text: read(matches[0]) }};
+}})()
+"#
+    );
+    let value = evaluate_target(websocket_url, &expression)?;
+    serde_json::from_value(value).map_err(|_| WebsiteDriverError::ReadFailed)
 }
 
 fn read_page_snapshot(websocket_url: &str) -> Result<BrowserPageSnapshot, WebsiteDriverError> {
@@ -990,14 +893,6 @@ fn place_text_in_named_editable(
     serde_json::from_value(value).map_err(|_| WebsiteDriverError::TextPlacementFailed)
 }
 
-fn press_named_button(websocket_url: &str, name: &str) -> Result<bool, WebsiteDriverError> {
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum NamedButtonPress {
-    Pressed,
-    Disabled,
-    NotFound,
-}
-
 fn press_named_button(
     websocket_url: &str,
     name: &str,
@@ -1041,19 +936,6 @@ fn press_named_button(
     return '';
   }};
   const matches = [];
-  for (const element of document.querySelectorAll('button, input[type="button"], input[type="submit"], input[type="reset"], [role="button"]')) {{
-    if (!visible(element) || !enabled(element) || controlName(element) !== wanted) continue;
-    matches.push(element);
-  }}
-  if (matches.length !== 1) return false;
-  matches[0].click();
-  return true;
-}})()
-"#
-    );
-    evaluate_target(websocket_url, &expression)?
-        .as_bool()
-        .ok_or(WebsiteDriverError::ReadFailed)
   const disabled = [];
   for (const element of document.querySelectorAll('button, input[type="button"], input[type="submit"], input[type="reset"], [role="button"]')) {{
     if (!visible(element) || controlName(element) !== wanted) continue;
@@ -1078,12 +960,17 @@ fn press_named_button(
     }
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
 fn read_selected_email_snapshot(
     websocket_url: &str,
 ) -> Result<BrowserSelectedEmailSnapshot, WebsiteDriverError> {
     let value = evaluate_target(websocket_url, SELECTED_EMAIL_EXPRESSION)?;
+    serde_json::from_value(value).map_err(|_| WebsiteDriverError::ReadFailed)
+}
+
+fn read_selected_email_identity_snapshot(
+    websocket_url: &str,
+) -> Result<BrowserSelectedEmailIdentitySnapshot, WebsiteDriverError> {
+    let value = evaluate_target(websocket_url, SELECTED_EMAIL_IDENTITY_EXPRESSION)?;
     serde_json::from_value(value).map_err(|_| WebsiteDriverError::ReadFailed)
 }
 
@@ -1098,10 +985,6 @@ fn read_mailbox_snapshot(
     websocket_url: &str,
 ) -> Result<BrowserMailboxReadSnapshot, WebsiteDriverError> {
     let value = evaluate_target(websocket_url, MAILBOX_READ_EXPRESSION)?;
-fn read_selected_email_identity_snapshot(
-    websocket_url: &str,
-) -> Result<BrowserSelectedEmailIdentitySnapshot, WebsiteDriverError> {
-    let value = evaluate_target(websocket_url, SELECTED_EMAIL_IDENTITY_EXPRESSION)?;
     serde_json::from_value(value).map_err(|_| WebsiteDriverError::ReadFailed)
 }
 
@@ -1142,7 +1025,7 @@ fn evaluate_target(
 }
 
 fn open_devtools_websocket(websocket_url: &str) -> Result<TcpStream, WebsiteDriverError> {
-    let url = url::Url::parse(websocket_url).map_err(|_| WebsiteDriverError::ReadFailed)?;
+    let url = Url::parse(websocket_url).map_err(|_| WebsiteDriverError::ReadFailed)?;
     if url.scheme() != "ws" {
         return Err(WebsiteDriverError::ReadFailed);
     }
@@ -1286,8 +1169,108 @@ fn read_websocket_text_message(stream: &mut TcpStream) -> Result<Vec<u8>, Websit
     }
 }
 
+fn reserve_loopback_port() -> Result<u16, WebsiteDriverError> {
+    TcpListener::bind("127.0.0.1:0")
+        .and_then(|listener| listener.local_addr())
+        .map(|address| address.port())
+        .map_err(|_| WebsiteDriverError::BrowserLaunchFailed)
+}
+
+fn make_profile_dir() -> Result<PathBuf, WebsiteDriverError> {
+    let since_epoch = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| WebsiteDriverError::BrowserLaunchFailed)?;
+    let path = std::env::temp_dir().join(format!(
+        "osl-website-driver-{}-{}",
+        std::process::id(),
+        since_epoch.as_nanos()
+    ));
+    fs::create_dir_all(&path).map_err(|_| WebsiteDriverError::BrowserLaunchFailed)?;
+    Ok(path)
+}
+
+fn discover_browser_executable() -> Option<PathBuf> {
+    if let Ok(path) = std::env::var("OSL_WEBSITE_DRIVER_BROWSER") {
+        let candidate = PathBuf::from(path);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    if let Some(path) = std::env::var_os("OSL_WEBSITE_DRIVER_CHROME").map(PathBuf::from) {
+        if executable_exists(&path) {
+            return Some(path);
+        }
+    }
+
+    for name in [
+        "chromium",
+        "chromium-browser",
+        "google-chrome",
+        "google-chrome-stable",
+    ] {
+        if let Some(path) = find_on_path(name) {
+            return Some(path);
+        }
+    }
+
+    let home = std::env::var_os("HOME").map(PathBuf::from)?;
+    let playwright_root = home.join(".cache").join("ms-playwright");
+    let mut candidates = fs::read_dir(playwright_root)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path().join("chrome-linux64").join("chrome"))
+        .filter(|path| path.is_file())
+        .collect::<Vec<_>>();
+    candidates.sort();
+    candidates.pop()
+}
+
+fn find_on_path(name: &str) -> Option<PathBuf> {
+    let path_var = std::env::var_os("PATH")?;
+    std::env::split_paths(&path_var)
+        .map(|dir| dir.join(name))
+        .find(|candidate| candidate.is_file())
+}
+
+fn executable_exists(path: &Path) -> bool {
+    fs::metadata(path)
+        .map(|metadata| metadata.is_file())
+        .unwrap_or(false)
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+fn valid_email_recipient(recipient: &str) -> bool {
+    if recipient.len() > 254
+        || recipient
+            .chars()
+            .any(|ch| ch.is_control() || ch.is_whitespace())
+    {
+        return false;
+    }
+    let Some((local, domain)) = recipient.split_once('@') else {
+        return false;
+    };
+    if local.is_empty() || domain.is_empty() || domain.ends_with('.') || !domain.contains('.') {
+        return false;
+    }
+    if domain.contains('@') || local.contains('@') {
+        return false;
+    }
+    domain.split('.').all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    })
+}
+
 const PAGE_SNAPSHOT_EXPRESSION: &str = r#"
-const SELECTED_EMAIL_IDENTITY_EXPRESSION: &str = r#"
 (() => {
   const compact = (value) => String(value || '').replace(/\s+/g, ' ').trim();
   const visible = (element) => {
@@ -1360,110 +1343,48 @@ const SELECTED_EMAIL_EXPRESSION: &str = r#"
   const visible = (element) => {
     if (!element || element.hidden || element.getAttribute('aria-hidden') === 'true') return false;
     const style = window.getComputedStyle(element);
-    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
-    return element.getClientRects().length > 0;
+    return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0' && element.getClientRects().length > 0;
   };
-  const firstVisible = (root, selector) => {
-    for (const element of root.querySelectorAll(selector)) {
-      if (visible(element)) return element;
-    }
-    return null;
-  };
-  const selected = firstVisible(document, [
-  const matchingVisible = (selector) =>
-    Array.from(document.querySelectorAll(selector)).filter(visible);
-  const readAncestorAttribute = (element, attrs) => {
-    for (let current = element; current; current = current.parentElement) {
-      for (const attr of attrs) {
-        const value = compact(current.getAttribute(attr));
-        if (value) return value;
-      }
-    }
-    return '';
-  };
-
-  const selected = matchingVisible([
-    '[data-osl-open-email="true"]',
-    '[data-osl-selected-email="true"]',
-    '[data-selected-email="true"]',
-    '[role="article"][aria-selected="true"]',
-    '[role="document"][aria-selected="true"]',
-    '[aria-current="true"][data-osl-email]'
-  ].join(', '));
-  if (!selected) return null;
-
-  const identityAttrs = [
+  const selected = Array.from(document.querySelectorAll('[data-osl-open-email="true"], [data-osl-selected-email="true"], [data-selected-email="true"], [role="article"][aria-selected="true"], [role="document"][aria-selected="true"]')).filter(visible);
   if (selected.length !== 1) return null;
-
-  const folders = matchingVisible([
-    '[data-osl-current-folder-id]',
-    '[data-osl-current-label-id]',
-    '[data-current-folder-id]',
-    '[data-current-label-id]',
-    '[aria-current="page"][data-osl-folder-id]',
-    '[aria-current="page"][data-osl-label-id]'
-  ].join(', '));
-  if (folders.length !== 1) return null;
-
-  const threadIdentity = readAncestorAttribute(selected[0], [
-    'data-osl-thread-id',
-    'data-thread-id',
-    'data-osl-conversation-id',
-    'data-conversation-id',
-    'data-message-thread-id',
-    'data-email-thread-id'
-  ];
-  let conversationIdentity = '';
-  for (let current = selected; current && !conversationIdentity; current = current.parentElement) {
-    for (const attr of identityAttrs) {
-      conversationIdentity = compact(current.getAttribute(attr));
-      if (conversationIdentity) break;
-    }
-  }
-
-  const bodyElement =
-    firstVisible(selected, '[data-osl-email-body], [data-email-body], [data-message-body], [role="document"]') ||
-    selected;
+  const row = selected[0];
+  const bodyElement = row.querySelector('[data-osl-email-body], [data-email-body], [data-message-body], [role="document"]') || row;
   const body = compact(bodyElement.innerText || bodyElement.textContent || '');
-  if (!body || !conversationIdentity) return null;
-  return {
-    body,
-    conversation_identity: conversationIdentity
-  ]);
-  const folderIdentity =
-    compact(folders[0].getAttribute('data-osl-current-folder-id')) ||
-    compact(folders[0].getAttribute('data-osl-current-label-id')) ||
-    compact(folders[0].getAttribute('data-current-folder-id')) ||
-    compact(folders[0].getAttribute('data-current-label-id')) ||
-    compact(folders[0].getAttribute('data-osl-folder-id')) ||
-    compact(folders[0].getAttribute('data-osl-label-id'));
+  const messageId = compact(row.getAttribute('data-osl-message-id') || row.getAttribute('data-message-id') || row.id);
+  const conversationIdentity = compact(row.getAttribute('data-osl-thread-id') || row.getAttribute('data-thread-id') || row.getAttribute('data-conversation-id'));
+  if (!body || !messageId || !conversationIdentity) return null;
+  return { message_id: messageId, body, conversation_identity: conversationIdentity };
+})()
+"#;
 
-  if (!threadIdentity || !folderIdentity) return null;
-  return {
-    thread_identity: threadIdentity,
-    folder_identity: folderIdentity
+const SELECTED_EMAIL_IDENTITY_EXPRESSION: &str = r#"
+(() => {
+  const compact = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+  const visible = (element) => {
+    if (!element || element.hidden || element.getAttribute('aria-hidden') === 'true') return false;
+    const style = window.getComputedStyle(element);
+    return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0' && element.getClientRects().length > 0;
   };
+  const selected = Array.from(document.querySelectorAll('[data-osl-open-email="true"], [data-osl-selected-email="true"], [data-selected-email="true"], [role="article"][aria-selected="true"], [role="document"][aria-selected="true"]')).filter(visible);
+  const folders = Array.from(document.querySelectorAll('[data-osl-current-folder-id], [data-current-folder-id], [aria-current="page"][data-osl-folder-id]')).filter(visible);
+  if (selected.length !== 1 || folders.length !== 1) return null;
+  const threadIdentity = compact(selected[0].getAttribute('data-osl-thread-id') || selected[0].getAttribute('data-thread-id') || selected[0].getAttribute('data-conversation-id'));
+  const folderIdentity = compact(folders[0].getAttribute('data-osl-current-folder-id') || folders[0].getAttribute('data-current-folder-id') || folders[0].getAttribute('data-osl-folder-id'));
+  if (!threadIdentity || !folderIdentity) return null;
+  return { thread_identity: threadIdentity, folder_identity: folderIdentity };
 })()
 "#;
 
 const LIVE_RUN_PROGRESS_EXPRESSION: &str = r#"
 (() => {
-  const compact = (value) => String(value || '').replace(/\s+/g, ' ').trim();
-  const root = document.querySelector('[data-osl-live-run-progress]');
-  if (!root) return null;
-  const valueFor = (name) => {
-    const fromRoot = root.getAttribute(`data-osl-${name}`);
-    if (fromRoot !== null) return fromRoot;
-    const element = document.querySelector(`[data-osl-${name}]`);
-    return element ? element.getAttribute(`data-osl-${name}`) : '';
-  };
   const numberFor = (name) => {
-    const parsed = Number.parseInt(valueFor(name), 10);
+    const value = document.querySelector(`[data-osl-progress-${name}]`)?.getAttribute(`data-osl-progress-${name}`);
+    const parsed = Number(value || 0);
     return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
   };
   return {
-    activeAccount: compact(valueFor('active-account')),
-    currentPlace: compact(valueFor('current-place')),
+    activeAccount: String(document.querySelector('[data-osl-active-account]')?.getAttribute('data-osl-active-account') || ''),
+    currentPlace: String(document.querySelector('[data-osl-current-place]')?.getAttribute('data-osl-current-place') || ''),
     messagesChecked: numberFor('messages-checked'),
     matches: numberFor('matches'),
     scrolls: numberFor('scrolls'),
@@ -1501,302 +1422,33 @@ const MAILBOX_READ_EXPRESSION: &str = r#"
   const messages = [];
   for (const row of document.querySelectorAll('[data-osl-mail-message], [data-proton-message-row]')) {
     if (!visible(row)) continue;
-    const folder = attrOrChild(row, 'data-osl-folder', '[data-osl-mail-message-folder], [data-proton-message-folder]') ||
-      compact(row.getAttribute('data-proton-folder'));
-    const subject = attrOrChild(row, 'data-osl-subject', '[data-osl-mail-subject], [data-proton-subject]') ||
-      compact(row.getAttribute('data-proton-subject'));
-    const time = attrOrChild(row, 'data-osl-time', '[data-osl-mail-time], [data-proton-time], time') ||
-      compact(row.getAttribute('data-proton-time'));
-    const sender = attrOrChild(row, 'data-osl-sender', '[data-osl-mail-sender], [data-proton-sender]') ||
-      compact(row.getAttribute('data-proton-sender'));
+    const folder = attrOrChild(row, 'data-osl-folder', '[data-osl-mail-message-folder], [data-proton-message-folder]') || compact(row.getAttribute('data-proton-folder'));
+    const subject = attrOrChild(row, 'data-osl-subject', '[data-osl-mail-subject], [data-proton-subject]') || compact(row.getAttribute('data-proton-subject'));
+    const time = attrOrChild(row, 'data-osl-time', '[data-osl-mail-time], [data-proton-time], time') || compact(row.getAttribute('data-proton-time'));
+    const sender = attrOrChild(row, 'data-osl-sender', '[data-osl-mail-sender], [data-proton-sender]') || compact(row.getAttribute('data-proton-sender'));
     const markerElement = row.querySelector('[data-osl-scrub-owner-marker], [data-proton-owner-marker]');
     const ownerMarker = compact(row.getAttribute('data-osl-scrub-owner-marker') || row.getAttribute('data-proton-owner-marker') ||
       (markerElement ? markerElement.getAttribute('data-osl-scrub-owner-marker') || markerElement.getAttribute('data-proton-owner-marker') || markerElement.innerText || markerElement.textContent : ''));
     if (!folder || !subject || !time || !sender) continue;
-    messages.push({
-      folder,
-      subject,
-      time,
-      sender,
-      ownerMarker,
-      yours: /^(SCRUB-PR-MINE|SCRUB-IC-MINE)$/.test(ownerMarker)
-    });
+    messages.push({ folder, subject, time, sender, ownerMarker, yours: /^(SCRUB-PR-MINE|SCRUB-IC-MINE)$/.test(ownerMarker) });
   }
   if (!folders.length) return null;
   return { folders, messages };
 })()
 "#;
 
-const PLACE_TEXT_EXPRESSION: &str = r#"
-(() => {
-  const text = __OSL_TEXT__;
-  const visible = (element) => {
-    if (!element || element.hidden || element.getAttribute('aria-hidden') === 'true') return false;
-    const style = window.getComputedStyle(element);
-    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
-    return element.getClientRects().length > 0;
-  };
-  const editable = (element) => {
-    if (element.disabled || element.readOnly) return false;
-    if (element.isContentEditable) return true;
-    const tag = element.tagName.toLowerCase();
-    if (tag === 'textarea') return true;
-    if (tag !== 'input') return element.getAttribute('role') === 'textbox' || element.getAttribute('role') === 'searchbox';
-    const type = (element.getAttribute('type') || 'text').toLowerCase();
-    return !['button', 'checkbox', 'color', 'file', 'hidden', 'image', 'radio', 'range', 'reset', 'submit'].includes(type);
-  };
-  const candidates = document.querySelectorAll('textarea, input, [contenteditable=""], [contenteditable="true"], [role="textbox"], [role="searchbox"]');
-  for (const element of candidates) {
-    if (!visible(element) || !editable(element)) continue;
-    element.focus();
-    if (element.isContentEditable) {
-      element.textContent = text;
-    } else {
-      element.value = text;
-    }
-    element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
-    element.dispatchEvent(new Event('change', { bubbles: true }));
-    return true;
-  }
-  return false;
-})()
-"#;
-
-const CLICK_NAMED_CONTROL_EXPRESSION: &str = r#"
-(() => {
-  const expected = __OSL_CONTROL_NAME__;
-  const compact = (value) => String(value || '').replace(/\s+/g, ' ').trim();
-  const visible = (element) => {
-    if (!element || element.hidden || element.getAttribute('aria-hidden') === 'true') return false;
-    const style = window.getComputedStyle(element);
-    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
-    return element.getClientRects().length > 0;
-  };
-  const labelledBy = (element) => compact(
-    (element.getAttribute('aria-labelledby') || '')
-      .split(/\s+/)
-      .map((id) => document.getElementById(id))
-      .filter(Boolean)
-      .map((label) => label.innerText || label.textContent || '')
-      .join(' ')
-  );
-  const controlName = (element) => {
-    const candidates = [
-      element.getAttribute('aria-label'),
-      labelledBy(element),
-      element.getAttribute('title'),
-      element.value,
-      element.innerText || element.textContent,
-      element.getAttribute('name'),
-      element.id
-    ];
-    for (const candidate of candidates) {
-      const name = compact(candidate);
-      if (name) return name;
-    }
-    return '';
-  };
-  for (const element of document.querySelectorAll('button, input[type="button"], input[type="submit"], input[type="reset"], [role="button"]')) {
-    if (!visible(element) || controlName(element) !== expected) continue;
-    element.click();
-    return true;
-  }
-  return false;
-})()
-"#;
-fn email_send_expression(recipient: &str, body: Option<&str>, should_send: bool) -> String {
-    let recipient = serde_json::to_string(recipient).unwrap_or_else(|_| "\"\"".to_owned());
-    let body = body
-        .map(|body| serde_json::to_string(body).unwrap_or_else(|_| "\"\"".to_owned()))
-        .unwrap_or_else(|| "null".to_owned());
-    let should_send = if should_send { "true" } else { "false" };
-    format!(
-        r#"
-(async () => {{
-  const recipient = {recipient};
-  const body = {body};
-  const shouldSend = {should_send};
-  const visible = (element) => {{
-    if (!element || element.disabled || element.hidden || element.getAttribute('aria-hidden') === 'true') return false;
-    const style = window.getComputedStyle(element);
-    return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0' && element.getClientRects().length > 0;
-  }};
-  const firstVisible = (selector) => Array.from(document.querySelectorAll(selector)).find(visible);
-  const setText = (element, value) => {{
-    element.focus();
-    if (element.isContentEditable) {{
-      element.textContent = value;
-    }} else {{
-      element.value = value;
-    }}
-    element.dispatchEvent(new InputEvent('input', {{ bubbles: true, inputType: 'insertText', data: value }}));
-    element.dispatchEvent(new Event('change', {{ bubbles: true }}));
-  }};
-
-  const to = firstVisible([
-    '[data-osl-email-to]',
-    'input[name="to"]',
-    'input[type="email"]',
-    '[role="textbox"][aria-label="To"]',
-    '[aria-label="To"]'
-  ].join(', '));
-  const send = firstVisible([
-    '[data-osl-email-send]',
-    'button[type="submit"]',
-    'button[aria-label="Send"]',
-    '[role="button"][aria-label="Send"]'
-  ].join(', '));
-  if (!to || !send) return false;
-  setText(to, recipient);
-
-  if (body !== null) {{
-    const bodyElement = firstVisible([
-      '[data-osl-email-body-input]',
-      'textarea[name="body"]',
-      'textarea[aria-label="Body"]',
-      '[contenteditable="true"][aria-label="Body"]',
-      '[role="textbox"][aria-label="Body"]'
-    ].join(', '));
-    if (!bodyElement) return false;
-    setText(bodyElement, body);
-  }}
-
-  if (!shouldSend) return true;
-  send.click();
-  if (window.__oslLastSendPromise && typeof window.__oslLastSendPromise.then === 'function') {{
-    await window.__oslLastSendPromise;
-  }} else {{
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }}
-  return true;
-}})()
-"#
-    )
-}
-
-fn valid_email_recipient(recipient: &str) -> bool {
-    if recipient.len() > 254
-        || recipient
-            .chars()
-            .any(|ch| ch.is_control() || ch.is_whitespace())
-    {
-        return false;
-    }
-    let Some((local, domain)) = recipient.split_once('@') else {
-        return false;
-    };
-    if local.is_empty() || domain.is_empty() || domain.ends_with('.') || !domain.contains('.') {
-        return false;
-    }
-    if domain.contains('@') || local.contains('@') {
-        return false;
-    }
-    domain.split('.').all(|label| {
-        !label.is_empty()
-            && label.len() <= 63
-            && !label.starts_with('-')
-            && !label.ends_with('-')
-            && label
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-    })
-}
-
-fn reserve_loopback_port() -> Result<u16, WebsiteDriverError> {
-    TcpListener::bind("127.0.0.1:0")
-        .and_then(|listener| listener.local_addr())
-        .map(|address| address.port())
-        .map_err(|_| WebsiteDriverError::BrowserLaunchFailed)
-}
-
-fn make_profile_dir() -> Result<PathBuf, WebsiteDriverError> {
-    let since_epoch = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| WebsiteDriverError::BrowserLaunchFailed)?;
-    let path = std::env::temp_dir().join(format!(
-        "osl-website-driver-{}-{}",
-        std::process::id(),
-        since_epoch.as_nanos()
-    ));
-    fs::create_dir_all(&path).map_err(|_| WebsiteDriverError::BrowserLaunchFailed)?;
-    Ok(path)
-}
-
-fn discover_browser_executable() -> Option<PathBuf> {
-    if let Ok(path) = std::env::var("OSL_WEBSITE_DRIVER_BROWSER") {
-        let candidate = PathBuf::from(path);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-
-    for name in [
-        "chromium",
-        "chromium-browser",
-        "google-chrome",
-        "google-chrome-stable",
-    ] {
-        if let Some(path) = find_on_path(name) {
-#[derive(Debug, Deserialize)]
-struct DevToolsTarget {
-    id: String,
-    #[serde(default)]
-    title: String,
-    #[serde(default)]
-    url: String,
-}
-
-fn reserve_loopback_port() -> Result<u16, WebsiteDriverError> {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .and_then(|listener| listener.local_addr())
-        .map(|address| address.port())
-        .map_err(|error| WebsiteDriverError::BrowserLaunchFailed(error.to_string()))
-}
-
-fn unique_profile_dir() -> PathBuf {
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    std::env::temp_dir().join(format!(
-        "osl-real-website-driver-{}-{nonce:x}",
-        std::process::id()
-    ))
-}
-
-fn find_browser_executable() -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os("OSL_WEBSITE_DRIVER_CHROME").map(PathBuf::from) {
-        if executable_exists(&path) {
-            return Some(path);
-        }
-    }
-
-    let home = std::env::var_os("HOME").map(PathBuf::from)?;
-    let playwright_root = home.join(".cache").join("ms-playwright");
-    let mut candidates = fs::read_dir(playwright_root)
-        .ok()?
-        .filter_map(Result::ok)
-        .map(|entry| entry.path().join("chrome-linux64").join("chrome"))
-        .filter(|path| path.is_file())
-        .collect::<Vec<_>>();
-    candidates.sort();
-    candidates.pop()
-}
-
-fn find_on_path(name: &str) -> Option<PathBuf> {
-    let path_var = std::env::var_os("PATH")?;
-    std::env::split_paths(&path_var)
-        .map(|dir| dir.join(name))
-        .find(|candidate| candidate.is_file())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
 
     struct NamesOnlyDriver;
 
     impl WebsiteDriver for NamesOnlyDriver {
+        fn kind(&self) -> WebsiteDriverKind {
+            WebsiteDriverKind::FakeTestBrowser
+        }
+
         fn find_page(
             &mut self,
             request: WebsitePageRequest,
@@ -1829,56 +1481,20 @@ mod tests {
                 editable_box_name: placement.editable_box_name,
                 utf16_units: placement.text.encode_utf16().count(),
                 placed_sha256: sha256_hex(placement.text.as_bytes()),
+                readback_text: placement.text,
             })
-        fn read_selected_email(
+        }
+
+        fn read_editable_box(
             &mut self,
             page: &WebsitePage,
-        ) -> Result<WebsiteSelectedEmail, WebsiteDriverError> {
-            Ok(WebsiteSelectedEmail {
+            editable_box_name: &str,
+        ) -> Result<WebsiteEditableBoxRead, WebsiteDriverError> {
+            Ok(WebsiteEditableBoxRead {
                 page: page.clone(),
-                body: "selected email body".to_owned(),
-                conversation_identity: "stable-thread-identity".to_owned(),
+                editable_box_name: editable_box_name.to_owned(),
+                text: String::new(),
             })
-        }
-
-        fn read_live_run_progress(
-            &mut self,
-            _page: &WebsitePage,
-        ) -> Result<WebsiteLiveRunProgress, WebsiteDriverError> {
-            Ok(WebsiteLiveRunProgress {
-                active_account: "fixture@example.invalid".to_owned(),
-                current_place: "Inbox".to_owned(),
-                messages_checked: 1,
-                matches: 1,
-                scrolls: 0,
-                waits: 0,
-                changes: 1,
-            })
-        }
-
-        fn read_mailbox(
-            &mut self,
-            page: &WebsitePage,
-        ) -> Result<WebsiteMailboxRead, WebsiteDriverError> {
-            Ok(WebsiteMailboxRead {
-                page: page.clone(),
-                folders: vec!["Inbox".to_owned(), "Sent".to_owned()],
-                messages: vec![WebsiteMailboxMessage {
-                    folder: "Sent".to_owned(),
-                    subject: "fixture".to_owned(),
-                    time: "2026-08-06 09:00".to_owned(),
-                    sender: "fixture@example.invalid".to_owned(),
-                    owner_marker: "SCRUB-PR-MINE".to_owned(),
-                    yours: true,
-                }],
-            })
-        }
-
-        fn place_text(
-            &mut self,
-            _placement: WebsiteTextPlacement,
-        ) -> Result<(), WebsiteDriverError> {
-            Ok(())
         }
 
         fn press_named_control(
@@ -1900,61 +1516,177 @@ mod tests {
                 "find_page",
                 "read_page",
                 "place_text",
+                "read_editable_box",
                 "press_named_control"
             ]
         );
-        assert_eq!(jobs.len(), 4);
+        assert_eq!(jobs.len(), 5);
 
         println!("TASK1200 website_driver_job_count={}", jobs.len());
         for name in names {
             println!("TASK1200 website_driver_job={name}");
         }
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    let mut candidates = Vec::new();
-    if let Some(home) = home {
-        candidates.push(home.join(".cache/ms-playwright/chromium-1234/chrome-linux64/chrome"));
-    }
-    candidates.extend(
-        [
-            "/usr/bin/google-chrome",
-            "/usr/bin/google-chrome-stable",
-            "/usr/bin/chromium",
-            "/usr/bin/chromium-browser",
-            "/snap/bin/chromium",
-        ]
-        .into_iter()
-        .map(PathBuf::from),
-    );
-    candidates.into_iter().find(|path| executable_exists(path))
-}
-
-fn executable_exists(path: &Path) -> bool {
-    fs::metadata(path)
-        .map(|metadata| metadata.is_file())
-        .unwrap_or(false)
-}
-
-#[cfg(test)]
-#[allow(dead_code)]
-pub(crate) struct FakeWebsiteDriver;
-
-#[cfg(test)]
-impl WebsiteDriver for FakeWebsiteDriver {
-    fn kind(&self) -> WebsiteDriverKind {
-        WebsiteDriverKind::FakeTestBrowser
     }
 
-    fn find_page(&mut self, url: &Url) -> Result<WebsitePage, WebsiteDriverError> {
-        Ok(WebsitePage {
-            target_id: "fake-target".to_owned(),
-            url: url.to_string(),
-        })
+    #[derive(Default)]
+    struct DraftFixtureDriver {
+        drafts: BTreeMap<String, String>,
+        sent_message_count: usize,
     }
 
-    fn read_page(&self, page: &WebsitePage) -> Result<WebsitePageSnapshot, WebsiteDriverError> {
-        Ok(WebsitePageSnapshot {
-            title: "fake test browser".to_owned(),
-            url: page.url.clone(),
-        })
+    impl DraftFixtureDriver {
+        fn new() -> Self {
+            let mut drafts = BTreeMap::new();
+            drafts.insert("Subject".to_owned(), "keep this subject".to_owned());
+            drafts.insert("Body".to_owned(), "old draft".to_owned());
+            Self {
+                drafts,
+                sent_message_count: 0,
+            }
+        }
+
+        fn draft(&self, name: &str) -> &str {
+            self.drafts.get(name).map(String::as_str).unwrap_or("")
+        }
+    }
+
+    impl WebsiteDriver for DraftFixtureDriver {
+        fn kind(&self) -> WebsiteDriverKind {
+            WebsiteDriverKind::FakeTestBrowser
+        }
+
+        fn find_page(
+            &mut self,
+            request: WebsitePageRequest,
+        ) -> Result<WebsitePage, WebsiteDriverError> {
+            Ok(WebsitePage::synthetic(request.url))
+        }
+
+        fn read_page(&mut self, page: &WebsitePage) -> Result<WebsitePageText, WebsiteDriverError> {
+            Ok(WebsitePageText {
+                page: page.clone(),
+                title: "fixture draft".to_owned(),
+                text: self.drafts.values().cloned().collect::<Vec<_>>().join("\n"),
+                controls: WebsitePageControls {
+                    editable_boxes: self.drafts.keys().cloned().collect(),
+                    buttons: vec!["Send".to_owned()],
+                    visible_message_areas: Vec::new(),
+                },
+            })
+        }
+
+        fn place_text(
+            &mut self,
+            placement: WebsiteTextPlacement,
+        ) -> Result<WebsitePlacementProof, WebsiteDriverError> {
+            let draft = self
+                .drafts
+                .get_mut(&placement.editable_box_name)
+                .ok_or(WebsiteDriverError::TextPlacementFailed)?;
+            *draft = placement.text.clone();
+            Ok(WebsitePlacementProof {
+                page: placement.page,
+                editable_box_name: placement.editable_box_name,
+                utf16_units: placement.text.encode_utf16().count(),
+                placed_sha256: sha256_hex(placement.text.as_bytes()),
+                readback_text: placement.text,
+            })
+        }
+
+        fn read_editable_box(
+            &mut self,
+            page: &WebsitePage,
+            editable_box_name: &str,
+        ) -> Result<WebsiteEditableBoxRead, WebsiteDriverError> {
+            let text = self
+                .drafts
+                .get(editable_box_name)
+                .ok_or(WebsiteDriverError::NamedControlNotFound)?
+                .clone();
+            Ok(WebsiteEditableBoxRead {
+                page: page.clone(),
+                editable_box_name: editable_box_name.to_owned(),
+                text,
+            })
+        }
+
+        fn press_named_control(
+            &mut self,
+            control: WebsiteNamedControl,
+        ) -> Result<(), WebsiteDriverError> {
+            if control.kind == WebsiteControlKind::Button && control.name == "Send" {
+                self.sent_message_count += 1;
+                Ok(())
+            } else {
+                Err(WebsiteDriverError::NamedControlNotFound)
+            }
+        }
+    }
+
+    #[test]
+    fn task_1207_direct_place_text_changes_named_draft_without_sending() {
+        let mut driver = DraftFixtureDriver::new();
+        let page = driver
+            .find_page(WebsitePageRequest {
+                url: "https://fixture.invalid/draft".to_owned(),
+            })
+            .expect("fixture page opens");
+        let before_sent = driver.sent_message_count;
+        let proof = driver
+            .place_text(WebsiteTextPlacement {
+                page,
+                editable_box_name: "Body".to_owned(),
+                text: "TASK1207 placed draft".to_owned(),
+            })
+            .expect("direct place_text command changes the named editable box");
+
+        assert_eq!(driver.draft("Body"), "TASK1207 placed draft");
+        assert_eq!(driver.draft("Subject"), "keep this subject");
+        assert_eq!(before_sent, 0);
+        assert_eq!(driver.sent_message_count, 0);
+
+        println!("TASK1207 direct_command=place_text");
+        println!("TASK1207 changed_editable_box={}", proof.editable_box_name);
+        println!("TASK1207 draft_after=\"{}\"", driver.draft("Body"));
+        println!("TASK1207 untouched_editable_box=Subject");
+        println!("TASK1207 sent_message_count_before={before_sent}");
+        println!(
+            "TASK1207 sent_message_count_after={}",
+            driver.sent_message_count
+        );
+    }
+
+    #[test]
+    fn task_1210_direct_read_editable_box_returns_two_line_fixture_draft() {
+        let mut driver = DraftFixtureDriver::new();
+        let page = driver
+            .find_page(WebsitePageRequest {
+                url: "https://fixture.invalid/draft".to_owned(),
+            })
+            .expect("fixture page opens");
+        let fixture_draft = "TASK1210 first fixture line\nTASK1210 second fixture line";
+
+        driver
+            .place_text(WebsiteTextPlacement {
+                page: page.clone(),
+                editable_box_name: "Body".to_owned(),
+                text: fixture_draft.to_owned(),
+            })
+            .expect("direct place_text command places fixture draft");
+        let read = driver
+            .read_editable_box(&page, "Body")
+            .expect("direct read_editable_box command reads fixture draft");
+
+        assert_eq!(read.editable_box_name, "Body");
+        assert_eq!(read.text, fixture_draft);
+        assert_eq!(read.text.lines().count(), 2);
+
+        println!("TASK1210 direct_command=read_editable_box");
+        println!("TASK1210 editable_box_name={}", read.editable_box_name);
+        println!(
+            "TASK1210 fixture_draft_line_count={}",
+            read.text.lines().count()
+        );
+        println!("TASK1210 fixture_draft={}", read.text);
     }
 }

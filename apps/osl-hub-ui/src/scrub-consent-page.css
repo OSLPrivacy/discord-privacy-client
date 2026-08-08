@@ -1,0 +1,127 @@
+/* TASK 1408 - the Scrub consent page. Layout only; every colour comes from the
+   palette in styles.css so the page follows the theme. The risk sentences are
+   never smaller or fainter than the Continue button that acts on them. */
+
+.scrub-consent-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px 24px 24px;
+  color: var(--text);
+  background: var(--bg);
+}
+
+.scp-header h1 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 21px;
+  line-height: 1.2;
+}
+
+.scp-lead {
+  margin: 6px 0 0;
+  max-width: 640px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.scp-accounts {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* One panel per chosen account: the accounts stay visibly separate so a tick
+   can never look as if it covers more than the account it sits under. */
+.scp-account {
+  padding: 14px 16px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.scp-account-name {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.scp-account-id {
+  margin: 2px 0 10px;
+  color: var(--subtle);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.scp-risks {
+  margin: 0 0 12px;
+  padding-left: 18px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.scp-risks li { margin-bottom: 6px; }
+
+.scp-terms {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.scp-terms-address {
+  margin: 8px 0 12px;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.scp-terms-address code {
+  font-family: var(--font-mono);
+  color: var(--brand);
+}
+
+.scp-terms-hidden { color: var(--muted); }
+
+.scp-risk-tick {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: start;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line-soft);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.scp-notice {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--warn);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.scp-footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.scp-back,
+.scp-continue {
+  font-size: 13px;
+  font-weight: 600;
+  min-width: 110px;
+}
+
+.scp-continue:disabled {
+  opacity: .5;
+  cursor: not-allowed;
+}

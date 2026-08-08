@@ -1,0 +1,11 @@
+[package]
+name = "task-1252-yahoo-pointer-fixture"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "task_1252_yahoo_pointer_fixture"
+path = "src/lib.rs"
+
+[workspace]
