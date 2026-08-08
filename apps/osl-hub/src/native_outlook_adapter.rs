@@ -283,10 +283,10 @@ mod tests {
             driver.title_reader_command
         );
     }
-//! Outlook desktop read-only adapter pieces.
-//!
-//! The mailbox reader is deliberately local and read-only. It adapts Outlook
-//! desktop message facts into the shared mailbox reader contract used by Scrub.
+// Outlook desktop read-only adapter pieces.
+//
+// The mailbox reader is deliberately local and read-only. It adapts Outlook
+// desktop message facts into the shared mailbox reader contract used by Scrub.
 
 use crate::services::{
     open_shared_mailbox_message, read_shared_mailbox_folders, read_shared_mailbox_messages,
