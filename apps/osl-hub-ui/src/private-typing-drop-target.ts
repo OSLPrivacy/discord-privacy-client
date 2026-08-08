@@ -31,8 +31,8 @@ export function directPrivateTypingDropCommand(
   tray: AttachmentTrayActions,
 ): readonly AttachmentTrayCard[] {
   const dropped = [...files];
-  if (dropped.some((file) => file.isDirectory)) throw new Error(FOLDER_DROP_REJECTION);
   const records = dropped
+    .filter((file) => !file.isDirectory)
     .filter((file) => file.name.trim().length > 0 && Number.isFinite(file.size) && file.size >= 0)
     .map((file, index) => ({
       removableId: `drop-${crypto.randomUUID()}-${index}`,
@@ -42,6 +42,9 @@ export function directPrivateTypingDropCommand(
       previewDataUrl: null,
     }));
   tray.addCards(records);
+  // Keep valid files from one physical drop in the tray, but never turn a
+  // folder into a tray record. A folder-only drop still leaves the tray empty.
+  if (dropped.some((file) => file.isDirectory)) throw new Error(FOLDER_DROP_REJECTION);
   return records;
 }
 
