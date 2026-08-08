@@ -103,6 +103,8 @@ pub mod cloud_autoscrub_run;
 pub mod components;
 pub mod consent_ledger;
 pub mod control_contract;
+#[cfg(feature = "core")]
+pub mod cover_writing_gate;
 // credits.rs existed but was never declared, so `crate::credits` failed to
 // resolve the moment ai_carrier started using it - the file shipped as an
 // orphan and only broke the build once something imported it.
