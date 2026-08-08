@@ -1,5 +1,5 @@
 use osl_privacy_hub::website_driver::{
-    MessengerSendButton, MessengerSendChoice, RealBrowserWebsiteDriver,
+    MessengerSendButton, MessengerSendChoice, MessengerSendFields, RealBrowserWebsiteDriver,
     WebsiteConversationDiscovery, WebsiteDriver, WebsitePageRequest,
 };
 use std::{
@@ -63,7 +63,15 @@ fn task_1173_each_messenger_send_button_choice_prepares_without_posting() {
         let button = MessengerSendButton::for_selected_choice(choice.name())
             .expect("every rendered choice connects to the send button");
         let prepared = button
-            .prepare_selected_cover(&mut driver, &page, COVER)
+            .prepare_selected_cover(
+                &mut driver,
+                &page,
+                MessengerSendFields {
+                    private_text: PRIVATE_DRAFT,
+                    composer_name: Some("Message"),
+                    cover_text: COVER,
+                },
+            )
             .expect("pressing the OSL button prepares the selected cover");
 
         assert!(prepared.prepared);
