@@ -1,4 +1,4 @@
-:root {
+<!doctype html><html lang="en"><head><meta charset="utf-8"/><title>TASK 4858 Role ability</title><style>:root {
   --font-ui: "Inter Variable", Inter, "Segoe UI Variable Text", "Segoe UI", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
   --font-display: "Inter Variable", Inter, "Segoe UI Variable Display", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "Cascadia Mono", "SFMono-Regular", Consolas, ui-monospace, monospace;
@@ -7620,3 +7620,171 @@ code {
 .osl-role-ability-note { grid-column: 1 / -1; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
 .osl-role-ability-reason { grid-column: 1 / -1; margin: 0; font-size: 12px; line-height: 1.5; }
 .osl-role-ability-detail { grid-column: 1 / -1; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+</style><style>html,body,#app{width:100%;height:100%;margin:0;background:#080c0d}</style></head><body><div id="app"><section class="osl-role-ability" aria-label="What WATCH_CAPTAIN can actually do">
+    <header class="osl-role-ability-header">
+      <h2>What WATCH_CAPTAIN can actually do</h2>
+      <p class="osl-role-ability-scope">In #ops-vault, after channel overrides, keys, relay timeouts and this role's limits.</p>
+      <p class="osl-role-ability-counts"><span class="osl-role-ability-count-allowed" data-count="17">17 allowed</span><span class="osl-role-ability-count-denied" data-count="23">23 denied</span></p>
+    </header>
+    <ul class="osl-role-ability-rows" data-row-count="40"><li class="osl-role-ability-row" data-permission="read_messages" data-state="allowed" data-decided-by="ROLE_GRANTS">
+      <span class="osl-role-ability-permission">Read messages</span>
+      <span class="osl-role-ability-state" data-state="allowed">Allowed</span>
+      <p class="osl-role-ability-note">This role can do this here.</p>
+    </li><li class="osl-role-ability-row" data-permission="send_messages" data-state="denied" data-decided-by="ROLE_LIMIT_SLOW_MODE" data-reason="role limit is lower">
+      <span class="osl-role-ability-permission">Send messages</span>
+      <span class="osl-role-ability-state" data-state="denied">Denied</span>
+      <p class="osl-role-ability-reason">Denied: role limit is lower</p><p class="osl-role-ability-detail">This role&#39;s slow mode is 17 seconds and 12 of them are still to run.</p>
+    </li><li class="osl-role-ability-row" data-permission="edit_own_messages" data-state="allowed" data-decided-by="ROLE_GRANTS">
+      <span class="osl-role-ability-permission">Edit own messages</span>
+      <span class="osl-role-ability-state" data-state="allowed">Allowed</span>
+      <p class="osl-role-ability-note">This role can do this here.</p>
+    </li><li class="osl-role-ability-row" data-permission="delete_own_messages" data-state="allowed" data-decided-by="ROLE_GRANTS">
+      <span class="osl-role-ability-permission">Delete own messages</span>
+      <span class="osl-role-ability-state" data-state="allowed">Allowed</span>
+      <p class="osl-role-ability-note">This role can do this here.</p>
+    </li><li class="osl-role-ability-row" data-permission="create_threads" data-state="denied" data-decided-by="CHANNEL_DENY" data-reason="channel override says deny">
+      <span class="osl-role-ability-permission">Create threads</span>
+      <span class="osl-role-ability-state" data-state="denied">Denied</span>
+      <p class="osl-role-ability-reason">Denied: channel override says deny</p><p class="osl-role-ability-detail">#ops-vault overrides this row to deny, and a channel deny beats every enclave grant.</p>
+    </li><li class="osl-role-ability-row" data-permission="reply_threads" data-state="allowed" data-decided-by="ROLE_GRANTS">
+      <span class="osl-role-ability-permission">Reply in threads</span>
+      <span class="osl-role-ability-state" data-state="allowed">Allowed</span>
+      <p class="osl-role-ability-note">This role can do this here.</p>
+    </li><li class="osl-role-ability-row" data-permission="react_messages" data-state="denied" data-decided-by="RELAY" data-reason="relay timeout is active">
+      <span class="osl-role-ability-permission">React to messages</span>
+      <span class="osl-role-ability-state" data-state="denied">Denied</span>
+      <p class="osl-role-ability-reason">Denied: relay timeout is active</p><p class="osl-role-ability-detail">OSL&#39;s relay is refusing this for another 420 seconds. It still cannot read what you write.</p>
+    </li><li class="osl-role-ability-row" data-permission="attach_files" data-state="denied" data-decided-by="CHANNEL_DENY" data-reason="channel override says deny">
+      <span class="osl-role-ability-permission">Attach files</span>
+      <span class="osl-role-ability-state" data-state="denied">Denied</span>
+      <p class="osl-role-ability-reason">Denied: channel override says deny</p><p class="osl-role-ability-detail">#ops-vault overrides this row to deny, and a channel deny beats every enclave grant.</p>
+    </li><li class="osl-role-ability-row" data-permission="view_members" data-state="allowed" data-decided-by="ROLE_GRANTS">
+      <span class="osl-role-ability-permission">View members</span>
+      <span class="osl-role-ability-state" data-state="allowed">Allowed</span>
+      <p class="osl-role-ability-note">This role can do this here.</p>
+    </li><li class="osl-role-ability-row" data-permission="invite_members" data-state="denied" data-decided-by="ROLE_LIMIT_ACTION_BUDGET" data-reason="role limit is lower">
+      <span class="osl-role-ability-permission">Invite members</span>
+      <span class="osl-role-ability-state" data-state="denied">Denied</span>
+      <p class="osl-role-ability-reason">Denied: role limit is lower</p><p class="osl-role-ability-detail">This role&#39;s budget is 24 actions an hour and 24 are already spent.</p>
+    </li><li class="osl-role-ability-row" data-permission="remove_members" data-state="allowed" data-decided-by="ROLE_GRANTS">
+      <span class="osl-role-ability-permission">Remove members</span>
+      <span class="osl-role-ability-state" data-state="allowed">Allowed</span>
+      <p class="osl-role-ability-note">This role can do this here.</p>
+    </li><li class="osl-role-ability-row" data-permission="mute_members" data-state="denied" data-decided-by="ROLE_LIMIT_LONGEST_MUTE" data-reason="role limit is lower">
+      <span class="osl-role-ability-permission">Mute members</span>
+      <span class="osl-role-ability-state" data-state="denied">Denied</span>
+      <p class="osl-role-ability-reason">Denied: role limit is lower</p><p class="osl-role-ability-detail">This role&#39;s longest mute is 3600 seconds and this action asks for 86400.</p>
+    </li><li class="osl-role-ability-row" data-permission="manage_channels" data-state="allowed" data-decided-by="ROLE_GRANTS">
+      <span class="osl-role-ability-permission">Manage channels</span>
+      <span class="osl-role-ability-state" data-state="allowed">Allowed</span>
+      <p class="osl-role-ability-note">This role can do this here.</p>
+    </li><li class="osl-role-ability-row" data-permission="rename_channels" data-state="allowed" data-decided-by="ROLE_GRANTS">
+      <span class="osl-role-ability-permission">Rename channels</span>
+      <span class="osl-role-ability-state" data-state="allowed">Allowed</span>
+      <p class="osl-role-ability-note">This role can do this here.</p>
+    </li><li class="osl-role-ability-row" data-permission="archive_channels" data-state="allowed" data-decided-by="ROLE_GRANTS">
+      <span class="osl-role-ability-permission">Archive channels</span>
+      <span class="osl-role-ability-state" data-state="allowed">Allowed</span>
+      <p class="osl-role-ability-note">This role can do this here.</p>
+    </li><li class="osl-role-ability-row" data-permission="pin_messages" data-state="allowed" data-decided-by="ROLE_GRANTS">
+      <span class="osl-role-ability-permission">Pin messages</span>
+      <span class="osl-role-ability-state" data-state="allowed">Allowed</span>
+      <p class="osl-role-ability-note">This role can do this here.</p>
+    </li><li class="osl-role-ability-row" data-permission="start_voice" data-state="denied" data-decided-by="RELAY" data-reason="relay timeout is active">
+      <span class="osl-role-ability-permission">Start voice</span>
+      <span class="osl-role-ability-state" data-state="denied">Denied</span>
+      <p class="osl-role-ability-reason">Denied: relay timeout is active</p><p class="osl-role-ability-detail">OSL&#39;s relay is refusing this for another 420 seconds. It still cannot read what you write.</p>
+    </li><li class="osl-role-ability-row" data-permission="screen_share" data-state="denied" data-decided-by="RELAY" data-reason="relay timeout is active">
+      <span class="osl-role-ability-permission">Share screen</span>
+      <span class="osl-role-ability-state" data-state="denied">Denied</span>
+      <p class="osl-role-ability-reason">Denied: relay timeout is active</p><p class="osl-role-ability-detail">OSL&#39;s relay is refusing this for another 420 seconds. It still cannot read what you write.</p>
+    </li><li class="osl-role-ability-row" data-permission="record_meetings" data-state="denied" data-decided-by="OFF" data-reason="permission is off">
+      <span class="osl-role-ability-permission">Record meetings</span>
+      <span class="osl-role-ability-state" data-state="denied">Denied</span>
+      <p class="osl-role-ability-reason">Denied: permission is off</p><p class="osl-role-ability-detail">Nobody has ticked this box for WATCH_CAPTAIN, and no channel override turns it on.</p>
+    </li><li class="osl-role-ability-row" data-permission="view_audit_log" data-state="allowed" data-decided-by="CHANNEL_ALLOW">
+      <span class="osl-role-ability-permission">View audit log</span>
+      <span class="osl-role-ability-state" data-state="allowed">Allowed</span>
+      <p class="osl-role-ability-note">This role can do this here.</p>
+    </li><li class="osl-role-ability-row" data-permission="export_receipts" data-state="denied" data-decided-by="KEY" data-reason="no channel key">
+      <span class="osl-role-ability-permission">Export receipts</span>
+      <span class="osl-role-ability-state" data-state="denied">Denied</span>
+      <p class="osl-role-ability-reason">Denied: no channel key</p><p class="osl-role-ability-detail">This member&#39;s key store holds no key for export_receipts in #ops-vault, so the enclave cannot grant it.</p>
+    </li><li class="osl-role-ability-row" data-permission="queue_burn" data-state="denied" data-decided-by="KEY" data-reason="no channel key">
+      <span class="osl-role-ability-permission">Queue burn</span>
+      <span class="osl-role-ability-state" data-state="denied">Denied</span>
+      <p class="osl-role-ability-reason">Denied: no channel key</p><p class="osl-role-ability-detail">This member&#39;s key store holds no key for queue_burn in #ops-vault, so the enclave cannot grant it.</p>
+    </li><li class="osl-role-ability-row" data-permission="approve_burn" data-state="denied" data-decided-by="KEY" data-reason="no channel key">
+      <span class="osl-role-ability-permission">Approve burn</span>
+      <span class="osl-role-ability-state" data-state="denied">Denied</span>
+      <p class="osl-role-ability-reason">Denied: no channel key</p><p class="osl-role-ability-detail">This member&#39;s key store holds no key for approve_burn in #ops-vault, so the enclave cannot grant it.</p>
+    </li><li class="osl-role-ability-row" data-permission="rotate_keys" data-state="denied" data-decided-by="KEY" data-reason="no channel key">
+      <span class="osl-role-ability-permission">Rotate keys</span>
+      <span class="osl-role-ability-state" data-state="denied">Denied</span>
+      <p class="osl-role-ability-reason">Denied: no channel key</p><p class="osl-role-ability-detail">This member&#39;s key store holds no key for rotate_keys in #ops-vault, so the enclave cannot grant it.</p>
+    </li><li class="osl-role-ability-row" data-permission="manage_invites" data-state="allowed" data-decided-by="ROLE_GRANTS">
+      <span class="osl-role-ability-permission">Manage invites</span>
+      <span class="osl-role-ability-state" data-state="allowed">Allowed</span>
+      <p class="osl-role-ability-note">This role can do this here.</p>
+    </li><li class="osl-role-ability-row" data-permission="create_channels" data-state="allowed" data-decided-by="ROLE_GRANTS">
+      <span class="osl-role-ability-permission">Create channels</span>
+      <span class="osl-role-ability-state" data-state="allowed">Allowed</span>
+      <p class="osl-role-ability-note">This role can do this here.</p>
+    </li><li class="osl-role-ability-row" data-permission="delete_channels" data-state="denied" data-decided-by="OFF" data-reason="permission is off">
+      <span class="osl-role-ability-permission">Delete channels</span>
+      <span class="osl-role-ability-state" data-state="denied">Denied</span>
+      <p class="osl-role-ability-reason">Denied: permission is off</p><p class="osl-role-ability-detail">Nobody has ticked this box for WATCH_CAPTAIN, and no channel override turns it on.</p>
+    </li><li class="osl-role-ability-row" data-permission="set_retention" data-state="denied" data-decided-by="OFF" data-reason="permission is off">
+      <span class="osl-role-ability-permission">Set retention</span>
+      <span class="osl-role-ability-state" data-state="denied">Denied</span>
+      <p class="osl-role-ability-reason">Denied: permission is off</p><p class="osl-role-ability-detail">Nobody has ticked this box for WATCH_CAPTAIN, and no channel override turns it on.</p>
+    </li><li class="osl-role-ability-row" data-permission="manage_webhooks" data-state="denied" data-decided-by="OFF" data-reason="permission is off">
+      <span class="osl-role-ability-permission">Manage webhooks</span>
+      <span class="osl-role-ability-state" data-state="denied">Denied</span>
+      <p class="osl-role-ability-reason">Denied: permission is off</p><p class="osl-role-ability-detail">Nobody has ticked this box for WATCH_CAPTAIN, and no channel override turns it on.</p>
+    </li><li class="osl-role-ability-row" data-permission="manage_integrations" data-state="denied" data-decided-by="OFF" data-reason="permission is off">
+      <span class="osl-role-ability-permission">Manage integrations</span>
+      <span class="osl-role-ability-state" data-state="denied">Denied</span>
+      <p class="osl-role-ability-reason">Denied: permission is off</p><p class="osl-role-ability-detail">Nobody has ticked this box for WATCH_CAPTAIN, and no channel override turns it on.</p>
+    </li><li class="osl-role-ability-row" data-permission="publish_announcements" data-state="denied" data-decided-by="CHANNEL_DENY" data-reason="channel override says deny">
+      <span class="osl-role-ability-permission">Publish announcements</span>
+      <span class="osl-role-ability-state" data-state="denied">Denied</span>
+      <p class="osl-role-ability-reason">Denied: channel override says deny</p><p class="osl-role-ability-detail">#ops-vault overrides this row to deny, and a channel deny beats every enclave grant.</p>
+    </li><li class="osl-role-ability-row" data-permission="edit_enclave_profile" data-state="allowed" data-decided-by="ROLE_GRANTS">
+      <span class="osl-role-ability-permission">Edit enclave profile</span>
+      <span class="osl-role-ability-state" data-state="allowed">Allowed</span>
+      <p class="osl-role-ability-note">This role can do this here.</p>
+    </li><li class="osl-role-ability-row" data-permission="manage_roles" data-state="denied" data-decided-by="OFF" data-reason="permission is off">
+      <span class="osl-role-ability-permission">Manage roles</span>
+      <span class="osl-role-ability-state" data-state="denied">Denied</span>
+      <p class="osl-role-ability-reason">Denied: permission is off</p><p class="osl-role-ability-detail">Nobody has ticked this box for WATCH_CAPTAIN, and no channel override turns it on.</p>
+    </li><li class="osl-role-ability-row" data-permission="assign_roles" data-state="allowed" data-decided-by="ROLE_GRANTS">
+      <span class="osl-role-ability-permission">Assign roles</span>
+      <span class="osl-role-ability-state" data-state="allowed">Allowed</span>
+      <p class="osl-role-ability-note">This role can do this here.</p>
+    </li><li class="osl-role-ability-row" data-permission="view_presence" data-state="allowed" data-decided-by="ROLE_GRANTS">
+      <span class="osl-role-ability-permission">View presence</span>
+      <span class="osl-role-ability-state" data-state="allowed">Allowed</span>
+      <p class="osl-role-ability-note">This role can do this here.</p>
+    </li><li class="osl-role-ability-row" data-permission="manage_presence" data-state="denied" data-decided-by="OFF" data-reason="permission is off">
+      <span class="osl-role-ability-permission">Manage presence</span>
+      <span class="osl-role-ability-state" data-state="denied">Denied</span>
+      <p class="osl-role-ability-reason">Denied: permission is off</p><p class="osl-role-ability-detail">Nobody has ticked this box for WATCH_CAPTAIN, and no channel override turns it on.</p>
+    </li><li class="osl-role-ability-row" data-permission="create_polls" data-state="allowed" data-decided-by="ROLE_GRANTS">
+      <span class="osl-role-ability-permission">Create polls</span>
+      <span class="osl-role-ability-state" data-state="allowed">Allowed</span>
+      <p class="osl-role-ability-note">This role can do this here.</p>
+    </li><li class="osl-role-ability-row" data-permission="close_polls" data-state="denied" data-decided-by="OFF" data-reason="permission is off">
+      <span class="osl-role-ability-permission">Close polls</span>
+      <span class="osl-role-ability-state" data-state="denied">Denied</span>
+      <p class="osl-role-ability-reason">Denied: permission is off</p><p class="osl-role-ability-detail">Nobody has ticked this box for WATCH_CAPTAIN, and no channel override turns it on.</p>
+    </li><li class="osl-role-ability-row" data-permission="manage_stickers" data-state="denied" data-decided-by="CHANNEL_DENY" data-reason="channel override says deny">
+      <span class="osl-role-ability-permission">Manage stickers</span>
+      <span class="osl-role-ability-state" data-state="denied">Denied</span>
+      <p class="osl-role-ability-reason">Denied: channel override says deny</p><p class="osl-role-ability-detail">#ops-vault overrides this row to deny, and a channel deny beats every enclave grant.</p>
+    </li><li class="osl-role-ability-row" data-permission="view_security_events" data-state="denied" data-decided-by="KEY" data-reason="no channel key">
+      <span class="osl-role-ability-permission">View security events</span>
+      <span class="osl-role-ability-state" data-state="denied">Denied</span>
+      <p class="osl-role-ability-reason">Denied: no channel key</p><p class="osl-role-ability-detail">This member&#39;s key store holds no key for view_security_events in #ops-vault, so the enclave cannot grant it.</p>
+    </li></ul>
+  </section></div></body></html>
