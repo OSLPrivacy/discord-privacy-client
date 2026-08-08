@@ -6675,9 +6675,10 @@ code {
 
 .setting-line small { max-width: 520px; margin-top: 3px; color: var(--muted); }
 
-
-
-
+/* Enclave channels stay visible when a per-channel rule denies opening them. */
+.osl-enclave-channel-list ul { margin: 0; padding: 0; list-style: none; }
+.osl-enclave-channel-row { width: 100%; min-height: 40px; border: 0; border-bottom: 1px solid var(--line-soft); background: transparent; color: var(--text); text-align: left; cursor: pointer; }
+.osl-enclave-channel-row.is-denied { color: var(--muted); opacity: .55; cursor: not-allowed; }
 
 /* THE CLAIM STATE. Every connected app ships the sentence that says what OSL
    has and has not proven there, next to the label it justifies. The row grows

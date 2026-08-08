@@ -1,6 +1,7 @@
 import { oslEnclaveStateMarkup, type OslEnclaveState } from "./osl-enclaves-view";
 import { oslEnclavesFiveRegionSurface } from "./osl-enclaves-surface";
 import { serverMemberPermissionsMarkup } from "./server-channel-sidebar";
+import { oslEnclaveChannelListMarkup, type EnclaveChannelList } from "./osl-enclave-channel-list";
 
 /**
  * The Enclaves surface is intentionally independent of the application shell.
@@ -9,6 +10,7 @@ import { serverMemberPermissionsMarkup } from "./server-channel-sidebar";
  */
 export interface OslEnclavesSurfaceModel {
   readonly state?: OslEnclaveState;
+  readonly channelList?: EnclaveChannelList;
   readonly statusTag: (label: string) => string;
   readonly roleEditorMarkup?: string;
 }
@@ -21,10 +23,11 @@ export interface OslEnclavesSurfaceModel {
  * channel pane, and the capability/honesty sheet lives on as the surface's
  * About subpage rather than being the whole screen.
  */
-export function oslEnclavesSurfaceMarkup({ state = {}, statusTag, roleEditorMarkup = "" }: OslEnclavesSurfaceModel): string {
+export function oslEnclavesSurfaceMarkup({ state = {}, channelList, statusTag, roleEditorMarkup = "" }: OslEnclavesSurfaceModel): string {
   return oslEnclavesFiveRegionSurface({
     stateNotices: oslEnclaveStateMarkup(state),
     statusTag,
+    supplementaryChannelListMarkup: channelList ? oslEnclaveChannelListMarkup(channelList) : "",
     roleEditorMarkup: `${serverMemberPermissionsMarkup()}${roleEditorMarkup}`,
   });
 }
