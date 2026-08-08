@@ -275,6 +275,12 @@
   font-size: .8125rem;
   cursor: pointer;
 }
+.attachment-tray-send[disabled],
+.attachment-tray-send[aria-disabled="true"] {
+  opacity: .55;
+  cursor: not-allowed;
+}
+
 :root[data-theme="light"] {
   color: #111820;
   background: #edf1f4;
