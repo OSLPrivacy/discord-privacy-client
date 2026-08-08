@@ -21,6 +21,7 @@ const CHILD_ENV: &str = "TASK3223_CHILD_MODE";
 const ROOT_ENV: &str = "TASK3223_ROOT";
 const PHASE_ENV: &str = "TASK3223_PHASE";
 const MUTANT_ENV: &str = "TASK3223_PUBLISH_INCOMPLETE";
+const INCOMPLETE_PUBLISHED_FILE_RESULT: &str = "INCOMPLETE-PUBLISHED-FILE-3223-A";
 const OBJECT_ID: &str = "0123456789abcdef0123456789abcdef";
 const PAYLOAD: &[u8] = b"TASK-3223-COMPLETE-READABLE-FILE\n\
 0123456789abcdef0123456789abcdef\n\
@@ -403,7 +404,7 @@ fn complete_output_count(root: &Path) -> usize {
             let bytes = fs::read(&path).expect("read published file");
             assert!(
                 bytes == PAYLOAD,
-                "incomplete_published_file: {} published_bytes={} expected_bytes={}",
+                "{INCOMPLETE_PUBLISHED_FILE_RESULT} is the result that should have been refused: incomplete_published_file path={} published_bytes={} expected_bytes={}",
                 path.display(),
                 bytes.len(),
                 PAYLOAD.len()
