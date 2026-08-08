@@ -279,6 +279,7 @@ pub struct AllowedPlaceDirectionState {
     /// `visible` only when both reciprocal allowance records are present.
     pub verification_state: String,
     pub state: String,
+    pub verification_ticked: bool,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
@@ -1976,6 +1977,7 @@ pub fn compare_allowed_place_direction_state(
         "hidden"
     }
     .to_owned();
+    let verification_ticked = first_to_second_allowed && second_to_first_allowed;
     Ok(AllowedPlaceDirectionState {
         app,
         kind,
@@ -1988,6 +1990,7 @@ pub fn compare_allowed_place_direction_state(
         saved_directions,
         verification_state,
         state,
+        verification_ticked,
     })
 }
 
@@ -4948,6 +4951,9 @@ fn validate_allowed_place_record(record: &AllowedPlaceRecord) -> Result<(), Stri
     }
     if record.app == "x" && !matches!(record.kind.as_str(), "direct_message" | "post") {
         return Err("OSL X allowed-place kind is invalid".to_owned());
+    }
+    if record.app == ipc::allowed_places::APP_MESSENGER {
+        ipc::allowed_places::normalize_messenger_whitelist_kind(&record.kind)?;
     }
     validate_allowed_place_id(&record.stable_id, "OSL allowed-place identifier is invalid")?;
     let expected_prefix = format!("{}:{}:{}:", record.app, record.account, record.kind);

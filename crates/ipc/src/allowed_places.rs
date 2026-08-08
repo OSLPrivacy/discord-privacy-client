@@ -93,6 +93,22 @@ impl AllowedPlaceRecord {
         ))
     }
 
+    pub fn messenger(
+        account: impl Into<String>,
+        kind: impl AsRef<str>,
+        place_id: impl Into<String>,
+    ) -> std::result::Result<Self, String> {
+        let account = account.into();
+        let kind = normalize_messenger_whitelist_kind(kind.as_ref())?;
+        let place_id = place_id.into();
+        Ok(Self::from_parts(
+            APP_MESSENGER,
+            account.clone(),
+            kind.clone(),
+            format!("{APP_MESSENGER}:{account}:{kind}:{place_id}"),
+        ))
+    }
+
     pub fn signal(
         account: impl Into<String>,
         kind: crate::auto_whitelist_rules::SignalWhitelistKind,
@@ -442,9 +458,11 @@ pub fn write_allowed_places(path: &Path, places: &SavedAllowedPlaces) -> Result<
 
 pub const APP_DISCORD: &str = "discord";
 pub const APP_TELEGRAM: &str = "telegram";
+pub const APP_MESSENGER: &str = "messenger";
 pub const KIND_DIRECT_MESSAGE: &str = "direct_message";
 pub const KIND_GROUP_CHAT: &str = "group_chat";
 pub const KIND_CHANNEL: &str = "channel";
+pub const KIND_COMMUNITY: &str = "community";
 pub const KIND_PUBLIC_POST: &str = "public_post";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -488,6 +506,15 @@ pub fn normalize_telegram_whitelist_kind(input: &str) -> std::result::Result<Str
         Ok(normalized)
     } else {
         Err(format!("OSL: unknown Telegram whitelist kind '{input}'"))
+    }
+}
+
+pub fn normalize_messenger_whitelist_kind(input: &str) -> std::result::Result<String, String> {
+    let normalized = input.trim().to_ascii_lowercase().replace('-', "_");
+    if [KIND_DIRECT_MESSAGE, KIND_GROUP_CHAT, KIND_COMMUNITY].contains(&normalized.as_str()) {
+        Ok(normalized)
+    } else {
+        Err(format!("OSL: unknown Messenger whitelist kind '{input}'"))
     }
 }
 

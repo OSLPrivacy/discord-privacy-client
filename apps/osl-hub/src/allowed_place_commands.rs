@@ -247,7 +247,6 @@ fn instagram_story_audience_member_is_allowed(
         },
     )
 }
-
 fn run_allowed_place_command(
     command: &str,
     args: &[String],
