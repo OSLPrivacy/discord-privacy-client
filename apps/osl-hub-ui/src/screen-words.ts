@@ -180,6 +180,8 @@ function namedCopy(source: string): Map<string, string> {
   const named = new Map<string, string>();
   const declaration = /\bconst\s+([A-Za-z_$][\w$]*)\s*=\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)')\s*;/gu;
   for (const match of source.matchAll(declaration)) named.set(match[1]!, match[2] ?? match[3] ?? "");
+  const conditional = /\bconst\s+([A-Za-z_$][\w$]*)\s*=\s*[^;?]+\?\s*"([^"]*)"\s*:\s*"([^"]*)"\s*;/gu;
+  for (const match of source.matchAll(conditional)) named.set(match[1]!, `${match[2]} ${match[3]}`);
   return named;
 }
 
@@ -246,6 +248,19 @@ export function screenMarkup(screenSource: string): string {
   return templateBodies(screenSource).map((body) => markupFromTemplate(body, named)).join(" ");
 }
 
+/** Extract one named top-level function without compiling the surrounding module. */
+export function sliceFunctionSource(source: string, name: string, nextName: string): string {
+  const start = source.indexOf(`function ${name}(`);
+  const end = source.indexOf(`function ${nextName}(`, start + 1);
+  if (start < 0 || end <= start) throw new Error(`cannot slice ${name} before ${nextName}`);
+  return source.slice(start, end);
+}
+
+/** Reconstruct the user-visible template copy from a render function's source. */
+export function screenMarkupFromSource(screenSource: string): string {
+  return screenMarkup(screenSource);
+}
+
 function stripTags(markup: string): string {
   return markup.replace(/<[^<>]*>/gu, " ").replace(/&[a-z]+;/giu, " ");
 }
@@ -276,13 +291,15 @@ export function findBannedWords(text: string): string[] {
 }
 
 export function checkScreenWords(screenSource: string, requiredWords: readonly string[]): ScreenWordReport;
+export function checkScreenWords(markup: string, expected: ScreenWordsExpectation): ScreenWordsReport;
 export function checkScreenWords(markup: string, expected: { title: string; requiredWords: readonly string[] }): ScreenWordReport;
 export function checkScreenWords(
   screenSource: string,
-  requiredWordsOrExpectation: readonly string[] | { title: string; requiredWords: readonly string[] },
-): ScreenWordReport {
+  requiredWordsOrExpectation: readonly string[] | ScreenWordsExpectation | { title: string; requiredWords: readonly string[] },
+): ScreenWordReport | ScreenWordsReport {
   if (!Array.isArray(requiredWordsOrExpectation)) {
-    const expectation = requiredWordsOrExpectation as { title: string; requiredWords: readonly string[] };
+    const expectation = requiredWordsOrExpectation as ScreenWordsExpectation | { title: string; requiredWords: readonly string[] };
+    if ("leastWords" in expectation) return checkPlainEnglishScreenWords(screenSource, expectation);
     const text = visibleText(screenSource);
     const words = visibleWords(screenSource);
     const presentWords = expectation.requiredWords.filter((word) => text.includes(word));
@@ -358,7 +375,7 @@ export interface ScreenWordsExpectation {
   /** Fewest visible words for the screen to count as read at all. */
   leastWords: number;
   /** Extra banned terms from the product contract, on top of the plain-English list. */
-  bannedWords: readonly string[];
+  bannedWords?: readonly string[];
 }
 
 export interface ScreenWordsReport {
@@ -498,7 +515,7 @@ export function checkPlainEnglishScreenWords(
     if (haystack.includes(needle)) present.push(required);
     else missing.push(required);
   }
-  const banned = findPlainEnglishBannedWords(markup, expectation.bannedWords);
+  const banned = findPlainEnglishBannedWords(markup, expectation.bannedWords ?? []);
   const titleMatches = title === expectation.title;
   const enoughWords = words.length >= expectation.leastWords;
   return {
