@@ -1,0 +1,17 @@
+{
+  "protected_marker": "TASK3234-PROTECTED-7C91A6D04E2B",
+  "windows_key_store_protected": false,
+  "items": [
+    { "surface": "program files", "root": "program_files", "path": "osl-privacy.exe", "protected": false },
+    { "surface": "settings", "root": "config", "path": "ordinary-settings.json", "protected": false },
+    { "surface": "keys", "root": "config", "path": "ordinary-note.txt", "protected": false },
+    { "surface": "stored messages", "root": "config", "path": "ordinary-history.txt", "protected": false },
+    { "surface": "downloaded files", "root": "local", "path": "ordinary-download.txt", "protected": false },
+    { "surface": "startup entry", "root": "startup", "path": "OSL Privacy.lnk", "protected": false },
+    { "surface": "uninstall logs", "root": "uninstall_logs", "path": "installer.log", "protected": false },
+    { "surface": "backups", "root": "config", "path": "ordinary-backup.txt", "protected": false },
+    { "surface": "temporary files", "root": "config", "path": "ordinary.tmp", "protected": false },
+    { "surface": "logs", "root": "config", "path": "ordinary.log", "protected": false },
+    { "surface": "waiting jobs", "root": "config", "path": "ordinary-job.json", "protected": false }
+  ]
+}
