@@ -10850,6 +10850,7 @@ fn cmd_osl_send_friend_request_with_dir(
     dir: &Path,
 ) -> Result<SendFriendRequestResult, String> {
     guard_friend_request_peer_binding(state, &peer_discord_id)?;
+    guard_friend_request_not_blocked(dir, &peer_discord_id)?;
     let scope: crate::scope::Scope = scope_input
         .try_into()
         .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
@@ -10892,6 +10893,36 @@ fn cmd_osl_send_friend_request_with_dir(
     save_pending_friend_requests(&path, &records)?;
 
     Ok(SendFriendRequestResult { request, pending })
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingFriendRequestCountDto {
+    pub person_id: String,
+    pub for_person: usize,
+    pub total: usize,
+}
+
+/// A direct, read-only count of the pending friend requests on file, so a caller
+/// can re-state what is pending from the store itself rather than from whatever a
+/// send happened to return.
+pub fn cmd_osl_count_pending_friend_requests(
+    _state: &AppState,
+    peer_discord_id: String,
+) -> Result<PendingFriendRequestCountDto, String> {
+    record_activity_on_command_entry();
+    validate_friend_request_person_id(&peer_discord_id)?;
+    let dir =
+        keystore::osl_config_dir().map_err(|e| format!("OSL: pending friend request dir: {e}"))?;
+    let records = load_pending_friend_requests(&pending_friend_requests_path(&dir))?;
+    Ok(PendingFriendRequestCountDto {
+        for_person: records
+            .iter()
+            .filter(|record| record.peer_discord_id == peer_discord_id)
+            .count(),
+        total: records.len(),
+        person_id: peer_discord_id,
+    })
 }
 
 pub fn cmd_osl_create_friend_invite_link(
