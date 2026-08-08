@@ -8,7 +8,8 @@
 use serde::Serialize;
 use std::collections::BTreeSet;
 
-pub const INSTAGRAM_STORY_LIFETIME_SECONDS: i64 = 24 * 60 * 60;
+pub const INSTAGRAM_STORY_LIFETIME_HOURS: i64 = 24;
+pub const INSTAGRAM_STORY_LIFETIME_SECONDS: i64 = INSTAGRAM_STORY_LIFETIME_HOURS * 60 * 60;
 pub const INSTAGRAM_STORY_ALLOWED_PLACE_KIND: &str = "public_post";
 pub const MAX_INSTAGRAM_STORY_AUDIENCE_MEMBERS: usize = 128;
 
@@ -45,6 +46,7 @@ pub struct InstagramStoryPublishReceipt {
     pub effective_expires_at: i64,
     pub expiry_source: &'static str,
     pub instagram_expires_at: i64,
+    pub maximum_visible_story_life_hours: i64,
     pub audience_count: usize,
 }
 
@@ -128,6 +130,7 @@ pub fn invoke_instagram_story_publish(
         effective_expires_at: control.earlier_expires_at,
         expiry_source: control.expiry_source,
         instagram_expires_at: control.instagram_expires_at,
+        maximum_visible_story_life_hours: INSTAGRAM_STORY_LIFETIME_HOURS,
         audience_count: control.audience_count,
     })
 }
