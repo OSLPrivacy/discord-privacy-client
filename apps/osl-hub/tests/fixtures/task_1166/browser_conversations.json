@@ -10,7 +10,8 @@
         "composer": {
           "role": "textbox",
           "name": "Message",
-          "accessible": true
+          "accessible": true,
+          "state": "active"
         }
       }
     },
@@ -31,7 +32,8 @@
         "composer": {
           "role": "textbox",
           "name": "Message…",
-          "accessible": true
+          "accessible": true,
+          "state": "active"
         }
       }
     },
@@ -65,7 +67,8 @@
         "composer": {
           "role": "textbox",
           "name": "Search Messenger",
-          "accessible": true
+          "accessible": true,
+          "state": "search-focused"
         }
       }
     },
@@ -95,7 +98,8 @@
         "composer": {
           "role": "textbox",
           "name": "Message",
-          "accessible": true
+          "accessible": true,
+          "state": "active"
         }
       }
     },
@@ -112,7 +116,8 @@
         "composer": {
           "role": "textbox",
           "name": "Post your reply",
-          "accessible": true
+          "accessible": true,
+          "state": "active"
         }
       }
     },

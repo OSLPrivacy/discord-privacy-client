@@ -183,6 +183,10 @@ pub struct WebsiteComposerAccessibility {
     pub role: String,
     pub name: String,
     pub accessible: bool,
+    /// Explicit browser-observed state. Only `active` is a writable composer;
+    /// closed surfaces and focused search controls must fail closed even when
+    /// they retain the same accessible name and textbox role.
+    pub state: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -292,6 +296,7 @@ pub fn discover_browser_conversation(
         .composer
         .as_ref()
         .filter(|composer| composer.accessible)
+        .filter(|composer| composer.state == "active")
         .filter(|composer| composer.role.eq_ignore_ascii_case("textbox"))
         .filter(|composer| !composer.name.trim().is_empty())
         .filter(|composer| !composer.name.to_ascii_lowercase().contains("search"))
@@ -1941,7 +1946,8 @@ const BROWSER_CONVERSATION_SNAPSHOT_EXPRESSION: &str = r#"
       composer: composer ? {
         role: composer.getAttribute('role') || '',
         name: composerName(composer),
-        accessible: visible(composer)
+        accessible: visible(composer),
+        state: compact(composer.getAttribute('data-osl-composer')) || 'active'
       } : null
     }
   };
