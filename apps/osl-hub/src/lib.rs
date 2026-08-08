@@ -90,6 +90,7 @@ pub mod execution_consent;
 pub mod external_overlay;
 pub(crate) mod firefox_migration_coordinator;
 pub mod front_window_grab;
+pub mod follow_active_app_window;
 #[cfg(feature = "core")]
 pub mod friend_account_reach;
 pub mod hosted_audience;
