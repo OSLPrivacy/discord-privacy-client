@@ -1,0 +1,39 @@
+[package]
+name = "task-3009-marked-message-deleter"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# This crate exists only so TASK 3009's shared deleter can be built and run in
+# this lane. It compiles the SAME source files the hub crate declares --
+# `apps/osl-hub/src/shared_marked_message_deleter.rs` and, for the TASK 3001
+# owner check it calls, `apps/osl-hub/src/privacy_scan.rs` (plus the
+# `attachment_scan` module that file imports) -- through `#[path]`, so there is
+# no second copy of the logic. The hub lib itself does not compile in this
+# worktree: `apps/osl-hub/src/services.rs` arrived with merge damage (`error:
+# this file contains an unclosed delimiter` at src/services.rs:5244), which is
+# unrelated to this task and not repaired here.
+#
+# Same shape as `apps/osl-hub/task_3406_place_text`. Dependency versions are the
+# exact pins from `apps/osl-hub/Cargo.toml`, including their default-feature
+# settings, so the shared source compiles against the same crates it does there.
+[dependencies]
+serde = { version = "=1.0.228", features = ["derive"] }
+base64 = "=0.22.1"
+calamine = { version = "=0.36.0", default-features = false }
+flate2 = "=1.1.9"
+lopdf = { version = "=0.42.0", default-features = false }
+pdf-extract = "=0.12.0"
+quick-xml = "=0.41.0"
+tar = "=0.4.46"
+zip = { version = "=8.6.0", default-features = false, features = ["deflate"] }
+
+[lib]
+name = "task_3009_marked_message_deleter"
+path = "src/lib.rs"
+
+[[bin]]
+name = "task-3009-marked-message-deleter"
+path = "src/main.rs"
+
+[workspace]

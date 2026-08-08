@@ -989,6 +989,7 @@ pub mod service_scope_index;
 pub mod shared_mail_deleter;
 #[cfg(not(task3982_focused))]
 pub mod shared_mailbox_reader;
+pub mod shared_marked_message_deleter;
 pub mod signal_destination_binding;
 #[cfg(feature = "core")]
 pub mod signal_extra_device_sender;
