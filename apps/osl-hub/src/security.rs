@@ -1595,6 +1595,41 @@ pub fn list_group_member_permissions_for_group(
     Ok(group_member_permission_records_for_group(&prefs, &group_id))
 }
 
+/// Compatibility-sized account-reach setter used by the headless attachment
+/// path.  The page-level bulk editor is the public UI; this keeps the native
+/// transport's one-account admission explicit and persisted.
+pub fn set_friend_account_reach_choice(
+    security: &HubSecurityState,
+    person_id: String,
+    service_id: String,
+    account_id: String,
+    allowed: bool,
+) -> Result<(), String> {
+    require_unlocked()?;
+    validate_person_id(&person_id)?;
+    let account = FriendAccountReachAccount {
+        service_id,
+        account_id,
+        account_label: "OSL account".to_owned(),
+    };
+    let key = validate_friend_account_reach_accounts(&[account])?
+        .pop()
+        .expect("one validated account key");
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL friend account reach is unavailable".to_owned())?;
+    let path = config_dir()?.join(SECURITY_PREFS_FILE);
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
+    if allowed {
+        prefs.friend_account_reach_choices.entry(person_id).or_default().insert(key, true);
+    } else if let Some(choices) = prefs.friend_account_reach_choices.get_mut(&person_id) {
+        choices.remove(&key);
+    }
+    prefs.version = 2;
+    write_encrypted_json(&path, &prefs)
+}
+
 pub fn set_hub_friend_account_reach_nowhere(
     security: &HubSecurityState,
     person_id: String,

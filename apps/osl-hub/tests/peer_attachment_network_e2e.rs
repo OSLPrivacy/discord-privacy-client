@@ -3547,6 +3547,147 @@ fn padding_buckets_and_rate_limit_budgets_bound_the_real_multipart_shape() {
     assert!(ATTACHMENT_DELETE_BUDGET >= 60);
 }
 
+/// A normal-size two-account run with every admission ceiling left enabled.
+///
+/// The receiver is Pro deliberately: the 400 MB sender is within Pro's send
+/// allowance, but its padded ciphertext is larger than Free's 250 MiB daily
+/// fetch ceiling.  Using a Pro receiver proves the requested normal transfer
+/// without quietly disabling that receive-side ceiling.
+#[test]
+#[ignore = "moves a 400 MB plaintext and its 512 MiB padded ciphertext through the loopback fixture"]
+fn task_0589_free_twenty_mb_and_pro_four_hundred_mb_open_with_all_limits_on() {
+    const FREE_BYTES: usize = 20 * 1024 * 1024;
+    const PRO_BYTES: usize = 400_000_000;
+    const USAGE_DAY: i64 = 20_589 * 86_400;
+
+    let _serial = fixture_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let relay = RelayServer::start();
+    let storage = TestStorage::new("task0589-normal-limits");
+    let free = Peer::new(&storage, "free-sender", &relay);
+    let pro = Peer::new(&storage, "pro-sender", &relay);
+    let receiver = Peer::new(&storage, "pro-receiver", &relay);
+    free.open_context_to(&receiver.friend_code);
+    receiver.open_context_to(&free.friend_code);
+    pro.open_context_to(&receiver.friend_code);
+    receiver.open_context_to(&pro.friend_code);
+    let client = CipherStoreClient::new(&relay.base_url()).expect("build cipher-store client");
+
+    set_account_tier(&free.core, keystore::LicenseState::Free, "Unconfigured");
+    set_account_tier(&pro.core, keystore::LicenseState::Paid, "ACTIVE");
+    set_account_tier(&receiver.core, keystore::LicenseState::Paid, "ACTIVE");
+
+    let free_source = write_plaintext_source(&storage.root.join("free-20mb.bin"), FREE_BYTES);
+    let pro_source = write_plaintext_source(&storage.root.join("pro-400mb.bin"), PRO_BYTES);
+
+    // Task 0588's durable, atomic admissions are enabled before either real
+    // send.  Their source-byte accounting is intentionally independent from
+    // the cipher-store's sealed-object accounting below; both boundaries have
+    // to accept this ordinary run.
+    let mut usage = ipc::usage_counters::UsageCounterStore::open(&storage.root.join("usage"))
+        .expect("open durable usage gates");
+    for (account, file_id, bytes, ceilings) in [
+        ("free-sender", "free-20mb", FREE_BYTES as u64, ipc::usage_counters::UsageCeilings::FREE),
+        ("pro-sender", "pro-400mb", PRO_BYTES as u64, ipc::usage_counters::UsageCeilings::PRO),
+    ] {
+        usage
+            .with_upload_admission(account, file_id, bytes, ceilings, USAGE_DAY, || Ok::<_, ()>(()))
+            .expect("normal attachment must pass every durable admission gate");
+        usage
+            .record_message_sent(account, USAGE_DAY)
+            .expect("record accepted attachment notice");
+        let measured = usage.read_at(account, USAGE_DAY).expect("read accepted usage");
+        assert!(measured.stored_bytes * 2 < ceilings.stored_bytes);
+        assert!(measured.bytes_sent_today * 2 < ceilings.bytes_sent_today);
+        assert!(measured.messages_sent_today * 2 < ceilings.messages_sent_today);
+    }
+
+    let free_sent = send_attachment(&free, &client, &free_source, "free-20mb.bin", false);
+    let pro_sent = send_attachment(&pro, &client, &pro_source, "pro-400mb.bin", false);
+    assert!(free_sent.sealed_size <= MAX_DIRECT_ATTACHMENT_BYTES);
+    assert!(pro_sent.sealed_size <= WORKER_MAX_SEALED_ATTACHMENT_BYTES);
+
+    receiver.activate();
+    let pending = osl_privacy_hub::broker::list_osl_chat_attachments(
+        &receiver.core,
+        &receiver.security,
+        &receiver.broker,
+    )
+    .expect("list both delivered attachments");
+    assert_eq!(pending.len(), 2, "neither normal send may be refused");
+
+    let mut opened = BTreeMap::new();
+    for (filename, source, expected_bytes) in [
+        ("free-20mb.bin", &free_source, FREE_BYTES as u64),
+        ("pro-400mb.bin", &pro_source, PRO_BYTES as u64),
+    ] {
+        let item = pending
+            .iter()
+            .find(|item| item.original_filename == filename)
+            .expect("the other side must receive this attachment");
+        let plan = osl_privacy_hub::broker::take_osl_chat_attachment(
+            &receiver.core,
+            &receiver.security,
+            &receiver.broker,
+            &item.attachment_id,
+        )
+        .expect("take an attachment open plan");
+        let download = fetch_and_verify(&receiver, &client, &plan)
+            .expect("the other side must fetch and authenticate it");
+        let mut sealed = File::open(&download).expect("open verified ciphertext");
+        let plain = osl_privacy_hub::peer_attachment_io::decrypt_file(
+            &receiver.local_root,
+            &mut sealed,
+            &plan.original_filename,
+            &plan.mime_type,
+            crypto::aead::Key::from_bytes(plan.attachment_key),
+        )
+        .expect("the other side must open it");
+        drop(sealed);
+        osl_privacy_hub::peer_attachment_io::remove_staging_path_in_root(&receiver.local_root, &download)
+            .expect("remove ciphertext staging");
+        let opened_path = plain.path().expect("opened plaintext staging exists").to_owned();
+        assert_eq!(plain.plaintext_len(), expected_bytes);
+        assert!(files_identical(source, &opened_path), "opened fingerprint must match original");
+        let (original_hash, _) = osl_privacy_hub::peer_attachment_io::sha256_file(source)
+            .expect("hash original");
+        let (opened_hash, _) = osl_privacy_hub::peer_attachment_io::sha256_file(&opened_path)
+            .expect("hash opened file");
+        assert_eq!(original_hash, opened_hash, "SHA-256 fingerprints must match exactly");
+        osl_privacy_hub::broker::commit_osl_chat_attachment_open(
+            &receiver.core, &receiver.security, &receiver.broker, &plan,
+        )
+        .expect("commit opened attachment");
+        plain.remove_now().expect("remove plaintext staging");
+        opened.insert(filename, hex_lower(&original_hash));
+    }
+    assert_eq!(relay.pending_for(&receiver.identity_id), 0);
+
+    let (live_rows, live_bytes) = relay.with_state(|state| {
+        (
+            state.attachments.len(),
+            state.attachments.values().map(|row| row.size_bytes).sum::<u64>(),
+        )
+    });
+    relay.counts(|counts| {
+        let upload_requests = counts.direct_uploads + counts.sessions
+            + u32::try_from(counts.parts.len()).expect("part count fits u32") + counts.completes;
+        assert_eq!(counts.rate_limited, 0, "neither send may be rate-limited");
+        assert!(upload_requests * 2 < ATTACHMENT_UPLOAD_BUDGET);
+        assert!(counts.fetches * 2 < ATTACHMENT_FETCH_BUDGET);
+        assert!(counts.deletes * 2 < ATTACHMENT_DELETE_BUDGET);
+        assert!(live_rows * 2 < MAX_LIVE_ATTACHMENT_ROWS);
+        assert!(live_bytes * 2 < MAX_LIVE_ATTACHMENT_BYTES);
+        println!(
+            "TASK0589 free_bytes={FREE_BYTES} pro_bytes={PRO_BYTES} free_fingerprint={} pro_fingerprint={} sends_refused=0 opens=2 upload_requests={upload_requests}/{} fetches={}/{} deletes={}/{} live_rows={live_rows}/{} live_bytes={live_bytes}/{} rate_limited={}",
+            opened["free-20mb.bin"], opened["pro-400mb.bin"], ATTACHMENT_UPLOAD_BUDGET,
+            counts.fetches, ATTACHMENT_FETCH_BUDGET, counts.deletes, ATTACHMENT_DELETE_BUDGET,
+            MAX_LIVE_ATTACHMENT_ROWS, MAX_LIVE_ATTACHMENT_BYTES, counts.rate_limited,
+        );
+    });
+}
+
 /// The full product path over the **smallest multipart shape production can
 /// actually produce**: a plaintext just past the 25 MiB bucket, which pads to
 /// the 50 MiB bucket and seals to roughly 50 MiB across seven parts.
