@@ -133,6 +133,8 @@ pub mod hosted_audience;
 pub mod hosted_port;
 pub mod hosted_provider_recipe;
 pub mod hosted_session_port;
+#[cfg(feature = "core")]
+pub mod instagram_eye_state;
 pub mod instagram_send;
 pub mod instagram_story;
 /// Fail-closed availability gate for Instagram's desktop story controls.
