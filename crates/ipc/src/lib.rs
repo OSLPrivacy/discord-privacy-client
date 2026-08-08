@@ -88,6 +88,7 @@ pub mod revocation;
 // 9-C1: `pending_invitations` module removed alongside the
 // invitation handshake. Pre-C1 `pending_invitations.json` files are
 // unconditionally deleted at bootstrap.
+pub mod schedule_storage;
 pub mod scope;
 pub mod scope_blobs_file;
 pub mod scope_ttl_file;
