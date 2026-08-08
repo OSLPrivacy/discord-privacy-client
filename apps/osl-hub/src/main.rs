@@ -2109,6 +2109,20 @@ async fn set_hub_chat_approval_suggestion_choice(
 }
 
 #[tauri::command]
+async fn reset_every_setting(
+    caller: tauri::WebviewWindow,
+    core: State<'_, HubCoreState>,
+    security_state: State<'_, HubSecurityState>,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<security::ResetEverySettingRecord, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may reset settings".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    security::reset_every_setting(&core, &security_state)
+}
+
+#[tauri::command]
 async fn answer_hub_chat_approval_suggestion(
     caller: tauri::WebviewWindow,
     broker_state: State<'_, HubBrokerState>,
