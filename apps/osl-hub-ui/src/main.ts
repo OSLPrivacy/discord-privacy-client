@@ -8487,6 +8487,24 @@ function bindWorkspace(): void {
   bindPasswordVisibility();
   bindLocalProtectedSheet();
   bindSavedAccountControls();
+  document.querySelectorAll<HTMLInputElement>('input[name="window-position"]').forEach((input) => input.addEventListener("change", () => {
+    if (!input.checked) return;
+    windowSoundsSettings = { ...windowSoundsSettings, position: input.value as WindowPosition };
+    saveWindowSoundsSettings(windowSoundsSettings);
+    render();
+  }));
+  (Object.keys(defaultWindowSoundsSettings) as Array<keyof WindowSoundsSettings>).filter((key) => key !== "position").forEach((key) => {
+    document.querySelector<HTMLInputElement>(`#window-sound-${key}`)?.addEventListener("change", (event) => {
+      windowSoundsSettings = { ...windowSoundsSettings, [key]: (event.currentTarget as HTMLInputElement).checked };
+      saveWindowSoundsSettings(windowSoundsSettings);
+      render();
+    });
+  });
+  document.querySelector<HTMLButtonElement>("#reset-window-sounds")?.addEventListener("click", () => {
+    windowSoundsSettings = { ...defaultWindowSoundsSettings };
+    saveWindowSoundsSettings(windowSoundsSettings);
+    render();
+  });
   document.querySelectorAll<HTMLButtonElement>("[data-osl-chat-open]").forEach((button) => button.addEventListener("click", () => {
     void openOslChat(button.dataset.oslChatOpen ?? "");
   }));
