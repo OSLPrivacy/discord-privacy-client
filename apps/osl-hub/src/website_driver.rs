@@ -559,9 +559,12 @@ impl RealBrowserWebsiteDriver {
         page: &WebsitePage,
     ) -> Result<InstagramPrivateComposerState, WebsiteDriverError> {
         let websocket_url = self.page_websocket_url(page)?;
-        read_instagram_private_composer_state(
-            &websocket_url,
-            INSTALL_INSTAGRAM_PRIVATE_COMPOSER_EXPRESSION,
+        verify_instagram_private_composer_state(
+            0,
+            read_instagram_private_composer_state(
+                &websocket_url,
+                INSTALL_INSTAGRAM_PRIVATE_COMPOSER_EXPRESSION,
+            ),
         )
     }
 
@@ -573,9 +576,13 @@ impl RealBrowserWebsiteDriver {
         text: &str,
     ) -> Result<InstagramPrivateComposerState, WebsiteDriverError> {
         let websocket_url = self.page_websocket_url(page)?;
+        let expected_private_bytes = text.len();
         let text = serde_json::to_string(text).map_err(|_| WebsiteDriverError::ReadFailed)?;
         let expression = WRITE_INSTAGRAM_PRIVATE_TEXT_EXPRESSION.replace("__OSL_TEXT__", &text);
-        read_instagram_private_composer_state(&websocket_url, &expression)
+        verify_instagram_private_composer_state(
+            expected_private_bytes,
+            read_instagram_private_composer_state(&websocket_url, &expression),
+        )
     }
 
     /// Clear OSL's private box without changing the Instagram composer.
@@ -1041,6 +1048,21 @@ fn read_instagram_private_composer_state(
 ) -> Result<InstagramPrivateComposerState, WebsiteDriverError> {
     let value = evaluate_target(websocket_url, expression)?;
     serde_json::from_value(value).map_err(|_| WebsiteDriverError::ReadFailed)
+}
+
+fn verify_instagram_private_composer_state(
+    expected_private_bytes: usize,
+    state: Result<InstagramPrivateComposerState, WebsiteDriverError>,
+) -> Result<InstagramPrivateComposerState, WebsiteDriverError> {
+    let state = state?;
+    if state.locked
+        && state.private_bytes == expected_private_bytes
+        && state.instagram_composer_characters == 0
+    {
+        Ok(state)
+    } else {
+        Err(WebsiteDriverError::ReadFailed)
+    }
 }
 
 fn evaluate_target(
@@ -1841,6 +1863,143 @@ mod tests {
             "TASK1135 cleared_instagram_composer_characters={}",
             cleared.instagram_composer_characters
         );
+    }
+
+    #[test]
+    fn task_1136_instagram_private_count_uses_multibyte_text_then_clears_directly() {
+        let server = Task1136Page::spawn();
+        let private_text = "\u{1f98b} cafe\u{301} \u{6f22}\u{5b57}";
+        let expected_bytes = private_text.len();
+        assert!(expected_bytes > private_text.chars().count());
+
+        let mut driver = RealBrowserWebsiteDriver::launch().expect("launch real browser driver");
+        let page = driver
+            .find_page(WebsitePageRequest { url: server.url() })
+            .expect("open Instagram composer fixture");
+        driver
+            .read_page(&page)
+            .expect("wait for the Instagram composer fixture to load");
+        let installed = driver
+            .install_instagram_private_composer(&page)
+            .expect("install the private box and clear the Instagram composer");
+        let written = driver
+            .write_instagram_private_text(&page, private_text)
+            .expect("write multi-byte private text");
+        let cleared = driver
+            .clear_instagram_private_text(&page)
+            .expect("clear private text directly");
+
+        assert!(installed.locked);
+        assert_eq!(installed.private_bytes, 0);
+        assert_eq!(installed.instagram_composer_characters, 0);
+        assert_eq!(written.private_bytes, expected_bytes);
+        assert_eq!(written.instagram_composer_characters, 0);
+        assert_eq!(cleared.private_bytes, 0);
+        assert_eq!(cleared.instagram_composer_characters, 0);
+
+        println!("TASK1136 multibyte_private_bytes={expected_bytes}");
+        println!("TASK1136 written_private_bytes={}", written.private_bytes);
+        println!("TASK1136 cleared_private_bytes={}", cleared.private_bytes);
+        println!(
+            "TASK1136 instagram_composer_characters_after_clear={}",
+            cleared.instagram_composer_characters
+        );
+    }
+
+    #[test]
+    fn task_1136_private_box_reader_stub_makes_the_check_fail() {
+        let expected_private_bytes = "\u{1f98b} cafe\u{301} \u{6f22}\u{5b57}".len();
+        let state_before_write = InstagramPrivateComposerState {
+            locked: true,
+            private_bytes: 0,
+            instagram_composer_characters: 0,
+        };
+        let actual_reader_state = InstagramPrivateComposerState {
+            private_bytes: expected_private_bytes,
+            ..state_before_write.clone()
+        };
+        let private_box_reader = || {
+            if std::env::var_os("OSL_TASK_1136_STUB_PRIVATE_BOX_READER").is_some() {
+                // The deliberately broken reader performs no read after the
+                // write, so it only returns the state captured before it.
+                Ok(state_before_write)
+            } else {
+                Ok(actual_reader_state)
+            }
+        };
+
+        let check =
+            verify_instagram_private_composer_state(expected_private_bytes, private_box_reader());
+        println!(
+            "TASK1136 private_box_reader_stubbed={} check_passed={}",
+            std::env::var_os("OSL_TASK_1136_STUB_PRIVATE_BOX_READER").is_some(),
+            check.is_ok()
+        );
+        assert!(
+            check.is_ok(),
+            "Instagram private-box reader did not report the written byte count"
+        );
+    }
+
+    struct Task1136Page {
+        listener_addr: String,
+        running: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        worker: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl Task1136Page {
+        fn spawn() -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind Instagram fixture");
+            listener
+                .set_nonblocking(true)
+                .expect("make Instagram fixture nonblocking");
+            let listener_addr = listener
+                .local_addr()
+                .expect("Instagram fixture address")
+                .to_string();
+            let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+            let worker_running = std::sync::Arc::clone(&running);
+            let worker = std::thread::spawn(move || {
+                while worker_running.load(std::sync::atomic::Ordering::SeqCst) {
+                    match listener.accept() {
+                        Ok((mut stream, _)) => {
+                            let mut request = [0_u8; 1024];
+                            let _ = stream.read(&mut request);
+                            let document = "<!doctype html><title>Instagram fixture</title><textarea data-osl-instagram-composer>Instagram must be cleared</textarea>";
+                            let response = format!(
+                                "HTTP/1.1 200 OK\r\ncontent-type: text/html; charset=utf-8\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                                document.len(), document
+                            );
+                            let _ = stream.write_all(response.as_bytes());
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(Duration::from_millis(10));
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+            Self {
+                listener_addr,
+                running,
+                worker: Some(worker),
+            }
+        }
+
+        fn url(&self) -> String {
+            format!("http://{}/instagram-task-1136.html", self.listener_addr)
+        }
+    }
+
+    impl Drop for Task1136Page {
+        fn drop(&mut self) {
+            self.running
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+            let _ = TcpStream::connect(&self.listener_addr);
+            if let Some(worker) = self.worker.take() {
+                let _ = worker.join();
+            }
+        }
     }
 }
 
