@@ -1038,6 +1038,16 @@ description = "Return the fixed terms address for one supported service; this do
 commands.allow = ["get_service_terms_address"]
 
 [[permission]]
+identifier = "allow-read-messaging-service-risk-agreement"
+description = "Read whether one signed-in service account has already agreed to that messaging service's risk, so the risk page is shown before the first action and not again for that account; it returns no credential, message or conversation data."
+commands.allow = ["read_messaging_service_risk_agreement"]
+
+[[permission]]
+identifier = "allow-agree-messaging-service-risk"
+description = "Record that the owner ticked the messaging risk page for one exact signed-in service account; the agreement is stored against that service and account only."
+commands.allow = ["agree_messaging_service_risk"]
+
+[[permission]]
 identifier = "allow-create-one-use-invite-link"
 description = "Create one fresh one-use invite link for a locally labelled person with no OSL username; the record is saved unused in encrypted device-local state."
 commands.allow = ["create_one_use_invite_link"]

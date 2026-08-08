@@ -655,6 +655,8 @@ macro_rules! hub_tauri_commands {
             resize_default_browser_companion,
             focus_default_browser_companion,
             detach_default_browser_companion,
+            agree_messaging_service_risk,
+            read_messaging_service_risk_agreement,
             host_native_app_window,
             native_app_takeover_requires_consent,
             discord_marker_available,

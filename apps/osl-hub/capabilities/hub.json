@@ -203,6 +203,8 @@
     "allow-list-scrub-accounts",
     "allow-query-osl-chat-visible-records",
     "allow-get-service-terms-address",
+    "allow-read-messaging-service-risk-agreement",
+    "allow-agree-messaging-service-risk",
     "allow-create-one-use-invite-link",
     "allow-add-allowed-place-record",
     "allow-remove-allowed-place-record",

@@ -5557,6 +5557,72 @@ async fn create_service_account(
 }
 
 #[tauri::command]
+async fn agree_messaging_service_risk(
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    registry: State<'_, ServiceRegistryState>,
+    service_id: String,
+    account_id: String,
+) -> Result<(), String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    let service_kind = osl_privacy_hub::services::service_kind_from_id(&service_id)
+        .ok_or_else(|| "unknown service".to_owned())?;
+    registry.require_owned(&owner, service_kind, &account_id)?;
+    osl_privacy_hub::services::save_messaging_risk_agreement(&owner, &service_id, &account_id)
+}
+
+/// TASK 3113 -- what the window has to know before OSL acts in a service:
+/// has *this* signed-in service account already been shown the risk page and
+/// agreed? The record is the per-account one TASK 3111 writes, so the answer
+/// survives a restart and never leaks across accounts in the same service.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MessagingRiskAgreementRead {
+    service_id: String,
+    account_id: String,
+    agreed: bool,
+    agreed_at: Option<i64>,
+    wording: Vec<String>,
+}
+
+#[tauri::command]
+async fn read_messaging_service_risk_agreement(
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    registry: State<'_, ServiceRegistryState>,
+    service_id: String,
+    account_id: String,
+) -> Result<MessagingRiskAgreementRead, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    let service_kind = osl_privacy_hub::services::service_kind_from_id(&service_id)
+        .ok_or_else(|| "unknown service".to_owned())?;
+    registry.require_owned(&owner, service_kind, &account_id)?;
+    let stored = osl_privacy_hub::services::read_messaging_risk_agreement(
+        &owner,
+        &service_id,
+        &account_id,
+    )?;
+    Ok(match stored {
+        Some(agreement) => MessagingRiskAgreementRead {
+            service_id: agreement.service_id,
+            account_id: agreement.account_id,
+            agreed: true,
+            agreed_at: Some(agreement.agreed_at),
+            wording: agreement.wording,
+        },
+        None => MessagingRiskAgreementRead {
+            service_id,
+            account_id,
+            agreed: false,
+            agreed_at: None,
+            wording: Vec::new(),
+        },
+    })
+}
+
+#[tauri::command]
 async fn open_service_host(
     app: tauri::AppHandle,
     host: State<'_, ServiceHostState>,
