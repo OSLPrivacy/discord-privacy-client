@@ -136,6 +136,179 @@ pub struct WebsiteBrowserDiscovery {
     pub active_composer: String,
 }
 
+/// The browser and accessibility facts required to identify a direct-message
+/// conversation. A page title or URL alone is not evidence that a writable
+/// conversation is open.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebsiteConversationBrowserSnapshot {
+    pub url: String,
+    pub title: String,
+    pub accessibility: WebsiteConversationAccessibility,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebsiteConversationAccessibility {
+    pub service: String,
+    pub active_conversation: bool,
+    pub composer: Option<WebsiteComposerAccessibility>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebsiteComposerAccessibility {
+    pub role: String,
+    pub name: String,
+    pub accessible: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WebsiteConversationDiscovery {
+    pub browser_title: String,
+    pub place_kind: String,
+    pub composer: String,
+}
+
+/// Live UI state for OSL's private draft mounted over a verified Messenger
+/// composer.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessengerPrivateComposerState {
+    pub locked: bool,
+    pub private_box_visible: bool,
+    pub private_bytes: usize,
+    pub counter_text: String,
+    pub messenger_composer_characters: usize,
+}
+
+/// Messenger's five reviewed send choices. Parsing is deliberately exact so a
+/// stale or fabricated UI value cannot inherit another choice's behavior.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MessengerSendChoice {
+    Manual,
+    DoubleEnter,
+    SingleEnter,
+    Instant,
+    MatchTyping,
+}
+
+impl MessengerSendChoice {
+    pub const ALL: [Self; 5] = [
+        Self::Manual,
+        Self::DoubleEnter,
+        Self::SingleEnter,
+        Self::Instant,
+        Self::MatchTyping,
+    ];
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Manual => "Manual",
+            Self::DoubleEnter => "Double Enter",
+            Self::SingleEnter => "Single Enter",
+            Self::Instant => "Instant",
+            Self::MatchTyping => "Match typing",
+        }
+    }
+
+    pub fn parse(choice: &str) -> Result<Self, WebsiteDriverError> {
+        match choice {
+            "Manual" => Ok(Self::Manual),
+            "Double Enter" => Ok(Self::DoubleEnter),
+            "Single Enter" => Ok(Self::SingleEnter),
+            "Instant" => Ok(Self::Instant),
+            "Match typing" => Ok(Self::MatchTyping),
+            _ => Err(WebsiteDriverError::UnknownMessengerSendChoice),
+        }
+    }
+}
+
+/// Readback after a reviewed choice prepares its public cover. The private
+/// draft is reported by byte count only.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessengerPreparedCoverState {
+    pub prepared: bool,
+    pub choice: String,
+    pub cover_text: String,
+    pub cover_bytes: usize,
+    pub private_bytes: usize,
+    pub messenger_composer_characters: usize,
+}
+
+/// Classify an already-open browser conversation from canonical service URL
+/// routing and accessibility evidence. Unknown claims fail closed.
+pub fn discover_browser_conversation(
+    snapshot: &WebsiteConversationBrowserSnapshot,
+) -> Result<WebsiteConversationDiscovery, WebsiteDriverError> {
+    if snapshot.title.trim().is_empty() {
+        return Err(WebsiteDriverError::PageUnavailable);
+    }
+    let (service, place_kind) =
+        conversation_service_for_url(&snapshot.url).ok_or(WebsiteDriverError::PageUnavailable)?;
+    let accessibility = &snapshot.accessibility;
+    let composer = accessibility
+        .composer
+        .as_ref()
+        .filter(|composer| composer.accessible)
+        .filter(|composer| composer.role.eq_ignore_ascii_case("textbox"))
+        .filter(|composer| !composer.name.trim().is_empty())
+        .filter(|composer| !composer.name.to_ascii_lowercase().contains("search"))
+        .ok_or(WebsiteDriverError::PageUnavailable)?;
+
+    if accessibility.service != service || !accessibility.active_conversation {
+        return Err(WebsiteDriverError::PageUnavailable);
+    }
+
+    Ok(WebsiteConversationDiscovery {
+        browser_title: snapshot.title.clone(),
+        place_kind: place_kind.to_owned(),
+        composer: composer.name.clone(),
+    })
+}
+
+pub fn discover_messenger_browser_conversation(
+    snapshot: &WebsiteConversationBrowserSnapshot,
+) -> Result<WebsiteConversationDiscovery, WebsiteDriverError> {
+    let discovery = discover_browser_conversation(snapshot)?;
+    (discovery.place_kind == "messenger:direct_message")
+        .then_some(discovery)
+        .ok_or(WebsiteDriverError::PageUnavailable)
+}
+
+fn conversation_service_for_url(url: &str) -> Option<(&'static str, &'static str)> {
+    let parsed = url::Url::parse(url).ok()?;
+    if parsed.scheme() != "https" {
+        return None;
+    }
+    let normalized_host = parsed
+        .host_str()?
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    let host = normalized_host
+        .strip_prefix("www.")
+        .unwrap_or(&normalized_host);
+    let path = parsed.path().trim_end_matches('/');
+    let conversation_id = |prefix: &str| {
+        path.strip_prefix(prefix)
+            .filter(|id| !id.is_empty() && !id.contains('/'))
+    };
+
+    match host {
+        "messenger.com" if conversation_id("/t/").is_some() => {
+            Some(("messenger", "messenger:direct_message"))
+        }
+        "facebook.com" if conversation_id("/messages/t/").is_some() => {
+            Some(("messenger", "messenger:direct_message"))
+        }
+        "instagram.com" if conversation_id("/direct/t/").is_some() => {
+            Some(("instagram", "instagram:direct_message"))
+        }
+        _ => None,
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WebsiteSelectedEmail {
     pub page: WebsitePage,
@@ -187,6 +360,7 @@ pub enum WebsiteDriverError {
     TextClearFailed,
     NamedControlNotFound,
     PageUnavailable,
+    UnknownMessengerSendChoice,
 }
 
 impl fmt::Display for WebsiteDriverError {
@@ -202,6 +376,7 @@ impl fmt::Display for WebsiteDriverError {
             Self::TextClearFailed => "website composer did not clear",
             Self::NamedControlNotFound => "website named control was not found",
             Self::PageUnavailable => "website page is unavailable",
+            Self::UnknownMessengerSendChoice => "unknown Messenger send choice",
         })
     }
 }
@@ -375,7 +550,6 @@ impl RealBrowserWebsiteDriver {
         let snapshot = read_page_snapshot(&websocket_url)?;
         Ok(browser_discovery_from_snapshot(snapshot))
     }
-
     /// Put text in one named editable control. This is deliberately service
     /// neutral: provider discovery chooses the control, while this shared
     /// action performs the browser mutation.
@@ -550,6 +724,149 @@ fn browser_discovery_from_snapshot(
     })
 }
 
+impl RealBrowserWebsiteDriver {
+    pub fn discover_messenger_conversation(
+        &mut self,
+        page: &WebsitePage,
+    ) -> Result<WebsiteConversationDiscovery, WebsiteDriverError> {
+        let websocket_url = self.page_websocket_url(page)?;
+        let snapshot = read_browser_conversation_snapshot(&websocket_url)?;
+        discover_messenger_browser_conversation(&snapshot)
+    }
+
+    pub fn install_messenger_private_composer(
+        &mut self,
+        page: &WebsitePage,
+        discovery: &WebsiteConversationDiscovery,
+    ) -> Result<MessengerPrivateComposerState, WebsiteDriverError> {
+        if discovery.place_kind != "messenger:direct_message"
+            || discovery.composer.trim().is_empty()
+        {
+            return Err(WebsiteDriverError::PageUnavailable);
+        }
+        let websocket_url = self.page_websocket_url(page)?;
+        let composer_name = serde_json::to_string(&discovery.composer)
+            .map_err(|_| WebsiteDriverError::ReadFailed)?;
+        let expression = INSTALL_MESSENGER_PRIVATE_COMPOSER_EXPRESSION
+            .replace("__OSL_COMPOSER_NAME__", &composer_name);
+        read_messenger_private_composer_state(&websocket_url, &expression)
+    }
+
+    pub fn write_messenger_private_text(
+        &mut self,
+        page: &WebsitePage,
+        text: &str,
+    ) -> Result<MessengerPrivateComposerState, WebsiteDriverError> {
+        let websocket_url = self.page_websocket_url(page)?;
+        let text = serde_json::to_string(text).map_err(|_| WebsiteDriverError::ReadFailed)?;
+        let expression = WRITE_MESSENGER_PRIVATE_TEXT_EXPRESSION.replace("__OSL_TEXT__", &text);
+        read_messenger_private_composer_state(&websocket_url, &expression)
+    }
+
+    pub fn clear_messenger_private_text(
+        &mut self,
+        page: &WebsitePage,
+    ) -> Result<MessengerPrivateComposerState, WebsiteDriverError> {
+        self.write_messenger_private_text(page, "")
+    }
+
+    /// Dispatch one exact Messenger send choice and prepare its public cover.
+    /// This step never presses Send.
+    pub fn prepare_messenger_cover_for_choice(
+        &mut self,
+        page: &WebsitePage,
+        choice: &str,
+        cover_text: &str,
+    ) -> Result<MessengerPreparedCoverState, WebsiteDriverError> {
+        let choice = MessengerSendChoice::parse(choice)?;
+        if cover_text.is_empty() {
+            return Err(WebsiteDriverError::TextPlacementFailed);
+        }
+
+        match choice {
+            MessengerSendChoice::Manual => self.prepare_messenger_manual_cover(page, cover_text),
+            MessengerSendChoice::DoubleEnter => {
+                self.prepare_messenger_double_enter_cover(page, cover_text)
+            }
+            MessengerSendChoice::SingleEnter => {
+                self.prepare_messenger_single_enter_cover(page, cover_text)
+            }
+            MessengerSendChoice::Instant => self.prepare_messenger_instant_cover(page, cover_text),
+            MessengerSendChoice::MatchTyping => {
+                self.prepare_messenger_match_typing_cover(page, cover_text)
+            }
+        }
+    }
+
+    pub fn read_messenger_prepared_cover(
+        &mut self,
+        page: &WebsitePage,
+    ) -> Result<MessengerPreparedCoverState, WebsiteDriverError> {
+        let websocket_url = self.page_websocket_url(page)?;
+        read_messenger_prepared_cover_state(
+            &websocket_url,
+            READ_MESSENGER_PREPARED_COVER_EXPRESSION,
+        )
+    }
+
+    fn prepare_messenger_manual_cover(
+        &mut self,
+        page: &WebsitePage,
+        cover_text: &str,
+    ) -> Result<MessengerPreparedCoverState, WebsiteDriverError> {
+        self.prepare_messenger_cover(page, MessengerSendChoice::Manual, cover_text)
+    }
+
+    fn prepare_messenger_double_enter_cover(
+        &mut self,
+        page: &WebsitePage,
+        cover_text: &str,
+    ) -> Result<MessengerPreparedCoverState, WebsiteDriverError> {
+        self.prepare_messenger_cover(page, MessengerSendChoice::DoubleEnter, cover_text)
+    }
+
+    fn prepare_messenger_single_enter_cover(
+        &mut self,
+        page: &WebsitePage,
+        cover_text: &str,
+    ) -> Result<MessengerPreparedCoverState, WebsiteDriverError> {
+        self.prepare_messenger_cover(page, MessengerSendChoice::SingleEnter, cover_text)
+    }
+
+    fn prepare_messenger_instant_cover(
+        &mut self,
+        page: &WebsitePage,
+        cover_text: &str,
+    ) -> Result<MessengerPreparedCoverState, WebsiteDriverError> {
+        self.prepare_messenger_cover(page, MessengerSendChoice::Instant, cover_text)
+    }
+
+    fn prepare_messenger_match_typing_cover(
+        &mut self,
+        page: &WebsitePage,
+        cover_text: &str,
+    ) -> Result<MessengerPreparedCoverState, WebsiteDriverError> {
+        self.prepare_messenger_cover(page, MessengerSendChoice::MatchTyping, cover_text)
+    }
+
+    fn prepare_messenger_cover(
+        &mut self,
+        page: &WebsitePage,
+        choice: MessengerSendChoice,
+        cover_text: &str,
+    ) -> Result<MessengerPreparedCoverState, WebsiteDriverError> {
+        let websocket_url = self.page_websocket_url(page)?;
+        let choice =
+            serde_json::to_string(choice.name()).map_err(|_| WebsiteDriverError::ReadFailed)?;
+        let cover_text =
+            serde_json::to_string(cover_text).map_err(|_| WebsiteDriverError::ReadFailed)?;
+        let expression = PREPARE_MESSENGER_COVER_EXPRESSION
+            .replace("__OSL_SEND_CHOICE__", &choice)
+            .replace("__OSL_COVER_TEXT__", &cover_text);
+        read_messenger_prepared_cover_state(&websocket_url, &expression)
+    }
+}
+
 impl WebsiteDriver for RealBrowserWebsiteDriver {
     fn find_page(
         &mut self,
@@ -722,6 +1039,29 @@ fn wait_for_devtools(
 fn read_page_snapshot(websocket_url: &str) -> Result<BrowserPageSnapshot, WebsiteDriverError> {
     let value = evaluate_target(websocket_url, PAGE_SNAPSHOT_EXPRESSION)?;
     serde_json::from_value(value).map_err(|_| WebsiteDriverError::ReadFailed)
+}
+
+fn read_browser_conversation_snapshot(
+    websocket_url: &str,
+) -> Result<WebsiteConversationBrowserSnapshot, WebsiteDriverError> {
+    let value = evaluate_target(websocket_url, BROWSER_CONVERSATION_SNAPSHOT_EXPRESSION)?;
+    serde_json::from_value(value).map_err(|_| WebsiteDriverError::ReadFailed)
+}
+
+fn read_messenger_private_composer_state(
+    websocket_url: &str,
+    expression: &str,
+) -> Result<MessengerPrivateComposerState, WebsiteDriverError> {
+    let value = evaluate_target(websocket_url, expression)?;
+    serde_json::from_value(value).map_err(|_| WebsiteDriverError::ReadFailed)
+}
+
+fn read_messenger_prepared_cover_state(
+    websocket_url: &str,
+    expression: &str,
+) -> Result<MessengerPreparedCoverState, WebsiteDriverError> {
+    let value = evaluate_target(websocket_url, expression)?;
+    serde_json::from_value(value).map_err(|_| WebsiteDriverError::TextPlacementFailed)
 }
 
 fn read_selected_email_snapshot(
@@ -933,6 +1273,172 @@ fn read_websocket_text_message(stream: &mut TcpStream) -> Result<Vec<u8>, Websit
         }
     }
 }
+
+const INSTALL_MESSENGER_PRIVATE_COMPOSER_EXPRESSION: &str = r#"
+(() => {
+  const expectedName = __OSL_COMPOSER_NAME__;
+  if (document.getElementById('osl-messenger-private-composer')) {
+    return window.__oslMessengerPrivateComposerState?.() || null;
+  }
+  const compact = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+  const nameOf = (element) => compact(
+    element.getAttribute('aria-label') || element.getAttribute('placeholder') || element.getAttribute('title')
+  );
+  const candidates = document.querySelectorAll(
+    '[data-osl-messenger-composer="active"], [data-osl-composer], [contenteditable="true"][role="textbox"], textarea[role="textbox"], input[role="textbox"], [role="textbox"]'
+  );
+  const composer = Array.from(candidates).find((element) =>
+    nameOf(element) === expectedName && !element.disabled && !element.readOnly
+  );
+  if (!composer) return null;
+
+  const contentEditableComposer = composer.isContentEditable;
+  const composerValue = () => contentEditableComposer ? composer.textContent : composer.value;
+  const clearMessenger = () => {
+    if (contentEditableComposer) composer.textContent = '';
+    else composer.value = '';
+    composer.dispatchEvent(new Event('input', { bubbles: true }));
+  };
+  const messengerCharacters = () => Array.from(composerValue() || '').length;
+  clearMessenger();
+  window.__oslMessengerComposer = composer;
+  window.__oslMessengerComposerWasContentEditable = contentEditableComposer;
+  window.__oslMessengerPreparedCover = null;
+  composer.setAttribute('data-osl-private-lock', 'true');
+  composer.setAttribute('aria-disabled', 'true');
+  composer.style.pointerEvents = 'none';
+  if (contentEditableComposer) composer.setAttribute('contenteditable', 'false');
+  else composer.readOnly = true;
+
+  const box = document.createElement('section');
+  box.id = 'osl-messenger-private-composer';
+  box.setAttribute('role', 'group');
+  box.setAttribute('aria-label', 'OSL private message');
+  box.style.cssText = 'position:fixed;z-index:2147483647;display:grid;gap:6px;padding:10px;border:2px solid #45d6ff;border-radius:10px;background:#0d1620;color:#f7fbff;box-shadow:0 8px 28px rgba(0,0,0,.45)';
+  const rect = composer.getBoundingClientRect();
+  box.style.left = `${Math.max(8, rect.left)}px`;
+  box.style.top = `${Math.max(8, rect.top)}px`;
+  box.style.width = `${Math.max(240, rect.width)}px`;
+  box.innerHTML = '<strong aria-label="Locked private draft">🔒 Private draft</strong><textarea id="osl-messenger-private-text" rows="3" autocomplete="off" spellcheck="true" aria-describedby="osl-messenger-private-count"></textarea><output id="osl-messenger-private-count" aria-live="polite">0 bytes</output>';
+  document.body.append(box);
+
+  const privateText = box.querySelector('#osl-messenger-private-text');
+  const count = box.querySelector('#osl-messenger-private-count');
+  const update = () => {
+    clearMessenger();
+    count.textContent = `${new TextEncoder().encode(privateText.value).length} bytes`;
+  };
+  privateText.addEventListener('input', update);
+  window.__oslMessengerPrivateComposerState = () => ({
+    locked: composer.getAttribute('data-osl-private-lock') === 'true',
+    privateBoxVisible: document.body.contains(box),
+    privateBytes: new TextEncoder().encode(privateText.value).length,
+    counterText: count.textContent,
+    messengerComposerCharacters: messengerCharacters()
+  });
+  window.__oslMessengerPreparedCoverState = () => {
+    const prepared = window.__oslMessengerPreparedCover;
+    if (!prepared) return null;
+    const coverText = composerValue() || '';
+    return {
+      prepared: coverText === prepared.coverText,
+      choice: prepared.choice,
+      coverText,
+      coverBytes: new TextEncoder().encode(coverText).length,
+      privateBytes: new TextEncoder().encode(privateText.value).length,
+      messengerComposerCharacters: Array.from(coverText).length
+    };
+  };
+  update();
+  return window.__oslMessengerPrivateComposerState();
+})()
+"#;
+
+const WRITE_MESSENGER_PRIVATE_TEXT_EXPRESSION: &str = r#"
+(() => {
+  const privateText = document.getElementById('osl-messenger-private-text');
+  if (!privateText || !window.__oslMessengerPrivateComposerState) return null;
+  privateText.value = __OSL_TEXT__;
+  privateText.dispatchEvent(new Event('input', { bubbles: true }));
+  return window.__oslMessengerPrivateComposerState();
+})()
+"#;
+
+const PREPARE_MESSENGER_COVER_EXPRESSION: &str = r#"
+(() => {
+  const choice = __OSL_SEND_CHOICE__;
+  const coverText = __OSL_COVER_TEXT__;
+  const composer = window.__oslMessengerComposer;
+  if (!composer ||
+      composer.getAttribute('data-osl-private-lock') !== 'true' ||
+      !window.__oslMessengerPrivateComposerState ||
+      !window.__oslMessengerPreparedCoverState) return null;
+
+  if (window.__oslMessengerComposerWasContentEditable) composer.textContent = coverText;
+  else composer.value = coverText;
+  composer.dispatchEvent(new Event('input', { bubbles: true }));
+
+  const readback = window.__oslMessengerComposerWasContentEditable
+    ? composer.textContent
+    : composer.value;
+  if (readback !== coverText) return null;
+  window.__oslMessengerPreparedCover = { choice, coverText };
+  return window.__oslMessengerPreparedCoverState();
+})()
+"#;
+
+const READ_MESSENGER_PREPARED_COVER_EXPRESSION: &str = r#"
+(() => window.__oslMessengerPreparedCoverState?.() || null)()
+"#;
+
+const BROWSER_CONVERSATION_SNAPSHOT_EXPRESSION: &str = r#"
+(() => {
+  const compact = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+  const visible = (element) => {
+    if (!element || element.hidden || element.getAttribute('aria-hidden') === 'true') return false;
+    const style = window.getComputedStyle(element);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+    return element.getClientRects().length > 0;
+  };
+  const host = location.hostname.replace(/\.$/, '').toLowerCase().replace(/^www\./, '');
+  const service = host === 'messenger.com' || host === 'facebook.com' ? 'messenger' :
+    host === 'instagram.com' ? 'instagram' : '';
+  const composerName = (element) => compact(
+    element.getAttribute('aria-label') || element.getAttribute('placeholder') || element.getAttribute('title')
+  );
+  const composer = Array.from(document.querySelectorAll(
+    '[data-osl-composer], [contenteditable="true"][role="textbox"], textarea[aria-label], input[aria-label][role="textbox"], [role="textbox"]'
+  )).find((element) => {
+    const name = composerName(element);
+    return visible(element) &&
+      !element.disabled &&
+      !element.readOnly &&
+      element.getAttribute('role') === 'textbox' &&
+      name &&
+      !/search/i.test(name);
+  });
+  const activeConversation = Array.from(document.querySelectorAll(
+    '[data-osl-active-conversation="true"], [data-active-conversation="true"], [role="main"]'
+  )).some((element) => visible(element) && (
+    element.getAttribute('data-osl-active-conversation') === 'true' ||
+    element.getAttribute('data-active-conversation') === 'true' ||
+    (composer && element.contains(composer))
+  ));
+  return {
+    url: location.href,
+    title: document.title,
+    accessibility: {
+      service,
+      activeConversation,
+      composer: composer ? {
+        role: composer.getAttribute('role') || '',
+        name: composerName(composer),
+        accessible: visible(composer)
+      } : null
+    }
+  };
+})()
+"#;
 
 const PAGE_SNAPSHOT_EXPRESSION: &str = r#"
 (() => {
