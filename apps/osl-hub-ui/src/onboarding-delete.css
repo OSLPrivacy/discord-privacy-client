@@ -225,6 +225,43 @@
   font-weight: 800;
 }
 
+.timed-delete-other-person-outcomes {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.timed-delete-outcome-group {
+  padding: 14px 16px;
+  border: 1px solid var(--del-card-line);
+  background: var(--osl-setup-card);
+  color: var(--osl-setup-text);
+}
+
+.timed-delete-outcome-group h2 {
+  margin: 0 0 6px;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.timed-delete-outcome-group ul {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 20px;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.timed-delete-signal-detail {
+  display: block;
+  margin-top: 3px;
+  color: var(--osl-setup-second);
+  font-size: 12px;
+}
+
 .timed-delete-agreement {
   display: flex;
   align-items: center;
@@ -294,6 +331,7 @@
 
 @media (max-width: 34rem) {
   .del-onboarding { width: 100%; padding: 0 16px; }
+  .timed-delete-other-person-outcomes { grid-template-columns: 1fr; }
   .del-row-title { white-space: normal; }
   .del-quiet { white-space: normal; }
 }
