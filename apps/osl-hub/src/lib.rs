@@ -722,6 +722,7 @@ pub mod view_once_open;
 #[cfg(not(task3982_focused))]
 pub mod view_once_watch;
 pub mod visible_osl_mark;
+pub mod x_marked_message_deleter;
 // The pure half of the headless QA self-test driver in `main.rs`. It lives here
 // only so it can actually be tested: the `osl-privacy-hub` binary cannot be
 // built on a Linux host, so every `#[cfg(test)]` inside `main.rs` is compiled
