@@ -214,6 +214,7 @@ export {
   type AutoscrubUnattendedRunResult,
 } from "./autoscrub-unattended-run";
 import { initializeThemePreference, themeStorageKey, type ThemeChoice } from "./theme-preference";
+import { defaultWindowSoundsSettings, loadWindowSoundsSettings, saveWindowSoundsSettings, windowSoundsSettingsMarkup, type WindowPosition, type WindowSoundsSettings } from "./window-sounds-settings";
 import { inDomTooltipMarkup } from "./in-dom-tooltip";
 import { applyOslChatDraftToElement, firstPartyOslSurfaceContract, OSL_CHAT_MAX_DRAFT_BYTES, oslChatDraftBytes, oslChatHandshakeConfirmed, oslChatsViewMarkup, senderReceiptStateFor, submitsOslChatDraft, type OslChatMessage } from "./osl-chats-view";
 import { createOslChatDeliveryRuntime, mergeOslChatTimeline, oslChatHistoryMessages, oslChatOpenRefusalMessage, pruneExpiredOslChatMessages, receivedOslChatBatchMessage, type OslChatDeliveryHost } from "./osl-chat-runtime";
@@ -537,6 +538,7 @@ const recoveryKitUnsavedFlag = createRecoveryKitUnsavedFlag({
   write: (unsaved) => setHubRecoveryKitUnsaved(unsaved),
 });
 let settingsSection: SettingsSection = "account";
+let windowSoundsSettings: WindowSoundsSettings = loadWindowSoundsSettings();
 let activeService: LinkedService | null = null;
 let activeHomeAppId: HomeAppId | null = null;
 let appLaunchPendingId: HomeAppId | null = null;
@@ -6202,6 +6204,7 @@ function settingsSectionContent(): string {
   if (settingsSection === "scrub") return privacySettingsContent();
   if (settingsSection === "cleanup") return massCleanupSettingsContent();
   if (settingsSection === "notifications") return notificationSettingsContent();
+  if (settingsSection === "window-sounds") return windowSoundsSettingsMarkup(windowSoundsSettings);
   if (settingsSection === "appearance") return appearanceSettingsContent();
   return updateSettingsContent();
 }
@@ -8506,6 +8509,24 @@ function bindWorkspace(): void {
     if (next === "scrub") void refreshAutoScrubFleetStatus();
     if (next === "cleanup") void refreshMassCleanupCapabilities();
   }));
+  document.querySelectorAll<HTMLInputElement>('input[name="window-position"]').forEach((input) => input.addEventListener("change", () => {
+    if (!input.checked) return;
+    windowSoundsSettings = { ...windowSoundsSettings, position: input.value as WindowPosition };
+    saveWindowSoundsSettings(windowSoundsSettings);
+    render();
+  }));
+  (Object.keys(defaultWindowSoundsSettings) as Array<keyof WindowSoundsSettings>).filter((key) => key !== "position").forEach((key) => {
+    document.querySelector<HTMLInputElement>(`#window-sound-${key}`)?.addEventListener("change", (event) => {
+      windowSoundsSettings = { ...windowSoundsSettings, [key]: (event.currentTarget as HTMLInputElement).checked };
+      saveWindowSoundsSettings(windowSoundsSettings);
+      render();
+    });
+  });
+  document.querySelector<HTMLButtonElement>("#reset-window-sounds")?.addEventListener("click", () => {
+    windowSoundsSettings = { ...defaultWindowSoundsSettings };
+    saveWindowSoundsSettings(windowSoundsSettings);
+    render();
+  });
   document.querySelectorAll<HTMLButtonElement>("[data-settings-send-mode]").forEach((button) => button.addEventListener("click", () => {
     void changeSendingMode(button.dataset.settingsSendMode as SendMode);
   }));

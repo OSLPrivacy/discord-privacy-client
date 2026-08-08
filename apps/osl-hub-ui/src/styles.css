@@ -6679,6 +6679,17 @@ code {
 
 .setting-line small { max-width: 520px; margin-top: 3px; color: var(--muted); }
 
+.window-sounds-settings > header > p { max-width: 560px; margin: 0 0 22px; color: var(--muted); line-height: 1.5; }
+.window-sounds-settings > h3 { margin: 26px 0 8px; }
+.window-position-options { margin: 0 0 20px; padding: 0; border: 0; }
+.window-position-options legend { margin-bottom: 8px; font-size: 14px; font-weight: 700; }
+.window-position-choice { min-height: 49px; padding: 9px 12px; border: 1px solid var(--line-soft); border-radius: 8px; display: flex; align-items: flex-start; gap: 10px; background: var(--panel); cursor: pointer; }
+.window-position-choice + .window-position-choice { margin-top: 7px; }
+.window-position-choice:has(input:checked) { border-color: var(--brand); background: color-mix(in srgb, var(--brand) 9%, var(--panel)); }
+.window-position-choice strong, .window-position-choice small { display: block; }
+.window-position-choice small { margin-top: 2px; color: var(--muted); font-size: 12px; }
+.window-sounds-footer { margin-top: 18px; display: flex; align-items: center; justify-content: space-between; gap: 14px; color: var(--muted); font-size: 12px; }
+
 /* Enclave channels stay visible when a per-channel rule denies opening them. */
 .osl-enclave-channel-list ul { margin: 0; padding: 0; list-style: none; }
 .osl-enclave-channel-row { width: 100%; min-height: 40px; border: 0; border-bottom: 1px solid var(--line-soft); background: transparent; color: var(--text); text-align: left; cursor: pointer; }

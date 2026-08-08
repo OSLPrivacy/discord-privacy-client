@@ -1,0 +1,7 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>Window and sounds settings</title><link rel="stylesheet" href="../src/styles.css"/></head><body><main class="content-viewport"><section class="settings-detail" id="fixture"></section></main><script type="module">
+import { windowSoundsSettingsMarkup } from "../src/window-sounds-settings.ts";
+const saved = { position: "last", rememberPlace: true, movement: true, trayPicture: true, sounds: true, muted: true, quietHours: false };
+document.querySelector("#fixture").innerHTML = windowSoundsSettingsMarkup(saved);
+document.body.dataset.windowSoundsFixture = "saved";
+</script></body></html>
