@@ -9990,23 +9990,13 @@ mod tests {
     }
 
     #[test]
-    fn outlook_desktop_mapping_lists_all_six_named_targets() {
+    fn outlook_desktop_mapping_lists_all_four_flow_controls() {
         let names = outlook_desktop_control_targets()
             .iter()
             .map(|target| target.name)
             .collect::<Vec<_>>();
 
-        assert_eq!(
-            names,
-            vec![
-                "ribbon New Mail",
-                "body",
-                "Send",
-                "reading pane",
-                "folders",
-                "conversation view",
-            ]
-        );
+        assert_eq!(names, vec!["Compose", "Place", "Readback", "Send"]);
         assert!(outlook_desktop_control_targets()
             .iter()
             .all(|target| !target.scope.is_empty()

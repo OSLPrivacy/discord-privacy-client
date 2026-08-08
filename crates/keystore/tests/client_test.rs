@@ -4,7 +4,10 @@
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use keystore::{generate_identity, Error, KeyServerClient, WrappedKeyUpload};
+use keystore::{
+    generate_identity, Error, KeyServerClient, UsernameDiscoverySync, UsernameDiscoveryVisibility,
+    WrappedKeyUpload,
+};
 use sha2::Digest;
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -534,6 +537,32 @@ fn username_claim_carries_public_name_proof_from_named_app_account() {
         .as_str()
         .unwrap();
     assert_eq!(STANDARD.decode(signature).unwrap().len(), 64);
+}
+
+#[test]
+fn task4758_never_show_me_skips_initial_username_discovery_write() {
+    let mut identity = generate_identity("osl1_task4758_owner".to_string());
+    identity.discord_snowflake = Some("123456789012345679".to_string());
+    let client = KeyServerClient::new("http://127.0.0.1:9").unwrap();
+
+    let synced = client
+        .sync_username_discovery_visibility(
+            &identity,
+            "task4758_drawer",
+            "OSLFR1.mock-invite-for-task-4758",
+            UsernameDiscoveryVisibility::NeverShowMe,
+            false,
+        )
+        .expect("initial never-show-me does not need the keyserver");
+
+    println!("TASK4758_NEVER_SHOW_ME_DISCOVERY_WRITE_CALLS=0");
+    assert_eq!(
+        synced,
+        UsernameDiscoverySync::SkippedNeverShowMe {
+            username: "task4758_drawer".to_owned(),
+            user_id: "osl1_task4758_owner".to_owned(),
+        }
+    );
 }
 
 fn query_value(target: &str, key: &str) -> String {

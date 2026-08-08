@@ -236,6 +236,54 @@ export const MIGRATION_NUMBER_DUPLICATES: readonly MigrationNumberDuplicate[] = 
       + "EXISTS back at 0031 and receives INSERT OR REPLACE on distinct "
       + "capability keys, which commutes.",
   },
+  {
+    dir: "migrations",
+    number: 44,
+    files: [
+      "0044_one_use_invite_links.sql",
+      "0044_protected_friend_profile_pictures.sql",
+      "0044_public_name_proofs.sql",
+      "0044_saved_public_names.sql",
+      "0044_update_attempt_records.sql",
+      "0044_wrapped_key_expiry_seconds.sql",
+      "0044_wrapped_key_open_receipts.sql",
+    ],
+    reason:
+      "TASK-4758 reconciliation of the rc/48h merge train. Seven lanes "
+      + "allocated 0044 independently before this checkout joined them. The "
+      + "obsolete token-shaped public-name proof body is now an explicit no-op "
+      + "so the nonce-shaped 0045 schema is the only public_name_proofs table "
+      + "created locally; the remaining files create disjoint tables, indexes, "
+      + "triggers, or one wrapped_keys column. This record pins the exact set so "
+      + "another accidental 0044 still fails instead of hiding in name order.",
+  },
+  {
+    dir: "migrations",
+    number: 45,
+    files: [
+      "0045_crypto_settlement_refusals.sql",
+      "0045_public_name_proofs.sql",
+      "0045_wrapped_key_display_duration_guard.sql",
+    ],
+    reason:
+      "TASK-4758 reconciliation of three independent 0045 allocations. The "
+      + "files touch separate surfaces: crypto settlement refusal audit rows, "
+      + "the live nonce-bound public_name_proofs table, and wrapped-key display "
+      + "duration guards. They are recorded as an exact duplicate set so local "
+      + "Worker tests can apply the schema while future unrecorded 0045 files "
+      + "remain a hard failure.",
+  },
+  {
+    dir: "migrations",
+    number: 46,
+    files: ["0046_public_name_directory.sql", "0046_saved_public_names.sql"],
+    reason:
+      "TASK-4758 reconciliation of two public-name follow-up migrations that "
+      + "landed with the same number. public_name_directory creates the minimal "
+      + "exact-search table. saved_public_names is now idempotent because "
+      + "0044_saved_public_names already creates the saved_names table shape "
+      + "used by the Worker. The duplicate remains pinned by exact filename set.",
+  },
 ];
 
 function fail(message: string): never {

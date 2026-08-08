@@ -1,0 +1,93 @@
+{
+  "task": "0760",
+  "title": "Apps and sending",
+  "subtitle": "Choose the account each app uses and how OSL puts a protected message into it. Nothing is sent without you.",
+  "saveNote": "Changes apply to new messages after you save.",
+  "apps": [
+    {
+      "id": "discord",
+      "name": "Discord",
+      "state": "connected",
+      "detail": "Dedicated OSL window",
+      "accounts": [
+        {
+          "id": "discord-work",
+          "label": "work@example.test",
+          "detail": "Signed in, dedicated window",
+          "selected": true
+        },
+        {
+          "id": "discord-spare",
+          "label": "spare@example.test",
+          "detail": "Signed out",
+          "selected": false
+        }
+      ],
+      "sendStyles": [
+        {
+          "id": "manual",
+          "name": "Manual",
+          "detail": "You click to place the message, then send it yourself.",
+          "tag": "",
+          "risk": "",
+          "active": false
+        },
+        {
+          "id": "clipboard",
+          "name": "Clipboard",
+          "detail": "OSL copies the protected message and you paste it.",
+          "tag": "",
+          "risk": "",
+          "active": true
+        },
+        {
+          "id": "double",
+          "name": "Double Enter",
+          "detail": "One Enter places the message, a second one sends it.",
+          "tag": "DANGEROUS",
+          "risk": "warn",
+          "active": false
+        },
+        {
+          "id": "single",
+          "name": "Single Enter",
+          "detail": "One Enter places and sends in a single press.",
+          "tag": "DANGEROUS",
+          "risk": "danger",
+          "active": false
+        }
+      ],
+      "nextGeneration": {
+        "requested": true,
+        "buildEnabled": true,
+        "detail": "Saved on. OSL uses the newer protected message format for this app."
+      }
+    },
+    {
+      "id": "telegram",
+      "name": "Telegram",
+      "state": "notConnected",
+      "detail": "Not set up on this device",
+      "accounts": [],
+      "sendStyles": [],
+      "nextGeneration": {
+        "requested": false,
+        "buildEnabled": true,
+        "detail": "Available after you set this app up."
+      }
+    },
+    {
+      "id": "signal",
+      "name": "Signal",
+      "state": "notConnected",
+      "detail": "Not set up on this device",
+      "accounts": [],
+      "sendStyles": [],
+      "nextGeneration": {
+        "requested": false,
+        "buildEnabled": true,
+        "detail": "Available after you set this app up."
+      }
+    }
+  ]
+}

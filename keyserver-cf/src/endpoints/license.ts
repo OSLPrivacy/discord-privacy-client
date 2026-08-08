@@ -81,7 +81,6 @@ export async function handleLicenseValidate(
 
   const hash = await hashLicense(normalized);
   const license = await env.DB.prepare(
-    `SELECT subscription_id, revoked_at, revoked_reason, redeemed_at, expires_at
     `SELECT licenses.subscription_id,
             licenses.revoked_at,
             licenses.revoked_reason,

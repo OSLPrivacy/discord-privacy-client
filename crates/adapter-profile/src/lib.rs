@@ -28,10 +28,12 @@ pub use defaults_web::{
     instagram_web_default_trusted_signing_key_b64, mail_com_web_mail_targets,
     messenger_web_default_profile, messenger_web_default_trusted_signing_key_b64,
     proton_web_control_targets, tuta_web_mail_targets, validate_icloud_web_control_targets,
-    validate_mail_com_web_mail_targets, x_web_default_capability_profile, x_web_default_profile,
-    x_web_default_trusted_signing_key_b64, yahoo_web_mail_targets, EmailWebControlStrategy,
-    EmailWebControlTarget, MailComWebTarget, MissingMailComWebTarget, TutaWebTarget,
-    YahooWebTarget, MAIL_COM_WEB_TARGET_NAMES,
+    validate_mail_com_web_mail_targets, validate_yahoo_web_mail_targets,
+    x_web_default_capability_profile, x_web_default_profile, x_web_default_trusted_signing_key_b64,
+    yahoo_web_mail_targets, EmailWebControlStrategy, EmailWebControlTarget, MailComWebTarget,
+    MissingMailComWebTarget, MissingYahooWebTarget, TutaWebTarget, YahooFakePageCounts,
+    YahooFakePageFixture, YahooWebTarget, MAIL_COM_WEB_TARGET_NAMES, OSL_YAHOO_1249_COVER_MESSAGE,
+    YAHOO_FAKE_PAGE_CONTROL_NAMES, YAHOO_WEB_TARGET_NAMES,
 };
 pub use envelope::{
     canonical_profile_digest, EnvelopeError, SignedProfile, ADAPTER_PROFILE_ENVELOPE_DOMAIN,

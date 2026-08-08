@@ -8897,8 +8897,9 @@ mod qa_selftest {
     use osl_privacy_hub::native_window_host::NativeWindowHostStatus;
     use osl_privacy_hub::qa_selftest_request::{
         instance_file_token, not_ready_refusal, parse_request, readiness_criterion_is_graded,
-        DrainReport, HostAction, HostReport, ParsedRequest, RehydrateReport, RevealReport,
-        RevealTarget, SelftestRequest, Verb,
+        DrainReport, HostAction, HostReport, ParsedRequest, ProviderVersion, RehydrateReport,
+        RevealReport, RevealTarget, SelftestRequest, Verb, REFUSAL_PROVIDER_NAME_MISSING,
+        REFUSAL_PROVIDER_VERSION_MISSING,
     };
     use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
@@ -9112,6 +9113,13 @@ mod qa_selftest {
         /// never a fragment of the request, so a malformed request cannot write
         /// its own bytes into this file.
         request_status: &'static str,
+        /// The app or browser provider this result is about. A completed
+        /// verdict must carry this and `exactVersion`; otherwise it is refused
+        /// and cannot pass.
+        provider_name: Option<String>,
+        /// The exact app/browser version recorded at the same boundary that
+        /// selected the provider.
+        exact_version: Option<String>,
         /// The one fixed plaintext the `send` verb transmits, and `null` for
         /// every other verb -- none of which sends anything at all.
         probe: Option<&'static str>,
@@ -9225,6 +9233,7 @@ mod qa_selftest {
         request_format: &'static str,
         request_status: &'static str,
         refusal: Option<&'static str>,
+        provider: Option<ProviderVersion>,
         verb_error: Option<String>,
         drain: Option<DrainReport>,
         host: Option<HostReport>,
@@ -9242,6 +9251,7 @@ mod qa_selftest {
                 request_format: "none",
                 request_status: "accepted",
                 refusal: None,
+                provider: None,
                 verb_error: None,
                 drain: None,
                 host: None,
@@ -9254,6 +9264,11 @@ mod qa_selftest {
         fn refused(mut self, refusal: &'static str) -> Self {
             self.request_status = refusal;
             self.refusal = Some(refusal);
+            self
+        }
+
+        fn with_provider(mut self, provider: ProviderVersion) -> Self {
+            self.provider = Some(provider);
             self
         }
     }
@@ -9762,6 +9777,25 @@ mod qa_selftest {
             );
         }
 
+        insert(
+            &mut criteria,
+            "provider_name_recorded",
+            outcome_detail.provider.is_some(),
+            outcome_detail
+                .provider
+                .is_none()
+                .then(|| REFUSAL_PROVIDER_NAME_MISSING.to_owned()),
+        );
+        insert(
+            &mut criteria,
+            "provider_exact_version_recorded",
+            outcome_detail.provider.is_some(),
+            outcome_detail
+                .provider
+                .is_none()
+                .then(|| REFUSAL_PROVIDER_VERSION_MISSING.to_owned()),
+        );
+
         insert_verb_criteria(&mut criteria, verb, &outcome_detail);
 
         let pass = outcome == "completed"
@@ -9780,6 +9814,14 @@ mod qa_selftest {
             verb: outcome_detail.verb,
             request_format: outcome_detail.request_format,
             request_status: outcome_detail.request_status,
+            provider_name: outcome_detail
+                .provider
+                .as_ref()
+                .map(|provider| provider.provider_name.clone()),
+            exact_version: outcome_detail
+                .provider
+                .as_ref()
+                .map(|provider| provider.exact_version.clone()),
             probe: is_send.then_some(PROBE_PLAINTEXT),
             outcome,
             ready: observation.ready_for(verb),
@@ -10181,6 +10223,32 @@ mod qa_selftest {
         }
     }
 
+    fn provider_version_for_request(
+        request: &SelftestRequest,
+    ) -> Result<ProviderVersion, &'static str> {
+        let app_id = match request.verb {
+            Verb::Status
+            | Verb::Send
+            | Verb::Drain
+            | Verb::Rehydrate
+            | Verb::RevealViewOnce => Some(NativeAppId::Discord),
+            Verb::Host => request.host.map(|host| host.app_id),
+            Verb::ListBrowserProfiles
+            | Verb::GrantBrowserProfile
+            | Verb::RevokeBrowserProfile
+            | Verb::RunBrowserImport => None,
+        };
+        let Some(app_id) = app_id else {
+            return Err(REFUSAL_PROVIDER_NAME_MISSING);
+        };
+        let provider_name = osl_privacy_hub::native_apps::native_app_display_name(app_id);
+        let Some(exact_version) = osl_privacy_hub::native_apps::native_app_exact_version(app_id)
+        else {
+            return Err(REFUSAL_PROVIDER_VERSION_MISSING);
+        };
+        ProviderVersion::new(provider_name, exact_version)
+    }
+
     fn run_once(
         app: &tauri::AppHandle,
         request: &SelftestRequest,
@@ -10190,6 +10258,27 @@ mod qa_selftest {
         let verb = request.verb;
         let mut outcome_detail = VerbOutcome::new(verb.label(), instance, trigger_file);
         outcome_detail.request_format = request.format;
+        match provider_version_for_request(request) {
+            Ok(provider) => outcome_detail = outcome_detail.with_provider(provider),
+            Err(refusal) => {
+                outcome_detail.refusal = Some(refusal);
+                outcome_detail.request_status = refusal;
+                let observation = observe(app);
+                let (stages, in_order) = stage_criteria(&[]);
+                return build_verdict(
+                    verb,
+                    "refused",
+                    &observation,
+                    "none",
+                    None,
+                    stages,
+                    in_order,
+                    None,
+                    None,
+                    outcome_detail,
+                );
+            }
+        }
 
         // Bounded readiness wait. The operator establishes the adopted Discord
         // window and the engaged lock by hand; this waits for them and then

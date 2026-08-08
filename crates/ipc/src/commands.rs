@@ -17829,6 +17829,68 @@ pub fn cmd_osl_check_server_person_allowed(
     })
 }
 
+pub fn cmd_osl_set_server_person_timed_out(
+    state: &AppState,
+    server_id: String,
+    person_name: String,
+) -> Result<bool, String> {
+    record_activity_on_command_entry();
+    let mut grants = state
+        .server_permissions
+        .lock()
+        .expect("server_permissions mutex poisoned");
+    grants
+        .set_person_timed_out(server_id, person_name)
+        .map_err(|error| error.to_string())
+}
+
+pub fn cmd_osl_clear_server_person_timeout(
+    state: &AppState,
+    server_id: String,
+    person_name: String,
+) -> Result<bool, String> {
+    record_activity_on_command_entry();
+    let mut grants = state
+        .server_permissions
+        .lock()
+        .expect("server_permissions mutex poisoned");
+    grants
+        .clear_person_timeout(&server_id, &person_name)
+        .map_err(|error| error.to_string())
+}
+
+pub fn cmd_osl_accept_voice_join(
+    state: &AppState,
+    server_id: String,
+    room_id: String,
+    person_name: String,
+) -> Result<crate::server_membership::VoicePermissionAcceptance, String> {
+    record_activity_on_command_entry();
+    let grants = state
+        .server_permissions
+        .lock()
+        .expect("server_permissions mutex poisoned");
+    grants
+        .accepts_voice_join(server_id, room_id, person_name)
+        .map_err(|error| error.to_string())
+}
+
+pub fn cmd_osl_accept_voice_speak_packet(
+    state: &AppState,
+    server_id: String,
+    room_id: String,
+    person_name: String,
+) -> Result<crate::server_membership::VoicePermissionAcceptance, String> {
+    record_activity_on_command_entry();
+    let grants = state
+        .server_permissions
+        .lock()
+        .expect("server_permissions mutex poisoned");
+    grants
+        .accepts_voice_speak_packet(server_id, room_id, person_name)
+        .map_err(|error| error.to_string())
+}
+
 pub fn cmd_osl_set_limited_channel_members(
     state: &AppState,
     server_id: String,

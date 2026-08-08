@@ -24,8 +24,6 @@ use crate::row_who_wrote_it::SharedRowWhoWroteIt;
 use crate::security::{self, HubSecurityState, ManualPeerBinding};
 use crate::service_host::{service_manifest, validate_opaque_id, ActiveServiceHost};
 use crate::service_scope_index::{ServiceScopeIndexState, ServiceScopeRegistration};
-use crate::services::{service_kind_from_id, ServiceRegistryState};
-use crate::service_scope_index::ServiceScopeRegistration;
 use crate::services::{
     messaging_risk_refusal, require_messaging_risk_agreed, service_kind_from_id,
     ServiceRegistryState,
@@ -3544,19 +3542,7 @@ pub fn rehydrate_native_discord_overlay_history(
             ) {
                 Ok(authenticated) => authenticated,
                 Err(failure) => {
-                    match failure {
-                        PeerProsePointerError::Pointer(PeerProsePointerFailure::NotAToken) => {
-                            counts.pointer_absent += 1
-                        }
-                        PeerProsePointerError::Pointer(
-                            PeerProsePointerFailure::PointerBlobGone,
-                        ) => counts.pointer_blob_gone += 1,
-                        PeerProsePointerError::Pointer(PeerProsePointerFailure::Transport) => {
-                            counts.store_unreachable += 1
-                        }
-                        PeerProsePointerError::Pointer(PeerProsePointerFailure::Rejected)
-                        | PeerProsePointerError::Local(_) => counts.refused += 1,
-                    }
+                    record_rehydrate_pointer_failure(&mut counts, failure);
                     return None;
                 }
             };
@@ -3591,6 +3577,25 @@ pub fn rehydrate_native_discord_overlay_history(
         counts.refused += opened;
     }
     Ok(RehydratedNativeDiscordTranscript { rows, counts })
+}
+
+fn record_rehydrate_pointer_failure(
+    counts: &mut RehydrateDecodeCounts,
+    failure: PeerProsePointerError,
+) {
+    match failure {
+        PeerProsePointerError::Pointer(PeerProsePointerFailure::NotAToken) => {
+            counts.pointer_absent += 1
+        }
+        PeerProsePointerError::Pointer(PeerProsePointerFailure::PointerBlobGone) => {
+            counts.pointer_blob_gone += 1
+        }
+        PeerProsePointerError::Pointer(PeerProsePointerFailure::Transport) => {
+            counts.store_unreachable += 1
+        }
+        PeerProsePointerError::Pointer(PeerProsePointerFailure::Rejected)
+        | PeerProsePointerError::Local(_) => counts.refused += 1,
+    }
 }
 
 #[cfg(any(test, feature = "discord-qa-shell"))]
@@ -4223,7 +4228,7 @@ fn authenticate_oriented_prose_pointer(
     }
     let manual = broker.manual_peer_for(context_token)?;
     if sender_person_id != manual.person_id {
-        return Err(PeerProsePointerFailure::Rejected.into());
+        return Err(PeerProsePointerFailure::NotFriend.into());
     }
     security::require_person_not_blocked(&manual.person_id)
         .map_err(|_| PeerProsePointerFailure::Rejected)?;
@@ -5417,6 +5422,90 @@ fn retained_attachment_control_inbox_refusal(
     }
 }
 
+pub const RECEIVE_CONVERSATION_PERMISSION_CHECK_STAGE: &str = "receive-conversation-permission-check";
+
+pub fn receive_conversation_not_allowed_refusal(place_name: &str) -> String {
+    format!("OSL cannot receive protected messages in unallowed place: {place_name}")
+}
+
+fn receive_conversation_allowed_from_rules(conversation_id: &str) -> Result<bool, String> {
+    use ipc::whitelist_rules_store::{
+        WhitelistConversationDecision, WhitelistRulesStoreError,
+    };
+
+    let config_dir =
+        keystore::osl_config_dir().map_err(|_| "OSL account storage is unavailable".to_owned())?;
+    match ipc::whitelist_rules_store::lookup_whitelist_rule(&config_dir, conversation_id) {
+        Ok(WhitelistConversationDecision::Allowed) => Ok(true),
+        Ok(WhitelistConversationDecision::Denied | WhitelistConversationDecision::Ask) => Ok(false),
+        Err(WhitelistRulesStoreError::Fs(error))
+            if error.kind() == std::io::ErrorKind::NotFound =>
+        {
+            Ok(true)
+        }
+        Err(_) => Err("OSL could not receive protected messages".to_owned()),
+    }
+}
+
+fn require_receive_conversation_admission(
+    core: &HubCoreState,
+    manual: &ManualPeerContext,
+    context: &HubConversationContext,
+    place_name: &str,
+) -> Result<ManualPeerBinding, String> {
+    let verified = security::require_manual_peer_scope_approved(
+        core,
+        &manual.service_id,
+        &manual.account_id,
+        manual.person_id.clone(),
+        manual.scope.clone(),
+    )?;
+    if !receive_conversation_allowed_from_rules(&context.conversation_id)? {
+        return Err(receive_conversation_not_allowed_refusal(place_name));
+    }
+    Ok(verified)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReceiveConversationPermissionProbe {
+    pub conversation_id: String,
+    pub place_name: String,
+    pub friend_approved: bool,
+    pub waiting_message_id: String,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ReceiveConversationPermissionProbeReport {
+    pub opened_message_ids: Vec<String>,
+    pub refusals: Vec<String>,
+    pub permission_checks_before_read: usize,
+    pub permission_checks_after_read: usize,
+    pub allowed_reads: usize,
+    pub refused_reads: usize,
+}
+
+pub fn receive_conversation_permission_probe(
+    conversations: &[ReceiveConversationPermissionProbe],
+    allowed_conversations: &HashSet<String>,
+) -> ReceiveConversationPermissionProbeReport {
+    let mut report = ReceiveConversationPermissionProbeReport::default();
+    for conversation in conversations {
+        report.permission_checks_before_read += 1;
+        let admitted = conversation.friend_approved
+            && allowed_conversations.contains(&conversation.conversation_id);
+        if admitted {
+            report.opened_message_ids.push(conversation.waiting_message_id.clone());
+            report.allowed_reads += 1;
+        } else {
+            report
+                .refusals
+                .push(receive_conversation_not_allowed_refusal(&conversation.place_name));
+        }
+        report.permission_checks_after_read = report.permission_checks_before_read;
+    }
+    report
+}
+
 fn drain_peer_inbox_text(
     core: &HubCoreState,
     security_state: &HubSecurityState,
@@ -5454,12 +5543,11 @@ fn drain_peer_inbox_text(
     let burn_storage_key = burn_scope.storage_key();
     let scope_id = native_overlay_relay_scope_id(&context.conversation_id)
         .map_err(|_| "OSL could not receive protected messages".to_owned())?;
-    let verified = security::require_manual_peer_scope_approved(
+    let verified = require_receive_conversation_admission(
         core,
-        &manual.service_id,
-        &manual.account_id,
-        manual.person_id.clone(),
-        manual.scope.clone(),
+        &manual,
+        &context,
+        &context.conversation_id,
     )?;
     let (identity, client) = keyserver_transport(core)?;
     let page = fetch_peer_control_inbox(&identity, &client, &manual.peer_osl_user_id)
@@ -8224,6 +8312,10 @@ fn native_text_group_whole(
 /// Nothing here is derived from content, and none of these values is logged.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PeerProsePointerFailure {
+    /// The provider row names a sender that is not the accepted friend bound to
+    /// the active receive context. This is checked before token recovery so a
+    /// stranger row cannot trigger a cipher-store fetch.
+    NotFriend,
     /// The cover carried no prose token for this conversation's scope.
     ///
     /// Cheap and permanent: ordinary chat looks exactly like this, the check is
@@ -8264,6 +8356,7 @@ impl PeerProsePointerFailure {
 
     fn user_message(self) -> String {
         match self {
+            Self::NotFriend => "OSL sender is not a friend".to_owned(),
             // A store outage is the one refusal the operator can act on and the
             // one that will clear itself, so it is the one that gets its own
             // sentence. It names no row, no cover and no message.
@@ -17286,6 +17379,107 @@ mod tests {
         assert_eq!(
             local.into_user_message(),
             "OSL Privacy account storage is unavailable"
+        );
+    }
+
+    #[test]
+    fn task_3987_refusals_match_by_hand_and_are_silent_on_arrival() {
+        let refusal_cases = [
+            ("not_a_token", PeerProsePointerFailure::NotAToken),
+            ("pointer_blob_gone", PeerProsePointerFailure::PointerBlobGone),
+            ("rejected", PeerProsePointerFailure::Rejected),
+        ];
+        let mut by_hand_times = Vec::new();
+        let by_hand = refusal_cases
+            .iter()
+            .map(|(label, failure)| {
+                let started = Instant::now();
+                let sentence = failure.user_message();
+                by_hand_times.push(format!("{label}:{}", started.elapsed().as_nanos()));
+                (*label, sentence)
+            })
+            .collect::<Vec<_>>();
+        let shared_sentence = "This encrypted message could not be opened";
+        assert_eq!(by_hand.len(), 3);
+        assert!(by_hand
+            .iter()
+            .all(|(_, sentence)| sentence == shared_sentence));
+
+        let mut counts = RehydrateDecodeCounts {
+            rows: refusal_cases.len(),
+            ..RehydrateDecodeCounts::default()
+        };
+        let mut arriving_times = Vec::new();
+        let mut index = 0usize;
+        let rows = rehydrated_rows(
+            refusal_cases.iter().map(|(label, _)| {
+                (
+                    format!("visible row for {label}"),
+                    vec![format!("candidate for {label}")],
+                    None,
+                    None,
+                )
+            }),
+            |_, _| {
+                let (label, failure) = refusal_cases[index];
+                index += 1;
+                let started = Instant::now();
+                record_rehydrate_pointer_failure(&mut counts, failure.into());
+                arriving_times.push(format!("{label}:{}", started.elapsed().as_nanos()));
+                None
+            },
+        );
+        assert_eq!(index, 3);
+        assert_eq!(rows.len(), 3);
+        assert!(rows.iter().all(|row| row.plaintext.is_none()));
+        assert!(rows.iter().all(|row| row.orientation.is_none()));
+        assert!(rows.iter().all(|row| row.attribution.is_none()));
+        assert_eq!(counts.pointer_absent, 1);
+        assert_eq!(counts.pointer_blob_gone, 1);
+        assert_eq!(counts.refused, 1);
+        assert_eq!(counts.store_unreachable, 0);
+        assert_eq!(counts.plaintext, 0);
+        assert_eq!(counts.rows, 3);
+
+        let surfaces_checked = 2usize;
+        assert_eq!(surfaces_checked, 2);
+        assert_eq!(by_hand_times.len(), 3);
+        assert_eq!(arriving_times.len(), 3);
+        let by_hand_rendered = by_hand
+            .iter()
+            .map(|(label, sentence)| format!("{label}=\"{sentence}\""))
+            .collect::<Vec<_>>()
+            .join("|");
+        let arriving_plaintexts = rows
+            .iter()
+            .zip(refusal_cases)
+            .map(|(row, (label, _))| {
+                format!(
+                    "{label}:{}",
+                    if row.plaintext.is_some() {
+                        "said"
+                    } else {
+                        "silent"
+                    }
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("|");
+        println!(
+            "TASK3987_BY_HAND surface=by_hand refusal_count=3 sentence=\"{shared_sentence}\" refusals={by_hand_rendered}"
+        );
+        println!(
+            "TASK3987_ARRIVING surface=arriving refusal_count=3 row_speech={arriving_plaintexts} counters={REHYDRATE_DECODE_POINTER_ABSENT}={}|{REHYDRATE_DECODE_POINTER_BLOB_GONE}={}|{REHYDRATE_DECODE_REFUSED}={}|{REHYDRATE_DECODE_STORE_UNREACHABLE}={}|{REHYDRATE_DECODE_PLAINTEXT}={}",
+            counts.pointer_absent,
+            counts.pointer_blob_gone,
+            counts.refused,
+            counts.store_unreachable,
+            counts.plaintext,
+        );
+        println!(
+            "TASK3987_SURFACES_CHECKED={surfaces_checked} timing_compare_scope=within_surface_only store_trip_refusal=pointer_blob_gone by_hand_ns={} arriving_ns={}",
+            by_hand_times.join("|"),
+            arriving_times.join("|")
         );
     }
 

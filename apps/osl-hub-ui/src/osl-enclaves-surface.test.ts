@@ -24,4 +24,16 @@ describe("T21-T46 Enclaves surface ownership", () => {
     expect(markup).toContain("<span>Available</span>");
     expect(markup).not.toContain("style=");
   });
+
+  it("shows the voice metadata boundary with four RELAY tags", () => {
+    const markup = oslEnclavesSurfaceMarkup({ statusTag: (label) => `<span>${label}</span>` });
+    const relayTags = markup.match(/<span>RELAY<\/span>/gu) ?? [];
+
+    console.log(`TASK4877 voice_screen_relay_tags=${relayTags.length}`);
+    console.log("TASK4877 voice_screen_sentence=OSL can see who is in a voice room and when.");
+
+    expect(relayTags).toHaveLength(4);
+    expect(markup).toContain("OSL can see who is in a voice room and when.");
+    expect(markup).toContain("Voice media stays encrypted, but voice is not as private as messages.");
+  });
 });

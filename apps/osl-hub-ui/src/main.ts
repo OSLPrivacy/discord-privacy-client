@@ -42,17 +42,6 @@ import { componentPickerScreen } from "./component-picker";
 import { componentManagerFromOnboarding } from "./component-manager";
 import { autoScrubConsentPrompt, decideAutoScrubInstall } from "./component-consent";
 import { autoScrubTierStatus } from "./autoscrub-tier";
-import {
-  chooseMessageDefault,
-  initialMessageDefaultsScreenState,
-  messageDefaultsScreenMarkup,
-  resetMessageDefaults,
-  savedMessageDefaultLabels,
-  saveMessageDefaults,
-  type MessageDefaults,
-  type MessageDefaultsControl,
-  type MessageDefaultsScreenState,
-} from "./message-defaults";
 import { deviceTransferManifestScreen } from "./device-transfer";
 import { initialOldDeviceCopyDecision, oldDeviceCopyDecisionView } from "./device-transfer-source";
 import { renderDeadmanScreen, selectDeadmanAction } from "./deadman";
@@ -125,6 +114,7 @@ import {
   type ServiceId,
   AndroidSurface,
 } from "./services";
+import { tileStatusRouteFor } from "./tile-status-route";
 import {
   coreReadinessLabel,
   clearHubActivationCode,
@@ -155,15 +145,10 @@ import {
 import { checkHubForUpdates, installHubUpdate, openHubReleasesPage, openHubSourceRepository, type UpdateStatus } from "./updates";
 import { createDiscordQaGeometryKeeper } from "./discord-qa-geometry";
 import { browserLogo, serviceLogo, providerLogo } from "./logos";
-import { activateLocalLoopbackContext, activateManualPeerContext, activateNativeManualPeerContext, activateOslChatContext, addOslFriend, addOslFriendByUsername, burnActiveHubContext, burnHubServiceAccount, captureProtectionEnforced, closeOslChatContext, copyHubFriendInvite, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubRevocationStatus, getHubServiceBurnReadiness, getOslUsernameStatus, isHubPlaintext, isNormalizedOslUsername, listHubIdentities, listHubPeople, listOslChatHistory, loadActiveContextSecurity, loadAppNotifications, loadBuildIntegrityStatus, loadFriendProfile, openOslChatText, openPeerProseText, peerIsVerified, prepareLocalProtectedText, prepareOslChatText, preparePeerProseText, recoverHubIdentitySlot, saveActiveContextSecurity, revokeActiveHubFriendScope, setActiveHubFriendPermission, setActiveHubFriendReach, setHubFriendNickname, setLocalProtectedSheetOpen, setNativeDiscordProtectedOverlayOpen, setNativeDiscordProtectedOverlayOpenForQa, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, viewHubRecoveryPhrase, type AppNotification, type BuildIntegrityStatus, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type LocalPrivacyScanResult, type ManualPeerContext, type PersistedLocalPrivacyScanResult } from "./adapters";
-import { activateLocalLoopbackContext, activateManualPeerContext, activateNativeManualPeerContext, activateOslChatContext, addOslFriend, addOslFriendByUsername, answerHubChatApprovalSuggestion, burnActiveHubContext, burnHubServiceAccount, captureProtectionEnforced, closeOslChatContext, copyHubFriendInvite, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubRevocationStatus, getHubServiceBurnReadiness, getOslUsernameStatus, isHubPlaintext, isNormalizedOslUsername, listHubIdentities, listHubPeople, listOslChatHistory, loadActiveContextSecurity, loadAppNotifications, loadFriendProfile, openOslChatText, openPeerProseText, peerIsVerified, prepareLocalProtectedText, prepareOslChatText, preparePeerProseText, recoverHubIdentitySlot, saveActiveContextSecurity, revokeActiveHubFriendScope, setActiveHubFriendPermission, setActiveHubFriendReach, setHubChatApprovalSuggestionChoice, setHubFriendNickname, setLocalProtectedSheetOpen, setNativeDiscordProtectedOverlayOpen, setNativeDiscordProtectedOverlayOpenForQa, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, viewHubRecoveryPhrase, type AppNotification, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type LocalPrivacyScanResult, type ManualPeerContext, type PersistedLocalPrivacyScanResult } from "./adapters";
-import { activateLocalLoopbackContext, activateManualPeerContext, activateNativeManualPeerContext, activateOslChatContext, addOslFriend, addOslFriendByUsername, burnActiveHubContext, burnHubServiceAccount, captureProtectionEnforced, closeOslChatContext, copyHubFriendInvite, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubRevocationStatus, getHubServiceBurnReadiness, getOslUsernameStatus, isHubPlaintext, isNormalizedOslUsername, listHubIdentities, listHubPeople, listOslChatHistory, loadActiveContextSecurity, loadAppNotifications, loadFriendProfile, loadInstalledBuildChatWarningStatus, openOslChatText, openPeerProseText, peerIsVerified, prepareLocalProtectedText, prepareOslChatText, preparePeerProseText, recoverHubIdentitySlot, saveActiveContextSecurity, revokeActiveHubFriendScope, setActiveHubFriendPermission, setActiveHubFriendReach, setHubFriendNickname, setLocalProtectedSheetOpen, setNativeDiscordProtectedOverlayOpen, setNativeDiscordProtectedOverlayOpenForQa, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, viewHubRecoveryPhrase, type AppNotification, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type InstalledBuildChatWarning, type LocalPrivacyScanResult, type ManualPeerContext, type PersistedLocalPrivacyScanResult } from "./adapters";
-import { activateLocalLoopbackContext, activateManualPeerContext, activateNativeManualPeerContext, activateOslChatContext, addOslChatReaction, addOslFriend, addOslFriendByUsername, burnActiveHubContext, burnHubServiceAccount, captureProtectionEnforced, closeOslChatContext, copyHubFriendInvite, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubRevocationStatus, getHubServiceBurnReadiness, getOslUsernameStatus, isHubPlaintext, isNormalizedOslUsername, listHubIdentities, listHubPeople, listOslChatHistory, loadActiveContextSecurity, loadAppNotifications, loadFriendProfile, openOslChatText, openPeerProseText, peerIsVerified, prepareLocalProtectedText, prepareOslChatText, preparePeerProseText, recoverHubIdentitySlot, removeOslChatReaction, saveActiveContextSecurity, revokeActiveHubFriendScope, setActiveHubFriendPermission, setActiveHubFriendReach, setHubFriendNickname, setLocalProtectedSheetOpen, setNativeDiscordProtectedOverlayOpen, setNativeDiscordProtectedOverlayOpenForQa, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, viewHubRecoveryPhrase, type AppNotification, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type LocalPrivacyScanResult, type ManualPeerContext, type PersistedLocalPrivacyScanResult } from "./adapters";
-import { activateLocalLoopbackContext, activateManualPeerContext, activateNativeManualPeerContext, activateOslChatContext, addOslFriend, addOslFriendByUsername, answerHubChatApprovalSuggestion, burnActiveHubContext, burnHubServiceAccount, captureProtectionEnforced, closeOslChatContext, copyHubFriendInvite, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubRevocationStatus, getHubServiceBurnReadiness, getOslUsernameStatus, isHubPlaintext, isNormalizedOslUsername, listHubIdentities, listHubPeople, listOslChatHistory, loadActiveContextSecurity, loadAppNotifications, loadFriendProfile, openOslChatText, openPeerProseText, peerIsVerified, prepareLocalProtectedText, prepareOslChatText, preparePeerProseText, recoverHubIdentitySlot, saveActiveContextSecurity, revokeActiveHubFriendScope, setActiveHubFriendPermission, setActiveHubFriendReach, setHubChatApprovalSuggestionChoice, setHubFriendNickname, setLocalProtectedSheetOpen, setNativeDiscordProtectedOverlayOpen, setNativeDiscordProtectedOverlayOpenForQa, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, viewHubRecoveryPhrase, type AppNotification, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type LocalPrivacyScanResult, type ManualPeerContext, type PersistedLocalPrivacyScanResult } from "./adapters";
+import { activateLocalLoopbackContext, activateManualPeerContext, activateNativeManualPeerContext, activateOslChatContext, addOslChatReaction, addOslFriend, addOslFriendByUsername, answerHubChatApprovalSuggestion, burnActiveHubContext, burnHubServiceAccount, captureProtectionEnforced, closeOslChatContext, copyHubFriendInvite, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubRevocationStatus, getHubServiceBurnReadiness, getOslUsernameStatus, isHubPlaintext, isNormalizedOslUsername, listHubIdentities, listHubPeople, listOslChatHistory, loadActiveContextSecurity, loadAppNotifications, loadBuildIntegrityStatus, loadFriendProfile, loadInstalledBuildChatWarningStatus, openOslChatText, openPeerProseText, peerIsVerified, prepareLocalProtectedText, prepareOslChatText, preparePeerProseText, recoverHubIdentitySlot, removeOslChatReaction, saveActiveContextSecurity, revokeActiveHubFriendScope, setActiveHubFriendPermission, setActiveHubFriendReach, setHubChatApprovalSuggestionChoice, setHubFriendNickname, setLocalProtectedSheetOpen, setNativeDiscordProtectedOverlayOpen, setNativeDiscordProtectedOverlayOpenForQa, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, viewHubRecoveryPhrase, type AppNotification, type BuildIntegrityStatus, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type InstalledBuildChatWarning, type LocalPrivacyScanResult, type ManualPeerContext, type PersistedLocalPrivacyScanResult } from "./adapters";
 import { blankLocalProtectedModel, isLocalTtlSeconds, loadOrCreateLocalConversationId, localProtectedSheetMarkup, validLocalChatLabel, type LocalProtectedPane, type LocalProtectedSheetModel } from "./local-protected-sheet";
 import { blankPeerProtectedModel, boundedPeerProtectedDraft, peerProtectedDraftByteFeedback, peerProtectedSheetMarkup, type PeerProtectedPane, type PeerProtectedSheetModel } from "./peer-protected-sheet";
 import { peerIntegrityMarkup } from "./peer-integrity";
-import { futureAccountSwitchMarkup } from "./future-account-switch";
 import oslLogoUrl from "../../osl-hub/icons/icon-cyan.png";
 import oslVectorLogoUrl from "./assets/logo-mark.svg";
 import oslGhostMarkUrl from "./assets/Ghost-white.svg";
@@ -184,6 +169,9 @@ import { NativeDeadlineError, withNativeDeadline } from "./native-deadline";
 import { CoalescedRealignment, NativeCallGate } from "./native-realignment";
 import { bindWindowLifecycleRealignment } from "./window-lifecycle-bindings";
 import { FrameRenderScheduler } from "./render-scheduler";
+import { whitelistDropdownMarkup } from "./whitelist-dropdown";
+import { settingsHomeMenuMarkup } from "./settings-home";
+import { whitelistingClearAll, whitelistingPendingChanges, whitelistingReset, whitelistingScreenMarkup, whitelistingSelectAll, whitelistingSetSearch, whitelistingToggleConversation, type WhitelistingConversation, type WhitelistingScreenState } from "./whitelisting-screen";
 import { defaultScrubSignalGroups, enabledScrubFindings, parseScrubSignalGroups, scrubSignalDefinitions, scrubSignalGroupFor, type ScrubSignalGroup } from "./scrub";
 import { loadMassCleanupCapabilities, type MassCleanupCapabilityManifest } from "./mass-cleanup";
 import { projectAutoScrubFleetStatus, type AutoScrubFleetStatus } from "./autoscrub-contract";
@@ -231,6 +219,7 @@ import { burnFeatureClaimsMarkup } from "./feature-claims";
 import { burnRevocationReceipt, type BurnRevocationReceipt } from "./burn-revocation-receipt";
 import { senderReceiptStatus } from "./receipt-status";
 import { attachmentProgressMarkup, parseAttachmentProgressEvent, type AttachmentProgressEvent } from "./attachment-progress";
+import { attachOslChatComposerDragAndDrop, attachmentTrayMarkup, createOslChatAttachmentTray, type OslChatAttachmentTrayState } from "./chat-attachment-drop";
 import { destructStatusMarkup, type ServerDestructStatus } from "./destruct-status";
 import { offlineCapabilityStatus, type OfflineUnavailableCapability, type OslConnectionState } from "./offline-capability-status";
 import type { NativeDiscordOverlayOpenedBatch } from "./overlay-state";
@@ -245,7 +234,7 @@ import {
 import type { SecureLocalStore } from "./secure-local-store";
 import { createOslChatSecureLocalStore } from "./osl-chat-secure-store";
 
-export type Route = "onboarding" | "home" | "inbox" | "people" | "privacy" | "activity" | "connections" | "service" | "settings" | "message-defaults" | "mullvad" | "osl-chat" | "osl-mail" | "osl-servers" | "signal-qa";
+export type Route = "onboarding" | "home" | "inbox" | "people" | "privacy" | "activity" | "connections" | "service" | "settings" | "mullvad" | "osl-chat" | "osl-mail" | "osl-servers" | "signal-qa";
 
 /**
  * The colour a status chip is allowed to claim, resolved from the word printed
@@ -284,6 +273,27 @@ function statusTag(label: string, extra = ""): string {
 /** The claim row for one connected app: the label, and the sentence behind it. */
 function nativeClaimMarkup(app: NativeApp): string {
   return `<p class="native-claim-note" data-claim-status="${app.supportStatus}" data-carrier-evidence="${app.carrierEvidence}" data-delivery-evidence="${app.deliveryEvidence}" data-status-page-capability="${escapeHtml(app.statusPage.capability)}">${statusTag(app.statusPage.generatedLabel)} ${escapeHtml(app.statusPage.explanation)}</p>`;
+}
+
+/**
+ * TASK 0853 — one tile's status route, rendered from its route data.
+ *
+ * Every word here is either generated (the label, the capability, the sentence)
+ * or one of the four strings `tile-status-route.ts` is allowed to write. The
+ * route this page used to show said "Open a separate OSL profile" over an app
+ * OSL cannot open and nothing at all about what OSL had proven, so the only
+ * honest thing on the tile — the claim — stopped at the Home screen.
+ *
+ * Both actions are reached by handlers that already bind: `[data-home-app]`
+ * opens the app in its own profile, `[data-route]` navigates. Nothing here
+ * offers a control that does not work yet.
+ */
+function tileStatusRouteMarkup(app: NativeApp): string {
+  const data = tileStatusRouteFor(app);
+  const next = data.nextAction.handler === "data-home-app"
+    ? `data-home-app="${escapeHtml(data.nextAction.handlerValue)}"`
+    : `data-route="${escapeHtml(data.nextAction.handlerValue)}"`;
+  return `<p class="native-claim-note" data-tile-status-route="${escapeHtml(data.route)}" data-tile-status-label="${escapeHtml(data.generatedLabel)}">${statusTag(data.generatedLabel)} ${escapeHtml(data.capability)}</p><p class="native-claim-note" data-tile-status-explanation="${escapeHtml(data.tileId)}">${escapeHtml(data.explanation)}</p><div class="native-app-secondary"><button class="button compact" type="button" data-tile-status-action="${escapeHtml(data.nextAction.target)}" ${next}>${escapeHtml(data.nextAction.label)}</button><button class="text-button" type="button" data-tile-status-action="${escapeHtml(data.evidenceAction.target)}" data-route="${escapeHtml(data.evidenceAction.handlerValue)}">${escapeHtml(data.evidenceAction.label)}</button></div>`;
 }
 
 /**
@@ -334,9 +344,8 @@ const NATIVE_DISCORD_COMPOSER_UNREACHABLE_EVENT = "osl://native-discord-composer
 // warning.
 const NATIVE_DISCORD_COMPOSER_UNREACHABLE_REASONS = ["zorder-band", "keyboard-focus", "session-ended"] as const;
 type NativeDiscordComposerUnreachableReason = (typeof NATIVE_DISCORD_COMPOSER_UNREACHABLE_REASONS)[number];
-type OnboardingRoute = "pro" | "welcome" | "create" | "import" | "unlock" | "keylost" | "account-recovery" | "recovery" | "mullvad" | "sending" | "defaults" | "tor" | "forward-secrecy" | "cover" | "silent-visible" | "passwords" | "burnpass" | "privacy" | "tutorial" | "detected" | "install" | "apps" | "browser" | "decoy";
-type OnboardingRoute = "pro" | "welcome" | "create" | "import" | "unlock" | "keylost" | "account-recovery" | "recovery" | "mullvad" | "sending" | "defaults" | "tor" | "forward-secrecy" | "cover" | "visibility" | "passwords" | "burnpass" | "privacy" | "tutorial" | "detected" | "install" | "apps" | "browser" | "decoy";
-type SettingsSection = "account" | "apps" | "scrub" | "cleanup" | "notifications" | "appearance" | "about";
+type OnboardingRoute = "pro" | "welcome" | "create" | "import" | "unlock" | "keylost" | "account-recovery" | "recovery" | "mullvad" | "sending" | "defaults" | "tor" | "forward-secrecy" | "cover" | "silent-visible" | "visibility" | "passwords" | "burnpass" | "privacy" | "tutorial" | "detected" | "install" | "apps" | "browser" | "decoy";
+type SettingsSection = "account" | "apps" | "whitelisting" | "scrub" | "cleanup" | "notifications" | "appearance" | "about";
 type SavedAccountMode = "ask" | "use" | "clean";
 type BurnScope = "chat" | "app" | "account";
 type BurnResult = {
@@ -456,9 +465,6 @@ let onboardingRoute: OnboardingRoute = "welcome";
 let onboardingTourStep = 0;
 let replayingOnboardingTour = false;
 let torOnboarding: TorOnboardingState = initialTorOnboardingState();
-// Which of the two insertion styles is highlighted. Nothing is persisted yet:
-// only "insert on send" is built, so this is the screen's own state.
-let coverInsertion: CoverInsertionChoice = initialCoverInsertionChoice();
 let silentVisibleMode: SilentVisibleMode | null = null;
 // Which of the two insertion styles is highlighted. It starts unset so setup
 // cannot silently accept a default the owner never chose.
@@ -482,7 +488,6 @@ const recoveryKitUnsavedFlag = createRecoveryKitUnsavedFlag({
   write: (unsaved) => setHubRecoveryKitUnsaved(unsaved),
 });
 let settingsSection: SettingsSection = "account";
-let messageDefaultsScreen: MessageDefaultsScreenState = initialMessageDefaultsScreenState();
 let activeService: LinkedService | null = null;
 let activeHomeAppId: HomeAppId | null = null;
 let appLaunchPendingId: HomeAppId | null = null;
@@ -671,6 +676,13 @@ let discordQaTranscriptVisibilityOutcome: DiscordQaTranscriptVisibilityOutcome =
 // might still need.
 let discordMarkerAvailable = true;
 let whitelistRosterOpen = false;
+// Whitelisting screen. The saved answer always comes from the hub (which chats
+// each verified person is approved in); these two hold only what the user has
+// typed and ticked since the screen was opened, so a re-render never invents an
+// approval and Reset has something real to go back to.
+let whitelistingSearch = "";
+let whitelistingDraft: readonly string[] | null = null;
+let whitelistingBusy = false;
 let onboardingComplete = false;
 let screenshotProtectionEnabled = false;
 let linkedServicesChecked = false;
@@ -702,6 +714,7 @@ let oslChatPreviewsVisible = true;
 let oslChatMutedPeople = new Set<string>();
 let oslChatSettingsPersonId: string | null = null;
 let oslChatAttachments: NativeOverlayPendingAttachment[] = [];
+const oslChatDropTray: OslChatAttachmentTrayState = createOslChatAttachmentTray();
 let buildIntegrityStatus: BuildIntegrityStatus | null = null;
 const attachmentProgressByContext = new Map<string, AttachmentProgressEvent>();
 let privacyScanResult: LocalPrivacyScanResult | PersistedLocalPrivacyScanResult | null = null;
@@ -743,9 +756,6 @@ let serviceGuideStep: ServiceGuideStep | null = null;
 let nativeHostFailureNotice = "";
 let friendsDialogOpen = false;
 let friendsDialogPage = 0;
-// Per-friend "Auto-whitelist new accounts" state. TASK 0267 draws the switch;
-// TASK 0268 fills this from the Hub command and writes changes back.
-const friendFutureAccountAutoWhitelist = new Map<string, boolean>();
 let burnDialogOpen = false;
 let burnScope: BurnScope = "chat";
 let burnBusy = false;
@@ -1958,7 +1968,7 @@ function dockOnboardingBackControl(): void {
 }
 
 function onboardingSetupNavigationMarkup(): string {
-  return ["pro", "forward-secrecy", "privacy", "defaults", "tor", "sending", "cover", "passwords", "burnpass", "browser", "detected", "install", "apps", "mullvad"].includes(onboardingRoute)
+  return ["pro", "forward-secrecy", "privacy", "defaults", "tor", "sending", "cover", "silent-visible", "visibility", "passwords", "burnpass", "browser", "detected", "install", "apps", "mullvad"].includes(onboardingRoute)
     ? `<div class="setup-footer onboarding-actions onboarding-nav"><button class="button ghost onboarding-back" id="onboarding-back" type="button">Back</button></div>`
     : "";
 }
@@ -1966,12 +1976,6 @@ function onboardingSetupNavigationMarkup(): string {
 function renderOnboarding(): void {
   onboardingRoute = onboardingRouteForBuild(onboardingRoute);
   persistCurrentOnboardingRoute();
-  const setupScreen = ["pro", "forward-secrecy", "privacy", "defaults", "tor", "sending", "cover", "silent-visible", "passwords", "burnpass", "browser", "detected", "install", "apps", "mullvad"].includes(onboardingRoute);
-  const setupScreen = ["pro", "forward-secrecy", "privacy", "defaults", "tor", "sending", "cover", "visibility", "passwords", "burnpass", "browser", "detected", "install", "apps", "mullvad"].includes(onboardingRoute);
-  const setupNavigation = setupScreen
-    ? `<div class="setup-footer onboarding-actions onboarding-nav"><button class="button ghost onboarding-back" id="onboarding-back" type="button">Back</button></div>`
-    : "";
-  const setupNavigation = isSetupOnboardingRoute(onboardingRoute) ? setupOnboardingNavigationMarkup() : "";
   const setupNavigation = onboardingSetupNavigationMarkup();
   const markup = onboardingShellMarkup(setupNavigation);
   lastWorkspaceMarkup = null;
@@ -3097,8 +3101,7 @@ function mullvadSetupContent(): string {
       ? "Mullvad is not installed. Windows can install it for you"
       : "Mullvad or Windows App Installer was not found";
   const action = found
-    ? `<button class="mv-action" id="found-session-mullvad" type="button" ${mullvadBusy ? "disabled" : ""}>${mullvadBusy ? "Checking…" : "Found session"}</button>`
-    ? `<button class="mv-action" id="open-mullvad" type="button" ${mullvadBusy ? "disabled" : ""}>${mullvadBusy ? "Opening…" : "found session"}</button>`
+    ? `<button class="mv-action" id="found-session-mullvad" type="button" ${mullvadBusy ? "disabled" : ""}>${mullvadBusy ? "Checking…" : "Found session"}</button><button class="mv-action" id="open-mullvad" type="button" ${mullvadBusy ? "disabled" : ""}>${mullvadBusy ? "Opening…" : "found session"}</button>`
     : availability === "installable"
       ? `<button class="mv-action" id="install-mullvad" type="button" ${mullvadBusy ? "disabled" : ""}>${mullvadBusy ? "Starting…" : "install"}</button>`
       : "";
@@ -3193,6 +3196,8 @@ async function saveSendingSetupDraft(): Promise<void> {
     windowCaptureEnabled,
     forwardSecrecyMode,
   });
+}
+
 type QuickTourScreen = "setup" | "tour-card" | "app-selection" | "home";
 type QuickTourControl = "Back" | "Next" | "Choose apps" | "Set card";
 type QuickTourControlResult = {
@@ -3553,7 +3558,6 @@ function bindOnboarding(): void {
   document.querySelector<HTMLButtonElement>("[data-forward-secrecy-continue]")?.addEventListener("click", () => {
     if (forwardSecrecyOnboarding.choice === null) return;
     const selectedForwardSecrecyMode = forwardSecrecyOnboarding.choice === "protect-past" ? "protectPast" : "keepGroupDelivery";
-    void saveOnboardingPreferences({ onboardingComplete: false, setup, coverInsertion, showPlaintextPreview: true, windowCaptureEnabled, forwardSecrecyMode: selectedForwardSecrecyMode }).then((saved) => {
     void saveOnboardingPreferences({ onboardingComplete: false, setup, showPlaintextPreview: true, windowCaptureEnabled, rnWirePolicyRequested, forwardSecrecyMode: selectedForwardSecrecyMode }).then((saved) => {
       forwardSecrecyMode = saved.forwardSecrecyMode;
       rnWirePolicyRequested = saved.rnWirePolicyRequested;
@@ -3607,11 +3611,6 @@ function bindOnboarding(): void {
     if (silentVisibleMode === null) return;
     onboardingRoute = "passwords";
     render();
-  document.querySelector("#continue-cover-draft")?.addEventListener("click", () => {
-    if (!coverInsertion) return;
-    onboardingRoute = "mullvad";
-    render();
-    void refreshMullvadSetup();
   });
   bindOnboardingPasswordRole();
   document.querySelectorAll<HTMLButtonElement>("button[data-password-role-next]").forEach((button) => button.addEventListener("click", () => {
@@ -3791,7 +3790,6 @@ async function completeSixStepOnboarding(): Promise<void> {
   const completedSetup = balancedFirstRunSetup(setup);
   if (!canCompleteSetup(completedSetup)) throw new Error("setup missing required sending consent");
   setup = completedSetup;
-  const saved = await saveOnboardingPreferences({ onboardingComplete: true, setup, coverInsertion, showPlaintextPreview: true, windowCaptureEnabled, forwardSecrecyMode });
   const saved = await saveOnboardingPreferences({ onboardingComplete: true, setup, showPlaintextPreview: true, windowCaptureEnabled, rnWirePolicyRequested, forwardSecrecyMode });
   setup = saved.setup;
   coverInsertion = saved.coverInsertion;
@@ -4364,7 +4362,7 @@ export function primarySidebarMarkup(): string {
   const activeDestination = (id: OslPrimaryDestination): boolean => {
     if (id === "home") return route === "home" && !friendsDialogOpen;
     if (id === "inbox") return route === "inbox" || route === "osl-chat" || route === "osl-mail";
-    if (id === "people") return route === "people" || friendsDialogOpen;
+    if (id === "people") return route === "people" || friendsDialogOpen || (route === "settings" && settingsSection === "whitelisting");
     if (id === "privacy") return route === "privacy" || (route === "settings" && (settingsSection === "scrub" || settingsSection === "cleanup" || settingsSection === "appearance"));
     if (id === "activity") return route === "activity" || (route === "settings" && settingsSection === "notifications");
     if (id === "connections") return route === "connections" || route === "service" || route === "mullvad" || (route === "settings" && settingsSection === "apps");
@@ -4501,7 +4499,6 @@ function nativeDiscordHeaderControls(): string {
   const visibilityBusy = discordQaHeaderBusy === "visibility";
   const rowProofBusy = discordQaRowProofState === "busy";
   const scopeApproved = context?.scopeApproved === true;
-  const openPlaceAllowed = context === null || scopeApproved;
   // Revoking used to be silent: the scope goes un-approved and the very next
   // send just fails closed in Rust ("Approve encryption for this friend
   // before continuing"), with nothing on screen explaining why. This chip
@@ -4548,9 +4545,7 @@ function nativeDiscordHeaderControls(): string {
   const transcriptNotice = transcriptFailed || transcriptUnapplied
     ? `<span class="discord-qa-visibility-notice" id="discord-qa-transcript-visibility-notice" role="status" data-transcript-state="${transcriptOutcome}">${transcriptFailed ? "Eye failed — transcript unchanged" : "Eye saved — no display surface open"}</span>`
     : "";
-  const transcriptVisibilityControl = openPlaceAllowed
-    ? `<button class="discord-qa-icon-control ${transcriptVisible ? "visible" : "hidden"}${transcriptFailed ? " transcript-failed" : ""}" id="discord-qa-transcript-visibility" type="button" aria-pressed="${transcriptVisible}" data-transcript-mode="${transcriptMode}" data-transcript-state="${transcriptOutcome}" ${transcriptFailed ? 'aria-invalid="true" ' : ""}aria-label="${transcriptVisible ? "Hide protected transcript" : "Show protected transcript"}" title="${transcriptTitle}" ${!verifiedPeer || visibilityBusy ? "disabled" : ""}>${eye}</button>`
-    : "";
+  const transcriptVisibilityControl = `<button class="discord-qa-icon-control ${transcriptVisible ? "visible" : "hidden"}${transcriptFailed ? " transcript-failed" : ""}" id="discord-qa-transcript-visibility" type="button" aria-pressed="${transcriptVisible}" data-transcript-mode="${transcriptMode}" data-transcript-state="${transcriptOutcome}" ${transcriptFailed ? 'aria-invalid="true" ' : ""}aria-label="${transcriptVisible ? "Hide protected transcript" : "Show protected transcript"}" title="${transcriptTitle}" ${!verifiedPeer || visibilityBusy ? "disabled" : ""}>${eye}</button>`;
   const lock = `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="${nativeDiscordProtectionActive ? "M8 10V7a4 4 0 0 1 8 0v3" : "M8 10V7a4 4 0 0 1 7.7-1.5"}"/></svg>`;
   // "Refused" only survives while protection is still off: an open composer
   // answers the question the refusal was asking. The four states are otherwise
@@ -4586,7 +4581,7 @@ function nativeDiscordHeaderControls(): string {
   // Pages with no message composer (e.g. Friends) report discordMarkerAvailable
   // false; the lock is hidden there. Protection already open stays shown so it
   // always has a control to turn back off, even if the view changes under it.
-  const composerControl = openPlaceAllowed && (discordMarkerAvailable || nativeDiscordProtectionActive)
+  const composerControl = discordMarkerAvailable || nativeDiscordProtectionActive
     ? `<button class="discord-qa-icon-control composer ${nativeDiscordProtectionActive ? "locked" : "unlocked"}${composerRefusal ? " composer-refused" : ""}" id="discord-qa-toggle-composer" type="button" aria-pressed="${nativeDiscordProtectionActive}" aria-label="${composerProtectionLabel}" title="${composerProtectionLabel}" ${discordQaComposerBusy ? "disabled" : ""} data-lock-state="${composerLockState}"${composerRefusal ? ' aria-invalid="true"' : ""}>${lock}${composerRefusedMark}</button>`
     : "";
   // Persistent, plain-language refusal in the header strip — the one surface
@@ -4606,7 +4601,7 @@ function nativeDiscordHeaderControls(): string {
           ? "Checking row proof…"
           : "Check row proof";
   const rowProofControl = `<button class="discord-qa-control" id="discord-qa-row-proof" type="button" data-runtime-proof="${discordQaRowProofState}" aria-label="${rowProofLabel}" title="${rowProofLabel}" ${!nativeDiscordProtectionActive || !verifiedPeer || rowProofBusy ? "disabled" : ""}>Proof</button>`;
-  return `<div class="native-discord-header-controls discord-qa-header-controls" aria-label="Discord QA privacy controls"><div class="discord-qa-header-left"><button class="discord-qa-control danger icon-only in-dom-tooltip-anchor" data-open-burn="account" type="button" aria-label="Account Burn">${accountBurnIcon}${inDomTooltipMarkup("Open Account Burn confirmation")}</button></div><button class="discord-qa-control danger icon-only discord-qa-discord-burn in-dom-tooltip-anchor" data-open-burn="app" type="button" aria-label="Discord Burn">${discordBurnIcon}${inDomTooltipMarkup("Open Discord Burn confirmation")}</button><div class="discord-qa-header-right">${rowProofControl}<div class="discord-qa-whitelist" role="group" aria-label="Connected verified peer whitelist"><button class="in-dom-tooltip-anchor" id="discord-qa-whitelist-roster" type="button" aria-haspopup="dialog" aria-expanded="${whitelistRosterOpen}" ${discordQaHeaderBusy ? "disabled" : ""}>Whitelist${inDomTooltipMarkup("Review who is whitelisted and where")}</button><button class="in-dom-tooltip-anchor" id="discord-qa-whitelist-add" type="button" aria-label="Allow this verified peer scope" ${!nativeDiscordProtectionActive || !verifiedPeer || scopeApproved || whitelistBusy ? "disabled" : ""}>+${inDomTooltipMarkup("Allow this verified peer scope")}</button><button class="in-dom-tooltip-anchor" id="discord-qa-whitelist-remove" type="button" aria-label="Revoke this verified peer scope" ${!nativeDiscordProtectionActive || !verifiedPeer || !scopeApproved || whitelistBusy ? "disabled" : ""}>−${inDomTooltipMarkup("Revoke this verified peer scope")}</button></div><button class="discord-qa-control danger icon-only chat-burn in-dom-tooltip-anchor" data-open-burn="chat" type="button" ${inactive} aria-label="Chat Burn">${flame}${inDomTooltipMarkup("Open Chat Burn confirmation")}</button>${composerUnreachableNotice}${composerRefusalNotice}${transcriptNotice}${transcriptVisibilityControl}${composerControl}${whitelistWarningNotice}</div></div>`;
+  return `<div class="native-discord-header-controls discord-qa-header-controls" aria-label="Discord QA privacy controls"><div class="discord-qa-header-left"><button class="discord-qa-control danger icon-only in-dom-tooltip-anchor" data-open-burn="account" type="button" aria-label="Account Burn">${accountBurnIcon}${inDomTooltipMarkup("Open Account Burn confirmation")}</button></div><button class="discord-qa-control danger icon-only discord-qa-discord-burn in-dom-tooltip-anchor" data-open-burn="app" type="button" aria-label="Discord Burn">${discordBurnIcon}${inDomTooltipMarkup("Open Discord Burn confirmation")}</button><div class="discord-qa-header-right">${rowProofControl}<div class="discord-qa-whitelist" role="group" aria-label="Connected verified peer whitelist"><button class="in-dom-tooltip-anchor" id="discord-qa-whitelist-roster" type="button" aria-haspopup="menu" aria-controls="whitelist-roster-dropdown" aria-expanded="${whitelistRosterOpen}" ${discordQaHeaderBusy ? "disabled" : ""}>Whitelist${inDomTooltipMarkup("Review who is whitelisted in this group")}</button><button class="in-dom-tooltip-anchor" id="discord-qa-whitelist-add" type="button" aria-label="Allow this verified peer scope" ${!nativeDiscordProtectionActive || !verifiedPeer || scopeApproved || whitelistBusy ? "disabled" : ""}>+${inDomTooltipMarkup("Allow this verified peer scope")}</button><button class="in-dom-tooltip-anchor" id="discord-qa-whitelist-remove" type="button" aria-label="Revoke this verified peer scope" ${!nativeDiscordProtectionActive || !verifiedPeer || !scopeApproved || whitelistBusy ? "disabled" : ""}>−${inDomTooltipMarkup("Revoke this verified peer scope")}</button></div><button class="discord-qa-control danger icon-only chat-burn in-dom-tooltip-anchor" data-open-burn="chat" type="button" ${inactive} aria-label="Chat Burn">${flame}${inDomTooltipMarkup("Open Chat Burn confirmation")}</button>${composerUnreachableNotice}${composerRefusalNotice}${transcriptNotice}${transcriptVisibilityControl}${composerControl}${whitelistWarningNotice}</div></div>`;
 }
 
 function trustedHeader(): string {
@@ -4863,7 +4858,6 @@ function workspaceContent(): string {
   if (route === "osl-mail") return oslMailContent();
   if (route === "osl-servers") return oslServersContent();
   if (route === "settings") return settingsContent();
-  if (route === "message-defaults") return messageDefaultsScreenMarkup(messageDefaultsScreen);
   if (route === "service" && activeService) return serviceContent();
   const launchableHomeApps = homeAppsFromServices(services).filter((app) => app.visibility === "launch");
   const roadmapHomeApps = launchableHomeApps.filter((app) => app.launchState !== "available");
@@ -5259,7 +5253,7 @@ function oslChatContent(): string {
   const settingsPerson = oslChatSettingsPersonId ? hubPeople.find((person) => person.personId === oslChatSettingsPersonId) ?? null : null;
   const settings = settingsPerson ? oslChatFriendSettingsMarkup(settingsPerson) : "";
   const attachments = activeOslChatContext?.scopeApproved && pro
-    ? `<section class="osl-chat-attachments" aria-label="Encrypted attachments"><header><strong>Attachments</strong><button class="button compact" id="osl-chat-attach" type="button" ${oslChatBusy ? "disabled" : ""}>Choose file</button></header>${attachmentProgressMarkupForActiveChat()}${oslChatAttachments.length ? oslChatAttachments.map((item) => `<button class="setting-line" data-osl-chat-attachment="${escapeHtml(item.attachmentId)}" type="button" ${oslChatBusy ? "disabled" : ""}><span><strong>${escapeHtml(item.originalFilename)}</strong><small>${item.viewOnce ? "View once · " : ""}${item.plaintextSize.toLocaleString("en-US")} bytes</small></span>${statusTag("Open")}</button>`).join("") : `<p>No pending attachments.</p>`}<small>Images open in OSL's capture-resistant viewer. Other supported files open temporarily in their Windows viewer, which may allow capture.</small></section>`
+    ? `<section class="osl-chat-attachments" aria-label="Encrypted attachments"><header><strong>Attachments</strong><button class="button compact" id="osl-chat-attach" type="button" ${oslChatBusy ? "disabled" : ""}>Choose file</button></header>${attachmentProgressMarkupForActiveChat()}${oslChatAttachments.length ? oslChatAttachments.map((item) => `<button class="setting-line" data-osl-chat-attachment="${escapeHtml(item.attachmentId)}" type="button" ${oslChatBusy ? "disabled" : ""}><span><strong>${escapeHtml(item.originalFilename)}</strong><small>${item.viewOnce ? "View once · " : ""}${item.plaintextSize.toLocaleString("en-US")} bytes</small></span>${statusTag("Open")}</button>`).join("") : `<p>No pending attachments.</p>`}${oslChatDropTray.attachments.length ? attachmentTrayMarkup(oslChatDropTray) : ""}<small>Images open in OSL's capture-resistant viewer. Other supported files open temporarily in their Windows viewer, which may allow capture.</small></section>`
     : "";
   const receipt = activeOslChatPersonId
     ? oslChatSenderReceiptMarkup(oslChatMessages.get(activeOslChatPersonId) ?? [])
@@ -5380,7 +5374,7 @@ function oslChatFriendSettingsMarkup(person: HubPerson): string {
   const isActive = activeOslChatPersonId === person.personId;
   const approved = isActive && activeOslChatContext?.scopeApproved === true;
   const muted = oslChatMutedPeople.has(person.personId);
-  return `<dialog class="friends-dialog osl-chat-settings-dialog" id="osl-chat-settings-dialog" aria-labelledby="osl-chat-settings-title"><div class="friends-dialog-card"><header><div><span>Encrypted chat</span><h2 id="osl-chat-settings-title">${escapeHtml(person.alias ?? "Verified friend")}</h2></div><button class="icon-button" id="osl-chat-settings-close" type="button" aria-label="Close chat settings">×</button></header><div class="settings-list">${peerIntegrityMarkup("unknown")}<label class="setting-line interactive"><span><strong>Mute notifications</strong><small>Messages still arrive without creating a local alert.</small></span><input id="osl-chat-mute-toggle" type="checkbox" ${muted ? "checked" : ""}/></label><label class="setting-line interactive"><span><strong>Message previews</strong><small>Hide previews on this device.</small></span><input id="osl-chat-preview-toggle" type="checkbox" ${chatPreviewHidingVisible(oslChatPreviewsVisible) ? "checked" : ""}/></label><div class="setting-line"><span><strong>Allowed reactions</strong><small>All reactions are allowed unless this channel is set to a chosen set or none. This reaction setting runs in every honest app the same way automatic rules do.</small></span></div><div class="setting-line"><span><strong>Chat permission</strong><small>${approved ? "This friend may exchange encrypted OSL messages with you." : "Open this friend to configure its exact chat permission."}</small></span>${isActive ? `<button class="button compact ${approved ? "danger" : "primary"}" id="osl-chat-permission-toggle" type="button" ${oslChatBusy ? "disabled" : ""}>${approved ? "Revoke" : "Enable"}</button>` : `<button class="button compact" data-osl-chat-open="${escapeHtml(person.personId)}" type="button">Open chat</button>`}</div></div></div></dialog>`;
+  return `<dialog class="friends-dialog osl-chat-settings-dialog" id="osl-chat-settings-dialog" aria-labelledby="osl-chat-settings-title"><div class="friends-dialog-card"><header><div><span>Encrypted chat</span><h2 id="osl-chat-settings-title">${escapeHtml(person.alias ?? "Verified friend")}</h2></div><button class="icon-button" id="osl-chat-settings-close" type="button" aria-label="Close chat settings">×</button></header><div class="settings-list">${peerIntegrityMarkup("unknown")}<label class="setting-line interactive"><span><strong>Mute notifications</strong><small>Messages still arrive without creating a local alert.</small></span><input id="osl-chat-mute-toggle" type="checkbox" ${muted ? "checked" : ""}/></label><label class="setting-line interactive"><span><strong>Message previews</strong><small>Hide previews on this device.</small></span><input id="osl-chat-preview-toggle" type="checkbox" ${chatPreviewHidingVisible(oslChatPreviewsVisible) ? "checked" : ""}/></label><div class="setting-line"><span><strong>Chat permission</strong><small>${approved ? "This friend may exchange encrypted OSL messages with you." : "Open this friend to configure its exact chat permission."}</small></span>${isActive ? `<button class="button compact ${approved ? "danger" : "primary"}" id="osl-chat-permission-toggle" type="button" ${oslChatBusy ? "disabled" : ""}>${approved ? "Revoke" : "Enable"}</button>` : `<button class="button compact" data-osl-chat-open="${escapeHtml(person.personId)}" type="button">Open chat</button>`}</div></div></div></dialog>`;
 }
 
 function oslServersContent(): string {
@@ -5461,31 +5455,15 @@ async function provisionOslMailFromProfile(): Promise<void> {
 }
 
 async function sendOslMailForm(form: HTMLFormElement, choice: OslMailSendChoice): Promise<void> {
-  const recipient = form.querySelector<HTMLInputElement>("#osl-mail-to")?.value ?? "";
-  const subject = form.querySelector<HTMLInputElement>("#osl-mail-subject")?.value ?? "";
-  const body = form.querySelector<HTMLTextAreaElement>("#osl-mail-body")?.value ?? "";
-  if (choice !== "Send") {
-    oslMailError = OSL_MAIL_NAMED_SEND_REQUIRED;
-    render();
-    return;
-  }
-async function sendOslMailForm(form: HTMLFormElement): Promise<void> {
   escapeAuditSendAttempts += 1;
   const recipient = form.querySelector<HTMLInputElement>("#osl-mail-to")?.value ?? "";
   const subject = form.querySelector<HTMLInputElement>("#osl-mail-subject")?.value ?? "";
   const body = form.querySelector<HTMLTextAreaElement>("#osl-mail-body")?.value ?? "";
   oslMailComposeDraft = { to: recipient, subject, body };
-  if (!recipient.endsWith("@oslprivacy.com")) {
-    oslMailError = "External outbound mail is unavailable in v1";
-    render();
-    return;
-  }
   const result = await sendOslMailWithChoice(choice, recipient, subject, body);
   oslMailSendReceipt = result.outcome === "sent" ? result.receipt : null;
   oslMailError = result.outcome === "sent" ? null : result.reason;
-  oslMailSendReceipt = await sendOslMail(recipient, subject, body);
-  oslMailError = oslMailSendReceipt ? null : "Send was refused";
-  if (oslMailSendReceipt) oslMailComposeDraft = { to: "", subject: "", body: "" };
+  if (result.outcome === "sent") oslMailComposeDraft = { to: "", subject: "", body: "" };
   if (route === "osl-mail") render();
 }
 
@@ -5541,13 +5519,7 @@ function peopleListMarkup(mode: PeopleListMode, limit?: number, offset = 0): str
       : "";
     const nicknameForm = mode === "manage" ? `<form class="friend-nickname-form" data-nickname-person="${escapeHtml(person.personId)}"><label><span>Nickname on this device</span><input name="nickname" maxlength="48" value="${escapeHtml(person.alias ?? "")}" placeholder="Add a nickname" autocomplete="off" spellcheck="false"/></label><button class="button compact" type="submit">Save</button></form>` : "";
     const removeControl = mode === "manage" ? friendRemovalButtonMarkup(person.personId, escapeHtml) : "";
-    const futureAccountSwitch = mode === "manage"
-      ? futureAccountSwitchMarkup({
-        personId: person.personId,
-        enabled: friendFutureAccountAutoWhitelist.get(person.personId) ?? false,
-      })
-      : "";
-    const management = `<details class="friend-management"><summary>Manage</summary><div>${nicknameForm}<div class="friend-approvals"><span>Approved chats</span><div>${scopes}</div>${truncated}</div>${futureAccountSwitch}<details class="friend-security"><summary>Security details</summary><div><span>OSL ID</span><code>${escapeHtml(identity)}</code><span>Verification code</span><code>${escapeHtml(person.safetyNumber)}</code></div></details>${removeControl}</div></details>`;
+    const management = `<details class="friend-management"><summary>Manage</summary><div>${nicknameForm}<div class="friend-approvals"><span>Approved chats</span><div>${scopes}</div>${truncated}</div><details class="friend-security"><summary>Security details</summary><div><span>OSL ID</span><code>${escapeHtml(identity)}</code><span>Verification code</span><code>${escapeHtml(person.safetyNumber)}</code></div></details>${removeControl}</div></details>`;
     return `<article class="person-row person-profile"><header><div><strong>${escapeHtml(nickname)}</strong><small>${escapeHtml(friendHandshakeSummary(person.safetyNumberVerified, person.pendingKeyChange))}</small></div>${action}</header>${management}</article>`;
   }).join("");
 }
@@ -5678,18 +5650,14 @@ function whitelistRosterPersonMarkup(person: HubPerson, activePersonId: string |
 }
 
 function whitelistRosterMarkup(): string {
-  if (!whitelistRosterOpen) return "";
   const active = activeVerifiedDiscordQaPeer();
-  const activePersonId = active?.person.personId ?? null;
-  const activeScopeApproved = active?.context.scopeApproved === true;
-  const busy = discordQaHeaderBusy !== null;
-  // Everyone OSL recorded trust for, plus the person whose protected chat is
-  // open, so their reach can be widened from here without hunting for a row.
-  const roster = hubPeople.filter((person) => person.whitelistCount > 0 || person.reachNarrowedScopes.length > 0 || person.personId === activePersonId);
-  const rows = roster.length
-    ? roster.map((person) => whitelistRosterPersonMarkup(person, activePersonId, busy, activeScopeApproved)).join("")
-    : `<div class="empty-state"><strong>Nobody is whitelisted yet</strong><p>Approve a verified friend inside a chat; they appear here with the chats they cover.</p></div>`;
-  return `<dialog class="friends-dialog whitelist-roster-dialog" id="whitelist-roster-dialog" aria-labelledby="whitelist-roster-title"><div class="friends-dialog-card"><header><h2 id="whitelist-roster-title">Whitelisted people</h2><button class="icon-button" id="whitelist-roster-close" type="button" aria-label="Close whitelist">×</button></header><p class="scope-approval-note">Approving a chat never widens anyone's reach. Extending reach is a separate, recorded choice, and a chat you take back stays revoked even while reach is on.</p><div class="whitelist-roster-list">${rows}</div></div></dialog>`;
+  return whitelistDropdownMarkup({
+    open: whitelistRosterOpen,
+    people: hubPeople,
+    activePersonId: active?.person.personId ?? null,
+    activeScopeApproved: active?.context.scopeApproved === true,
+    busy: discordQaHeaderBusy !== null,
+  });
 }
 
 function nativeDiscordProtectPickerMarkup(): string {
@@ -5825,7 +5793,11 @@ function serviceContent(): string {
   if (activeDefaultBrowserCompanion) return `<main class="content-viewport host-viewport native-host-open" id="route-heading" tabindex="-1" aria-label="${name} is open in your default-browser companion"><span class="sr-only">${name} is open in an app-style normal-profile browser window. It is not capture-protected or shortcut-locked by OSL.</span></main>`;
   if (activeEmbeddedHost) return `<main class="content-viewport host-viewport host-open" id="route-heading" tabindex="-1" aria-label="${name} is open inside OSL"><div class="loading-host" aria-hidden="true"><span class="host-skeleton logo"></span><span class="host-skeleton title"></span></div></main>`;
   if (serviceAccountPickerOpen) return serviceAccountPickerContent();
-  return `<main class="content-viewport native-app-page" id="route-heading" tabindex="-1"><section class="native-app-card"><span class="service-icon large">${activeService ? serviceLogo(activeService.id) : ""}</span><h1>${name}</h1><p>Open a separate OSL profile. Your normal app stays open.</p>${mailScope}<button class="button primary native-app-action" id="embedded-service-setup" ${nativeActionBusy ? "disabled" : ""}>${nativeActionBusy ? "Opening…" : `Open ${name}`}</button><div class="native-app-secondary"><button class="text-back" id="native-app-back">← Apps</button><button class="text-button" id="burn-button" data-open-burn="app">Burn…</button></div></section></main>`;
+  // TASK 0853: where this tile has a generated claim, the route shows it —
+  // capability, sentence, and the one action worth taking about that status.
+  const claimedApp = activeNativeApp();
+  const tileStatus = claimedApp ? tileStatusRouteMarkup(claimedApp) : "";
+  return `<main class="content-viewport native-app-page" id="route-heading" tabindex="-1"><section class="native-app-card"><span class="service-icon large">${activeService ? serviceLogo(activeService.id) : ""}</span><h1>${name}</h1><p>Open a separate OSL profile. Your normal app stays open.</p>${mailScope}${tileStatus}<button class="button primary native-app-action" id="embedded-service-setup" ${nativeActionBusy ? "disabled" : ""}>${nativeActionBusy ? "Opening…" : `Open ${name}`}</button><div class="native-app-secondary"><button class="text-back" id="native-app-back">← Apps</button><button class="text-button" id="burn-button" data-open-burn="app">Burn…</button></div></section></main>`;
 }
 
 function activeNativeApp(): NativeApp | null {
@@ -5872,19 +5844,24 @@ function serviceGuideContent(service: LinkedService, step: ServiceGuideStep): st
 }
 
 function settingsContent(): string {
-  const items: Array<[SettingsSection, string]> = [["account", "Account"], ["apps", "Apps"], ["scrub", "Scrub"], ["cleanup", "Cleanup"], ["notifications", "Notifications"], ["appearance", "Appearance"], ["about", "About"]];
+  const items: Array<[SettingsSection, string]> = [["account", "Account"], ["apps", "Apps"], ["whitelisting", "Whitelisting"], ["scrub", "Scrub"], ["cleanup", "Cleanup"], ["notifications", "Notifications"], ["appearance", "Appearance"], ["about", "About"]];
   // These buttons pick a section WITHIN Settings, so they are not `page`.
   // Settings itself is the page, and the primary sidebar already marks it
   // `aria-current="page"`; marking a section button the same way put two
   // "current page" markers in one document and left a screen-reader user with no
   // way to tell which one was the destination. `aria-current="true"` is the
   // generic "this one is current in its own set".
-  return `<main class="content-viewport settings-page" aria-labelledby="route-heading"><nav class="settings-sidebar" aria-label="Settings"><h1 id="route-heading" tabindex="-1">Settings</h1>${items.map(([id, label]) => `<button data-settings="${id}" class="${settingsSection === id ? "active" : ""}" ${settingsSection === id ? 'aria-current="true"' : ""}>${label}</button>`).join("")}</nav><section class="settings-detail">${settingsSectionContent()}</section></main>`;
+  // The Settings home is this menu: every choice carries one line saying what
+  // is behind it, because "Scrub" and "Cleanup" are indistinguishable to a
+  // first-time user from their labels alone. settingsHomeMenuMarkup refuses to
+  // render if any of the eight choices is missing.
+  return `<main class="content-viewport settings-page" aria-labelledby="route-heading"><nav class="settings-sidebar settings-home" aria-label="Settings"><h1 id="route-heading" tabindex="-1">Settings</h1><p class="settings-home-intro">Choose what you want to change.</p>${settingsHomeMenuMarkup(items, settingsSection)}</nav><section class="settings-detail">${settingsSectionContent()}</section></main>`;
 }
 
 function settingsSectionContent(): string {
   if (settingsSection === "account") return `${identitySettingsContent()}${settingsDivider()}${passwordSecuritySettingsContent()}${accountAdvancedSettingsContent()}${renderRecoveryStatesSettings()}`;
   if (settingsSection === "apps") return `${serviceAccountsSettingsContent()}${optionalComponentsSettingsContent()}${sendingSettingsContent()}${messageDefaultsSettingsEntry()}`;
+  if (settingsSection === "whitelisting") return whitelistingSettingsContent();
   if (settingsSection === "scrub") return privacySettingsContent();
   if (settingsSection === "cleanup") return massCleanupSettingsContent();
   if (settingsSection === "notifications") return notificationSettingsContent();
@@ -5892,10 +5869,125 @@ function settingsSectionContent(): string {
   return updateSettingsContent();
 }
 
+// The allowed-conversation list the Whitelisting screen ticks. Every row is a
+// chat the hub already knows about for a verified person: the ones in
+// whitelistedScopes are allowed right now, the ones in reachNarrowedScopes are
+// chats that were taken back. That is the whole saved answer -- this screen
+// never invents a conversation the hub has not seen.
+const whitelistingRowSeparator = "::";
+
+function whitelistingConversationId(personId: string, storageKey: string): string {
+  return `${personId}${whitelistingRowSeparator}${storageKey}`;
+}
+
+function whitelistingConversationParts(id: string): { personId: string; storageKey: string } | null {
+  const at = id.indexOf(whitelistingRowSeparator);
+  if (at <= 0) return null;
+  return { personId: id.slice(0, at), storageKey: id.slice(at + whitelistingRowSeparator.length) };
+}
+
+function whitelistingRows(): { conversations: WhitelistingConversation[]; saved: string[] } {
+  const conversations: WhitelistingConversation[] = [];
+  const saved: string[] = [];
+  for (const person of hubPeople.filter((candidate) => candidate.safetyNumberVerified && !candidate.pendingKeyChange)) {
+    const nickname = person.alias ?? "Unnamed friend";
+    for (const scope of person.whitelistedScopes.slice(0, whitelistRosterScopeLimit)) {
+      const id = whitelistingConversationId(person.personId, scope.storageKey);
+      conversations.push({
+        id,
+        account: `Approved for ${nickname}`,
+        name: friendScopeLabel(scope),
+        kind: scope.userSpecific ? "Only this person" : "Anyone verified here",
+      });
+      saved.push(id);
+    }
+    for (const key of person.reachNarrowedScopes.slice(0, whitelistRosterScopeLimit)) {
+      conversations.push({
+        id: whitelistingConversationId(person.personId, key),
+        account: `Taken back for ${nickname}`,
+        name: narrowedScopeLabel(key),
+        kind: "Not allowed since you took it back",
+      });
+    }
+  }
+  return { conversations, saved };
+}
+
+function whitelistingScreenState(): WhitelistingScreenState {
+  const { conversations, saved } = whitelistingRows();
+  const known = new Set(conversations.map((conversation) => conversation.id));
+  // A draft can outlive the row it ticked (the hub reloads, a friend is
+  // removed). Dropping unknown ids keeps Save from writing to a chat that is no
+  // longer on screen.
+  const draft = whitelistingDraft === null ? saved : whitelistingDraft.filter((id) => known.has(id));
+  return { conversations, saved, draft, search: whitelistingSearch, busy: whitelistingBusy || discordQaHeaderBusy !== null };
+}
+
+function setWhitelistingState(next: WhitelistingScreenState): void {
+  whitelistingSearch = next.search;
+  whitelistingDraft = next.draft;
+  render();
+}
+
+// Save only ever removes. Approving a chat still has to happen from inside that
+// chat, where OSL can see which scope the user is actually standing in, so a tick
+// that turns ON is reported back as refused rather than silently written.
+async function saveWhitelistingSelection(): Promise<void> {
+  const state = whitelistingScreenState();
+  const changes = whitelistingPendingChanges(state);
+  if (changes.allow.length === 0 && changes.remove.length === 0) {
+    showToast("Nothing to save");
+    return;
+  }
+  const active = activeVerifiedDiscordQaPeer();
+  whitelistingBusy = true;
+  render();
+  let removed = 0;
+  const refused: string[] = [];
+  for (const id of changes.remove) {
+    const parts = whitelistingConversationParts(id);
+    if (!parts || !active || active.person.personId !== parts.personId) {
+      refused.push(id);
+      continue;
+    }
+    const updated = await revokeActiveHubFriendScope(active.context.contextToken, parts.personId, parts.storageKey);
+    if (!updated) {
+      refused.push(id);
+      continue;
+    }
+    removed += 1;
+    hubPeople = hubPeople.map((person) => person.personId === parts.personId ? updated : person);
+  }
+  hubPeople = await listHubPeople() ?? hubPeople;
+  whitelistingBusy = false;
+  whitelistingDraft = null;
+  render();
+  const blocked = refused.length + changes.allow.length;
+  showToast(blocked === 0
+    ? `Saved. ${removed} ${removed === 1 ? "conversation is" : "conversations are"} no longer allowed.`
+    : `Saved ${removed} of ${removed + blocked}. ${blocked} ${blocked === 1 ? "change needs" : "changes need"} that chat open first.`);
+}
+
 /** The way in to the Message defaults screen from Settings. */
 function messageDefaultsSettingsEntry(): string {
   const labels = savedMessageDefaultLabels(messageDefaultsScreen.saved);
   return `<div class="setting-line" data-message-defaults-entry><span><strong>Message defaults</strong><small>Timer ${escapeHtml(labels.timer)} · Burn ${escapeHtml(labels["burn-scope"])} · View once ${escapeHtml(labels["view-once-length"])} · ${escapeHtml(labels.writing)}</small></span><button class="button compact" type="button" data-route="message-defaults">Open</button></div>`;
+}
+
+function whitelistingSettingsContent(): string {
+  const verified = hubPeople.filter((person) => person.safetyNumberVerified && !person.pendingKeyChange);
+  const active = activeVerifiedDiscordQaPeer();
+  const approvedChats = verified.reduce((total, person) => total + person.whitelistCount, 0);
+  const rows = verified.length
+    ? verified.map((person) => whitelistRosterPersonMarkup(
+      person,
+      active?.person.personId ?? null,
+      discordQaHeaderBusy !== null,
+      active?.context.scopeApproved === true,
+    )).join("")
+    : `<div class="empty-state compact"><strong>No verified people yet</strong><p>Verify a friend before any chat can be whitelisted.</p></div>`;
+  const roster = `<section class="settings-list whitelist-settings" data-settings-whitelisting aria-labelledby="whitelisting-people-title"><header><h2 id="whitelisting-people-title">Who is trusted where</h2><p>${verified.length.toLocaleString("en-US")} verified ${verified.length === 1 ? "person" : "people"} · ${approvedChats.toLocaleString("en-US")} approved ${approvedChats === 1 ? "chat" : "chats"}. A chat is approved from inside that chat; here you can review it or take it back.</p></header>${rows}</section>`;
+  return `${whitelistingScreenMarkup(whitelistingScreenState())}${settingsDivider()}${roster}`;
 }
 
 function optionalComponentsSettingsContent(): string {
@@ -6288,7 +6380,6 @@ async function changeSendingMode(mode: SendMode): Promise<void> {
   };
   render();
   try {
-    const saved = await saveOnboardingPreferences({ onboardingComplete: true, setup, coverInsertion, showPlaintextPreview: true, windowCaptureEnabled, forwardSecrecyMode });
     const saved = await saveOnboardingPreferences({ onboardingComplete: true, setup, showPlaintextPreview: true, windowCaptureEnabled, rnWirePolicyRequested, forwardSecrecyMode });
     setup = saved.setup;
     windowCaptureEnabled = saved.windowCaptureEnabled;
@@ -6525,8 +6616,8 @@ function notificationSettingsContent(): string {
   const visibleNotifications = visibleAppNotifications();
   const activity = notificationsEnabled && visibleNotifications.length
     ? visibleNotifications.map((item) => `<article class="notification-event"><span><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(notificationPreviewContent ? item.detail : "Private OSL activity")}</small></span><time>${escapeHtml(item.createdAt)}</time></article>`).join("")
-    : `<div class="empty-state"><strong>${notificationsEnabled ? "Nothing new" : "Notifications are off"}</strong><p>${notificationsEnabled ? "New OSL security and chat events appear here." : "Turn on local activity to see OSL events on this device."}</p></div>`;
-  return `<h2>Notifications</h2><p>Choose what OSL tells you about on this device. Nothing on this screen is sent anywhere else.</p><section class="notification-events" aria-label="Recent OSL activity">${activity}</section><div class="settings-list"><label class="setting-line interactive"><span><strong>Local OSL activity</strong><small>Master control for activity on this device.</small></span><input id="notifications-opt-in" type="checkbox" ${notificationsEnabled ? "checked" : ""}/></label><label class="setting-line interactive"><span><strong>Security changes</strong><small>Friend encryption-key changes that need verification.</small></span><input id="notification-security-activity" type="checkbox" ${notificationSecurityActivity ? "checked" : ""}/></label><label class="setting-line interactive"><span><strong>Show details</strong><small>Off by default. When off, this screen hides event content.</small></span><input id="notification-previews" type="checkbox" ${notificationPreviewContent ? "checked" : ""}/></label><label class="setting-line interactive"><span><strong>Suggest chat approval</strong><small>Suggestions never enable decryption.</small></span><input id="notification-scope-suggestions" type="checkbox" ${notificationScopeSuggestions ? "checked" : ""}/></label><div class="setting-line"><span><strong>Sounds</strong><small>OSL stays silent. Alerts only appear on screen, and nothing plays a sound.</small></span><span class="setting-state-word">Silent</span></div></div><p class="settings-note">There is no Save button on this screen. Each choice takes effect and is remembered the moment you set it.</p>${oslChatNotificationSettings()}<details class="settings-disclosure notification-apps"><summary><span><strong>Connected apps</strong><small>Provider unread counts are not read</small></span></summary><div class="notification-app-list">${apps}</div></details>`;
+    : `<div class="empty-state"><strong>${notificationsEnabled ? "Nothing new" : "Activity is off"}</strong><p>${notificationsEnabled ? "New OSL security and chat events appear here." : "Turn on local activity to see OSL events on this device."}</p></div>`;
+  return `<h2>Activity</h2><p>Private events created by OSL on this device.</p><section class="notification-events" aria-label="Recent OSL activity">${activity}</section><div class="settings-list"><label class="setting-line interactive"><span><strong>Local OSL activity</strong><small>Master control for activity on this device.</small></span><input id="notifications-opt-in" type="checkbox" ${notificationsEnabled ? "checked" : ""}/></label><label class="setting-line interactive"><span><strong>Security changes</strong><small>Friend encryption-key changes that need verification.</small></span><input id="notification-security-activity" type="checkbox" ${notificationSecurityActivity ? "checked" : ""}/></label><label class="setting-line interactive"><span><strong>Show details</strong><small>Off by default. When off, Activity hides event content.</small></span><input id="notification-previews" type="checkbox" ${notificationPreviewContent ? "checked" : ""}/></label><label class="setting-line interactive"><span><strong>Suggest chat approval</strong><small>Suggestions never enable decryption.</small></span><input id="notification-scope-suggestions" type="checkbox" ${notificationScopeSuggestions ? "checked" : ""}/></label></div>${oslChatNotificationSettings()}<details class="settings-disclosure notification-apps"><summary><span><strong>Connected apps</strong><small>Provider unread counts are not read</small></span></summary><div class="notification-app-list">${apps}</div></details>`;
 }
 
 function oslChatNotificationSettings(): string {
@@ -6536,9 +6627,8 @@ function oslChatNotificationSettings(): string {
   }).join("");
   const previewsChecked = chatPreviewHidingVisible(oslChatPreviewsVisible);
   const previewText = "Hide message previews on this device.";
-  const mutedRows = muted || `<div class="setting-line"><span><strong>Nobody is muted</strong><small>Every friend you have approved can still reach you here.</small></span></div>`;
-  const mutedDetails = `<details class="settings-disclosure" open><summary><span><strong>Muted OSL Chats</strong><small>${oslChatMutedPeople.size.toLocaleString("en-US")} muted</small></span></summary><div class="settings-list">${mutedRows}</div></details>`;
-  return `<div class="settings-subhead"><h3>Messages</h3></div><section class="settings-list osl-chat-notification-settings" aria-label="OSL Chat controls"><label class="setting-line interactive"><span><strong>Encrypted chat alerts</strong><small>New-message activity from unmuted OSL friends.</small></span><input id="notification-chat-activity" type="checkbox" ${notificationChatActivity ? "checked" : ""}/></label><label class="setting-line interactive"><span><strong>OSL Chat previews</strong><small>${previewText}</small></span><input id="osl-chat-preview-toggle" type="checkbox" ${previewsChecked ? "checked" : ""}/></label></section><div class="settings-subhead"><h3>Friends</h3></div>${mutedDetails}`;
+  const mutedDetails = muted ? `<details class="settings-disclosure" open><summary><span><strong>Muted OSL Chats</strong><small>${oslChatMutedPeople.size.toLocaleString("en-US")} muted</small></span></summary><div class="settings-list">${muted}</div></details>` : "";
+  return `<section class="settings-list osl-chat-notification-settings" aria-label="OSL Chat controls"><label class="setting-line interactive"><span><strong>Encrypted chat alerts</strong><small>New-message activity from unmuted OSL friends.</small></span><input id="notification-chat-activity" type="checkbox" ${notificationChatActivity ? "checked" : ""}/></label><label class="setting-line interactive"><span><strong>OSL Chat previews</strong><small>${previewText}</small></span><input id="osl-chat-preview-toggle" type="checkbox" ${previewsChecked ? "checked" : ""}/></label></section>${mutedDetails}`;
 }
 
 function setNotificationAppPreference(id: ServiceId, enabled: boolean): void {
@@ -7864,6 +7954,8 @@ function bindWorkspace(): void {
   document.querySelector<HTMLInputElement>("#osl-chat-view-once")?.addEventListener("change", (event) => { oslChatViewOnce = (event.currentTarget as HTMLInputElement).checked; });
   document.querySelector<HTMLFormElement>("[data-osl-chat-compose]")?.addEventListener("submit", (event) => void sendOslChat(event));
   document.querySelector<HTMLButtonElement>("#osl-chat-attach")?.addEventListener("click", () => void sendOslChatAttachment());
+  const oslChatComposerForm = document.querySelector<HTMLFormElement>("[data-osl-chat-compose]");
+  if (oslChatComposerForm) attachOslChatComposerDragAndDrop(oslChatComposerForm, oslChatDropTray, () => render(), (refusal) => showToast(refusal));
   document.querySelectorAll<HTMLButtonElement>("[data-osl-chat-attachment]").forEach((button) => button.addEventListener("click", () => void openPendingOslChatAttachment(button.dataset.oslChatAttachment ?? "")));
   const nativeProtectDialog = document.querySelector<HTMLDialogElement>("#native-protect-friend-dialog");
   if (nativeProtectDialog && !nativeProtectDialog.open) nativeProtectDialog.showModal();
@@ -7952,27 +8044,6 @@ function bindWorkspace(): void {
   document.querySelectorAll<HTMLButtonElement>("[data-settings-send-mode]").forEach((button) => button.addEventListener("click", () => {
     void changeSendingMode(button.dataset.settingsSendMode as SendMode);
   }));
-  // Message defaults. Save and Reset move the screen's own state; the saved
-  // values do not leave the app yet because `osl_save_message_defaults` is an
-  // `ipc` command that is not on the hub command surface. Wiring it is a
-  // separate step; the controls and their saved reading are this screen's job.
-  document.querySelectorAll<HTMLInputElement>("[data-message-default]").forEach((input) => input.addEventListener("change", () => {
-    messageDefaultsScreen = chooseMessageDefault(
-      messageDefaultsScreen,
-      input.dataset.messageDefault as MessageDefaultsControl,
-      input.value,
-    );
-    render();
-  }));
-  document.querySelector<HTMLButtonElement>("[data-message-default-save]")?.addEventListener("click", () => {
-    messageDefaultsScreen = saveMessageDefaults(messageDefaultsScreen);
-    render();
-    showToast("Message defaults saved");
-  });
-  document.querySelector<HTMLButtonElement>("[data-message-default-reset]")?.addEventListener("click", () => {
-    messageDefaultsScreen = resetMessageDefaults(messageDefaultsScreen);
-    render();
-  });
   document.querySelector<HTMLButtonElement>("[data-inbox-start-private]")?.addEventListener("click", () => inboxPrimaryAction());
   document.querySelectorAll<HTMLButtonElement>("[data-inbox-filter]").forEach((button) => button.addEventListener("click", () => {
     inboxFilter = parseInboxFilter(button.dataset.inboxFilter);
@@ -8109,7 +8180,7 @@ function bindWorkspace(): void {
     void setDiscordQaWhitelistPermission(false);
   });
   document.querySelector<HTMLButtonElement>("#discord-qa-whitelist-roster")?.addEventListener("click", () => {
-    whitelistRosterOpen = true;
+    whitelistRosterOpen = !whitelistRosterOpen;
     render();
   });
   document.querySelector<HTMLButtonElement>("#whitelist-roster-close")?.addEventListener("click", () => {
@@ -8127,6 +8198,33 @@ function bindWorkspace(): void {
   document.querySelectorAll<HTMLButtonElement>("[data-whitelist-scope-remove]").forEach((button) => button.addEventListener("click", () => {
     void revokeWhitelistRosterScope(button.dataset.whitelistScopeRemove ?? "", button.dataset.whitelistScopeKey ?? "");
   }));
+  // Whitelisting screen. render() rebuilds the section, so the search box puts
+  // its own focus and caret back rather than dropping the user out of the field
+  // after every keystroke.
+  document.querySelector<HTMLInputElement>("#whitelisting-search")?.addEventListener("input", (event) => {
+    const input = event.currentTarget as HTMLInputElement;
+    const caret = input.selectionStart;
+    setWhitelistingState(whitelistingSetSearch(whitelistingScreenState(), input.value));
+    const restored = document.querySelector<HTMLInputElement>("#whitelisting-search");
+    if (!restored) return;
+    restored.focus({ preventScroll: true });
+    if (caret !== null) restored.setSelectionRange(caret, caret);
+  });
+  document.querySelectorAll<HTMLInputElement>("[data-whitelisting-conversation]").forEach((tick) => tick.addEventListener("change", () => {
+    setWhitelistingState(whitelistingToggleConversation(whitelistingScreenState(), tick.dataset.whitelistingConversation ?? "", tick.checked));
+  }));
+  document.querySelector<HTMLButtonElement>("[data-whitelisting-select-all]")?.addEventListener("click", () => {
+    setWhitelistingState(whitelistingSelectAll(whitelistingScreenState()));
+  });
+  document.querySelector<HTMLButtonElement>("[data-whitelisting-clear-all]")?.addEventListener("click", () => {
+    setWhitelistingState(whitelistingClearAll(whitelistingScreenState()));
+  });
+  document.querySelector<HTMLButtonElement>("[data-whitelisting-reset]")?.addEventListener("click", () => {
+    setWhitelistingState(whitelistingReset(whitelistingScreenState()));
+  });
+  document.querySelector<HTMLButtonElement>("[data-whitelisting-save]")?.addEventListener("click", () => {
+    void saveWhitelistingSelection();
+  });
   document.querySelector<HTMLButtonElement>("#discord-qa-transcript-visibility")?.addEventListener("click", () => {
     void toggleDiscordQaTranscriptVisibility();
   });
@@ -10679,7 +10777,6 @@ type OslHubUiTestStatePatch = {
   oslChatDraft?: string;
   recoveryBundle?: { userId: string; identityPhrase: string | null; passwordPhrase: string } | null;
   recoveryKitUnsaved?: boolean;
-  messageDefaults?: MessageDefaults;
 };
 
 function testHubPerson(person: Partial<HubPerson> & { personId: string }): HubPerson {
@@ -10728,7 +10825,6 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   deleteChoices = initialDeleteChoices();
   torOnboarding = initialTorOnboardingState();
   settingsSection = "account";
-  messageDefaultsScreen = initialMessageDefaultsScreenState(patch.messageDefaults);
   activeService = null;
   activeHomeAppId = null;
   activeOslChatPersonId = patch.activeOslChatPersonId ?? null;
@@ -11201,9 +11297,6 @@ export const __oslHubUiTest = {
     settingsSection = section;
     return workspaceContent();
   },
-  messageDefaultsStateForTest(): MessageDefaultsScreenState {
-    return { saved: { ...messageDefaultsScreen.saved }, draft: { ...messageDefaultsScreen.draft } };
-  },
   renderRouteShell(destination: Route): string {
     route = destination;
     return destination === "onboarding" ? onboardingShellMarkup() : workspaceShellMarkup();
@@ -11216,11 +11309,13 @@ export const __oslHubUiTest = {
   },
   flushRenderForTest(): void {
     renderNow();
+  },
   renderOnboardingSetupShell(destination: OnboardingRoute): string {
     route = "onboarding";
     onboardingRoute = onboardingRouteForBuild(destination);
     renderOnboarding();
     return root.innerHTML;
+  },
   renderOnboardingCaptureShell(destination: OnboardingRoute): string {
     route = "onboarding";
     onboardingRoute = onboardingRouteForBuild(destination);
@@ -11394,6 +11489,7 @@ export const __oslHubUiTest = {
     onboardingRoute = "tutorial";
     onboardingTourStep = step;
     return onboardingContent();
+  },
   renderOnboardingShellForTest(destination: OnboardingRoute): string {
     route = "onboarding";
     onboardingRoute = onboardingRouteForBuild(destination);
@@ -11434,6 +11530,7 @@ export const __oslHubUiTest = {
   setBrowserFootprintForTest(hydration: BrowserFootprintHydration): void {
     browserFootprintOwner = core.readiness.activeOslUserId;
     applyNativeBrowserFootprint(hydration);
+  },
   setDeleteChoicesForTest(choices: DeleteChoices | null): void {
     deleteChoices = choices;
   },
@@ -11462,6 +11559,7 @@ export const __oslHubUiTest = {
     route = "onboarding";
     onboardingRoute = "silent-visible";
     return silentVisibleSetupContent();
+  },
   confirmMullvadFoundSession(): boolean {
     return confirmMullvadFoundSession();
   },
@@ -11496,6 +11594,7 @@ export const __oslHubUiTest = {
   },
   longRunningButtonAudit(): BusyButtonAuditRow[] {
     return longRunningButtonAuditForTest();
+  },
   escapeAuditComposerScreens(): readonly string[] {
     return ["osl-chat", "osl-mail-compose"];
   },
@@ -11732,17 +11831,6 @@ const skipAutoBootstrap = Boolean(
 );
 
 if (!runningUnderVitest && !skipAutoBootstrap) {
-  const desktopWindow = getCurrentWindow();
-  bindWindowLifecycleRealignment(
-    window,
-    desktopWindow,
-    document,
-    scheduleNativeHostRealignment,
-  );
-  void bindMainWindowFocusChanges(
-    (handler) => desktopWindow.onFocusChanged(handler),
-    {
-if (!runningUnderVitest) {
   if (fixedNoRecoverySecretFixture) {
     applyOslHubUiTestState({
       route: "onboarding",

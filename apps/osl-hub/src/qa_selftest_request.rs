@@ -35,6 +35,78 @@ use serde::Serialize;
 /// any OSL state.
 const MAX_MESSAGE_ID_BYTES: usize = 128;
 
+pub const REFUSAL_PROVIDER_NAME_MISSING: &str = "provider-name-missing";
+pub const REFUSAL_PROVIDER_VERSION_MISSING: &str = "provider-version-missing";
+
+/// Provider identity attached to an automated or live provider result.
+///
+/// This exists as a constructor-checked value instead of two loose strings so
+/// a test result cannot be assembled without naming both the provider and the
+/// exact app/browser version under proof.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderVersion {
+    pub provider_name: String,
+    pub exact_version: String,
+}
+
+impl ProviderVersion {
+    pub fn new(
+        provider_name: impl Into<String>,
+        exact_version: impl Into<String>,
+    ) -> Result<Self, &'static str> {
+        let provider_name = provider_name.into();
+        let exact_version = exact_version.into();
+        if provider_name.trim().is_empty() {
+            return Err(REFUSAL_PROVIDER_NAME_MISSING);
+        }
+        if exact_version.trim().is_empty() {
+            return Err(REFUSAL_PROVIDER_VERSION_MISSING);
+        }
+        Ok(Self {
+            provider_name,
+            exact_version,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProviderTestMode {
+    Automated,
+    Live,
+}
+
+/// One provider-scoped test result after the provider/version gate has passed.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderVersionedTestResult {
+    pub mode: ProviderTestMode,
+    pub result_id: &'static str,
+    pub provider_name: String,
+    pub exact_version: String,
+    pub passed: bool,
+}
+
+impl ProviderVersionedTestResult {
+    pub fn new(
+        mode: ProviderTestMode,
+        result_id: &'static str,
+        provider_name: impl Into<String>,
+        exact_version: impl Into<String>,
+        passed: bool,
+    ) -> Result<Self, &'static str> {
+        let provider = ProviderVersion::new(provider_name, exact_version)?;
+        Ok(Self {
+            mode,
+            result_id,
+            provider_name: provider.provider_name,
+            exact_version: provider.exact_version,
+            passed,
+        })
+    }
+}
+
 /// What one triggered invocation is being asked to drive.
 ///
 /// Every variant maps to exactly one entry point the *protected renderer*
@@ -1260,6 +1332,85 @@ mod tests {
             ParsedRequest::Accepted(request) => panic!("accepted as {}", request.verb.label()),
             ParsedRequest::Refused(label) => label,
         }
+    }
+
+    #[test]
+    fn task_3633_provider_results_record_names_and_exact_versions_and_refuse_missing_fields() {
+        let providers = [
+            ("Discord", "1.0.9168"),
+            ("Telegram", "5.14.3"),
+            ("Signal", "7.60.0"),
+            ("WhatsApp", "2.2531.5.0"),
+            ("Outlook", "1.2026.707.300"),
+            ("Gmail", "Firefox 141.0.3"),
+            ("Proton Mail", "Firefox 141.0.3"),
+            ("Tuta Mail", "Firefox 141.0.3"),
+            ("Yahoo Mail", "Firefox 141.0.3"),
+            ("AOL Mail", "Firefox 141.0.3"),
+            ("GMX Mail", "Firefox 141.0.3"),
+            ("mail.com", "Firefox 141.0.3"),
+            ("iCloud Mail", "Firefox 141.0.3"),
+            ("Chrome", "127.0.6533.120"),
+            ("Edge", "127.0.2651.105"),
+            ("Firefox", "141.0.3"),
+            ("Brave", "1.68.141"),
+        ];
+        let results = providers
+            .iter()
+            .enumerate()
+            .map(|(index, (provider, version))| {
+                ProviderVersionedTestResult::new(
+                    ProviderTestMode::Automated,
+                    "task-3633-provider-version",
+                    *provider,
+                    *version,
+                    true,
+                )
+                .unwrap_or_else(|refusal| {
+                    panic!("provider result {index} refused as {refusal}: {provider}")
+                })
+            })
+            .collect::<Vec<_>>();
+        println!("TASK3633_PROVIDER_RESULT_COUNT={}", results.len());
+        println!(
+            "TASK3633_PROVIDER_RESULTS={}",
+            results
+                .iter()
+                .map(|result| format!("{}={}", result.provider_name, result.exact_version))
+                .collect::<Vec<_>>()
+                .join(";")
+        );
+        assert_eq!(results.len(), 17);
+        assert!(results
+            .iter()
+            .all(|result| !result.provider_name.trim().is_empty()));
+        assert!(results
+            .iter()
+            .all(|result| !result.exact_version.trim().is_empty()));
+        assert_eq!(
+            ProviderVersionedTestResult::new(
+                ProviderTestMode::Automated,
+                "task-3633-provider-version",
+                "",
+                "1.0.0",
+                true,
+            )
+            .unwrap_err(),
+            REFUSAL_PROVIDER_NAME_MISSING
+        );
+        assert_eq!(
+            ProviderVersionedTestResult::new(
+                ProviderTestMode::Live,
+                "task-3633-provider-version",
+                "Discord",
+                "",
+                false,
+            )
+            .unwrap_err(),
+            REFUSAL_PROVIDER_VERSION_MISSING
+        );
+        println!("TASK3633_MISSING_PROVIDER_REFUSAL={REFUSAL_PROVIDER_NAME_MISSING}");
+        println!("TASK3633_MISSING_VERSION_REFUSAL={REFUSAL_PROVIDER_VERSION_MISSING}");
     }
 
     #[test]

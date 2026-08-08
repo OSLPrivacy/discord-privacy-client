@@ -140,6 +140,8 @@ pub const ROT_DOMAIN: &str = "OSL-ROTATE-v1";
 /// string with no trailing newline.
 /// Mirrors `USERNAME_CLAIM_DOMAIN` in keyserver-cf/src/lib/username.ts.
 pub const USERNAME_CLAIM_DOMAIN: &str = "OSL-USERNAME-CLAIM-v1";
+/// Mirrors `USERNAME_RELEASE_DOMAIN` in keyserver-cf/src/lib/username.ts.
+pub const USERNAME_RELEASE_DOMAIN: &str = "OSL-USERNAME-RELEASE-v1";
 /// Mirrors `USERNAME_MIN` / `USERNAME_MAX` in the same module.
 pub const USERNAME_MIN: usize = 3;
 pub const USERNAME_MAX: usize = 30;
@@ -180,11 +182,49 @@ pub fn username_claim_msg(
         .into_bytes()
 }
 
+/// Byte-exact release message, mirroring `usernameReleaseMessage` in
+/// keyserver-cf/src/lib/username.ts.
+pub fn username_release_msg(
+    username: &str,
+    user_id: &str,
+    request_id: &str,
+    timestamp_ms: i64,
+) -> Vec<u8> {
+    format!("{USERNAME_RELEASE_DOMAIN}\n{username}\n{user_id}\n{request_id}\n{timestamp_ms}")
+        .into_bytes()
+}
+
 /// Response returned after an authenticated username claim.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct UsernameClaimResponse {
     pub username: String,
     pub user_id: String,
+}
+
+/// Response returned after an authenticated username release.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct UsernameReleaseResponse {
+    pub username: String,
+    pub user_id: String,
+    pub released: bool,
+}
+
+/// Public-name discovery exposure selected by the user.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UsernameDiscoveryVisibility {
+    /// Do not publish a discovery row. If no row was previously published, this
+    /// returns locally without contacting the keyserver.
+    NeverShowMe,
+    /// Publish the name so people the user has allowed can resolve it through
+    /// the fixed-size bucket flow.
+    OnlyPeopleAllowed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UsernameDiscoverySync {
+    SkippedNeverShowMe { username: String, user_id: String },
+    Published(UsernameClaimResponse),
+    Released(UsernameReleaseResponse),
 }
 
 #[derive(Serialize)]
@@ -198,6 +238,15 @@ struct UsernameClaimRequest<'a> {
     service: &'static str,
     service_account_id: &'a str,
     public_name_proof: PublicNameProof,
+}
+
+#[derive(Serialize)]
+struct UsernameReleaseRequest<'a> {
+    username: &'a str,
+    user_id: &'a str,
+    request_id: String,
+    signature_b64: String,
+    timestamp_ms: i64,
 }
 
 #[derive(Deserialize)]
@@ -1042,6 +1091,74 @@ impl KeyServerClient {
         let bytes = serde_json::to_vec(&body)?;
         let response = self.send_request(
             "POST",
+            "/v1/usernames/claim",
+            Some(("application/json", &bytes)),
+        )?;
+        check_2xx(&response)?;
+        serde_json::from_slice(&response.body).map_err(Into::into)
+    }
+
+    /// Apply the user's discovery visibility for an OSL username.
+    ///
+    /// `NeverShowMe` with no previously-published row is a real local off: it
+    /// returns before any keyserver discovery write is attempted. When a row was
+    /// previously published, the same setting sends a signed release so the
+    /// server takes the row back.
+    pub fn sync_username_discovery_visibility(
+        &self,
+        identity: &Identity,
+        username: &str,
+        friend_code: &str,
+        visibility: UsernameDiscoveryVisibility,
+        previously_published: bool,
+    ) -> Result<UsernameDiscoverySync> {
+        match (visibility, previously_published) {
+            (UsernameDiscoveryVisibility::NeverShowMe, false) => {
+                if !is_normalized_username(username) {
+                    return Err(Error::Transport(
+                        "username must already be normalized".into(),
+                    ));
+                }
+                Ok(UsernameDiscoverySync::SkippedNeverShowMe {
+                    username: username.to_owned(),
+                    user_id: identity.user_id.clone(),
+                })
+            }
+            (UsernameDiscoveryVisibility::NeverShowMe, true) => self
+                .release_username(identity, username)
+                .map(UsernameDiscoverySync::Released),
+            (UsernameDiscoveryVisibility::OnlyPeopleAllowed, _) => self
+                .claim_username(identity, username, friend_code)
+                .map(UsernameDiscoverySync::Published),
+        }
+    }
+
+    /// Delete this identity's public username discovery row.
+    pub fn release_username(
+        &self,
+        identity: &Identity,
+        username: &str,
+    ) -> Result<UsernameReleaseResponse> {
+        if !is_normalized_username(username) {
+            return Err(Error::Transport(
+                "username must already be normalized".into(),
+            ));
+        }
+        let request_id = URL_SAFE_NO_PAD.encode(crypto::random::random_bytes(32));
+        let timestamp_ms = unix_timestamp_ms();
+        let message = username_release_msg(username, &identity.user_id, &request_id, timestamp_ms);
+        let signature_b64 =
+            STANDARD.encode(crypto::ed25519::sign(&identity.ed25519_secret, &message).as_bytes());
+        let body = UsernameReleaseRequest {
+            username,
+            user_id: &identity.user_id,
+            request_id,
+            signature_b64,
+            timestamp_ms,
+        };
+        let bytes = serde_json::to_vec(&body)?;
+        let response = self.send_request(
+            "DELETE",
             "/v1/usernames/claim",
             Some(("application/json", &bytes)),
         )?;

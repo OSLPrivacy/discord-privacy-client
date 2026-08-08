@@ -47,6 +47,25 @@ impl WebPageControls {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WebPlacementCommandAction {
+    Place,
+    Submit,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WebPlacementCommandRefusal {
+    PlacementCannotSubmit,
+}
+
+impl fmt::Display for WebPlacementCommandRefusal {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            WebPlacementCommandRefusal::PlacementCannotSubmit => "placement cannot submit",
+        })
+    }
+}
+
 /// GMX Mail target map. Kept as service-local data until a live GMX backend
 /// proves the fixed-origin controls against a signed-in account.
 pub mod gmx;
@@ -148,6 +167,21 @@ impl<B: WebSurfaceBackend> WebSurfaceAdapter<B> {
         SendReceipt {
             outcome: SendOutcome::NotSent,
             elapsed_ms: 0,
+        }
+    }
+
+    pub fn run_placement_command(
+        &self,
+        binding: &SurfaceBinding,
+        authorization: &PlacementAuthorization,
+        carrier: &Carrier,
+        requested_action: WebPlacementCommandAction,
+    ) -> Result<PlacementReceipt, WebPlacementCommandRefusal> {
+        match requested_action {
+            WebPlacementCommandAction::Place => Ok(self.place(binding, authorization, carrier)),
+            WebPlacementCommandAction::Submit => {
+                Err(WebPlacementCommandRefusal::PlacementCannotSubmit)
+            }
         }
     }
 }

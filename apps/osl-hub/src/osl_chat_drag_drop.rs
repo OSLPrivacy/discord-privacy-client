@@ -4,15 +4,24 @@
 //! metadata for the trusted composer; message creation remains owned by the
 //! explicit send path.
 
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
+
+/// Refusal shown when a dropped item is a folder rather than a file. Folders are
+/// not allowed: staging one would mean walking a tree of unknown size and depth
+/// out of the composer's sight, so the whole drop is refused instead.
+pub const OSL_CHAT_DROP_FOLDER_REFUSAL: &str =
+    "The dropped OSL Chat attachment is a folder, and folders are not allowed";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OslChatTrayAttachment {
     pub tray_id: String,
     pub original_filename: String,
+    /// Short human-readable identity for the staged bytes, see [`tray_fingerprint`].
+    pub fingerprint: String,
     pub path: PathBuf,
     pub size_bytes: u64,
 }
@@ -24,6 +33,7 @@ pub struct OslChatDropIntakeReceipt {
     pub tray_file_count: usize,
     pub messages_created: usize,
     pub accepted_filenames: Vec<String>,
+    pub accepted_fingerprints: Vec<String>,
 }
 
 #[derive(Debug, Default)]
@@ -64,6 +74,10 @@ impl OslChatAttachmentTray {
             .iter()
             .map(|attachment| attachment.original_filename.clone())
             .collect::<Vec<_>>();
+        let accepted_fingerprints = accepted
+            .iter()
+            .map(|attachment| attachment.fingerprint.clone())
+            .collect::<Vec<_>>();
         self.attachments.extend(accepted);
 
         Ok(OslChatDropIntakeReceipt {
@@ -71,6 +85,7 @@ impl OslChatAttachmentTray {
             tray_file_count: self.attachments.len(),
             messages_created: self.messages_created,
             accepted_filenames,
+            accepted_fingerprints,
         })
     }
 }
@@ -78,6 +93,9 @@ impl OslChatAttachmentTray {
 fn tray_attachment(index: usize, path: &Path) -> Result<OslChatTrayAttachment, String> {
     let metadata = std::fs::metadata(path)
         .map_err(|_| "The dropped OSL Chat attachment could not be checked".to_owned())?;
+    if metadata.is_dir() {
+        return Err(OSL_CHAT_DROP_FOLDER_REFUSAL.to_owned());
+    }
     if !metadata.is_file() {
         return Err("The dropped OSL Chat attachment is not a regular file".to_owned());
     }
@@ -87,13 +105,60 @@ fn tray_attachment(index: usize, path: &Path) -> Result<OslChatTrayAttachment, S
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "The dropped OSL Chat attachment filename is invalid".to_owned())?
         .to_owned();
+    let fingerprint = tray_fingerprint(&original_filename, path)?;
 
     Ok(OslChatTrayAttachment {
         tray_id: format!("osl-chat-drop-{index:06}"),
         original_filename,
+        fingerprint,
         path: path.to_path_buf(),
         size_bytes: metadata.len(),
     })
+}
+
+/// Short, human-readable identity for one staged tray item: the uppercased
+/// filename stem, then a four-digit fold of the file's own bytes.
+///
+/// It is derived from what is on disk at drop time and never stored anywhere
+/// else, so a tray card that still carries its fingerprint is carrying the
+/// bytes it was staged with — a later drop cannot quietly re-point it.
+pub fn tray_fingerprint(original_filename: &str, path: &Path) -> Result<String, String> {
+    let stem = original_filename
+        .split('.')
+        .next()
+        .unwrap_or(original_filename);
+    let label = stem
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .take(16)
+        .collect::<String>()
+        .to_uppercase();
+    let label = if label.is_empty() {
+        "FILE".to_owned()
+    } else {
+        label
+    };
+
+    // FNV-1a over the bytes, read in bounded chunks so a large attachment is
+    // never held in memory just to be named.
+    let mut file = std::fs::File::open(path)
+        .map_err(|_| "The dropped OSL Chat attachment could not be checked".to_owned())?;
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut chunk = [0_u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut chunk)
+            .map_err(|_| "The dropped OSL Chat attachment could not be read".to_owned())?;
+        if read == 0 {
+            break;
+        }
+        for byte in &chunk[..read] {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+
+    Ok(format!("{label}-{:04}", hash % 10_000))
 }
 
 #[cfg(test)]

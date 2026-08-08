@@ -4,6 +4,7 @@
   "version": "0.0.1",
   "type": "module",
   "scripts": {
-    "check": "node check.js"
+    "check": "node check.js",
+    "check:task-1233": "node task-1233-gmail-body-selector.mjs"
   }
 }

@@ -5394,6 +5394,10 @@ code {
 .osl-chat-friend-preview { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .osl-chat-friend-copy strong { font-size: 13px; font-weight: 600; }
 .osl-chat-friend-preview { margin-top: 2px; color: var(--muted); font-size: 11px; }
+.osl-verification-tick { display: inline-grid; place-items: center; width: 14px; height: 14px; margin-left: 5px; border-radius: 50%; background: var(--brand); color: var(--brand-ink); vertical-align: middle; }
+.osl-verification-tick svg { width: 10px; height: 10px; fill: none; stroke: currentColor; stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
+.osl-chat-thread-header h2 .osl-verification-tick { width: 13px; height: 13px; }
+.osl-chat-thread-header h2 .osl-verification-tick svg { width: 9px; height: 9px; }
 .osl-chat-friend-settings,
 .osl-chat-thread-settings { width: 44px; min-height: 44px; border: 0; background: transparent; color: var(--muted); display: grid; place-items: center; cursor: pointer; }
 .osl-chat-friend-settings:hover,
@@ -5404,6 +5408,18 @@ code {
 .osl-chat-thread-header > div { min-width: 0; }
 .osl-chat-thread-header span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 11px; letter-spacing: .025em; }
 .osl-chat-thread-header h2 { margin: 0 0 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 600; }
+.osl-group-chat-header { min-height: 56px; padding: 8px 12px 8px 16px; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 12px; background: var(--panel); }
+.osl-group-chat-header.is-empty { opacity: .7; }
+.osl-group-chat-identity { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.osl-group-chat-avatar { width: 36px; height: 36px; border-radius: 50%; background: var(--brand); color: var(--brand-ink); display: grid; place-items: center; font-size: 12px; font-weight: 700; flex: 0 0 auto; }
+.osl-group-chat-avatar.is-empty { background: var(--line); color: var(--muted); }
+.osl-group-chat-identity > div { min-width: 0; }
+.osl-group-chat-name { margin: 0 0 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 600; }
+.osl-group-chat-member-count { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 11px; letter-spacing: .025em; }
+.osl-group-chat-actions { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+.osl-group-chat-action { padding: 6px 10px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel-2); color: var(--text); font-size: 12px; font-weight: 500; cursor: pointer; }
+.osl-group-chat-action:hover { background: var(--panel-3); }
+.osl-group-chat-action:disabled { opacity: .5; cursor: not-allowed; }
 .osl-chat-message-list { min-height: 0; padding: 22px 24px; overflow-y: auto; display: flex; flex-direction: column; gap: 16px; }
 .osl-chat-thread-empty { margin: auto; color: var(--muted); }
 .osl-chat-handshake-warning { margin: 0; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--warn-soft, rgba(255, 176, 32, .12)); color: var(--text); font-size: 12px; line-height: 1.45; }
@@ -6361,6 +6377,7 @@ code {
 
 /* Whitelist roster: every whitelisted person, where they are trusted, and how
    far their reach was deliberately widened. */
+.discord-qa-whitelist { position: relative; }
 .discord-qa-whitelist #discord-qa-whitelist-roster {
   min-width: auto;
   padding: 0 9px;
@@ -6372,6 +6389,40 @@ code {
   text-transform: uppercase;
 }
 .whitelist-roster-list { display: grid; gap: 12px; }
+.whitelist-roster-dropdown {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 30;
+  width: min(280px, calc(100vw - 24px));
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 16px 34px rgba(0, 0, 0, .18);
+}
+.whitelist-dropdown-list { display: grid; gap: 4px; }
+.whitelist-dropdown-row {
+  min-height: 42px;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  padding: 7px 8px;
+  border-radius: 6px;
+}
+.whitelist-dropdown-row:hover { background: var(--osl-bg-hover); }
+.whitelist-dropdown-row input { margin: 0; }
+.whitelist-dropdown-row span,
+.whitelist-dropdown-row small { min-width: 0; }
+.whitelist-dropdown-row strong,
+.whitelist-dropdown-row small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.whitelist-dropdown-row small { color: var(--muted); }
 .whitelist-roster-row { display: grid; gap: 8px; }
 .whitelist-roster-row > header {
   display: flex;
@@ -7749,6 +7800,17 @@ code {
   width: 100%;
   min-height: 100vh;
   padding: 26px 32px;
+/* TASK 0760 - Apps and sending: one card per app carrying its account choice,
+   its open/set up/remove actions, its sending style and the next-generation
+   switch. Only a connected card draws the sending half. */
+.apps-sending-screen {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  width: 100%;
+  min-height: 100vh;
+  padding: 22px 32px 22px;
   background: var(--bg);
   color: var(--text);
   font-family: var(--font-ui);
@@ -7757,6 +7819,9 @@ code {
 .home-summary-head { display: flex; flex-direction: column; gap: 6px; }
 
 .home-summary-title {
+.apps-sending-header { display: flex; flex-direction: column; gap: 4px; }
+
+.apps-sending-title {
   margin: 0;
   font-family: var(--font-display);
   font-size: 26px;
@@ -7808,6 +7873,21 @@ code {
   font-size: 11px;
   font-weight: 600;
   letter-spacing: .06em;
+.apps-sending-subtitle {
+  margin: 0;
+  max-width: 74ch;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.apps-sending-group { display: flex; flex-direction: column; gap: 8px; }
+
+.apps-sending-group-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: .04em;
   text-transform: uppercase;
   color: var(--muted);
 }
@@ -7926,6 +8006,12 @@ code {
   display: flex;
   flex-direction: column;
   gap: 4px;
+.apps-sending-group-note { margin: -4px 0 0; font-size: 12px; color: var(--subtle); }
+
+.apps-sending-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -7940,3 +8026,184 @@ code {
 
 .home-panel-activity-title { color: var(--text); }
 .home-panel-activity-time { color: var(--muted); white-space: nowrap; }
+.apps-sending-app {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 12px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+/* Nothing is set up here yet, so the row carries only the name, the reason and
+   the one action that changes it. */
+.apps-sending-app[data-app-state="not-connected"] {
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+  padding: 7px 16px;
+  background: var(--panel-2);
+  border-color: var(--line-soft);
+}
+
+.apps-sending-app[data-app-state="not-connected"] .apps-sending-app-head { flex: 1 1 auto; }
+
+/* Name, then why it is empty, then the button that fixes it. */
+.apps-sending-app[data-app-state="not-connected"] .apps-sending-actions { order: 1; }
+
+.apps-sending-app-head { display: flex; align-items: center; gap: 10px; }
+
+.apps-sending-app-mark {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius);
+  background: var(--panel-3);
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.apps-sending-app-identity { display: flex; flex-direction: column; gap: 1px; flex: 1 1 auto; }
+
+.apps-sending-app-name { font-size: 15px; font-weight: 600; }
+
+.apps-sending-app-detail { font-size: 12px; color: var(--muted); }
+
+.apps-sending-app-status {
+  padding: 3px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 11px;
+  letter-spacing: .03em;
+  color: var(--muted);
+}
+
+.apps-sending-app-status[data-app-status="connected"] {
+  border-color: var(--success);
+  color: var(--success);
+}
+
+.apps-sending-field { display: flex; flex-direction: column; gap: 5px; }
+
+.apps-sending-field-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  color: var(--subtle);
+}
+
+.apps-sending-choices { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.apps-sending-choice {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  /* Every choice in a row keeps one line of name and a short line of detail:
+     a fixed basis, so four sending styles stay on one row and can be compared
+     side by side instead of stacking into a list. */
+  flex: 1 1 240px;
+  min-width: 240px;
+  max-width: 340px;
+  padding: 7px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  color: var(--text);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* The chosen choice is the whole point of the screen, so it is a filled tile
+   and not a tick mark: it has to read from across a screenshot. */
+.apps-sending-choice.selected {
+  border-color: var(--brand);
+  background: var(--brand-wash);
+  box-shadow: inset 0 0 0 1px var(--brand);
+}
+
+.apps-sending-choice-name { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; }
+
+.apps-sending-choice.selected .apps-sending-choice-name { color: var(--brand); }
+
+.apps-sending-choice-detail { font-size: 11px; line-height: 1.3; color: var(--muted); }
+
+.apps-sending-choice-tag {
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--panel-3);
+  color: var(--warn);
+  font-size: 9px;
+  font-style: normal;
+  letter-spacing: .04em;
+}
+
+.apps-sending-choice-tag[data-risk="danger"] { color: var(--danger); }
+
+.apps-sending-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.apps-sending-pending { margin: 0; font-size: 12px; color: var(--subtle); }
+
+.apps-sending-switch {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  cursor: pointer;
+}
+
+.apps-sending-switch[data-next-generation="on"] {
+  border-color: var(--brand);
+  background: var(--brand-wash);
+}
+
+.apps-sending-switch-copy { display: flex; flex-direction: column; gap: 2px; font-size: 13px; }
+
+.apps-sending-switch-copy small { font-size: 11px; color: var(--muted); }
+
+.apps-sending-switch-control { display: flex; align-items: center; gap: 8px; }
+
+.apps-sending-switch-input { width: 16px; height: 16px; accent-color: var(--brand); }
+
+/* Fixed width so On and Off occupy the same box: a capture that compares the
+   two states is then comparing paint, not reflow. */
+.apps-sending-switch-state {
+  min-width: 84px;
+  padding: 3px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-align: center;
+  color: var(--muted);
+}
+
+.apps-sending-switch-state[data-next-generation-state="on"] {
+  border-color: var(--brand);
+  background: var(--brand);
+  color: var(--brand-ink);
+}
+
+.apps-sending-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: auto;
+  padding-top: 14px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.apps-sending-save-note { margin: 0; font-size: 12px; color: var(--muted); }
+
+.apps-sending-footer-buttons { display: flex; gap: 8px; }

@@ -60,6 +60,8 @@ pub struct MailboxMessageCandidate {
     pub subject: String,
     pub time: i64,
     pub sender: String,
+    #[serde(default)]
+    pub ownership: SharedMailboxOwnership,
     pub body: String,
 }
 
@@ -432,8 +434,6 @@ impl MailboxReaderSnapshot {
         Self {
             folders: folders.into_iter().collect(),
             messages: messages.into_iter().collect(),
-        }
-    }
             signed_in_address: None,
         }
     }
@@ -527,11 +527,6 @@ impl MailOwnerCheckError {
             Self::SenderAddressUnreadable => "OSL: sender address cannot be read",
         }
     }
-}
-
-    #[serde(default)]
-    pub ownership: SharedMailboxOwnership,
-    pub body: String,
 }
 
 /// Local metadata for isolated service profiles. It intentionally stores no
