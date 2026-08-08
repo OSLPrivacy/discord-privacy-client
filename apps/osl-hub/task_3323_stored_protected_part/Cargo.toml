@@ -1,0 +1,22 @@
+[package]
+name = "task-3323-stored-protected-part"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# The osl-hub library crate cannot be compiled in this worktree (pre-existing
+# merge damage in src/autoscrub_run.rs and duplicated items in
+# src/message_expiry.rs, both present in HEAD and unrelated to TASK 3323), so
+# the check for the stored protected part follows the same standalone-command
+# precedent as apps/osl-hub/task_3308_timed_delete_sweep_job: this crate
+# compiles the hub's own source file through #[path], it does not copy it.
+
+[dependencies]
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.149"
+
+[[bin]]
+name = "task-3323-stored-protected-part"
+path = "src/main.rs"
+
+[workspace]

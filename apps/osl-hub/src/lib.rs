@@ -394,6 +394,7 @@ pub mod shared_mail_deleter;
 pub mod shared_mail_reader_types;
 pub mod shared_mailbox_reader;
 pub mod shared_marked_message_deleter;
+pub mod timed_delete_sweep_job;
 pub mod timed_delete_closed_recovery;
 pub mod signal_destination_binding;
 #[cfg(feature = "core")]
