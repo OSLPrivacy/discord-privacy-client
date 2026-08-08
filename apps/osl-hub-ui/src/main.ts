@@ -4205,8 +4205,6 @@ function bindOnboarding(): void {
     if (outcome.route !== next) return;
     onboardingRoute = next;
     render();
-    if (next === "browser") void refreshBrowserImportReadiness();
-    if (next === "mullvad") void refreshMullvadSetup();
   }));
   document.querySelector("#continue-onboarding-privacy")?.addEventListener("click", () => { onboardingRoute = "tor"; render(); });
   document.querySelector<HTMLInputElement>("#window-capture-enabled")?.addEventListener("change", async (event) => {
@@ -4399,8 +4397,6 @@ function bindOnboardingPasswordRole(): void {
       if (outcome.route !== next) return;
       onboardingRoute = next;
       render();
-      if (onboardingRoute === "browser") void refreshBrowserImportReadiness();
-      if (onboardingRoute === "mullvad") void refreshMullvadSetup();
     } catch (failure) {
       error.textContent = localActionError(failure, "Password was not changed");
       submit.disabled = false;
