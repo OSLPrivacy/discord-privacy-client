@@ -11,6 +11,8 @@ export interface MessengerAttachmentSource {
   name: string;
   size: number;
   bytes: Uint8Array;
+  /** Explicitly identifies non-file picker/drop entries at the intake boundary. */
+  kind?: "file" | "folder";
 }
 
 export interface MessengerAttachmentCard {
@@ -55,6 +57,9 @@ function stageOne(
   tray: MessengerAttachmentTray,
   source: MessengerAttachmentSource,
 ): MessengerAttachmentReceipt {
+  if (source.kind === "folder") {
+    throw new Error(`Messenger attachments must be files, not folders: ${source.name}`);
+  }
   if (!isSafeName(source.name)) throw new Error("Messenger attachment filename is invalid");
   if (!Number.isSafeInteger(source.size) || source.size < 0 || source.size !== source.bytes.byteLength) {
     throw new Error("Messenger attachment size does not match its bytes");
@@ -104,7 +109,7 @@ export function messengerAttachmentTrayMarkup(tray: MessengerAttachmentTray): st
 }
 
 async function sourceFromFile(file: File): Promise<MessengerAttachmentSource> {
-  return { name: file.name, size: file.size, bytes: new Uint8Array(await file.arrayBuffer()) };
+  return { name: file.name, size: file.size, bytes: new Uint8Array(await file.arrayBuffer()), kind: "file" };
 }
 
 /** Bind the real picker and drag/drop events to the same one-card staging path. */
