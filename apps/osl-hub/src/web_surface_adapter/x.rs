@@ -48,6 +48,29 @@ pub struct XSurfaceSnapshot {
     pub rows: Vec<XTranscriptRow>,
 }
 
+/// The minimal, provider-specific result of finding an active X browser.
+///
+/// This is intentionally distinct from the general accessibility snapshot:
+/// callers that need to bind a web surface must first prove that the focused
+/// browser is the reviewed X origin, then may use the returned place and
+/// composer records to construct an adapter binding.  Browser titles and
+/// accessible names are kept only at this driver boundary.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct XActiveBrowserSurface {
+    pub browser_title: String,
+    pub origin: String,
+    pub place_kind: String,
+    pub composer: String,
+}
+
+/// The three records a caller needs after the active X browser is found.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct XFoundBrowserPlaceComposer {
+    pub browser_title: String,
+    pub place_kind: String,
+    pub composer: String,
+}
+
 /// The only platform-specific seam used by the X adapter.
 ///
 /// Implementors must obtain an isolated-VM attestation before either write
@@ -57,6 +80,12 @@ pub trait XSurfaceDriver: Send + Sync {
     fn is_current_generation(&self, generation: u64) -> bool;
     fn wake_accessibility(&self) -> Result<(), AdapterRefusal>;
     fn snapshot(&self) -> Result<XSurfaceSnapshot, AdapterRefusal>;
+
+    /// Find the focused browser surface before the normal X selector walk.
+    /// Implementations must return only the fixed X messages origin.
+    fn active_browser_surface(&self) -> Result<XActiveBrowserSurface, AdapterRefusal> {
+        Err(AdapterRefusal::PlatformUnsupported)
+    }
 
     fn place_with_vm_attestation(&self, _carrier: &str) -> Result<(), AdapterRefusal> {
         Err(AdapterRefusal::PlatformUnsupported)
@@ -81,6 +110,27 @@ impl<D> XWebBackend<D> {
 impl<D: XSurfaceDriver> XWebBackend<D> {
     fn snapshot(&self) -> Result<XSurfaceSnapshot, AdapterRefusal> {
         self.driver.snapshot()
+    }
+
+    /// Locate the active X browser and expose its title, classified place, and
+    /// composer name.  This is deliberately read-only; placement remains at
+    /// the VM-attested method on [`XSurfaceDriver`].
+    pub fn find_active_browser_place_and_composer(
+        &self,
+    ) -> Result<XFoundBrowserPlaceComposer, AdapterRefusal> {
+        let surface = self.driver.active_browser_surface()?;
+        if surface.origin != "https://x.com/messages"
+            || !matches!(surface.place_kind.as_str(), "direct_message" | "public_post")
+            || surface.browser_title.trim().is_empty()
+            || surface.composer.trim().is_empty()
+        {
+            return Err(AdapterRefusal::WindowGone);
+        }
+        Ok(XFoundBrowserPlaceComposer {
+            browser_title: surface.browser_title,
+            place_kind: surface.place_kind,
+            composer: surface.composer,
+        })
     }
 
     fn destination_from(snapshot: XSurfaceSnapshot) -> DestinationIdentity {
