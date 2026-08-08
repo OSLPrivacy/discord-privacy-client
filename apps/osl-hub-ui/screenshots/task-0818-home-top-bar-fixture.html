@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OSL Home</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+    <style>
+      html, body { width: 100%; height: 100%; margin: 0; }
+      body { overflow: hidden; }
+      .fixture-shell { width: 1280px; height: 800px; display: grid; grid-template-columns: 190px 1fr; background: var(--bg); color: var(--text); }
+      .fixture-sidebar { padding: 24px 18px; border-right: 1px solid var(--line); background: var(--panel); }
+      .fixture-sidebar strong { display: block; margin: 10px 8px 28px; color: var(--brand); letter-spacing: .08em; }
+      .fixture-sidebar p { margin: 0 8px 14px; color: var(--muted); font-size: 12px; }
+      .fixture-main { min-width: 0; }
+      .fixture-content { padding: 42px 48px; }
+      .fixture-content h1 { margin: 0 0 8px; font-size: 30px; letter-spacing: -.03em; }
+      .fixture-content > p { margin: 0 0 34px; color: var(--muted); }
+      .fixture-card { max-width: 720px; padding: 24px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+      .fixture-card h2 { margin: 0 0 8px; font-size: 16px; }
+      .fixture-card p { margin: 0; color: var(--muted); line-height: 1.5; }
+    </style>
+  </head>
+  <body>
+    <div class="fixture-shell">
+      <aside class="fixture-sidebar"><strong>OSL</strong><p>Home</p><p>Inbox</p><p>People</p><p>Privacy</p><p>Activity</p><p>Connections</p></aside>
+      <div class="fixture-main">
+        <div class="trusted-stack home-trusted-stack">
+          <header class="home-header home-command-bar">
+            <button class="home-logo-button" type="button" aria-label="OSL Privacy home"><img src="/src/assets/logo-mark.svg" alt="" /><span class="home-command-label">OSL</span></button>
+            <nav class="home-command-actions" aria-label="Home controls">
+              <button class="home-command-icon" type="button" aria-label="Friends"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 20v-1.8c0-2-1.8-3.7-4-3.7H7c-2.2 0-4 1.7-4 3.7V20M9.5 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7ZM16 11.2c1.7-.3 2.8-1.7 2.8-3.4 0-1.6-1.1-3-2.6-3.3M17.5 14.8c2 .5 3.5 1.9 3.5 3.7V20" /></svg><span class="home-command-label">Friends</span></button>
+              <button class="home-command-icon" type="button" aria-label="Notifications"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 7h18s-3 0-3-7ZM10 20h4" /></svg><span class="home-command-label">Notifications</span></button>
+              <button class="home-command-icon" type="button" aria-label="Settings"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.6v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z" /></svg><span class="home-command-label">Settings</span></button>
+              <button class="home-command-icon home-profile-command" type="button" aria-label="Profile"><span class="home-profile-initial" aria-hidden="true">A</span><span class="home-command-label">Profile</span></button>
+            </nav>
+          </header>
+        </div>
+        <main class="fixture-content"><h1>Home</h1><p>Your private workspace at a glance.</p><section class="fixture-card"><h2>Protection status</h2><p>OSL keeps your local workspace ready and makes each connected surface explicit.</p></section></main>
+      </div>
+    </div>
+  </body>
+</html>
