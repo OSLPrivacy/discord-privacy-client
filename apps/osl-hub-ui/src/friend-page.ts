@@ -45,8 +45,13 @@ export function friendPageMarkup(model: FriendPageModel = builtInFriendPage): st
   return `<section class="friend-page" aria-labelledby="friend-page-title">
     <header class="friend-page-header">
       <button class="friend-page-back" type="button" aria-label="back">Back</button>
-      <div><p class="friend-page-eyebrow">Friend settings</p><h1 id="friend-page-title">${friend}</h1><p>Control where this friend can reach you.</p></div>
+      <div><p class="friend-page-eyebrow">${friend}</p><h1 id="friend-page-title">${FRIEND_PAGE_TITLE}</h1><p>Control where this friend can reach you.</p></div>
     </header>
+    <nav class="friend-page-destinations" aria-label="Friend choices">
+      <button type="button">Message</button>
+      <button type="button">Pictures</button>
+      <button type="button">Privacy</button>
+    </nav>
     <div class="friend-page-scope">
       <section class="friend-page-card" aria-labelledby="friend-account-title">
         <div class="friend-page-card-heading"><h2 id="friend-account-title" aria-label="account">Account</h2><span class="friend-page-approved"><span role="img" aria-label="checkmark">✓</span> Approved</span></div>
@@ -64,6 +69,7 @@ export function friendPageMarkup(model: FriendPageModel = builtInFriendPage): st
     </label>
     <footer class="friend-page-actions">
       <button class="friend-page-remove" type="button" aria-label="remove">Remove friend</button>
+      <button class="friend-page-block" type="button" aria-label="block">Block</button>
       <span class="friend-page-actions-spacer"></span>
       <button class="friend-page-cancel" type="button" aria-label="cancel">Cancel</button>
       <button class="friend-page-save" type="button" aria-label="save">Save</button>

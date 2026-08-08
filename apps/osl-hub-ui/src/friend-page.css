@@ -18,6 +18,8 @@
 .friend-page-eyebrow { color: var(--brand) !important; font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
 .friend-page-back, .friend-page-actions button { border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 12px; background: var(--panel-2); color: var(--text); font: 600 13px var(--font-ui); cursor: pointer; }
 .friend-page-back:hover, .friend-page-cancel:hover { border-color: var(--brand); }
+.friend-page-destinations { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.friend-page-destinations button { border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px; background: var(--panel-2); color: var(--text); font: 600 13px var(--font-ui); cursor: pointer; }
 .friend-page-scope { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .friend-page-card, .friend-page-new-account { border: 1px solid var(--line-soft); border-radius: var(--radius); background: var(--panel-2); }
 .friend-page-card { padding: 14px; }
@@ -32,9 +34,9 @@
 .friend-page-new-account em { min-width: 58px; color: var(--brand); font-size: 12px; font-style: normal; text-align: right; }
 .friend-page-actions { display: flex; align-items: center; gap: 8px; padding-top: 4px; border-top: 1px solid var(--line-soft); }
 .friend-page-actions-spacer { flex: 1; }
-.friend-page-remove { border-color: color-mix(in srgb, var(--danger) 55%, var(--line)) !important; color: var(--danger) !important; }
+.friend-page-remove, .friend-page-block { border-color: color-mix(in srgb, var(--danger) 55%, var(--line)) !important; color: var(--danger) !important; }
 .friend-page-save { border-color: var(--brand) !important; background: var(--brand) !important; color: var(--brand-ink) !important; }
 .friend-page-empty { place-content: center; min-height: 360px; }
 .friend-page-empty h1 { margin: 0; }
 .friend-page-empty p { color: var(--muted); }
-@media (max-width: 580px) { .friend-page { margin: 12px auto; padding: 16px; } .friend-page-scope { grid-template-columns: 1fr; } .friend-page-new-account { grid-template-columns: 1fr auto; } .friend-page-new-account em { grid-column: 1; text-align: left; } }
+@media (max-width: 580px) { .friend-page { margin: 12px auto; padding: 16px; } .friend-page-destinations, .friend-page-scope { grid-template-columns: 1fr; } .friend-page-new-account { grid-template-columns: 1fr auto; } .friend-page-new-account em { grid-column: 1; text-align: left; } }
