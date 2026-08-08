@@ -404,20 +404,70 @@ export function friendRemovalButtonMarkup(
   return `<button class="button compact danger" type="button" data-remove-person="${escapeAttribute(personId)}">Remove friend</button>`;
 }
 
+export const FRIEND_WHITELIST_EVERYWHERE_SELECTOR = "[data-whitelist-everywhere-person]";
+export const FRIEND_WHITELIST_NOWHERE_SELECTOR = "[data-whitelist-nowhere-person]";
+
+export interface FriendWhitelistEverywhereControl extends EventTarget {
+  readonly dataset: { readonly whitelistEverywherePerson?: string };
+}
+
+export interface FriendWhitelistEverywhereRoot {
+  querySelectorAll(selector: string): Iterable<FriendWhitelistEverywhereControl>;
+}
+
+export interface FriendWhitelistNowhereControl extends EventTarget {
+  readonly dataset: { readonly whitelistNowherePerson?: string };
+}
+
+export interface FriendWhitelistNowhereRoot {
+  querySelectorAll(selector: string): Iterable<FriendWhitelistNowhereControl>;
+}
+
 /**
- * The friend-wide whitelist controls: one button that grants every currently
- * owned account reach to this friend at once, and one that revokes every
- * currently owned account's reach at once. These call the same friend-wide
- * actions as the per-account grid (`set_hub_friend_account_reach_everywhere`
- * / `set_hub_friend_account_reach_nowhere`), so the grid stays the source of
- * truth for the reach state itself.
+ * Friend-wide reach buttons: one action that ticks every current owned
+ * account for this friend, and one that unticks all of them. They operate on
+ * the whole friend at once, distinct from the per-chat approvals above.
  */
-export function friendWideWhitelistButtonsMarkup(
+export function friendWhitelistEverywhereButtonMarkup(
   personId: string,
   escapeAttribute: (value: string) => string,
 ): string {
   const escapedPersonId = escapeAttribute(personId);
-  return `<div class="friend-wide-whitelist-actions"><button class="button compact" type="button" data-whitelist-everywhere="${escapedPersonId}">Whitelist everywhere</button><button class="button compact" type="button" data-whitelist-nowhere="${escapedPersonId}">Whitelist nowhere</button></div>`;
+  return `<button class="button compact" type="button" data-whitelist-everywhere-person="${escapedPersonId}" data-whitelist-everywhere="${escapedPersonId}">Whitelist everywhere</button>`;
+}
+
+export function friendWhitelistNowhereButtonMarkup(
+  personId: string,
+  escapeAttribute: (value: string) => string,
+): string {
+  const escapedPersonId = escapeAttribute(personId);
+  return `<button class="button compact danger" type="button" data-whitelist-nowhere-person="${escapedPersonId}" data-whitelist-nowhere="${escapedPersonId}">Whitelist nowhere</button>`;
+}
+
+/** Render both friend-wide reach actions using the shared single-button definitions. */
+export function friendWideWhitelistButtonsMarkup(
+  personId: string,
+  escapeAttribute: (value: string) => string,
+): string {
+  return `<div class="friend-wide-whitelist-actions friend-whitelist-reach">${friendWhitelistEverywhereButtonMarkup(personId, escapeAttribute)}${friendWhitelistNowhereButtonMarkup(personId, escapeAttribute)}</div>`;
+}
+
+export function bindFriendWhitelistEverywhereControls(
+  root: FriendWhitelistEverywhereRoot,
+  requestWhitelistEverywhere: (personId: string) => void,
+): void {
+  for (const control of root.querySelectorAll(FRIEND_WHITELIST_EVERYWHERE_SELECTOR)) {
+    control.addEventListener("click", () => requestWhitelistEverywhere(control.dataset.whitelistEverywherePerson ?? ""));
+  }
+}
+
+export function bindFriendWhitelistNowhereControls(
+  root: FriendWhitelistNowhereRoot,
+  requestWhitelistNowhere: (personId: string) => void,
+): void {
+  for (const control of root.querySelectorAll(FRIEND_WHITELIST_NOWHERE_SELECTOR)) {
+    control.addEventListener("click", () => requestWhitelistNowhere(control.dataset.whitelistNowherePerson ?? ""));
+}
 }
 
 export function bindFriendRemovalControls(
