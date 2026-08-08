@@ -134,6 +134,7 @@ import {
 import { tileStatusPageMarkup } from "./tile-status-page";
 import {
   coreReadinessLabel,
+  checkHubRecoveryWordRetype,
   clearHubActivationCode,
   createHubOslIdentity,
   identityProtectionStatus,
@@ -252,6 +253,7 @@ import { addFriendByNameBoxMarkup, addFriendFailureStatus, bindAddFriendByNameFo
 import { runRecoveryReveal, submitsRecoveryReveal } from "./recovery-reveal";
 import { addLegacyPhraseWrap, initialAccountRecoveryFlow, legacyMarkerRecoveryRefused, legacyRecoveryMigrationMarkup, recoveryScreenMarkup, submitRecoveredPassword, submitRecoveryPhrase, type AccountRecoveryDependencies, type AccountRecoveryFlow, type LegacyRecoveryMigration, type RecoveryMigrationDependencies } from "./account-recovery";
 import { RECOVERY_SHOW_ANYWAY_ACKNOWLEDGEMENT, recoveryKitReducer, recoveryKitSecretCardsMarkup, recoveryKitView, visibleRecoverySecrets, type RecoveryKitAction, type RecoveryKitState, type RecoveryKitView } from "./recovery-kit";
+import { applyRecoveryWordRetypeResult, everyRecoveryWordAnswered, initialRecoveryWordCheckState, recoveryWordCheckContinueDisabled, recoveryWordCheckMarkup, recoveryWordRetypeRequest, setRecoveryWordCheckAnswer, type RecoveryWordCheckState } from "./recovery-word-check";
 import { resumeOnboardingRoute } from "./onboarding-resume";
 import { createRecoveryKitUnsavedFlag } from "./recovery-kit-flag";
 import { loadHubRecoveryKitUnsaved, setHubRecoveryKitUnsaved } from "./adapters";
@@ -375,7 +377,7 @@ const NATIVE_DISCORD_COMPOSER_UNREACHABLE_EVENT = "osl://native-discord-composer
 // warning.
 const NATIVE_DISCORD_COMPOSER_UNREACHABLE_REASONS = ["zorder-band", "keyboard-focus", "session-ended"] as const;
 type NativeDiscordComposerUnreachableReason = (typeof NATIVE_DISCORD_COMPOSER_UNREACHABLE_REASONS)[number];
-const onboardingRouteValues = ["pro", "welcome", "create", "import", "unlock", "keylost", "account-recovery", "recovery", "identity-choice", "private-link", "mullvad", "sending", "defaults", "tor", "forward-secrecy", "cover", "silent-visible", "visibility", "passwords", "burnpass", "privacy", "tutorial", "detected", "install", "apps", "browser", "decoy"] as const;
+const onboardingRouteValues = ["pro", "welcome", "create", "import", "unlock", "keylost", "account-recovery", "recovery", "recovery-check", "identity-choice", "private-link", "mullvad", "sending", "defaults", "tor", "forward-secrecy", "cover", "silent-visible", "visibility", "passwords", "burnpass", "privacy", "tutorial", "detected", "install", "apps", "browser", "decoy"] as const;
 type OnboardingRoute = typeof onboardingRouteValues[number];
 // Derived, never re-declared: the Settings sections ARE the Settings home
 // choices. A hand-copied union here once drifted from settings-home.ts (it
@@ -682,6 +684,8 @@ let recoveryBundle: { userId: string; identityPhrase: string | null; passwordPhr
 let cleanDeviceRestoreState: CleanDeviceRestoreState = initialCleanDeviceRestoreState;
 let recoverySavedAcknowledged = false;
 let recoveryNoSecretAcknowledged = false;
+let recoveryWordCheckState: RecoveryWordCheckState = initialRecoveryWordCheckState();
+let recoveryWordCheckEpoch = 0;
 // T15-A7: the owner typed the acknowledgement and asked to see the kit even
 // though capture resistance is not proven. In-memory only, and reset the
 // moment the recovery step is left.
@@ -2146,7 +2150,7 @@ function dockOnboardingBackControl(): void {
 }
 
 function onboardingSetupNavigationMarkup(): string {
-  return ["identity-choice", "private-link", "pro", "forward-secrecy", "privacy", "defaults", "tor", "sending", "cover", "silent-visible", "visibility", "passwords", "burnpass", "browser", "detected", "install", "apps", "mullvad"].includes(onboardingRoute)
+  return ["recovery-check", "identity-choice", "private-link", "pro", "forward-secrecy", "privacy", "defaults", "tor", "sending", "cover", "silent-visible", "visibility", "passwords", "burnpass", "browser", "detected", "install", "apps", "mullvad"].includes(onboardingRoute)
     ? `<div class="setup-footer onboarding-actions onboarding-nav"><button class="button ghost onboarding-back" id="onboarding-back" type="button">Back</button></div>`
     : "";
 }
@@ -2204,6 +2208,7 @@ function onboardingContent(): string {
       ? restoredAccountReadyContent()
       : recoveryContent();
   }
+  if (onboardingRoute === "recovery-check") return recoveryWordCheckMarkup(recoveryWordCheckState, escapeHtml);
   if (onboardingRoute === "identity-choice") return identityChoiceMarkup(identityChoiceError);
   if (onboardingRoute === "private-link") return privateContactLinkMarkup({
     busy: privateContactLinkBusy,
@@ -3190,8 +3195,7 @@ function recoveryContent(): string {
   const secrets = visibleRecoverySecrets(state);
   if (!secrets) return `<section class="onboarding-centered-step recovery-empty" aria-labelledby="route-heading"><p class="eyebrow">Recovery</p><h1 id="route-heading" tabindex="-1">No recovery secret is available</h1><button class="button primary" id="recovery-no-secret-continue" type="button">Continue</button></section>`;
   // 2026-08-06 restyle. Gone from this screen: the Mullvad and Android "next
-  // steps" cards (neither is a step, and one is not built), the Account details
-  // disclosure, and the numbered badges.
+  // steps" cards (neither is a step, and one is not built) and numbered badges.
   //
   // The capture notice is deliberately NOT here. Liam removed it from this
   // screen on 2026-08-06 after it was raised with him. It still shows on the
@@ -3200,6 +3204,7 @@ function recoveryContent(): string {
   return `<section class="recovery-screen" aria-labelledby="route-heading">
     <h1 id="route-heading" tabindex="-1" class="recovery-screen-title">Save your recovery kit</h1>
     <div class="recovery-phrase-list">${recoveryKitSecretCardsMarkup(secrets, escapeHtml)}</div>
+    <details class="recovery-account-details" id="recovery-account-details"><summary>Account details</summary><code>${escapeHtml(secrets.userId)}</code></details>
     <button class="signin-unlock osl-continue recovery-copy" id="copy-recovery-kit" type="button"><span class="signin-unlock-label" data-copy-label="Copy recovery kit" data-copied-label="Copied">Copy recovery kit</span>${recoveryCopyIcon()}${recoveryCopiedIcon()}</button>
     <label class="recovery-saved-row"><input class="sr-only" id="recovery-saved" type="checkbox" ${recoverySavedAcknowledged ? "checked" : ""}/>${recoveryCheckbox()}<span>I saved my recovery kit</span></label>
     ${continueButton(`id="recovery-continue" ${recoverySavedAcknowledged ? "" : "disabled aria-disabled=\"true\""}`, "recovery-continue-button")}
@@ -3595,6 +3600,67 @@ function continueFromPrivateContactLink(): boolean {
   return true;
 }
 
+function syncRecoveryWordCheckControls(message = ""): void {
+  const button = document.querySelector<HTMLButtonElement>("#recovery-word-check-continue");
+  const status = document.querySelector<HTMLElement>("#recovery-word-check-status");
+  const disabled = recoveryWordCheckContinueDisabled(recoveryWordCheckState);
+  if (button) {
+    button.disabled = disabled;
+    if (disabled) button.setAttribute("aria-disabled", "true");
+    else button.removeAttribute("aria-disabled");
+  }
+  if (status) status.textContent = message;
+}
+
+async function verifyRecoveryWordCheck(epoch: number): Promise<void> {
+  if (!recoveryBundle || !everyRecoveryWordAnswered(recoveryWordCheckState)) return;
+  syncRecoveryWordCheckControls("Checking…");
+  try {
+    const result = await checkHubRecoveryWordRetype(
+      recoveryWordRetypeRequest(recoveryWordCheckState, recoveryBundle.passwordPhrase),
+    );
+    if (epoch !== recoveryWordCheckEpoch || onboardingRoute !== "recovery-check") return;
+    recoveryWordCheckState = applyRecoveryWordRetypeResult(recoveryWordCheckState, result);
+    const failed = new Set(result.failedPositions);
+    document.querySelectorAll<HTMLInputElement>("[data-recovery-word-position]").forEach((input) => {
+      const position = Number(input.dataset.recoveryWordPosition);
+      if (failed.has(position)) input.setAttribute("aria-invalid", "true");
+      else input.removeAttribute("aria-invalid");
+    });
+    syncRecoveryWordCheckControls(
+      recoveryWordCheckContinueDisabled(recoveryWordCheckState)
+        ? "One or more words did not match. Check the numbered words and try again."
+        : "All requested words match.",
+    );
+  } catch {
+    if (epoch !== recoveryWordCheckEpoch || onboardingRoute !== "recovery-check") return;
+    syncRecoveryWordCheckControls("OSL could not check those words. Edit an answer to try again.");
+  }
+}
+
+function bindRecoveryWordCheck(): void {
+  document.querySelectorAll<HTMLInputElement>("[data-recovery-word-position]").forEach((input) => {
+    input.addEventListener("input", () => {
+      const position = Number(input.dataset.recoveryWordPosition);
+      recoveryWordCheckState = setRecoveryWordCheckAnswer(recoveryWordCheckState, position, input.value);
+      const epoch = ++recoveryWordCheckEpoch;
+      input.removeAttribute("aria-invalid");
+      syncRecoveryWordCheckControls();
+      if (everyRecoveryWordAnswered(recoveryWordCheckState)) void verifyRecoveryWordCheck(epoch);
+    });
+  });
+  document.querySelector<HTMLButtonElement>("#recovery-word-check-continue")?.addEventListener("click", () => {
+    if (recoveryWordCheckContinueDisabled(recoveryWordCheckState)) return;
+    if (applyRecoveryKitAction({ kind: "continue" }) !== "leave-recovery") return;
+    recoveryWordCheckState = initialRecoveryWordCheckState();
+    recoveryWordCheckEpoch += 1;
+    resetOnboardingBranch();
+    resetOnboardingConnections();
+    onboardingRoute = pendingOnboardingRoute() ?? onboardingRouteForBuild("passwords");
+    render();
+  });
+}
+
 function bindOnboarding(): void {
   document.querySelectorAll<HTMLButtonElement>("[data-onboarding]").forEach((button) => button.addEventListener("click", () => {
     handleOnboardingRouteAction(button.dataset.onboarding);
@@ -3635,6 +3701,7 @@ function bindOnboarding(): void {
   document.querySelector<HTMLButtonElement>("#continue-private-contact-link")?.addEventListener("click", () => {
     continueFromPrivateContactLink();
   });
+  bindRecoveryWordCheck();
   document.querySelector<HTMLButtonElement>("#retry-recovery-protection")?.addEventListener("click", async () => {
     await proveRecoveryCaptureProtection();
     render();
@@ -3661,15 +3728,13 @@ function bindOnboarding(): void {
     if (recoveryContinue) recoveryContinue.disabled = !recoverySavedAcknowledged;
   });
   recoveryContinue?.addEventListener("click", () => {
-    if (applyRecoveryKitAction({ kind: "continue" }) !== "leave-recovery") {
+    if (!recoverySavedAcknowledged || !recoveryBundle) {
       showToast("Confirm you saved your recovery kit first");
       return;
     }
-    resetOnboardingBranch();
-    resetOnboardingConnections();
-    // The kit is saved, so the flag is cleared and this resolves to whatever
-    // step the owner was actually on before the restart.
-    onboardingRoute = pendingOnboardingRoute() ?? onboardingRouteForBuild("passwords");
+    recoveryWordCheckState = initialRecoveryWordCheckState();
+    recoveryWordCheckEpoch += 1;
+    onboardingRoute = "recovery-check";
     render();
   });
   document.querySelector<HTMLButtonElement>("#recovery-no-secret-continue")?.addEventListener("click", () => {
@@ -11969,6 +12034,7 @@ type OslHubUiTestStatePatch = {
   oslChatDraft?: string;
   recoveryBundle?: { userId: string; identityPhrase: string | null; passwordPhrase: string } | null;
   recoveryKitUnsaved?: boolean;
+  recoveryCaptureProven?: boolean;
 };
 
 function testHubPerson(person: Partial<HubPerson> & { personId: string }): HubPerson {
@@ -12092,6 +12158,14 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   nativeCatalogRefusal = null;
   protectionPreset = patch.protectionPreset ?? loadProtectionPreset();
   inboxFilter = patch.inboxFilter ?? "all";
+  recoveryBundle = patch.recoveryBundle ?? null;
+  recoverySavedAcknowledged = false;
+  recoveryNoSecretAcknowledged = false;
+  recoveryShownWithoutProtection = false;
+  recoveryWordCheckState = initialRecoveryWordCheckState();
+  recoveryWordCheckEpoch += 1;
+  recoveryCaptureGate.invalidate();
+  if (patch.recoveryCaptureProven) recoveryCaptureGate.accept(recoveryCaptureGate.checkpoint());
   resetAccountRecovery();
   recoveryBundle = patch.recoveryBundle ?? null;
   recoverySavedAcknowledged = false;
@@ -12675,6 +12749,19 @@ export const __oslHubUiTest = {
   },
   cleanDeviceRestoreSnapshot(): CleanDeviceRestoreState {
     return { ...cleanDeviceRestoreState };
+  },
+  recoveryKitSnapshot(): {
+    onboardingRoute: OnboardingRoute;
+    bundle: typeof recoveryBundle;
+    savedAcknowledged: boolean;
+    wordCheck: RecoveryWordCheckState;
+  } {
+    return {
+      onboardingRoute,
+      bundle: recoveryBundle ? { ...recoveryBundle } : null,
+      savedAcknowledged: recoverySavedAcknowledged,
+      wordCheck: recoveryWordCheckState,
+    };
   },
   bindWorkspace(): void {
     bindWorkspace();

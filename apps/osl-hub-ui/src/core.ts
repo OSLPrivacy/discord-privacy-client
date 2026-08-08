@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { isTauriRuntime } from "./preferences";
+import type { RecoveryWordRetypeRequest, RecoveryWordRetypeResult } from "./recovery-word-check";
 
 export interface CoreReadiness {
   originalCoreLinked: boolean;
@@ -302,6 +303,33 @@ export async function resetHubMainPasswordAfterRecovery(
     recoveryPhrase: normalizedPhrase,
     newPassword,
   }));
+}
+
+export async function checkHubRecoveryWordRetype(
+  request: RecoveryWordRetypeRequest,
+): Promise<RecoveryWordRetypeResult> {
+  if (!isTauriRuntime() || !isRecoveryPhrase(request.recoveryPhrase)) {
+    throw new Error("recovery word check unavailable");
+  }
+  return parseRecoveryWordRetypeResult(
+    await invoke<unknown>("check_hub_recovery_word_retype", { request }),
+  );
+}
+
+export function parseRecoveryWordRetypeResult(raw: unknown): RecoveryWordRetypeResult {
+  if (!isExactRecord(raw, ["prompts", "checkedCount", "passed", "failedPositions"])
+    || !Array.isArray(raw.prompts)
+    || !raw.prompts.every((prompt) => isExactRecord(prompt, ["position"])
+      && Number.isSafeInteger(prompt.position)
+      && (prompt.position as number) > 0)
+    || !Number.isSafeInteger(raw.checkedCount)
+    || (raw.checkedCount as number) < 0
+    || typeof raw.passed !== "boolean"
+    || !Array.isArray(raw.failedPositions)
+    || !raw.failedPositions.every((position) => Number.isSafeInteger(position) && position > 0)) {
+    throw new Error("invalid recovery word check response");
+  }
+  return raw as unknown as RecoveryWordRetypeResult;
 }
 
 export function isActivationCode(value: string): boolean {
