@@ -170,6 +170,7 @@ import { browserLogo, serviceLogo, providerLogo } from "./logos";
 import { appearanceColourRowsMarkup, bindAppearanceColourRows, loadAppearanceColours } from "./appearance-colours";
 import { appearancePreviewMarkup, updateAppearancePreview, type AppearancePreviewService } from "./appearance-preview";
 import { attachSettingsProfileBlock, restoreSettingsProfile, settingsProfileBlockMarkup } from "./settings-profile-block";
+import { resetSettingsScreen } from "./settings-reset";
 import { activateLocalLoopbackContext, activateManualPeerContext, activateNativeManualPeerContext, activateOslChatContext, addOslChatReaction, addOslFriend, addOslFriendByUsername, answerHubChatApprovalSuggestion, backBurnReview, burnActiveHubContext, burnHubServiceAccount, captureProtectionEnforced, closeOslChatContext, copyHubFriendInvite, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubRevocationStatus, getHubServiceBurnReadiness, getOslUsernameStatus, isHubPlaintext, isNormalizedOslUsername, listHubIdentities, listHubPeople, listOslChatHistory, loadActiveContextSecurity, loadAppNotifications, loadBuildIntegrityStatus, loadFriendProfile, loadInstalledBuildChatWarningStatus, openOslChatText, openPeerProseText, peerIsVerified, prepareLocalProtectedText, prepareOslChatText, preparePeerProseText, recoverHubIdentitySlot, removeOslChatReaction, saveActiveContextSecurity, saveBurnReviewState, revokeActiveHubFriendScope, setActiveHubFriendPermission, setActiveHubFriendReach, setHubChatApprovalSuggestionChoice, setHubFriendNickname, setLocalProtectedSheetOpen, setNativeDiscordProtectedOverlayOpen, setNativeDiscordProtectedOverlayOpenForQa, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, viewHubRecoveryPhrase, type AppNotification, type BuildIntegrityStatus, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type InstalledBuildChatWarning, type LocalPrivacyScanResult, type ManualPeerContext, type PersistedLocalPrivacyScanResult } from "./adapters";
 import { blankLocalProtectedModel, isLocalTtlSeconds, loadOrCreateLocalConversationId, localProtectedSheetMarkup, validLocalChatLabel, type LocalProtectedPane, type LocalProtectedSheetModel } from "./local-protected-sheet";
 import { claimOslUsername, createHubPrivateContactLink, createOslFriendRequestByOslName, type HubPrivateContactLink } from "./adapters";
@@ -9684,7 +9685,18 @@ function bindWorkspace(): void {
     const spacing = button.dataset.lookSpacing;
     if (spacing === "compact" || spacing === "relaxed") previewLook({ ...lookState, spacing });
   }));
-  document.querySelector<HTMLButtonElement>("[data-look-reset]")?.addEventListener("click", () => previewLook(defaultLookState));
+  document.querySelector<HTMLButtonElement>("[data-look-reset]")?.addEventListener("click", (event) => {
+    const button = event.currentTarget as HTMLButtonElement;
+    previewLook(defaultLookState);
+    button.disabled = true;
+    void resetSettingsScreen("Look", (command, args) => invoke(command, args)).then(() => {
+      showToast("Look reset to defaults");
+      render();
+    }).catch(() => {
+      button.disabled = false;
+      showToast("Look reset did not complete");
+    });
+  });
   document.querySelector<HTMLButtonElement>("[data-look-save]")?.addEventListener("click", persistLook);
   document.querySelector("#service-guide-next")?.addEventListener("click", () => {
     if (serviceGuideStep !== null) setServiceGuideStep(nextServiceGuideStep(serviceGuideStep));
