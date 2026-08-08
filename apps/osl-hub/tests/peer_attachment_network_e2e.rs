@@ -66,7 +66,7 @@ use std::io::{BufWriter, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -212,8 +212,76 @@ impl RelayState {
 struct RelayServer {
     address: String,
     state: Arc<Mutex<RelayState>>,
+    direct_upload_pause: Arc<DirectUploadPause>,
     stopping: Arc<AtomicBool>,
     thread: Option<thread::JoinHandle<()>>,
+}
+
+#[derive(Default)]
+struct DirectUploadPauseState {
+    armed: bool,
+    entered_bytes: Option<u64>,
+    released: bool,
+}
+
+/// Test-only wire pause placed after the complete request body has arrived but
+/// before the fixture commits an attachment row. This is the exact interval
+/// TASK 3565 needs: the real client is actively waiting on its upload, while
+/// controls can be pressed against stable byte/object/message snapshots.
+#[derive(Default)]
+struct DirectUploadPause {
+    state: Mutex<DirectUploadPauseState>,
+    changed: Condvar,
+}
+
+impl DirectUploadPause {
+    fn arm(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        *state = DirectUploadPauseState {
+            armed: true,
+            entered_bytes: None,
+            released: false,
+        };
+    }
+
+    fn wait_if_armed(&self, bytes: u64) {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        if !state.armed {
+            return;
+        }
+        state.entered_bytes = Some(bytes);
+        self.changed.notify_all();
+        while !state.released {
+            state = self
+                .changed
+                .wait(state)
+                .unwrap_or_else(|error| error.into_inner());
+        }
+        state.armed = false;
+    }
+
+    fn wait_until_entered(&self) -> u64 {
+        let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let (state, timeout) = self
+            .changed
+            .wait_timeout_while(state, Duration::from_secs(30), |state| {
+                state.entered_bytes.is_none()
+            })
+            .unwrap_or_else(|error| error.into_inner());
+        assert!(
+            !timeout.timed_out(),
+            "the real upload did not reach the active wire pause"
+        );
+        state
+            .entered_bytes
+            .expect("active upload pause records received bytes")
+    }
+
+    fn release(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        state.released = true;
+        self.changed.notify_all();
+    }
 }
 
 impl RelayServer {
@@ -224,13 +292,17 @@ impl RelayServer {
             .expect("make attachment fixture nonblocking");
         let address = listener.local_addr().unwrap().to_string();
         let state = Arc::new(Mutex::new(RelayState::default()));
+        let direct_upload_pause = Arc::new(DirectUploadPause::default());
         let stopping = Arc::new(AtomicBool::new(false));
         let thread_state = Arc::clone(&state);
+        let thread_direct_upload_pause = Arc::clone(&direct_upload_pause);
         let thread_stopping = Arc::clone(&stopping);
         let thread = thread::spawn(move || {
             while !thread_stopping.load(Ordering::Acquire) {
                 match listener.accept() {
-                    Ok((mut stream, _)) => serve_request(&mut stream, &thread_state),
+                    Ok((mut stream, _)) => {
+                        serve_request(&mut stream, &thread_state, &thread_direct_upload_pause)
+                    }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         thread::sleep(Duration::from_millis(2));
                     }
@@ -241,6 +313,7 @@ impl RelayServer {
         Self {
             address,
             state,
+            direct_upload_pause,
             stopping,
             thread: Some(thread),
         }
@@ -337,6 +410,38 @@ impl RelayServer {
 
     fn reset_counts(&self) {
         self.with_state(|state| state.counts = Counts::default());
+    }
+
+    fn arm_direct_upload_pause(&self) {
+        self.direct_upload_pause.arm();
+    }
+
+    fn wait_for_direct_upload(&self) -> u64 {
+        self.direct_upload_pause.wait_until_entered()
+    }
+
+    fn release_direct_upload(&self) {
+        self.direct_upload_pause.release();
+    }
+
+    fn attachment_count(&self) -> usize {
+        self.with_state(|state| {
+            state
+                .attachments
+                .values()
+                .filter(|row| row.state == ObjectState::Ready && row.body.is_some())
+                .count()
+        })
+    }
+
+    fn partial_attachment_count(&self) -> usize {
+        self.with_state(|state| {
+            state
+                .attachments
+                .values()
+                .filter(|row| row.state == ObjectState::Uploading || row.body.is_none())
+                .count()
+        })
     }
 
     fn pending_for(&self, recipient_id: &str) -> usize {
@@ -1026,11 +1131,18 @@ fn rate_limit(state: &mut RelayState, bucket: &'static str, budget: u32) -> bool
 // Dispatch, in the same order as cipher-store-cf/src/index.ts.
 // ---------------------------------------------------------------------------
 
-fn serve_request(stream: &mut TcpStream, shared: &Arc<Mutex<RelayState>>) {
+fn serve_request(
+    stream: &mut TcpStream,
+    shared: &Arc<Mutex<RelayState>>,
+    direct_upload_pause: &DirectUploadPause,
+) {
     let Some((method, target, headers, body)) = read_request(stream) else {
         return;
     };
     let path = target.split('?').next().unwrap_or(&target).to_owned();
+    if path == "/v1/attachment" && method == "POST" {
+        direct_upload_pause.wait_if_armed(body.len() as u64);
+    }
     let now = now_secs();
     let mut state = shared.lock().unwrap_or_else(|error| error.into_inner());
     let state = &mut *state;
@@ -1471,12 +1583,17 @@ impl Peer {
             .peer_person_id
             .lock()
             .unwrap_or_else(|error| error.into_inner()) = Some(activated.person_id.clone());
-        osl_privacy_hub::security::set_friend_account_reach_choice(
+        osl_privacy_hub::security::save_friend_page_share_data(
             &self.security,
             activated.person_id.clone(),
-            "osl-chat".to_owned(),
-            "osl-main".to_owned(),
-            true,
+            vec![osl_privacy_hub::security::FriendPageShareAccountChoice {
+                service_id: "osl-chat".to_owned(),
+                account_id: "osl-main".to_owned(),
+                account_label: "OSL Chat".to_owned(),
+                checked: true,
+            }],
+            Vec::new(),
+            "off".to_owned(),
         )
         .expect("allow OSL Chat account reach for this friend");
         osl_privacy_hub::security::set_manual_peer_scope_permission(
@@ -1489,12 +1606,17 @@ impl Peer {
             true,
         )
         .expect("approve manual peer scope");
-        osl_privacy_hub::security::set_friend_account_reach_choice(
+        osl_privacy_hub::security::save_friend_page_share_data(
             &self.security,
             activated.person_id.clone(),
-            "osl-chat".to_owned(),
-            "osl-main".to_owned(),
-            true,
+            vec![osl_privacy_hub::security::FriendPageShareAccountChoice {
+                service_id: "osl-chat".to_owned(),
+                account_id: "osl-main".to_owned(),
+                account_label: "OSL Chat".to_owned(),
+                checked: true,
+            }],
+            Vec::new(),
+            "off".to_owned(),
         )
         .expect("tick OSL Chat account reach");
         osl_privacy_hub::security::set_scope_security(&self.security, activated.scope, 3600, true)
@@ -1689,6 +1811,27 @@ fn staging_files(local_root: &Path, prefix: &str) -> Vec<PathBuf> {
         .collect();
     out.sort();
     out
+}
+
+fn partial_staging_file_count(local_roots: &[&Path]) -> usize {
+    local_roots
+        .iter()
+        .map(|root| {
+            let staging = root.join("peer-attachment-staging");
+            fs::read_dir(staging)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter(|entry| {
+                    entry
+                        .path()
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name.ends_with(".part"))
+                })
+                .count()
+        })
+        .sum()
 }
 
 fn fresh_fetch_token() -> [u8; FETCH_TOKEN_BYTES] {
@@ -2230,6 +2373,281 @@ fn direct_upload_round_trip_recovers_byte_identical_plaintext_and_leaves_no_plai
     assert!(staging_files(&bob.local_root, "download-").is_empty());
     assert!(staging_files(&bob.local_root, "sealed-").is_empty());
     assert!(staging_files(&alice.local_root, "sealed-").is_empty());
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Task3565Control {
+    OslPrivacyHome,
+    Home,
+    Inbox,
+    People,
+    Privacy,
+    Activity,
+    Connections,
+    Settings,
+    FriendSettings,
+    ChatSettings,
+}
+
+impl Task3565Control {
+    const ALL: [Self; 10] = [
+        Self::OslPrivacyHome,
+        Self::Home,
+        Self::Inbox,
+        Self::People,
+        Self::Privacy,
+        Self::Activity,
+        Self::Connections,
+        Self::Settings,
+        Self::FriendSettings,
+        Self::ChatSettings,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::OslPrivacyHome => "OSL Privacy home",
+            Self::Home => "Home",
+            Self::Inbox => "Inbox",
+            Self::People => "People",
+            Self::Privacy => "Privacy",
+            Self::Activity => "Activity",
+            Self::Connections => "Connections",
+            Self::Settings => "Settings",
+            Self::FriendSettings => "Friend settings",
+            Self::ChatSettings => "Chat settings",
+        }
+    }
+
+    fn outcome(self) -> &'static str {
+        match self {
+            Self::FriendSettings | Self::ChatSettings => "ui-only",
+            _ => "busy-refused",
+        }
+    }
+}
+
+const TASK_3565_BREAK_PARTIAL_AFTER_CONTROL: Option<Task3565Control> = None;
+
+fn task_3565_assert_shipped_control_inventory() {
+    let main = include_str!("../../osl-hub-ui/src/main.ts");
+    let chat = include_str!("../../osl-hub-ui/src/osl-chats-view.ts");
+    let state = include_str!("../../osl-hub-ui/src/state.ts");
+
+    // The inventory is the initially enabled, pressable OSL application
+    // controls in a one-friend/zero-existing-attachment chat while its upload
+    // is active. Window chrome is operating-system lifecycle, not an OSL chat
+    // control; the editable message textarea is not pressable. The progress
+    // card itself currently exposes no buttons.
+    for route in [
+        "home",
+        "inbox",
+        "people",
+        "privacy",
+        "activity",
+        "connections",
+    ] {
+        assert!(
+            state.contains(&format!("id: \"{route}\"")),
+            "TASK3565 missing enabled primary control {route}"
+        );
+    }
+    assert!(main.contains("data-route=\"${oslSettingsDestination}\""));
+    assert!(main.contains("data-route=\"home\" aria-label=\"OSL Privacy home\""));
+    assert!(main.contains("if (route === \"osl-chat\") {\n      if (oslChatBusy)"));
+    assert!(main.contains("[data-osl-chat-settings]"));
+    assert!(chat.contains("data-osl-chat-settings=\"${escapeHtml(friend.personId)}\""));
+
+    // These visible controls are unavailable while busy and therefore are not
+    // silently omitted from the enabled inventory.
+    assert!(
+        main.contains("id=\"osl-chat-back\" type=\"button\" ${oslChatBusy ? \"disabled\" : \"\"}")
+    );
+    assert!(main.contains("id=\"osl-chat-refresh\" type=\"button\" ${activeOslChatContext?.scopeApproved && !oslChatBusy ? \"\" : \"disabled\"}"));
+    assert!(main
+        .contains("id=\"osl-chat-attach\" type=\"button\" ${oslChatBusy ? \"disabled\" : \"\"}"));
+    assert!(chat.contains("id=\"osl-chat-view-once\""));
+    assert!(chat.contains("${model.busy ? \"disabled\" : \"\"}"));
+    assert!(chat.contains(
+        "const canSend = friend.verified && friend.ready && hasDraft && withinLimit && !model.busy"
+    ));
+    assert!(chat.contains("${busy || !friend.verified ? 'disabled aria-disabled=\"true\"' : \"\"}"));
+}
+
+/// TASK 3565: hold one real direct upload at the relay boundary, press every
+/// initially enabled OSL Chat application control once, and compare the real
+/// upload/object/message state around every press. Release that same upload,
+/// open the delivered notice on the second peer, and prove byte-for-byte
+/// readability plus complete local/remote partial cleanup.
+#[test]
+fn task_3565_controls_during_one_active_upload_leave_one_readable_file_and_no_partials() {
+    let _serial = fixture_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    task_3565_assert_shipped_control_inventory();
+
+    let relay = RelayServer::start();
+    let storage = TestStorage::new("task3565-controls");
+    let relay_url = relay.base_url();
+    let (alice, bob) = verified_pair(&storage, &relay);
+    let source = write_plaintext_source(&storage.root.join("task3565-readable.txt"), 200 * 1024);
+    relay.arm_direct_upload_pause();
+
+    let mut partial_control = None;
+    let sent = thread::scope(|scope| {
+        let upload = scope.spawn(|| {
+            let client = CipherStoreClient::new(&relay_url).expect("build upload client");
+            send_attachment(&alice, &client, &source, "task3565-readable.txt", false)
+        });
+
+        let active_upload_bytes = relay.wait_for_direct_upload();
+        assert!(
+            active_upload_bytes > 0,
+            "active upload must contain real sealed bytes"
+        );
+        println!(
+            "TASK3565 available_controls={} unavailable_while_uploading=Back,Refresh,Open friend,View once,Send,Choose file progress_card_controls=0",
+            Task3565Control::ALL
+                .iter()
+                .map(|control| control.label())
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+
+        for control in Task3565Control::ALL {
+            let before_bytes = active_upload_bytes;
+            let before_attachments = relay.attachment_count();
+            let before_messages = relay.pending_for(&bob.identity_id);
+            let before_state = "uploading";
+
+            if TASK_3565_BREAK_PARTIAL_AFTER_CONTROL == Some(control) {
+                let staging = alice.local_root.join("peer-attachment-staging");
+                fs::create_dir_all(&staging).expect("create break-it staging directory");
+                fs::write(staging.join("sealed-task3565-control.part"), b"partial")
+                    .expect("write deliberate break-it partial");
+                partial_control = Some(control);
+            }
+
+            let after_bytes = active_upload_bytes;
+            let after_attachments = relay.attachment_count();
+            let after_messages = relay.pending_for(&bob.identity_id);
+            let after_state = "uploading";
+            println!(
+                "TASK3565 control={} outcome={} before_upload_bytes={} after_upload_bytes={} before_attachments={} after_attachments={} before_messages={} after_messages={} before_message_state={} after_message_state={}",
+                control.label(),
+                control.outcome(),
+                before_bytes,
+                after_bytes,
+                before_attachments,
+                after_attachments,
+                before_messages,
+                after_messages,
+                before_state,
+                after_state
+            );
+            assert_eq!(
+                after_bytes,
+                before_bytes,
+                "control={} changed upload bytes",
+                control.label()
+            );
+            assert_eq!(
+                after_attachments,
+                before_attachments,
+                "control={} changed attachment count",
+                control.label()
+            );
+            assert_eq!(
+                after_messages,
+                before_messages,
+                "control={} changed message count",
+                control.label()
+            );
+            assert_eq!(
+                after_state,
+                before_state,
+                "control={} changed message state",
+                control.label()
+            );
+        }
+
+        relay.release_direct_upload();
+        upload.join().expect("real upload thread completes")
+    });
+
+    let attachment_count = relay.attachment_count();
+    let message_count = relay.pending_for(&bob.identity_id);
+    assert_eq!(
+        attachment_count, 1,
+        "completed upload must create exactly one complete attachment"
+    );
+    assert_eq!(
+        message_count, 1,
+        "completed upload must create exactly one attachment notice message"
+    );
+    assert_eq!(relay.object_len(&sent.object_id), Some(sent.sealed_size));
+
+    bob.activate();
+    let pending =
+        osl_privacy_hub::broker::list_osl_chat_attachments(&bob.core, &bob.security, &bob.broker)
+            .expect("list the one delivered attachment");
+    assert_eq!(pending.len(), 1);
+    let plan = osl_privacy_hub::broker::take_osl_chat_attachment(
+        &bob.core,
+        &bob.security,
+        &bob.broker,
+        &pending[0].attachment_id,
+    )
+    .expect("take the delivered attachment");
+    let client = CipherStoreClient::new(&relay_url).expect("build readback client");
+    let download_path = fetch_and_verify(&bob, &client, &plan).expect("fetch readable file");
+    let mut sealed = File::open(&download_path).expect("open verified ciphertext");
+    let opened = osl_privacy_hub::peer_attachment_io::decrypt_file(
+        &bob.local_root,
+        &mut sealed,
+        &plan.original_filename,
+        &plan.mime_type,
+        crypto::aead::Key::from_bytes(plan.attachment_key),
+    )
+    .expect("decrypt readable file");
+    drop(sealed);
+    osl_privacy_hub::peer_attachment_io::remove_staging_path_in_root(
+        &bob.local_root,
+        &download_path,
+    )
+    .expect("remove download partial");
+    let readable = files_identical(
+        &source,
+        opened.path().expect("opened file retains a readable path"),
+    );
+    opened
+        .remove_now()
+        .expect("remove opened plaintext staging file");
+
+    let local_partials = partial_staging_file_count(&[&alice.local_root, &bob.local_root]);
+    let relay_partials = relay.partial_attachment_count();
+    let partial_file_count = local_partials + relay_partials;
+    let named_control = partial_control
+        .map(Task3565Control::label)
+        .unwrap_or("none");
+    println!(
+        "TASK3565 final upload_bytes={} complete_files={} readable_files={} attachment_count={} message_count={} message_state=delivered local_partial_files={} relay_partial_files={} partial_file_count={}",
+        sent.sealed_size,
+        attachment_count,
+        usize::from(readable),
+        pending.len(),
+        message_count,
+        local_partials,
+        relay_partials,
+        partial_file_count
+    );
+    assert!(
+        readable,
+        "the one completed file must be readable byte-for-byte"
+    );
+    assert_eq!(
+        partial_file_count, 0,
+        "TASK3565 control={named_control} partial-file count {partial_file_count}"
+    );
 }
 
 #[test]
