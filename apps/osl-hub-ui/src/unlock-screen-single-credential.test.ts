@@ -17,6 +17,9 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { loadFriendProfile, listHubPeople } from "./adapters";
+import { loadLinkedServices } from "./services";
+
 
 // D-251: every `it()` below deliberately re-loads `./main` with its own
 // selectors / storage / stubs, so the import CANNOT be hoisted into a single
@@ -108,6 +111,7 @@ interface UnlockHarness {
   submitButton: FakeElement;
   forgotButton: FakeElement;
   backButton: FakeElement;
+  closeDecoyButton: FakeElement;
   error: FakeElement;
   nodes: Map<string, FakeElement>;
   allNodes: FakeElement[];
@@ -132,6 +136,8 @@ function buildUnlockHarness(): UnlockHarness {
   const backButton = fakeElement("BUTTON");
   backButton.dataset.onboarding = "welcome";
   backButton.textContent = "Back";
+  const closeDecoyButton = fakeElement("BUTTON", "close-decoy");
+  closeDecoyButton.textContent = "Close";
   const error = fakeElement("P", "password-error");
 
   const nodes = new Map<string, FakeElement>([
@@ -139,9 +145,10 @@ function buildUnlockHarness(): UnlockHarness {
     ["#identity-password", password],
     ["#identity-password-submit", submitButton],
     ["#password-error", error],
+    ["#close-decoy", closeDecoyButton],
   ]);
 
-  const allNodes = [form, password, eyeButton, submitButton, forgotButton, backButton, error];
+  const allNodes = [form, password, eyeButton, submitButton, forgotButton, backButton, closeDecoyButton, error];
   return {
     form,
     password,
@@ -149,6 +156,7 @@ function buildUnlockHarness(): UnlockHarness {
     submitButton,
     forgotButton,
     backButton,
+    closeDecoyButton,
     error,
     nodes,
     allNodes,
@@ -636,6 +644,102 @@ describe("D80 unlock screen renders one credential input", () => {
 
       expect(__oslHubUiTest.snapshot().onboardingRoute).toBe(expectedRoute);
     }
+  }, 30_000);
+
+  it("TASK 0352 drives the decoy workspace controls and refuses every named real-data request", async () => {
+    const exactStealthPassword = "stealth-0307-password";
+    const nearMatchStealthPassword = "stealth-0307-passwore";
+    const harness = buildUnlockHarness();
+
+    const refusedCommands: string[] = [];
+    mocks.invoke.mockImplementation(async (command: string, args?: unknown) => {
+      if (command === "unlock_hub_password_gate") {
+        const entered = (args as { password?: unknown } | undefined)?.password;
+        return gateResult(entered === exactStealthPassword ? "decoy" : "wrong");
+      }
+      if (["list_linked_services", "list_hub_people", "export_hub_friend_code"].includes(command)) {
+        refusedCommands.push(command);
+        throw new Error(`OSL: session is locked; refused ${command}`);
+      }
+      throw new Error(`unexpected TASK 0352 command: ${command}`);
+    });
+
+    const { __oslHubUiTest } = await loadUi(harness);
+    __oslHubUiTest.reset({
+      route: "onboarding",
+      onboardingRoute: "unlock",
+      coreReady: false,
+      bootstrapStatus: "passwordRequired",
+    });
+    __oslHubUiTest.bindUnlockForm();
+
+    let realDataResultCount = 0;
+    const initialMarkup = __oslHubUiTest.renderOnboardingRoute("unlock");
+    expect(initialMarkup, "HAZEL-0352 decoy-control: locked page was not Unlock").toContain(">Unlock<");
+
+    harness.password.value = nearMatchStealthPassword;
+    harness.submitButton.disabled = false;
+    await harness.submit();
+    const nearMatch = __oslHubUiTest.snapshot();
+    expect(nearMatch, "HAZEL-0352 decoy-control: near-match changed the locked page").toMatchObject({
+      route: "onboarding",
+      onboardingRoute: "unlock",
+    });
+    expect(realDataResultCount, "HAZEL-0352 decoy-control: near-match returned real data").toBe(0);
+    expect(refusedCommands, "HAZEL-0352 decoy-control: near-match reached a real-data command").toEqual([]);
+
+    harness.password.value = exactStealthPassword;
+    harness.submitButton.disabled = false;
+    await harness.submit();
+    const decoy = __oslHubUiTest.snapshot();
+    const decoyMarkup = __oslHubUiTest.renderOnboardingRoute("decoy");
+    expect(decoy, "HAZEL-0352 decoy-control: exact stealth password did not open Workspace").toMatchObject({
+      route: "onboarding",
+      onboardingRoute: "decoy",
+    });
+    expect(decoyMarkup, "HAZEL-0352 decoy-control: named Workspace was absent").toContain(">Workspace<");
+    expect(decoyMarkup, "HAZEL-0352 decoy-control: Close was absent").toContain(">Close<");
+
+    const realDataRequests = [
+      ["list_linked_services", () => loadLinkedServices()],
+      ["list_hub_people", () => listHubPeople()],
+      ["export_hub_friend_code", () => loadFriendProfile()],
+    ] as const;
+    const requestResults: string[] = [];
+    for (const [name, request] of realDataRequests) {
+      let result: unknown = null;
+      try {
+        result = await request();
+      } catch {
+        result = null;
+      }
+      const returnedRealData = result !== null
+        && result !== undefined
+        && (!Array.isArray(result) || result.length > 0);
+      if (returnedRealData) realDataResultCount += 1;
+      requestResults.push(`${name}:${returnedRealData ? "REAL-DATA" : "refused/no-result"}`);
+    }
+    expect(refusedCommands, "HAZEL-0352 decoy-control: a real-data request was not refused by name").toEqual(
+      realDataRequests.map(([name]) => name),
+    );
+    expect(realDataResultCount, "HAZEL-0352 decoy-control: decoy returned real workspace data").toBe(0);
+
+    await harness.closeDecoyButton.click();
+    const afterClose = __oslHubUiTest.snapshot();
+    expect(afterClose, "HAZEL-0352 decoy-control: Close did not exit to Unlock").toMatchObject({
+      route: "onboarding",
+      onboardingRoute: "unlock",
+    });
+    const afterCloseMarkup = __oslHubUiTest.renderOnboardingRoute(afterClose.onboardingRoute);
+    expect(afterCloseMarkup, "HAZEL-0352 decoy-control: Close did not render Unlock").toContain(">Unlock<");
+    expect(realDataResultCount, "HAZEL-0352 decoy-control: Close changed the real-data count").toBe(0);
+
+    console.info(
+      `TASK0352 initial_page=Unlock initial_real_data_count=0 exact_password=${exactStealthPassword} `
+      + `exact_result=Workspace close_calls=1 close_next_page=${afterClose.onboardingRoute} `
+      + `near_match=${nearMatchStealthPassword} near_match_result=refused near_match_page=${nearMatch.onboardingRoute} `
+      + `near_match_real_data_count=0 requests=${requestResults.join(",")} final_real_data_count=${realDataResultCount}`,
+    );
   }, 30_000);
 
   it("announces nothing after a burn, a duress or a stealth unlock", async () => {

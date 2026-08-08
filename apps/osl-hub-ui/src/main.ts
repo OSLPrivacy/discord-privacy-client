@@ -4144,7 +4144,12 @@ function bindOnboarding(): void {
   document.querySelector("#continue-mullvad")?.addEventListener("click", () => { continueMullvadSetup(); });
   document.querySelector("#install-mullvad")?.addEventListener("click", () => void openMullvadInstallPage());
   document.querySelector("#found-session-mullvad")?.addEventListener("click", () => { confirmMullvadFoundSession(); });
-  document.querySelector("#close-decoy")?.addEventListener("click", () => void getCurrentWindow().close().catch(() => undefined));
+  document.querySelector("#open-mullvad")?.addEventListener("click", () => void runMullvadSetupAction("open"));
+  document.querySelector("#close-decoy")?.addEventListener("click", () => {
+    onboardingRoute = "unlock";
+    render();
+    void getCurrentWindow()?.close().catch(() => undefined);
+  });
 }
 
 function resetAccountRecovery(): void {
