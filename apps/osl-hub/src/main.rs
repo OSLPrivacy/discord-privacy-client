@@ -36,6 +36,10 @@ use osl_privacy_hub::core_bridge::{
 use osl_privacy_hub::deadman;
 use osl_privacy_hub::discord_carrier_geometry::CarrierDecision;
 use osl_privacy_hub::entitlement_refresh;
+#[cfg(windows)]
+use osl_privacy_hub::follow_active_app_window::{
+    FollowActiveAppWindowMover, WindowPosition, WindowRect,
+};
 use osl_privacy_hub::identity_binding_verifier::{
     AccountRef, BindingScope, IdentityBindingVerifier, PinnedOwner,
 };
@@ -678,6 +682,19 @@ fn set_tor_preference(
 }
 
 #[tauri::command]
+fn get_follow_active_app_choice(core: State<'_, HubCoreState>) -> Result<String, String> {
+    ipc::commands::cmd_osl_get_follow_active_app_choice(&core.osl)
+}
+
+#[tauri::command]
+fn set_follow_active_app_choice(
+    core: State<'_, HubCoreState>,
+    value: String,
+) -> Result<String, String> {
+    ipc::commands::cmd_osl_set_follow_active_app_choice(&core.osl, &value, None)
+}
+
+#[tauri::command]
 async fn scan_local_privacy(
     messages: Vec<LocalMessageCandidate>,
 ) -> Result<LocalPrivacyScanResult, String> {
@@ -1192,6 +1209,74 @@ fn main_window_is_live(window: &tauri::WebviewWindow) -> bool {
 fn main_window_is_live(_window: &tauri::WebviewWindow) -> bool {
     true
 }
+
+/// Move only OSL's own window beside a newly foregrounded application when the
+/// owner has explicitly enabled following. The foreground application is
+/// observed, never focused, resized, or moved.
+#[cfg(windows)]
+fn spawn_follow_active_app_window_watcher(app: tauri::AppHandle) {
+    use ipc::app_preferences::FollowActiveAppChoice;
+    use windows_sys::Win32::Foundation::RECT;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowRect};
+
+    std::thread::spawn(move || {
+        let mut mover = FollowActiveAppWindowMover::default();
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            let choice = app
+                .state::<HubCoreState>()
+                .osl
+                .app_preferences
+                .lock()
+                .expect("app_preferences mutex poisoned")
+                .follow_active_app_choice;
+            if choice == FollowActiveAppChoice::Off {
+                mover.disable();
+                continue;
+            }
+
+            let Some(osl_window) = app.get_webview_window("main") else {
+                continue;
+            };
+            let Ok(osl_handle) = osl_window.hwnd() else {
+                continue;
+            };
+            let osl_hwnd = osl_handle.0 as windows_sys::Win32::Foundation::HWND;
+            let front_window = unsafe { GetForegroundWindow() };
+            if front_window.is_null() || front_window == osl_hwnd {
+                continue;
+            }
+
+            let mut front_bounds = RECT::default();
+            if unsafe { GetWindowRect(front_window, &mut front_bounds) } == 0 {
+                continue;
+            }
+            let Ok(current) = osl_window.outer_position() else {
+                continue;
+            };
+            let target = mover.observe(
+                choice,
+                front_window as isize,
+                WindowRect::new(
+                    front_bounds.left,
+                    front_bounds.top,
+                    front_bounds.right,
+                    front_bounds.bottom,
+                ),
+                WindowPosition {
+                    x: current.x,
+                    y: current.y,
+                },
+            );
+            if let Some(target) = target {
+                let _ = osl_window.set_position(tauri::PhysicalPosition::new(target.x, target.y));
+            }
+        }
+    });
+}
+
+#[cfg(not(windows))]
+fn spawn_follow_active_app_window_watcher(_app: tauri::AppHandle) {}
 
 #[tauri::command]
 async fn list_linked_services(
@@ -10567,6 +10652,7 @@ fn main() {
             let _ = apply_saved_message_runtime_preferences(&core, &preferences);
         }
         startup_breadcrumb("setup_step_24a_message_runtime_preferences_applied"); // STARTUP-TRACE
+        spawn_follow_active_app_window_watcher(app.handle().clone());
         entitlement_refresh::spawn(app.handle().clone());
         #[cfg(feature = "whatsapp-qa-shell")]
         {
