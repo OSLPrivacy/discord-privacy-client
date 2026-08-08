@@ -274,6 +274,7 @@ import { removeEverythingScreenMarkup } from "./remove-everything-screen";
 import { burnRevocationReceipt, type BurnRevocationReceipt } from "./burn-revocation-receipt";
 import { senderReceiptStatus } from "./receipt-status";
 import { attachmentProgressMarkup, parseAttachmentProgressEvent, type AttachmentProgressEvent } from "./attachment-progress";
+import { withTorKeyserverPolling } from "./tor-breakage-honesty";
 import { attachOslChatComposerDragAndDrop, attachmentTrayMarkup, createOslChatAttachmentTray, type OslChatAttachmentTrayState } from "./chat-attachment-drop";
 import { createAttachmentTrayActions } from "./attachment-tray-actions";
 import { attachmentTrayScreenMarkup } from "./attachment-tray-screen";
@@ -6030,7 +6031,7 @@ function oslChatContent(): string {
     ? `<button class="button compact" id="osl-chat-attach" type="button" ${oslChatBusy ? "disabled" : ""}>Choose file</button>`
     : `<span class="quiet-note">Pro is required to make an attachment.</span>`;
   const attachments = activeOslChatContext?.scopeApproved
-    ? `<section class="osl-chat-attachments" aria-label="Encrypted attachments"><header><strong>Attachments</strong>${attachmentCreation}</header>${pro ? [...attachmentProgressByContext.values()].map(attachmentProgressMarkup).join("") : ""}${oslChatAttachments.length ? oslChatAttachments.map((item) => `<button class="setting-line" data-osl-chat-attachment="${escapeHtml(item.attachmentId)}" type="button"><span><strong>${escapeHtml(item.originalFilename)}</strong><small>${item.viewOnce ? "View once · " : ""}${item.plaintextSize.toLocaleString("en-US")} bytes</small></span>${statusTag("Open")}</button>`).join("") : `<p>No pending attachments.</p>`}<small>Opening a received view-once item is free. Images open in OSL's capture-resistant viewer. Other supported files open temporarily in their Windows viewer, which may allow capture.</small></section>`
+    ? `<section class="osl-chat-attachments" aria-label="Encrypted attachments"><header><strong>Attachments</strong>${attachmentCreation}</header>${pro ? [...attachmentProgressByContext.values()].map((event) => attachmentProgressMarkup(event, torOnboarding.choice)).join("") : ""}${oslChatAttachments.length ? oslChatAttachments.map((item) => `<button class="setting-line" data-osl-chat-attachment="${escapeHtml(item.attachmentId)}" type="button"><span><strong>${escapeHtml(item.originalFilename)}</strong><small>${item.viewOnce ? "View once · " : ""}${item.plaintextSize.toLocaleString("en-US")} bytes</small></span>${statusTag("Open")}</button>`).join("") : `<p>No pending attachments.</p>`}<small>Opening a received view-once item is free. Images open in OSL's capture-resistant viewer. Other supported files open temporarily in their Windows viewer, which may allow capture.</small></section>`
     : "";
   const droppedFiles = oslChatDropTray.attachments.length
     ? attachmentTrayMarkup(oslChatDropTray)
@@ -10852,7 +10853,13 @@ async function submitFriendCode(event: SubmitEvent): Promise<void> {
   }
   if (button) button.disabled = true;
   if (status) status.textContent = username ? "Resolving username…" : "Saving request locally…";
-  const resolved = username ? await addOslFriendByUsername(username, nicknameInput?.value ?? "") : null;
+  const resolved = username
+    ? await withTorKeyserverPolling(
+      () => addOslFriendByUsername(username, nicknameInput?.value ?? ""),
+      torOnboarding.choice,
+      (message) => { if (status) status.textContent = message ?? ""; },
+    )
+    : null;
   const outcome = username
     ? (resolved ? { added: true, reason: null } : { added: false, reason: "username lookup was refused" })
     : await addOslFriend(code, nicknameInput?.value ?? "");

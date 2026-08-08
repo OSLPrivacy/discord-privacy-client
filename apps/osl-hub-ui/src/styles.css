@@ -17264,3 +17264,15 @@ code {
 .osl-role-ability-note { grid-column: 1 / -1; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
 .osl-role-ability-reason { grid-column: 1 / -1; margin: 0; font-size: 12px; line-height: 1.5; }
 .osl-role-ability-detail { grid-column: 1 / -1; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+/* Slow Tor transfers stay visibly active and report exact byte progress. */
+.attachment-progress__tor {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 12px;
+  margin: 0;
+  color: var(--muted);
+  font-size: .8125rem;
+}
+
+.attachment-progress__tor strong { color: var(--warn); }
