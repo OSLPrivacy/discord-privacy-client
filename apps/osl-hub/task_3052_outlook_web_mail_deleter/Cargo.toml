@@ -1,0 +1,29 @@
+[package]
+name = "task-3052-outlook-web-mail-deleter"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# A standalone per-task command crate, the pattern `task_3406_place_text/` set
+# and `task_3045_shared_mail_deleter/` followed. It copies nothing:
+# `src/main.rs` compiles `../src/outlook_web_mail_deleter.rs` (this task),
+# `../src/shared_mail_deleter.rs` (gate 3045) and `../src/mail_owner_check.rs`
+# (gate 3044) straight out of `apps/osl-hub/src/`, by path.
+#
+# It exists because the `osl-hub` lib does not build in this worktree, for two
+# reasons that both predate this task:
+#   * `src/services.rs` does not parse -- "this file contains an unclosed
+#     delimiter", and it declares `MailboxFolderCandidate`, `MailboxReaderSnapshot`
+#     and `read_shared_mailbox_messages` twice over;
+#   * `src/website_driver.rs` does not parse either -- "unterminated character
+#     literal" at line 1058 -- which takes `src/service_connections.rs` with it.
+# Building the lib at all additionally needs `libclang` for `llama-cpp-sys-2`,
+# which is not installed here.
+#
+# That is why this task's Outlook web fill-in depends only on the shared mail
+# deleter and the shared mail owner check, and reaches gate 3050's folder
+# vocabulary through `include_str!` drift checks rather than a `use`.
+[dependencies]
+serde = { version = "=1.0.228", features = ["derive"] }
+
+[workspace]
