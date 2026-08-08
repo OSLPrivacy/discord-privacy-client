@@ -80,14 +80,14 @@ export function whitelistSetupMarkup(draft: WhitelistSetupDraft): string {
   }).join("");
   const selectedCount = whitelistSetupSelectedCount(draft);
   return `<section class="whitelist-setup whitelisting-screen" aria-labelledby="route-heading">
-    <h1 id="route-heading" tabindex="-1">Whitelist setup</h1>
+    <h1 id="route-heading" tabindex="-1">Whitelisting setup</h1>
     <p class="compact-lead">Choose the conversations OSL may protect and what happens when a new conversation appears.</p>
     <label for="whitelist-setup-search">Search conversations</label>
     <input id="whitelist-setup-search" type="search" autocomplete="off" maxlength="64" value="${escapeHtml(draft.search)}"${draft.busy ? " disabled" : ""}/>
     <div class="whitelisting-bulk" role="group" aria-label="Change every conversation the search is showing"><button class="button compact" id="select-all-whitelist-setup" type="button"${draft.busy || matches.every((conversation) => selected.has(conversation.id)) ? " disabled" : ""}>Select all</button><button class="button compact" id="clear-all-whitelist-setup" type="button"${draft.busy || !matches.some((conversation) => selected.has(conversation.id)) ? " disabled" : ""}>Clear all</button></div>
-    <div class="whitelisting-list" data-whitelist-setup-list>${rows || `<p class="empty-state compact">No conversations match this search.</p>`}</div>
+    <div class="whitelisting-list" data-whitelist-setup-list aria-label="conversation ticks">${rows || `<p class="empty-state compact">No conversations match this search.</p>`}</div>
     <p id="whitelist-setup-count" role="status">${selectedCount} selected ${selectedCount === 1 ? "conversation" : "conversations"}</p>
-    <fieldset><legend>New conversations</legend><label><input type="radio" name="whitelist-setup-rule" value="deny"${draft.newlyFoundConversationRule === "deny" ? " checked" : ""}${draft.busy ? " disabled" : ""}/>Deny</label><label><input type="radio" name="whitelist-setup-rule" value="ask"${draft.newlyFoundConversationRule === "ask" ? " checked" : ""}${draft.busy ? " disabled" : ""}/>Ask</label></fieldset>
+    <fieldset aria-label="rule"><legend>New conversations</legend><label><input type="radio" name="whitelist-setup-rule" value="deny"${draft.newlyFoundConversationRule === "deny" ? " checked" : ""}${draft.busy ? " disabled" : ""}/>Deny</label><label><input type="radio" name="whitelist-setup-rule" value="ask"${draft.newlyFoundConversationRule === "ask" ? " checked" : ""}${draft.busy ? " disabled" : ""}/>Ask</label></fieldset>
     <p id="whitelist-setup-error" role="alert"></p>
     <div class="setup-footer onboarding-actions"><button class="button ghost" id="back-whitelist-setup" type="button"${draft.busy ? " disabled" : ""}>Back</button><button class="button primary" id="continue-whitelist-setup" type="button"${draft.busy ? " disabled" : ""}>${draft.busy ? "Saving…" : "Continue"}</button></div>
   </section>`;
