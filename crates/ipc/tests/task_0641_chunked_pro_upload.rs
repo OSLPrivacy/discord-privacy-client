@@ -79,7 +79,8 @@ impl MultipartFixture {
                         respond_json(
                             &mut stream,
                             &format!(
-                                r#"{{"id":"{UPLOAD_ID}","expires_at":{EXPIRES_AT},"size_bytes":{encrypted_len}}}"#
+                                r#"{{"id":"{UPLOAD_ID}","expires_at":{EXPIRES_AT},"size_bytes":{}}}"#,
+                                encrypted_len - expected_parts.last().copied().expect("at least one uploaded piece")
                             ),
                         );
                     }
