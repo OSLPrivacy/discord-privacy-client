@@ -8326,3 +8326,74 @@ code {
 .apps-sending-save-note { margin: 0; font-size: 12px; color: var(--muted); }
 
 .apps-sending-footer-buttons { display: flex; gap: 8px; }
+/* TASK 0859 - the Service status page rows this task added. The rest of the
+   page is painted by TASK 0856's block in lane j's `styles.css`; these are only
+   the classes TASK 0859 introduced, kept separate so the two do not collide. */
+.tile-status-service-name {
+  margin: 4px 0 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.tile-status-group-current,
+.tile-status-group-carried {
+  margin-top: 20px;
+}
+
+.tile-status-group-current h2,
+.tile-status-group-carried h2 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.tile-status-current {
+  margin: 0 0 6px;
+}
+
+.tile-status-updated {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.tile-status-carried {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 10px;
+}
+
+.tile-status-carried-row {
+  display: grid;
+  grid-template-columns: 110px 160px 1fr;
+  gap: 12px;
+  align-items: baseline;
+  padding: 10px 0;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.tile-status-carried-name {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.tile-status-carried-state {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.tile-status-carried-row[data-tile-status-carried-held="yes"] .tile-status-carried-state {
+  color: var(--text-primary);
+}
+
+.tile-status-carried-text {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}

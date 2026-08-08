@@ -1,0 +1,342 @@
+[
+  {
+    "role": "RootWebArea",
+    "name": "Confirm this burn"
+  },
+  {
+    "role": "region",
+    "name": "Confirm this burn"
+  },
+  {
+    "role": "heading",
+    "name": "Confirm this burn"
+  },
+  {
+    "role": "group",
+    "name": "How much to burn"
+  },
+  {
+    "role": "group",
+    "name": "Whose copies"
+  },
+  {
+    "role": "button",
+    "name": "Back"
+  },
+  {
+    "role": "button",
+    "name": "Confirm burn"
+  },
+  {
+    "role": "StaticText",
+    "name": "BURNING FROM #GENERAL IN STUDY HALL"
+  },
+  {
+    "role": "StaticText",
+    "name": "Confirm this burn"
+  },
+  {
+    "role": "StaticText",
+    "name": "Burn cleans up. It does not un-send. Nothing is chosen for you: pick how much to burn and whose copies it reaches, then confirm."
+  },
+  {
+    "role": "group",
+    "name": "How much to burn"
+  },
+  {
+    "role": "group",
+    "name": "Whose copies"
+  },
+  {
+    "role": "checkbox",
+    "name": "Also hide other people's messages"
+  },
+  {
+    "role": "StaticText",
+    "name": "Also hide other people's messages"
+  },
+  {
+    "role": "StaticText",
+    "name": "Hiding only changes what this machine shows you. It does not delete anyone else's messages."
+  },
+  {
+    "role": "StaticText",
+    "name": "Choose how much to burn and whose copies it reaches."
+  },
+  {
+    "role": "StaticText",
+    "name": "Back"
+  },
+  {
+    "role": "StaticText",
+    "name": "Confirm burn"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "BURNING FROM #GENERAL IN STUDY HALL"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Confirm this burn"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Burn cleans up. It does not un-send. Nothing is chosen for you: pick how much to burn and whose "
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "copies it reaches, then confirm."
+  },
+  {
+    "role": "StaticText",
+    "name": "How much to burn"
+  },
+  {
+    "role": "button",
+    "name": "This channel #general Only the messages in #general. Every other channel stays."
+  },
+  {
+    "role": "button",
+    "name": "Whole server Study Hall Every channel in Study Hall, not just this one."
+  },
+  {
+    "role": "button",
+    "name": "Whole service OSL Chat Everything OSL holds for OSL Chat on this machine."
+  },
+  {
+    "role": "button",
+    "name": "Whole account you@osl Every service and every chat under you@osl."
+  },
+  {
+    "role": "StaticText",
+    "name": "Whose copies"
+  },
+  {
+    "role": "button",
+    "name": "Your side Deletes your own copy on this machine. Their copy is left alone."
+  },
+  {
+    "role": "button",
+    "name": "Their side Asks the other OSL app to delete its copy. Your copy is left alone."
+  },
+  {
+    "role": "button",
+    "name": "Both sides Deletes your copy and asks the other OSL app to delete its copy too."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Also hide other people's messages"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Hiding only changes what this machine shows you. It does not delete anyone else's messages."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Choose how much to burn and whose copies it reaches."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Back"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Confirm burn"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "How much to burn"
+  },
+  {
+    "role": "StaticText",
+    "name": "This channel"
+  },
+  {
+    "role": "StaticText",
+    "name": " "
+  },
+  {
+    "role": "StaticText",
+    "name": "#general"
+  },
+  {
+    "role": "StaticText",
+    "name": "Only the messages in #general. Every other channel stays."
+  },
+  {
+    "role": "StaticText",
+    "name": "Whole server"
+  },
+  {
+    "role": "StaticText",
+    "name": " "
+  },
+  {
+    "role": "StaticText",
+    "name": "Study Hall"
+  },
+  {
+    "role": "StaticText",
+    "name": "Every channel in Study Hall, not just this one."
+  },
+  {
+    "role": "StaticText",
+    "name": "Whole service"
+  },
+  {
+    "role": "StaticText",
+    "name": " "
+  },
+  {
+    "role": "StaticText",
+    "name": "OSL Chat"
+  },
+  {
+    "role": "StaticText",
+    "name": "Everything OSL holds for OSL Chat on this machine."
+  },
+  {
+    "role": "StaticText",
+    "name": "Whole account"
+  },
+  {
+    "role": "StaticText",
+    "name": " "
+  },
+  {
+    "role": "StaticText",
+    "name": "you@osl"
+  },
+  {
+    "role": "StaticText",
+    "name": "Every service and every chat under you@osl."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Whose copies"
+  },
+  {
+    "role": "StaticText",
+    "name": "Your side"
+  },
+  {
+    "role": "StaticText",
+    "name": "Deletes your own copy on this machine. Their copy is left alone."
+  },
+  {
+    "role": "StaticText",
+    "name": "Their side"
+  },
+  {
+    "role": "StaticText",
+    "name": "Asks the other OSL app to delete its copy. Your copy is left alone."
+  },
+  {
+    "role": "StaticText",
+    "name": "Both sides"
+  },
+  {
+    "role": "StaticText",
+    "name": "Deletes your copy and asks the other OSL app to delete its copy too."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "This channel"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": " "
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "#general"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Only the messages in #general. Every other channel stays."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Whole server"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": " "
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Study Hall"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Every channel in Study Hall, not just this one."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Whole service"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": " "
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "OSL Chat"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Everything OSL holds for OSL Chat on this machine."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Whole account"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": " "
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "you@osl"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Every service and every chat under you@osl."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Your side"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Deletes your own copy on this machine. Their copy is left "
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "alone."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Their side"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Asks the other OSL app to delete its copy. Your copy is left "
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "alone."
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Both sides"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Deletes your copy and asks the other OSL app to delete its "
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "copy too."
+  }
+]
