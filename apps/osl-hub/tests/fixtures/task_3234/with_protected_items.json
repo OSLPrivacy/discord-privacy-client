@@ -1,0 +1,17 @@
+{
+  "protected_marker": "TASK3234-PROTECTED-7C91A6D04E2B",
+  "windows_key_store_protected": true,
+  "items": [
+    { "surface": "program files", "root": "program_files", "path": "osl-privacy.exe", "protected": false },
+    { "surface": "settings", "root": "config", "path": "preview-preferences.json", "protected": true },
+    { "surface": "keys", "root": "config", "path": "osl-core/identity.json", "protected": true },
+    { "surface": "stored messages", "root": "config", "path": "osl-core/store/messages.sqlite", "protected": true },
+    { "surface": "downloaded files", "root": "local", "path": "peer-attachment-staging/payload.bin", "protected": true },
+    { "surface": "startup entry", "root": "startup", "path": "OSL Privacy.lnk", "protected": false },
+    { "surface": "uninstall logs", "root": "uninstall_logs", "path": "installer.log", "protected": false },
+    { "surface": "backups", "root": "config", "path": "service-registry.bak", "protected": true },
+    { "surface": "temporary files", "root": "config", "path": "service-registry.tmp", "protected": true },
+    { "surface": "logs", "root": "config", "path": "osl-core/logs/backend.log", "protected": true },
+    { "surface": "waiting jobs", "root": "config", "path": "osl-core/revocation_outbox.json", "protected": true }
+  ]
+}

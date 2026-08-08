@@ -132,6 +132,9 @@ whatsapp-qa-shell = []
 # destroyed. Two-VM WhatsApp QA opts in explicitly:
 #   cargo build --features desktop,whatsapp-qa-identity
 whatsapp-qa-identity = ["whatsapp-qa-shell"]
+# Fault-injection seam used only by the named TASK 3234 integration target.
+# Normal/default/desktop builds do not include it.
+task-3234-test = []
 
 [lib]
 # The package is `osl-hub` so it can be selected with `cargo -p osl-hub`.

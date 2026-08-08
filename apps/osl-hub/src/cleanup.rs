@@ -666,6 +666,18 @@ pub fn resume_interrupted_gate_burn(
     app_config_dir: &Path,
     app_local_data_dir: &Path,
 ) -> Result<bool, String> {
+    resume_interrupted_gate_burn_with_key_material_wipe(
+        app_config_dir,
+        app_local_data_dir,
+        &KeyMaterialWipe::production(),
+    )
+}
+
+fn resume_interrupted_gate_burn_with_key_material_wipe(
+    app_config_dir: &Path,
+    app_local_data_dir: &Path,
+    key_material: &KeyMaterialWipe,
+) -> Result<bool, String> {
     validate_trusted_roots(app_config_dir, app_local_data_dir)?;
     let journal_path = app_config_dir.join(GATE_BURN_JOURNAL);
     let bytes = match std::fs::read(&journal_path) {
@@ -680,11 +692,7 @@ pub fn resume_interrupted_gate_burn(
         return Err("OSL burn recovery journal is invalid; no deletion was attempted".to_owned());
     }
     let (mut removed, mut failed_targets) = purge_fixed_targets(app_config_dir, app_local_data_dir);
-    run_key_material_wipe(
-        &KeyMaterialWipe::production(),
-        &mut removed,
-        &mut failed_targets,
-    );
+    run_key_material_wipe(key_material, &mut removed, &mut failed_targets);
     failed_targets.extend(residual_local_state(app_config_dir, app_local_data_dir));
     if !failed_targets.is_empty() {
         return Err("OSL burn recovery remains pending".to_owned());
@@ -1366,6 +1374,113 @@ fn normalise_lexical(path: &Path) -> PathBuf {
         }
     }
     out
+}
+
+/// Isolated persisted-key model for the TASK 3234 power-cut integration test.
+/// This seam is absent from every normal build and can never address the
+/// production machine-global keyring credential.
+#[cfg(feature = "task-3234-test")]
+pub struct Task3234PowerCutKeyStore {
+    tpm: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    keyring: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[cfg(feature = "task-3234-test")]
+impl Task3234PowerCutKeyStore {
+    pub fn seeded(present: bool) -> Self {
+        Self {
+            tpm: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(present)),
+            keyring: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(present)),
+        }
+    }
+
+    pub fn usable_count(&self) -> usize {
+        use std::sync::atomic::Ordering;
+        usize::from(self.tpm.load(Ordering::SeqCst))
+            + usize::from(self.keyring.load(Ordering::SeqCst))
+    }
+
+    fn wipe(&self) -> KeyMaterialWipe {
+        use std::sync::atomic::Ordering;
+        let tpm = std::sync::Arc::clone(&self.tpm);
+        let keyring = std::sync::Arc::clone(&self.keyring);
+        KeyMaterialWipe {
+            evict_tpm_key: Box::new(move || {
+                if tpm.swap(false, Ordering::SeqCst) {
+                    KeyMaterialOutcome::Wiped
+                } else {
+                    KeyMaterialOutcome::Absent
+                }
+            }),
+            purge_keyring_entry: Box::new(move || {
+                if keyring.swap(false, Ordering::SeqCst) {
+                    KeyMaterialOutcome::Wiped
+                } else {
+                    KeyMaterialOutcome::Absent
+                }
+            }),
+        }
+    }
+}
+
+#[cfg(feature = "task-3234-test")]
+pub fn task_3234_cleanup_step_count(
+    app_config_dir: &Path,
+    app_local_data_dir: &Path,
+) -> Result<usize, String> {
+    validate_trusted_roots(app_config_dir, app_local_data_dir)?;
+    let (targets, failures) = cleanup_targets(app_config_dir, app_local_data_dir);
+    if !failures.is_empty() {
+        return Err("TASK3234 could not enumerate every cleanup step".to_owned());
+    }
+    Ok(targets.len() + 2)
+}
+
+/// Commit the real recovery journal, execute the same fixed target sequence as
+/// Burn, and simulate loss of power immediately after `cut_after`.
+#[cfg(feature = "task-3234-test")]
+pub fn task_3234_cut_power_after_cleanup_step(
+    app_config_dir: &Path,
+    app_local_data_dir: &Path,
+    key_store: &Task3234PowerCutKeyStore,
+    cut_after: usize,
+) -> Result<String, String> {
+    validate_trusted_roots(app_config_dir, app_local_data_dir)?;
+    write_gate_burn_journal(app_config_dir)?;
+    let (targets, failures) = cleanup_targets(app_config_dir, app_local_data_dir);
+    if !failures.is_empty() || cut_after == 0 || cut_after > targets.len() + 2 {
+        return Err("TASK3234 cleanup cut point is invalid".to_owned());
+    }
+    for (index, target) in targets.iter().enumerate() {
+        remove_target_without_following_links(&target.path)
+            .map_err(|_| format!("TASK3234 cleanup step {} failed", target.id))?;
+        if index + 1 == cut_after {
+            return Ok(target.id.to_owned());
+        }
+    }
+    let wipe = key_store.wipe();
+    let tpm = (wipe.evict_tpm_key)();
+    if matches!(tpm, KeyMaterialOutcome::Failed) {
+        return Err("TASK3234 TPM cleanup step failed".to_owned());
+    }
+    if cut_after == targets.len() + 1 {
+        return Ok("tpm_persisted_key".to_owned());
+    }
+    let keyring = (wipe.purge_keyring_entry)();
+    if matches!(keyring, KeyMaterialOutcome::Failed) {
+        return Err("TASK3234 keyring cleanup step failed".to_owned());
+    }
+    Ok("os_keyring_credential".to_owned())
+}
+
+#[cfg(feature = "task-3234-test")]
+pub fn task_3234_restart_and_resume_gate_burn(
+    app_config_dir: &Path,
+    app_local_data_dir: &Path,
+    key_store: &Task3234PowerCutKeyStore,
+) -> Result<bool, String> {
+    let wipe = key_store.wipe();
+    resume_interrupted_gate_burn_with_key_material_wipe(app_config_dir, app_local_data_dir, &wipe)
 }
 
 #[cfg(test)]
