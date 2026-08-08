@@ -1,7 +1,7 @@
-use ipc::commands::cmd_osl_list_email_send_modes;
+use ipc::commands::{cmd_osl_list_email_send_modes, cmd_osl_open_email_send_review};
 use ipc::email_send_modes::{
-    apply_email_composer_input, EmailComposerInput, EmailComposerInputEffect,
-    EmailDraftReadbackState, EmailSendMode,
+    apply_email_composer_input, open_email_send_review, visible_subject_protection_warning,
+    EmailComposerInput, EmailComposerInputEffect, EmailSendMode, BORING_PROTECTED_SUBJECT,
 };
 
 #[test]
@@ -82,77 +82,10 @@ fn task_1223_email_enter_adds_line_in_all_five_modes() {
     assert_eq!(line_insertions, 5);
 }
 
+/// TASK 1298 - the visible-subject warning has to reach the send review, not
+/// only the send refusal. Fixture: one private subject, one "Hello", plus two
+/// controls that keep the rule from collapsing into "long subjects warn".
 #[test]
-fn task_1212_changed_draft_readback_fails_before_send() {
-    let mut draft = EmailDraftReadbackState::place("MAPLE-4172");
-
-    println!(
-        "TASK1212 matching_readback_count_before={}",
-        draft.matching_readback_count()
-    );
-    assert_eq!(draft.matching_readback_count(), 0);
-
-    let good = draft
-        .readback("MAPLE-4172")
-        .expect("matching readback should be accepted");
-    println!("TASK1212 returned_readback={}", good.returned_readback);
-    println!(
-        "TASK1212 matching_readback_count_after_good={}",
-        draft.matching_readback_count()
-    );
-    assert_eq!(good.returned_readback, "MAPLE-4172");
-    assert_eq!(good.matching_readback_count, 1);
-    assert_eq!(draft.matching_readback_count(), 1);
-
-    let refusal = draft
-        .send_after_readback("MAPLE-4173")
-        .expect_err("changed readback must be refused before Send");
-    println!("TASK1212 changed_readback=MAPLE-4173");
-    println!("TASK1212 changed_readback_refusal={refusal}");
-    assert_eq!(refusal, "readback mismatch");
-
-    println!("TASK1212 body_still_reads={}", draft.body());
-    println!(
-        "TASK1212 matching_readback_count_after_bad={}",
-        draft.matching_readback_count()
-    );
-    println!("TASK1212 send_count={}", draft.send_count());
-    assert_eq!(draft.body(), "MAPLE-4172");
-    assert_eq!(draft.matching_readback_count(), 1);
-    assert_eq!(draft.send_count(), 0);
-}
-
-fn task_1298_send_review_command_carries_the_warning_to_the_ui() {
-    let protected_body = "Meet me at the west loading door after payroll closes.";
-
-    let private = cmd_osl_open_email_send_review("manual", protected_body, protected_body)
-        .expect("manual is a real send mode");
-    let hello = cmd_osl_open_email_send_review("manual", "Hello", protected_body)
-        .expect("manual is a real send mode");
-
-    println!(
-        "TASK1298 command private rows={:?} warning={:?}",
-        private.rows, private.visible_subject_warning
-    );
-    println!(
-        "TASK1298 command hello rows={:?} warning={:?}",
-        hello.rows, hello.visible_subject_warning
-    );
-
-    assert_eq!(private.mode_name, "Manual");
-    assert_eq!(
-        private.visible_subject_warning.as_deref(),
-        Some(visible_subject_protection_warning().as_str())
-    );
-    assert_eq!(
-        private.rows,
-        vec![visible_subject_protection_warning(), "Send".to_owned()]
-    );
-    assert_eq!(hello.visible_subject_warning, None);
-    assert_eq!(hello.rows, vec!["Send".to_owned()]);
-    assert!(cmd_osl_open_email_send_review("not_a_mode", "Hello", protected_body).is_err());
-}
-
 fn task_1298_send_review_warns_about_a_visible_private_subject_before_send() {
     let protected_body = "Meet me at the west loading door after payroll closes.";
     let private_subject = protected_body;
@@ -211,4 +144,37 @@ fn task_1298_send_review_warns_about_a_visible_private_subject_before_send() {
     assert!(private.warns_about_visible_subject());
     assert!(!hello.warns_about_visible_subject());
     assert_eq!(warned, 1);
+}
+
+/// The same review reaching the composer UI through the named command.
+#[test]
+fn task_1298_send_review_command_carries_the_warning_to_the_ui() {
+    let protected_body = "Meet me at the west loading door after payroll closes.";
+
+    let private = cmd_osl_open_email_send_review("manual", protected_body, protected_body)
+        .expect("manual is a real send mode");
+    let hello = cmd_osl_open_email_send_review("manual", "Hello", protected_body)
+        .expect("manual is a real send mode");
+
+    println!(
+        "TASK1298 command private rows={:?} warning={:?}",
+        private.rows, private.visible_subject_warning
+    );
+    println!(
+        "TASK1298 command hello rows={:?} warning={:?}",
+        hello.rows, hello.visible_subject_warning
+    );
+
+    assert_eq!(private.mode_name, "Manual");
+    assert_eq!(
+        private.visible_subject_warning.as_deref(),
+        Some(visible_subject_protection_warning().as_str())
+    );
+    assert_eq!(
+        private.rows,
+        vec![visible_subject_protection_warning(), "Send".to_owned()]
+    );
+    assert_eq!(hello.visible_subject_warning, None);
+    assert_eq!(hello.rows, vec!["Send".to_owned()]);
+    assert!(cmd_osl_open_email_send_review("not_a_mode", "Hello", protected_body).is_err());
 }

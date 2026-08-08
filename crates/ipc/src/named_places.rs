@@ -181,7 +181,7 @@ pub fn validate_named_places(rows: &[NamedPlace]) -> NamedPlacesReport {
     let source_tasks: BTreeSet<&str> = EXPECTED_SOURCE_TASKS.into_iter().collect();
     let expected_places: BTreeSet<&str> = EXPECTED_PLACE_ROWS
         .into_iter()
-        .map(|(_source_task, place, _disposition)| place)
+        .map(|(_source_task, place, _research, _build, _disposition)| place)
         .collect();
     let expected: BTreeSet<NamedPlace> = EXPECTED_PLACE_ROWS
         .into_iter()
@@ -481,6 +481,7 @@ pub const TASK_4204_REAL_RECORDS_JSON: &str =
 pub const TASK_4204_REQUIRED_PARTS: [&str; 5] =
     ["app", "placeName", "state", "sourceTask", "provingCheck"];
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Task4204Fault {
     MissingPart { row: usize, part: &'static str },
     BadState { row: usize, state: String },
@@ -489,6 +490,7 @@ pub enum Task4204Fault {
     DuplicateAppPlace { app: String, place_name: String },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Task4204Record {
     pub app: String,
     pub place_name: String,
@@ -497,6 +499,7 @@ pub struct Task4204Record {
     pub proving_check: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Task4204Report {
     pub row_count: usize,
     pub records: Vec<Task4204Record>,
@@ -517,7 +520,7 @@ pub fn check_task_4204_records_json(input: &str) -> Result<Task4204Report, Strin
     let source_tasks = EXPECTED_SOURCE_TASKS.into_iter().collect::<BTreeSet<_>>();
     let places_from_source_tasks = EXPECTED_PLACE_ROWS
         .into_iter()
-        .map(|(_, place, _)| place)
+        .map(|(_, place, _, _, _)| place)
         .collect::<BTreeSet<_>>();
     let mut seen_app_places = BTreeSet::new();
     let mut records = Vec::new();
@@ -609,6 +612,38 @@ fn required_task_4204_string(
         _ => {
             faults.push(Task4204Fault::MissingPart { row, part });
             None
+        }
+    }
+}
+
+impl Task4204Report {
+    pub fn fault_count(&self) -> usize {
+        self.faults.len()
+    }
+
+    pub fn is_green(&self) -> bool {
+        self.row_count == EXPECTED_ROW_COUNT && self.faults.is_empty()
+    }
+}
+
+impl Task4204Fault {
+    pub fn report_line(&self) -> String {
+        match self {
+            Self::MissingPart { row, part } => {
+                format!("TASK4204_FAULT=missing_part row={row} part={part}")
+            }
+            Self::BadState { row, state } => {
+                format!("TASK4204_FAULT=bad_state row={row} state={state}")
+            }
+            Self::UnknownSourceTask { row, source_task } => {
+                format!("TASK4204_FAULT=unknown_source_task row={row} source_task={source_task}")
+            }
+            Self::InventedPlace { place_name } => {
+                format!("TASK4204_FAULT=invented_place place={place_name}")
+            }
+            Self::DuplicateAppPlace { app, place_name } => {
+                format!("TASK4204_FAULT=duplicate_app_place app={app} place={place_name}")
+            }
         }
     }
 }

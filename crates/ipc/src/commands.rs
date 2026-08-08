@@ -19661,69 +19661,9 @@ pub struct AllowedPlaceSearchResultDto {
     pub allowed: bool,
 }
 
-fn allowed_place_search_result(row: crate::allowed_places::AllowedPlaceRow) -> AllowedPlaceSearchResultDto {
-    AllowedPlaceSearchResultDto {
-        app: row.record.app,
-        account: row.record.account,
-        kind: row.record.kind,
-        stable_id: row.record.stable_id,
-        place_name: row.record.place_name,
-        person_name: row.record.person_name,
-        allowed: row.allowed,
-    }
-}
 
-pub fn cmd_osl_search_allowed_places(
-    app_data_dir: PathBuf,
-    query: String,
-) -> Result<Vec<AllowedPlaceSearchResultDto>, String> {
-    record_activity_on_command_entry();
-    let results = crate::allowed_places::search_allowed_place_rows(&app_data_dir, &query)
-        .map_err(|error| format!("OSL: {error}"))?
-        .into_iter()
-        .map(allowed_place_search_result)
-        .collect();
-    Ok(results)
-}
 
-/// TASK 0868 — every place the Whitelisting screen lists, allowed or not.
-///
-/// The screen's rows and its search have to come from the same store, or the
-/// search answers a question about rows the screen is not showing and "Select
-/// all" acts on ids that are not on screen.
-pub fn cmd_osl_list_allowed_places(
-    app_data_dir: PathBuf,
-) -> Result<Vec<AllowedPlaceSearchResultDto>, String> {
-    record_activity_on_command_entry();
-    let results = crate::allowed_places::list_allowed_place_rows(&app_data_dir)
-        .map_err(|error| format!("OSL: {error}"))?
-        .into_iter()
-        .map(allowed_place_search_result)
-        .collect();
-    Ok(results)
-}
 
-/// TASK 0868 — write one row's tick back to the store.
-///
-/// Returns the stable ids that were actually changed, so a Save that could not
-/// find a row says so instead of reporting a write it did not do.
-pub fn cmd_osl_set_allowed_places_allowed(
-    app_data_dir: PathBuf,
-    stable_ids: Vec<String>,
-    allowed: bool,
-) -> Result<Vec<String>, String> {
-    record_activity_on_command_entry();
-    let mut written = Vec::new();
-    for stable_id in stable_ids {
-        let changed =
-            crate::allowed_places::set_allowed_place_allowed(&app_data_dir, &stable_id, allowed)
-                .map_err(|error| format!("OSL: {error}"))?;
-        if changed {
-            written.push(stable_id);
-        }
-    }
-    Ok(written)
-}
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct SignalWhitelistKindDto {

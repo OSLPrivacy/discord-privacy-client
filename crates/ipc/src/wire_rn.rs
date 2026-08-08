@@ -785,6 +785,11 @@ struct SessionSendFloor {
 }
 
 impl RnSessionStore {
+    fn pin_path(&self, peer_identity_x25519: &[u8; 32]) -> PathBuf {
+        self.dir
+            .join(format!("{}.pin", Self::peer_key(peer_identity_x25519)))
+    }
+
     /// Build the session store for an account configuration directory.
     ///
     /// Older builds used `rn/`; migrate it into the canonical directory
