@@ -15,13 +15,21 @@ use reqwest::blocking::Client;
 use reqwest::Proxy;
 use std::io;
 use std::io::{BufRead, BufReader};
-use std::net::{SocketAddr, TcpStream};
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdout, Command, Stdio};
 use std::sync::{mpsc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use thiserror::Error;
+
+/// The loopback SOCKS listener exposed by Arti's proxy mode.
+// Built from parts rather than `SocketAddr::from(([127,0,0,1], 9150))`: the
+// `From` impl is not a const trait, so that form does not compile in a const
+// and took the whole `transport` crate -- and therefore every Rust test in the
+// workspace -- down with it.
+pub const DEFAULT_SOCKS_ADDR: SocketAddr =
+    SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 9150));
 
 /// Configuration for the OSL-owned Tor sidecar executable packaged with OSL.
 #[derive(Debug, Clone)]
