@@ -59,6 +59,11 @@ function renderLock(input: {
     '\n  return `<div class="native-discord-header-controls',
   );
   const build = new Function(
+    // TASK 4501 put the build discriminator below the eye so the shipping strip
+    // can carry the app's one show-private-words control. That branch now falls
+    // inside this evaluated region, so the region's free variable has to be
+    // supplied: `true` keeps the QA strip -- the one this test is about.
+    "discordQaShell",
     "nativeDiscordProtectionActive",
     "discordQaComposerBusy",
     "discordQaComposerRefusal",
@@ -71,6 +76,7 @@ function renderLock(input: {
     "composerLockAvailability",
     `const openPlaceAllowed = true;\n${block}\nreturn { composerLockState, composerProtectionLabel, composerControl, composerRefusalNotice };`,
   ) as (
+    discordQaShell: boolean,
     protectionActive: boolean,
     busy: boolean,
     refusal: { message: string; reason: string } | null,
@@ -83,6 +89,7 @@ function renderLock(input: {
     availability: typeof composerLockAvailability,
   ) => LockMarkup;
   return build(
+    true,
     input.protectionActive ?? false,
     input.busy ?? false,
     input.refusal ?? null,

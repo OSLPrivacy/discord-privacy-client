@@ -23,10 +23,13 @@ describe("Discord QA header strip", () => {
       "function nativeDiscordHeaderControls()",
       "function trustedHeader()",
     );
-    const production = controls.slice(
-      controls.indexOf("if (!discordQaShell)"),
-      controls.indexOf("const context ="),
-    );
+    // TASK 4501 moved the build discriminator BELOW the eye, so the shipping
+    // strip can carry the one show-private-words control instead of a copy of
+    // it. The production branch is therefore the `if (!discordQaShell)` block
+    // itself, not everything before the QA state is read.
+    const branchStart = controls.indexOf("if (!discordQaShell) {");
+    expect(branchStart).toBeGreaterThan(-1);
+    const production = controls.slice(branchStart, controls.indexOf("\n  }\n", branchStart));
     expect(production).toContain('data-open-burn="chat"');
     expect(production).toContain('coverWritingControlsMarkup("discord"');
     expect(production).toContain('covertextId: "native-discord-covertext"');
@@ -35,10 +38,10 @@ describe("Discord QA header strip", () => {
     expect(coverControls).toContain("<button${covertextId}");
     expect(coverControls).toContain("<button${aiCovertextId}");
     expect(production).not.toContain("discord-qa-control");
-    // Transcript visibility remains QA-only; the shipping branch shares only
-    // the two cover-writing buttons with the other composer surfaces.
-    expect(production).not.toContain("${transcriptVisibilityControl}");
-    expect(controls.match(/\$\{transcriptVisibilityControl\}/gu)?.length).toBe(1);
+    // The eye is the app's only control that turns private words on and off, so
+    // the shipping strip carries that same one -- not a second button of its own.
+    expect(production).toContain("${transcriptVisibilityControl}");
+    expect(controls.match(/\$\{transcriptVisibilityControl\}/gu)?.length).toBe(2);
     expect(controls.match(/id="discord-qa-transcript-visibility"/gu)?.length).toBe(1);
     expect(controls).toContain('data-open-burn="account"');
     expect(controls).toContain('data-open-burn="app"');

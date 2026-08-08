@@ -390,7 +390,14 @@ describe("trusted composer overlay", () => {
     expect(html).toContain("This composer belongs to OSL, not Discord");
     expect(html).toContain('id="protected-view-once"');
     expect(html).toContain('id="protected-ttl"');
-    expect(html).toContain('id="protected-decrypt-display"');
+    // TASK 4501. The paint-over window used to carry its own "show decrypted
+    // text" tick box here. It was one of four controls over a single per-scope
+    // setting -- fully working, defaulting to on, and out of reach only because
+    // `.overlay-runtime-controls` carries a `hidden` mark -- so the moment
+    // anybody tidied that box a second answer to "is this protected right now"
+    // would have appeared. The eye on the Discord strip is the one control now,
+    // and this renderer only follows the setting it publishes.
+    expect(html).not.toContain('id="protected-decrypt-display"');
     expect(html).toContain('id="current-expiry"');
     expect(html).toContain('id="protected-send-mode" aria-label="Send behavior"');
     expect(html).toContain('<option value="button">Manual</option>');
@@ -868,11 +875,19 @@ describe("trusted composer overlay", () => {
     expect(visibility).toContain("row.plaintextHidden = !visible");
     expect(visibility).not.toContain('body.textContent = ""');
     expect(save).toContain("applyDecryptDisplayVisibility(decryptDisplayEnabled)");
-    expect(save).toContain("applyDecryptDisplayVisibility(false)");
-    expect(save.indexOf("applyDecryptDisplayVisibility(false)")).toBeLessThan(
-      save.indexOf("await setNativeDiscordOverlaySecurity"),
+    // EXPECTED VALUE CHANGED (TASK 4501). This save belongs to the expiry
+    // control, and the tick box that used to sit beside it is gone: there is
+    // exactly one show-private-words control in the app and it is the eye. With
+    // nothing here deciding a new value there is nothing to speculatively hide,
+    // so the stored value is carried through unchanged instead. The
+    // hide-before-save ordering this pair of assertions existed for now belongs
+    // to the eye and is asserted on its own path in
+    // discord-qa-transcript-visibility.test.ts.
+    expect(save).toContain(
+      "setNativeDiscordOverlaySecurity(requestedTtl as NativeOverlayTtlSeconds, decryptDisplayEnabled)",
     );
-    expect(save).toContain("applyDecryptDisplayVisibility(previousDecrypt)");
+    expect(save).not.toContain("decryptDisplay.checked");
+    expect(save).not.toContain("applyDecryptDisplayVisibility(false)");
     // EXPECTED VALUE CHANGED: the eye-on branch used to be the single statement
     // `if (decryptDisplayEnabled) requestRealtimeDrain()`. Switching the eye on
     // now also claims one bounded transcript read -- the edge that puts the

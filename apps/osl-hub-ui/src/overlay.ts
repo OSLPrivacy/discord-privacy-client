@@ -61,7 +61,12 @@ const ttl = requireElement<HTMLSelectElement>("#protected-ttl");
 const viewOnce = requireElement<HTMLInputElement>("#protected-view-once");
 const sendMode = requireElement<HTMLSelectElement>("#protected-send-mode");
 const placementMode = requireElement<HTMLSelectElement>("#protected-placement-mode");
-const decryptDisplay = requireElement<HTMLInputElement>("#protected-decrypt-display");
+// TASK 4501: the paint-over window used to carry its own "show decrypted text"
+// tick box here. It was a fourth control over the one per-scope setting, fully
+// working and out of reach only because `.overlay-runtime-controls` carries
+// `hidden` -- so tidying that box would have put a second answer to "is this
+// protected right now" back on screen. The eye on the Discord strip is the one
+// control now; this renderer only *follows* `decryptDisplayEnabled`.
 const currentExpiry = requireElement<HTMLElement>("#current-expiry");
 const prepare = requireElement<HTMLButtonElement>("#prepare-protected");
 const chooseAttachment = requireElement<HTMLButtonElement>("#choose-attachment");
@@ -1131,7 +1136,6 @@ function refreshControls(): void {
   sendMode.disabled = sendBusy || !overlayReady;
   placementMode.disabled = sendBusy || !overlayReady || !discordMarkerAvailable;
   ttl.disabled = sendBusy || securityBusy || !overlayReady;
-  decryptDisplay.disabled = sendBusy || securityBusy || !overlayReady;
   viewOnce.disabled = sendBusy || !overlayReady || !viewOnceEnabled;
   syncOslStrip();
 }
@@ -2021,7 +2025,7 @@ function expiryLabel(seconds: NativeOverlayTtlSeconds): string {
   return "7 days";
 }
 
-async function saveSecurity(): Promise<void> {
+async function saveSecurity(requestedReveal = decryptDisplayEnabled): Promise<void> {
   if (!overlayReady || securityBusy) return;
   const requestedTtl = Number(ttl.value);
   if (!NATIVE_OVERLAY_TTL_OPTIONS.includes(requestedTtl as NativeOverlayTtlSeconds)) {
@@ -2029,24 +2033,16 @@ async function saveSecurity(): Promise<void> {
     return;
   }
   const previousTtl = confirmedTtlSeconds;
-  const previousDecrypt = decryptDisplayEnabled;
-  const requestedDecrypt = decryptDisplay.checked;
-  if (!requestedDecrypt) {
-    // Hiding is immediate and conservative; a failed save restores the exact
-    // prior visibility below. Do not allow a receive poll to race the toggle.
-    decryptDisplayEnabled = false;
-    applyDecryptDisplayVisibility(false);  }
+  // TASK 4501: this is the expiry control's save, and nothing else. The one
+  // show-private-words control is the eye, so the current per-scope value is
+  // carried through here unchanged -- never re-decided from a second tick box.
   securityBusy = true;
   refreshControls();
   status.textContent = "Saving protection…";
-  const saved = await setNativeDiscordOverlaySecurity(requestedTtl as NativeOverlayTtlSeconds, decryptDisplay.checked);
+  const saved = await setNativeDiscordOverlaySecurity(requestedTtl as NativeOverlayTtlSeconds, requestedReveal);
   securityBusy = false;
   if (!saved) {
     ttl.value = String(previousTtl);
-    decryptDisplay.checked = previousDecrypt;
-    decryptDisplayEnabled = previousDecrypt;
-    applyDecryptDisplayVisibility(previousDecrypt);
-    if (previousDecrypt) requestRealtimeDrain();
     status.textContent = "That change was not saved. The previous protection stays active.";
     refreshControls();
     return;
@@ -2057,7 +2053,6 @@ async function saveSecurity(): Promise<void> {
   attachmentsEnabled = saved.attachmentsEnabled;
   discordMarkerAvailable = saved.discordMarkerAvailable;
   ttl.value = String(saved.ttlSeconds);
-  decryptDisplay.checked = saved.decryptDisplayEnabled;
   currentExpiry.textContent = `Current: ${expiryLabel(saved.ttlSeconds)}`;
   // Existing non-view-once plaintext stays in this bounded DOM lifetime and
   // is revealed synchronously before polling resumes. No message is reopened.
@@ -2111,7 +2106,6 @@ async function refreshProtectedDisplayVisibility(): Promise<void> {
   applyVerifiedCarrierRows(state.visibleCarrierRows);
   rehydrateScope = state.friendLabel;
   decryptDisplayEnabled = state.decryptDisplayEnabled;
-  decryptDisplay.checked = state.decryptDisplayEnabled;
   applyDecryptDisplayVisibility(decryptDisplayEnabled);
   refreshControls();
   if (decryptDisplayEnabled) {
@@ -2125,7 +2119,6 @@ async function refreshProtectedDisplayVisibility(): Promise<void> {
 }
 
 ttl.addEventListener("change", () => void saveSecurity());
-decryptDisplay.addEventListener("change", () => void saveSecurity());
 
 // Readiness must be self-healing. `overlayReady` can only be set by a successful
 // `initializeOverlay`, and the backend announces a verified session once, at its
@@ -2193,8 +2186,7 @@ async function initializeOverlay(): Promise<void> {
     currentExpiry.textContent = `Current: ${expiryLabel(state.ttlSeconds)}`;
     overlayReady = true;
     decryptDisplayEnabled = state.decryptDisplayEnabled;
-    decryptDisplay.checked = state.decryptDisplayEnabled;
-    applyDecryptDisplayVisibility(decryptDisplayEnabled);
+      applyDecryptDisplayVisibility(decryptDisplayEnabled);
     viewOnceEnabled = state.viewOnceEnabled;
     attachmentsEnabled = state.attachmentsEnabled;
     discordMarkerAvailable = state.discordMarkerAvailable;
@@ -2358,7 +2350,6 @@ void document.fonts.ready.then(() => {
 void listen<boolean>(PROTECTED_DISPLAY_VISIBILITY_CHANGED_EVENT, ({ payload }) => {
   if (discordQaShell && typeof payload === "boolean") {
     decryptDisplayEnabled = payload;
-    decryptDisplay.checked = payload;
     applyDecryptDisplayVisibility(payload);
     if (payload) {
       requestRealtimeDrain();
@@ -2622,9 +2613,8 @@ async function syncStripReveal(): Promise<void> {
         await new Promise((resolve) => window.setTimeout(resolve, 60));
         continue;
       }
-      if (decryptDisplay.checked === stripRevealDesired && decryptDisplayEnabled === stripRevealDesired) break;
-      decryptDisplay.checked = stripRevealDesired;
-      await saveSecurity();
+      if (decryptDisplayEnabled === stripRevealDesired) break;
+      await saveSecurity(stripRevealDesired);
     }
   } finally {
     stripRevealSyncing = false;
@@ -2632,7 +2622,6 @@ async function syncStripReveal(): Promise<void> {
       // Fail closed: the eye was toggled off, so nothing may stay revealed,
       // whatever the native save just said.
       decryptDisplayEnabled = false;
-      decryptDisplay.checked = false;
       applyDecryptDisplayVisibility(false);
       // The stored policy still says "revealed"; keep trying to persist the
       // hide so a later state refresh cannot repaint plaintext unasked.

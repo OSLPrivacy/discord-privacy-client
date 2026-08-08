@@ -199,7 +199,6 @@ function readyMarkup(model: PeerProtectedSheetModel): string {
       <textarea id="peer-cover-input" maxlength="262144" rows="6" autocomplete="off" spellcheck="false" placeholder="Paste here yourself">${escapeHtml(model.openDraft)}</textarea>
       <button class="local-primary" type="submit" ${model.busy ? "disabled" : ""}>${model.busy ? "Opening…" : "Open"}</button>
     </form>
-    <label class="local-decrypt-display"><span><strong>Show decrypted text</strong><small>For this app + friend.</small></span><input id="peer-decrypt-display" type="checkbox" ${model.decryptDisplayEnabled ? "checked" : ""}/></label>
     ${model.openedPlaintext ? `<section class="local-plaintext-result"><span>Decrypted here</span><p>${escapeHtml(model.openedPlaintext)}</p></section>` : ""}`;
   const receipt = model.receipt
     ? `<div class="peer-message-receipt" role="status"><span>${model.receipt.direction === "sent" ? "You" : escapeHtml(model.displayName)}</span><strong>${model.receipt.state === "opened-once" ? "Received · opened once" : model.receipt.state === "received" ? "Received" : model.receipt.state === "sent" ? "Sent" : "Prepared"}</strong></div>`

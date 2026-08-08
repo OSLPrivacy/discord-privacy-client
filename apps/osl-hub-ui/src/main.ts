@@ -735,7 +735,6 @@ let identityStorageMethod: string | null = null;
 // recovered via the multi-identity flow, which does not switch to them
 // automatically. Consulted only when the user later switches into that slot.
 const knownIdentityStorageMethods = new Map<string, string>();
-let decryptDisplay = true;
 let themeChoice: ThemeChoice = initializeThemePreference(localStorage);
 let appearancePreferences: AppearancePreferences = loadAppearancePreferences(localStorage);
 let savedAppearancePreferences: AppearancePreferences = { ...appearancePreferences };
@@ -5104,10 +5103,6 @@ function nativeDiscordHeaderControls(): string {
   // Discord window and refuses focus the same way, so the warning belongs in both
   // strips and not only in the QA one.
   const composerUnreachableNotice = nativeDiscordComposerUnreachableNotice();
-  if (!discordQaShell) {
-    const inactive = nativeDiscordProtectionActive ? "" : "disabled";
-    return `<div class="native-discord-header-controls" aria-label="Discord privacy controls">${composerUnreachableNotice}<button class="header-protection-control burn in-dom-tooltip-anchor" data-open-burn="chat" type="button" ${inactive}>Burn${inDomTooltipMarkup("Burn this local OSL chat")}</button>${coverWritingControlsMarkup("discord", { covertextEnabled: nativeDiscordCovertextEnabled, aiAvailable: true, aiSelected: nativeDiscordAiCovertextSelected, covertextId: "native-discord-covertext", aiCovertextId: "native-discord-ai-covertext" })}</div>`;
-  }
   const context = peerProtectedSheet.context;
   const verifiedPeer = context
     ? hubPeople.find((person) => person.personId === context.personId
@@ -5230,6 +5225,17 @@ function nativeDiscordHeaderControls(): string {
           ? "Checking row proof…"
           : "Check row proof";
   const rowProofControl = `<button class="discord-qa-control" id="discord-qa-row-proof" type="button" data-runtime-proof="${discordQaRowProofState}" aria-label="${rowProofLabel}" title="${rowProofLabel}" ${!nativeDiscordProtectionActive || !verifiedPeer || rowProofBusy ? "disabled" : ""}>Proof</button>`;
+  // TASK 4501. The build discriminator sits BELOW the eye, not above it, for the
+  // same reason the composer-unreachable notice does: there is exactly one
+  // show-private-words control in this app and both strips have to carry that
+  // one, not a copy each. Before this task there were four -- this eye, a
+  // "Show decrypted text" tick box in each of the two protected sheets, and a
+  // fourth on the paint-over window kept out of reach only by a `hidden` mark on
+  // the box around it. Four controls is four answers to "is this protected right
+  // now"; the blueprint says one. The other three and their handlers are gone.
+  if (!discordQaShell) {
+    return `<div class="native-discord-header-controls" aria-label="Discord privacy controls">${composerUnreachableNotice}<button class="header-protection-control burn in-dom-tooltip-anchor" data-open-burn="chat" type="button" ${inactive}>Burn${inDomTooltipMarkup("Burn this local OSL chat")}</button>${coverWritingControlsMarkup("discord", { covertextEnabled: nativeDiscordCovertextEnabled, aiAvailable: true, aiSelected: nativeDiscordAiCovertextSelected, covertextId: "native-discord-covertext", aiCovertextId: "native-discord-ai-covertext" })}${transcriptNotice}${transcriptVisibilityControl}</div>`;
+  }
   return `<div class="native-discord-header-controls discord-qa-header-controls" aria-label="Discord QA privacy controls"><div class="discord-qa-header-left"><button class="discord-qa-control danger icon-only in-dom-tooltip-anchor" data-open-burn="account" type="button" aria-label="Account Burn">${accountBurnIcon}${inDomTooltipMarkup("Open Account Burn confirmation")}</button></div><button class="discord-qa-control danger icon-only discord-qa-discord-burn in-dom-tooltip-anchor" data-open-burn="app" type="button" aria-label="Discord Burn">${discordBurnIcon}${inDomTooltipMarkup("Open Discord Burn confirmation")}</button><div class="discord-qa-header-right">${rowProofControl}<div class="discord-qa-whitelist" role="group" aria-label="Connected verified peer whitelist"><button class="in-dom-tooltip-anchor" id="discord-qa-whitelist-roster" type="button" aria-haspopup="dialog" aria-expanded="${whitelistRosterOpen}" ${discordQaHeaderBusy ? "disabled" : ""}>Whitelist${inDomTooltipMarkup("Review who is whitelisted and where")}</button>${discordQaWhitelistButtonMarkup({ scopeApproved, protectionActive: nativeDiscordProtectionActive, verifiedPeer: Boolean(verifiedPeer), busy: whitelistBusy })}</div><button class="discord-qa-control danger icon-only chat-burn in-dom-tooltip-anchor" data-open-burn="chat" type="button" ${inactive} aria-label="Chat Burn">${flame}${inDomTooltipMarkup("Open Chat Burn confirmation")}</button>${composerUnreachableNotice}${composerRefusalNotice}${transcriptNotice}${transcriptVisibilityControl}${composerControl}${whitelistWarningNotice}</div></div>`;
 }
 
@@ -8161,7 +8167,13 @@ async function openNativeDiscordProtection(personId: string): Promise<boolean> {
 }
 
 function activeVerifiedDiscordQaPeer(): { context: ManualPeerContext; person: HubPerson } | null {
-  if (!discordQaShell) return null;
+  // TASK 4501. The eye is now the app's only show-private-words control and it
+  // is drawn in the shipping strip too, so this lookup may not answer "nothing"
+  // purely because the test switch is off -- that would make every shipping
+  // press fail with "the protected scope is unavailable", which is exactly the
+  // pretend key press the ship-or-not list forbids. Who counts as verified is
+  // unchanged: the same allowed, safety-number-verified, no-pending-key-change
+  // person, or nothing.
   const context = peerProtectedSheet.context;
   if (!context || context.contextToken !== activeContextToken) return null;
   const person = hubPeople.find((candidate) => candidate.personId === context.personId
@@ -8664,27 +8676,6 @@ async function openPeerProtectedText(event: SubmitEvent): Promise<void> {
   render();
 }
 
-async function changePeerDecryptDisplay(input: HTMLInputElement): Promise<void> {
-  const context = peerProtectedSheet.context;
-  if (!context?.scopeApproved) {
-    input.checked = peerProtectedSheet.decryptDisplayEnabled;
-    return;
-  }
-  const saved = await saveActiveContextSecurity(context.contextToken, peerProtectedSheet.ttlSeconds, input.checked);
-  if (!isCurrentPeerContext(context.contextToken)) return;
-  if (!saved || !isLocalTtlSeconds(saved.ttlSeconds)) {
-    input.checked = peerProtectedSheet.decryptDisplayEnabled;
-    peerProtectedSheet.status = "This app + friend setting could not be saved.";
-    render();
-    return;
-  }
-  peerProtectedSheet.ttlSeconds = saved.ttlSeconds;
-  peerProtectedSheet.decryptDisplayEnabled = saved.decryptDisplayEnabled;
-  if (!saved.decryptDisplayEnabled) peerProtectedSheet.openedPlaintext = "";
-  peerProtectedSheet.status = saved.decryptDisplayEnabled ? "Decrypted display is on." : "Decrypted display is off.";
-  render();
-}
-
 async function copyPeerProtectedText(): Promise<void> {
   if (!peerProtectedSheet.coverText) return;
   try {
@@ -8858,25 +8849,6 @@ async function openLocalProtectedCapsule(event: SubmitEvent): Promise<void> {
   render();
 }
 
-async function changeLocalDecryptDisplay(input: HTMLInputElement): Promise<void> {
-  const contextToken = localProtectedSheet.context?.contextToken;
-  if (!contextToken) {
-    input.checked = localProtectedSheet.decryptDisplayEnabled;
-    return;
-  }
-  const saved = await saveActiveContextSecurity(contextToken, localProtectedSheet.ttlSeconds, input.checked);
-  if (!saved) {
-    input.checked = localProtectedSheet.decryptDisplayEnabled;
-    localProtectedSheet.status = "This chat setting could not be saved.";
-    render();
-    return;
-  }
-  localProtectedSheet.decryptDisplayEnabled = saved.decryptDisplayEnabled;
-  if (!saved.decryptDisplayEnabled) localProtectedSheet.openedPlaintext = "";
-  localProtectedSheet.status = saved.decryptDisplayEnabled ? "Decrypted display is on for this local chat." : "Decrypted display is off for this local chat.";
-  render();
-}
-
 async function copyLocalProtectedCapsule(): Promise<void> {
   if (!localProtectedSheet.capsule) return;
   try {
@@ -8914,7 +8886,6 @@ function bindLocalProtectedSheet(): void {
   const peerOpenDraft = document.querySelector<HTMLTextAreaElement>("#peer-cover-input");
   peerOpenDraft?.addEventListener("input", () => { peerProtectedSheet.openDraft = peerOpenDraft.value; });
   document.querySelector<HTMLButtonElement>("#peer-cover-copy")?.addEventListener("click", () => void copyPeerProtectedText());
-  document.querySelector<HTMLInputElement>("#peer-decrypt-display")?.addEventListener("change", (event) => void changePeerDecryptDisplay(event.currentTarget as HTMLInputElement));
   document.querySelectorAll<HTMLButtonElement>("[data-peer-pane]").forEach((button) => button.addEventListener("click", () => {
     reconcilePeerDraft();
     if (peerOpenDraft) peerProtectedSheet.openDraft = peerOpenDraft.value;
@@ -8927,7 +8898,6 @@ function bindLocalProtectedSheet(): void {
   document.querySelector<HTMLFormElement>("#local-protect-form")?.addEventListener("submit", (event) => void prepareLocalProtectedDraft(event));
   document.querySelector<HTMLFormElement>("#local-open-form")?.addEventListener("submit", (event) => void openLocalProtectedCapsule(event));
   document.querySelector<HTMLButtonElement>("#local-capsule-copy")?.addEventListener("click", () => void copyLocalProtectedCapsule());
-  document.querySelector<HTMLInputElement>("#local-decrypt-display")?.addEventListener("change", (event) => void changeLocalDecryptDisplay(event.currentTarget as HTMLInputElement));
   document.querySelectorAll<HTMLButtonElement>("[data-local-pane]").forEach((button) => button.addEventListener("click", () => {
     localProtectedSheet.pane = button.dataset.localPane as LocalProtectedPane;
     localProtectedSheet.openedPlaintext = "";
@@ -9244,7 +9214,7 @@ function bindWorkspace(): void {
       encryptedMode.disabled = true;
       encryptedMode.title = "Encrypted mode unlocks after OSL verifies the exact chat and recipients";
     }
-    for (const selector of ["#decrypt-display", "#timer-button"]) {
+    for (const selector of ["#timer-button"]) {
       const control = document.querySelector<HTMLInputElement | HTMLButtonElement>(selector);
       if (control) control.disabled = true;
     }
@@ -9458,7 +9428,6 @@ function bindWorkspace(): void {
   document.querySelector<HTMLButtonElement>("[data-connections-primary-action]")?.addEventListener("click", connectionsPrimaryAction);
   document.querySelector<HTMLButtonElement>("[data-people-primary-action]")?.addEventListener("click", peoplePrimaryAction);
   document.querySelectorAll<HTMLButtonElement>("[data-onboarding-action]").forEach((button) => button.addEventListener("click", () => { onboardingRoute = button.dataset.onboardingAction as OnboardingRoute; route = "onboarding"; render(); }));
-  document.querySelector<HTMLInputElement>("#decrypt-display")?.addEventListener("change", (event) => void changeDecryptDisplay(event.currentTarget as HTMLInputElement));
   document.querySelector<HTMLInputElement>("#privacy-export-input")?.addEventListener("change", (event) => void scanPrivacyExport(event.currentTarget as HTMLInputElement));
   document.querySelector<HTMLButtonElement>("#clear-privacy-scan")?.addEventListener("click", () => void clearPrivacyScanResults());
   bindScrubControls();
@@ -11340,19 +11309,12 @@ function ttlLabel(seconds: number): string {
 async function cycleContextTimer(): Promise<void> {
   if (!activeContextToken) return;
   const next = timer === "1h" ? "24h" : timer === "24h" ? "72h" : timer === "72h" ? "7d" : "1h";
-  const saved = await saveActiveContextSecurity(activeContextToken, ttlSeconds(next), decryptDisplay);
+  // The expiry control never re-decides the show-private-words setting: it
+  // carries the eye's current per-scope value through unchanged (TASK 4501).
+  const saved = await saveActiveContextSecurity(activeContextToken, ttlSeconds(next), peerProtectedSheet.decryptDisplayEnabled);
   if (!saved) { showToast("Expiry setting failed closed"); return; }
   timer = ttlLabel(saved.ttlSeconds);
   render();
-}
-
-async function changeDecryptDisplay(input: HTMLInputElement): Promise<void> {
-  if (!activeContextToken) { input.checked = decryptDisplay; return; }
-  const saved = await saveActiveContextSecurity(activeContextToken, ttlSeconds(timer), input.checked);
-  if (!saved) { input.checked = decryptDisplay; showToast("Decrypt-display setting failed closed"); return; }
-  decryptDisplay = saved.decryptDisplayEnabled;
-  render();
-  showToast(decryptDisplay ? "Encrypted messages may be decrypted locally" : "Encrypted messages stay encrypted on screen");
 }
 
 function openServiceRoute(service: LinkedService, _provider: EmailProvider | null = null, appId?: HomeAppId, forceGuide = false): void {

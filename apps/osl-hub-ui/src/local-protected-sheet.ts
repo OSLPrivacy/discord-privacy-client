@@ -185,7 +185,6 @@ export function localProtectedSheetMarkup(model: LocalProtectedSheetModel, sendM
       <textarea id="local-capsule-input" maxlength="262144" rows="6" autocomplete="off" spellcheck="false" placeholder="Paste here yourself"></textarea>
       <button class="local-primary" type="submit" ${model.busy ? "disabled" : ""}>${model.busy ? "Opening…" : "Open locally"}</button>
     </form>
-    <label class="local-decrypt-display"><span><strong>Show decrypted text</strong><small>Only for this local chat.</small></span><input id="local-decrypt-display" type="checkbox" ${model.decryptDisplayEnabled ? "checked" : ""}/></label>
     ${model.openedPlaintext ? `<section class="local-plaintext-result"><span>On this device</span><p>${escapeHtml(model.openedPlaintext)}</p></section>` : ""}`;
 
   return `<aside class="local-protected-sheet ready" aria-labelledby="local-protected-title">
