@@ -1261,3 +1261,8 @@ commands.allow = ["accept_osl_chat_clipboard_image_attachment"]
 identifier = "allow-check-hub-recovery-word-retype"
 description = "Allow only the trusted main OSL window to ask for selected recovery word positions and check the words typed for those exact positions without echoing the expected words."
 commands.allow = ["check_hub_recovery_word_retype"]
+
+[[permission]]
+identifier = "allow-reset-every-setting"
+description = "Allow only the trusted main OSL window to restore every safe Settings, Look, Friends, and Behaviour choice to its documented default."
+commands.allow = ["reset_every_setting"]

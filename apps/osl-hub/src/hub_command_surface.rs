@@ -494,6 +494,7 @@ macro_rules! hub_tauri_commands {
             set_hub_notifications_enabled,
             get_hub_chat_approval_suggestion_choice,
             set_hub_chat_approval_suggestion_choice,
+            reset_every_setting,
             answer_hub_chat_approval_suggestion,
             set_hub_screenshot_protection,
             save_onboarding_preferences,
