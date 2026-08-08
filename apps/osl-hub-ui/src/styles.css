@@ -4600,6 +4600,7 @@ code {
 .safety-disclosure > div { padding: 0 12px 12px; }
 .safety-disclosure p { margin: 7px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
 .safety-disclosure strong { color: var(--warn); }
+.safety-disclosure ul { margin: 7px 0 0; padding-left: 17px; display: grid; gap: 5px; color: var(--muted); font-size: 11px; line-height: 1.5; }
 
 .privacy-review-card h3 { margin: 8px 0 4px; }
 .privacy-review-card p { max-width: 620px; margin: 0; font-size: 12px; }
