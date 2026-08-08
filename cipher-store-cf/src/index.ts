@@ -56,6 +56,7 @@ import {
   withUploadTransferLimit,
 } from "./lib/transfer-limits.js";
 import { CYCLE_MARKER } from "./lib/d2-proof-contract.js";
+import { runAttachmentCleanupTimer } from "./lib/attachment-cleanup-timer.js";
 import { verifyStorageGrant } from "./lib/storage-grant.js";
 import {
   sweepExpired,
@@ -88,10 +89,11 @@ export default {
   },
 
   async scheduled(
-    _event: ScheduledEvent,
+    event: ScheduledEvent,
     env: Env,
     _ctx: ExecutionContext
   ): Promise<void> {
+    await runAttachmentCleanupTimer(env, event.scheduledTime);
     try {
       await sweepExpired(env);
     } catch {
