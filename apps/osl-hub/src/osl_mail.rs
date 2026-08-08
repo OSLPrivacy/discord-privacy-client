@@ -82,25 +82,6 @@ pub struct OslMailBurnReceipt {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct OslMailForwardPlan {
-    pub osl_recipients: Vec<String>,
-    pub no_osl_warnings: Vec<String>,
-    pub required_confirmation: Option<String>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OslMailForwardResult {
-    pub status: &'static str,
-    pub forwarded: bool,
-    pub osl_recipients: Vec<String>,
-    pub no_osl_warnings: Vec<String>,
-    pub warning: Option<String>,
-    pub required_confirmation: Option<String>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct OslMailThreadSummary {
     pub thread_id: String,
     pub subject: String,
@@ -142,43 +123,6 @@ pub struct OslMailSealedEnvelope {
     pub body_sha256: String,
     pub recipient_sha256: String,
     pub tag_sha256: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MailDraftControl {
-    pub name: String,
-    pub value: String,
-}
-
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct MailDraftRecipients {
-    pub to: Vec<String>,
-    pub cc: Vec<String>,
-    pub bcc: Vec<String>,
-}
-
-/// Read recipient addresses only from the named recipient controls of a mail
-/// draft. Subject/body controls are deliberately ignored even if they contain
-/// address-shaped text.
-pub fn read_draft_recipients_from_named_controls(
-    controls: &[MailDraftControl],
-) -> MailDraftRecipients {
-    let mut recipients = MailDraftRecipients::default();
-    for control in controls {
-        match normalized_recipient_control_name(&control.name) {
-            Some("to") => recipients
-                .to
-                .extend(extract_email_addresses(&control.value)),
-            Some("cc") => recipients
-                .cc
-                .extend(extract_email_addresses(&control.value)),
-            Some("bcc") => recipients
-                .bcc
-                .extend(extract_email_addresses(&control.value)),
-            _ => {}
-        }
-    }
-    recipients
 }
 
 #[derive(Deserialize)]
@@ -811,6 +755,126 @@ fn valid_osl_address(address: &str) -> bool {
         })
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SealedMailBody {
+    body: Vec<u8>,
+    envelope: OslMailSealedEnvelope,
+}
+
+fn seal_mail_body(
+    identity: &keystore::Identity,
+    recipient: &str,
+    subject: &str,
+    body: &str,
+) -> Result<SealedMailBody, String> {
+    let nonce = crypto::random::random_bytes(24);
+    let sealed_body =
+        xor_with_mail_body_keystream(identity, recipient, subject, &nonce, body.as_bytes());
+    let envelope = OslMailSealedEnvelope {
+        version: 2,
+        sealed_body_len: sealed_body.len(),
+        plaintext_len: body.len(),
+        nonce_b64: STANDARD.encode(&nonce),
+        subject_sha256: sha256_hex(subject.as_bytes()),
+        body_sha256: sha256_hex(body.as_bytes()),
+        recipient_sha256: sha256_hex(recipient.as_bytes()),
+        tag_sha256: mail_body_tag_sha256(identity, recipient, subject, &nonce, &sealed_body),
+    };
+    Ok(SealedMailBody {
+        body: sealed_body,
+        envelope,
+    })
+}
+
+fn open_mail_body(
+    identity: &keystore::Identity,
+    recipient: &str,
+    subject: &str,
+    envelope: &OslMailSealedEnvelope,
+    sealed_body: &[u8],
+) -> Result<String, String> {
+    if envelope.version != 2
+        || envelope.sealed_body_len != sealed_body.len()
+        || envelope.subject_sha256 != sha256_hex(subject.as_bytes())
+        || envelope.recipient_sha256 != sha256_hex(recipient.as_bytes())
+    {
+        return Err("OSL Mail sealed body envelope did not match the message".to_owned());
+    }
+    let nonce = STANDARD
+        .decode(&envelope.nonce_b64)
+        .map_err(|_| "OSL Mail sealed body nonce was malformed".to_owned())?;
+    if envelope.tag_sha256
+        != mail_body_tag_sha256(identity, recipient, subject, &nonce, sealed_body)
+    {
+        return Err("OSL Mail sealed body tag did not verify".to_owned());
+    }
+    let plaintext = xor_with_mail_body_keystream(identity, recipient, subject, &nonce, sealed_body);
+    if plaintext.len() != envelope.plaintext_len || envelope.body_sha256 != sha256_hex(&plaintext) {
+        return Err("OSL Mail sealed body fingerprint did not match".to_owned());
+    }
+    String::from_utf8(plaintext).map_err(|_| "OSL Mail sealed body was not UTF-8".to_owned())
+}
+
+pub fn open_osl_mail_sealed_body(
+    identity: &keystore::Identity,
+    recipient: &str,
+    subject: &str,
+    envelope: &OslMailSealedEnvelope,
+    sealed_body: &[u8],
+) -> Result<String, String> {
+    open_mail_body(identity, recipient, subject, envelope, sealed_body)
+}
+
+fn xor_with_mail_body_keystream(
+    identity: &keystore::Identity,
+    recipient: &str,
+    subject: &str,
+    nonce: &[u8],
+    input: &[u8],
+) -> Vec<u8> {
+    input
+        .iter()
+        .enumerate()
+        .map(|(index, byte)| {
+            byte ^ mail_body_keystream_byte(identity, recipient, subject, nonce, index)
+        })
+        .collect()
+}
+
+fn mail_body_keystream_byte(
+    identity: &keystore::Identity,
+    recipient: &str,
+    subject: &str,
+    nonce: &[u8],
+    index: usize,
+) -> u8 {
+    let mut hash = Sha256::new();
+    hash.update(b"OSL-MAIL-BODY-STREAM-v2");
+    hash.update(identity.ed25519_secret.as_bytes());
+    hash.update(recipient.as_bytes());
+    hash.update(subject.as_bytes());
+    hash.update(nonce);
+    hash.update((index / 32).to_be_bytes());
+    (hash.finalize()[index % 32] & 0x7f) | 0x80
+}
+
+fn mail_body_tag_sha256(
+    identity: &keystore::Identity,
+    recipient: &str,
+    subject: &str,
+    nonce: &[u8],
+    sealed_body: &[u8],
+) -> String {
+    let mut hash = Sha256::new();
+    hash.update(b"OSL-MAIL-BODY-TAG-v2");
+    hash.update(identity.ed25519_secret.as_bytes());
+    hash.update(recipient.as_bytes());
+    hash.update(subject.as_bytes());
+    hash.update(nonce);
+    hash.update(sealed_body);
+    sha256_hex(&hash.finalize())
+}
+
 fn thread_summaries_from_list(messages: Vec<ListResponseMessage>) -> Vec<OslMailThreadSummary> {
     let mut seen = std::collections::BTreeSet::new();
     let mut threads = Vec::new();
@@ -1036,122 +1100,6 @@ fn visible_list_subject(message: &ListResponseMessage) -> String {
         .filter(|_subject| message.kind == "external_envelope")
         .unwrap_or(BORING_PROTECTED_SUBJECT)
         .to_owned()
-}
-
-fn protected_forward_confirmation(no_osl_recipients: &[String]) -> String {
-    format!("CONFIRM NO-OSL FORWARD: {}", no_osl_recipients.join(","))
-}
-
-fn protected_forward_warning(required_confirmation: &str) -> String {
-    format!(
-        "Protected OSL Mail forward includes recipients without OSL. Enter `{required_confirmation}` to continue."
-    )
-}
-
-fn normalize_forward_recipient(recipient: &str) -> Result<String, String> {
-    let normalized = recipient.trim().to_ascii_lowercase();
-    if normalized.len() > 254
-        || normalized.chars().any(|character| {
-            character.is_control() || matches!(character, '<' | '>' | '"' | ',' | ';')
-        })
-        || !valid_forward_email_address(&normalized)
-    {
-        return Err("OSL Mail forward recipient is invalid".to_owned());
-    }
-    Ok(normalized)
-}
-
-fn valid_forward_email_address(address: &str) -> bool {
-    let Some((local, domain)) = address.split_once('@') else {
-        return false;
-    };
-    !local.is_empty()
-        && local.len() <= 64
-        && !domain.is_empty()
-        && domain.len() <= 253
-        && local.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric()
-                || matches!(
-                    byte,
-                    b'.' | b'_'
-                        | b'%'
-                        | b'+'
-                        | b'-'
-                        | b'!'
-                        | b'#'
-                        | b'$'
-                        | b'&'
-                        | b'\''
-                        | b'*'
-                        | b'/'
-                        | b'='
-                        | b'?'
-                        | b'^'
-                        | b'`'
-                        | b'{'
-                        | b'|'
-                        | b'}'
-                        | b'~'
-                )
-        })
-        && domain.split('.').all(|label| {
-            !label.is_empty()
-                && label
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-        })
-        && domain.contains('.')
-}
-
-fn normalized_recipient_control_name(name: &str) -> Option<&'static str> {
-    let mut value = name.trim();
-    if let Some(stripped) = value.strip_suffix(':') {
-        value = stripped.trim_end();
-    }
-    if value.eq_ignore_ascii_case("to") {
-        Some("to")
-    } else if value.eq_ignore_ascii_case("cc") {
-        Some("cc")
-    } else if value.eq_ignore_ascii_case("bcc") {
-        Some("bcc")
-    } else {
-        None
-    }
-}
-
-fn extract_email_addresses(value: &str) -> Vec<String> {
-    value
-        .split(|byte: char| byte.is_whitespace() || matches!(byte, ',' | ';'))
-        .filter_map(normalized_email_token)
-        .collect()
-}
-
-fn normalized_email_token(token: &str) -> Option<String> {
-    let token = token
-        .trim_matches(|byte: char| matches!(byte, '<' | '>' | '"' | '\'' | '(' | ')' | '[' | ']'));
-    if token.is_empty()
-        || token.len() > 254
-        || token.matches('@').count() != 1
-        || token.chars().any(|byte| byte.is_control())
-    {
-        return None;
-    }
-    let (local, domain) = token.split_once('@')?;
-    if local.is_empty()
-        || domain.is_empty()
-        || domain.starts_with('.')
-        || domain.ends_with('.')
-        || !domain.contains('.')
-    {
-        return None;
-    }
-    let local_ok = local
-        .bytes()
-        .all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+-/=?^_`{|}~.".contains(&byte));
-    let domain_ok = domain
-        .bytes()
-        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'));
-    (local_ok && domain_ok).then(|| token.to_owned())
 }
 
 fn active_identity(core: &HubCoreState) -> Result<keystore::Identity, String> {

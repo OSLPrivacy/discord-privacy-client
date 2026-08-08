@@ -223,7 +223,7 @@ export class Mailbox extends DurableObject<Env> {
     const bounded = Math.max(1, Math.min(100, Math.trunc(limit)));
     return this.sql.exec<MessageListRow>(
       `SELECT message_id, kind, sender_user_id, opaque_thread_token,
-       recipient_key_fingerprint, received_at, expires_at, byte_length
+       recipient_key_fingerprint, received_at, expires_at, byte_length, opened_at
        FROM messages WHERE expires_at > ? ORDER BY received_at DESC LIMIT ?`,
       Date.now(),
       bounded,
@@ -231,11 +231,9 @@ export class Mailbox extends DurableObject<Env> {
   }
 
   /**
-   * The one authoritative unread decision.  Arrival creates a row with a
-   * null `opened_at`; `fetchMessage` records the first time its ciphertext is
-   * handed to the client to show.  Keeping this beside those transitions makes
-   * the count durable across desktop restarts and prevents each caller from
-   * inventing its own definition of unread.
+   * The one authoritative unread decision. Arrival creates a row with a null
+   * `opened_at`; only an explicit mark records that the user handled it.
+   * Fetching is deliberately observational and cannot change this count.
    */
   unreadCount(ownerUserId: string): number {
     this.assertOwner(ownerUserId);
@@ -247,19 +245,21 @@ export class Mailbox extends DurableObject<Env> {
 
   fetchMessage(ownerUserId: string, messageId: string): MessageRow | null {
     this.assertOwner(ownerUserId);
-    const row = this.sql.exec<MessageRow>(
+    return this.sql.exec<MessageRow>(
       "SELECT * FROM messages WHERE message_id = ? AND expires_at > ?",
       messageId,
       Date.now(),
     ).toArray()[0] ?? null;
-    if (!row) return null;
-    const openedAt = Date.now();
-    this.sql.exec(
-      "UPDATE messages SET opened_at = COALESCE(opened_at, ?) WHERE message_id = ?",
-      openedAt,
+  }
+
+  markRead(ownerUserId: string, messageId: string, now: number): boolean {
+    this.assertOwner(ownerUserId);
+    return this.sql.exec(
+      "UPDATE messages SET opened_at = COALESCE(opened_at, ?) WHERE message_id = ? AND expires_at > ?",
+      now,
       messageId,
-    );
-    return { ...row, opened_at: row.opened_at ?? openedAt };
+      now,
+    ).rowsWritten > 0;
   }
 
   ack(ownerUserId: string, requestId: string, messageId: string, now: number): { deleted: boolean; replay: boolean } {
