@@ -201,6 +201,40 @@ pub struct WebsiteInstagramDiscovery {
     pub active_composer: String,
 }
 
+/// The outcome of placing a marked fixture into a named browser composer,
+/// reading that same composer back, and clearing it again.
+///
+/// The byte counts are intentionally public for an attended check, while the
+/// provider's text stays private to this receipt.  A caller can only ask
+/// whether the exact fixture bytes match it through
+/// [`WebsiteExactTextPlacementReceipt::matches_fixture_bytes`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WebsiteExactTextPlacementReceipt {
+    pub marked_bytes: usize,
+    pub readback_bytes: usize,
+    pub bytes_after_clear: usize,
+    readback: Vec<u8>,
+}
+
+impl WebsiteExactTextPlacementReceipt {
+    /// Check the provider's read-back against the original fixture bytes.
+    ///
+    /// This is exact byte equality, not a substring or normalized-text check;
+    /// changing even one fixture byte makes the check fail.
+    pub fn matches_fixture_bytes(&self, fixture: &[u8]) -> bool {
+        self.readback == fixture
+    }
+
+    /// Turn the exact byte comparison into the same fail-closed result used
+    /// by the placement action. This gives break checks a real red result
+    /// instead of treating a boolean observation as a proof.
+    pub fn verify_fixture_bytes(&self, fixture: &[u8]) -> Result<(), WebsiteDriverError> {
+        self.matches_fixture_bytes(fixture)
+            .then_some(())
+            .ok_or(WebsiteDriverError::TextReadbackMismatch)
+    }
+}
+
 /// Bounded browser-window discovery shared by the reviewed messaging surfaces.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WebsiteBrowserDiscovery {
@@ -391,6 +425,8 @@ pub enum WebsiteDriverError {
     ReadFailed,
     NoSelectedMessage,
     TextPlacementFailed,
+    TextReadbackMismatch,
+    TextClearFailed,
     NamedControlNotFound,
     NamedControlDisabled,
     MissingNamedControl(String),
@@ -409,6 +445,10 @@ impl fmt::Display for WebsiteDriverError {
             Self::ReadFailed => f.write_str("website page could not be read"),
             Self::NoSelectedMessage => f.write_str("no selected message"),
             Self::TextPlacementFailed => f.write_str("website text could not be placed"),
+            Self::TextReadbackMismatch => {
+                f.write_str("website text read-back did not match the fixture bytes")
+            }
+            Self::TextClearFailed => f.write_str("website composer did not clear"),
             Self::NamedControlNotFound => f.write_str("website named control was not found"),
             Self::NamedControlDisabled => f.write_str("Send disabled"),
             Self::MissingNamedControl(name) => {
@@ -779,6 +819,122 @@ impl RealBrowserWebsiteDriver {
         let websocket_url = self.page_websocket_url(page)?;
         let snapshot = read_page_snapshot(&websocket_url)?;
         Ok(browser_discovery_from_snapshot(snapshot))
+    }
+
+    /// Put text in one named editable control.  This is deliberately service
+    /// neutral: provider discovery chooses the control, while this shared
+    /// action performs the browser mutation.
+    pub fn place_text_in_named_composer(
+        &mut self,
+        page: &WebsitePage,
+        composer_name: &str,
+        text: &str,
+    ) -> Result<(), WebsiteDriverError> {
+        let websocket_url = self.page_websocket_url(page)?;
+        let expression = named_composer_expression(
+            PLACE_NAMED_COMPOSER_TEXT_EXPRESSION,
+            composer_name,
+            Some(text),
+        )?;
+        match evaluate_target(&websocket_url, &expression)? {
+            serde_json::Value::Bool(true) => Ok(()),
+            _ => Err(WebsiteDriverError::TextPlacementFailed),
+        }
+    }
+
+    /// Read one named editable control through the same generic browser
+    /// action used by every reviewed website surface.
+    pub fn read_named_composer_text(
+        &mut self,
+        page: &WebsitePage,
+        composer_name: &str,
+    ) -> Result<String, WebsiteDriverError> {
+        let websocket_url = self.page_websocket_url(page)?;
+        let expression =
+            named_composer_expression(READ_NAMED_COMPOSER_TEXT_EXPRESSION, composer_name, None)?;
+        match evaluate_target(&websocket_url, &expression)? {
+            serde_json::Value::String(text) => Ok(text),
+            _ => Err(WebsiteDriverError::ReadFailed),
+        }
+    }
+
+    /// Clear one named editable control through the shared browser action.
+    pub fn clear_named_composer_text(
+        &mut self,
+        page: &WebsitePage,
+        composer_name: &str,
+    ) -> Result<(), WebsiteDriverError> {
+        let websocket_url = self.page_websocket_url(page)?;
+        let expression =
+            named_composer_expression(CLEAR_NAMED_COMPOSER_TEXT_EXPRESSION, composer_name, None)?;
+        match evaluate_target(&websocket_url, &expression)? {
+            serde_json::Value::Bool(true) => Ok(()),
+            _ => Err(WebsiteDriverError::TextClearFailed),
+        }
+    }
+
+    /// Place a marked fixture, read it back byte-for-byte, then leave the
+    /// composer empty.  The action is shared by website surfaces; the caller
+    /// supplies only the previously discovered composer name.
+    pub fn place_composer_text_exactly_and_clear(
+        &mut self,
+        page: &WebsitePage,
+        composer_name: &str,
+        fixture: &str,
+    ) -> Result<WebsiteExactTextPlacementReceipt, WebsiteDriverError> {
+        self.place_text_in_named_composer(page, composer_name, fixture)?;
+
+        // Once a write has happened, always attempt the clear before returning
+        // a failed exactness check. A mismatched browser read-back must never
+        // leave marked text in a real conversation.
+        let readback = self.read_named_composer_text(page, composer_name);
+        let clear = self.clear_named_composer_text(page, composer_name);
+        let after_clear = self.read_named_composer_text(page, composer_name);
+        let readback = readback?;
+        clear?;
+        let after_clear = after_clear?;
+        let receipt = WebsiteExactTextPlacementReceipt {
+            marked_bytes: fixture.len(),
+            readback_bytes: readback.len(),
+            bytes_after_clear: after_clear.len(),
+            readback: readback.into_bytes(),
+        };
+        if receipt.bytes_after_clear != 0 {
+            return Err(WebsiteDriverError::TextClearFailed);
+        }
+        receipt.verify_fixture_bytes(fixture.as_bytes())?;
+        Ok(receipt)
+    }
+
+    /// Instagram supplies discovery facts only. The actual write, exact
+    /// read-back, and clear are the generic actions above, not an Instagram
+    /// specific DOM path.
+    pub fn place_instagram_composer_text_exactly_and_clear(
+        &mut self,
+        page: &WebsitePage,
+        fixture: &str,
+    ) -> Result<WebsiteExactTextPlacementReceipt, WebsiteDriverError> {
+        let discovery = self
+            .discover_instagram_window(page)?
+            .ok_or(WebsiteDriverError::PageUnavailable)?;
+        self.place_composer_text_exactly_and_clear(page, &discovery.active_composer, fixture)
+    }
+}
+
+fn named_composer_expression(
+    template: &str,
+    composer_name: &str,
+    text: Option<&str>,
+) -> Result<String, WebsiteDriverError> {
+    let name = serde_json::to_string(composer_name).map_err(|_| WebsiteDriverError::ReadFailed)?;
+    let expression = template
+        .replace("__OSL_NAMED_COMPOSER_COMMON__", NAMED_COMPOSER_COMMON)
+        .replace("__OSL_COMPOSER_NAME__", &name);
+    match text {
+        Some(text) => serde_json::to_string(text)
+            .map(|text| expression.replace("__OSL_TEXT__", &text))
+            .map_err(|_| WebsiteDriverError::ReadFailed),
+        None => Ok(expression),
     }
 }
 
@@ -2336,6 +2492,31 @@ mod tests {
             .iter()
             .flatten()
             .all(|discovery| discovery.place_kind != INSTAGRAM_PLACE));
+
+        println!(
+            "TASK1131 browser_title={}",
+            instagram_discovery.browser_title
+        );
+        println!(
+            "TASK1131 instagram_place_kind={}",
+            instagram_discovery.place_kind
+        );
+        println!(
+            "TASK1131 active_composer={}",
+            instagram_discovery.active_composer
+        );
+        println!(
+            "TASK1131 messenger_place_kind={}",
+            messenger_discovery.place_kind
+        );
+        println!(
+            "TASK1131 other_fixture_instagram_place_kind_count={}",
+            other_discoveries
+                .iter()
+                .flatten()
+                .filter(|discovery| discovery.place_kind == INSTAGRAM_PLACE)
+                .count()
+        );
     }
 
     #[test]
@@ -2407,6 +2588,24 @@ mod tests {
             .discover_browser_window(&other_page)
             .expect("read other fixture")
             .is_none());
+
+        println!(
+            "TASK1131 browser_title={}",
+            instagram_discovery.browser_title
+        );
+        println!(
+            "TASK1131 instagram_place_kind={}",
+            instagram_discovery.place_kind
+        );
+        println!(
+            "TASK1131 active_composer={}",
+            instagram_discovery.active_composer
+        );
+        println!(
+            "TASK1131 messenger_place_kind={}",
+            messenger_discovery.place_kind
+        );
+        println!("TASK1131 other_fixture_instagram_place_kind_count=0");
     }
 
     #[test]
@@ -2432,7 +2631,8 @@ mod tests {
                   <input id="instagram-box-1132" role="searchbox" aria-label="Instagram composer" data-osl-instagram-composer="search-focused">
                 </main>"#,
         );
-        let mut driver = RealBrowserWebsiteDriver::launch().expect("launch task 1132 fixture browser");
+        let mut driver =
+            RealBrowserWebsiteDriver::launch().expect("launch task 1132 fixture browser");
 
         let discover = |driver: &mut RealBrowserWebsiteDriver, fixture: &Task1131Page| {
             let page = driver
@@ -2453,13 +2653,81 @@ mod tests {
             search_focused_result.is_none(),
             "search-focused must be refused by name"
         );
-        let restored_result = discover(&mut driver, &good).expect("restored active composer must be found");
+        let restored_result =
+            discover(&mut driver, &good).expect("restored active composer must be found");
         assert_eq!(restored_result.active_composer, COMPOSER_NAME);
 
         println!("TASK1132 box={BOX_ID} result_count=1 result_name={COMPOSER_NAME}");
         println!("TASK1132 state=closed result=refused");
         println!("TASK1132 state=search-focused result=refused");
         println!("TASK1132 restored_box={BOX_ID} result_count=1 result_name={COMPOSER_NAME}");
+    }
+
+    #[test]
+    fn task_1133_instagram_uses_shared_exact_place_readback_and_clear_actions() {
+        const FIXTURE: &str = "OSL-MARKED-1133";
+        let instagram = Task1131Page::spawn(
+            "Instagram — Maya placement fixture",
+            r#"<main data-osl-service="instagram" data-osl-instagram-place-kind="direct_message">
+                  <textarea aria-label="Search messages"></textarea>
+                  <textarea aria-label="Message Maya" data-osl-instagram-composer="active"></textarea>
+                </main>"#,
+        );
+        let mut driver = RealBrowserWebsiteDriver::launch().expect("launch fixture browser");
+        let page = driver
+            .find_page(WebsitePageRequest {
+                url: instagram.url(),
+            })
+            .expect("open Instagram fixture");
+        driver.read_page(&page).expect("wait for Instagram fixture");
+
+        let receipt = driver
+            .place_instagram_composer_text_exactly_and_clear(&page, FIXTURE)
+            .expect("shared actions place, read back, and clear the Instagram composer");
+        let search_after = driver
+            .read_named_composer_text(&page, "Search messages")
+            .expect("read decoy composer");
+        let changed = b"PSL-MARKED-1133";
+        let expected_fixture =
+            std::env::var("OSL_TASK_1133_EXPECTED_FIXTURE").unwrap_or_else(|_| FIXTURE.to_owned());
+
+        assert_eq!(receipt.marked_bytes, FIXTURE.len());
+        assert_eq!(receipt.readback_bytes, FIXTURE.len());
+        assert_eq!(receipt.bytes_after_clear, 0);
+        assert!(receipt.matches_fixture_bytes(FIXTURE.as_bytes()));
+        receipt
+            .verify_fixture_bytes(expected_fixture.as_bytes())
+            .expect("the configured fixture bytes must match the exact browser read-back");
+        assert!(
+            !receipt.matches_fixture_bytes(changed),
+            "a one-byte fixture change must fail the exact read-back check"
+        );
+        assert_eq!(
+            receipt.verify_fixture_bytes(changed),
+            Err(WebsiteDriverError::TextReadbackMismatch),
+            "the changed fixture must produce the shared check's failure"
+        );
+        assert!(
+            search_after.is_empty(),
+            "the shared named action skipped Search"
+        );
+
+        println!("TASK1133 marked_bytes={}", receipt.marked_bytes);
+        println!("TASK1133 readback_bytes={}", receipt.readback_bytes);
+        println!("TASK1133 clear_bytes={}", receipt.bytes_after_clear);
+        println!(
+            "TASK1133 exact_fixture_match={}",
+            receipt.matches_fixture_bytes(FIXTURE.as_bytes())
+        );
+        println!(
+            "TASK1133 one_byte_changed_fixture_match={}",
+            receipt.matches_fixture_bytes(changed)
+        );
+        println!(
+            "TASK1133 one_byte_changed_fixture_check={}",
+            receipt.verify_fixture_bytes(changed).is_err()
+        );
+        println!("TASK1133 search_decoy_bytes={}", search_after.len());
     }
 
     struct Task1131Page {
@@ -2571,6 +2839,85 @@ fn email_send_expression(recipient: &str, body: Option<&str>, should_send: bool)
 "#
     )
 }
+
+// These are intentionally service-neutral browser actions. A reviewed surface
+// discovers its composer first, then gives its accessible name to this shared
+// implementation.
+const NAMED_COMPOSER_COMMON: &str = r#"
+  const expected = __OSL_COMPOSER_NAME__;
+  const compact = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+  const visible = (element) => {
+    if (!element || element.hidden || element.getAttribute('aria-hidden') === 'true') return false;
+    const style = window.getComputedStyle(element);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+    return element.getClientRects().length > 0;
+  };
+  const editable = (element) => {
+    if (element.disabled || element.readOnly) return false;
+    if (element.isContentEditable) return true;
+    const tag = element.tagName.toLowerCase();
+    if (tag === 'textarea') return true;
+    if (tag !== 'input') return element.getAttribute('role') === 'textbox' || element.getAttribute('role') === 'searchbox';
+    const type = (element.getAttribute('type') || 'text').toLowerCase();
+    return !['button', 'checkbox', 'color', 'file', 'hidden', 'image', 'radio', 'range', 'reset', 'submit'].includes(type);
+  };
+  const labelledBy = (element) => compact(
+    (element.getAttribute('aria-labelledby') || '')
+      .split(/\s+/)
+      .map((id) => document.getElementById(id))
+      .filter(Boolean)
+      .map((label) => label.innerText || label.textContent || '')
+      .join(' ')
+  );
+  const controlName = (element) => {
+    for (const candidate of [
+      element.getAttribute('aria-label'), labelledBy(element), element.getAttribute('placeholder'),
+      element.getAttribute('title'), element.getAttribute('name'), element.id
+    ]) {
+      const name = compact(candidate);
+      if (name) return name;
+    }
+    return '';
+  };
+  const matches = Array.from(document.querySelectorAll(
+    'textarea, input, [contenteditable=""], [contenteditable="true"], [role="textbox"], [role="searchbox"]'
+  )).filter((element) => visible(element) && editable(element) && controlName(element) === expected);
+  if (matches.length !== 1) return null;
+  const composer = matches[0];
+  const valueOf = (element) => element.isContentEditable ? (element.textContent || '') : String(element.value || '');
+"#;
+
+const PLACE_NAMED_COMPOSER_TEXT_EXPRESSION: &str = r#"
+(() => {
+__OSL_NAMED_COMPOSER_COMMON__
+  const text = __OSL_TEXT__;
+  composer.focus();
+  if (composer.isContentEditable) composer.textContent = text;
+  else composer.value = text;
+  composer.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+  composer.dispatchEvent(new Event('change', { bubbles: true }));
+  return valueOf(composer) === text;
+})()
+"#;
+
+const READ_NAMED_COMPOSER_TEXT_EXPRESSION: &str = r#"
+(() => {
+__OSL_NAMED_COMPOSER_COMMON__
+  return valueOf(composer);
+})()
+"#;
+
+const CLEAR_NAMED_COMPOSER_TEXT_EXPRESSION: &str = r#"
+(() => {
+__OSL_NAMED_COMPOSER_COMMON__
+  composer.focus();
+  if (composer.isContentEditable) composer.textContent = '';
+  else composer.value = '';
+  composer.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward', data: null }));
+  composer.dispatchEvent(new Event('change', { bubbles: true }));
+  return valueOf(composer) === '';
+})()
+"#;
 
 const PLACE_TEXT_EXPRESSION: &str = r#"
 (() => {
