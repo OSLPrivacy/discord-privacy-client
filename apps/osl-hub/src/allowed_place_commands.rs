@@ -1,4 +1,5 @@
 use crate::security::{
+    AllowedPlaceDirectionState,
     HubSecurityState,
     self,
 };
@@ -48,6 +49,11 @@ pub enum AllowedPlaceCommandJson {
         ok: bool,
         allowed: bool,
         query: AllowedPlaceQuery,
+    },
+    Compare {
+        ok: bool,
+        #[serde(flatten)]
+        direction: AllowedPlaceDirectionState,
     },
 }
 
@@ -152,6 +158,28 @@ pub fn allowed_place_allowed_json(
     })
 }
 
+pub fn compare_allowed_place_json(
+    store_dir: &Path,
+    app: String,
+    kind: String,
+    first_account: String,
+    second_account: String,
+) -> Result<AllowedPlaceCommandJson, String> {
+    with_headless_store(store_dir, |security| {
+        let direction = security::compare_allowed_place_direction_state(
+            security,
+            app,
+            kind,
+            first_account,
+            second_account,
+        )?;
+        Ok(AllowedPlaceCommandJson::Compare {
+            ok: true,
+            direction,
+        })
+    })
+}
+
 fn run_allowed_place_command(
     command: &str,
     args: &[String],
@@ -162,8 +190,15 @@ fn run_allowed_place_command(
         "remove" => remove_allowed_place_json(&parsed.store, parsed.required("stable-id")?),
         "list" => list_allowed_places_json(&parsed.store),
         "allowed" => allowed_place_allowed_json(&parsed.store, parsed.query()?),
+        "compare" => compare_allowed_place_json(
+            &parsed.store,
+            parsed.required("app")?,
+            parsed.required("kind")?,
+            parsed.required("first-account")?,
+            parsed.required("second-account")?,
+        ),
         _ => Err(
-            "usage: --allowed-place <add|remove|list|allowed> --store <dir> [--app <app> --account <account> --kind <kind> --stable-id <stable-id>]"
+            "usage: --allowed-place <add|remove|list|allowed|compare> --store <dir> [--app <app> --account <account> --kind <kind> --stable-id <stable-id> --first-account <account> --second-account <account>]"
                 .to_owned(),
         ),
     }
