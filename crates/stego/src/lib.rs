@@ -25,6 +25,7 @@ mod mode0;
 mod mode1;
 mod mode1_templates;
 mod mode1_wordlists;
+pub mod word_bank_grown;
 
 pub use image_hidden::{
     decode_png_hidden_pointer, decode_png_hidden_pointer_bytes, encode_png_hidden_pointer_bytes,
@@ -41,7 +42,7 @@ pub use mode0::{
 pub use mode1::{
     compute_shrunk_token_tag, compute_token_tag, decode_cover_message_token, decode_mode1,
     decode_shrunk_token, decode_token, encode_mode1, encode_shrunk_token,
-    encode_shrunk_token_word_bank, encode_token, is_mode1,
+    encode_shrunk_token_grown_bank, encode_shrunk_token_word_bank, encode_token, is_mode1,
     ConversationCipher, CoverMessageToken, DETECT_TAG_BYTES, MODE1_MAX_RAW_LEN, MODE1_PREFIX,
     NEW_COVER_MESSAGE_VERSION, OLD_COVER_MESSAGE_VERSION, PERMUTATION_DOMAIN,
     SHRUNK_TOKEN_ID_BYTES, SHRUNK_TOKEN_MAC_DOMAIN, SHRUNK_TOKEN_PAYLOAD_BITS,
