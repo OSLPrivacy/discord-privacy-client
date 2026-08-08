@@ -54,6 +54,9 @@ export function torRouteStatusLabel(status: TorBootStatus): string {
  * live attempt, including a cold start that needs 75 seconds. */
 export function firstRunTorScreenMarkup(status: TorBootStatus): string {
   const label = torRouteStatusLabel(status);
+  const successCopy = status.ready
+    ? `<p class="tor-first-run-scope">Use Tor covers OSL's own traffic and nothing else. Discord, Telegram and the browser are separate processes with their own sockets.</p>`
+    : "";
   const actions = status.failed
     ? `<div class="tor-first-run-actions"><button type="button" data-tor-retry>Retry</button><button type="button" data-tor-direct>Direct</button></div>`
     : status.ready
@@ -62,6 +65,7 @@ export function firstRunTorScreenMarkup(status: TorBootStatus): string {
   return `<section class="tor-first-run" aria-labelledby="tor-first-run-heading">
     <h1 id="tor-first-run-heading">Connecting with Tor</h1>
     <p class="tor-first-run-status" role="status" aria-live="polite">${label}</p>
+    ${successCopy}
     ${actions}
   </section>`;
 }

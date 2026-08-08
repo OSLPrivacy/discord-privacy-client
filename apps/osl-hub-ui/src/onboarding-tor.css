@@ -164,6 +164,29 @@
   text-align: center;
 }
 
+.tor-mullvad-status {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: baseline;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--tor-line);
+  background: var(--tor-card);
+  color: var(--tor-second);
+  text-align: left;
+}
+
+.tor-mullvad-status strong {
+  color: var(--tor-text);
+  font-size: 14px;
+}
+
+.tor-mullvad-status span {
+  font-family: "Source Sans 3 Variable", "Source Sans 3", var(--font-ui);
+  font-size: 13px;
+}
+
 /* Continue and Back stack. The global Back is prepended into this row by
    dockOnboardingBackControl, so it arrives FIRST in the DOM and `order` puts
    it back underneath. */
@@ -220,6 +243,13 @@
   margin: 24px 0 0;
   font-variant-numeric: tabular-nums;
   color: var(--tor-second, #b8c2c7);
+}
+
+.tor-first-run-scope {
+  margin: 16px auto 0;
+  max-width: 48ch;
+  color: var(--tor-second, #b8c2c7);
+  line-height: 1.5;
 }
 
 .tor-first-run-actions {

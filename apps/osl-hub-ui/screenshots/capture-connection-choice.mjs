@@ -9,8 +9,8 @@ import { createServer as createViteServer } from "vite";
 import { launchChrome } from "../../../scripts/lib/cdp-harness.mjs";
 
 export const FIXED_VIEWPORT = { width: 800, height: 620 };
-export const REQUIRED_NAMES = ["Connection choice", "Tor", "direct", "Continue", "Back"];
-const REQUIRED_IMAGE_TEXT = ["Connection choice", "Tor", "direct", "Continue", "Back"];
+export const REQUIRED_NAMES = ["Connection choice", "Tor", "Direct", "Mullvad", "You can use both. Neither replaces the other.", "Continue", "Back"];
+const REQUIRED_IMAGE_TEXT = ["Connection choice", "Tor", "Direct", "Mullvad", "You can use both. Neither replaces the other.", "Continue", "Back"];
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const APP_ROOT = path.dirname(SCRIPT_DIR);

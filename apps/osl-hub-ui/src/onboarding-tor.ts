@@ -88,7 +88,7 @@ export function onboardingTorMarkup(state: TorOnboardingState): string {
   const card = (choice: Exclude<TorChoice, null>, title: string, diagram: string, caption: string): string => {
     const selected = state.choice === choice;
     return `<label class="tor-choice-card${selected ? " selected" : ""}">
-      <input class="sr-only" type="radio" name="tor-route" value="${choice}" aria-label="${choice === "tor" ? "Tor" : "direct"}"${selected ? " checked" : ""}/>
+      <input class="sr-only" type="radio" name="tor-route" value="${choice}" aria-label="${title}"${selected ? " checked" : ""}/>
       <span class="tor-card-head">${choiceRadio()}<strong>${title}</strong></span>
       ${diagram}
       <span class="tor-card-caption">${caption}</span>
@@ -98,9 +98,10 @@ export function onboardingTorMarkup(state: TorOnboardingState): string {
   return `<section class="tor-onboarding" aria-labelledby="tor-onboarding-heading">
     <h1 id="tor-onboarding-heading" tabindex="-1" class="tor-title">Connection choice</h1>
     <fieldset class="tor-choice-grid"><legend class="sr-only">Connection route</legend>
-      ${card("tor", "Use Tor", torDiagram(), "travel time · 2–6 s")}
-      ${card("direct", "Connect directly", directDiagram(), "travel time · under 1 s")}
+      ${card("tor", "Tor", torDiagram(), "travel time · 2–6 s")}
+      ${card("direct", "Direct", directDiagram(), "travel time · under 1 s")}
     </fieldset>
+    <div class="tor-mullvad-status" aria-label="Mullvad status"><strong>Mullvad</strong><span>You can use both. Neither replaces the other.</span></div>
     <div class="setup-footer onboarding-actions">${continueButton("data-tor-choice-continue", "tor-continue")}</div>
   </section>`;
 }

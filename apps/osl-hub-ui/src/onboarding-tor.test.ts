@@ -23,14 +23,19 @@ describe("Tor onboarding choice", () => {
     expect(markup).not.toContain("disabled");
   });
 
-  it("gives both routes equal weight and claims nothing in words", () => {
+  it("gives the two routes equal weight and keeps Mullvad beside them as status", () => {
     const markup = onboardingTorMarkup(initialTorOnboardingState());
 
+    expect(markup.match(/type="radio"/gu)).toHaveLength(2);
     expect(markup).toContain('value="tor"');
     expect(markup).toContain('value="direct"');
     expect(markup).toContain(">Connection choice</h1>");
     expect(markup).toContain('aria-label="Tor"');
-    expect(markup).toContain('aria-label="direct"');
+    expect(markup).toContain('aria-label="Direct"');
+    expect(markup).toContain("<strong>Tor</strong>");
+    expect(markup).toContain("<strong>Direct</strong>");
+    expect(markup).toContain('<div class="tor-mullvad-status" aria-label="Mullvad status">');
+    expect(markup).toContain("You can use both. Neither replaces the other.");
     expect(markup).not.toMatch(/recommended|more private|safer/iu);
     // The two animations carry the comparison, so each card states only its
     // own travel time and neither is described as the better option.
