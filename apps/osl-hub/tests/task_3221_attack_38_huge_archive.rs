@@ -118,7 +118,10 @@ fn task_3221_small_archive_with_huge_unpacked_size_is_delivered_without_unpackin
     let archive_entries_unpacked = count_regular_files(&unpack_root);
     let peak_memory_bytes = proc_status_bytes("VmHWM:").max(start_memory_bytes);
 
-    assert_eq!(archive_entries_unpacked, 0);
+    assert_eq!(
+        archive_entries_unpacked, 0,
+        "ARCHIVE-3221-A is the result that should have been refused: archive entries unpacked expected=0 actual={archive_entries_unpacked}"
+    );
     assert_eq!(delivered_bytes, starting_archive_bytes);
     assert_eq!(delivered_digest, expected_digest);
     assert!(
