@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 import {
   applyTorSidecarEvent,
   attemptNetworkSend,
+  firstRunTorScreenMarkup,
   initialTorBootStatus,
+  markTorBootSlow,
   parseTorSidecarLine,
   startTorBootOrchestrator,
   torRouteStatusLabel,
@@ -71,9 +73,11 @@ describe("applyTorSidecarEvent", () => {
     expect(applyTorSidecarEvent(initialTorBootStatus(), { event: "bootstrap", percent: -5 }).percent).toBe(0);
   });
 
-  it("never lets percent run backwards on a later, lower reading", () => {
+  it("copies the last bootstrap reading even when it is lower", () => {
     const mid = applyTorSidecarEvent(initialTorBootStatus(), { event: "bootstrap", percent: 60 });
-    expect(applyTorSidecarEvent(mid, { event: "bootstrap", percent: 10 }).percent).toBe(60);
+    const next = applyTorSidecarEvent(mid, { event: "bootstrap", percent: 10 });
+    expect(next.percent).toBe(10);
+    expect(torRouteStatusLabel(next)).toBe("Connecting -- 10%");
   });
 
   it("flips ready and reports 'Connected'", () => {
@@ -95,6 +99,20 @@ describe("applyTorSidecarEvent", () => {
     expect(after).toBe(failed);
     expect(after.failed).toBe(true);
   });
+
+  it("marks a long live bootstrap slow without failing it", () => {
+    const slow = markTorBootSlow(initialTorBootStatus());
+    expect(slow.failed).toBe(false);
+    expect(torRouteStatusLabel(slow)).toBe("Slow -- still trying");
+  });
+
+  it("renders Retry and Direct only after an explicit failure", () => {
+    const failed = applyTorSidecarEvent(initialTorBootStatus(), { event: "error", message: "relay refused" });
+    expect(torRouteStatusLabel(failed)).toBe("Failed -- Tor could not connect");
+    expect(firstRunTorScreenMarkup(failed)).toContain(">Retry</button>");
+    expect(firstRunTorScreenMarkup(failed)).toContain(">Direct</button>");
+    expect(firstRunTorScreenMarkup(initialTorBootStatus())).not.toContain(">Retry</button>");
+  });
 });
 
 describe("attemptNetworkSend", () => {
@@ -109,7 +127,7 @@ describe("attemptNetworkSend", () => {
 
   it("records zero network writes when the route has failed", () => {
     let writes = 0;
-    const failed: TorBootStatus = { ready: false, failed: true, percent: 0, errorMessage: "x" };
+    const failed: TorBootStatus = { ready: false, failed: true, slow: false, percent: 0, errorMessage: "x" };
     const result = attemptNetworkSend(failed, () => {
       writes += 1;
     });
@@ -119,7 +137,7 @@ describe("attemptNetworkSend", () => {
 
   it("performs exactly one network write once the route is ready", () => {
     let writes = 0;
-    const ready: TorBootStatus = { ready: true, failed: false, percent: 100, errorMessage: null };
+    const ready: TorBootStatus = { ready: true, failed: false, slow: false, percent: 100, errorMessage: null };
     const result = attemptNetworkSend(ready, () => {
       writes += 1;
     });

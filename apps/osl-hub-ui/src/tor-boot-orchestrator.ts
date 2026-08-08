@@ -21,12 +21,17 @@ export type TorSidecarEvent =
 export interface TorBootStatus {
   readonly ready: boolean;
   readonly failed: boolean;
+  readonly slow: boolean;
   readonly percent: number;
   readonly errorMessage: string | null;
 }
 
+/** A long bootstrap is still a live bootstrap. It changes the explanation on
+ * screen, but it is deliberately not a deadline and cannot fail the route. */
+export const TOR_SLOW_AFTER_MS = 45_000;
+
 export function initialTorBootStatus(): TorBootStatus {
-  return { ready: false, failed: false, percent: 0, errorMessage: null };
+  return { ready: false, failed: false, slow: false, percent: 0, errorMessage: null };
 }
 
 /**
@@ -36,9 +41,25 @@ export function initialTorBootStatus(): TorBootStatus {
  * through before Send may be pressed.
  */
 export function torRouteStatusLabel(status: TorBootStatus): string {
-  if (status.failed) return "Connection failed";
+  if (status.failed) return "Failed -- Tor could not connect";
   if (status.ready) return "Connected";
+  if (status.slow) return "Slow -- still trying";
   return `Connecting -- ${status.percent}%`;
+}
+
+/** The first-run status surface. Retry and Direct are intentionally absent
+ * until the sidecar reports a real error: a merely slow bootstrap remains a
+ * live attempt, including a cold start that needs 75 seconds. */
+export function firstRunTorScreenMarkup(status: TorBootStatus): string {
+  const label = torRouteStatusLabel(status);
+  const actions = status.failed
+    ? `<div class="tor-first-run-actions"><button type="button" data-tor-retry>Retry</button><button type="button" data-tor-direct>Direct</button></div>`
+    : "";
+  return `<section class="tor-first-run" aria-labelledby="tor-first-run-heading">
+    <h1 id="tor-first-run-heading">Connecting with Tor</h1>
+    <p class="tor-first-run-status" role="status" aria-live="polite">${label}</p>
+    ${actions}
+  </section>`;
 }
 
 /** Malformed or unrecognised lines are dropped rather than thrown, so one bad
@@ -68,10 +89,17 @@ export function applyTorSidecarEvent(status: TorBootStatus, event: TorSidecarEve
   if (status.ready || status.failed) return status;
   if (event.event === "bootstrap") {
     const clamped = Math.min(100, Math.max(0, Math.trunc(event.percent)));
-    return { ...status, percent: Math.max(status.percent, clamped) };
+    return { ...status, percent: clamped };
   }
-  if (event.event === "ready") return { ready: true, failed: false, percent: 100, errorMessage: null };
+  if (event.event === "ready") return { ready: true, failed: false, slow: false, percent: 100, errorMessage: null };
   return { ...status, failed: true, errorMessage: event.message };
+}
+
+/** Mark a still-running attempt as slow without fabricating either progress or
+ * failure. Terminal states ignore the timer if it races a sidecar line. */
+export function markTorBootSlow(status: TorBootStatus): TorBootStatus {
+  if (status.ready || status.failed || status.slow) return status;
+  return { ...status, slow: true };
 }
 
 export interface NetworkSendAttempt {
@@ -123,17 +151,30 @@ export function startTorBootOrchestrator(host: TorBootOrchestratorHost): TorBoot
   host.onStatus(status);
 
   const sidecar = host.spawnSidecar();
+  const slowTimer = setTimeout(() => {
+    const next = markTorBootSlow(status);
+    if (next === status) return;
+    status = next;
+    host.onStatus(status);
+  }, TOR_SLOW_AFTER_MS);
+  // A status timer must not keep a Node fixture/test process alive after its
+  // sidecar is gone. Browser timers are numeric and simply skip this branch.
+  if (typeof slowTimer === "object" && "unref" in slowTimer) slowTimer.unref();
   sidecar.onLine((line) => {
     const event = parseTorSidecarLine(line);
     if (event === null) return;
     const next = applyTorSidecarEvent(status, event);
     if (next === status) return;
     status = next;
+    if (status.ready || status.failed) clearTimeout(slowTimer);
     host.onStatus(status);
   });
 
   return {
     status: () => status,
-    stop: () => sidecar.kill(),
+    stop: () => {
+      clearTimeout(slowTimer);
+      sidecar.kill();
+    },
   };
 }
