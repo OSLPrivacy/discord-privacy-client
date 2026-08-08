@@ -123,6 +123,24 @@
   font-weight: 600;
 }
 
+.timer-overlay-error {
+  display: block;
+  min-height: 1.2em;
+  color: var(--danger, #f66);
+  font-size: 12px;
+}
+
+.timer-overlay-save {
+  min-height: 40px;
+  padding: 0 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--accent, var(--panel-2));
+  color: var(--text);
+  font-weight: 600;
+  cursor: pointer;
+}
+
 
 
 

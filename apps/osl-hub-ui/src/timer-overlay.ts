@@ -64,6 +64,8 @@ export function timerOverlayMarkup(state: TimerOverlayState = defaultTimerOverla
       <div class="timer-overlay-panel">
         <h2 id="timer-overlay-heading" class="timer-overlay-heading">Set a timer</h2>
         <div class="timer-overlay-fields">${fields}</div>
+        <output id="timer-overlay-error" class="timer-overlay-error" aria-live="polite"></output>
+        <button type="button" id="timer-overlay-save" class="timer-overlay-save">Save</button>
       </div>
     </div>`;
 }
