@@ -199,3 +199,4 @@ if ($stderr) {
   Write-Output $stderr.TrimEnd()
   Write-Output 'DESKTOP-RUNNER STDERR-END'
 }
+exit [int]$result.PayloadExitCode
