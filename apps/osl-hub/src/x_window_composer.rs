@@ -117,6 +117,7 @@ impl XSurfaceDriver for PreparedXDriver {
             origin: "https://x.com/messages".to_owned(),
             place_kind: "direct_message".to_owned(),
             composer: "Message".to_owned(),
+            composer_state: "active".to_owned(),
         })
     }
 }

@@ -135,6 +135,9 @@ pub struct XActiveBrowserSurface {
     pub origin: String,
     pub place_kind: String,
     pub composer: String,
+    /// Explicit lifecycle state from the focused browser control. Only
+    /// `active` composers are released by the backend.
+    pub composer_state: String,
 }
 
 /// The three records a caller needs after the active X browser is found.
@@ -215,6 +218,7 @@ impl<D: XSurfaceDriver> XWebBackend<D> {
         let surface = self.driver.active_browser_surface()?;
         if surface.origin != "https://x.com/messages"
             || !matches!(surface.place_kind.as_str(), "direct_message" | "public_post")
+            || surface.composer_state != "active"
             || surface.browser_title.trim().is_empty()
             || surface.composer.trim().is_empty()
         {
