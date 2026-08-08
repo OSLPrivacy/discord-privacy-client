@@ -30,9 +30,18 @@ export interface ScrubSetupSummary {
   noticeSetting: ScrubSetupNotice | null;
 }
 
+/** A visible result belongs to exactly one account and is never an empty success. */
+export interface ScrubSetupScanResult {
+  readonly accountId: string;
+  readonly result: string;
+}
+
 export interface ScrubSetupCallbacks {
   onChange?: (draft: ScrubSetupDraft) => void;
-  onScanNow: (selectedScanAccounts: string[]) => void;
+  onScanNow: (selectedScanAccounts: string[]) =>
+    | readonly ScrubSetupScanResult[]
+    | Promise<readonly ScrubSetupScanResult[]>;
+  onScanResult?: (results: readonly ScrubSetupScanResult[]) => void;
   onContinue: (summary: ScrubSetupSummary, draft: ScrubSetupDraft) => void;
   onNotNow: (summary: ScrubSetupSummary) => void;
   onBack: () => void;
@@ -47,7 +56,9 @@ const notices: readonly ScrubSetupNotice[] = ["before_scan", "after_scan", "quie
 export function initialScrubSetupDraft(): ScrubSetupDraft {
   return {
     selectedScanAccounts: new Set<string>(),
-    autoScrub: true,
+    // Automatic scanning is opt-in. A first visit must never silently create
+    // a recurring plan just because the owner picked an account to scan now.
+    autoScrub: false,
     automaticSchedule: "weekly",
     noticeSetting: "before_scan",
   };
@@ -80,6 +91,7 @@ export function scrubSetupMarkup(
 }
 
 export function scrubSetupCommand(draft: ScrubSetupDraft): ScrubSetupCommand {
+  validateDraftForAutomaticSave(draft);
   return {
     selectedScanAccounts: [...draft.selectedScanAccounts],
     automaticSchedule: draft.autoScrub ? draft.automaticSchedule : null,
@@ -161,15 +173,19 @@ export function bindScrubSetupControls(
   });
   scanNow?.addEventListener("click", () => {
     if (busy || draft.selectedScanAccounts.size === 0) return;
-    callbacks.onScanNow([...draft.selectedScanAccounts]);
+    const selected = [...draft.selectedScanAccounts];
+    Promise.resolve(callbacks.onScanNow(selected)).then((results) => {
+      validateScanResults(selected, results);
+      callbacks.onScanResult?.(results);
+    }).catch(reportError);
   });
   continueButton?.addEventListener("click", async () => {
     if (busy || draft.selectedScanAccounts.size === 0 || !draft.autoScrub) return;
     const submittedDraft = copyDraft(draft);
-    const command = scrubSetupCommand(submittedDraft);
     busy = true;
     syncControls();
     try {
+      const command = scrubSetupCommand(submittedDraft);
       const summary = await saveScrubSetup(command);
       callbacks.onContinue(summary, submittedDraft);
     } catch (failure) {
@@ -181,6 +197,9 @@ export function bindScrubSetupControls(
   });
   notNowButton?.addEventListener("click", async () => {
     if (busy) return;
+    // The visible state must agree with the explicit skip that is persisted.
+    draft.autoScrub = false;
+    notifyChange();
     busy = true;
     syncControls();
     try {
@@ -240,6 +259,31 @@ function isFrequency(value: unknown): value is ScrubSetupFrequency {
 
 function isNotice(value: unknown): value is ScrubSetupNotice {
   return typeof value === "string" && (notices as readonly string[]).includes(value);
+}
+
+function validateDraftForAutomaticSave(draft: ScrubSetupDraft): void {
+  if (!draft.autoScrub) return;
+  if (!isFrequency(draft.automaticSchedule)) {
+    throw new Error("Choose a valid automatic Scrub schedule");
+  }
+  if (!isNotice(draft.noticeSetting)) {
+    throw new Error("Choose a valid Scrub notice setting");
+  }
+}
+
+function validateScanResults(
+  selected: readonly string[],
+  results: readonly ScrubSetupScanResult[],
+): void {
+  if (results.length !== selected.length) {
+    throw new Error("Scrub scan did not return one result for each selected account");
+  }
+  for (const accountId of selected) {
+    const result = results.find((candidate) => candidate.accountId === accountId);
+    if (!result || !result.result.trim()) {
+      throw new Error(`Scrub scan returned no named result for ${accountId}`);
+    }
+  }
 }
 
 function escapeHtml(value: string): string {
