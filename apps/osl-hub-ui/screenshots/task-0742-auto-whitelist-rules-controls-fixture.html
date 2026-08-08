@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <link rel="stylesheet" href="/src/auto-whitelist-rules-screen.css" />
+    <title>OSL Privacy - TASK 0742</title>
+  </head>
+  <body class="rules-screen-stage">
+    <div id="app"></div>
+    <script type="module">
+      const { attachAutoWhitelistRulesScreen } = await import("/src/auto-whitelist-rules-screen.ts");
+      const { AUTO_WHITELIST_RULES_SCREEN_SAVED } = await import(
+        "/src/auto-whitelist-rules-screen-data.ts"
+      );
+      // The same saved rules the rules screen is captured with: all four
+      // choices are in use, so the families across the top read mixed rather
+      // than all saying the same word.
+      window.oslLastSavedRules = null;
+      attachAutoWhitelistRulesScreen(
+        document.querySelector("#app"),
+        AUTO_WHITELIST_RULES_SCREEN_SAVED,
+        (rules) => { window.oslLastSavedRules = rules; },
+      );
+      await document.fonts.ready;
+      document.documentElement.dataset.task0742 = "ready";
+    </script>
+  </body>
+</html>

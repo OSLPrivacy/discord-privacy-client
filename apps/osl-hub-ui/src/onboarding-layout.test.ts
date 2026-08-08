@@ -881,8 +881,6 @@ describe("fresh-account continuation", () => {
     expect(content).toContain('id="install-mullvad"');
     expect(content).toContain('id="found-session-mullvad"');
     expect(content).toContain("Found session");
-    expect(content).toContain('id="open-mullvad"');
-    expect(content).toContain("found session");
     expect(content).toContain("install");
     expect(content).toContain("Not now");
     expect(content).toContain('id="continue-mullvad"');

@@ -4,6 +4,7 @@
 ///   GET    /v1/healthz
 ///   POST   /v1/register
 ///   GET    /v1/pubkeys/:user_id
+///   POST   /v1/devices/lookup
 ///   POST   /v1/wrapped-keys
 ///   GET    /v1/wrapped-keys/:content_id
 ///   DELETE /v1/wrapped-keys
@@ -47,7 +48,7 @@ import { handleCryptoSettlement, sweepAnonymousCryptoInvoices } from "./endpoint
 import { handleCryptoStatus } from "./endpoints/crypto-status.js";
 import { handleHealthz } from "./endpoints/healthz.js";
 import { handleWindowsDownload } from "./endpoints/download.js";
-import { handleDevices } from "./endpoints/devices.js";
+import { handleDevicesLookup } from "./endpoints/devices.js";
 import { handleLicenseRedeem } from "./endpoints/license-redeem.js";
 import { handleLicenseValidate } from "./endpoints/license.js";
 import { handleLinkGrant } from "./endpoints/link-grant.js";
@@ -414,8 +415,9 @@ async function dispatch(
     if (usernameBucket !== null) return await handleUsernameBucket(request, env, usernameBucket);
     const pubkeysUserId = matchParam(path, /^\/v1\/pubkeys\/([^/]+)$/);
     if (pubkeysUserId !== null) return await handlePubkeys(env, pubkeysUserId);
-    const devicesUserId = matchParam(path, /^\/v1\/devices\/([^/]+)$/);
-    if (devicesUserId !== null) return await handleDevices(env, devicesUserId);
+    // Task 4803: the legacy path-based device lookup is gone. The account
+    // identifier belongs in the POST body so the platform request path does
+    // not retain it next to the caller address.
     // D-260 / OPEN-4, DECIDED: `GET /v1/space-events/:tag` NO LONGER EXISTS.
     // It used to be dispatched here, and it was this lane's standing exception
     // to D81 -- the 32-byte bearer tag rode in the request path, where every
@@ -496,6 +498,7 @@ async function dispatch(
     if (path === "/v1/mail/ack") return await handleMailRead(request, env, "ACK");
     if (path === "/v1/mail/delete") return await handleMailRead(request, env, "DELETE");
     if (path === "/v1/mail/burn") return await handleMailRead(request, env, "BURN");
+    if (path === "/v1/devices/lookup") return await handleDevicesLookup(request, env);
     if (path === "/v1/internal/sender-filter-rollout-root/provision") {
       return await handleSenderFilterRolloutRootProvision(request, env);
     }

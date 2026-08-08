@@ -44,6 +44,11 @@ import {
   upsertPrekeyBundle,
   popPrekeyBundle,
   burnWrappedKeys,
+  publishPrivateDrawerCard,
+  getPrivateDrawerCards,
+  PRIVATE_DRAWER_CARD_COUNT,
+  PRIVATE_DRAWER_RAW_CARD_BYTES,
+  PRIVATE_DRAWER_CARD_B64_BYTES,
 } from './db.js';
 import {
   canonicalBurnBytes,
@@ -69,10 +74,42 @@ function isPlainString(value) {
 
 function isViewOnceDisplayDurationSeconds(value) {
   return Number.isInteger(value) && value >= 1 && value <= 60;
+}
+
 function deriveExpirySeconds(expiresAt, now = new Date()) {
   const deltaMs = Date.parse(expiresAt) - now.getTime();
   if (!Number.isFinite(deltaMs) || deltaMs <= 0) return null;
   return Math.ceil(deltaMs / 1000);
+}
+
+function hasFixedPrivateDrawerCardBytes(value) {
+  if (!isNonEmptyBase64(value)) return false;
+  if (Buffer.byteLength(value, 'utf8') !== PRIVATE_DRAWER_CARD_B64_BYTES) return false;
+  return Buffer.from(value, 'base64').byteLength === PRIVATE_DRAWER_RAW_CARD_BYTES;
+}
+
+function fakePrivateDrawerCard(drawerName, slot) {
+  return createHash('sha512')
+    .update('osl/private-drawer/fake/v1\0', 'utf8')
+    .update(drawerName, 'utf8')
+    .update('\0', 'utf8')
+    .update(String(slot), 'utf8')
+    .digest('base64');
+}
+
+function fixedPrivateDrawerAnswer(drawerName, realCards) {
+  if (realCards.length > PRIVATE_DRAWER_CARD_COUNT) {
+    throw new Error('private drawer assignment overflowed fixed card count');
+  }
+  const cards = [...realCards];
+  const seen = new Set(cards);
+  for (let slot = 0; cards.length < PRIVATE_DRAWER_CARD_COUNT; slot += 1) {
+    const fake = fakePrivateDrawerCard(drawerName, slot);
+    if (seen.has(fake)) continue;
+    seen.add(fake);
+    cards.push(fake);
+  }
+  return cards;
 }
 
 // Constant-time comparison. Hashes both sides to SHA-256 first so the
@@ -629,6 +666,65 @@ are open. OK for localhost dev; DO NOT do this on a public host.'
       scope: b.scope,
       deleted_count,
     });
+  });
+
+  // ---- private fixed-size drawer answers ----
+  //
+  // A publisher stores a fixed-size opaque card under a drawer name. A
+  // question asks for one drawer in the request body and always gets the
+  // same envelope: 40 card strings, each the same byte length. The
+  // caller detects real cards by comparing against the opaque cards it
+  // already knows; the server does not return match booleans.
+  fastify.post('/v1/private-drawer/cards', mutationRouteOpts, async (request, reply) => {
+    const b = request.body ?? {};
+    if (!isPlainString(b.drawer_name)) {
+      return reply.code(400).send({ error: 'drawer_name required' });
+    }
+    if (!isPlainString(b.handle)) {
+      return reply.code(400).send({ error: 'handle required' });
+    }
+    if (!isPlainString(b.account)) {
+      return reply.code(400).send({ error: 'account required' });
+    }
+    if (!hasFixedPrivateDrawerCardBytes(b.card_b64)) {
+      return reply.code(400).send({
+        error: `card_b64 must be ${PRIVATE_DRAWER_RAW_CARD_BYTES} raw bytes as base64`,
+      });
+    }
+
+    try {
+      const result = publishPrivateDrawerCard(db, {
+        drawer_name: b.drawer_name,
+        handle: b.handle,
+        account: b.account,
+        card_b64: b.card_b64,
+      });
+      return reply.code(201).send(result);
+    } catch (err) {
+      if (err.code === 'SQLITE_CONSTRAINT_PRIMARYKEY') {
+        return reply.code(409).send({ error: 'card_b64 already exists' });
+      }
+      throw err;
+    }
+  });
+
+  fastify.post('/v1/private-drawer/question', async (request, reply) => {
+    const b = request.body ?? {};
+    if (!isPlainString(b.drawer_name)) {
+      return reply.code(400).send({ error: 'drawer_name required' });
+    }
+
+    const realCards = getPrivateDrawerCards(db, b.drawer_name);
+    const body = { cards: fixedPrivateDrawerAnswer(b.drawer_name, realCards) };
+    request.log.info(
+      {
+        returned_card_count: body.cards.length,
+        fixed_card_b64_bytes: PRIVATE_DRAWER_CARD_B64_BYTES,
+        fixed_body_bytes: Buffer.byteLength(JSON.stringify(body), 'utf8'),
+      },
+      'private fixed drawer served',
+    );
+    return reply.send(body);
   });
 
   // ---- GET /v1/selector-manifest ----

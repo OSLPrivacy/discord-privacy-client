@@ -76,6 +76,8 @@ pub mod outlook;
 /// means it receives the same generation, scope, and authorization checks as
 /// every other fixed-origin web surface.
 pub mod x;
+/// AOL Mail fake page target map for the task 1257 email flow.
+pub mod aol;
 
 /// Accessibility and input implementation for one verified web profile.
 ///

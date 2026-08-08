@@ -53,6 +53,9 @@ mod windows_place_text {
     const TREE_WAIT_MS: u64 = 1_000;
     const SETTLE_MS: u64 = 160;
     const DEFAULT_WAIT_TIMEOUT_SECONDS: u64 = 120;
+    // lane/g: the standalone clipboard observer.
+    const DEFAULT_PRIVATE_CANARY: &str = "QQQQQQQQQQ";
+    const DEFAULT_OBSERVER_TIMEOUT_MS: u64 = 3_000;
     const COMPOSER_STEMS: &[&str] = &["message", "nachricht", "mensaje"];
     const NON_COMPOSER_STEMS: &[&str] = &["search", "filter", "buscar"];
 
@@ -134,6 +137,11 @@ mod windows_place_text {
 
     pub fn run() -> Result<(), CommandError> {
         let args = Args::parse()?;
+        // lane/g: --clipboard-observer watches the clipboard instead of placing
+        // text, so it returns before any window work below.
+        if let Some(observer) = args.observer {
+            return run_clipboard_observer(observer);
+        }
         let initial = foreground_window()
             .ok_or_else(|| CommandError::exit1("Windows reported no foreground window"))?;
         println!(
@@ -338,6 +346,7 @@ mod windows_place_text {
         wait_for_person: bool,
         wait_timeout_seconds: u64,
         allow_already_front: bool,
+        observer: Option<ObserverArgs>,
     }
 
     impl Args {
@@ -348,6 +357,9 @@ mod windows_place_text {
             let mut wait_for_person = false;
             let mut wait_timeout_seconds = DEFAULT_WAIT_TIMEOUT_SECONDS;
             let mut allow_already_front = false;
+            let mut observer_requested = false;
+            let mut observer_needle: Option<String> = None;
+            let mut observer_timeout_ms = DEFAULT_OBSERVER_TIMEOUT_MS;
             let mut args = std::env::args().skip(1);
             while let Some(arg) = args.next() {
                 match arg.as_str() {
@@ -380,6 +392,22 @@ mod windows_place_text {
                             CommandError::usage("--wait-timeout-seconds must be a positive integer")
                         })?;
                     }
+                    "--clipboard-observer" => {
+                        observer_requested = true;
+                    }
+                    "--observer-needle" => {
+                        observer_needle = Some(args.next().ok_or_else(|| {
+                            CommandError::usage("--observer-needle needs a value")
+                        })?);
+                    }
+                    "--observer-timeout-ms" => {
+                        let raw = args.next().ok_or_else(|| {
+                            CommandError::usage("--observer-timeout-ms needs a value")
+                        })?;
+                        observer_timeout_ms = raw.parse().map_err(|_| {
+                            CommandError::usage("--observer-timeout-ms must be a whole number")
+                        })?;
+                    }
                     "--help" | "-h" => {
                         return Err(CommandError::usage(
                             "usage: task_3406_place_text [--initial-front Photos] [--app Discord] [--text MAPLE-3406] [--wait-for-person] [--wait-timeout-seconds 120] [--allow-already-front]",
@@ -405,6 +433,15 @@ mod windows_place_text {
                 wait_for_person,
                 wait_timeout_seconds,
                 allow_already_front,
+                observer: if observer_requested {
+                    Some(ObserverArgs {
+                        needle: observer_needle
+                            .unwrap_or_else(|| DEFAULT_PRIVATE_CANARY.to_owned()),
+                        timeout: Duration::from_millis(observer_timeout_ms),
+                    })
+                } else {
+                    None
+                },
             })
         }
     }
@@ -987,6 +1024,45 @@ mod windows_place_text {
 
     fn normalize(value: &str) -> String {
         value.to_ascii_lowercase()
+    }
+
+    struct ObserverArgs {
+        needle: String,
+        timeout: Duration,
+    }
+    struct ClipboardObserver {
+        child: Child,
+    }
+    struct ClipboardObserverReport {
+        pid: Option<u32>,
+        saw: String,
+    }
+    fn run_clipboard_observer(args: ObserverArgs) -> Result<(), CommandError> {
+        println!("observer_pid={}", unsafe { GetCurrentProcessId() });
+        let started = Instant::now();
+        let mut last_text = None;
+        while started.elapsed() < args.timeout {
+            if let Ok(Some(text)) = read_clipboard_unicode_text() {
+                if text == args.needle {
+                    println!("observer_saw={text}");
+                    return Ok(());
+                }
+                last_text = Some(text);
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        if let Some(text) = last_text {
+            println!("observer_saw={text}");
+        }
+        Err(CommandError::exit1(
+            "observer did not see requested clipboard text",
+        ))
+    }
+    fn private_canary_chars_reaching_clipboard(canary: &str, observations: &[&str]) -> String {
+        canary
+            .chars()
+            .filter(|private| observations.iter().any(|seen| seen.contains(*private)))
+            .collect()
     }
 }
 
