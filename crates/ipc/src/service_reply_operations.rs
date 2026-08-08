@@ -7,7 +7,7 @@
 //! same call prevents a caller from accidentally changing a message or
 //! offering a file before checking the response.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
 
@@ -28,14 +28,20 @@ pub struct ServiceOperationRequest<'a> {
 
 /// The item collections visible to direct burn and download callers.
 ///
-/// A set models the externally important behavior: burn removes one named
-/// message and download offers one named completed file. Counts are derived
-/// from the collections so a refused reply cannot increment a detached
-/// success counter while leaving the actual item state unchanged.
+/// The collections model the externally important behavior: burn removes one
+/// named message and download retains one named completed-file record. Counts
+/// are derived from the collections so a refused reply cannot increment a
+/// detached success counter while leaving the actual item state unchanged.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ReplyGatedServiceItems {
     messages: BTreeMap<String, String>,
-    completed_files: BTreeSet<String>,
+    completed_files: BTreeMap<String, CompletedFile>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CompletedFile {
+    marked: bool,
+    bytes: Vec<u8>,
 }
 
 impl ReplyGatedServiceItems {
@@ -49,7 +55,7 @@ impl ReplyGatedServiceItems {
                 .into_iter()
                 .map(|message| (message.into(), String::new()))
                 .collect(),
-            completed_files: BTreeSet::new(),
+            completed_files: BTreeMap::new(),
         }
     }
 
@@ -67,7 +73,7 @@ impl ReplyGatedServiceItems {
                 .into_iter()
                 .map(|(id, text)| (id.into(), text.into()))
                 .collect(),
-            completed_files: BTreeSet::new(),
+            completed_files: BTreeMap::new(),
         }
     }
 
@@ -88,7 +94,20 @@ impl ReplyGatedServiceItems {
     }
 
     pub fn offers_completed_file(&self, item_id: &str) -> bool {
-        self.completed_files.contains(item_id)
+        self.completed_files.contains_key(item_id)
+    }
+
+    /// Return the exact bytes retained for a reply-gated completed file.
+    pub fn completed_file_bytes(&self, item_id: &str) -> Option<&[u8]> {
+        self.completed_files
+            .get(item_id)
+            .map(|file| file.bytes.as_slice())
+    }
+
+    /// Report whether the completed file was marked when it crossed the
+    /// reply-gated mutation boundary.
+    pub fn completed_file_is_marked(&self, item_id: &str) -> Option<bool> {
+        self.completed_files.get(item_id).map(|file| file.marked)
     }
 
     /// Validate the exact burn acknowledgement before removing the message.
@@ -117,12 +136,42 @@ impl ReplyGatedServiceItems {
         request: ServiceOperationRequest<'_>,
         reply: ServiceReply<'_>,
     ) -> Result<ServiceOperationReceipt, ReplyGatedOperationError> {
+        self.offer_completed_download_record(request, reply, false, &[])
+    }
+
+    /// Validate the exact download acknowledgement before retaining a marked
+    /// file and its bytes. Validation precedes insertion, so a refused reply
+    /// cannot add a candidate or change an existing completed file.
+    pub fn offer_completed_marked_download(
+        &mut self,
+        request: ServiceOperationRequest<'_>,
+        reply: ServiceReply<'_>,
+        bytes: &[u8],
+    ) -> Result<ServiceOperationReceipt, ReplyGatedOperationError> {
+        self.offer_completed_download_record(request, reply, true, bytes)
+    }
+
+    fn offer_completed_download_record(
+        &mut self,
+        request: ServiceOperationRequest<'_>,
+        reply: ServiceReply<'_>,
+        marked: bool,
+        bytes: &[u8],
+    ) -> Result<ServiceOperationReceipt, ReplyGatedOperationError> {
         validate_operation_reply(DOWNLOAD_SERVICE_OPERATION, request, reply)?;
 
-        if !self.completed_files.insert(request.item_id.to_owned()) {
-            return Err(ReplyGatedOperationError::CompletedFileAlreadyOffered {
-                item_id: request.item_id.to_owned(),
-            });
+        match self.completed_files.entry(request.item_id.to_owned()) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(CompletedFile {
+                    marked,
+                    bytes: bytes.to_vec(),
+                });
+            }
+            std::collections::btree_map::Entry::Occupied(_) => {
+                return Err(ReplyGatedOperationError::CompletedFileAlreadyOffered {
+                    item_id: request.item_id.to_owned(),
+                });
+            }
         }
         Ok(ServiceOperationReceipt {
             operation: DOWNLOAD_SERVICE_OPERATION,
