@@ -5364,6 +5364,10 @@ code {
 .osl-chat-friend.is-active { background: color-mix(in srgb, var(--brand) 7%, var(--bg)); box-shadow: inset 2px 0 var(--brand); }
 .osl-chat-friend-open { min-width: 0; padding: 10px 8px 10px 14px; border: 0; background: transparent; color: var(--text); text-align: left; cursor: pointer; display: grid; grid-template-columns: 38px minmax(0, 1fr) 22px; align-items: center; gap: 10px; }
 .osl-chat-friend-open:disabled { cursor: default; opacity: .58; }
+.osl-chat-friend.is-key-changed { background: var(--warn-soft); box-shadow: inset 2px 0 var(--warn); }
+.osl-chat-friend.is-key-changed .osl-chat-friend-copy strong,
+.osl-chat-key-changed-triangle { color: var(--warn); }
+.osl-chat-key-changed-triangle { width: 22px; height: 22px; display: grid; place-items: center; font-size: 15px; }
 .osl-chat-avatar { width: 38px; height: 38px; border: 1px solid color-mix(in srgb, var(--brand) 35%, var(--line)); display: grid; place-items: center; background: color-mix(in srgb, var(--brand) 8%, var(--panel)); color: var(--brand); font-size: 11px; font-weight: 700; letter-spacing: .03em; }
 .osl-chat-avatar.is-thread { width: 36px; height: 36px; }
 .osl-chat-friend-copy,
@@ -5384,6 +5388,10 @@ code {
 .osl-chat-message-list { min-height: 0; padding: 22px 24px; overflow-y: auto; display: flex; flex-direction: column; gap: 16px; }
 .osl-chat-thread-empty { margin: auto; color: var(--muted); }
 .osl-chat-handshake-warning { margin: 0; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--warn-soft, rgba(255, 176, 32, .12)); color: var(--text); font-size: 12px; line-height: 1.45; }
+.osl-chat-key-changed-banner { margin: 0; padding: 10px 16px; border-bottom: 1px solid var(--warn); background: var(--warn-soft); color: var(--text); display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 12px; line-height: 1.45; }
+.osl-chat-key-changed-banner strong,
+.osl-chat-key-changed-banner span { display: block; }
+.osl-chat-key-changed-banner span { margin-top: 2px; }
 .osl-chat-build-warning { margin: 0; padding: 10px 16px; border-width: 0 0 1px 3px; border-radius: 0; background: var(--warn-soft, rgba(255, 176, 32, .12)); color: var(--text); font-size: 12px; line-height: 1.45; }
 .osl-chat-build-warning small { display: block; margin-top: 2px; color: var(--muted); }
 .osl-chat-message-unreadable { color: var(--muted); font-size: 11px; }

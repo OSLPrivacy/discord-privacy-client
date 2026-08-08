@@ -108,6 +108,8 @@ export interface OslChatFriend {
   personId: string;
   nickname: string;
   verified: boolean;
+  /** The authoritative HubPerson reports a safety-number change awaiting review. */
+  keyChanged?: boolean;
   ready: boolean;
   preview: string | null;
   previewVisible: boolean;
@@ -122,6 +124,9 @@ export interface OslChatFriend {
    */
   handshakeConfirmed?: boolean;
 }
+
+/** Exact refusal shown everywhere an unreviewed friend key blocks a send. */
+export const OSL_CHAT_KEY_CHANGED_REFUSAL_REASON = "Sending is blocked until you verify the new safety number.";
 
 export interface OslChatMessage {
   messageId: string;
@@ -260,9 +265,9 @@ function friendPreview(friend: OslChatFriend): string {
 
 function friendRow(friend: OslChatFriend, activePersonId: string | null, busy: boolean): string {
   const active = friend.personId === activePersonId;
-  return `<div class="osl-chat-friend${active ? " is-active" : ""}" data-person-id="${escapeHtml(friend.personId)}">
+  return `<div class="osl-chat-friend${active ? " is-active" : ""}${friend.keyChanged ? " is-key-changed" : ""}" data-person-id="${escapeHtml(friend.personId)}">
     <button class="osl-chat-friend-open" type="button" data-osl-chat-open="${escapeHtml(friend.personId)}" ${active ? 'aria-current="true"' : ""} ${busy || !friend.verified ? 'disabled aria-disabled="true"' : ""}>
-      ${avatar(friend.nickname)}<span class="osl-chat-friend-copy"><strong>${escapeHtml(friend.nickname)}</strong>${friendPreview(friend)}</span><span class="osl-chat-kind" title="Direct message">${chatIcon}</span>
+      ${avatar(friend.nickname)}<span class="osl-chat-friend-copy"><strong>${escapeHtml(friend.nickname)}</strong>${friendPreview(friend)}</span>${friend.keyChanged ? '<span class="osl-chat-key-changed-triangle" role="img" aria-label="Safety number changed">⚠</span>' : `<span class="osl-chat-kind" title="Direct message">${chatIcon}</span>`}
     </button>
     <button class="osl-chat-friend-settings" type="button" data-osl-chat-settings="${escapeHtml(friend.personId)}" aria-label="Settings for ${escapeHtml(friend.nickname)}">${settingsIcon}</button>
   </div>`;
@@ -349,8 +354,10 @@ function activeThread(model: OslChatsViewModel, friend: OslChatFriend): string {
   const bytes = oslChatDraftBytes(model.draft);
   const withinLimit = bytes <= OSL_CHAT_MAX_DRAFT_BYTES;
   const hasDraft = model.draft.trim().length > 0;
-  const canSend = friend.verified && friend.ready && hasDraft && withinLimit && !model.busy;
-  const readiness = !friend.verified
+  const canSend = friend.verified && !friend.keyChanged && friend.ready && hasDraft && withinLimit && !model.busy;
+  const readiness = friend.keyChanged
+    ? OSL_CHAT_KEY_CHANGED_REFUSAL_REASON
+    : !friend.verified
     ? "Verify this friend to chat."
     : !friend.ready
       ? "Chat is not ready."
@@ -362,15 +369,19 @@ function activeThread(model: OslChatsViewModel, friend: OslChatFriend): string {
   const unconfirmed = handshakeWarning
     ? `<p class="osl-chat-handshake-warning" role="status">${escapeHtml(handshakeWarning)}</p>`
     : "";
+  const keyChanged = friend.keyChanged
+    ? `<section class="osl-chat-key-changed-banner" role="alert" data-osl-key-changed-banner="true"><div><strong>Key changed</strong><span>${escapeHtml(OSL_CHAT_KEY_CHANGED_REFUSAL_REASON)}</span></div><button class="button compact" type="button" data-verify-person="${escapeHtml(friend.personId)}">Verify new safety number</button></section>`
+    : "";
   return `<section class="osl-chat-thread" aria-label="OSL direct chat with ${escapeHtml(friend.nickname)}">
+    ${keyChanged}
     ${unconfirmed}
     <header class="osl-chat-thread-header">${avatar(friend.nickname, "is-thread")}<div><h2>${escapeHtml(friend.nickname)}</h2><span>${friend.ready ? "Ready" : "Connecting"} · ${friend.verified ? "Verified" : "Unverified"}</span></div><button class="osl-chat-thread-settings" type="button" data-osl-chat-settings="${escapeHtml(friend.personId)}" aria-label="Chat settings">${settingsIcon}</button></header>
     <div class="osl-chat-message-list" role="log" aria-live="polite" aria-relevant="additions text">${messages}</div>
     ${deletionUnconfirmedRow(model.deletionUnconfirmed ?? 0)}
     <form class="osl-chat-composer" data-osl-chat-compose="${escapeHtml(friend.personId)}">
       <label for="osl-chat-draft">Message</label>
-      <div class="osl-chat-composer-bar"><label class="osl-chat-view-once" title="View once"><input id="osl-chat-view-once" type="checkbox" ${model.viewOnce ? "checked" : ""} ${model.busy ? "disabled" : ""}/>${onceIcon}<span><strong>View once</strong><small>For view-once items, making one needs Pro; opening one is free. Kept out of OSL history. OSL asks for the sent copy to be deleted once it is opened, and says here when it cannot confirm that.</small></span></label><textarea id="osl-chat-draft" rows="1" placeholder="Message ${escapeHtml(friend.nickname)}" autocomplete="off" spellcheck="true" aria-describedby="osl-chat-draft-count osl-chat-readiness">${escapeHtml(model.draft)}</textarea><button class="osl-chat-send" type="submit" aria-label="${model.busy ? "Sending" : "Send"}" data-osl-chat-send-context="${friend.verified && friend.ready && !model.busy ? "1" : "0"}" ${canSend ? "" : "disabled"}>${sendIcon}<span>${model.busy ? "Sending…" : "Send"}</span></button></div>
-      <div class="osl-chat-composer-meta"><span id="osl-chat-readiness" class="osl-chat-readiness">${readiness}</span><output id="osl-chat-draft-count" class="osl-chat-byte-count${withinLimit ? "" : " is-over"}">${bytes.toLocaleString("en-US")} / ${OSL_CHAT_MAX_DRAFT_BYTES.toLocaleString("en-US")}</output></div>
+      <div class="osl-chat-composer-bar"><label class="osl-chat-view-once" title="View once"><input id="osl-chat-view-once" type="checkbox" ${model.viewOnce ? "checked" : ""} ${model.busy ? "disabled" : ""}/>${onceIcon}<span><strong>View once</strong><small>For view-once items, making one needs Pro; opening one is free. Kept out of OSL history. OSL asks for the sent copy to be deleted once it is opened, and says here when it cannot confirm that.</small></span></label><textarea id="osl-chat-draft" rows="1" placeholder="Message ${escapeHtml(friend.nickname)}" autocomplete="off" spellcheck="true" aria-describedby="osl-chat-draft-count osl-chat-readiness">${escapeHtml(model.draft)}</textarea><button class="osl-chat-send" type="submit" aria-label="${model.busy ? "Sending" : "Send"}" data-osl-chat-send-context="${friend.verified && !friend.keyChanged && friend.ready && !model.busy ? "1" : "0"}" ${canSend ? "" : "disabled"}>${sendIcon}<span>${model.busy ? "Sending…" : "Send"}</span></button></div>
+      <div class="osl-chat-composer-meta"><span id="osl-chat-readiness" class="osl-chat-readiness">${escapeHtml(readiness)}</span><output id="osl-chat-draft-count" class="osl-chat-byte-count${withinLimit ? "" : " is-over"}">${bytes.toLocaleString("en-US")} / ${OSL_CHAT_MAX_DRAFT_BYTES.toLocaleString("en-US")}</output></div>
     </form>
   </section>`;
 }

@@ -190,7 +190,7 @@ export {
 } from "./autoscrub-unattended-run";
 import { initializeThemePreference, themeStorageKey, type ThemeChoice } from "./theme-preference";
 import { inDomTooltipMarkup } from "./in-dom-tooltip";
-import { applyOslChatDraftToElement, firstPartyOslSurfaceContract, OSL_CHAT_MAX_DRAFT_BYTES, oslChatDraftBytes, oslChatHandshakeConfirmed, oslChatsViewMarkup, senderReceiptStateFor, type OslChatMessage } from "./osl-chats-view";
+import { applyOslChatDraftToElement, firstPartyOslSurfaceContract, OSL_CHAT_KEY_CHANGED_REFUSAL_REASON, OSL_CHAT_MAX_DRAFT_BYTES, oslChatDraftBytes, oslChatHandshakeConfirmed, oslChatsViewMarkup, senderReceiptStateFor, type OslChatMessage } from "./osl-chats-view";
 import { createOslChatDeliveryRuntime, mergeOslChatTimeline, oslChatHistoryMessages, receivedOslChatBatchMessage, type OslChatDeliveryHost } from "./osl-chat-runtime";
 import { peopleReverificationNoticeMarkup } from "./people-reverification-notice";
 import { parseEnclaveAudience, type EnclaveAudience } from "./osl-collab";
@@ -5019,6 +5019,7 @@ export function activityPrimaryAction(): void {
 
 function oslChatContent(): string {
   const pro = licenseState.access === "pro" || licenseState.access === "offlineGrace";
+  const activeOslChatKeyChanged = hubPeople.some((person) => person.personId === activeOslChatPersonId && person.pendingKeyChange);
   const friends = hubPeople.map((person) => {
     const messages = oslChatMessages.get(person.personId) ?? [];
     const last = messages.at(-1);
@@ -5026,6 +5027,7 @@ function oslChatContent(): string {
       personId: person.personId,
       nickname: person.alias ?? "Unnamed friend",
       verified: person.safetyNumberVerified && !person.pendingKeyChange,
+      keyChanged: person.pendingKeyChange,
       ready: person.personId === activeOslChatPersonId && activeOslChatContext?.scopeApproved === true,
       preview: last?.body ?? null,
       previewVisible: chatPreviewHidingVisible(oslChatPreviewsVisible),
@@ -5039,7 +5041,7 @@ function oslChatContent(): string {
   const settingsPerson = oslChatSettingsPersonId ? hubPeople.find((person) => person.personId === oslChatSettingsPersonId) ?? null : null;
   const settings = settingsPerson ? oslChatFriendSettingsMarkup(settingsPerson) : "";
   const attachmentCreation = pro
-    ? `<button class="button compact" id="osl-chat-attach" type="button" ${oslChatBusy ? "disabled" : ""}>Choose file</button>`
+    ? `<button class="button compact" id="osl-chat-attach" type="button" ${oslChatBusy || activeOslChatKeyChanged ? "disabled" : ""}>Choose file</button>`
     : `<span class="quiet-note">Pro is required to make an attachment.</span>`;
   const attachments = activeOslChatContext?.scopeApproved
     ? `<section class="osl-chat-attachments" aria-label="Encrypted attachments"><header><strong>Attachments</strong>${attachmentCreation}</header>${pro ? attachmentProgressMarkupForActiveChat() : ""}${oslChatAttachments.length ? oslChatAttachments.map((item) => `<button class="setting-line" data-osl-chat-attachment="${escapeHtml(item.attachmentId)}" type="button"><span><strong>${escapeHtml(item.originalFilename)}</strong><small>${item.viewOnce ? "View once · " : ""}${item.plaintextSize.toLocaleString("en-US")} bytes</small></span>${statusTag("Open")}</button>`).join("") : `<p>No pending attachments.</p>`}<small>Images open in OSL's capture-resistant viewer. Other supported files open temporarily in their Windows viewer, which may allow capture.</small></section>`
@@ -8726,6 +8728,12 @@ async function refreshOslChat(): Promise<void> {
 }
 
 async function sendOslChatAttachment(): Promise<void> {
+  const person = hubPeople.find((candidate) => candidate.personId === activeOslChatPersonId);
+  if (person?.pendingKeyChange) {
+    showToast(OSL_CHAT_KEY_CHANGED_REFUSAL_REASON);
+    render();
+    return;
+  }
   if (!activeOslChatContext?.scopeApproved || oslChatBusy) return;
   oslChatBusy = true;
   render();
@@ -8754,6 +8762,12 @@ async function sendOslChat(event: SubmitEvent): Promise<void> {
   const context = activeOslChatContext;
   const personId = activeOslChatPersonId;
   const draft = oslChatDraft;
+  const person = hubPeople.find((candidate) => candidate.personId === personId);
+  if (person?.pendingKeyChange) {
+    showToast(OSL_CHAT_KEY_CHANGED_REFUSAL_REASON);
+    render();
+    return;
+  }
   if (!context?.scopeApproved || !personId || oslChatBusy || !isHubPlaintext(draft) || refuseOfflineCapability("sendMessage")) return;
   const epoch = oslChatOperationEpoch;
   oslChatBusy = true;
@@ -8879,6 +8893,13 @@ function requestFriendVerification(personId: string): void {
   ownedConfirmationBusy = false;
   ownedConfirmationError = "";
   render();
+}
+
+/** Verify against the hub, then replace local people with its authoritative view. */
+async function verifyHubPersonAndRefresh(personId: string, safetyNumber: string): Promise<boolean> {
+  if (!(await verifyHubPerson(personId, safetyNumber))) return false;
+  hubPeople = await listHubPeople() ?? hubPeople;
+  return true;
 }
 
 function requestFriendRemoval(personId: string): void {
@@ -9062,8 +9083,7 @@ async function executeOwnedConfirmation(): Promise<void> {
   try {
     if (request.kind === "verifyFriend") {
       const reviewingKeyChange = hubPeople.find((person) => person.personId === request.personId)?.pendingKeyChange === true;
-      if (!(await verifyHubPerson(request.personId, typedVerificationCode))) { refuse("Verification refused: the code was not accepted. Nothing changed."); return; }
-      hubPeople = await listHubPeople() ?? hubPeople;
+      if (!(await verifyHubPersonAndRefresh(request.personId, typedVerificationCode))) { refuse("Verification refused: the code was not accepted. Nothing changed."); return; }
       closeOwnedConfirmation();
       showToast(reviewingKeyChange ? "Friend key re-verified locally · no conversations approved" : "Friend request accepted locally · no conversations approved");
       return;
@@ -10374,6 +10394,36 @@ export const __oslHubUiTest = {
   },
   renderPrimarySidebar(): string {
     return primarySidebarMarkup();
+  },
+  /** Minimal real-chat setup for focused send and verification behavior tests. */
+  setOslChatForTest(personId: string, draft: string): void {
+    const person = hubPeople.find((candidate) => candidate.personId === personId);
+    if (!person) throw new Error(`Unknown test chat person: ${personId}`);
+    route = "osl-chat";
+    activeOslChatPersonId = personId;
+    activeOslChatContext = {
+      contextToken: "task-5013-test-context",
+      serviceId: "osl-chat",
+      accountId: "local",
+      personId,
+      peerOslUserId: person.oslUserId,
+      scopeApproved: true,
+    };
+    oslChatBusy = false;
+    setOslChatDraft(draft);
+  },
+  renderOslChatForTest(): string {
+    route = "osl-chat";
+    return oslChatContent();
+  },
+  sendOslChatForTest(): Promise<void> {
+    return sendOslChat({ preventDefault() {} } as SubmitEvent);
+  },
+  sendOslChatAttachmentForTest(): Promise<void> {
+    return sendOslChatAttachment();
+  },
+  verifyHubPersonAndRefreshForTest(personId: string, safetyNumber: string): Promise<boolean> {
+    return verifyHubPersonAndRefresh(personId, safetyNumber);
   },
   renderWorkspaceContent(destination?: Route): string {
     if (destination) route = destination;
