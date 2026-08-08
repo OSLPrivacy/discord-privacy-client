@@ -199,6 +199,17 @@ impl ScheduleStore {
         self.schedules.values().cloned().collect()
     }
 
+    /// Remove the one schedule for `account_id` and return the record that was
+    /// removed.  The AutoScrub controls use this only after an in-flight run
+    /// reaches its safe stopping point; they must not replace deletion with a
+    /// fresh `OnlyWhenChosen` record, because that would leave automation
+    /// state behind when the person chose "Stop and turn off".
+    pub fn remove(&mut self, account_id: &str) -> Result<ScheduleRecord, ScheduleError> {
+        self.schedules
+            .remove(account_id)
+            .ok_or(ScheduleError::NotFound)
+    }
+
     pub fn len(&self) -> usize {
         self.schedules.len()
     }
