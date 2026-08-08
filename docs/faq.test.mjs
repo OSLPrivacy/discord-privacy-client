@@ -80,7 +80,9 @@ test('T1536 question check finds all six requested FAQ answers', () => {
       required: [
         /Pro is an early-access purchase/u,
         /protected text on Discord with no message limit/u,
-        /Encrypted images, other file types, AutoScrub, view once, expiry, burn, and AI-written cover text arrive at v1/u,
+        /Encrypted images, other file types, AutoScrub, expiry, burn, and AI-written cover text arrive at v1/u,
+        /making one needs\s+Pro/u,
+        /opening one is\s+free/u,
       ],
     },
     {

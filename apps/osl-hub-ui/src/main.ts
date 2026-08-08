@@ -2056,14 +2056,15 @@ function welcomeOnboardingContent(): string {
 
 function proSetupContent(): string {
   const pro = licenseState.access === "pro" || licenseState.access === "offlineGrace";
-  if (pro) return `<section class="pro-setup onboarding-centered-step" aria-labelledby="route-heading">${statusTag("Pro active", "active")}<h1 id="route-heading" tabindex="-1">OSL Pro is ready</h1><div class="setup-footer onboarding-actions"><button class="button primary" data-onboarding="sending" type="button">Continue</button></div></section>`;
+  const tierCopy = "For view-once items, making one needs Pro; opening one is free.";
+  if (pro) return `<section class="pro-setup onboarding-centered-step" aria-labelledby="route-heading">${statusTag("Pro active", "active")}<h1 id="route-heading" tabindex="-1">OSL Pro is ready</h1><p class="compact-lead onboarding-centered-copy">${tierCopy}</p><div class="setup-footer onboarding-actions"><button class="button primary" data-onboarding="sending" type="button">Continue</button></div></section>`;
   // The submit and the Skip escape hatch sit in the step's own action row, so
   // the docking pass folds Back in beside them instead of leaving a third,
   // separate footer below a loose text link.
   // The eyebrow, the divider and the solid cyan button are gone by the 2026-08-06
   // redesign. Same button and same tokens as the other entry screens -- one
   // component, so a change to it lands everywhere at once.
-  return `<section class="pro-setup pro-code-screen" aria-labelledby="route-heading"><h1 id="route-heading" class="pro-code-title" tabindex="-1">Enter Pro code</h1><form id="activation-form" class="pro-setup-form pro-code-form" novalidate><label class="sr-only" for="activation-code">Pro activation code</label><input id="activation-code" inputmode="text" maxlength="23" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="OSL-XXXX-XXXX-XXXX-XXXX" required/><button class="signin-unlock pro-code-continue" type="submit"><span class="signin-unlock-label">Continue</span>${signinArrowIcon()}</button><button class="signin-recovery" id="skip-pro-setup" type="button">Skip</button></form></section>`;
+  return `<section class="pro-setup pro-code-screen" aria-labelledby="route-heading"><h1 id="route-heading" class="pro-code-title" tabindex="-1">Enter Pro code</h1><p class="compact-lead onboarding-centered-copy">${tierCopy}</p><form id="activation-form" class="pro-setup-form pro-code-form" novalidate><label class="sr-only" for="activation-code">Pro activation code</label><input id="activation-code" inputmode="text" maxlength="23" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="OSL-XXXX-XXXX-XXXX-XXXX" required/><button class="signin-unlock pro-code-continue" type="submit"><span class="signin-unlock-label">Continue</span>${signinArrowIcon()}</button><button class="signin-recovery" id="skip-pro-setup" type="button">Skip</button></form></section>`;
 }
 
 function tutorialContent(): string {
@@ -4984,8 +4985,11 @@ function oslChatContent(): string {
     : "";
   const settingsPerson = oslChatSettingsPersonId ? hubPeople.find((person) => person.personId === oslChatSettingsPersonId) ?? null : null;
   const settings = settingsPerson ? oslChatFriendSettingsMarkup(settingsPerson) : "";
-  const attachments = activeOslChatContext?.scopeApproved && pro
-    ? `<section class="osl-chat-attachments" aria-label="Encrypted attachments"><header><strong>Attachments</strong><button class="button compact" id="osl-chat-attach" type="button" ${oslChatBusy ? "disabled" : ""}>Choose file</button></header>${attachmentProgressMarkupForActiveChat()}${oslChatAttachments.length ? oslChatAttachments.map((item) => `<button class="setting-line" data-osl-chat-attachment="${escapeHtml(item.attachmentId)}" type="button"><span><strong>${escapeHtml(item.originalFilename)}</strong><small>${item.viewOnce ? "View once · " : ""}${item.plaintextSize.toLocaleString("en-US")} bytes</small></span>${statusTag("Open")}</button>`).join("") : `<p>No pending attachments.</p>`}<small>Images open in OSL's capture-resistant viewer. Other supported files open temporarily in their Windows viewer, which may allow capture.</small></section>`
+  const attachmentCreation = pro
+    ? `<button class="button compact" id="osl-chat-attach" type="button" ${oslChatBusy ? "disabled" : ""}>Choose file</button>`
+    : `<span class="quiet-note">Pro is required to make an attachment.</span>`;
+  const attachments = activeOslChatContext?.scopeApproved
+    ? `<section class="osl-chat-attachments" aria-label="Encrypted attachments"><header><strong>Attachments</strong>${attachmentCreation}</header>${pro ? attachmentProgressMarkupForActiveChat() : ""}${oslChatAttachments.length ? oslChatAttachments.map((item) => `<button class="setting-line" data-osl-chat-attachment="${escapeHtml(item.attachmentId)}" type="button"><span><strong>${escapeHtml(item.originalFilename)}</strong><small>${item.viewOnce ? "View once · " : ""}${item.plaintextSize.toLocaleString("en-US")} bytes</small></span>${statusTag("Open")}</button>`).join("") : `<p>No pending attachments.</p>`}<small>Images open in OSL's capture-resistant viewer. Other supported files open temporarily in their Windows viewer, which may allow capture.</small></section>`
     : "";
   const receipt = activeOslChatPersonId
     ? oslChatSenderReceiptMarkup(oslChatMessages.get(activeOslChatPersonId) ?? [])
@@ -6346,7 +6350,7 @@ function activationSettingsContent(): string {
     ? "Optional Pro module: separately installed and licensed on this device."
     : "Optional Pro module: separate install and license required; base OSL stays available.";
   const clear = licenseState.status === "UNCONFIGURED" ? "" : `<button class="button compact" id="clear-activation-code" type="button">Clear activation</button>`;
-  return `<details class="license-card settings-disclosure"><summary><span><strong>Plan</strong><small>${escapeHtml(copy.title)}</small></span>${statusTag(escapeHtml(licenseState.status === "UNCONFIGURED" ? "Free" : licenseState.status), pro ? "active" : "")}</summary><div data-entitlement-banner="${entitlement.banner}" data-entitlement-cta="${entitlement.cta}"><p>${escapeHtml(copy.detail)}</p><p>Paste the activation code shown after checkout. No email is required.</p><p class="quiet-note">${moduleAccess}</p><form id="activation-form" class="license-form"><label for="activation-code">Activation code</label><div><input id="activation-code" inputmode="text" maxlength="23" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="OSL-XXXX-XXXX-XXXX-XXXX" required/><button class="button primary" type="submit">Activate Pro</button>${clear}</div></form></div></details>`;
+  return `<details class="license-card settings-disclosure"><summary><span><strong>Plan</strong><small>${escapeHtml(copy.title)}</small></span>${statusTag(escapeHtml(licenseState.status === "UNCONFIGURED" ? "Free" : licenseState.status), pro ? "active" : "")}</summary><div data-entitlement-banner="${entitlement.banner}" data-entitlement-cta="${entitlement.cta}"><p>${escapeHtml(copy.detail)}</p><p>For view-once items, making one needs Pro; opening one is free.</p><p>Paste the activation code shown after checkout. No email is required.</p><p class="quiet-note">${moduleAccess}</p><form id="activation-form" class="license-form"><label for="activation-code">Activation code</label><div><input id="activation-code" inputmode="text" maxlength="23" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="OSL-XXXX-XXXX-XXXX-XXXX" required/><button class="button primary" type="submit">Activate Pro</button>${clear}</div></form></div></details>`;
 }
 
 function appearanceSettingsContent(): string {

@@ -60,7 +60,13 @@ describe("Discord QA license gate", () => {
   it("retains the production Pro onboarding and activation UI", async () => {
     const { __oslHubUiTest } = await loadUi();
 
-    expect(__oslHubUiTest.renderOnboardingRoute("pro")).toContain("Enter Pro code");
-    expect(__oslHubUiTest.renderSettingsSection("account")).toContain("Activate Pro");
+    const proPage = __oslHubUiTest.renderOnboardingRoute("pro");
+    const settingsPage = __oslHubUiTest.renderSettingsSection("account");
+    expect(proPage).toContain("Enter Pro code");
+    expect(settingsPage).toContain("Activate Pro");
+    for (const surface of [proPage, settingsPage]) {
+      expect(surface).toMatch(/making one needs\s+Pro/u);
+      expect(surface).toMatch(/opening one is\s+free/u);
+    }
   }, MODULE_RELOAD_BUDGET_MS);
 });
