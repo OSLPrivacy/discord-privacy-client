@@ -4,11 +4,17 @@
 //! paths, capabilities, keys, ciphertext, and plaintext bytes stay in Rust.
 
 use osl_privacy_hub::attachment_formats;
+use osl_privacy_hub::attachment_limits::AttachmentAccountTier;
 use osl_privacy_hub::attachment_partial_guard::AttachmentPartialGuard;
 use osl_privacy_hub::broker::{
     self, HubBrokerState, PendingNativeOverlayAttachment, PreparedNativeOverlayAttachment,
 };
 use osl_privacy_hub::core_bridge::HubCoreState;
+use osl_privacy_hub::osl_chat_attachment_download_permission::{
+    authorize_recipient_attachment_download, download_pro_attachment_for_recipient,
+    grant_recipient_download_from_authenticated_notice, RecipientAttachmentDownloadError,
+    RecipientAttachmentDownloadPermission, RecipientAttachmentDownloadRequest,
+};
 use osl_privacy_hub::peer_attachment_io;
 use osl_privacy_hub::security::HubSecurityState;
 use osl_privacy_hub::service_host::ActiveServiceHost;
@@ -615,7 +621,6 @@ pub(crate) fn list_pending(
     security: &HubSecurityState,
     broker: &HubBrokerState,
 ) -> Result<Vec<PendingNativeOverlayAttachment>, String> {
-    require_active_pro(core)?;
     broker::list_native_overlay_attachments(core, security, broker)
 }
 
@@ -624,7 +629,6 @@ pub(crate) fn list_osl_chat_pending(
     security: &HubSecurityState,
     broker: &HubBrokerState,
 ) -> Result<Vec<PendingNativeOverlayAttachment>, String> {
-    require_active_pro(core)?;
     broker::list_osl_chat_attachments(core, security, broker)
 }
 
@@ -665,7 +669,6 @@ fn open_pending_inner(
     overlay_context: Option<(u64, &ActiveServiceHost)>,
     attachment_id: &str,
 ) -> Result<OpenedNativeOverlayAttachment, String> {
-    require_active_pro(core)?;
     let local_root = app
         .path()
         .app_local_data_dir()
@@ -697,15 +700,30 @@ fn open_pending_inner(
         return Err(attachment_formats::unsupported_protected_image_message());
     }
     let token = parse_token(&plan.fetch_token)?;
+    let permission = grant_recipient_download_from_authenticated_notice(
+        plan.recipient_osl_user_id.clone(),
+        plan.object_id.clone(),
+        plan.sealed_size,
+        token,
+    )
+    .map_err(|_| "This private attachment permission is invalid".to_owned())?;
+    let recipient_request = current_recipient_download_request(core)?;
+    authorize_recipient_attachment_download(&permission, &recipient_request)
+        .map_err(recipient_permission_error)?;
     let (download_path, mut download) = peer_attachment_io::create_download_file(&local_root)?;
     let mut partial = AttachmentPartialGuard::new(
         &local_root,
         download_path,
         peer_attachment_io::remove_staging_path_in_root,
     );
-    let fetched = match client.fetch_attachment_to_writer(&plan.object_id, &token, &mut download) {
-        Ok(size) => size,
-        Err(error) => {
+    let fetched = match download_pro_attachment_for_recipient(
+        &permission,
+        &recipient_request,
+        &client,
+        &mut download,
+    ) {
+        Ok(receipt) => receipt.byte_length,
+        Err(RecipientAttachmentDownloadError::Transfer(error)) => {
             drop(download);
             // A rejected capability is not an expiry, and being offline is
             // neither. Report which one actually happened.
@@ -713,6 +731,10 @@ fn open_pending_inner(
                 &error,
                 peer_attachment_io::TransportPhase::Fetch,
             ));
+        }
+        Err(error) => {
+            drop(download);
+            return Err(recipient_permission_error(error));
         }
     };
     if fetched != plan.sealed_size || download.sync_all().is_err() {
@@ -747,14 +769,14 @@ fn open_pending_inner(
         if let Err(error) = validate_surface(app, broker_state, overlay_context) {
             return Err(error);
         }
-        require_active_pro(core)?;
+        authorize_current_recipient(core, &permission)?;
         // Decode and create the window while it is hidden. `prepare` applies
         // and reads back capture exclusion before returning; Drop closes the
         // hidden window and zeroizes its pixels on every later failure.
         let viewer =
             super::native_image_viewer::prepare(app, opened, plan.display_duration_seconds)?;
         validate_surface(app, broker_state, overlay_context)?;
-        require_active_pro(core)?;
+        authorize_current_recipient(core, &permission)?;
         if overlay_context.is_some() {
             broker::commit_native_overlay_attachment_open(core, security, broker_state, &plan)?;
         } else {
@@ -798,7 +820,7 @@ fn open_pending_inner(
     if let Err(error) = validate_surface(app, broker_state, overlay_context) {
         return Err(with_plaintext_removal(error, opened.remove_now()));
     }
-    if let Err(error) = require_active_pro(core) {
+    if let Err(error) = authorize_current_recipient(core, &permission) {
         return Err(with_plaintext_removal(error, opened.remove_now()));
     }
     let committed = if overlay_context.is_some() {
@@ -825,6 +847,46 @@ fn open_pending_inner(
         burn_view_once(&client, &plan.object_id, &token)?;
     }
     Ok(response)
+}
+
+fn current_recipient_download_request(
+    core: &HubCoreState,
+) -> Result<RecipientAttachmentDownloadRequest, String> {
+    let recipient_osl_user_id = core
+        .osl
+        .identity
+        .lock()
+        .map_err(|_| "This private attachment recipient is unavailable".to_owned())?
+        .as_ref()
+        .map(|identity| identity.user_id.clone())
+        .ok_or_else(|| "This private attachment recipient is unavailable".to_owned())?;
+    let account_tier = if ipc::tier_gate::is_paid_equivalent(&core.osl) {
+        AttachmentAccountTier::Pro
+    } else {
+        AttachmentAccountTier::Free
+    };
+    Ok(RecipientAttachmentDownloadRequest {
+        recipient_osl_user_id,
+        account_tier,
+    })
+}
+
+fn authorize_current_recipient(
+    core: &HubCoreState,
+    permission: &RecipientAttachmentDownloadPermission,
+) -> Result<(), String> {
+    let request = current_recipient_download_request(core)?;
+    authorize_recipient_attachment_download(permission, &request)
+        .map_err(recipient_permission_error)
+}
+
+fn recipient_permission_error(error: RecipientAttachmentDownloadError) -> String {
+    match error {
+        RecipientAttachmentDownloadError::DownloadLengthMismatch { .. } => {
+            "This private attachment has an invalid size".to_owned()
+        }
+        _ => "This private attachment permission is unavailable".to_owned(),
+    }
 }
 
 /// Longest lifetime the cipher store honours. The taken plan does not expose its

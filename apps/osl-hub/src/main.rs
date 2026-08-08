@@ -5406,7 +5406,6 @@ async fn list_osl_chat_attachments(
     if caller.label() != "main" {
         return Err("Only the trusted OSL window may list OSL Chat attachments".to_owned());
     }
-    require_active_pro_entitlement(&app.state::<HubCoreState>())?;
     let _session = session.transition.lock().await;
     tauri::async_runtime::spawn_blocking(move || {
         native_attachment_transport::list_osl_chat_pending(
@@ -5432,7 +5431,6 @@ async fn open_osl_chat_attachment(
     screenshot::apply_to_window(&caller, active_osl_capture_protection()).map_err(|_| {
         "Windows capture resistance is required to open OSL Chat attachments".to_owned()
     })?;
-    require_active_pro_entitlement(&app.state::<HubCoreState>())?;
     let _session = session.transition.lock().await;
     tauri::async_runtime::spawn_blocking(move || {
         native_attachment_transport::open_osl_chat_pending(
@@ -5486,7 +5484,6 @@ async fn list_native_discord_overlay_attachments(
     if caller.label() != native_discord_overlay::OVERLAY_LABEL {
         return Err("Only the trusted native Discord overlay may list attachments".to_owned());
     }
-    require_active_pro_entitlement(&app.state::<HubCoreState>())?;
     let _session = session.transition.lock().await;
     tauri::async_runtime::spawn_blocking(move || {
         let (context_epoch, host) = require_overlay_context_snapshot(&app)?;
@@ -5512,7 +5509,6 @@ async fn open_native_discord_overlay_attachment(
     if caller.label() != native_discord_overlay::OVERLAY_LABEL {
         return Err("Only the trusted native Discord overlay may open attachments".to_owned());
     }
-    require_active_pro_entitlement(&app.state::<HubCoreState>())?;
     let _session = session.transition.lock().await;
     tauri::async_runtime::spawn_blocking(move || {
         let (context_epoch, host) = require_overlay_context_snapshot(&app)?;
@@ -7138,7 +7134,6 @@ async fn open_hub_attachment(
     let _session = session.transition.lock().await;
     tauri::async_runtime::spawn_blocking(move || {
         let core = app.state::<HubCoreState>();
-        require_active_pro_entitlement(&core)?;
         let broker_state = app.state::<HubBrokerState>();
         let host_state = app.state::<ServiceHostState>();
         let active = host_state
@@ -7161,7 +7156,6 @@ async fn open_hub_attachment(
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "OSL service closed during attachment opening".to_owned())?;
         broker_state.validate_active_host(&context_token, &still_active)?;
-        require_active_pro_entitlement(&core)?;
         Ok(opened)
     })
     .await
