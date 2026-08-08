@@ -7,12 +7,13 @@ describe("Look screen", () => {
     const markup = lookScreenMarkup(defaultLookState);
     for (const text of [
       "Light", "Dark", "Computer", "Named looks", "Midnight", "Paper", "Signal",
-      "Accent", "Corners and glow", "Text and spacing", "Reset look",
+      "Accent", "Corners and glow", "Window size", "Reset look", "Save",
     ]) expect(markup).toContain(text);
     for (const control of ["mode", "named", "accent", "corners", "glow", "text", "spacing"]) {
       expect(markup).toContain(`data-look-${control}=`);
     }
     expect(markup).toContain("data-look-reset");
+    expect(markup).toContain("data-look-save");
     expect(markup.match(/<small>/gu)?.length).toBeGreaterThanOrEqual(18);
   });
 
@@ -20,7 +21,7 @@ describe("Look screen", () => {
     const main = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
     expect(main).toContain('[["account", "Account"], ["apps", "Apps"], ["scrub", "Scrub"], ["cleanup", "Cleanup"], ["notifications", "Notifications"], ["appearance", "Look"]');
     expect(main).toContain("return lookScreenMarkup(lookState);");
-    for (const control of ["mode", "named", "accent", "corners", "glow", "text", "spacing", "reset"]) {
+    for (const control of ["mode", "named", "accent", "corners", "glow", "text", "spacing", "reset", "save"]) {
       expect(main).toContain(`data-look-${control}`);
     }
   });

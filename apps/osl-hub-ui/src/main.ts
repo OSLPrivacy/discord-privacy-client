@@ -7591,12 +7591,16 @@ function appearanceSettingsContent(): string {
   return `${lookScreenMarkup(lookState)}${appearanceSettingsMarkup(appearancePreferences)}<section class="appearance-theme"><h3>Theme</h3>${theme}</section>`;
 }
 
-function saveAndApplyLook(next: LookState): void {
+function previewLook(next: LookState): void {
   lookState = next;
-  saveLookState(localStorage, next);
   themeChoice = parseTheme(next.mode === "computer" ? "system" : next.mode);
-  localStorage.setItem(themeStorageKey, themeChoice);
   applyTheme(themeChoice);
+  render();
+}
+
+function persistLook(): void {
+  saveLookState(localStorage, lookState);
+  localStorage.setItem(themeStorageKey, themeChoice);
   render();
 }
 
@@ -9324,7 +9328,7 @@ function bindWorkspace(): void {
   }));
   document.querySelectorAll<HTMLButtonElement>("[data-look-mode]").forEach((button) => button.addEventListener("click", () => {
     const mode = lookMode(button.dataset.lookMode);
-    if (mode) saveAndApplyLook({ ...lookState, mode });
+    if (mode) previewLook({ ...lookState, mode });
   }));
   document.querySelectorAll<HTMLButtonElement>("[data-appearance-accent]").forEach((button) => button.addEventListener("click", () => {
     const accent = button.dataset.appearanceAccent;
@@ -9360,28 +9364,29 @@ function bindWorkspace(): void {
   });
   document.querySelectorAll<HTMLButtonElement>("[data-look-named]").forEach((button) => button.addEventListener("click", () => {
     const named = button.dataset.lookNamed;
-    if (named === "midnight" || named === "paper" || named === "signal") saveAndApplyLook({ ...lookState, named });
+    if (named === "midnight" || named === "paper" || named === "signal") previewLook({ ...lookState, named });
   }));
   document.querySelectorAll<HTMLButtonElement>("[data-look-accent]").forEach((button) => button.addEventListener("click", () => {
     const accent = button.dataset.lookAccent;
-    if (accent === "cyan" || accent === "violet" || accent === "amber") saveAndApplyLook({ ...lookState, accent });
+    if (accent === "cyan" || accent === "violet" || accent === "amber") previewLook({ ...lookState, accent });
   }));
   document.querySelectorAll<HTMLButtonElement>("[data-look-corners]").forEach((button) => button.addEventListener("click", () => {
     const corners = button.dataset.lookCorners;
-    if (corners === "square" || corners === "soft") saveAndApplyLook({ ...lookState, corners });
+    if (corners === "square" || corners === "soft") previewLook({ ...lookState, corners });
   }));
   document.querySelectorAll<HTMLButtonElement>("[data-look-glow]").forEach((button) => button.addEventListener("click", () => {
-    saveAndApplyLook({ ...lookState, glow: button.dataset.lookGlow === "on" });
+    previewLook({ ...lookState, glow: button.dataset.lookGlow === "on" });
   }));
   document.querySelectorAll<HTMLButtonElement>("[data-look-text]").forEach((button) => button.addEventListener("click", () => {
     const text = button.dataset.lookText;
-    if (text === "comfortable" || text === "large") saveAndApplyLook({ ...lookState, text });
+    if (text === "comfortable" || text === "large") previewLook({ ...lookState, text });
   }));
   document.querySelectorAll<HTMLButtonElement>("[data-look-spacing]").forEach((button) => button.addEventListener("click", () => {
     const spacing = button.dataset.lookSpacing;
-    if (spacing === "compact" || spacing === "relaxed") saveAndApplyLook({ ...lookState, spacing });
+    if (spacing === "compact" || spacing === "relaxed") previewLook({ ...lookState, spacing });
   }));
-  document.querySelector<HTMLButtonElement>("[data-look-reset]")?.addEventListener("click", () => saveAndApplyLook(defaultLookState));
+  document.querySelector<HTMLButtonElement>("[data-look-reset]")?.addEventListener("click", () => previewLook(defaultLookState));
+  document.querySelector<HTMLButtonElement>("[data-look-save]")?.addEventListener("click", persistLook);
   document.querySelector("#service-guide-next")?.addEventListener("click", () => {
     if (serviceGuideStep !== null) setServiceGuideStep(nextServiceGuideStep(serviceGuideStep));
   });
