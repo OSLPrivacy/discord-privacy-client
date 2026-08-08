@@ -548,6 +548,7 @@ fn execute_full_hub_cleanup_with_key_material_wipe(
     ipc::main_password::get_file_storage_key()
         .ok_or_else(|| "OSL main password must be unlocked".to_owned())?;
     validate_trusted_roots(app_config_dir, app_local_data_dir)?;
+    core.burn_jobs.begin_burn();
     let (identities, unreadable_identities) = collect_identities(core, app_config_dir)?;
     let client = core
         .osl
@@ -620,6 +621,10 @@ fn execute_verified_gate_burn_with_key_material_wipe(
         return Err("OSL burn requires every OSL-owned service host to be closed first".to_owned());
     }
     validate_trusted_roots(app_config_dir, app_local_data_dir)?;
+    // Revoke live workers before collecting identities or deleting one file.
+    // A worker already inside an indivisible side effect completes first; no
+    // state-creating or sending side effect can begin after this returns.
+    core.burn_jobs.begin_burn();
 
     // Collect only what is already available in trusted memory. Sealed
     // identities that cannot be opened without the ordinary password are

@@ -621,6 +621,9 @@ pub mod claim_state;
 pub mod cleanup;
 #[cfg(feature = "core")]
 #[cfg(not(task3982_focused))]
+pub mod burn_job_fence;
+#[cfg(feature = "core")]
+#[cfg(not(task3982_focused))]
 pub mod core_bridge;
 #[cfg(all(feature = "core", task3982_focused))]
 pub mod core_bridge {

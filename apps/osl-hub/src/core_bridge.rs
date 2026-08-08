@@ -13,6 +13,8 @@ use std::sync::{Arc, Mutex};
 
 pub struct HubCoreState {
     pub osl: Arc<AppState>,
+    /// Revokes protected background workers before Burn deletes their state.
+    pub burn_jobs: crate::burn_job_fence::BurnJobFence,
     bootstrap_attempted: bool,
     /// Serialises trusted identity/password transitions so Create, Import,
     /// Setup, and Unlock cannot race each other into replacing disk state.
@@ -23,6 +25,7 @@ impl Default for HubCoreState {
     fn default() -> Self {
         Self {
             osl: production_osl_state(),
+            burn_jobs: crate::burn_job_fence::BurnJobFence::default(),
             bootstrap_attempted: false,
             lifecycle_lock: Mutex::new(()),
         }
@@ -35,6 +38,7 @@ impl HubCoreState {
     pub fn bootstrap_from_disk() -> Self {
         let state = Self {
             osl: production_osl_state(),
+            burn_jobs: crate::burn_job_fence::BurnJobFence::default(),
             bootstrap_attempted: true,
             lifecycle_lock: Mutex::new(()),
         };
