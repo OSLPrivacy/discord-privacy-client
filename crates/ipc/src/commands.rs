@@ -22483,10 +22483,7 @@ fn check_site_for_update(
     arch: String,
 ) -> Result<SiteUpdateCheckResult, String> {
     let current = parse_update_semver(&current_version)?;
-    let client = reqwest::blocking::Client::builder()
-        .timeout(UPDATE_SITE_HTTP_TIMEOUT)
-        .build()
-        .map_err(|e| format!("update HTTP client could not start: {e}"))?;
+    let client = update_site_http_client()?;
 
     let Some(body) = fetch_bounded_text(&client, &manifest_url)? else {
         return Ok(SiteUpdateCheckResult::UpToDate {
@@ -22537,10 +22534,7 @@ pub fn cmd_osl_install_site_update(request: SiteUpdateInstallRequest) -> SiteUpd
             };
         }
     };
-    let client = match reqwest::blocking::Client::builder()
-        .timeout(UPDATE_SITE_HTTP_TIMEOUT)
-        .build()
-    {
+    let client = match update_site_http_client() {
         Ok(client) => client,
         Err(e) => {
             return SiteUpdateInstallResult::Error {
@@ -22680,6 +22674,19 @@ pub fn cmd_osl_install_site_update(request: SiteUpdateInstallRequest) -> SiteUpd
         fingerprint,
         downloaded_file_count_during,
         downloaded_file_count_after,
+    }
+}
+
+fn update_site_http_client() -> Result<reqwest::blocking::Client, String> {
+    match keystore::egress::direct_client_decision() {
+        keystore::egress::DirectClientDecision::Adopt(client) => Ok(*client),
+        keystore::egress::DirectClientDecision::Refuse => {
+            Err(keystore::egress::TOR_UNAVAILABLE.to_owned())
+        }
+        keystore::egress::DirectClientDecision::Build => reqwest::blocking::Client::builder()
+            .timeout(UPDATE_SITE_HTTP_TIMEOUT)
+            .build()
+            .map_err(|e| format!("update HTTP client could not start: {e}")),
     }
 }
 
