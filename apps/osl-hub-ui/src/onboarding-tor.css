@@ -6,7 +6,9 @@
    sit inside each card.
    --------------------------------------------------------------------------- */
 .onboarding-shell:has(.tor-onboarding),
-.onboarding-panel:has(.tor-onboarding) {
+.onboarding-panel:has(.tor-onboarding),
+.onboarding-shell:has(.tor-first-run),
+.onboarding-panel:has(.tor-first-run) {
   width: 100%;
   max-width: none;
   margin: 0;
@@ -195,6 +197,50 @@
 
 .tor-onboarding #onboarding-back::before { content: "\2190\00a0"; }
 .tor-onboarding #onboarding-back:hover { color: var(--tor-text); background: transparent; }
+
+.tor-first-run {
+  width: min(100%, 520px);
+  margin: 0 auto;
+  padding: 52px 24px 24px;
+  color: var(--tor-text, #f4f7f8);
+  text-align: center;
+}
+
+.tor-first-run h1 {
+  margin: 0;
+  font-family: "Onest Variable", "Onest", var(--font-ui);
+  font-size: clamp(28px, 5vw, 40px);
+  font-weight: 650;
+}
+
+.tor-first-run-status {
+  margin: 24px 0 0;
+  font-variant-numeric: tabular-nums;
+  color: var(--tor-second, #b8c2c7);
+}
+
+.tor-first-run-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-top: 32px;
+}
+
+.tor-first-run-actions button {
+  min-height: 48px;
+  border: 1px solid var(--tor-line, #2a343a);
+  border-radius: 12px;
+  background: transparent;
+  color: var(--tor-text, #f4f7f8);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.tor-first-run-actions [data-tor-retry] {
+  border-color: var(--tor-accent, #2ac0f0);
+  background: rgb(42 192 240 / 12%);
+}
 
 @media (prefers-reduced-motion: reduce) {
   .tor-packet { display: none; }

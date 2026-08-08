@@ -1,21 +1,32 @@
 import "./onboarding-tor.css";
 import { choiceRadio, continueButton } from "./onboarding-controls";
+import { firstRunTorScreenMarkup, type TorBootStatus } from "./tor-boot-orchestrator";
 
 /** The network route must be chosen explicitly during onboarding. */
 export type TorChoice = "tor" | "direct" | null;
 
 export interface TorOnboardingState {
   choice: TorChoice;
+  /** Null while choosing a route; populated exclusively from the sidecar
+   * orchestrator's onStatus callback once a Tor attempt starts. */
+  bootstrapStatus: TorBootStatus | null;
 }
 
 // 2026-08-06: Liam's redesign selects Tor by default rather than starting with
 // nothing chosen. The route is still SAVED on Continue, so the preference the
 // backend receives is still the one on screen.
-export const initialTorOnboardingState = (): TorOnboardingState => ({ choice: "tor" });
+export const initialTorOnboardingState = (): TorOnboardingState => ({ choice: "tor", bootstrapStatus: null });
 
-// The previous state is intentionally unused: choosing a route REPLACES it.
-export function chooseTorRoute(_state: TorOnboardingState, choice: Exclude<TorChoice, null>): TorOnboardingState {
-  return { choice };
+// Direct cancels any Tor attempt. Re-selecting Tor preserves the status stream
+// projection so a radio re-render cannot rewind visible progress.
+export function chooseTorRoute(state: TorOnboardingState, choice: Exclude<TorChoice, null>): TorOnboardingState {
+  return { choice, bootstrapStatus: choice === "tor" ? state.bootstrapStatus : null };
+}
+
+/** Feed one status projection from startTorBootOrchestrator into the actual
+ * first-run Tor route. There is no independent spinner or percentage clock. */
+export function applyTorBootstrapStatus(state: TorOnboardingState, bootstrapStatus: TorBootStatus): TorOnboardingState {
+  return { choice: "tor", bootstrapStatus };
 }
 
 /** Guards the Continue handler. A null choice can still arrive from a restored session. */
@@ -70,6 +81,9 @@ function directDiagram(): string {
  * contrast between the two animations is the only claim the screen makes.
  */
 export function onboardingTorMarkup(state: TorOnboardingState): string {
+  if (state.choice === "tor" && state.bootstrapStatus !== null) {
+    return firstRunTorScreenMarkup(state.bootstrapStatus);
+  }
   const card = (choice: Exclude<TorChoice, null>, title: string, diagram: string, caption: string): string => {
     const selected = state.choice === choice;
     return `<label class="tor-choice-card${selected ? " selected" : ""}">

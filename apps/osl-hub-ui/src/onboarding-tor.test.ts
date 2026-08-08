@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  applyTorBootstrapStatus,
   canContinuePastTorChoice,
   chooseTorRoute,
   initialTorOnboardingState,
   onboardingTorMarkup,
 } from "./onboarding-tor";
+import { applyTorSidecarEvent, initialTorBootStatus, markTorBootSlow } from "./tor-boot-orchestrator";
 
 describe("Tor onboarding choice", () => {
   // 2026-08-06: the screen used to start with nothing selected and a disabled
@@ -86,5 +88,23 @@ describe("Tor onboarding choice", () => {
     expect(onboardingTorMarkup(tor)).toMatch(/value="tor"[^>]*checked/u);
     expect(canContinuePastTorChoice(direct)).toBe(true);
     expect(onboardingTorMarkup(direct)).toMatch(/value="direct"[^>]*checked/u);
+  });
+
+  it("renders first-run progress copied from a sidecar bootstrap event", () => {
+    const status = applyTorSidecarEvent(initialTorBootStatus(), { event: "bootstrap", percent: 40 });
+    const state = applyTorBootstrapStatus(initialTorOnboardingState(), status);
+    expect(onboardingTorMarkup(state)).toContain("Connecting -- 40%");
+  });
+
+  it("keeps slow separate from failure and offers exits only on explicit error", () => {
+    const slow = applyTorBootstrapStatus(initialTorOnboardingState(), markTorBootSlow(initialTorBootStatus()));
+    expect(onboardingTorMarkup(slow)).toContain("Slow -- still trying");
+    expect(onboardingTorMarkup(slow)).not.toContain(">Retry</button>");
+
+    const failedStatus = applyTorSidecarEvent(initialTorBootStatus(), { event: "error", message: "no route" });
+    const failed = applyTorBootstrapStatus(initialTorOnboardingState(), failedStatus);
+    expect(onboardingTorMarkup(failed)).toContain("Failed -- Tor could not connect");
+    expect(onboardingTorMarkup(failed)).toContain(">Retry</button>");
+    expect(onboardingTorMarkup(failed)).toContain(">Direct</button>");
   });
 });
