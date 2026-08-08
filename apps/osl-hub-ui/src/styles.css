@@ -130,10 +130,72 @@
 
 .attachment-progress__bar::-moz-progress-bar { background: var(--brand); }
 
+.attachment-tray__title {
+  margin: 0 0 10px;
+  font-size: .9375rem;
+}
 
+.attachment-tray-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+}
 
+.attachment-tray-empty {
+  color: var(--muted);
+  font-size: .8125rem;
+}
 
+.attachment-tray-card {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  color: var(--text);
+}
 
+.attachment-tray-card__preview {
+  display: block;
+  width: 100%;
+  height: 96px;
+  border-radius: var(--radius);
+  object-fit: cover;
+  background: var(--panel-3);
+}
+
+.attachment-tray-card__preview--none {
+  border: 1px dashed var(--line);
+}
+
+.attachment-tray-card__body {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.attachment-tray-card__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachment-tray-card__meta {
+  color: var(--muted);
+  font-size: .75rem;
+}
+
+.attachment-tray-card__remove {
+  justify-self: start;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--danger);
+  font-size: .8125rem;
+  cursor: pointer;
+}
 :root[data-theme="light"] {
   color: #111820;
   background: #edf1f4;
