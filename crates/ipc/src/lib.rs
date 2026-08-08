@@ -123,6 +123,9 @@ pub mod unfinished_onboarding;
 // padding boundary.  Expose it from the shipping IPC crate so the upload path
 // can consume the one canonical implementation as the object envelope lands.
 pub mod transport_padding;
+/// Durable, per-person attachment and daily activity accounting used by the
+/// storage-budget gate.
+pub mod usage_counters;
 pub mod whitelist;
 pub mod whitelist_rules_store;
 pub mod whitelist_state;
