@@ -36,6 +36,7 @@
 pub mod allowed_places;
 pub mod app_preferences;
 pub mod at_rest_boundary;
+pub mod attachment_uploads;
 pub mod attachment_wire;
 pub mod auto_whitelist_rules;
 pub mod autoscrub_account_switches;

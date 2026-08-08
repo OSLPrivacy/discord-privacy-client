@@ -3903,6 +3903,7 @@ pub fn cmd_osl_remove_sender_message_records(
 pub struct BurnSenderMessageRecordsBothSidesDto {
     pub burn_id: String,
     pub requested_count: usize,
+    pub cancelled_upload_count: usize,
     pub local_removal_count: usize,
     pub remote_removal_count: usize,
     pub remaining_local_count: usize,
@@ -3931,6 +3932,15 @@ pub fn cmd_osl_burn_sender_message_records_both_sides(
 ) -> Result<BurnSenderMessageRecordsBothSidesDto, String> {
     record_activity_on_command_entry();
     validate_selected_sender_message_records(&discord_message_ids)?;
+    // Cancel first: once the user burns this exact message, its upload must
+    // not be allowed to complete even if identity/keyserver work below later
+    // refuses. `cancel_exact` is idempotent and cannot cancel another message.
+    let cancelled_upload_count = discord_message_ids.iter().try_fold(
+        0usize,
+        |count, message_id| -> Result<usize, String> {
+            Ok(count + usize::from(state.active_attachment_uploads.cancel_exact(message_id)?))
+        },
+    )?;
     let identity = state
         .identity_slot()
         .as_ref()
@@ -3966,6 +3976,7 @@ pub fn cmd_osl_burn_sender_message_records_both_sides(
         return Ok(BurnSenderMessageRecordsBothSidesDto {
             burn_id,
             requested_count: local.requested_count,
+            cancelled_upload_count,
             local_removal_count: local.removed_count,
             remote_removal_count,
             remaining_local_count: local.remaining_local_count,
@@ -3998,6 +4009,7 @@ pub fn cmd_osl_burn_sender_message_records_both_sides(
     Ok(BurnSenderMessageRecordsBothSidesDto {
         burn_id,
         requested_count: discord_message_ids.len(),
+        cancelled_upload_count,
         local_removal_count,
         remote_removal_count,
         remaining_local_count,

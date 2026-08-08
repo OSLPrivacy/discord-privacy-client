@@ -496,6 +496,9 @@ pub enum CipherStoreError {
     /// part or completion request could be sent.
     #[error("attachment upload cancelled")]
     UploadCancelled,
+    /// The exact message owning an in-flight multipart upload was burned.
+    #[error("attachment upload cancelled by message burn")]
+    AttachmentUploadCancelled,
 }
 
 const MAX_BLOB_BYTES: usize = 64 * 1024;
@@ -814,6 +817,16 @@ fn read_pro_chunked_upload_resume_record(
         Ok(_) => Ok(Some(ProChunkedUploadResumeRecord::load(path)?)),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error.into()),
+    }
+}
+
+fn refuse_burned_attachment_upload(
+    cancellation: Option<&crate::attachment_uploads::AttachmentUploadCancellation>,
+) -> Result<(), CipherStoreError> {
+    if cancellation.is_some_and(|signal| signal.is_cancelled()) {
+        Err(CipherStoreError::AttachmentUploadCancelled)
+    } else {
+        Ok(())
     }
 }
 
@@ -1264,7 +1277,7 @@ impl CipherStoreClient {
         sealed.seek(SeekFrom::Start(0))?;
         if length > LEGACY_DIRECT_ATTACHMENT_BYTES {
             return self
-                .upload_attachment_multipart(sealed, length, ttl_seconds, fetch_token, None, None)
+                .upload_attachment_multipart(sealed, length, ttl_seconds, fetch_token, None, None, None)
                 .map(|report| UploadResult {
                     id_hex: report.completed_file.file_id,
                     expires_at: report.completed_file.expires_at,
@@ -1306,7 +1319,41 @@ impl CipherStoreClient {
             });
         }
         sealed.seek(SeekFrom::Start(0))?;
-        self.upload_attachment_multipart(sealed, length, ttl_seconds, fetch_token, None, None)
+        self.upload_attachment_multipart(sealed, length, ttl_seconds, fetch_token, None, None, None)
+    }
+
+    /// Multipart upload registered to an exact message burn signal. The signal
+    /// is checked around every accepted part and immediately before completion.
+    pub fn upload_attachment_file_pro_chunked_cancellable(
+        &self,
+        mut sealed: File,
+        ttl_seconds: u32,
+        fetch_token: &[u8; FETCH_TOKEN_BYTES],
+        cancellation: &crate::attachment_uploads::AttachmentUploadCancellation,
+    ) -> Result<ProChunkedUploadReport, CipherStoreError> {
+        if cancellation.is_cancelled() {
+            return Err(CipherStoreError::AttachmentUploadCancelled);
+        }
+        if !is_valid_ttl(ttl_seconds) {
+            return Err(CipherStoreError::BadTtl(ttl_seconds));
+        }
+        let length = sealed.metadata()?.len();
+        if length == 0 || length > MAX_SEALED_ATTACHMENT_BYTES {
+            return Err(CipherStoreError::BlobTooLarge {
+                got: usize::try_from(length).unwrap_or(usize::MAX),
+                max: MAX_SEALED_ATTACHMENT_BYTES as usize,
+            });
+        }
+        sealed.seek(SeekFrom::Start(0))?;
+        self.upload_attachment_multipart(
+            sealed,
+            length,
+            ttl_seconds,
+            fetch_token,
+            None,
+            None,
+            Some(cancellation),
+        )
     }
 
     /// Upload an already-sealed Pro attachment and write live byte counters to
@@ -1338,6 +1385,7 @@ impl CipherStoreClient {
             fetch_token,
             None,
             Some(progress.clone()),
+            None,
         )
     }
 
@@ -1368,6 +1416,7 @@ impl CipherStoreClient {
             ttl_seconds,
             fetch_token,
             Some(resume_record_path.as_ref()),
+            None,
             None,
         )
     }
@@ -1429,6 +1478,7 @@ impl CipherStoreClient {
             fetch_token,
             Some(path),
             Some(progress.clone()),
+            None,
         );
         // A cancellation can arrive while reqwest is draining the current
         // request body.  Normalize that transport interruption to the same
@@ -1455,7 +1505,9 @@ impl CipherStoreClient {
         fetch_token: &[u8; FETCH_TOKEN_BYTES],
         resume_record_path: Option<&Path>,
         progress: Option<ProChunkedUploadProgress>,
+        cancellation: Option<&crate::attachment_uploads::AttachmentUploadCancellation>,
     ) -> Result<ProChunkedUploadReport, CipherStoreError> {
+        refuse_burned_attachment_upload(cancellation)?;
         if progress.as_ref().is_some_and(ProChunkedUploadProgress::is_cancelled) {
             return Err(CipherStoreError::UploadCancelled);
         }
@@ -1530,6 +1582,7 @@ impl CipherStoreClient {
         let result = (|| {
             let mut finished_pieces = Vec::with_capacity(plan.len());
             for (part_number, offset, part_length) in plan {
+                refuse_burned_attachment_upload(cancellation)?;
                 if progress.as_ref().is_some_and(ProChunkedUploadProgress::is_cancelled) {
                     return Err(CipherStoreError::UploadCancelled);
                 }
@@ -1566,6 +1619,7 @@ impl CipherStoreClient {
                     piece_number: receipt.part_number,
                     size_bytes: receipt.size_bytes,
                 });
+                refuse_burned_attachment_upload(cancellation)?;
                 completed_piece_numbers.push(receipt.part_number);
                 if let Some(path) = resume_record_path {
                     ProChunkedUploadResumeRecord {
@@ -1586,6 +1640,7 @@ impl CipherStoreClient {
             if progress.as_ref().is_some_and(ProChunkedUploadProgress::is_cancelled) {
                 return Err(CipherStoreError::UploadCancelled);
             }
+            refuse_burned_attachment_upload(cancellation)?;
             if sealed.metadata()?.len() != length {
                 return Err(CipherStoreError::Io(io::Error::new(
                     io::ErrorKind::UnexpectedEof,

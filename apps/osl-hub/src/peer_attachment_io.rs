@@ -495,6 +495,9 @@ pub fn classify_cipher_store_error(
         Raw::RateLimited => TransportOutcome::RateLimited,
         Raw::ParseError(_) => TransportOutcome::MalformedResponse,
         Raw::Io(_) => TransportOutcome::LocalIo,
+        // A message burn is a local, intentional refusal to let the owning
+        // multipart upload produce a completed object.
+        Raw::AttachmentUploadCancelled => TransportOutcome::Refused,
         Raw::RouteUnavailable(_) => TransportOutcome::RouteUnavailable,
         Raw::ConfigOverrideRefused { .. } => TransportOutcome::Refused,
         Raw::UploadCancelled => TransportOutcome::Cancelled,

@@ -6,6 +6,7 @@
 //! not call the attachment upload-size gate: a Free recipient may receive the
 //! full object that the Pro sender was allowed to upload.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::io::Write;
 
@@ -93,8 +94,69 @@ impl RecipientAttachmentDownloadPermission {
     }
 }
 
+/// Receiver-side completed-file permissions. In-flight uploads never enter
+/// this collection, so a burn/cancellation cannot manufacture an openable file.
+#[derive(Default)]
+pub struct RecipientAttachmentInbox {
+    completed: HashMap<String, (RecipientAttachmentDownloadPermission, StoredRecipientAttachment)>,
+}
+
+impl RecipientAttachmentInbox {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn record_completed(
+        &mut self,
+        report: &ProChunkedUploadReport,
+        recipient_osl_user_id: impl Into<String>,
+        fetch_token: [u8; FETCH_TOKEN_BYTES],
+    ) -> Result<bool, RecipientAttachmentDownloadError> {
+        let completed = &report.completed_file;
+        let stored = StoredRecipientAttachment {
+            file_id: completed.file_id.clone(),
+            file_name: "authenticated-attachment".to_owned(),
+            byte_length: completed.total_size_bytes,
+            kind: "application/octet-stream".to_owned(),
+            owner_osl_user_id: "authenticated-sender".to_owned(),
+            receiver_permission: StoredReceiverPermission::Download,
+        };
+        let permission = grant_recipient_download_from_pro_send(
+            report,
+            &stored,
+            recipient_osl_user_id,
+            fetch_token,
+        )?;
+        if self.completed.contains_key(permission.file_id()) {
+            return Ok(false);
+        }
+        self.completed
+            .insert(permission.file_id().to_owned(), (permission, stored));
+        Ok(true)
+    }
+
+    pub fn completed_file_count(&self) -> usize {
+        self.completed.len()
+    }
+
+    pub fn open(
+        &self,
+        file_id: &str,
+        request: &RecipientAttachmentDownloadRequest,
+        client: &CipherStoreClient,
+        output: &mut impl Write,
+    ) -> Result<RecipientAttachmentDownloadReceipt, RecipientAttachmentDownloadError> {
+        let (permission, stored) = self
+            .completed
+            .get(file_id)
+            .ok_or(RecipientAttachmentDownloadError::CompletedFileUnavailable)?;
+        download_pro_attachment_for_recipient(permission, stored, request, client, output)
+    }
+}
+
 #[derive(Debug)]
 pub enum RecipientAttachmentDownloadError {
+    CompletedFileUnavailable,
     ShareRevoked,
     RecipientMismatch,
     InvalidProSendReceipt,
@@ -112,6 +174,7 @@ impl RecipientAttachmentDownloadError {
     /// Stable refusal name for UI and audit assertions.
     pub const fn name(&self) -> &'static str {
         match self {
+            Self::CompletedFileUnavailable => "completed_file_unavailable",
             Self::ShareRevoked => SHARE_REVOKED_REFUSAL_NAME,
             Self::RecipientMismatch => "recipient_mismatch",
             Self::InvalidProSendReceipt => "invalid_pro_send_receipt",
@@ -130,6 +193,7 @@ impl RecipientAttachmentDownloadError {
 impl fmt::Display for RecipientAttachmentDownloadError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::CompletedFileUnavailable => write!(formatter, "completed_file_unavailable"),
             Self::ShareRevoked => write!(formatter, "{SHARE_REVOKED_REFUSAL_NAME}"),
             Self::RecipientMismatch => write!(formatter, "recipient_mismatch"),
             Self::InvalidProSendReceipt => write!(formatter, "invalid_pro_send_receipt"),
