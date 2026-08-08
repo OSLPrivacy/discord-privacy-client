@@ -344,7 +344,9 @@ fn run_full_disk(
             "TASK3224 MUTANT recoverable_half_file_with_unlock_key half_bytes={half_bytes} unlock_key_bytes={key_bytes}"
         );
         assert!(half.is_file() && key.is_file());
-        panic!("recoverable_half_file_with_unlock_key");
+        panic!(
+            "RECOVERABLE-HALF-FILE-WITH-UNLOCK-KEY-3224-A is the result that should have been refused: half_bytes={half_bytes} unlock_key_bytes={key_bytes}"
+        );
     }
 
     // This is the production failure path: dropping the guard removes the
