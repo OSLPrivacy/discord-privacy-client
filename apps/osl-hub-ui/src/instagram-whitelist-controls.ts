@@ -42,7 +42,6 @@ export interface InstagramPlaceInspection {
   kind: string;
   controls: string;
 }
-
 function escapeHtml(value: string): string {
   return value.replace(/&/gu, "&amp;").replace(/</gu, "&lt;").replace(/>/gu, "&gt;")
     .replace(/"/gu, "&quot;").replace(/'/gu, "&#39;");
@@ -89,7 +88,6 @@ export function inspectInstagramAllowedPlace(
   if (!place) return null;
   return { kind: place.kind, controls: instagramWhitelistControlsMarkup(place, verification) };
 }
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
