@@ -21,6 +21,7 @@ const DEFAULT_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tests/fixtures/task_3222/all_dangerous_names.json"
 );
+const OUTSIDE_CHOSEN_FOLDER_RESULT: &str = "DANGEROUS-NAME-3222-A";
 const REQUIRED_KINDS: [DangerousNameKind; 6] = [
     DangerousNameKind::PathParts,
     DangerousNameKind::ReservedWindows,
@@ -135,7 +136,14 @@ fn task_3222_hostile_names_stay_inside_chosen_folder_without_overwrite_or_displa
         let saved = save_received_attachment_bytes(&chosen_folder, &received_name, &received_bytes)
             .expect("receiver saves authenticated bytes in the chosen folder");
         assert_eq!(saved.display_name.as_bytes(), fixture.name.as_bytes());
-        assert_eq!(saved.path.parent(), Some(chosen_folder.as_path()));
+        assert_eq!(
+            saved.path.parent(),
+            Some(chosen_folder.as_path()),
+            "{OUTSIDE_CHOSEN_FOLDER_RESULT} is the result that should have been refused: attachment landed outside chosen folder kind={} name={:?} path={}",
+            fixture.kind.label(),
+            fixture.name,
+            saved.path.display()
+        );
         assert_eq!(
             saved.path.file_name().and_then(|name| name.to_str()),
             Some(safe_output_name.as_str())
@@ -178,7 +186,10 @@ fn task_3222_hostile_names_stay_inside_chosen_folder_without_overwrite_or_displa
 
     assert_eq!(actual_files, expected_files);
     assert_eq!(landed_file_count, REQUIRED_KINDS.len());
-    assert_eq!(outside_chosen_file_count, 0);
+    assert_eq!(
+        outside_chosen_file_count, 0,
+        "{OUTSIDE_CHOSEN_FOLDER_RESULT} is the result that should have been refused: files outside chosen folder expected=0 actual={outside_chosen_file_count}"
+    );
     assert_eq!(parent_entries_after, parent_entries_before);
     assert_eq!(parent_files_after, parent_files_before);
     assert_eq!(
