@@ -192,7 +192,6 @@ export interface OslChatsViewModel {
   buildIntegrity?: OslChatBuildIntegrityStatus | null;
   verificationWarningSurface?: VerificationWarningSurface;
   buildWarning?: OslChatBuildWarning | null;
-  verificationWarningSurface?: VerificationWarningSurface;
 }
 
 export type OslChatBuildIntegrityStatus = "verified" | "mismatch" | "unknown";

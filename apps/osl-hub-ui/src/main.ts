@@ -859,6 +859,7 @@ const autoScrubServiceLabels: Record<ServiceId, string> = {
   email: "Email",
   signal: "Signal",
   whatsapp: "WhatsApp",
+  messenger: "Messenger",
 };
 const supportedNativeAppIds = new Set<NativeAppId>(["discord"]);
 const importedFirefoxHomeAppIds = new Set<HomeAppId>([
@@ -11964,4 +11965,26 @@ function homeTopBarPage(): HomeTopBarPage {
  */
 function viewOnceCreationAllowedHere(): boolean {
   return viewOnceCreationAllowed(licenseState.access);
+}
+
+const OPEN_AUTO_SCRUB_RUN_PHASES: readonly AutoScrubRunPhase[] = ["reviewRequired", "running", "stopping", "blocked"];
+
+function openAutoScrubRuns(): readonly AutoScrubRunSummary[] {
+  return autoScrubFleetStatus?.runs.filter((run) => OPEN_AUTO_SCRUB_RUN_PHASES.includes(run.phase)) ?? [];
+}
+
+function homeActiveScrubRunCardsMarkup(): string {
+  const runs = openAutoScrubRuns();
+  if (!runs.length) return "";
+  return `<section class="home-scrub-runs" aria-label="Active Scrub runs">${runs.map(homeScrubRunCardMarkup).join("")}</section>`;
+}
+
+function homeScrubRunCardMarkup(run: AutoScrubRunSummary): string {
+  const serviceName = autoScrubRunServiceName(run.serviceId);
+  const phaseLabel = run.phase === "reviewRequired" ? "Review required" : run.phase === "stopping" ? "Stopping" : run.phase === "blocked" ? "Needs attention" : "Scanning";
+  return `<article class="scrub-run-card" data-home-scrub-run-card="${escapeHtml(run.serviceId)}" data-scrub-run-phase="${run.phase}" role="status"><span class="scrub-run-card-dot" aria-hidden="true"></span><span class="scrub-run-card-copy"><strong>${escapeHtml(serviceName)} Scrub running</strong><small>${phaseLabel} · ${run.reviewedItemCount.toLocaleString("en-US")} reviewed</small></span></article>`;
+}
+
+function openAutoScrubRuns(): readonly AutoScrubRunSummary[] {
+  return autoScrubFleetStatus?.runs.filter((run) => OPEN_AUTO_SCRUB_RUN_PHASES.includes(run.phase)) ?? [];
 }
