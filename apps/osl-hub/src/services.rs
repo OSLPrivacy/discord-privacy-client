@@ -76,8 +76,16 @@ pub struct MessagingRiskAgreement {
 pub enum ConversationPlaceKind {
     DirectMessage,
     Group,
+    /// A group direct-message conversation.  This is distinct from the
+    /// generic `Group` shape so provider readers can preserve the service's
+    /// reviewed kind rather than silently broadening it.
+    GroupChat,
     Channel,
     Thread,
+    /// A public post owned by the signed-in account.
+    PublicPost,
+    /// A comment owned by the signed-in account.
+    Comment,
 }
 
 impl ConversationPlaceKind {
@@ -85,8 +93,11 @@ impl ConversationPlaceKind {
         match self {
             Self::DirectMessage => "direct_message",
             Self::Group => "group",
+            Self::GroupChat => "group_chat",
             Self::Channel => "channel",
             Self::Thread => "thread",
+            Self::PublicPost => "public_post",
+            Self::Comment => "comment",
         }
     }
 }
@@ -140,6 +151,36 @@ impl ConversationPlaceCandidate {
         }
     }
 
+    pub fn group_chat(id: impl Into<String>, label: impl Into<String>) -> Self {
+        Self {
+            place_id: id.into(),
+            label: label.into(),
+            place_kind: ConversationPlaceKind::GroupChat,
+            server: None,
+            channel: None,
+        }
+    }
+
+    pub fn public_post(id: impl Into<String>, label: impl Into<String>) -> Self {
+        Self {
+            place_id: id.into(),
+            label: label.into(),
+            place_kind: ConversationPlaceKind::PublicPost,
+            server: None,
+            channel: None,
+        }
+    }
+
+    pub fn comment(id: impl Into<String>, label: impl Into<String>) -> Self {
+        Self {
+            place_id: id.into(),
+            label: label.into(),
+            place_kind: ConversationPlaceKind::Comment,
+            server: None,
+            channel: None,
+        }
+    }
+
     pub fn channel(
         id: impl Into<String>,
         label: impl Into<String>,
@@ -182,6 +223,68 @@ pub struct SharedConversationPlace {
     pub server: Option<ConversationPlaceParent>,
     #[serde(default)]
     pub channel: Option<ConversationPlaceParent>,
+}
+
+/// A place the Instagram browser accessibility reader observed.  The public
+/// kinds deliberately say `Own`: the reader is scoped to things the signed-in
+/// account can later review for Scrub, and never treats another person's post
+/// or comment as a place of its own.
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InstagramBrowserPlaceKind {
+    DirectMessage,
+    GroupDirectMessage,
+    OwnPost,
+    OwnComment,
+}
+
+impl InstagramBrowserPlaceKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::DirectMessage => "direct_message",
+            Self::GroupDirectMessage => "group_chat",
+            Self::OwnPost => "public_post",
+            Self::OwnComment => "comment",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InstagramBrowserPlace {
+    pub place_id: String,
+    pub label: String,
+    pub kind: InstagramBrowserPlaceKind,
+}
+
+impl InstagramBrowserPlace {
+    pub fn new(
+        place_id: impl Into<String>,
+        label: impl Into<String>,
+        kind: InstagramBrowserPlaceKind,
+    ) -> Self {
+        Self {
+            place_id: place_id.into(),
+            label: label.into(),
+            kind,
+        }
+    }
+}
+
+/// The read-only, accessibility-derived list exposed by the Instagram browser
+/// machine.  It contains no credentials or browser session material.
+#[derive(Debug, Clone, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InstagramBrowserMachine {
+    pub places: Vec<InstagramBrowserPlace>,
+}
+
+impl InstagramBrowserMachine {
+    pub fn new(places: impl IntoIterator<Item = InstagramBrowserPlace>) -> Self {
+        Self {
+            places: places.into_iter().collect(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
@@ -834,6 +937,32 @@ pub fn read_shared_conversation_places(
         .collect()
 }
 
+/// Read the Scrub places presently exposed by the reviewed Instagram browser
+/// surface.  The shared reader performs the account-specific risk-agreement
+/// check before it maps any provider data, so an unticked account observes no
+/// places at all.
+pub fn read_instagram_shared_places(
+    owner_osl_user_id: &str,
+    account_id: &str,
+    browser_machine: &InstagramBrowserMachine,
+) -> Result<Vec<SharedConversationPlace>, String> {
+    let places = browser_machine.places.iter().map(|place| match place.kind {
+        InstagramBrowserPlaceKind::DirectMessage => {
+            ConversationPlaceCandidate::direct_message(&place.place_id, &place.label)
+        }
+        InstagramBrowserPlaceKind::GroupDirectMessage => {
+            ConversationPlaceCandidate::group_chat(&place.place_id, &place.label)
+        }
+        InstagramBrowserPlaceKind::OwnPost => {
+            ConversationPlaceCandidate::public_post(&place.place_id, &place.label)
+        }
+        InstagramBrowserPlaceKind::OwnComment => {
+            ConversationPlaceCandidate::comment(&place.place_id, &place.label)
+        }
+    });
+    read_shared_conversation_places(owner_osl_user_id, "instagram", account_id, places)
+}
+
 pub fn read_shared_mailbox_folders(
     owner_osl_user_id: &str,
     service_id: &str,
@@ -1112,7 +1241,11 @@ fn validate_conversation_place(place: &ConversationPlaceCandidate) -> Result<(),
         validate_conversation_place_parent(channel, "conversation place channel")?;
     }
     match place.place_kind {
-        ConversationPlaceKind::DirectMessage | ConversationPlaceKind::Group => Ok(()),
+        ConversationPlaceKind::DirectMessage
+        | ConversationPlaceKind::Group
+        | ConversationPlaceKind::GroupChat
+        | ConversationPlaceKind::PublicPost
+        | ConversationPlaceKind::Comment => Ok(()),
         ConversationPlaceKind::Channel => {
             if place.server.is_some() {
                 Ok(())
