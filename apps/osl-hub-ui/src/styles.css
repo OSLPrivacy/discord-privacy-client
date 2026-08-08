@@ -10945,6 +10945,23 @@ code {
 .osl-chat-view-once:has(input:focus-visible),
 .osl-chat-send:focus-visible { outline: 2px solid var(--brand); outline-offset: -2px; }
 
+/* Group-chat header: the displayed count is supplied by the selected group,
+   never derived from a rendered member list. */
+.osl-group-chat-header { min-height: 84px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: var(--panel); display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+.osl-group-chat-header-copy { min-width: 0; }
+.osl-group-chat-kicker { margin: 0 0 3px; color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; }
+.osl-group-chat-header h1 { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 20px; font-weight: 650; letter-spacing: -.02em; }
+.osl-group-chat-members { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+.osl-group-chat-actions { display: flex; align-items: center; gap: 8px; }
+.osl-group-chat-action { min-height: 36px; padding: 0 12px; border: 1px solid var(--line); background: transparent; color: var(--text); cursor: pointer; font: inherit; font-size: 13px; }
+.osl-group-chat-action:hover { border-color: var(--brand); background: var(--brand-wash); }
+.osl-group-chat-action:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+.task-1315-fixture-shell { max-width: 880px; margin: 80px auto; padding: 0 24px; }
+.task-1315-fixture-label { margin: 0 0 12px; color: var(--muted); font-size: 13px; }
+.task-1315-conversation { min-height: 360px; border: 1px solid var(--line); background: var(--bg); }
+.task-1315-transcript { min-height: 274px; padding: 24px; color: var(--muted); }
+.task-1315-transcript p { margin: 0; }
+
 @media (max-width: 760px) {
   .osl-chat-page { padding: 8px; }
   .server-channel-sidebar { grid-template-columns: 56px minmax(0, 1fr); }
@@ -10955,6 +10972,7 @@ code {
   .osl-chat-message-list { padding: 16px 12px; }
   .osl-chat-message { width: min(88%, 660px); }
   .osl-chat-composer { padding: 8px; }
+  .osl-group-chat-header { align-items: flex-start; flex-direction: column; gap: 12px; }
 }
 
 /* The decision above is about corners, and these elements have none: they are
