@@ -34,6 +34,15 @@ export interface InstagramWhitelistDependencies {
   invoke(command: string, args: Record<string, unknown>): Promise<unknown>;
 }
 
+/** The narrow native bridge used to read the Instagram place currently on screen. */
+export type InstagramPlaceReader = () => InstagramAllowedPlace | null | undefined;
+
+/** What the UI may use after it has directly read the current Instagram place. */
+export interface InstagramPlaceInspection {
+  kind: string;
+  controls: string;
+}
+
 function escapeHtml(value: string): string {
   return value.replace(/&/gu, "&amp;").replace(/</gu, "&lt;").replace(/>/gu, "&gt;")
     .replace(/"/gu, "&quot;").replace(/'/gu, "&#39;");
@@ -66,6 +75,19 @@ export function instagramWhitelistControlsMarkup(
     + `<label><input type="checkbox" data-instagram-whitelist-toggle="${escapeHtml(place.stableId)}" checked/> Allow OSL in this direct message with ${peer}</label>`
     + `<span class="instagram-whitelist-verification" data-instagram-verification-tick="${ticked ? "visible" : "hidden"}" aria-live="polite">${ticked ? "✓ Both people have allowed this direct message" : "Waiting for the other person to allow this direct message"}</span>`
     + `</section>`;
+}
+
+/**
+ * Reads the current place before deciding which controls may be rendered.
+ * A missing reader result is not a place match and therefore renders nothing.
+ */
+export function inspectInstagramAllowedPlace(
+  readPlace: InstagramPlaceReader,
+  verification: InstagramVerificationState,
+): InstagramPlaceInspection | null {
+  const place = readPlace();
+  if (!place) return null;
+  return { kind: place.kind, controls: instagramWhitelistControlsMarkup(place, verification) };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
