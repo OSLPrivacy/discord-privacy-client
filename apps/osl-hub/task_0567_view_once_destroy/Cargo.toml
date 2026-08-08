@@ -1,0 +1,17 @@
+[package]
+name = "task-0567-view-once-destroy"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# The hub library currently has unrelated merge damage, so this focused gate
+# follows the repository's established task-crate pattern: compile the shared
+# view-once implementation itself without compiling unrelated hub modules.
+[dev-dependencies]
+rand = "0.8"
+
+[lib]
+name = "task_0567_view_once_destroy"
+path = "src/lib.rs"
+
+[workspace]
