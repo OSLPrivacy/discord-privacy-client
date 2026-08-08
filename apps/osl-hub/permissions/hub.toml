@@ -34,6 +34,11 @@ description = "Provision the unlocked identity's claimed OSL Mail username throu
 commands.allow = ["osl_mail_provision"]
 
 [[permission]]
+identifier = "allow-osl-mail-agree-to-sender"
+description = "Allow the unlocked OSL Mail identity to explicitly allow or remove one normalized sender username."
+commands.allow = ["osl_mail_agree_to_sender"]
+
+[[permission]]
 identifier = "allow-osl-mail-list-threads"
 description = "List capped OSL Mail thread summaries for the unlocked identity's active mailbox."
 commands.allow = ["osl_mail_list_threads"]

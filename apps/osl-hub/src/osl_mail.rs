@@ -48,6 +48,8 @@ fn osl_mail_desktop_bridge_available() -> bool {
 #[derive(Default)]
 pub struct OslMailState {
     addresses: Mutex<BTreeMap<String, String>>,
+    address_keys: Mutex<BTreeMap<String, crypto::x25519::PublicKey>>,
+    opened_retrievals: Mutex<BTreeMap<String, Vec<String>>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -99,6 +101,18 @@ pub struct OslMailForwardResult {
     pub required_confirmation: Option<String>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OslMailAgreementReceipt {
+    #[serde(alias = "sender_user_id")]
+    pub sender_user_id: String,
+    #[serde(alias = "sender_username")]
+    pub sender_username: String,
+    #[serde(alias = "sender_address")]
+    pub sender_address: String,
+    pub allowed: bool,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OslMailThreadSummary {
@@ -131,6 +145,16 @@ pub struct OslMailRetrievedThread {
     pub messages: Vec<OslMailThreadMessage>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OslMailDeleteReceipt {
+    pub retrieval_id: String,
+    pub deleted_message_ids: Vec<String>,
+    pub deleted_at: i64,
+    pub receipt_sha256: String,
+    pub server_delete_confirmed: bool,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OslMailSealedEnvelope {
@@ -138,6 +162,7 @@ pub struct OslMailSealedEnvelope {
     pub sealed_body_len: usize,
     pub plaintext_len: usize,
     pub nonce_b64: String,
+    pub sender_x25519_public_b64: String,
     pub subject_sha256: String,
     pub body_sha256: String,
     pub recipient_sha256: String,
@@ -218,6 +243,11 @@ struct FetchResponse {
 }
 
 #[derive(Deserialize)]
+struct AckResponse {
+    deleted: bool,
+}
+
+#[derive(Deserialize)]
 struct MailListResponse {
     unread_count: u32,
 }
@@ -292,10 +322,70 @@ pub fn provision(
         .lock()
         .map_err(|_| "OSL Mail state is unavailable".to_owned())?
         .insert(identity.user_id.clone(), provisioned.address.clone());
+    state
+        .address_keys
+        .lock()
+        .map_err(|_| "OSL Mail recipient key state is unavailable".to_owned())?
+        .insert(provisioned.address.clone(), identity.x25519_public);
     Ok(status_from_address(
         Some(provisioned.address),
         EMPTY_UNREAD_COUNT,
     ))
+}
+
+pub fn osl_mail_provision(
+    core: &HubCoreState,
+    state: &OslMailState,
+    username: String,
+) -> Result<OslMailStatus, String> {
+    provision(core, state, username)
+}
+
+pub fn osl_mail_agree_to_sender(
+    core: &HubCoreState,
+    state: &OslMailState,
+    sender_username: String,
+    allowed: bool,
+) -> Result<OslMailAgreementReceipt, String> {
+    if !keystore::client::is_normalized_username(&sender_username) {
+        return Err("OSL Mail sender username must already be normalized".to_owned());
+    }
+    let identity = active_identity(core)?;
+    state
+        .addresses
+        .lock()
+        .map_err(|_| "OSL Mail state is unavailable".to_owned())?
+        .get(&identity.user_id)
+        .ok_or_else(|| "Provision OSL Mail before changing sender agreement".to_owned())?;
+    let base_url = mail_base_url()?;
+    ensure_capabilities(&base_url)?;
+    let mut unsigned = signed_fields(&identity)?;
+    unsigned.insert(
+        "sender_username".to_owned(),
+        Value::String(sender_username.clone()),
+    );
+    unsigned.insert("allowed".to_owned(), Value::Bool(allowed));
+    sign_fields("CONSENT", &identity, &mut unsigned)?;
+    let response = http_client()?
+        .post(format!("{base_url}/v1/mail/consent"))
+        .json(&unsigned)
+        .send()
+        .map_err(|_| "OSL Mail sender agreement is unavailable".to_owned())?;
+    if !response.status().is_success() {
+        return Err("OSL Mail sender agreement was refused".to_owned());
+    }
+    let receipt = response
+        .json::<OslMailAgreementReceipt>()
+        .map_err(|_| "OSL Mail sender agreement response was malformed".to_owned())?;
+    let expected_address = format!("{sender_username}@{MAIL_DOMAIN}");
+    if receipt.sender_username != sender_username
+        || receipt.sender_address != expected_address
+        || receipt.allowed != allowed
+        || receipt.sender_user_id.is_empty()
+    {
+        return Err("OSL Mail sender agreement response was invalid".to_owned());
+    }
+    Ok(receipt)
 }
 
 pub fn list_my_threads(
@@ -345,6 +435,13 @@ pub fn list_my_threads(
     Ok(thread_summaries_from_list(listed.messages))
 }
 
+pub fn osl_mail_list_threads(
+    core: &HubCoreState,
+    state: &OslMailState,
+) -> Result<Vec<OslMailThreadSummary>, String> {
+    list_my_threads(core, state)
+}
+
 pub fn open_thread(
     core: &HubCoreState,
     state: &OslMailState,
@@ -376,13 +473,99 @@ pub fn open_thread(
         let fetched = fetch_one_message(&identity, &base_url, &row.message_id)?;
         opened.push(open_fetched_message(&identity, &own_address, row, fetched)?);
     }
+    let retrieval_id = retrieval_id_for_messages(&thread_id, &opened);
+    state
+        .opened_retrievals
+        .lock()
+        .map_err(|_| "OSL Mail retrieval state is unavailable".to_owned())?
+        .insert(
+            retrieval_id.clone(),
+            opened
+                .iter()
+                .map(|message| message.message_id.clone())
+                .collect(),
+        );
     let expires_at = now_millis()?.saturating_add(i64::from(RETENTION_SECONDS) * 1_000);
     Ok(OslMailRetrievedThread {
-        retrieval_id: retrieval_id_for_messages(&thread_id, &opened),
+        retrieval_id,
         thread_id,
         expires_at,
         messages: opened,
     })
+}
+
+pub fn osl_mail_retrieve_thread(
+    core: &HubCoreState,
+    state: &OslMailState,
+    thread_id: String,
+) -> Result<OslMailRetrievedThread, String> {
+    open_thread(core, state, thread_id)
+}
+
+pub fn osl_mail_acknowledge_retrieval(
+    core: &HubCoreState,
+    state: &OslMailState,
+    retrieval_id: String,
+    message_ids: Vec<String>,
+) -> Result<OslMailDeleteReceipt, String> {
+    let identity = active_identity(core)?;
+    let expected = state
+        .opened_retrievals
+        .lock()
+        .map_err(|_| "OSL Mail retrieval state is unavailable".to_owned())?
+        .get(&retrieval_id)
+        .cloned()
+        .ok_or_else(|| "OSL Mail retrieval was not opened by this app".to_owned())?;
+    if expected != message_ids || message_ids.is_empty() || message_ids.len() > 200 {
+        return Err("OSL Mail acknowledgement did not match the opened retrieval".to_owned());
+    }
+    let base_url = mail_base_url()?;
+    ensure_capabilities(&base_url)?;
+    for message_id in &message_ids {
+        let mut unsigned = signed_fields(&identity)?;
+        unsigned.insert("message_id".to_owned(), Value::String(message_id.clone()));
+        sign_fields("ACK", &identity, &mut unsigned)?;
+        let response = http_client()?
+            .post(format!("{base_url}/v1/mail/ack"))
+            .json(&unsigned)
+            .send()
+            .map_err(|_| "OSL Mail acknowledgement is unavailable".to_owned())?;
+        if !response.status().is_success()
+            || !response
+                .json::<AckResponse>()
+                .map_err(|_| "OSL Mail acknowledgement response was malformed".to_owned())?
+                .deleted
+        {
+            return Err(format!(
+                "OSL Mail message '{message_id}' was not acknowledged"
+            ));
+        }
+    }
+    state
+        .opened_retrievals
+        .lock()
+        .map_err(|_| "OSL Mail retrieval state is unavailable".to_owned())?
+        .remove(&retrieval_id);
+    let deleted_at = now_millis()?;
+    Ok(OslMailDeleteReceipt {
+        receipt_sha256: sha256_hex(
+            format!("{retrieval_id}\n{}\n{deleted_at}", message_ids.join("\n")).as_bytes(),
+        ),
+        retrieval_id,
+        deleted_message_ids: message_ids,
+        deleted_at,
+        server_delete_confirmed: true,
+    })
+}
+
+pub fn osl_mail_send(
+    core: &HubCoreState,
+    state: &OslMailState,
+    recipient: String,
+    subject: String,
+    body: String,
+) -> Result<OslMailSendReceipt, String> {
+    send(core, state, recipient, subject, body)
 }
 
 /// Send a sealed message body to the relay. The relay still receives the three
@@ -416,7 +599,14 @@ pub fn send(
     let base_url = mail_base_url()?;
     ensure_capabilities(&base_url)?;
 
-    let sealed = seal_mail_body(&identity, &recipient, &subject, &body)?;
+    let recipient_public = state
+        .address_keys
+        .lock()
+        .map_err(|_| "OSL Mail recipient key state is unavailable".to_owned())?
+        .get(&recipient)
+        .copied()
+        .ok_or_else(|| "OSL Mail recipient key is unavailable".to_owned())?;
+    let sealed = seal_mail_body(&identity, &recipient_public, &recipient, &subject, &body)?;
     let mut unsigned = Map::new();
     unsigned.insert(
         "recipient_address".to_owned(),
@@ -624,26 +814,36 @@ struct SealedMailBody {
 
 fn seal_mail_body(
     identity: &keystore::Identity,
+    recipient_public: &crypto::x25519::PublicKey,
     recipient: &str,
     subject: &str,
     body: &str,
 ) -> Result<SealedMailBody, String> {
-    let nonce = crypto::random::random_bytes(24);
-    let sealed_body =
-        xor_with_mail_body_keystream(identity, recipient, subject, &nonce, body.as_bytes());
-    let envelope = OslMailSealedEnvelope {
-        version: 2,
-        sealed_body_len: sealed_body.len(),
-        plaintext_len: body.as_bytes().len(),
-        nonce_b64: STANDARD.encode(&nonce),
-        subject_sha256: sha256_hex(subject.as_bytes()),
-        body_sha256: sha256_hex(body.as_bytes()),
-        recipient_sha256: sha256_hex(recipient.as_bytes()),
-        tag_sha256: mail_body_tag_sha256(identity, recipient, subject, &nonce, &sealed_body),
-    };
+    let shared = crypto::x25519::diffie_hellman(&identity.x25519_secret, recipient_public)
+        .map_err(|_| "OSL Mail could not prepare the recipient key".to_owned())?;
+    let key = mail_body_key(shared.as_bytes(), recipient, subject);
+    let nonce_bytes = crypto::random::random_bytes(crypto::aead::NONCE_SIZE);
+    let nonce_array: [u8; crypto::aead::NONCE_SIZE] = nonce_bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| "OSL Mail could not prepare the sealed body nonce".to_owned())?;
+    let nonce = crypto::aead::Nonce::from_bytes(nonce_array);
+    let associated = mail_body_associated_data(recipient, subject);
+    let sealed_body = crypto::aead::seal(&key, &nonce, &associated, body.as_bytes())
+        .map_err(|_| "OSL Mail could not seal the protected body".to_owned())?;
     Ok(SealedMailBody {
+        envelope: OslMailSealedEnvelope {
+            version: 3,
+            sealed_body_len: sealed_body.len(),
+            plaintext_len: body.len(),
+            nonce_b64: STANDARD.encode(nonce.as_bytes()),
+            sender_x25519_public_b64: STANDARD.encode(identity.x25519_public.as_bytes()),
+            subject_sha256: sha256_hex(subject.as_bytes()),
+            body_sha256: sha256_hex(body.as_bytes()),
+            recipient_sha256: sha256_hex(recipient.as_bytes()),
+            tag_sha256: sha256_hex(&sealed_body),
+        },
         body: sealed_body,
-        envelope,
     })
 }
 
@@ -654,22 +854,39 @@ fn open_mail_body(
     envelope: &OslMailSealedEnvelope,
     sealed_body: &[u8],
 ) -> Result<String, String> {
-    if envelope.version != 2
+    if envelope.version != 3
         || envelope.sealed_body_len != sealed_body.len()
         || envelope.subject_sha256 != sha256_hex(subject.as_bytes())
         || envelope.recipient_sha256 != sha256_hex(recipient.as_bytes())
+        || envelope.tag_sha256 != sha256_hex(sealed_body)
     {
         return Err("OSL Mail sealed body envelope did not match the message".to_owned());
     }
-    let nonce = STANDARD
+    let sender_public_bytes = STANDARD
+        .decode(&envelope.sender_x25519_public_b64)
+        .map_err(|_| "OSL Mail sender key was malformed".to_owned())?;
+    let sender_public_array: [u8; crypto::x25519::PUBLIC_KEY_SIZE] = sender_public_bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| "OSL Mail sender key was malformed".to_owned())?;
+    let sender_public = crypto::x25519::PublicKey::from_bytes(sender_public_array);
+    let shared = crypto::x25519::diffie_hellman(&identity.x25519_secret, &sender_public)
+        .map_err(|_| "OSL Mail could not open the sender key".to_owned())?;
+    let key = mail_body_key(shared.as_bytes(), recipient, subject);
+    let nonce_bytes = STANDARD
         .decode(&envelope.nonce_b64)
         .map_err(|_| "OSL Mail sealed body nonce was malformed".to_owned())?;
-    if envelope.tag_sha256
-        != mail_body_tag_sha256(identity, recipient, subject, &nonce, sealed_body)
-    {
-        return Err("OSL Mail sealed body tag did not verify".to_owned());
-    }
-    let plaintext = xor_with_mail_body_keystream(identity, recipient, subject, &nonce, sealed_body);
+    let nonce_array: [u8; crypto::aead::NONCE_SIZE] = nonce_bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| "OSL Mail sealed body nonce was malformed".to_owned())?;
+    let plaintext = crypto::aead::open(
+        &key,
+        &crypto::aead::Nonce::from_bytes(nonce_array),
+        &mail_body_associated_data(recipient, subject),
+        sealed_body,
+    )
+    .map_err(|_| "OSL Mail sealed body authentication failed".to_owned())?;
     if plaintext.len() != envelope.plaintext_len || envelope.body_sha256 != sha256_hex(&plaintext) {
         return Err("OSL Mail sealed body fingerprint did not match".to_owned());
     }
@@ -686,54 +903,47 @@ pub fn open_osl_mail_sealed_body(
     open_mail_body(identity, recipient, subject, envelope, sealed_body)
 }
 
-fn xor_with_mail_body_keystream(
-    identity: &keystore::Identity,
+fn mail_body_key(
+    shared_secret: &[u8; crypto::x25519::SHARED_SECRET_SIZE],
     recipient: &str,
     subject: &str,
-    nonce: &[u8],
-    input: &[u8],
-) -> Vec<u8> {
-    input
-        .iter()
-        .enumerate()
-        .map(|(index, byte)| {
-            byte ^ mail_body_keystream_byte(identity, recipient, subject, nonce, index)
-        })
-        .collect()
-}
-
-fn mail_body_keystream_byte(
-    identity: &keystore::Identity,
-    recipient: &str,
-    subject: &str,
-    nonce: &[u8],
-    index: usize,
-) -> u8 {
+) -> crypto::aead::Key {
     let mut hash = Sha256::new();
-    hash.update(b"OSL-MAIL-BODY-STREAM-v2");
-    hash.update(identity.ed25519_secret.as_bytes());
+    hash.update(b"OSL-MAIL-BODY-KEY-v3");
+    hash.update(shared_secret);
     hash.update(recipient.as_bytes());
     hash.update(subject.as_bytes());
-    hash.update(nonce);
-    hash.update((index / 32).to_be_bytes());
-    (hash.finalize()[index % 32] & 0x7f) | 0x80
+    crypto::aead::Key::from_bytes(hash.finalize().into())
 }
 
-fn mail_body_tag_sha256(
+fn mail_body_associated_data(recipient: &str, subject: &str) -> Vec<u8> {
+    format!("OSL-MAIL-BODY-v3\n{recipient}\n{subject}").into_bytes()
+}
+
+fn signed_fields(identity: &keystore::Identity) -> Result<Map<String, Value>, String> {
+    let mut unsigned = Map::new();
+    unsigned.insert("timestamp_ms".to_owned(), Value::from(now_millis()?));
+    unsigned.insert("request_id".to_owned(), Value::String(request_id()));
+    unsigned.insert(
+        "user_id".to_owned(),
+        Value::String(identity.user_id.clone()),
+    );
+    Ok(unsigned)
+}
+
+fn sign_fields(
+    operation: &str,
     identity: &keystore::Identity,
-    recipient: &str,
-    subject: &str,
-    nonce: &[u8],
-    sealed_body: &[u8],
-) -> String {
-    let mut hash = Sha256::new();
-    hash.update(b"OSL-MAIL-BODY-TAG-v2");
-    hash.update(identity.ed25519_secret.as_bytes());
-    hash.update(recipient.as_bytes());
-    hash.update(subject.as_bytes());
-    hash.update(nonce);
-    hash.update(sealed_body);
-    sha256_hex(&hash.finalize())
+    fields: &mut Map<String, Value>,
+) -> Result<(), String> {
+    let message = signed_message(operation, fields)?;
+    fields.insert(
+        "signature_b64".to_owned(),
+        Value::String(
+            STANDARD.encode(crypto::ed25519::sign(&identity.ed25519_secret, &message).as_bytes()),
+        ),
+    );
+    Ok(())
 }
 
 fn visible_subject_protection_warning() -> String {
@@ -1221,9 +1431,9 @@ fn canonical_json(value: &Value) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        forward_protected, open_mail_body, plan_protected_forward, seal_mail_body, signed_message,
-        status_from_address, visible_subject_protection_warning, BurnResponse,
-        OslMailSealedEnvelope, BORING_PROTECTED_SUBJECT, EMPTY_UNREAD_COUNT, pointer_envelope,
+        forward_protected, open_mail_body, plan_protected_forward, pointer_envelope,
+        seal_mail_body, signed_message, status_from_address, visible_subject_protection_warning,
+        BurnResponse, OslMailSealedEnvelope, BORING_PROTECTED_SUBJECT, EMPTY_UNREAD_COUNT,
     };
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine as _;

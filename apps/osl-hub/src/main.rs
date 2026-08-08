@@ -1250,7 +1250,7 @@ async fn osl_mail_provision(
     }
     let _session = session.transition.lock().await;
     tauri::async_runtime::spawn_blocking(move || {
-        osl_mail::provision(
+        osl_mail::osl_mail_provision(
             &app.state::<HubCoreState>(),
             &app.state::<OslMailState>(),
             username,
@@ -1258,6 +1258,96 @@ async fn osl_mail_provision(
     })
     .await
     .map_err(|_| "OSL Mail provisioning worker failed".to_owned())?
+}
+
+#[tauri::command]
+async fn osl_mail_agree_to_sender(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+    session: State<'_, HubAccountSessionState>,
+    sender_username: String,
+    allowed: bool,
+) -> Result<osl_mail::OslMailAgreementReceipt, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may change OSL Mail sender agreement".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        osl_mail::osl_mail_agree_to_sender(
+            &app.state::<HubCoreState>(),
+            &app.state::<OslMailState>(),
+            sender_username,
+            allowed,
+        )
+    })
+    .await
+    .map_err(|_| "OSL Mail sender agreement worker failed".to_owned())?
+}
+
+#[tauri::command]
+async fn osl_mail_list_threads(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<Vec<osl_mail::OslMailThreadSummary>, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may list OSL Mail threads".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        osl_mail::osl_mail_list_threads(
+            &app.state::<HubCoreState>(),
+            &app.state::<OslMailState>(),
+        )
+    })
+    .await
+    .map_err(|_| "OSL Mail thread-list worker failed".to_owned())?
+}
+
+#[tauri::command]
+async fn osl_mail_retrieve_thread(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+    session: State<'_, HubAccountSessionState>,
+    thread_id: String,
+) -> Result<osl_mail::OslMailRetrievedThread, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may retrieve an OSL Mail thread".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        osl_mail::osl_mail_retrieve_thread(
+            &app.state::<HubCoreState>(),
+            &app.state::<OslMailState>(),
+            thread_id,
+        )
+    })
+    .await
+    .map_err(|_| "OSL Mail retrieval worker failed".to_owned())?
+}
+
+#[tauri::command]
+async fn osl_mail_acknowledge_retrieval(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+    session: State<'_, HubAccountSessionState>,
+    retrieval_id: String,
+    message_ids: Vec<String>,
+) -> Result<osl_mail::OslMailDeleteReceipt, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may acknowledge OSL Mail".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        osl_mail::osl_mail_acknowledge_retrieval(
+            &app.state::<HubCoreState>(),
+            &app.state::<OslMailState>(),
+            retrieval_id,
+            message_ids,
+        )
+    })
+    .await
+    .map_err(|_| "OSL Mail acknowledgement worker failed".to_owned())?
 }
 
 #[tauri::command]
@@ -1274,7 +1364,7 @@ async fn osl_mail_send(
     }
     let _session = session.transition.lock().await;
     tauri::async_runtime::spawn_blocking(move || {
-        osl_mail::send(
+        osl_mail::osl_mail_send(
             &app.state::<HubCoreState>(),
             &app.state::<OslMailState>(),
             recipient,
