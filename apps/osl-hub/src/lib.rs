@@ -168,6 +168,8 @@ pub mod mail_com_mail_deleter;
 /// in. Re-exported from `service_connections`, so every path there still reads.
 pub mod mail_owner_check;
 pub mod main_window_reveal;
+pub mod messenger_delivery;
+pub mod messenger_eye_state;
 #[cfg(not(task3982_focused))]
 pub mod messenger_whitelist_kinds;
 /// WhatsApp's browser-observation adapter for the shared Scrub message reader.
