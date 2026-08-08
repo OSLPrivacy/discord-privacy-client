@@ -246,6 +246,19 @@ pub struct MessengerSendButton {
     selected_choice: MessengerSendChoice,
 }
 
+/// Fields that must still be present when a selected Messenger cover is
+/// prepared.
+///
+/// The private text remains inside OSL. `composer_name` is only the accessible
+/// name discovered for Messenger's provider composer; the protected send
+/// boundary does not press the provider's Send control.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MessengerSendFields<'a> {
+    pub private_text: &'a str,
+    pub composer_name: Option<&'a str>,
+    pub cover_text: &'a str,
+}
+
 impl MessengerSendButton {
     /// Connect the button to one of the five exact choices shown by the
     /// protected composer.
@@ -260,9 +273,27 @@ impl MessengerSendButton {
         &self,
         driver: &mut RealBrowserWebsiteDriver,
         page: &WebsitePage,
-        cover_text: &str,
+        fields: MessengerSendFields<'_>,
     ) -> Result<MessengerPreparedCoverState, WebsiteDriverError> {
-        driver.prepare_messenger_cover_for_choice(page, self.selected_choice.name(), cover_text)
+        if fields.private_text.trim().is_empty() {
+            return Err(WebsiteDriverError::RefusedMessengerSendFieldValue(
+                "empty-text",
+            ));
+        }
+        if fields
+            .composer_name
+            .filter(|name| !name.trim().is_empty())
+            .is_none()
+        {
+            return Err(WebsiteDriverError::RefusedMessengerSendFieldValue(
+                "missing-composer",
+            ));
+        }
+        driver.prepare_messenger_cover_for_choice(
+            page,
+            self.selected_choice.name(),
+            fields.cover_text,
+        )
     }
 }
 
@@ -390,6 +421,7 @@ pub enum WebsiteDriverError {
     NamedControlNotFound,
     PageUnavailable,
     UnknownMessengerSendChoice,
+    RefusedMessengerSendFieldValue(&'static str),
 }
 
 impl fmt::Display for WebsiteDriverError {
@@ -406,6 +438,9 @@ impl fmt::Display for WebsiteDriverError {
             Self::NamedControlNotFound => "website named control was not found",
             Self::PageUnavailable => "website page is unavailable",
             Self::UnknownMessengerSendChoice => "unknown Messenger send choice",
+            Self::RefusedMessengerSendFieldValue(value) => {
+                return write!(f, "refused Messenger send field value {value}")
+            }
         })
     }
 }
