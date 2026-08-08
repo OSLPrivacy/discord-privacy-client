@@ -706,14 +706,12 @@ fn open_pending_inner(
         file_name: plan.original_filename.clone(),
         byte_length: plan.sealed_size,
         kind: plan.mime_type.clone(),
-        owner_osl_user_id: plan.sender_osl_user_id.clone(),
+        owner_osl_user_id: plan.owner_osl_user_id.clone(),
         receiver_permission: StoredReceiverPermission::Download,
     };
     let permission = grant_recipient_download_from_authenticated_notice(
         plan.recipient_osl_user_id.clone(),
-        plan.object_id.clone(),
-        plan.sealed_size,
-        stored_attachment.clone(),
+        &stored_attachment,
         token,
     )
     .map_err(|_| "This private attachment permission is invalid".to_owned())?;

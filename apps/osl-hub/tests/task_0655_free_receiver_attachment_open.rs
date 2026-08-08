@@ -63,6 +63,17 @@ fn completed_pro_send(byte_length: u64) -> ProChunkedUploadReport {
     }
 }
 
+fn stored_attachment(byte_length: u64) -> StoredRecipientAttachment {
+    StoredRecipientAttachment {
+        file_id: FILE_ID.to_owned(),
+        file_name: "task-0655-pro-file.bin".to_owned(),
+        byte_length,
+        kind: "application/octet-stream".to_owned(),
+        owner_osl_user_id: "pro-sender-0655".to_owned(),
+        receiver_permission: StoredReceiverPermission::Download,
+    }
+}
+
 fn read_request(stream: &mut TcpStream) -> String {
     let mut request = Vec::new();
     let mut buffer = [0_u8; 2048];
@@ -103,18 +114,10 @@ fn task_0655_free_recipient_opens_pro_file_and_free_upload_still_exits_1() {
             .collect::<Vec<_>>(),
     );
     let expected_fingerprint = Sha256::digest(file_bytes.as_slice());
-    let stored_attachment = StoredRecipientAttachment {
-        file_id: FILE_ID.to_owned(),
-        file_name: "task-0655-pro-file.bin".to_owned(),
-        byte_length: file_length,
-        kind: "application/octet-stream".to_owned(),
-        owner_osl_user_id: "task-0655-pro-sender".to_owned(),
-        receiver_permission: StoredReceiverPermission::Download,
-    };
-
     let pro_report = completed_pro_send(file_length);
+    let stored = stored_attachment(file_length);
     let report_permission =
-        grant_recipient_download_from_pro_send(&pro_report, &stored_attachment, RECIPIENT_ID, FETCH_TOKEN)
+        grant_recipient_download_from_pro_send(&pro_report, &stored, RECIPIENT_ID, FETCH_TOKEN)
             .expect("completed Pro upload grants its named recipient");
     assert_eq!(report_permission.expected_byte_length(), file_length);
     assert_eq!(report_permission.file_id(), FILE_ID);
@@ -142,14 +145,9 @@ fn task_0655_free_recipient_opens_pro_file_and_free_upload_still_exits_1() {
 
     // This is the constructor used by the native receive path after the broker
     // authenticates the sender, conversation, recipient, object, and token.
-    let permission = grant_recipient_download_from_authenticated_notice(
-        RECIPIENT_ID,
-        FILE_ID,
-        file_length,
-        stored_attachment.clone(),
-        FETCH_TOKEN,
-    )
-    .expect("authenticated notice restores recipient permission");
+    let permission =
+        grant_recipient_download_from_authenticated_notice(RECIPIENT_ID, &stored, FETCH_TOKEN)
+            .expect("authenticated notice restores recipient permission");
     let request = RecipientAttachmentDownloadRequest {
         recipient_osl_user_id: RECIPIENT_ID.to_owned(),
         account_tier: AttachmentAccountTier::Free,
@@ -158,7 +156,7 @@ fn task_0655_free_recipient_opens_pro_file_and_free_upload_still_exits_1() {
         CipherStoreClient::new(format!("http://{address}")).expect("receiver fixture client");
     let mut opened = Vec::new();
     let receipt =
-        download_pro_attachment_for_recipient(&permission, &stored_attachment, &request, &client, &mut opened)
+        download_pro_attachment_for_recipient(&permission, &stored, &request, &client, &mut opened)
             .expect("Free recipient opens the Pro attachment through recipient permission");
     server.join().expect("receiver fixture completes");
 

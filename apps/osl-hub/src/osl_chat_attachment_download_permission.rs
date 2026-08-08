@@ -191,8 +191,7 @@ pub fn grant_recipient_download_from_pro_send(
         &recipient_osl_user_id,
         &completed.file_id,
         completed.total_size_bytes,
-    )
-        || stored_attachment.file_id != completed.file_id
+    ) || stored_attachment.file_id != completed.file_id
         || stored_attachment.byte_length != completed.total_size_bytes
         || stored_attachment.file_name.is_empty()
         || stored_attachment.kind.is_empty()
@@ -225,17 +224,15 @@ pub fn grant_recipient_download_from_pro_send(
 /// the production open path.
 pub fn grant_recipient_download_from_authenticated_notice(
     recipient_osl_user_id: impl Into<String>,
-    file_id: impl Into<String>,
-    expected_byte_length: u64,
-    stored_attachment: StoredRecipientAttachment,
+    stored_attachment: &StoredRecipientAttachment,
     fetch_token: [u8; FETCH_TOKEN_BYTES],
 ) -> Result<RecipientAttachmentDownloadPermission, RecipientAttachmentDownloadError> {
     let recipient_osl_user_id = recipient_osl_user_id.into();
-    let file_id = file_id.into();
-    if !valid_permission_target(&recipient_osl_user_id, &file_id, expected_byte_length)
-        || stored_attachment.file_id != file_id
-        || stored_attachment.byte_length != expected_byte_length
-        || stored_attachment.file_name.is_empty()
+    if !valid_permission_target(
+        &recipient_osl_user_id,
+        &stored_attachment.file_id,
+        stored_attachment.byte_length,
+    ) || stored_attachment.file_name.is_empty()
         || stored_attachment.kind.is_empty()
         || stored_attachment.owner_osl_user_id.is_empty()
         || stored_attachment.receiver_permission != StoredReceiverPermission::Download
@@ -244,9 +241,9 @@ pub fn grant_recipient_download_from_authenticated_notice(
     }
     Ok(RecipientAttachmentDownloadPermission {
         recipient_osl_user_id,
-        file_id,
-        expected_byte_length,
-        expected_stored_attachment: stored_attachment,
+        file_id: stored_attachment.file_id.clone(),
+        expected_byte_length: stored_attachment.byte_length,
+        expected_stored_attachment: stored_attachment.clone(),
         fetch_token,
         revoked: false,
     })

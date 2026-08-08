@@ -1812,8 +1812,8 @@ pub struct NativeOverlayAttachmentOpenPlan {
     pub attachment_key: [u8; 32],
     pub view_once: bool,
     pub display_duration_seconds: Option<u64>,
-    pub sender_osl_user_id: String,
     pub recipient_osl_user_id: String,
+    pub owner_osl_user_id: String,
     expires_at: i64,
 }
 
@@ -6227,8 +6227,8 @@ fn native_overlay_attachment_plans(
             attachment_key: notice.attachment_key,
             view_once: notice.view_once,
             display_duration_seconds: native_overlay_attachment_display_duration(&notice).ok()?,
-            sender_osl_user_id: std::mem::take(&mut notice.sender_osl_user_id),
             recipient_osl_user_id: std::mem::take(&mut notice.recipient_osl_user_id),
+            owner_osl_user_id: manual.peer_osl_user_id.clone(),
             expires_at: notice.expires_at,
         })
     });
