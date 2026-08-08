@@ -2456,13 +2456,13 @@ mod tests {
 
 /// Scan-only selector model kept separate from the WebView2 structural contract.
 pub mod scan_selectors {
-    //! Pure WhatsApp Desktop accessibility selectors.
-    //!
-    //! This module is scan-only. It models the structural facts OSL needs before it
-    //! can claim WhatsApp support: one editable composer paired with one transcript
-    //! surface, and exact message-body nodes only when the platform exposes them as
-    //! such. Localized labels and placeholder text are deliberately not selector
-    //! inputs.
+    // Pure WhatsApp Desktop accessibility selectors.
+    //
+    // This module is scan-only. It models the structural facts OSL needs before it
+    // can claim WhatsApp support: one editable composer paired with one transcript
+    // surface, and exact message-body nodes only when the platform exposes them as
+    // such. Localized labels and placeholder text are deliberately not selector
+    // inputs.
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     pub struct WhatsAppRect {
