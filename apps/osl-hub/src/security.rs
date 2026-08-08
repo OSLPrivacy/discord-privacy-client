@@ -113,7 +113,7 @@ pub struct AddFriendResult {
     pub safety_number_verified: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoveFriendResult {
     pub person_id: String,
@@ -121,6 +121,15 @@ pub struct RemoveFriendResult {
     pub peer_key_removed: bool,
     pub revocations_queued: usize,
     pub revocation_queue_complete: bool,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FriendPageRemoveActionResult {
+    pub person_id: String,
+    pub confirmation_required: bool,
+    pub removed: bool,
+    pub removal: Option<RemoveFriendResult>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1189,6 +1198,42 @@ pub fn remove_friend(
     })
 }
 
+/// Connect the friend page's destructive control to the real friend-removal
+/// transition. The first call only opens the confirmation path; no friendship,
+/// key, grant, or share preference changes until the caller resubmits the same
+/// selected person with `confirmed=true`.
+pub fn remove_friend_from_friend_page(
+    core: &HubCoreState,
+    security: &HubSecurityState,
+    person_id: String,
+    confirmed: bool,
+) -> Result<FriendPageRemoveActionResult, String> {
+    require_unlocked()?;
+    validate_person_id(&person_id)?;
+    if !load_people_file(&config_dir()?)?
+        .people
+        .contains_key(&person_id)
+    {
+        return Err("OSL friend is unknown".to_owned());
+    }
+    if !confirmed {
+        return Ok(FriendPageRemoveActionResult {
+            person_id,
+            confirmation_required: true,
+            removed: false,
+            removal: None,
+        });
+    }
+
+    let removal = remove_friend(core, security, person_id.clone())?;
+    Ok(FriendPageRemoveActionResult {
+        person_id,
+        confirmation_required: false,
+        removed: true,
+        removal: Some(removal),
+    })
+}
+
 /// Persist one friend removal across both files that hold the friend, keys
 /// first, with the same write-then-rollback ordering `add_friend_code` uses.
 ///
@@ -1665,6 +1710,47 @@ pub fn save_friend_page_share_data(
     }
     write_encrypted_json(&path, &prefs)?;
     read_friend_page_share_data(security, person_id, account_catalog, conversation_catalog)
+}
+
+/// Change only the future-account rule for the selected friend. Account and
+/// conversation choices are catalogs here, not write input, so a switch click
+/// cannot accidentally save a stale checkbox belonging to this or any other
+/// friend.
+pub fn set_friend_page_new_account_rule(
+    security: &HubSecurityState,
+    person_id: String,
+    accounts: Vec<FriendAccountReachAccount>,
+    conversations: Vec<FriendPageShareConversation>,
+    new_account_rule: String,
+) -> Result<FriendPageShareData, String> {
+    require_unlocked()?;
+    validate_person_id(&person_id)?;
+    let account_keys = validate_friend_account_reach_accounts(&accounts)?;
+    validate_friend_page_share_conversations(&conversations)?;
+    let enabled = parse_friend_page_new_account_rule(&new_account_rule)?;
+
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL friend share choices are unavailable".to_owned())?;
+    let path = config_dir()?.join(SECURITY_PREFS_FILE);
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
+    prefs.version = 2;
+    if enabled {
+        prefs
+            .friend_new_account_share_rules
+            .insert(person_id.clone(), true);
+    } else {
+        prefs.friend_new_account_share_rules.remove(&person_id);
+    }
+    write_encrypted_json(&path, &prefs)?;
+    Ok(friend_page_share_data_from_preferences(
+        &person_id,
+        accounts,
+        account_keys,
+        conversations,
+        &prefs,
+    ))
 }
 
 pub fn remove_friend_page_share_data(
@@ -2773,6 +2859,12 @@ fn withdraw_person_grants(prefs: &mut SecurityPreferences, person_id: &str) -> u
         prefs.decrypt_display_by_scope.remove(storage_key);
     }
     prefs.reach_narrowed_scopes.remove(person_id);
+    // Friend-page share decisions belong to the friendship, not to the stable
+    // identifier forever. Keeping them would silently restore old reach if the
+    // same person were added again later.
+    prefs.friend_account_reach_choices.remove(person_id);
+    prefs.friend_conversation_share_choices.remove(person_id);
+    prefs.friend_new_account_share_rules.remove(person_id);
     storage_keys.len()
 }
 
