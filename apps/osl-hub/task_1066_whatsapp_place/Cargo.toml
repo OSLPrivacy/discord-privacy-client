@@ -1,0 +1,14 @@
+[package]
+name = "task-1066-whatsapp-place"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+sha2 = "=0.10.9"
+
+[workspace]
+
+[[test]]
+name = "task_1066_whatsapp_shared_place_text"
+path = "../tests/task_1066_whatsapp_shared_place_text.rs"
