@@ -1864,6 +1864,50 @@ mod tests {
     }
 
     #[test]
+    fn task_1062_records_every_placement_receipt_field_for_a_marked_byte_string() {
+        // This is intentionally the same prepared, non-sending WhatsApp
+        // companion fixture as the 1060 discovery command.  The marker is
+        // ASCII so its byte sequence is unambiguous in both the carrier and
+        // the recorded composer value.
+        const MARKER: &[u8] = b"TASK1062-WA-BYTES-7F3A";
+        let marker = std::str::from_utf8(MARKER).expect("ASCII marker");
+        let host = whatsapp_host(vec![composer("Type a message")]);
+
+        let receipt = drive_whatsapp_composer_placement(&host, marker, false);
+        let composer_value = host.value.borrow().clone().unwrap_or_default();
+        let marker_in_composer = composer_value.contains(marker);
+
+        println!(
+            "TASK1062 marker_utf8={marker} marker_hex={} marker_bytes_len={}",
+            MARKER.iter().map(|byte| format!("{byte:02X}")).collect::<String>(),
+            MARKER.len(),
+        );
+        println!(
+            "TASK1062 receipt placed={} enter_sent={} status={:?} bound_process_id={} bound_is_app_shell={} tree_route={:?} woke={} elements={} readback_contains_carrier={} cleared={}",
+            receipt.placed,
+            receipt.enter_sent,
+            receipt.status,
+            receipt.bound_process_id,
+            receipt.bound_is_app_shell,
+            receipt.tree_route,
+            receipt.woke,
+            receipt.elements,
+            receipt.readback_contains_carrier,
+            receipt.cleared,
+        );
+        println!(
+            "TASK1062 compose_box name=Type a message exact_marker_present={} value={composer_value}",
+            marker_in_composer,
+        );
+
+        assert_eq!(receipt.status, WhatsAppPlacementStatus::Placed);
+        assert!(receipt.placed);
+        assert!(!receipt.enter_sent);
+        assert!(receipt.readback_contains_carrier);
+        assert!(marker_in_composer, "compose box must contain the exact marker");
+    }
+
+    #[test]
     fn whatsapp_signed_out_refuses_instead_of_typing_into_the_phone_number_box() {
         // A-00 measured WhatsApp signed out: eleven elements, and the ONE
         // writable one was `Phone number`. It is a perfectly good ValuePattern
