@@ -174,6 +174,7 @@ pub mod signal_surface_finder;
 pub mod native_telegram_adapter;
 #[cfg(not(task3982_focused))]
 pub mod native_whatsapp_adapter;
+pub mod whatsapp_place_reader;
 #[cfg(not(task3982_focused))]
 pub mod native_window_host;
 #[cfg(feature = "core")]
