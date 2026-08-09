@@ -96,10 +96,7 @@ fn deliver(notice: &Notice, sink: &mut dyn NoticeSink) {
 /// `[start, end)`. A window whose start is after its end crosses midnight
 /// (22:00 -> 07:00 covers 23:15 and 03:00 but not 07:00). Switched-off
 /// quiet hours are never "inside".
-pub fn is_inside_quiet_hours(
-    settings: &QuietHoursSettings,
-    clock: &str,
-) -> Result<bool, String> {
+pub fn is_inside_quiet_hours(settings: &QuietHoursSettings, clock: &str) -> Result<bool, String> {
     if !settings.enabled {
         return Ok(false);
     }

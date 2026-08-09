@@ -55,8 +55,6 @@ pub mod ai_consent;
 pub mod app_own_names;
 #[cfg(not(task3982_focused))]
 pub mod attended_imap;
-#[cfg(not(task3982_focused))]
-pub mod bad_message_rules;
 #[cfg(feature = "core")]
 #[cfg(not(task3982_focused))]
 pub mod autoscrub_bridge;
@@ -64,6 +62,8 @@ pub mod autoscrub_bridge;
 #[cfg(not(task3982_focused))]
 pub mod autoscrub_run;
 pub mod background_priority;
+#[cfg(not(task3982_focused))]
+pub mod bad_message_rules;
 #[cfg(not(task3982_focused))]
 pub mod browser_companion;
 // The persistent footprint store is sealed with `ipc`'s process key, so it
@@ -74,8 +74,8 @@ pub mod browser_footprint;
 #[cfg(feature = "core")]
 #[cfg(not(task3982_focused))]
 pub mod browser_profile_scan;
-pub mod bundled_model_pack;
 pub mod build_integrity;
+pub mod bundled_model_pack;
 pub mod burn_authorize;
 pub mod burn_contract;
 #[cfg(feature = "core")]
@@ -120,17 +120,17 @@ pub mod execution_consent;
 pub mod external_overlay;
 #[cfg(not(task3982_focused))]
 pub(crate) mod firefox_migration_coordinator;
-pub mod front_window_grab;
 #[cfg(feature = "core")]
 #[cfg(not(task3982_focused))]
 pub mod friend_account_reach;
+pub mod front_window_grab;
 pub mod hosted_audience;
 pub mod hosted_port;
 pub mod hosted_provider_recipe;
 pub mod hosted_session_port;
+pub mod installed_build;
 #[cfg(not(task3982_focused))]
 pub mod installed_build_version;
-pub mod installed_build;
 pub mod invite_clipboard;
 /// The landing oracle: did this exact text land in the composer? Judged
 /// through channels that did not write it. Pure above its syscall seam, so the
@@ -242,11 +242,11 @@ pub(crate) mod seam_ledger;
 /// offline send queue could not be wired at all before this module existed.
 #[cfg(not(task3982_focused))]
 pub mod secure_disk_backend;
-#[cfg(not(task3982_focused))]
-pub mod service_connections;
 #[cfg(feature = "core")]
 #[cfg(not(task3982_focused))]
 pub mod server_records;
+#[cfg(not(task3982_focused))]
+pub mod service_connections;
 pub mod service_host;
 #[cfg(feature = "core")]
 #[cfg(not(task3982_focused))]
@@ -396,7 +396,9 @@ pub mod broker {
             } else {
                 report
                     .refusals
-                    .push(receive_conversation_not_allowed_refusal(&conversation.place_name));
+                    .push(receive_conversation_not_allowed_refusal(
+                        &conversation.place_name,
+                    ));
             }
             report.permission_checks_after_read = report.permission_checks_before_read;
         }
@@ -508,7 +510,10 @@ pub mod broker {
             return Err("OSL Chat protection is not active".to_owned());
         }
         Ok(PreparedPeerProseText {
-            cover_text: format!("TASK3982::{}", plaintext.replace('\\', "\\\\").replace('\n', "\\n")),
+            cover_text: format!(
+                "TASK3982::{}",
+                plaintext.replace('\\', "\\\\").replace('\n', "\\n")
+            ),
         })
     }
 
@@ -825,7 +830,9 @@ pub mod security {
             .find(|(_, friend)| friend.email_address.as_deref() == Some(normalized.as_str()))
             .map(|(_, friend)| friend.display_name.clone());
         if let Some(name) = duplicate_name {
-            return Err(format!("OSL friend email address already belongs to {name}"));
+            return Err(format!(
+                "OSL friend email address already belongs to {name}"
+            ));
         }
         let friend = friends
             .get_mut(&person_id)
@@ -893,10 +900,7 @@ pub mod security {
         Ok(())
     }
 
-    pub fn require_accepted_friend(
-        _core: &HubCoreState,
-        _person_id: &str,
-    ) -> Result<(), String> {
+    pub fn require_accepted_friend(_core: &HubCoreState, _person_id: &str) -> Result<(), String> {
         Ok(())
     }
 }
@@ -923,6 +927,7 @@ pub mod startup_gate;
 
 // Share the original Tauri-free bootstrap verbatim so the app loads the same
 // sealed identity and local security state without forking that logic.
+pub mod device_pairing;
 #[cfg(feature = "core")]
 #[allow(
     clippy::needless_borrow,
@@ -931,22 +936,21 @@ pub mod startup_gate;
 )]
 #[path = "../../../src-tauri/src/bootstrap.rs"]
 pub mod original_bootstrap;
-pub mod device_pairing;
-pub mod quiet_hours;
-pub mod quiet_hours_notices;
-pub mod proton_fake_page;
-pub mod shared_web_reader_shape;
-pub mod shared_marked_message_deleter;
-pub mod pro_marked_deletion;
-pub mod pro_marked_deletion_outcomes;
-pub mod shared_marked_deletion_record;
 pub mod osl_chat_danger_row;
-pub mod timed_delete_sweep_job;
-pub mod sync_policy;
-pub mod realtime_wakeup;
-pub mod shared_delete_action;
 pub mod osl_enclave_role_ability;
 pub mod osl_enclave_roles;
+pub mod pro_marked_deletion;
+pub mod pro_marked_deletion_outcomes;
+pub mod proton_fake_page;
+pub mod quiet_hours;
+pub mod quiet_hours_notices;
+pub mod realtime_wakeup;
+pub mod shared_delete_action;
+pub mod shared_marked_deletion_record;
+pub mod shared_marked_message_deleter;
+pub mod shared_web_reader_shape;
+pub mod sync_policy;
+pub mod timed_delete_sweep_job;
 
 // The keystore/ipc crates deliberately keep the active-account dir, base-dir
 // override, and unlocked main-password key in process-wide statics (see

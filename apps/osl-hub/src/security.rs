@@ -8231,12 +8231,9 @@ key"
             Vec::new(),
         )
         .expect("server-channel burn succeeds");
-        let after = ipc::commands::cmd_osl_load_channel_history(
-            &core.osl,
-            channel_id.to_owned(),
-            Some(10),
-        )
-        .expect("load channel history after burn");
+        let after =
+            ipc::commands::cmd_osl_load_channel_history(&core.osl, channel_id.to_owned(), Some(10))
+                .expect("load channel history after burn");
         let still_present = after.iter().any(|row| row.plaintext == mark);
         println!(
             "TASK0530 server_channel_burn rows_destroyed={} marked_channel_message_still_present={} marked=\"{}\"",

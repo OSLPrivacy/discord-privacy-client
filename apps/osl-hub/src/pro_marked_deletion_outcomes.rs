@@ -24,10 +24,14 @@ use crate::pro_marked_deletion::MarkedMessageRef;
 pub enum DeletionAttemptResult {
     Deleted,
     /// The attempt was made and it did not succeed.
-    Failed { reason: String },
+    Failed {
+        reason: String,
+    },
     /// The attempt could not be completed as a clean success or failure --
     /// e.g. the locator no longer resolves, or the message already moved.
-    NeedsAttention { reason: String },
+    NeedsAttention {
+        reason: String,
+    },
 }
 
 /// One message's attempt result, paired with the location it was about.

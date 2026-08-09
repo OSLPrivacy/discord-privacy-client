@@ -316,9 +316,11 @@ impl ScrubIndexState {
             .iter()
             .map(|selection| selection.service_id.clone())
             .collect();
-        if request.messages.iter().any(|message| {
-            !allowed.contains(&message.service_id)
-        }) {
+        if request
+            .messages
+            .iter()
+            .any(|message| !allowed.contains(&message.service_id))
+        {
             return Err("Scrub account not approved".into());
         }
         let scan = scan_local_messages(request.messages.clone());

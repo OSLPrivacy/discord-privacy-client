@@ -944,7 +944,10 @@ impl Space {
     /// This is a normal, usable Space state. It occurs if the last moderator
     /// leaves; callers must not reject a membership event merely to prevent it.
     pub fn is_unmoderated(&self) -> bool {
-        !self.members.values().any(|role| *role == SpaceRole::Moderator)
+        !self
+            .members
+            .values()
+            .any(|role| *role == SpaceRole::Moderator)
     }
 
     /// Mints an independent key domain for a channel and scopes it to the

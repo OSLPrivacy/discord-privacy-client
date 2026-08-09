@@ -1334,10 +1334,7 @@ pub fn install_native_app(id: NativeAppId) -> Result<NativeInstallResult, String
     {
         let app = manifest(id);
         if matches!(id, NativeAppId::Outlook | NativeAppId::X) {
-            return Err(
-                "This app is not installable by OSL Privacy"
-                    .to_owned(),
-            );
+            return Err("This app is not installable by OSL Privacy".to_owned());
         }
         let winget = installer_executable()
             .ok_or_else(|| "Windows App Installer (winget) is unavailable".to_owned())?;
@@ -2864,7 +2861,10 @@ pub(crate) mod tests {
             &manifest(NativeAppId::Outlook).adapter_service,
             &AdapterService::Outlook
         );
-        assert_eq!(&manifest(NativeAppId::X).adapter_service, &AdapterService::X);
+        assert_eq!(
+            &manifest(NativeAppId::X).adapter_service,
+            &AdapterService::X
+        );
         assert_eq!(manifest(NativeAppId::Whatsapp).package_source, "msstore");
         assert_eq!(
             native_app_publisher(NativeAppId::Discord),
