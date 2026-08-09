@@ -45,6 +45,61 @@ pub const TELEGRAM_COMPOSER_MEASURED_NAME: &str = "Write a message...";
 
 pub const TELEGRAM_LIVE_CARRIER_MAX_BYTES: usize = 4096;
 
+/// A Telegram Desktop window observed by the native window enumerator.
+///
+/// The conversation name is deliberately carried independently of the outer
+/// window title: Telegram's Qt title is normally just `Telegram`, while the
+/// active chat is exposed by the conversation-bearing accessibility record.
+/// Keeping the record explicit also makes the finder usable by the native
+/// enumerator and deterministic fixture tests alike.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TelegramConversationWindowRecord {
+    pub window_id: u64,
+    pub process_name: String,
+    pub conversation_name: String,
+    pub is_open: bool,
+    pub is_foreground: bool,
+}
+
+/// Why the active Telegram conversation could not be determined.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TelegramConversationWindowError {
+    NoActiveConversation,
+    AmbiguousActiveConversation,
+}
+
+fn is_telegram_process_name(value: &str) -> bool {
+    value
+        .trim()
+        .eq_ignore_ascii_case(TELEGRAM_DESKTOP_PROCESS_NAME)
+        || value.trim().eq_ignore_ascii_case("Telegram.exe")
+}
+
+/// Find the one foreground, open Telegram conversation window.
+///
+/// A stale chat-list row can retain an old conversation name, and an unfocused
+/// Telegram window can coexist with the user's current one.  Neither is the
+/// active conversation.  The exact accessible name is returned unchanged;
+/// callers must not normalise it into an identity that no longer matches what
+/// Telegram exposed.
+pub fn find_active_telegram_conversation_window<'a>(
+    records: &'a [TelegramConversationWindowRecord],
+) -> Result<&'a str, TelegramConversationWindowError> {
+    let mut matches = records.iter().filter(|record| {
+        is_telegram_process_name(&record.process_name)
+            && record.is_open
+            && record.is_foreground
+            && !record.conversation_name.trim().is_empty()
+    });
+    let Some(record) = matches.next() else {
+        return Err(TelegramConversationWindowError::NoActiveConversation);
+    };
+    if matches.next().is_some() {
+        return Err(TelegramConversationWindowError::AmbiguousActiveConversation);
+    }
+    Ok(record.conversation_name.as_str())
+}
+
 /// Telegram's measured UIA2 window shape.
 ///
 /// `DirectOuterWindow`, `Uia2WakePolicy::None`, `poll_until_populated: false`,
