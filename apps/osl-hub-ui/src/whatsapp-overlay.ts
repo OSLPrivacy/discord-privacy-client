@@ -1,8 +1,8 @@
 import "@fontsource-variable/inter/wght.css";
 import { invoke } from "@tauri-apps/api/core";
 import "./whatsapp-overlay.css";
-import { boundedProtectedDraft, utf8Length } from "./overlay-state";
 import { parseWhatsAppPreparedCarrier } from "./whatsapp-overlay-prepare";
+import { reconcileWhatsAppPrivateBox } from "./whatsapp-private-box";
 
 function requireElement<T extends Element>(selector: string): T {
   const element = document.querySelector<T>(selector);
@@ -19,11 +19,10 @@ let composing = false;
 let busy = false;
 
 function reconcileDraft(): void {
-  const bounded = boundedProtectedDraft(draft.value);
-  if (bounded !== draft.value) draft.value = bounded;
-  const bytes = utf8Length(bounded);
-  counter.textContent = `${bytes} / 1000 bytes`;
-  copy.disabled = busy || bytes === 0;
+  const state = reconcileWhatsAppPrivateBox(draft.value);
+  if (state.privateDraft !== draft.value) draft.value = state.privateDraft;
+  counter.textContent = state.byteCountText;
+  copy.disabled = busy || state.privateDraft.length === 0;
 }
 
 draft.addEventListener("compositionstart", () => { composing = true; });
@@ -31,7 +30,7 @@ draft.addEventListener("compositionend", () => { composing = false; reconcileDra
 draft.addEventListener("input", () => { if (!composing) reconcileDraft(); });
 copy.addEventListener("click", async () => {
   if (busy) return;
-  const plaintext = boundedProtectedDraft(draft.value);
+  const plaintext = reconcileWhatsAppPrivateBox(draft.value).privateDraft;
   if (!plaintext) return;
   busy = true;
   reconcileDraft();
