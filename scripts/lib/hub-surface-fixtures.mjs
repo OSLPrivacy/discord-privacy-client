@@ -36,7 +36,7 @@ async function withHubUiTestModule(vitestName, callback) {
   });
   try {
     const { __oslHubUiTest: ui } = await vite.ssrLoadModule('/src/main.ts');
-    return await callback(ui);
+    return await callback(ui, vite);
   } finally {
     await vite.close();
     if (previousVitest === undefined) delete process.env.VITEST;
@@ -46,7 +46,7 @@ async function withHubUiTestModule(vitestName, callback) {
   }
 }
 
-function buildHubScreenshotSurfaces(ui) {
+async function buildHubScreenshotSurfaces(ui, vite) {
   const surfaces = [];
   const add = (name, markup) => surfaces.push({ kind: 'screen', name, markup });
 
@@ -64,7 +64,11 @@ function buildHubScreenshotSurfaces(ui) {
   }
   ui.reset({ coreReady: true, servicesChecked: true });
   add('service:discord', ui.renderServiceHeader('discord'));
-  add('protected-sheets', ui.renderProtectedSheets());
+  // The default test reset intentionally keeps every overlay closed, which
+  // makes `renderProtectedSheets()` empty. A screenshot surface must instead
+  // render the shipping local-protection component in its initial open state.
+  const { blankLocalProtectedModel, localProtectedSheetMarkup } = await vite.ssrLoadModule('/src/local-protected-sheet.ts');
+  add('protected-sheets', localProtectedSheetMarkup(blankLocalProtectedModel(true), 'manual'));
   return surfaces;
 }
 
@@ -73,8 +77,8 @@ export async function hubScreenshotSurfaceMarkup(vitestName = 'screenshot-claim-
 }
 
 export async function hubTabTravelSurfaceMarkup(vitestName = 'hub-tab-travel-gate') {
-  return withHubUiTestModule(vitestName, (ui) => {
-    const screens = buildHubScreenshotSurfaces(ui);
+  return withHubUiTestModule(vitestName, async (ui, vite) => {
+    const screens = await buildHubScreenshotSurfaces(ui, vite);
     const dialogs = [];
     for (const name of HUB_DIALOG_SURFACES) {
       ui.reset({ coreReady: true, servicesChecked: true });
