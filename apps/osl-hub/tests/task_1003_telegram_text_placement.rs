@@ -40,9 +40,9 @@ use crate::native_a11y::{
 };
 #[cfg(task1003_direct)]
 use crate::native_telegram_adapter::{
-    probe_telegram_composer_write_then_clear, TelegramLivePlacementRequest,
-    TelegramPlacementStatus, TELEGRAM_COMPOSER_MEASURED_NAME, TELEGRAM_OUTER_WINDOW_CLASS,
-    TELEGRAM_UIA2_MEASURED_ELEMENTS,
+    probe_telegram_composer_write_then_clear, TelegramLivePlacementReceipt,
+    TelegramLivePlacementRequest, TelegramPlacementStatus, TELEGRAM_COMPOSER_MEASURED_NAME,
+    TELEGRAM_OUTER_WINDOW_CLASS, TELEGRAM_UIA2_MEASURED_ELEMENTS,
 };
 #[cfg(not(task1003_direct))]
 use osl_privacy_hub::native_a11y::{
@@ -50,9 +50,9 @@ use osl_privacy_hub::native_a11y::{
 };
 #[cfg(not(task1003_direct))]
 use osl_privacy_hub::native_telegram_adapter::{
-    probe_telegram_composer_write_then_clear, TelegramLivePlacementRequest,
-    TelegramPlacementStatus, TELEGRAM_COMPOSER_MEASURED_NAME, TELEGRAM_OUTER_WINDOW_CLASS,
-    TELEGRAM_UIA2_MEASURED_ELEMENTS,
+    probe_telegram_composer_write_then_clear, TelegramLivePlacementReceipt,
+    TelegramLivePlacementRequest, TelegramPlacementStatus, TELEGRAM_COMPOSER_MEASURED_NAME,
+    TELEGRAM_OUTER_WINDOW_CLASS, TELEGRAM_UIA2_MEASURED_ELEMENTS,
 };
 
 mod fixture {
@@ -60,17 +60,27 @@ mod fixture {
 }
 
 const EXPECTED_ORIGINAL_FIXTURE_BYTES: &[u8] = b"OSL-MARKED-BYTES-1003";
+const TASK1004_TEXT: &str = "telegram-text-1004";
+const TASK1004_CHANGED_BYTE_INDEX: usize = 11;
 
 struct TelegramPlacementHost {
     value: RefCell<Option<String>>,
     writes: RefCell<Vec<Vec<u8>>>,
+    readbacks: RefCell<Vec<Option<Vec<u8>>>>,
+    mutate_one_byte_before_readback: RefCell<bool>,
 }
 
 impl TelegramPlacementHost {
     fn new() -> Self {
+        Self::with_one_byte_readback_mutation(false)
+    }
+
+    fn with_one_byte_readback_mutation(mutate: bool) -> Self {
         Self {
             value: RefCell::new(None),
             writes: RefCell::new(Vec::new()),
+            readbacks: RefCell::new(Vec::new()),
+            mutate_one_byte_before_readback: RefCell::new(mutate),
         }
     }
 
@@ -156,7 +166,23 @@ impl Uia2Syscalls for TelegramPlacementHost {
         _deadline: Uia2Deadline,
     ) -> Result<Option<String>, Uia2CallTimeout> {
         assert_eq!(element.name, TELEGRAM_COMPOSER_MEASURED_NAME);
-        Ok(self.value.borrow().clone())
+        let mut value = self.value.borrow_mut();
+        let mut mutate = self.mutate_one_byte_before_readback.borrow_mut();
+        if *mutate {
+            if let Some(readback) = value.as_mut() {
+                assert_eq!(readback.as_bytes()[TASK1004_CHANGED_BYTE_INDEX], b'x');
+                readback.replace_range(
+                    TASK1004_CHANGED_BYTE_INDEX..TASK1004_CHANGED_BYTE_INDEX + 1,
+                    "X",
+                );
+                *mutate = false;
+            }
+        }
+        let returned = value.clone();
+        self.readbacks
+            .borrow_mut()
+            .push(returned.as_ref().map(|text| text.as_bytes().to_vec()));
+        Ok(returned)
     }
 
     fn submit_shaped_calls(&self) -> usize {
@@ -208,7 +234,97 @@ fn found_telegram_box_uses_shared_place_exact_readback_and_clear_actions() {
     println!("TASK1003_BYTES_AFTER_CLEAR={}", receipt.bytes_after_clear);
 }
 
+fn place_task1004_text(
+    mutate_one_byte_before_readback: bool,
+) -> (
+    TelegramLivePlacementReceipt,
+    TelegramPlacementHost,
+    Vec<String>,
+) {
+    let host =
+        TelegramPlacementHost::with_one_byte_readback_mutation(mutate_one_byte_before_readback);
+    let receipt = probe_telegram_composer_write_then_clear(
+        &host,
+        TelegramLivePlacementRequest {
+            carrier: TASK1004_TEXT,
+            allow_replace_existing: false,
+        },
+    );
+    let results = if receipt.status == TelegramPlacementStatus::Placed
+        && receipt.placed
+        && receipt.readback_exact
+    {
+        vec![TASK1004_TEXT.to_owned()]
+    } else {
+        Vec::new()
+    };
+    (receipt, host, results)
+}
+
+#[cfg_attr(not(task1003_direct), test)]
+fn task_1004_changed_placed_byte_is_refused_and_the_good_text_is_stable() {
+    let (good_receipt, good_host, good_results) = place_task1004_text(false);
+    assert_eq!(good_receipt.status, TelegramPlacementStatus::Placed);
+    assert_eq!(good_results, [TASK1004_TEXT]);
+    assert_eq!(good_results.len(), 1);
+    assert_eq!(
+        good_host.writes.borrow().as_slice(),
+        [TASK1004_TEXT.as_bytes(), b""]
+    );
+
+    let (changed_receipt, changed_host, changed_results) = place_task1004_text(true);
+    assert_eq!(
+        changed_receipt.status,
+        TelegramPlacementStatus::ReadbackMismatch
+    );
+    assert_eq!(format!("{:?}", changed_receipt.status), "ReadbackMismatch");
+    assert!(!changed_receipt.placed);
+    assert!(changed_results.is_empty());
+
+    let changed_readbacks = changed_host.readbacks.borrow();
+    let changed = changed_readbacks[1]
+        .as_deref()
+        .expect("the changed placed text is returned by the provider read-back");
+    assert_eq!(changed, b"telegram-teXt-1004");
+    let differing_indices = TASK1004_TEXT
+        .as_bytes()
+        .iter()
+        .zip(changed)
+        .enumerate()
+        .filter_map(|(index, (placed, returned))| (placed != returned).then_some(index))
+        .collect::<Vec<_>>();
+    assert_eq!(differing_indices, [TASK1004_CHANGED_BYTE_INDEX]);
+    assert_eq!(changed[TASK1004_CHANGED_BYTE_INDEX], b'X');
+    assert_eq!(
+        changed_host.writes.borrow().as_slice(),
+        [TASK1004_TEXT.as_bytes(), b""],
+        "a refused read-back still clears the text that was placed"
+    );
+
+    let (restored_receipt, _restored_host, restored_results) = place_task1004_text(false);
+    assert_eq!(restored_receipt.status, TelegramPlacementStatus::Placed);
+    assert_eq!(restored_results, good_results);
+    assert_eq!(restored_results.len(), 1);
+
+    println!(
+        "TASK1004 good_text={TASK1004_TEXT} result_count={} result={}",
+        good_results.len(),
+        good_results[0]
+    );
+    println!(
+        "TASK1004 changed_placed_byte=x changed_text={} result=refused_by_name name={:?}",
+        std::str::from_utf8(changed).expect("changed Telegram read-back remains UTF-8"),
+        changed_receipt.status
+    );
+    println!(
+        "TASK1004 restored_text={TASK1004_TEXT} result_count={} result={}",
+        restored_results.len(),
+        restored_results[0]
+    );
+}
+
 #[cfg(task1003_direct)]
 fn main() {
     found_telegram_box_uses_shared_place_exact_readback_and_clear_actions();
+    task_1004_changed_placed_byte_is_refused_and_the_good_text_is_stable();
 }
