@@ -1,7 +1,7 @@
 use osl_privacy_hub::security::{default_timer_picker_state, timer_picker_state};
 
 fn usage() -> ! {
-    eprintln!("usage: task_0549_timer_picker_state query-default | set <days> <hours> <minutes> <seconds>");
+    eprintln!("usage: task_0549_timer_picker_state query-default | set <days> <hours> <minutes>");
     std::process::exit(2);
 }
 
@@ -19,7 +19,6 @@ fn print_state(prefix: &str, state: osl_privacy_hub::security::TimerPickerStateD
     println!("{prefix}.days={}", state.days);
     println!("{prefix}.hours={}", state.hours);
     println!("{prefix}.minutes={}", state.minutes);
-    println!("{prefix}.seconds={}", state.seconds);
 }
 
 fn main() {
@@ -31,12 +30,11 @@ fn main() {
                 default_timer_picker_state(),
             );
         }
-        Some("set") if args.len() == 5 => {
+        Some("set") if args.len() == 4 => {
             let days = parse_part(args.get(1), "days");
             let hours = parse_part(args.get(2), "hours");
             let minutes = parse_part(args.get(3), "minutes");
-            let seconds = parse_part(args.get(4), "seconds");
-            match timer_picker_state(days, hours, minutes, seconds) {
+            match timer_picker_state(days, hours, minutes) {
                 Ok(state) => print_state("TASK0549 timer_picker.accepted", state),
                 Err(error) => {
                     eprintln!("TASK0549 timer_picker.rejected_days={days}");
