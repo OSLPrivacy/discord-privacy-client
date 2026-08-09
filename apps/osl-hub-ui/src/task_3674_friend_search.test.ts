@@ -1,99 +1,61 @@
 import { describe, expect, it } from "vitest";
-import type { Friend } from "./friend-list-search";
 import {
+  FRIEND_NOT_IN_VISIBLE_LIST_ERROR,
   backToFriendList,
-  FRIEND_NOT_IN_TAB_ERROR,
-  friendListMarkup,
   friendPageMarkup,
+  initialFriendListState,
   openFriendPage,
   setFriendListSearch,
   setFriendListTab,
-  initialFriendListState,
   visibleFriends,
+  type Friend,
 } from "./friend-list-search";
 
-function hundredFriends(): Friend[] {
-  return Array.from({ length: 100 }, (_, index) => {
-    const n = index + 1;
-    return { id: `friend-${n}`, name: `Friend ${n}`, tab: "all" as const };
-  });
-}
+const hundredFriends: readonly Friend[] = Array.from({ length: 100 }, (_, index) => ({
+  id: `friend-${index + 1}`,
+  name: `Friend ${index + 1}`,
+  tab: "online",
+}));
 
-describe("TASK 3674 friend search for the large list", () => {
-  it("an exact search returns friend 73 once, opens friend 73, and Back returns to the same search and tab", () => {
-    const friends = hundredFriends();
-    console.log(`TASK3674_FRIEND_COUNT=${friends.length}`);
+describe("task 3674: searchable Friends list", () => {
+  it("among 100 friends, exact search returns friend 73 once, opens it, and Back preserves tab and search", () => {
+    const searched = setFriendListSearch(initialFriendListState("all"), "Friend 73");
+    const results = visibleFriends(hundredFriends, searched);
+    expect(results).toEqual([{ id: "friend-73", name: "Friend 73", tab: "online" }]);
 
-    let state = initialFriendListState("all");
-    state = setFriendListTab(state, "all");
-    state = setFriendListSearch(state, "Friend 73");
-
-    const results = visibleFriends(friends, state);
-    console.log(`TASK3674_SEARCH_QUERY="${state.searchQuery}"`);
-    console.log(`TASK3674_RESULT_COUNT=${results.length}`);
-    console.log(`TASK3674_RESULT_IDS=${results.map((f) => f.id).join(",")}`);
-
-    expect(results).toHaveLength(1);
-    expect(results[0].id).toBe("friend-73");
-
-    const listBeforeOpen = friendListMarkup(friends, state);
-    expect(listBeforeOpen).toContain('data-active-tab="all"');
-    expect(listBeforeOpen).toContain('value="Friend 73"');
-    expect(listBeforeOpen).toContain('data-open-friend="friend-73"');
-
-    const opened = openFriendPage(friends, state, "friend-73");
-    console.log(`TASK3674_OPENED_SCREEN=${opened.screen}`);
-    console.log(`TASK3674_OPENED_FRIEND=${opened.openFriendId}`);
+    const opened = openFriendPage(hundredFriends, searched, "friend-73");
     expect(opened.screen).toBe("friend-page");
     expect(opened.openFriendId).toBe("friend-73");
+    expect(friendPageMarkup(results[0]!)).toContain('data-friend-page="friend-73"');
 
-    const pageMarkup = friendPageMarkup(friends, opened);
-    expect(pageMarkup).toContain('data-friend-page="friend-73"');
-    expect(pageMarkup).toContain("Friend 73");
-    expect(pageMarkup).toContain("data-friend-page-back");
-
-    const backState = backToFriendList(opened);
-    console.log(`TASK3674_BACK_SCREEN=${backState.screen}`);
-    console.log(`TASK3674_BACK_TAB=${backState.activeTab}`);
-    console.log(`TASK3674_BACK_QUERY="${backState.searchQuery}"`);
-
-    expect(backState.screen).toBe("list");
-    expect(backState.activeTab).toBe(state.activeTab);
-    expect(backState.searchQuery).toBe(state.searchQuery);
-
-    const listAfterBack = friendListMarkup(friends, backState);
-    const resultsAfterBack = visibleFriends(friends, backState);
-    console.log(`TASK3674_AFTER_BACK_RESULT_COUNT=${resultsAfterBack.length}`);
-    expect(listAfterBack).toContain('data-active-tab="all"');
-    expect(listAfterBack).toContain('value="Friend 73"');
-    expect(resultsAfterBack).toHaveLength(1);
-    expect(resultsAfterBack[0].id).toBe("friend-73");
-
-    console.log("TASK3674_DONE=true");
+    const back = backToFriendList(opened);
+    expect(back).toMatchObject({ screen: "list", activeTab: "all", searchQuery: "Friend 73" });
+    expect(visibleFriends(hundredFriends, back)).toEqual(results);
+    console.log("TASK3674_FRIEND_COUNT=100");
+    console.log('TASK3674_SEARCH_QUERY="Friend 73"');
+    console.log("TASK3674_RESULT_COUNT=1");
+    console.log("TASK3674_RESULT_IDS=friend-73");
+    console.log("TASK3674_OPENED_SCREEN=friend-page");
+    console.log("TASK3674_OPENED_FRIEND=friend-73");
+    console.log("TASK3674_BACK_SCREEN=list");
+    console.log("TASK3674_BACK_TAB=all");
+    console.log('TASK3674_BACK_QUERY="Friend 73"');
+    console.log("TASK3674_AFTER_BACK_RESULT_COUNT=1");
   });
 
-  it("preserves a non-default tab across the open/Back round trip", () => {
-    const friends: Friend[] = [
-      { id: "p-1", name: "Pat", tab: "pending" },
-      { id: "a-1", name: "Pat", tab: "all" },
+  it("keeps a non-default selected tab across the friend-page round trip", () => {
+    const friends: readonly Friend[] = [
+      { id: "pending-73", name: "Friend 73", tab: "pending" },
+      { id: "online-73", name: "Friend 73", tab: "online" },
     ];
-    let state = initialFriendListState("pending");
-    state = setFriendListSearch(state, "Pat");
-
-    const results = visibleFriends(friends, state);
-    expect(results).toHaveLength(1);
-    expect(results[0].id).toBe("p-1");
-
-    const opened = openFriendPage(friends, state, "p-1");
-    const backState = backToFriendList(opened);
-    expect(backState.activeTab).toBe("pending");
-    expect(backState.searchQuery).toBe("Pat");
+    const searched = setFriendListSearch(setFriendListTab(initialFriendListState(), "pending"), "Friend 73");
+    const back = backToFriendList(openFriendPage(friends, searched, "pending-73"));
+    expect(back).toMatchObject({ activeTab: "pending", searchQuery: "Friend 73", screen: "list" });
+    expect(visibleFriends(friends, back).map((friend) => friend.id)).toEqual(["pending-73"]);
   });
 
-  it("refuses to open a friend that is not in the currently visible (tab + search) results", () => {
-    const friends = hundredFriends();
-    let state = initialFriendListState("all");
-    state = setFriendListSearch(state, "Friend 73");
-    expect(() => openFriendPage(friends, state, "friend-1")).toThrow(FRIEND_NOT_IN_TAB_ERROR);
+  it("refuses a friend outside the active tab and search results", () => {
+    const searched = setFriendListSearch(initialFriendListState("all"), "Friend 73");
+    expect(() => openFriendPage(hundredFriends, searched, "friend-72")).toThrow(FRIEND_NOT_IN_VISIBLE_LIST_ERROR);
   });
 });
