@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Instagram plain uploaded-file story composer</title>
+    <style>
+      :root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #fafafa; color: #262626; }
+      * { box-sizing: border-box; }
+      body { margin: 0; min-width: 980px; background: #fafafa; }
+      .ig-header { height: 60px; border-bottom: 1px solid #dbdbdb; background: #fff; display: flex; align-items: center; padding: 0 calc((100vw - 1120px) / 2); gap: 28px; }
+      .ig-logo { font-family: cursive; font-size: 29px; line-height: 1; letter-spacing: -1.5px; color: #111; }
+      .ig-header span { color: #737373; font-size: 14px; }
+      .workspace { width: 1120px; margin: 0 auto; padding: 34px 0; display: grid; grid-template-columns: 168px 1fr; gap: 32px; }
+      .side-nav { padding-top: 10px; color: #555; font-size: 14px; }
+      .side-nav strong { display: block; color: #111; margin-bottom: 23px; font-size: 16px; }
+      .side-nav div { margin: 18px 0; }
+      .story-frame { background: #fff; border: 1px solid #dbdbdb; border-radius: 12px; overflow: hidden; min-height: 652px; box-shadow: 0 1px 2px #0000000a; }
+      .composer-heading { height: 72px; border-bottom: 1px solid #efefef; display: flex; align-items: center; justify-content: space-between; padding: 0 28px; }
+      .composer-heading h1 { font-size: 19px; margin: 0; font-weight: 650; }
+      .composer-heading .file-state { color: #737373; font-size: 13px; }
+      .composer-layout { display: grid; grid-template-columns: minmax(440px, 1fr) 268px; min-height: 579px; }
+      .story-stage { min-height: 579px; display: grid; place-items: center; padding: 28px; background: #f5f5f5; }
+      .story-canvas { width: 300px; height: 516px; position: relative; overflow: hidden; border-radius: 6px; background: linear-gradient(154deg, #fdc7a0 0%, #f47ab5 45%, #6b53ca 100%); box-shadow: 0 8px 24px #0003; }
+      .photo-haze { position: absolute; inset: 0; background: radial-gradient(circle at 72% 23%, #fff9 0 4%, transparent 18%), radial-gradient(circle at 27% 70%, #ffde9a9c 0 10%, transparent 25%), linear-gradient(33deg, #371f6850, transparent 60%); }
+      .story-copy { position: absolute; left: 25px; right: 25px; bottom: 64px; color: #fff; text-shadow: 0 1px 5px #0007; font-size: 25px; font-weight: 650; line-height: 1.15; }
+      .story-copy small { display: block; margin-top: 9px; font-size: 13px; font-weight: 500; }
+      .story-chip { position: absolute; top: 18px; left: 16px; display: flex; gap: 9px; align-items: center; color: #fff; font-size: 12px; font-weight: 650; }
+      .avatar { width: 28px; height: 28px; border: 2px solid #fff; border-radius: 50%; background: linear-gradient(140deg, #feda75, #d62976, #4f5bd5); }
+      .control-rail { padding: 24px 18px; border-left: 1px solid #efefef; background: #fff; }
+      .control-rail h2 { font-size: 14px; margin: 4px 0 6px; }
+      .control-rail p { margin: 0 0 20px; color: #737373; font-size: 12px; line-height: 1.45; }
+      .story-control { width: 100%; min-height: 43px; border: 1px solid #dbdbdb; border-radius: 9px; background: #fff; color: #262626; margin: 8px 0; padding: 0 12px; display: flex; align-items: center; gap: 10px; font: inherit; font-size: 14px; font-weight: 600; text-align: left; }
+      .story-control .icon { width: 22px; text-align: center; font-size: 18px; }
+      .share { margin-top: 20px; background: #0095f6; border-color: #0095f6; color: #fff; justify-content: center; text-align: center; }
+      .hidden-composer { display: none; }
+      .control-note { margin-top: 15px; padding-top: 15px; border-top: 1px solid #efefef; color: #737373; font-size: 11px; line-height: 1.4; }
+      @media (max-width: 1100px) { .workspace { width: calc(100vw - 48px); } .ig-header { padding: 0 24px; } }
+    </style>
+  </head>
+  <body>
+    <header class="ig-header"><strong class="ig-logo" aria-label="Instagram">Instagram</strong><span>Stories</span></header>
+    <main class="workspace">
+      <aside class="side-nav" aria-label="Instagram navigation"><strong>Create</strong><div>Home</div><div>Search</div><div>Reels</div><div>Messages</div><div>Profile</div></aside>
+      <section class="story-frame" aria-label="Instagram story composer">
+        <div class="composer-heading"><h1>Create a story</h1><span class="file-state">uploaded file · coast-sunset.jpg</span></div>
+        <article class="composer-layout" data-story-composer="plain-uploaded-file" aria-label="Plain uploaded-file story composer">
+          <div class="story-stage">
+            <div class="story-canvas" aria-label="Uploaded file preview">
+              <div class="photo-haze"></div><div class="story-chip"><span class="avatar"></span><span>your_story · now</span></div>
+              <div class="story-copy">Golden hour by the water<small>Uploaded photo preview</small></div>
+            </div>
+          </div>
+          <aside class="control-rail" aria-label="Plain story controls">
+            <h2>Story tools</h2><p>Controls for this plain uploaded file.</p>
+            <button class="story-control" data-instagram-story-control="text" type="button"><span class="icon">Aa</span>Text</button>
+            <button class="story-control" data-instagram-story-control="draw" type="button"><span class="icon">✎</span>Draw</button>
+            <button class="story-control" data-instagram-story-control="stickers" type="button"><span class="icon">☺</span>Stickers</button>
+            <button class="story-control" data-instagram-story-control="music" type="button"><span class="icon">♫</span>Music</button>
+            <button class="story-control" data-instagram-story-control="accessibility" type="button"><span class="icon">≡</span>Accessibility</button>
+            <button class="story-control share" data-instagram-story-control="share" type="button">Share to story</button>
+            <div class="control-note">Shown only for the plain uploaded-file story composer.</div>
+          </aside>
+        </article>
+        <article class="hidden-composer" data-story-composer="camera" aria-hidden="true"></article>
+        <article class="hidden-composer" data-story-composer="reel" aria-hidden="true"></article>
+      </section>
+    </main>
+  </body>
+</html>
