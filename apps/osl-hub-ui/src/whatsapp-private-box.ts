@@ -14,6 +14,25 @@ export interface WhatsAppPrivateBoxState {
   whatsappComposerCharacters: 0;
 }
 
+export type WhatsAppPrivateBoxCommand =
+  | { type: "enterPrivateText"; text: string }
+  | { type: "clearPrivateText" };
+
+/**
+ * Read the private box independently after a command has run. The count check
+ * must not infer success from the command's input text.
+ */
+export interface WhatsAppPrivateBoxReader {
+  readPrivateByteCount(privateBox: WhatsAppPrivateBoxState): number;
+}
+
+export interface WhatsAppPrivateCountCheck {
+  fixtureBytes: number;
+  countAfterEnter: number;
+  countAfterClear: number;
+  whatsappComposerCharacters: 0;
+}
+
 export function boundedWhatsAppPrivateDraft(value: string): string {
   let result = "";
   for (const character of value) {
@@ -29,5 +48,60 @@ export function reconcileWhatsAppPrivateBox(value: string): WhatsAppPrivateBoxSt
     privateDraft,
     byteCountText: `${utf8Length(privateDraft)} / ${WHATSAPP_PRIVATE_BOX_MAX_BYTES} bytes`,
     whatsappComposerCharacters: 0,
+  };
+}
+
+/** Apply an explicit private-box command without writing into WhatsApp. */
+export function executeWhatsAppPrivateBoxCommand(
+  privateBox: WhatsAppPrivateBoxState,
+  command: WhatsAppPrivateBoxCommand,
+): WhatsAppPrivateBoxState {
+  switch (command.type) {
+    case "enterPrivateText":
+      return reconcileWhatsAppPrivateBox(command.text);
+    case "clearPrivateText":
+      return {
+        ...privateBox,
+        privateDraft: "",
+        byteCountText: `0 / ${WHATSAPP_PRIVATE_BOX_MAX_BYTES} bytes`,
+      };
+  }
+}
+
+/**
+ * Execute a multi-byte entry and a direct clear, independently reading the box
+ * after both commands. A stale or no-op reader cannot satisfy this check.
+ */
+export function checkWhatsAppPrivateCount(
+  reader: WhatsAppPrivateBoxReader,
+): WhatsAppPrivateCountCheck {
+  const fixture = `${"a".repeat(34)}€`;
+  const fixtureBytes = utf8Length(fixture);
+  let privateBox = reconcileWhatsAppPrivateBox("");
+
+  privateBox = executeWhatsAppPrivateBoxCommand(privateBox, {
+    type: "enterPrivateText",
+    text: fixture,
+  });
+  const countAfterEnter = reader.readPrivateByteCount(privateBox);
+  if (countAfterEnter !== fixtureBytes) {
+    throw new Error(
+      `WhatsApp private-box reader returned ${countAfterEnter} bytes after enter; expected ${fixtureBytes}`,
+    );
+  }
+
+  privateBox = executeWhatsAppPrivateBoxCommand(privateBox, { type: "clearPrivateText" });
+  const countAfterClear = reader.readPrivateByteCount(privateBox);
+  if (countAfterClear !== 0) {
+    throw new Error(
+      `WhatsApp private-box reader returned ${countAfterClear} bytes after clear; expected 0`,
+    );
+  }
+
+  return {
+    fixtureBytes,
+    countAfterEnter,
+    countAfterClear,
+    whatsappComposerCharacters: privateBox.whatsappComposerCharacters,
   };
 }
