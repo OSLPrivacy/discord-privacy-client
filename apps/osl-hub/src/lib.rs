@@ -145,6 +145,7 @@ pub mod invite_clipboard;
 /// verdict is testable in every build that can compile this crate.
 #[cfg(not(task3982_focused))]
 pub mod landing_oracle;
+pub mod local_profile_email_driver;
 #[cfg(feature = "core")]
 pub mod look_window;
 /// When the hidden main window may be shown. Pure, and deliberately not behind
