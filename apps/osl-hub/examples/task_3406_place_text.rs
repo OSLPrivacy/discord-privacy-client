@@ -39,8 +39,8 @@ mod windows_place_text {
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         EnumWindows, GetAncestor, GetCursorPos, GetForegroundWindow, GetSystemMetrics,
-        GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible,
-        SetCursorPos, SetForegroundWindow, ShowWindow, WindowFromPoint, GA_ROOT,
+        GetWindowRect, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
+        IsWindowVisible, SetCursorPos, SetForegroundWindow, ShowWindow, WindowFromPoint, GA_ROOT,
         SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_RESTORE,
     };
 
@@ -54,8 +54,6 @@ mod windows_place_text {
     const MIN_TREE_ELEMENTS: i32 = 10;
     const TREE_WAIT_MS: u64 = 1_000;
     const SETTLE_MS: u64 = 160;
-    const COMPOSER_STEMS: &[&str] = &["message", "nachricht", "mensaje"];
-    const NON_COMPOSER_STEMS: &[&str] = &["search", "filter", "buscar"];
 
     #[derive(Clone, Debug)]
     struct WindowInfo {
@@ -145,78 +143,81 @@ mod windows_place_text {
             private_canary,
         } = args.place;
         let initial = foreground_window()
-            .ok_or_else(|| CommandError::exit1("Windows reported no foreground window"))?;
+            .ok_or_else(|| refuse_before_typing(&app, "Windows reported no foreground window"))?;
         println!(
             "initial_front={}",
             describe_window(&initial).replace('\n', " ")
         );
         if !window_matches(&initial, &initial_front) {
-            return Err(CommandError::exit1(format!(
-                "initial front window was not {}",
-                initial_front
-            )));
+            return Err(refuse_before_typing(
+                &app,
+                format!("initial front window was not {initial_front}"),
+            ));
         }
 
-        let discord = match find_window(&app) {
+        let provider = match find_window(&app) {
             Some(window) => window,
             None => {
                 println!("osl_clipboard_entries=0");
-                return Err(CommandError::exit1(format!("{} not found", app)));
+                return Err(refuse_before_typing(&app, "window not found"));
             }
         };
-        let initially_behind = !same_root(initial.hwnd, discord.hwnd);
+        let initially_behind = !same_root(initial.hwnd, provider.hwnd);
         println!(
             "behind_window={} behind_initial={}",
-            describe_window(&discord).replace('\n', " "),
+            describe_window(&provider).replace('\n', " "),
             initially_behind
         );
         if !initially_behind {
-            return Err(CommandError::exit1(format!(
-                "{} was already the foreground window",
-                app
-            )));
+            return Err(refuse_before_typing(
+                &app,
+                "provider was already the foreground window",
+            ));
         }
 
-        request_front_window(discord.hwnd);
+        request_front_window(provider.hwnd);
         thread::sleep(Duration::from_millis(SETTLE_MS));
         let grabbed = foreground_window().ok_or_else(|| {
-            CommandError::exit1("Windows reported no foreground window after grab")
+            refuse_before_typing(&app, "Windows reported no foreground window after grab")
         })?;
         println!(
             "after_grab_front={}",
             describe_window(&grabbed).replace('\n', " ")
         );
-        if !same_root(grabbed.hwnd, discord.hwnd) {
-            return Err(CommandError::exit1(format!(
-                "{} did not become the foreground window",
-                app
-            )));
+        if !same_root(grabbed.hwnd, provider.hwnd) {
+            return Err(refuse_before_typing(
+                &app,
+                "provider did not become the foreground window",
+            ));
         }
 
-        let _com = initialize_com()?;
-        let automation = automation()?;
-        let root = discord_accessibility_root(&automation, discord.hwnd)?;
-        wait_for_tree(&root, &automation)?;
-        let composer = find_composer(&root, &automation)?;
-        println!("composer_name={:?}", element_name(&composer));
+        let _com = initialize_com().map_err(|error| refuse_before_typing(&app, error.message))?;
+        let automation = automation().map_err(|error| refuse_before_typing(&app, error.message))?;
+        let root = provider_accessibility_root(&automation, provider.hwnd, &app)?;
+        wait_for_tree(&root, &automation, &app)?;
+        let provider_bounds = window_bounds(provider.hwnd)
+            .ok_or_else(|| refuse_before_typing(&app, "window bounds not found"))?;
+        let composer = find_composer(&root, &automation, provider_bounds, &app)?;
+        println!("composer_discovered_by=role-state-geometry");
         let bounds = element_bounds(&composer)
-            .ok_or_else(|| CommandError::exit1(format!("{} composer bounds not found", app)))?;
+            .ok_or_else(|| refuse_before_typing(&app, "message box bounds not found"))?;
         println!(
             "composer_bounds={},{},{},{}",
             bounds[0], bounds[1], bounds[2], bounds[3]
         );
 
-        click_composer(bounds, discord.hwnd)?;
+        click_composer(bounds, provider.hwnd)
+            .map_err(|error| refuse_before_typing(&app, error.message))?;
         thread::sleep(Duration::from_millis(180));
         let focus = unsafe { composer.CurrentHasKeyboardFocus() }
             .map(|value| value.as_bool())
             .unwrap_or(false);
         println!("composer_has_keyboard_focus={focus}");
         if !focus {
-            return Err(CommandError::exit1(format!(
-                "{} composer did not take keyboard focus",
-                app
-            )));
+            return Err(refuse_before_typing(
+                &app,
+                "message box did not take keyboard focus",
+            ));
         }
 
         let snapshot = snapshot_clipboard()
@@ -506,14 +507,19 @@ mod windows_place_text {
         })
     }
 
-    fn discord_accessibility_root(
+    /// Obtain the provider's accessibility root without consulting any provider
+    /// copy.  The alert wakes Electron's bridge where it exists; the resulting
+    /// tree is then treated identically for every supported provider.
+    fn provider_accessibility_root(
         automation: &IUIAutomation,
         hwnd: HWND,
+        provider: &str,
     ) -> Result<IUIAutomationElement, CommandError> {
         let accessible = wake_electron_accessibility(hwnd)
-            .ok_or_else(|| CommandError::exit1("Discord accessibility wake failed"))?;
-        unsafe { automation.ElementFromIAccessible(&accessible, 0) }
-            .map_err(|error| CommandError::exit1(format!("MSAA bridge failed: {error:?}")))
+            .ok_or_else(|| refuse_before_typing(provider, "accessibility wake failed"))?;
+        unsafe { automation.ElementFromIAccessible(&accessible, 0) }.map_err(|error| {
+            refuse_before_typing(provider, format!("MSAA bridge failed: {error:?}"))
+        })
     }
 
     fn wake_electron_accessibility(hwnd: HWND) -> Option<IAccessible> {
@@ -549,6 +555,7 @@ mod windows_place_text {
     fn wait_for_tree(
         root: &IUIAutomationElement,
         automation: &IUIAutomation,
+        provider: &str,
     ) -> Result<(), CommandError> {
         let started = Instant::now();
         loop {
@@ -558,9 +565,12 @@ mod windows_place_text {
                 return Ok(());
             }
             if started.elapsed() >= Duration::from_millis(TREE_WAIT_MS) {
-                return Err(CommandError::exit1(format!(
-                    "Discord accessibility tree never populated: saw {count}, needed {MIN_TREE_ELEMENTS}"
-                )));
+                return Err(refuse_before_typing(
+                    provider,
+                    format!(
+                        "accessibility tree never populated: saw {count}, needed {MIN_TREE_ELEMENTS}"
+                    ),
+                ));
             }
             thread::sleep(Duration::from_millis(100));
         }
@@ -579,6 +589,8 @@ mod windows_place_text {
     fn find_composer(
         root: &IUIAutomationElement,
         automation: &IUIAutomation,
+        provider_bounds: [i32; 4],
+        provider: &str,
     ) -> Result<IUIAutomationElement, CommandError> {
         let condition = unsafe { automation.CreateTrueCondition() }.map_err(|error| {
             CommandError::exit1(format!("UI Automation condition failed: {error:?}"))
@@ -592,20 +604,26 @@ mod windows_place_text {
             let Ok(element) = (unsafe { found.GetElement(index) }) else {
                 continue;
             };
-            if element_is_composer(&element) {
+            if element_is_composer(&element, provider_bounds) {
                 matches.push(element);
             }
         }
         match matches.len() {
             1 => Ok(matches.remove(0)),
-            0 => Err(CommandError::exit1("Discord composer not found")),
-            count => Err(CommandError::exit1(format!(
-                "Discord composer ambiguous: {count} candidates"
-            ))),
+            0 => Err(refuse_before_typing(provider, "message box not found")),
+            count => Err(refuse_before_typing(
+                provider,
+                format!("message box ambiguous: {count} candidates"),
+            )),
         }
     }
 
-    fn element_is_composer(element: &IUIAutomationElement) -> bool {
+    /// Locate a conversation composer by accessible semantics and its position
+    /// in the provider window, never by a translated accessible name.  A search
+    /// field is normally writable too, but is above the conversation; requiring
+    /// a substantial writable field in the lower window rejects it in every
+    /// locale.  Ambiguity is a refusal, not permission to type.
+    fn element_is_composer(element: &IUIAutomationElement, provider_bounds: [i32; 4]) -> bool {
         let control_type = unsafe { element.CurrentControlType() }.ok();
         if !control_type.is_some_and(|kind| {
             kind == UIA_EditControlTypeId
@@ -626,7 +644,7 @@ mod windows_place_text {
         let read_only = unsafe { pattern.CurrentIsReadOnly() }
             .map(|value| value.as_bool())
             .unwrap_or(true);
-        enabled && focusable && !read_only && name_is_composer(&element_name(element))
+        enabled && focusable && !read_only && is_lower_conversation_field(element, provider_bounds)
     }
 
     fn value_pattern(element: &IUIAutomationElement) -> Option<IUIAutomationValuePattern> {
@@ -660,25 +678,26 @@ mod windows_place_text {
         Ok(last)
     }
 
-    fn element_name(element: &IUIAutomationElement) -> String {
-        unsafe { element.CurrentName() }
-            .map(|name| name.to_string())
-            .unwrap_or_default()
-    }
-
-    fn name_is_composer(name: &str) -> bool {
-        let normalized = name
-            .trim()
-            .trim_end_matches('.')
-            .replace('\u{2026}', "")
-            .to_lowercase();
-        if NON_COMPOSER_STEMS
-            .iter()
-            .any(|stem| normalized.contains(stem))
-        {
+    fn is_lower_conversation_field(
+        element: &IUIAutomationElement,
+        provider_bounds: [i32; 4],
+    ) -> bool {
+        let Some(bounds) = element_bounds(element) else {
+            return false;
+        };
+        let provider_width = provider_bounds[2].saturating_sub(provider_bounds[0]);
+        let provider_height = provider_bounds[3].saturating_sub(provider_bounds[1]);
+        if provider_width <= 0 || provider_height <= 0 {
             return false;
         }
-        COMPOSER_STEMS.iter().any(|stem| normalized.contains(stem))
+        let center_y = bounds[1].saturating_add(bounds[3]).saturating_div(2);
+        let lower_half = center_y >= provider_bounds[1].saturating_add(provider_height / 2);
+        let wide_enough = bounds[2].saturating_sub(bounds[0]) >= provider_width / 4;
+        let inside_provider = bounds[0] >= provider_bounds[0]
+            && bounds[2] <= provider_bounds[2]
+            && bounds[1] >= provider_bounds[1]
+            && bounds[3] <= provider_bounds[3];
+        lower_half && wide_enough && inside_provider
     }
 
     fn element_bounds(element: &IUIAutomationElement) -> Option<[i32; 4]> {
@@ -688,6 +707,27 @@ mod windows_place_text {
         let right = rect.right as i32;
         let bottom = rect.bottom as i32;
         (right > left && bottom > top).then_some([left, top, right, bottom])
+    }
+
+    fn window_bounds(hwnd: HWND) -> Option<[i32; 4]> {
+        let mut rect = windows_sys::Win32::Foundation::RECT::default();
+        if unsafe { GetWindowRect(hwnd, &mut rect) } == 0 {
+            return None;
+        }
+        (rect.right > rect.left && rect.bottom > rect.top).then_some([
+            rect.left,
+            rect.top,
+            rect.right,
+            rect.bottom,
+        ])
+    }
+
+    fn refuse_before_typing(provider: &str, reason: impl Into<String>) -> CommandError {
+        let reason = reason.into();
+        println!(
+            "provider={provider} result=refused reason={reason:?} typed_characters_before=0 typed_characters_after=0"
+        );
+        CommandError::exit1(format!("{provider} refused before typing: {reason}"))
     }
 
     fn find_window(wanted: &str) -> Option<WindowInfo> {
