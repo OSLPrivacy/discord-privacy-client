@@ -41,6 +41,10 @@ pub struct FoundWhatsAppDirectMessage {
 pub struct WhatsAppFinderSnapshot {
     pub window: ActiveWhatsAppWindow,
     pub conversation: ActiveWhatsAppConversation,
+    /// The state named by WhatsApp's accessibility surface.  A focused search
+    /// field and a closed client may still expose an Edit, but neither is a
+    /// message box.
+    pub state: String,
     pub nodes: Vec<WhatsAppStructuralNode>,
 }
 
@@ -49,6 +53,9 @@ pub struct WhatsAppFinderSnapshot {
 pub fn find_active_whatsapp_direct_message(
     snapshot: &WhatsAppFinderSnapshot,
 ) -> Result<FoundWhatsAppDirectMessage, WhatsAppAdapterRefusal> {
+    if matches!(snapshot.state.as_str(), "search-focused" | "closed") {
+        return Err(WhatsAppAdapterRefusal::MissingComposer);
+    }
     if !snapshot.window.active || snapshot.window.title != "WhatsApp" {
         return Err(WhatsAppAdapterRefusal::MissingExactAppRoot);
     }
@@ -73,16 +80,22 @@ pub fn find_active_whatsapp_direct_message(
 
 pub fn render_prepared_whatsapp_fixture(value: &str) -> Result<String, String> {
     let snapshot = match value {
-        "whatsapp-direct" => prepared_direct_snapshot(),
+        "whatsapp-direct" | "whatsapp-box-1061" => prepared_direct_snapshot(),
         "whatsapp-signed-out" => prepared_signed_out_snapshot(),
+        "whatsapp-search-focused" => prepared_search_focused_snapshot(),
+        "whatsapp-closed" => prepared_closed_snapshot(),
         _ => {
             return Err(
-                "usage: whatsapp-window-composer <whatsapp-direct|whatsapp-signed-out>".to_owned(),
+                "usage: whatsapp-window-composer <whatsapp-direct|whatsapp-signed-out|whatsapp-box-1061|whatsapp-search-focused|whatsapp-closed>".to_owned(),
             )
         }
     };
-    let found = find_active_whatsapp_direct_message(&snapshot)
-        .map_err(|error| format!("WhatsApp direct-message finder refused: {error:?}"))?;
+    let found = find_active_whatsapp_direct_message(&snapshot).map_err(|error| {
+        format!(
+            "WhatsApp direct-message finder refused for state {}: {error:?}",
+            snapshot.state
+        )
+    })?;
     Ok(format!(
         "TASK1060_WINDOW={}\nTASK1060_CONVERSATION={}\nTASK1060_TYPING_BOX={}\nTASK1060_FOUND_COUNT=3\n",
         found.window.title, found.conversation.title, found.typing_box_name
@@ -166,6 +179,7 @@ fn prepared_direct_snapshot() -> WhatsAppFinderSnapshot {
             kind: WhatsAppConversationKind::DirectMessage,
             selected: true,
         },
+        state: "active".to_owned(),
         nodes: vec![root, webview, content, transcript, composer],
     }
 }
@@ -182,5 +196,24 @@ fn prepared_signed_out_snapshot() -> WhatsAppFinderSnapshot {
         .find(|node| node.structural_id == "typing-box")
         .expect("prepared typing box exists");
     composer.automation_id = Some("Phone number".to_owned());
+    snapshot
+}
+
+fn prepared_search_focused_snapshot() -> WhatsAppFinderSnapshot {
+    let mut snapshot = prepared_direct_snapshot();
+    snapshot.state = "search-focused".to_owned();
+    let composer = snapshot
+        .nodes
+        .iter_mut()
+        .find(|node| node.structural_id == "typing-box")
+        .expect("prepared typing box exists");
+    composer.automation_id = Some("Search messages".to_owned());
+    snapshot
+}
+
+fn prepared_closed_snapshot() -> WhatsAppFinderSnapshot {
+    let mut snapshot = prepared_direct_snapshot();
+    snapshot.state = "closed".to_owned();
+    snapshot.window.active = false;
     snapshot
 }
