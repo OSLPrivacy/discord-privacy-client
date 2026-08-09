@@ -27,6 +27,24 @@ export interface TelegramPrivateBoxState {
   readonly telegramComposerCharacters: 0;
 }
 
+export type TelegramPrivateBoxCommand =
+  | { type: "enterPrivateText"; text: string }
+  | { type: "clearPrivateText" };
+
+/**
+ * Read the private box independently after a command has run. The count check
+ * must not infer success from the command's input text.
+ */
+export interface TelegramPrivateBoxReader {
+  readPrivateByteCount(privateBox: TelegramPrivateBoxState): number;
+}
+
+export interface TelegramPrivateCountCheck {
+  fixtureBytes: number;
+  countAfterEnter: number;
+  countAfterClear: number;
+  telegramComposerCharacters: 0;
+}
 function telegramCharacterCount(value: string): number {
   return Array.from(value).length;
 }
@@ -97,6 +115,66 @@ export class TelegramPrivateBoxController {
   }
 }
 
+/** Apply an explicit private-box command without writing into Telegram. */
+export function executeTelegramPrivateBoxCommand(
+  privateBox: TelegramPrivateBoxState,
+  command: TelegramPrivateBoxCommand,
+): TelegramPrivateBoxState {
+  const privateDraft = command.type === "enterPrivateText" ? command.text : "";
+  const privateBytes = new TextEncoder().encode(privateDraft);
+  return {
+    ...privateBox,
+    privateDraft,
+    privateBytes,
+    privateByteCount: privateBytes.length,
+  };
+}
+
+/**
+ * Execute a multi-byte entry and a direct clear, independently reading the box
+ * after both commands. A stale or no-op reader cannot satisfy this check.
+ */
+export function checkTelegramPrivateCount(
+  reader: TelegramPrivateBoxReader,
+): TelegramPrivateCountCheck {
+  const fixture = `${"a".repeat(34)}€`;
+  const fixtureBytes = new TextEncoder().encode(fixture).length;
+  const emptyBytes = new Uint8Array();
+  let privateBox: TelegramPrivateBoxState = {
+    foundBoxName: TELEGRAM_FOUND_BOX_NAME,
+    locked: true,
+    privateDraft: "",
+    privateBytes: emptyBytes,
+    privateByteCount: emptyBytes.length,
+    telegramComposerCharacters: 0,
+  };
+
+  privateBox = executeTelegramPrivateBoxCommand(privateBox, {
+    type: "enterPrivateText",
+    text: fixture,
+  });
+  const countAfterEnter = reader.readPrivateByteCount(privateBox);
+  if (countAfterEnter !== fixtureBytes) {
+    throw new Error(
+      `Telegram private-box reader returned ${countAfterEnter} bytes after enter; expected ${fixtureBytes}`,
+    );
+  }
+
+  privateBox = executeTelegramPrivateBoxCommand(privateBox, { type: "clearPrivateText" });
+  const countAfterClear = reader.readPrivateByteCount(privateBox);
+  if (countAfterClear !== 0) {
+    throw new Error(
+      `Telegram private-box reader returned ${countAfterClear} bytes after clear; expected 0`,
+    );
+  }
+
+  return {
+    fixtureBytes,
+    countAfterEnter,
+    countAfterClear,
+    telegramComposerCharacters: privateBox.telegramComposerCharacters,
+  };
+}
 /** Pure markup for the locked box the overlay renderer places over Telegram. */
 export function telegramPrivateBoxMarkup(state: TelegramPrivateBoxState): string {
   return `<section class="telegram-private-box" data-over-telegram-box="${escapeHtml(state.foundBoxName)}" data-lock-state="locked" aria-label="OSL private message box">`
