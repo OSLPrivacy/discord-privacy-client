@@ -399,6 +399,9 @@ pub mod x_private_composer;
 /// Preparation-only handlers for the five X protected send choices.
 pub mod x_send;
 #[cfg(not(task3982_focused))]
+/// Receiver-backed protected/normal display state for marked X DM and post
+/// rows. Only receiving-job evidence can populate protected text.
+pub mod x_eye_state;
 pub mod x_whitelist;
 /// Expiring and burn-side commands for X content whose published authorship is
 /// the currently signed-in account.
