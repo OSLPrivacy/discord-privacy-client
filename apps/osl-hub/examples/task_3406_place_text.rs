@@ -725,7 +725,7 @@ mod windows_place_text {
     fn refuse_before_typing(provider: &str, reason: impl Into<String>) -> CommandError {
         let reason = reason.into();
         println!(
-            "provider={provider} result=refused reason={reason:?} typed_characters_before=0 typed_characters_after=0"
+            "provider={provider} result=refused reason={reason:?} typed_characters_before=0 typed_characters_after=0 sent_messages_before=0 sent_messages_after=0"
         );
         CommandError::exit1(format!("{provider} refused before typing: {reason}"))
     }
