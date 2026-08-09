@@ -36,6 +36,7 @@ fn task_3406_command_measures_clipboard_exposure_and_second_process_visibility()
     assert!(TASK_3406.contains("observer_saw="));
     assert!(TASK_3406.contains("clipboard_second_program_saw={:?}"));
     assert!(TASK_3406.contains("private_canary_chars_reaching_clipboard"));
+    assert!(TASK_3406.contains("typed_characters_before=0 typed_characters_after=0 sent_messages_before=0 sent_messages_after=0"));
 }
 
 #[test]
