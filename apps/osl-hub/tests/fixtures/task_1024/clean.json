@@ -1,0 +1,13 @@
+{
+  "initial_drop": {
+    "files": [
+      {
+        "name": "valid-clean.pdf",
+        "media_type": "application/pdf",
+        "size": 4096,
+        "is_directory": false
+      }
+    ]
+  },
+  "invalid_drop_attempts": []
+}

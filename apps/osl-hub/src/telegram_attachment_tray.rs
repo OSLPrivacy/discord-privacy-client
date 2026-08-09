@@ -15,6 +15,8 @@ pub struct TelegramPickedFile {
     pub name: String,
     pub media_type: String,
     pub size: u64,
+    /// Explicit intake metadata: directories cannot be staged as attachments.
+    pub is_directory: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -33,6 +35,7 @@ pub enum TelegramAttachmentTrayError {
     InvalidSize,
     TooLarge { size: u64, max: u64 },
     TooManyFiles { requested: usize, max: usize },
+    FolderNotAllowed { name: String },
     UnknownRemoveControl,
 }
 
@@ -44,6 +47,7 @@ impl fmt::Display for TelegramAttachmentTrayError {
             Self::InvalidSize => formatter.write_str("Telegram attachment size must be positive"),
             Self::TooLarge { size, max } => write!(formatter, "Telegram attachment is {size} bytes; maximum is {max}"),
             Self::TooManyFiles { requested, max } => write!(formatter, "Telegram attachment tray accepts {max} files, not {requested}"),
+            Self::FolderNotAllowed { name } => write!(formatter, "Telegram attachment folder is not allowed: {name}"),
             Self::UnknownRemoveControl => formatter.write_str("Telegram attachment remove control was not found"),
         }
     }
@@ -119,6 +123,11 @@ impl TelegramAttachmentTray {
 }
 
 fn validate(file: &TelegramPickedFile) -> Result<(), TelegramAttachmentTrayError> {
+    if file.is_directory {
+        return Err(TelegramAttachmentTrayError::FolderNotAllowed {
+            name: file.name.trim().to_owned(),
+        });
+    }
     if file.name.trim().is_empty() || file.name.trim() == "." || file.name.trim() == ".." {
         return Err(TelegramAttachmentTrayError::EmptyName);
     }
@@ -139,7 +148,7 @@ mod tests {
     use super::*;
 
     fn valid(name: &str, size: u64) -> TelegramPickedFile {
-        TelegramPickedFile { name: name.to_owned(), media_type: "application/pdf".to_owned(), size }
+        TelegramPickedFile { name: name.to_owned(), media_type: "application/pdf".to_owned(), size, is_directory: false }
     }
 
     #[test]
