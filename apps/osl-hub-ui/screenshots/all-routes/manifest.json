@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-08-09T18:25:04.814Z",
+  "generatedAt": "2026-08-09T18:25:57.380Z",
   "window": {
     "width": 1280,
     "height": 800
@@ -232,14 +232,14 @@
       "outputPath": "/home/liamw/osl-rc/apps/osl-hub-ui/screenshots/all-routes/osl-chat.png",
       "status": "OK",
       "reason": null,
-      "bytes": 35458,
+      "bytes": 33872,
       "width": 1280,
       "height": 800,
-      "distinctColors": 417,
+      "distinctColors": 504,
       "dominantBackground": "#080c0d",
       "theme": "dark",
       "heading": "Chats",
-      "dominantShare": 0.782
+      "dominantShare": 0.682
     },
     {
       "route": "osl-mail",
