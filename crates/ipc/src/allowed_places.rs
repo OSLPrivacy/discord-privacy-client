@@ -464,6 +464,7 @@ pub const KIND_GROUP_CHAT: &str = "group_chat";
 pub const KIND_CHANNEL: &str = "channel";
 pub const KIND_COMMUNITY: &str = "community";
 pub const KIND_PUBLIC_POST: &str = "public_post";
+pub const KIND_SUPERGROUP: &str = "supergroup";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AllowedPlaceKind {
@@ -484,6 +485,7 @@ pub fn telegram_whitelist_kinds() -> Vec<AllowedPlaceKind> {
         KIND_GROUP_CHAT,
         KIND_CHANNEL,
         KIND_PUBLIC_POST,
+        KIND_SUPERGROUP,
     ]
     .into_iter()
     .map(|name| AllowedPlaceKind {
@@ -500,6 +502,7 @@ pub fn normalize_telegram_whitelist_kind(input: &str) -> std::result::Result<Str
         KIND_GROUP_CHAT,
         KIND_CHANNEL,
         KIND_PUBLIC_POST,
+        KIND_SUPERGROUP,
     ]
     .contains(&normalized.as_str())
     {
