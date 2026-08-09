@@ -59,6 +59,14 @@ pub enum AllowedPlaceCommandJson {
         ok: bool,
         #[serde(flatten)]
         direction: security::AllowedPlaceDirectionState,
+        #[serde(rename = "whitelistState")]
+        whitelist_state: String,
+        #[serde(rename = "verificationTick")]
+        verification_tick: bool,
+        #[serde(rename = "firstToSecond")]
+        first_to_second: bool,
+        #[serde(rename = "secondToFirst")]
+        second_to_first: bool,
     },
     InstagramStoryPublish {
         ok: bool,
@@ -175,6 +183,9 @@ pub fn allowed_place_tick_json(
     first_account: String,
     second_account: String,
 ) -> Result<AllowedPlaceCommandJson, String> {
+    if app == ipc::allowed_places::APP_TELEGRAM {
+        ipc::allowed_places::normalize_telegram_whitelist_kind(&kind)?;
+    }
     with_headless_store(store_dir, |security| {
         let state = security::compare_allowed_place_direction_state(
             security,
@@ -193,6 +204,9 @@ pub fn compare_allowed_place_json(
     first_account: String,
     second_account: String,
 ) -> Result<AllowedPlaceCommandJson, String> {
+    if app == ipc::allowed_places::APP_TELEGRAM {
+        ipc::allowed_places::normalize_telegram_whitelist_kind(&kind)?;
+    }
     with_headless_store(store_dir, |security| {
         let direction = security::compare_allowed_place_direction_state(
             security,
@@ -203,6 +217,10 @@ pub fn compare_allowed_place_json(
         )?;
         Ok(AllowedPlaceCommandJson::Compare {
             ok: true,
+            whitelist_state: direction.state.clone(),
+            verification_tick: direction.verification_ticked,
+            first_to_second: direction.first_to_second_allowed,
+            second_to_first: direction.second_to_first_allowed,
             direction,
         })
     })

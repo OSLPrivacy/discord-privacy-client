@@ -13,7 +13,7 @@ fn main() {
     }
     let Some(result) = osl_privacy_hub::allowed_place_commands::run_allowed_place_cli(args) else {
         println!(
-            "{{\"ok\":false,\"command\":\"unknown\",\"error\":\"usage: osl-allowed-place <add|remove|list|allowed> --store <dir>\"}}"
+            "{{\"ok\":false,\"command\":\"unknown\",\"error\":\"usage: osl-allowed-place <add|remove|list|allowed|compare> --store <dir>\"}}"
         );
         std::process::exit(2);
     };
