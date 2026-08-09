@@ -20,6 +20,116 @@ pub use crate::native_a11y::{
 pub const WHATSAPP_ROOT_WINDOW_CLASS: &str = "WinUIDesktopWin32WindowClass";
 pub const WHATSAPP_CARRIER_PREFIX: &str = "OSL1.WA.";
 
+/// The only reviewed ways a person can ask OSL to prepare a WhatsApp cover.
+///
+/// This is deliberately not an insertion mode.  A trigger says when the
+/// person invokes preparation; [`WhatsAppCoverInsertion`] says how the already
+/// prepared cover is inserted.  Keeping the two axes separate prevents a UI
+/// label such as "Type naturally" from becoming an unreviewed send trigger.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WhatsAppSendTrigger {
+    Enter,
+    EnterX2,
+    Clipboard,
+}
+
+impl WhatsAppSendTrigger {
+    pub const ALL: [Self; 3] = [Self::Enter, Self::EnterX2, Self::Clipboard];
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Enter => "Enter",
+            Self::EnterX2 => "Enter x2",
+            Self::Clipboard => "Clipboard",
+        }
+    }
+
+    pub fn parse(name: &str) -> Result<Self, WhatsAppCoverPreparationError> {
+        match name {
+            "Enter" => Ok(Self::Enter),
+            "Enter x2" => Ok(Self::EnterX2),
+            "Clipboard" => Ok(Self::Clipboard),
+            // These names belonged to a broader send-choice vocabulary.  They
+            // are refused explicitly so a caller cannot silently downgrade a
+            // WhatsApp trigger into a different behavior.
+            "Manual" | "Instant" | "Match typing" => Err(
+                WhatsAppCoverPreparationError::RefusedTriggerName(name.to_owned()),
+            ),
+            _ => Err(WhatsAppCoverPreparationError::UnknownTriggerName(
+                name.to_owned(),
+            )),
+        }
+    }
+}
+
+/// The independent setting for inserting an already prepared cover.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WhatsAppCoverInsertion {
+    InsertOnSend,
+    TypeNaturally,
+}
+
+impl WhatsAppCoverInsertion {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::InsertOnSend => "Insert on send",
+            Self::TypeNaturally => "Type naturally",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WhatsAppCoverPreparationError {
+    RefusedTriggerName(String),
+    UnknownTriggerName(String),
+    EmptyCover,
+}
+
+impl std::fmt::Display for WhatsAppCoverPreparationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::RefusedTriggerName(name) => write!(
+                f,
+                "WhatsApp send trigger {name:?} is refused; choose Enter, Enter x2, or Clipboard"
+            ),
+            Self::UnknownTriggerName(name) => write!(f, "unknown WhatsApp send trigger {name:?}"),
+            Self::EmptyCover => f.write_str("WhatsApp cover must not be empty"),
+        }
+    }
+}
+
+impl std::error::Error for WhatsAppCoverPreparationError {}
+
+/// A prepared WhatsApp cover.  This records the trigger and the independent
+/// insertion preference; it does not place text or commit a message.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WhatsAppPreparedCover {
+    pub prepared: bool,
+    pub trigger: WhatsAppSendTrigger,
+    pub cover_insertion: WhatsAppCoverInsertion,
+    pub cover_text: String,
+    pub cover_bytes: usize,
+}
+
+/// Validate one exact trigger and prepare its cover without sending it.
+pub fn prepare_whatsapp_cover_for_trigger(
+    trigger_name: &str,
+    cover_insertion: WhatsAppCoverInsertion,
+    cover_text: &str,
+) -> Result<WhatsAppPreparedCover, WhatsAppCoverPreparationError> {
+    let trigger = WhatsAppSendTrigger::parse(trigger_name)?;
+    if cover_text.is_empty() {
+        return Err(WhatsAppCoverPreparationError::EmptyCover);
+    }
+    Ok(WhatsAppPreparedCover {
+        prepared: true,
+        trigger,
+        cover_insertion,
+        cover_text: cover_text.to_owned(),
+        cover_bytes: cover_text.len(),
+    })
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WhatsAppProcessKind {
     StoreAppRoot,

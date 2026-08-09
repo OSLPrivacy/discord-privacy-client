@@ -1,0 +1,14 @@
+[package]
+name = "task-1071-whatsapp-send-choices"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+sha2 = "=0.10.9"
+
+[workspace]
+
+[[test]]
+name = "task_1071_whatsapp_send_choices"
+path = "../tests/task_1071_whatsapp_send_choices.rs"
