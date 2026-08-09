@@ -41,6 +41,7 @@ pub mod attachment_scan;
 pub mod attachment_thumbnail;
 #[cfg(feature = "core")]
 pub mod attachment_thumbnail_policy;
+pub mod telegram_attachment_tray;
 // ai_carrier was once gated on `desktop` because it declared a
 // #[tauri::command] and tauri only arrives with that feature. The command
 // wrapper now lives in main.rs (the macro's __cmd__* helpers must sit beside
