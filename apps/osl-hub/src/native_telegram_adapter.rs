@@ -978,6 +978,56 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn telegram_box_1002_refuses_the_focused_search_field_and_keeps_one_message_box() {
+        // Telegram gives both the chat-list search and the composer the same
+        // writable/focusable UIA shape.  Model the focus change by leaving the
+        // search-field as the only focusable editable: identity must still come
+        // from its name, never from focus or position.
+        let good_box = writable(TELEGRAM_COMPOSER_MEASURED_NAME);
+        let good_matches = [good_box.clone()]
+            .iter()
+            .filter(|element| {
+                element.writable()
+                    && uia2_name_is_composer(TELEGRAM_COMPOSER_MATCHER, &element.name)
+            })
+            .count();
+        assert_eq!(good_matches, 1, "telegram-box-1002 must find one box");
+        assert_eq!(good_box.name, TELEGRAM_COMPOSER_MEASURED_NAME);
+        println!("TASK1002_GOOD_BOX_ID=telegram-box-1002");
+        println!("TASK1002_GOOD_BOX_COUNT={good_matches}");
+        println!("TASK1002_GOOD_BOX_NAME=Telegram message box");
+
+        let focused_search_field = writable("search-field");
+        assert!(focused_search_field.writable());
+        assert!(
+            !uia2_name_is_composer(TELEGRAM_COMPOSER_MATCHER, &focused_search_field.name),
+            "the focused search-field must be refused by name"
+        );
+        assert_eq!(
+            resolve_uia2_composer(TELEGRAM_COMPOSER_MATCHER, &[focused_search_field]),
+            Err(Uia2ComposerError::NoComposerName),
+            "a focused search-field is not a Telegram message box"
+        );
+        println!("TASK1002_CHANGED_FOCUSED_FIELD=search-field");
+        println!("TASK1002_CHANGED_REFUSED_BY_NAME=true");
+
+        let restored_matches = [good_box]
+            .iter()
+            .filter(|element| {
+                element.writable()
+                    && uia2_name_is_composer(TELEGRAM_COMPOSER_MATCHER, &element.name)
+            })
+            .count();
+        assert_eq!(
+            restored_matches, 1,
+            "telegram-box-1002 must retain the same sole message box"
+        );
+        println!("TASK1002_RESTORED_BOX_ID=telegram-box-1002");
+        println!("TASK1002_RESTORED_BOX_COUNT={restored_matches}");
+        println!("TASK1002_RESTORED_BOX_NAME=Telegram message box");
+    }
+
+    #[test]
     fn telegram_refuses_two_composers_rather_than_guessing_which_chat_it_is_in() {
         let host = recorded_telegram(vec![
             writable(TELEGRAM_COMPOSER_MEASURED_NAME),
