@@ -13,6 +13,7 @@ use crate::models::{
     DemoConnectionState, EmailProvider, LinkedAccountDemo, LinkedServiceDemo, ServiceCategory,
     ServiceKind, ServiceLaunchState,
 };
+use crate::shared_conversation_scroll::{SharedConversationScrollablePlace, SharedPlaceMessage};
 
 const REGISTRY_VERSION: u8 = 3;
 const MAX_REGISTRY_BYTES: u64 = 64 * 1024;
@@ -182,6 +183,217 @@ pub struct SharedConversationPlace {
     pub server: Option<ConversationPlaceParent>,
     #[serde(default)]
     pub channel: Option<ConversationPlaceParent>,
+}
+
+/// The conversation kinds that the Telegram Desktop reader may expose.
+/// Keeping a channel distinct prevents a later Scrub action from treating a
+/// broadcast surface as a group conversation.
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TelegramDesktopPlaceKind {
+    DirectChat,
+    Group,
+    Channel,
+}
+
+/// One openable Telegram Desktop conversation. This boundary intentionally
+/// contains only display metadata, never session or credential material.
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TelegramDesktopPlace {
+    pub place_id: String,
+    pub label: String,
+    pub kind: TelegramDesktopPlaceKind,
+}
+
+impl TelegramDesktopPlace {
+    pub fn new(
+        place_id: impl Into<String>,
+        label: impl Into<String>,
+        kind: TelegramDesktopPlaceKind,
+    ) -> Self {
+        Self {
+            place_id: place_id.into(),
+            label: label.into(),
+            kind,
+        }
+    }
+}
+
+/// One Telegram message observed in an openable conversation. `yours` is the
+/// provider-observed authorship bit; Scrub never infers it from message text.
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TelegramDesktopMessage {
+    pub place_id: String,
+    pub message_id: String,
+    pub text: String,
+    pub time: i64,
+    pub yours: bool,
+}
+
+impl TelegramDesktopMessage {
+    pub fn new(
+        place_id: impl Into<String>,
+        message_id: impl Into<String>,
+        text: impl Into<String>,
+        time: i64,
+        yours: bool,
+    ) -> Self {
+        Self {
+            place_id: place_id.into(),
+            message_id: message_id.into(),
+            text: text.into(),
+            time,
+            yours,
+        }
+    }
+}
+
+/// The read-only Telegram Desktop observations made available to Scrub.
+#[derive(Debug, Clone, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TelegramDesktopMachine {
+    pub places: Vec<TelegramDesktopPlace>,
+    pub messages: Vec<TelegramDesktopMessage>,
+}
+
+impl TelegramDesktopMachine {
+    pub fn new(places: impl IntoIterator<Item = TelegramDesktopPlace>) -> Self {
+        Self {
+            places: places.into_iter().collect(),
+            messages: Vec::new(),
+        }
+    }
+
+    pub fn with_messages(
+        mut self,
+        messages: impl IntoIterator<Item = TelegramDesktopMessage>,
+    ) -> Self {
+        self.messages = messages.into_iter().collect();
+        self
+    }
+
+    fn chat_page_place_from_messages(
+        &self,
+        place_id: &str,
+        page_size: usize,
+        messages: Vec<TelegramDesktopMessage>,
+    ) -> Result<TelegramDesktopChatPagePlace, String> {
+        let place = self
+            .places
+            .iter()
+            .find(|place| place.place_id == place_id)
+            .cloned()
+            .ok_or_else(|| "Telegram conversation place not found".to_owned())?;
+        Ok(TelegramDesktopChatPagePlace {
+            place,
+            messages,
+            current_page: 0,
+            page_size,
+            one_screen_scrolls: 0,
+            stop_when_reading_page: None,
+            stop_request_callback: None,
+        })
+    }
+}
+
+/// Create a consent-gated, one-screen Telegram Scrub viewport. Provider rows
+/// are read through the selected account's risk agreement before this function
+/// makes its first page available; scrolling only advances that local copy.
+pub fn telegram_desktop_chat_page_place_for_scrub(
+    owner_osl_user_id: &str,
+    account_id: &str,
+    place_id: &str,
+    desktop_machine: &TelegramDesktopMachine,
+    page_size: usize,
+) -> Result<TelegramDesktopChatPagePlace, String> {
+    validate_conversation_message_place_id(place_id)?;
+    if page_size == 0 {
+        return Err("Telegram message page size must be at least one".to_owned());
+    }
+    let messages = read_telegram_desktop_shared_messages(
+        owner_osl_user_id,
+        account_id,
+        place_id,
+        desktop_machine,
+    )?;
+    desktop_machine.chat_page_place_from_messages(place_id, page_size, messages)
+}
+
+/// A bounded read-only Telegram conversation viewport for the shared scroll
+/// reader. It exposes exactly one screen until `scroll_one_screen` is called.
+pub struct TelegramDesktopChatPagePlace {
+    place: TelegramDesktopPlace,
+    messages: Vec<TelegramDesktopMessage>,
+    current_page: usize,
+    page_size: usize,
+    one_screen_scrolls: usize,
+    stop_when_reading_page: Option<usize>,
+    stop_request_callback: Option<Box<dyn Fn() -> Result<(), String>>>,
+}
+
+impl TelegramDesktopChatPagePlace {
+    pub fn message_count(&self) -> usize {
+        self.messages.len()
+    }
+
+    pub fn one_screen_scroll_count(&self) -> usize {
+        self.one_screen_scrolls
+    }
+
+    pub fn request_stop_when_reading_page(
+        &mut self,
+        page_number: usize,
+        callback: impl Fn() -> Result<(), String> + 'static,
+    ) {
+        self.stop_when_reading_page = Some(page_number);
+        self.stop_request_callback = Some(Box::new(callback));
+    }
+
+    fn current_page_number(&self) -> usize {
+        self.current_page.saturating_add(1)
+    }
+}
+
+impl std::fmt::Debug for TelegramDesktopChatPagePlace {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TelegramDesktopChatPagePlace")
+            .field("place", &self.place)
+            .field("message_count", &self.messages.len())
+            .field("current_page", &self.current_page)
+            .field("page_size", &self.page_size)
+            .field("one_screen_scrolls", &self.one_screen_scrolls)
+            .finish()
+    }
+}
+
+impl SharedConversationScrollablePlace for TelegramDesktopChatPagePlace {
+    fn read_current_screen(&self) -> Result<Vec<SharedPlaceMessage>, String> {
+        if self.stop_when_reading_page == Some(self.current_page_number()) {
+            if let Some(callback) = &self.stop_request_callback {
+                callback()?;
+            }
+        }
+        let start = self.current_page.saturating_mul(self.page_size);
+        let end = start
+            .saturating_add(self.page_size)
+            .min(self.messages.len());
+        Ok(self.messages[start..end]
+            .iter()
+            .map(|message| SharedPlaceMessage::new(&message.message_id, &message.text))
+            .collect())
+    }
+
+    fn scroll_one_screen(&mut self) -> Result<bool, String> {
+        let next_start = (self.current_page + 1).saturating_mul(self.page_size);
+        if next_start >= self.messages.len() {
+            return Ok(false);
+        }
+        self.current_page += 1;
+        self.one_screen_scrolls += 1;
+        Ok(true)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
@@ -834,6 +1046,38 @@ pub fn read_shared_conversation_places(
         .collect()
 }
 
+/// Read the messages of one owner-selected Telegram conversation. The account
+/// risk agreement is checked before provider rows are filtered or released.
+pub fn read_telegram_desktop_shared_messages(
+    owner_osl_user_id: &str,
+    account_id: &str,
+    place_id: &str,
+    desktop_machine: &TelegramDesktopMachine,
+) -> Result<Vec<TelegramDesktopMessage>, String> {
+    validate_owner_osl_user_id(owner_osl_user_id)?;
+    validate_messaging_risk_account_id(account_id)?;
+    validate_conversation_message_place_id(place_id)?;
+    if read_messaging_risk_agreement(owner_osl_user_id, "telegram", account_id)?.is_none() {
+        return Ok(Vec::new());
+    }
+
+    let mut messages = desktop_machine
+        .messages
+        .iter()
+        .filter(|message| message.place_id == place_id)
+        .cloned()
+        .collect::<Vec<_>>();
+    for message in &messages {
+        validate_telegram_desktop_message(message)?;
+    }
+    messages.sort_by(|left, right| {
+        left.time
+            .cmp(&right.time)
+            .then_with(|| left.message_id.cmp(&right.message_id))
+    });
+    Ok(messages)
+}
+
 pub fn read_shared_mailbox_folders(
     owner_osl_user_id: &str,
     service_id: &str,
@@ -1148,6 +1392,25 @@ fn validate_conversation_place_text(value: &str, label: &str) -> Result<(), Stri
     } else {
         Err(format!("{label} is invalid"))
     }
+}
+
+fn validate_conversation_message_place_id(value: &str) -> Result<(), String> {
+    validate_conversation_place_text(value, "conversation message place id")
+}
+
+fn validate_telegram_desktop_message(message: &TelegramDesktopMessage) -> Result<(), String> {
+    validate_conversation_message_place_id(&message.place_id)?;
+    validate_conversation_place_text(&message.message_id, "Telegram message id")?;
+    if message.text.trim() != message.text
+        || message.text.len() > 8_192
+        || message
+            .text
+            .chars()
+            .any(|character| character.is_control() && character != '\n')
+    {
+        return Err("Telegram message text is invalid".to_owned());
+    }
+    Ok(())
 }
 
 fn validate_mailbox_reader_binding(
