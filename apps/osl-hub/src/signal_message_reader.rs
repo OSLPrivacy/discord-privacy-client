@@ -66,6 +66,7 @@ impl SignalOpenScreenSnapshot {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SignalScreenReadAction {
     ReadOpenScreen,
+    ScrollOneScreen,
     KeyPress { key: String },
 }
 

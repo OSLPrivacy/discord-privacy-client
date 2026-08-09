@@ -399,6 +399,12 @@ pub mod services {
         Ok(())
     }
 }
+#[cfg(all(feature = "core", not(task3982_focused)))]
+pub mod signal_message_reader;
+#[cfg(all(feature = "core", not(task3982_focused)))]
+pub mod signal_place_reader;
+#[cfg(all(feature = "core", not(task3982_focused)))]
+pub mod signal_scroll_reader;
 #[cfg(feature = "core")]
 #[cfg(not(task3982_focused))]
 pub mod update_apply;
