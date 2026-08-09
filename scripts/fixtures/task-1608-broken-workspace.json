@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "requiredLocalDataFolder": {
+    "path": "%LOCALAPPDATA%\\OSL Privacy",
+    "available": false
+  },
+  "screens": [
+    {
+      "kind": "plain",
+      "text": "Required local data folder is unavailable."
+    }
+  ],
+  "openWorkspaces": []
+}
