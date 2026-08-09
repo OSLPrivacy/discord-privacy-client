@@ -396,19 +396,63 @@ impl TelegramDesktopPlace {
     }
 }
 
-/// The read-only list Telegram Desktop made openable to the currently
-/// signed-in account.  The desktop adapter is responsible for excluding rows
-/// it cannot open before constructing this narrow boundary object.
+/// The read-only Telegram Desktop observations for the currently signed-in
+/// account. The desktop adapter is responsible for excluding rows it cannot
+/// open before constructing this narrow boundary object.
 #[derive(Debug, Clone, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TelegramDesktopMachine {
     pub places: Vec<TelegramDesktopPlace>,
+    /// Rows retain Telegram's displayed timestamp and provider-observed
+    /// authorship bit. Scrub uses that bit directly and never guesses who
+    /// wrote a message from its text or position in the conversation.
+    pub messages: Vec<TelegramDesktopMessage>,
 }
 
 impl TelegramDesktopMachine {
     pub fn new(places: impl IntoIterator<Item = TelegramDesktopPlace>) -> Self {
         Self {
             places: places.into_iter().collect(),
+            messages: Vec::new(),
+        }
+    }
+
+    pub fn with_messages(
+        mut self,
+        messages: impl IntoIterator<Item = TelegramDesktopMessage>,
+    ) -> Self {
+        self.messages = messages.into_iter().collect();
+        self
+    }
+}
+
+/// One message Telegram Desktop displayed in an openable conversation.
+/// The message is read-only: this boundary contains neither credentials nor
+/// any operation capable of changing the Telegram account.
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TelegramDesktopMessage {
+    pub place_id: String,
+    pub message_id: String,
+    pub text: String,
+    pub time: i64,
+    pub yours: bool,
+}
+
+impl TelegramDesktopMessage {
+    pub fn new(
+        place_id: impl Into<String>,
+        message_id: impl Into<String>,
+        text: impl Into<String>,
+        time: i64,
+        yours: bool,
+    ) -> Self {
+        Self {
+            place_id: place_id.into(),
+            message_id: message_id.into(),
+            text: text.into(),
+            time,
+            yours,
         }
     }
 }
@@ -1524,6 +1568,50 @@ pub fn read_telegram_desktop_shared_places(
     read_shared_conversation_places(owner_osl_user_id, "telegram", account_id, places)
 }
 
+/// Read messages from one owner-selected Telegram Desktop conversation.
+///
+/// The account-level risk agreement is checked before any provider rows are
+/// filtered or returned. A place that is not present in the observed desktop
+/// rows therefore remains silent, while returned rows are chronologically
+/// ordered using Telegram's timestamp and stable message id as the tie-break.
+pub fn read_telegram_desktop_shared_messages(
+    owner_osl_user_id: &str,
+    account_id: &str,
+    place_id: &str,
+    desktop_machine: &TelegramDesktopMachine,
+) -> Result<Vec<SharedConversationMessage>, String> {
+    validate_owner_osl_user_id(owner_osl_user_id)?;
+    validate_messaging_risk_account_id(account_id)?;
+    validate_conversation_message_place_id(place_id)?;
+    if read_messaging_risk_agreement(owner_osl_user_id, "telegram", account_id)?.is_none() {
+        return Ok(Vec::new());
+    }
+
+    let mut messages = desktop_machine
+        .messages
+        .iter()
+        .filter(|message| message.place_id == place_id)
+        .map(|message| {
+            validate_telegram_desktop_message(message)?;
+            Ok(SharedConversationMessage {
+                service_id: "telegram".to_owned(),
+                account_id: account_id.to_owned(),
+                place_id: message.place_id.clone(),
+                message_id: message.message_id.clone(),
+                text: message.text.clone(),
+                time: message.time,
+                yours: message.yours,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    messages.sort_by(|left, right| {
+        left.time
+            .cmp(&right.time)
+            .then_with(|| left.message_id.cmp(&right.message_id))
+    });
+    Ok(messages)
+}
+
 /// Read messages from one Instagram place already selected by the owner.
 /// The account-level risk agreement is checked before browser rows are read.
 pub fn read_instagram_shared_messages(
@@ -1913,6 +2001,21 @@ fn validate_instagram_browser_message(message: &InstagramBrowserMessage) -> Resu
             .any(|character| character.is_control() && character != '\n')
     {
         return Err("Instagram message text is invalid".to_owned());
+    }
+    Ok(())
+}
+
+fn validate_telegram_desktop_message(message: &TelegramDesktopMessage) -> Result<(), String> {
+    validate_conversation_message_place_id(&message.place_id)?;
+    validate_conversation_place_text(&message.message_id, "Telegram message id")?;
+    if message.text.trim() != message.text
+        || message.text.len() > 8_192
+        || message
+            .text
+            .chars()
+            .any(|character| character.is_control() && character != '\n')
+    {
+        return Err("Telegram message text is invalid".to_owned());
     }
     Ok(())
 }
