@@ -12,6 +12,8 @@ export interface SignalAttachmentFile {
   readonly name: string;
   readonly type?: string;
   readonly size: number;
+  /** File-system adapters set this for folders dropped alongside files. */
+  readonly isDirectory?: boolean;
 }
 
 export interface SignalAttachmentTrayCard {
@@ -33,7 +35,8 @@ const escapeHtml = (value: string): string => value.replace(/[&<>"']/gu, (charac
 })[character] ?? character);
 
 function validFile(file: SignalAttachmentFile): boolean {
-  return file.name.trim().length > 0
+  return file.isDirectory !== true
+    && file.name.trim().length > 0
     && Number.isSafeInteger(file.size)
     && file.size > 0
     && file.size <= SIGNAL_ATTACHMENT_MAX_BYTES;
