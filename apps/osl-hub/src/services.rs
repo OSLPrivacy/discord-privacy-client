@@ -349,6 +349,70 @@ pub struct InstagramBrowserMachine {
     pub messages: Vec<InstagramBrowserMessage>,
 }
 
+/// The kinds of conversation Telegram Desktop exposes to an account.  Telegram
+/// channels deliberately remain channels: treating a broadcast channel as a
+/// group would make a later Scrub action target the wrong surface.
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TelegramDesktopPlaceKind {
+    DirectChat,
+    Group,
+    Channel,
+}
+
+impl TelegramDesktopPlaceKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::DirectChat => "direct_chat",
+            Self::Group => "group",
+            Self::Channel => "channel",
+        }
+    }
+}
+
+/// One conversation row observed in the signed-in Telegram Desktop account.
+/// This deliberately carries only the stable conversation id, visible label,
+/// and Telegram's own kind; session material and message text never cross the
+/// place-reader boundary.
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TelegramDesktopPlace {
+    pub place_id: String,
+    pub label: String,
+    pub kind: TelegramDesktopPlaceKind,
+}
+
+impl TelegramDesktopPlace {
+    pub fn new(
+        place_id: impl Into<String>,
+        label: impl Into<String>,
+        kind: TelegramDesktopPlaceKind,
+    ) -> Self {
+        Self {
+            place_id: place_id.into(),
+            label: label.into(),
+            kind,
+        }
+    }
+}
+
+/// The read-only list Telegram Desktop made openable to the currently
+/// signed-in account.  The desktop adapter is responsible for excluding rows
+/// it cannot open before constructing this narrow boundary object.
+#[derive(Debug, Clone, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TelegramDesktopMachine {
+    pub places: Vec<TelegramDesktopPlace>,
+}
+
+impl TelegramDesktopMachine {
+    pub fn new(places: impl IntoIterator<Item = TelegramDesktopPlace>) -> Self {
+        Self {
+            places: places.into_iter().collect(),
+        }
+    }
+}
+
 impl InstagramBrowserMachine {
     pub fn new(places: impl IntoIterator<Item = InstagramBrowserPlace>) -> Self {
         Self {
@@ -1429,6 +1493,37 @@ pub fn read_x_shared_messages(
     Ok(messages)
 }
 
+/// Read the direct chats, groups, and channels presently openable in the
+/// signed-in Telegram Desktop account.  The shared reader checks the selected
+/// account's messaging-risk agreement before mapping desktop observations, so
+/// an unticked account cannot learn even place labels or ids.
+///
+/// Telegram broadcast channels have no Discord-like server parent.  They are
+/// therefore returned as `channel` with no `server` metadata rather than with
+/// invented hierarchy data.
+pub fn read_telegram_desktop_shared_places(
+    owner_osl_user_id: &str,
+    account_id: &str,
+    desktop_machine: &TelegramDesktopMachine,
+) -> Result<Vec<SharedConversationPlace>, String> {
+    let places = desktop_machine.places.iter().map(|place| match place.kind {
+        TelegramDesktopPlaceKind::DirectChat => {
+            ConversationPlaceCandidate::direct_message(&place.place_id, &place.label)
+        }
+        TelegramDesktopPlaceKind::Group => {
+            ConversationPlaceCandidate::group(&place.place_id, &place.label)
+        }
+        TelegramDesktopPlaceKind::Channel => ConversationPlaceCandidate {
+            place_id: place.place_id.clone(),
+            label: place.label.clone(),
+            place_kind: ConversationPlaceKind::Channel,
+            server: None,
+            channel: None,
+        },
+    });
+    read_shared_conversation_places(owner_osl_user_id, "telegram", account_id, places)
+}
+
 /// Read messages from one Instagram place already selected by the owner.
 /// The account-level risk agreement is checked before browser rows are read.
 pub fn read_instagram_shared_messages(
@@ -1755,13 +1850,9 @@ fn validate_conversation_place(place: &ConversationPlaceCandidate) -> Result<(),
         | ConversationPlaceKind::BroadcastList
         | ConversationPlaceKind::PublicPost
         | ConversationPlaceKind::Comment => Ok(()),
-        ConversationPlaceKind::Channel => {
-            if place.server.is_some() {
-                Ok(())
-            } else {
-                Err("conversation channel place is missing its server".to_owned())
-            }
-        }
+        // A server parent is present for Discord-like channels, but Telegram
+        // broadcast channels are first-class places without that hierarchy.
+        ConversationPlaceKind::Channel => Ok(()),
         ConversationPlaceKind::Thread => {
             if place.channel.is_some() {
                 Ok(())
