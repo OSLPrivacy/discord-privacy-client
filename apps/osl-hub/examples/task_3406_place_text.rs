@@ -14,6 +14,55 @@ pub trait SharedTextActions {
     fn clear_text(&mut self) -> Result<(), String>;
 }
 
+/// The native-window relationship sampled immediately before placement.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PlacementWindowState {
+    pub app_has_focus: bool,
+    pub app_is_covered: bool,
+    pub app_is_minimized: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PlacementInterruption {
+    FocusChanged,
+    AppCovered,
+    AppMinimized,
+}
+
+impl PlacementInterruption {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::FocusChanged => "focus changed",
+            Self::AppCovered => "app covered",
+            Self::AppMinimized => "app minimized",
+        }
+    }
+}
+
+pub trait PlacementWindowGuard {
+    fn state_before_place(&mut self) -> Result<PlacementWindowState, String>;
+}
+
+fn guard_placement_window(guard: &mut impl PlacementWindowGuard) -> Result<(), String> {
+    let state = guard.state_before_place()?;
+    let interruption = if !state.app_has_focus {
+        Some(PlacementInterruption::FocusChanged)
+    } else if state.app_is_covered {
+        Some(PlacementInterruption::AppCovered)
+    } else if state.app_is_minimized {
+        Some(PlacementInterruption::AppMinimized)
+    } else {
+        None
+    };
+    if let Some(interruption) = interruption {
+        return Err(format!(
+            "placement refused: {} before text was put down",
+            interruption.name()
+        ));
+    }
+    Ok(())
+}
+
 /// Text that the shared native placement job may put into a composer.
 ///
 /// A literal space is content and must survive the read-back check unchanged.
@@ -33,11 +82,33 @@ pub fn place_read_back_and_clear(
     actions: &mut impl SharedTextActions,
     mark: &str,
 ) -> Result<SharedTextPlacementReceipt, String> {
+    struct Focused;
+
+    impl PlacementWindowGuard for Focused {
+        fn state_before_place(&mut self) -> Result<PlacementWindowState, String> {
+            Ok(PlacementWindowState {
+                app_has_focus: true,
+                app_is_covered: false,
+                app_is_minimized: false,
+            })
+        }
+    }
+
+    place_read_back_and_clear_guarded(actions, &mut Focused, mark)
+}
+
+/// Guard the last mutable boundary, then place, verify, and clear exact text.
+pub fn place_read_back_and_clear_guarded(
+    actions: &mut impl SharedTextActions,
+    guard: &mut impl PlacementWindowGuard,
+    mark: &str,
+) -> Result<SharedTextPlacementReceipt, String> {
     validate_placement_text(mark)?;
     let before_readback = actions.read_back_text()?;
     if !before_readback.is_empty() {
         return Err(format!("composer was not empty before placement: {before_readback:?}"));
     }
+    guard_placement_window(guard)?;
     actions.place_text(mark)?;
     let readback = actions.read_back_text()?;
     if readback.as_bytes() != mark.as_bytes() {
@@ -309,7 +380,7 @@ mod windows_place_text {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         EnumChildWindows, EnumWindows, GetAncestor, GetClassNameW, GetCursorPos,
         GetForegroundWindow, GetSystemMetrics, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
-        GetWindowThreadProcessId, IsWindowVisible, SetCursorPos, SetForegroundWindow, ShowWindow,
+        GetWindowThreadProcessId, IsIconic, IsWindowVisible, SetCursorPos, SetForegroundWindow, ShowWindow,
         WindowFromPoint, GA_ROOT, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
         SM_YVIRTUALSCREEN, SW_RESTORE,
     };
@@ -560,6 +631,14 @@ mod windows_place_text {
         // oracle and is never accepted by the clipboard writer.
         let text = super::ClipboardCoverText::new(&args.text, &args.private_canary)
             .map_err(CommandError::exit1)?;
+        let mut placement_guard = WindowsPlacementWindowGuard {
+            composer: &composer,
+            app_root: discord.hwnd,
+        };
+        // Apply the same boundary contract as
+        // `super::place_read_back_and_clear_guarded` without replacing this
+        // richer persistent-placement and clipboard-restoration pipeline.
+        super::guard_placement_window(&mut placement_guard).map_err(CommandError::exit1)?;
         let staged_at = stage_clipboard_text(&text)
             .map_err(|error| CommandError::exit1(format!("clipboard stage failed: {error}")))?;
         clipboard_exposure.exposure.staged(staged_at);
@@ -1109,6 +1188,37 @@ mod windows_place_text {
         let right = rect.right as i32;
         let bottom = rect.bottom as i32;
         (right > left && bottom > top).then_some([left, top, right, bottom])
+    }
+
+    struct WindowsPlacementWindowGuard<'a> {
+        composer: &'a IUIAutomationElement,
+        app_root: HWND,
+    }
+
+    impl super::PlacementWindowGuard for WindowsPlacementWindowGuard<'_> {
+        fn state_before_place(&mut self) -> Result<super::PlacementWindowState, String> {
+            let app_has_focus = foreground_window()
+                .is_some_and(|foreground| same_root(foreground.hwnd, self.app_root));
+            let app_is_minimized = unsafe { IsIconic(self.app_root) } != 0;
+            let app_is_covered = element_bounds(self.composer).is_none_or(|bounds| {
+                let [left, top, right, bottom] = bounds;
+                let point = POINT {
+                    x: left + (right - left) / 3,
+                    y: top + (bottom - top) / 2,
+                };
+                let hit = unsafe { WindowFromPoint(point) };
+                hit.is_null() || !same_root(hit, self.app_root)
+            });
+            println!(
+                "placement_boundary_focus={} placement_boundary_covered={} placement_boundary_minimized={}",
+                app_has_focus, app_is_covered, app_is_minimized
+            );
+            Ok(super::PlacementWindowState {
+                app_has_focus,
+                app_is_covered,
+                app_is_minimized,
+            })
+        }
     }
 
     fn find_window(wanted: &str) -> Option<WindowInfo> {
