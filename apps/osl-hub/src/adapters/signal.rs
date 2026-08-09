@@ -5,8 +5,15 @@
 //! accessible names or text, place input, or attest a destination.
 
 use super::*;
+<<<<<<< HEAD
 use crate::native_signal_adapter::{
     discover_signal_composer, discover_signal_transcript, SignalNode, SignalRect, SignalRole,
+=======
+#[cfg(target_os = "windows")]
+use crate::native_signal_adapter::SignalRole;
+use crate::native_signal_adapter::{
+    discover_signal_composer, discover_signal_transcript, SignalNode, SignalRect,
+>>>>>>> a8cf3df5a (TASK 1031 find Signal window conversation and typing box)
     SignalSelectorError,
 };
 use crate::signal_destination_binding::{
@@ -14,7 +21,9 @@ use crate::signal_destination_binding::{
 };
 use std::sync::Arc;
 
+#[cfg(target_os = "windows")]
 const MAX_SIGNAL_A11Y_NODES: usize = 4_096;
+#[cfg(target_os = "windows")]
 const MAX_SIGNAL_A11Y_DEPTH: usize = 64;
 
 /// The operations supplied by Signal's native accessibility bridge.
@@ -426,7 +435,7 @@ mod windows {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::native_signal_adapter::SignalNode;
+    use crate::native_signal_adapter::{SignalNode, SignalRole};
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
         Arc, Mutex,
@@ -576,6 +585,7 @@ mod tests {
         fn place_without_submit(&self, _: &SurfaceBinding, _: &Carrier) -> PlacementReceipt {
             unreachable!("destination attestation never places a carrier")
         }
+<<<<<<< HEAD
 
         fn commit(&self, _: &SurfaceBinding, _: &PlacementReceipt) -> SendReceipt {
             unreachable!("destination attestation never commits")
@@ -719,6 +729,122 @@ mod tests {
         }
     }
 
+=======
+
+        fn commit(&self, _: &SurfaceBinding, _: &PlacementReceipt) -> SendReceipt {
+            unreachable!("destination attestation never commits a send")
+        }
+    }
+
+    #[test]
+    fn t3_t14_live_nodes_feed_the_existing_signal_selectors() {
+        let window_bounds = rect(0, 0, 1200, 900);
+        let snapshot = SignalNodeSnapshot {
+            nodes: vec![
+                SignalNode::structural(SignalRole::Window, window_bounds),
+                SignalNode::structural(SignalRole::List, rect(430, 90, 1130, 710)),
+                editable(rect(455, 735, 1125, 820)),
+            ],
+            window_bounds,
+        };
+
+        assert_eq!(
+            snapshot.locate(),
+            Ok(SignalLocatedNodes {
+                composer: 2,
+                transcript: 1,
+            })
+        );
+    }
+
+    #[test]
+    fn t3_t14_empty_live_tree_refuses_instead_of_locating_a_composer() {
+        let snapshot = SignalNodeSnapshot {
+            nodes: Vec::new(),
+            window_bounds: rect(0, 0, 1200, 900),
+        };
+
+        assert_eq!(snapshot.locate(), Err(AdapterRefusal::ComposerNotFound));
+    }
+
+    #[test]
+    fn t3_t15_places_only_a_focused_empty_draft_and_never_submits() {
+        let adapter = SignalSurfaceAdapter::new(PlacementBackend {
+            placements: AtomicUsize::new(0),
+            commits: AtomicUsize::new(0),
+            signal_route: None,
+        });
+        let binding = binding(1);
+
+        let placed = adapter.place(
+            &binding,
+            &PlacementAuthorization::for_scope("scope-a"),
+            &Carrier("carrier".into()),
+        );
+        assert_eq!(placed.status, PlacementStatus::Placed);
+        assert_eq!(placed.placed_sha256.as_deref(), Some("carrier-digest"));
+        assert_eq!(adapter.backend.placements.load(Ordering::SeqCst), 1);
+
+        assert_eq!(
+            adapter
+                .commit(&binding, &SendAuthorization::for_scope("scope-a"), &placed)
+                .outcome,
+            SendOutcome::NotSent
+        );
+
+        let refused = adapter.place(
+            &binding,
+            &PlacementAuthorization::for_scope("other-scope"),
+            &Carrier("carrier".into()),
+        );
+        assert_eq!(refused.status, PlacementStatus::NotPlaced);
+        assert_eq!(adapter.backend.placements.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn t3_t16_conversation_change_invalidates_prior_signal_attestation() {
+        let state = Arc::new(SignalDestinationBindingState::default());
+        let adapter = SignalSurfaceAdapter::with_destination_binding(
+            AttestationBackend {
+                conversation: Mutex::new(3),
+            },
+            Arc::clone(&state),
+        );
+        let binding = binding(7);
+
+        let first = adapter.destination(&binding).unwrap();
+        assert_eq!(first.status, DestinationStatus::Attested);
+        let first_readiness = state.readiness();
+        assert_eq!(first_readiness.status, SignalBindingStatus::Accepted);
+
+        *adapter.backend.conversation.lock().unwrap() = 8;
+        let second = adapter.destination(&binding).unwrap();
+
+        assert_eq!(second.status, DestinationStatus::Attested);
+        assert_ne!(first.conversation_digest, second.conversation_digest);
+        let second_readiness = state.readiness();
+        assert_eq!(second_readiness.status, SignalBindingStatus::Accepted);
+        assert!(second_readiness.lifecycle_generation > first_readiness.lifecycle_generation);
+    }
+
+    fn direct_signal_request(adapter: &SignalSurfaceAdapter<PlacementBackend>) -> String {
+        let binding = binding(1);
+        let placed = adapter.place(
+            &binding,
+            &PlacementAuthorization::for_scope("scope-a"),
+            &Carrier("carrier".into()),
+        );
+        assert_eq!(placed.status, PlacementStatus::Placed);
+        let receipt = adapter.commit(&binding, &SendAuthorization::for_scope("scope-a"), &placed);
+        let commits = adapter.backend.commits.load(Ordering::SeqCst);
+        match (adapter.backend.signal_route, receipt.outcome, commits) {
+            (Some(route), SendOutcome::Sent, 1) => format!("route {route} called once"),
+            (None, SendOutcome::NotSent, 0) => "Signal route not selected".to_owned(),
+            other => panic!("unexpected direct Signal request result: {other:?}"),
+        }
+    }
+
+>>>>>>> a8cf3df5a (TASK 1031 find Signal window conversation and typing box)
     #[test]
     fn task1030a_signal_direct_send_uses_selected_route_and_refuses_without_route() {
         let routed = SignalSurfaceAdapter::new(PlacementBackend {
@@ -739,6 +865,7 @@ mod tests {
         println!("{unrouted_result}");
         assert_eq!(unrouted_result, "Signal route not selected");
     }
+<<<<<<< HEAD
 
     #[test]
     fn task1030a_signal_direct_send_uses_selected_route_and_refuses_without_route() {
@@ -789,4 +916,6 @@ mod tests {
         assert_eq!(second_readiness.status, SignalBindingStatus::Accepted);
         assert!(second_readiness.lifecycle_generation > first_readiness.lifecycle_generation);
     }
+=======
+>>>>>>> a8cf3df5a (TASK 1031 find Signal window conversation and typing box)
 }
