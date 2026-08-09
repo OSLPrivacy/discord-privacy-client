@@ -181,6 +181,74 @@ pub struct ScopeSecurityDto {
     pub decrypt_display_enabled: bool,
 }
 
+/// The Strip timer deliberately has minute granularity.  A seconds wheel made
+/// it possible to set a timer the owner does not permit, so seconds are not
+/// represented in the state sent to the picker at all.
+pub const TIMER_PICKER_MINUTES: u32 = 1;
+pub const TIMER_PICKER_MAX_DAYS: u32 = 30;
+const MINUTES_PER_HOUR: u32 = 60;
+const HOURS_PER_DAY: u32 = 24;
+const TIMER_PICKER_MAX_MINUTES: u32 = TIMER_PICKER_MAX_DAYS * HOURS_PER_DAY * MINUTES_PER_HOUR;
+
+/// State for the Strip timer controls.  Values remain zero-padded strings for
+/// direct picker binding, but the state intentionally exposes only days,
+/// hours, and minutes.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimerPickerStateDto {
+    pub days: String,
+    pub hours: String,
+    pub minutes: String,
+}
+
+fn two_digit_timer_value(value: u32) -> String {
+    format!("{value:02}")
+}
+
+fn timer_picker_total_minutes(days: u32, hours: u32, minutes: u32) -> Result<u32, String> {
+    if days > TIMER_PICKER_MAX_DAYS {
+        return Err("OSL timer picker days must be between 00 and 30".to_owned());
+    }
+    if hours >= HOURS_PER_DAY {
+        return Err("OSL timer picker hours must be between 00 and 23".to_owned());
+    }
+    if minutes >= MINUTES_PER_HOUR {
+        return Err("OSL timer picker minutes must be between 00 and 59".to_owned());
+    }
+
+    let total_minutes =
+        days * HOURS_PER_DAY * MINUTES_PER_HOUR + hours * MINUTES_PER_HOUR + minutes;
+    if total_minutes < TIMER_PICKER_MINUTES {
+        return Err("OSL timer picker must be at least one minute".to_owned());
+    }
+    if total_minutes > TIMER_PICKER_MAX_MINUTES {
+        return Err("OSL timer picker cannot exceed 30 days".to_owned());
+    }
+    Ok(total_minutes)
+}
+
+pub fn default_timer_picker_state() -> TimerPickerStateDto {
+    // A default is an admissible timer, not an all-zero placeholder.
+    TimerPickerStateDto {
+        days: two_digit_timer_value(0),
+        hours: two_digit_timer_value(0),
+        minutes: two_digit_timer_value(TIMER_PICKER_MINUTES),
+    }
+}
+
+pub fn timer_picker_state(
+    days: u32,
+    hours: u32,
+    minutes: u32,
+) -> Result<TimerPickerStateDto, String> {
+    timer_picker_total_minutes(days, hours, minutes)?;
+    Ok(TimerPickerStateDto {
+        days: two_digit_timer_value(days),
+        hours: two_digit_timer_value(hours),
+        minutes: two_digit_timer_value(minutes),
+    })
+}
+
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GroupMemberPermissionRecord {
@@ -6200,6 +6268,33 @@ mod tests {
     use super::*;
 
     const TEST_FILE_KEY: [u8; 32] = [0x91; 32];
+
+    #[test]
+    fn task_0549_strip_timer_has_only_day_hour_minute_state_and_enforces_bounds() {
+        let default = default_timer_picker_state();
+        assert_eq!(default.days, "00");
+        assert_eq!(default.hours, "00");
+        assert_eq!(default.minutes, "01");
+
+        let one_minute = timer_picker_state(0, 0, 1).unwrap();
+        assert_eq!(one_minute.minutes, "01");
+
+        let thirty_days = timer_picker_state(30, 0, 0).unwrap();
+        assert_eq!(thirty_days.days, "30");
+
+        assert_eq!(
+            timer_picker_state(0, 0, 0).unwrap_err(),
+            "OSL timer picker must be at least one minute"
+        );
+        assert_eq!(
+            timer_picker_state(31, 0, 0).unwrap_err(),
+            "OSL timer picker days must be between 00 and 30"
+        );
+        assert_eq!(
+            timer_picker_state(30, 0, 1).unwrap_err(),
+            "OSL timer picker cannot exceed 30 days"
+        );
+    }
 
     struct FileBackedSecurityHarness {
         dir: std::path::PathBuf,
