@@ -1,3 +1,5 @@
+import { signalAttachmentTrayMarkup } from "./signal-attachment-tray";
+
 /**
  * Structural receipt supplied by the Signal finder gate.
  *
@@ -120,5 +122,6 @@ export function signalPrivateBoxMarkup(state: SignalPrivateBoxState): string {
     + `<label for="signal-private-draft">Private message</label>`
     + `<textarea id="signal-private-draft" autocomplete="off" spellcheck="true" aria-describedby="signal-private-draft-bytes">${escapeHtml(state.privateDraft)}</textarea>`
     + `<output id="signal-private-draft-bytes" aria-live="polite">${state.privateByteCount} bytes</output>`
+    + signalAttachmentTrayMarkup([])
     + `</section>`;
 }
