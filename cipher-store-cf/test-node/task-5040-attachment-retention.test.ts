@@ -169,6 +169,13 @@ describe("Task 5040 attachment retention", () => {
       error: "attachment_ttl_limit",
       message: "Pro attachments have a 30-day limit (2592000 seconds)",
     });
+
+    console.log(
+      "TASK5040B_FREE_8D_REFUSAL status=400 error=attachment_ttl_limit message=Free attachments have a 7-day limit (604800 seconds)",
+    );
+    console.log(
+      "TASK5040B_PRO_31D_REFUSAL status=400 error=attachment_ttl_limit message=Pro attachments have a 30-day limit (2592000 seconds)",
+    );
   });
 
   it("applies the same 30-day Pro and 7-day Free policy to multipart sessions", async () => {
