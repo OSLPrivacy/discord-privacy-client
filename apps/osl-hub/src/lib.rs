@@ -211,6 +211,9 @@ pub mod native_telegram_adapter;
 pub mod native_whatsapp_adapter;
 #[cfg(not(task3982_focused))]
 pub mod native_window_host;
+/// Signal's read-only open-screen adapter for the shared Scrub message reader.
+/// The adapter has no typing or scrolling operation.
+pub mod signal_message_reader;
 #[cfg(feature = "core")]
 pub mod osl_chat_attachment_download_permission;
 #[cfg(feature = "core")]
