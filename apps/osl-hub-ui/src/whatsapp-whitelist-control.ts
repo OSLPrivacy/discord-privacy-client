@@ -1,8 +1,27 @@
 import { invoke } from "@tauri-apps/api/core";
 import { isTauriRuntime } from "./preferences";
 
-/** The only WhatsApp place that can acquire this inline OSL control. */
+/** The WhatsApp kind that can acquire this reciprocal inline OSL control. */
 export const WHATSAPP_DIRECT_MESSAGE_KIND = "direct_message";
+export const WHATSAPP_CHANNEL_KIND = "channel";
+
+/** The narrow native shape read before rendering a WhatsApp place control. */
+export interface WhatsAppAllowedPlace {
+  app: "whatsapp";
+  account: string;
+  kind: string;
+  stableId: string;
+  personName: string;
+  placeName: string;
+  allowed: boolean;
+}
+
+export type WhatsAppPlaceReader = () => WhatsAppAllowedPlace | null | undefined;
+
+export interface WhatsAppPlaceInspection {
+  kind: string;
+  controls: string;
+}
 
 export interface WhatsAppDirectMessageWhitelistState {
   app: "whatsapp";
@@ -63,6 +82,33 @@ export function whatsappDirectMessageIsAllowed(state: WhatsAppDirectMessageWhite
 export function whatsappDirectMessageControlMarkup(state: WhatsAppDirectMessageWhitelistState | null): string {
   if (!whatsappDirectMessageIsAllowed(state)) return "";
   return '<button class="osl-whatsapp-direct-control" type="button" data-osl-whatsapp-control="protected-direct-message" aria-label="OSL protection controls"><span class="osl-verification-tick" data-osl-verification-tick="visible" aria-label="Verified two-way OSL allowance">✓</span><span>OSL</span></button>';
+}
+
+/** Channels have their own allowance surface and never inherit DM controls. */
+export function whatsappChannelControlsVisible(place: WhatsAppAllowedPlace): boolean {
+  const stableIdPrefix = `whatsapp:${place.account}:${WHATSAPP_CHANNEL_KIND}:`;
+  return place.app === "whatsapp"
+    && place.kind === WHATSAPP_CHANNEL_KIND
+    && place.allowed
+    && nonEmptyString(place.account)
+    && place.stableId.startsWith(stableIdPrefix)
+    && place.stableId.length > stableIdPrefix.length;
+}
+
+/** Render the channel-scoped control only after directly reading an allowed channel. */
+export function whatsappChannelControlsMarkup(place: WhatsAppAllowedPlace): string {
+  if (!whatsappChannelControlsVisible(place)) return "";
+  return `<section class="osl-whatsapp-channel-controls" data-osl-whatsapp-channel-controls data-osl-whatsapp-place-id="${place.stableId}" aria-label="WhatsApp channel protection"><label><input type="checkbox" data-osl-whatsapp-channel-toggle="${place.stableId}" checked/> Allow OSL in ${place.placeName}</label></section>`;
+}
+
+/**
+ * The reader is the authority for the current place. A channel gets only its
+ * channel controls; every other kind is deliberately silent on this path.
+ */
+export function inspectWhatsAppAllowedPlace(readPlace: WhatsAppPlaceReader): WhatsAppPlaceInspection | null {
+  const place = readPlace();
+  if (!place) return null;
+  return { kind: place.kind, controls: whatsappChannelControlsMarkup(place) };
 }
 
 export async function loadWhatsAppDirectMessageWhitelistState(
