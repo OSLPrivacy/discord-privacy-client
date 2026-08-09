@@ -279,6 +279,106 @@ fn roundtrip_unicode_and_long_plaintext() {
     assert_eq!(ascii_out.plaintext, "ordinary ascii body");
 }
 
+/// The two supported history readers (by message id and by channel) must
+/// preserve non-Latin UTF-8 exactly, including after the SQLite store is
+/// closed and reopened as it is on an application restart.
+#[test]
+fn task_3618_world_language_text_survives_all_message_store_paths_and_restart() {
+    let tmp = TempDir::new().expect("create isolated world-language store");
+    let channel = "task-3618-world-language-channel";
+    let messages = [
+        ("task3618-ja", "TASK3618-日本語: こんにちは世界"),
+        ("task3618-zh", "TASK3618-中文: 你好，世界"),
+        ("task3618-ar", "TASK3618-العربية: مرحبًا بالعالم"),
+        ("task3618-hi", "TASK3618-हिन्दी: नमस्ते दुनिया"),
+        ("task3618-ru", "TASK3618-Кириллица: Привет, мир"),
+    ];
+    let store = open_a(tmp.path());
+
+    for (index, (message_id, text)) in messages.iter().enumerate() {
+        store
+            .put(&sample(
+                message_id,
+                channel,
+                "task3618-sender",
+                "task3618-sender-osl",
+                text,
+                1_700_361_800 + index as i64,
+            ))
+            .expect("store each exact world-language message");
+    }
+
+    let direct_before = messages
+        .iter()
+        .map(|(message_id, text)| {
+            let row = store
+                .get(message_id)
+                .expect("read stored message by id")
+                .expect("stored message exists");
+            assert_eq!(row.plaintext, *text, "direct reader preserves exact text");
+            row.plaintext
+        })
+        .collect::<Vec<_>>();
+    let history_before = store
+        .list_by_channel(channel, messages.len() as u32)
+        .expect("read stored messages by channel");
+    assert_eq!(direct_before.len(), messages.len());
+    assert_eq!(history_before.len(), messages.len());
+    assert_eq!(
+        history_before
+            .iter()
+            .map(|row| row.plaintext.as_str())
+            .collect::<Vec<_>>(),
+        messages
+            .iter()
+            .rev()
+            .map(|(_, text)| *text)
+            .collect::<Vec<_>>(),
+        "channel-history reader preserves all five exact strings before restart"
+    );
+
+    drop(store);
+    let restarted = open_a(tmp.path());
+    let direct_after = messages
+        .iter()
+        .map(|(message_id, text)| {
+            let row = restarted
+                .get(message_id)
+                .expect("read restarted stored message by id")
+                .expect("restarted stored message exists");
+            assert_eq!(
+                row.plaintext, *text,
+                "restarted direct reader preserves exact text"
+            );
+            row.plaintext
+        })
+        .collect::<Vec<_>>();
+    let history_after = restarted
+        .list_by_channel(channel, messages.len() as u32)
+        .expect("read restarted stored messages by channel");
+    assert_eq!(direct_after.len(), messages.len());
+    assert_eq!(history_after.len(), messages.len());
+    assert_eq!(
+        history_after
+            .iter()
+            .map(|row| row.plaintext.as_str())
+            .collect::<Vec<_>>(),
+        messages
+            .iter()
+            .rev()
+            .map(|(_, text)| *text)
+            .collect::<Vec<_>>(),
+        "channel-history reader preserves all five exact strings after restart"
+    );
+
+    println!("TASK3618_SUPPORTED_MESSAGE_PATHS=put,get,list_by_channel");
+    println!("TASK3618_MESSAGES_BEFORE_RESTART={}", history_before.len());
+    println!("TASK3618_MESSAGES_AFTER_RESTART={}", history_after.len());
+    for (_, text) in messages {
+        println!("TASK3618_EXACT_TEXT={text}");
+    }
+}
+
 // ---- list_by_channel ----
 
 #[test]
