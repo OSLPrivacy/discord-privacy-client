@@ -81,6 +81,8 @@ pub enum ConversationPlaceKind {
     /// from a generic group so the reviewed browser reader does not erase the
     /// service-specific destination shape.
     GroupChat,
+    Community,
+    BroadcastList,
     Channel,
     Thread,
     /// A public place authored by the signed-in account (a post or reply).
@@ -95,6 +97,8 @@ impl ConversationPlaceKind {
             Self::DirectMessage => "direct_message",
             Self::Group => "group",
             Self::GroupChat => "group_chat",
+            Self::Community => "community",
+            Self::BroadcastList => "broadcast_list",
             Self::Channel => "channel",
             Self::Thread => "thread",
             Self::PublicPost => "public_post",
@@ -157,6 +161,26 @@ impl ConversationPlaceCandidate {
             place_id: id.into(),
             label: label.into(),
             place_kind: ConversationPlaceKind::GroupChat,
+            server: None,
+            channel: None,
+        }
+    }
+
+    pub fn community(id: impl Into<String>, label: impl Into<String>) -> Self {
+        Self {
+            place_id: id.into(),
+            label: label.into(),
+            place_kind: ConversationPlaceKind::Community,
+            server: None,
+            channel: None,
+        }
+    }
+
+    pub fn broadcast_list(id: impl Into<String>, label: impl Into<String>) -> Self {
+        Self {
+            place_id: id.into(),
+            label: label.into(),
+            place_kind: ConversationPlaceKind::BroadcastList,
             server: None,
             channel: None,
         }
@@ -1724,6 +1748,8 @@ fn validate_conversation_place(place: &ConversationPlaceCandidate) -> Result<(),
         ConversationPlaceKind::DirectMessage
         | ConversationPlaceKind::Group
         | ConversationPlaceKind::GroupChat
+        | ConversationPlaceKind::Community
+        | ConversationPlaceKind::BroadcastList
         | ConversationPlaceKind::PublicPost
         | ConversationPlaceKind::Comment => Ok(()),
         ConversationPlaceKind::Channel => {
