@@ -30,14 +30,14 @@ const root = resolve(__dirname, "..");
 appendFileSync(join(root, "fake-tools.jsonl"), JSON.stringify({ cwd: process.cwd(), args: process.argv.slice(2) }) + "\\n");
 const args = process.argv.slice(2);
 if (args[0] === "ci" && args[1] === "--prefix" && args[2] === "apps/osl-hub-ui") process.exit(0);
-if (args[0] === "run" && args[1] === "--prefix" && args[2] === "apps/osl-hub-ui" && args[3] === "build") {
+if (args[0] === "exec" && args[1] === "--" && args[2] === "vite" && args[3] === "build") {
   mkdirSync(join(root, "apps/osl-hub-ui/dist"), { recursive: true });
   writeFileSync(join(root, "apps/osl-hub-ui/dist/index.html"), "<!doctype html>");
   process.exit(0);
 }
-const expected = ["exec", "--yes", "--package", "@tauri-apps/cli@2.11.4", "--", "tauri", "build", "--features", "desktop", "--", "--locked"];
+const expected = ["exec", "--yes", "--package", "@tauri-apps/cli@2.11.4", "--", "tauri", "build", "--target", "x86_64-pc-windows-gnu", "--features", "desktop", "--", "--locked"];
 if (JSON.stringify(args) === JSON.stringify(expected)) {
-  const bundle = join(process.cwd(), "target/release/bundle/nsis");
+  const bundle = join(process.env.CARGO_TARGET_DIR, "x86_64-pc-windows-gnu/release/bundle/nsis");
   mkdirSync(bundle, { recursive: true });
   writeFileSync(join(bundle, "setup-from-tauri.exe"), Buffer.from("fake nonzero installer"));
   process.exit(0);
@@ -90,9 +90,12 @@ test("TASK 1600 recipe builds exactly one nonempty OSL-versioned installer", asy
     .map((line) => JSON.parse(line).args);
   assert.deepEqual(invocations, [
     ["ci", "--prefix", "apps/osl-hub-ui"],
-    ["run", "--prefix", "apps/osl-hub-ui", "build"],
-    ["exec", "--yes", "--package", "@tauri-apps/cli@2.11.4", "--", "tauri", "build", "--features", "desktop", "--", "--locked"],
+    ["exec", "--", "vite", "build"],
+    ["exec", "--yes", "--package", "@tauri-apps/cli@2.11.4", "--", "tauri", "build", "--target", "x86_64-pc-windows-gnu", "--features", "desktop", "--", "--locked"],
   ]);
+
+  const repeated = await runRecipe(root, ["--version", "2.0.0"]);
+  assert.match(repeated.stdout, /installer_count=1/);
 });
 
 test("TASK 1600 recipe fails nonzero and leaves no installer when version input is missing", async (t) => {
