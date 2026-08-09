@@ -31,11 +31,18 @@ function commandResult(raw: string): EyeCommandResult {
   const parsed: unknown = JSON.parse(raw);
   if (!parsed || typeof parsed !== "object") throw new Error("Instagram eye command returned no object");
   const value = parsed as { ok?: unknown; result?: { marker?: unknown; after?: unknown; shownText?: unknown } };
-  if (value.ok !== true
-    || typeof value.result?.marker !== "string"
-    || (value.result.after !== "normal" && value.result.after !== "protected")
-    || typeof value.result.shownText !== "string") {
-    throw new Error("Instagram eye command returned an invalid result");
+  if (value.ok !== true) throw new Error("Instagram eye command result key ok is missing or invalid");
+  if (!value.result || typeof value.result !== "object") {
+    throw new Error("Instagram eye command result key result is missing or invalid");
+  }
+  if (typeof value.result.marker !== "string") {
+    throw new Error("Instagram eye command result key marker is missing or invalid");
+  }
+  if (value.result.after !== "normal" && value.result.after !== "protected") {
+    throw new Error("Instagram eye command result key after is missing or invalid");
+  }
+  if (typeof value.result.shownText !== "string") {
+    throw new Error("Instagram eye command result key shownText is missing or invalid");
   }
   return value as EyeCommandResult;
 }
