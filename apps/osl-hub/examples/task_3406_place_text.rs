@@ -780,7 +780,7 @@ mod windows_place_text {
         let composer_has_focus = unsafe { composer.CurrentHasKeyboardFocus() }
             .map(|value| value.as_bool())
             .unwrap_or(false);
-        let focused_is_message_box = composer_has_focus && element_is_composer(&focused);
+        let focused_is_message_box = composer_has_focus && element_is_composer(&focused, app);
         println!("typing_point_in_message_box={focused_is_message_box}");
         if !focused_is_message_box {
             println!("placement_refused_focused_box={focused_name:?}");
@@ -1067,7 +1067,9 @@ mod windows_place_text {
             let Ok(element) = (unsafe { found.GetElement(index) }) else {
                 continue;
             };
-            if element_is_composer(&element) && is_lower_conversation_field(&element, provider_bounds) {
+            if element_is_composer(&element, app)
+                && is_lower_conversation_field(&element, provider_bounds)
+            {
                 matches.push(element);
             }
         }
@@ -1110,13 +1112,21 @@ mod windows_place_text {
         Ok(false)
     }
 
-    fn element_is_composer(element: &IUIAutomationElement) -> bool {
+    fn element_is_composer(element: &IUIAutomationElement, app: &str) -> bool {
         let control_type = unsafe { element.CurrentControlType() }.ok();
-        if !control_type.is_some_and(|kind| {
-            kind == UIA_EditControlTypeId
-                || kind == UIA_DocumentControlTypeId
-                || kind == UIA_TextControlTypeId
-        }) {
+        let is_outlook = normalize(app).contains("outlook");
+        let type_matches = if is_outlook {
+            // Outlook's writable Document role is language-neutral; do not
+            // bind its compose body to any localized accessible name.
+            control_type == Some(UIA_DocumentControlTypeId)
+        } else {
+            control_type.is_some_and(|kind| {
+                kind == UIA_EditControlTypeId
+                    || kind == UIA_DocumentControlTypeId
+                    || kind == UIA_TextControlTypeId
+            })
+        };
+        if !type_matches {
             return false;
         }
         let Some(pattern) = value_pattern(element) else {
