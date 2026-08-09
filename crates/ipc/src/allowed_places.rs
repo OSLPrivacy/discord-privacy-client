@@ -1067,7 +1067,11 @@ fn validate_stable_id_shape(stable_id: &str) -> Result<()> {
     let valid = matches!(
         (parts.next(), parts.next(), parts.next(), parts.next(), parts.next()),
         (Some(app), Some(account), Some(kind), Some(place), None)
-            if app == "discord"
+            if matches!(
+                    (app, kind),
+                    ("discord", _)
+                        | ("signal", KIND_DIRECT_MESSAGE | KIND_GROUP_CHAT)
+                )
                 && !account.trim().is_empty()
                 && !kind.trim().is_empty()
                 && !place.trim().is_empty()
