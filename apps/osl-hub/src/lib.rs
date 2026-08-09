@@ -218,6 +218,12 @@ pub mod service_host;
 #[cfg(feature = "core")]
 pub mod services;
 #[cfg(feature = "core")]
+pub mod signal_message_reader;
+#[cfg(feature = "core")]
+pub mod signal_place_reader;
+#[cfg(feature = "core")]
+pub mod signal_scroll_reader;
+#[cfg(feature = "core")]
 pub mod update_apply;
 #[cfg(feature = "core")]
 pub mod update_state_backup;

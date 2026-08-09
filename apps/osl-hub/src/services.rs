@@ -77,6 +77,7 @@ pub struct MessagingRiskAgreement {
 pub enum ConversationPlaceKind {
     DirectMessage,
     Group,
+    NoteToSelf,
     Channel,
     Thread,
 }
@@ -86,6 +87,7 @@ impl ConversationPlaceKind {
         match self {
             Self::DirectMessage => "direct_message",
             Self::Group => "group",
+            Self::NoteToSelf => "note_to_self",
             Self::Channel => "channel",
             Self::Thread => "thread",
         }
@@ -914,7 +916,7 @@ pub const MESSAGING_RISK_FACTS: [&str; MESSAGING_RISK_FACT_COUNT] = [
     "you can turn it off",
 ];
 
-pub fn all_messaging_risk_facts() -> [MessagingRiskFacts; 7] {
+pub fn all_messaging_risk_facts() -> [MessagingRiskFacts; 8] {
     MESSAGING_RISK_FACT_ROWS
 }
 
@@ -1208,13 +1210,14 @@ const SERVICE_CONTROL_DEFINITIONS: [ServiceControlDefinition; 4] = [
     },
 ];
 
-const MESSAGING_RISK_FACT_ROWS: [MessagingRiskFacts; 7] = [
+const MESSAGING_RISK_FACT_ROWS: [MessagingRiskFacts; 8] = [
     messaging_risk_facts_row("discord", "Discord"),
     messaging_risk_facts_row("telegram", "Telegram"),
     messaging_risk_facts_row("whatsapp", "WhatsApp"),
     messaging_risk_facts_row("x", "X"),
     messaging_risk_facts_row("instagram", "Instagram"),
     messaging_risk_facts_row("messenger", "Messenger"),
+    messaging_risk_facts_row("signal", "Signal"),
     messaging_risk_facts_row("email", "email"),
 ];
 
@@ -1356,7 +1359,9 @@ fn validate_conversation_place(place: &ConversationPlaceCandidate) -> Result<(),
         validate_conversation_place_parent(channel, "conversation place channel")?;
     }
     match place.place_kind {
-        ConversationPlaceKind::DirectMessage | ConversationPlaceKind::Group => Ok(()),
+        ConversationPlaceKind::DirectMessage
+        | ConversationPlaceKind::Group
+        | ConversationPlaceKind::NoteToSelf => Ok(()),
         ConversationPlaceKind::Channel => {
             if place.server.is_some() {
                 Ok(())
