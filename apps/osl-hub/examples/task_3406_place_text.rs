@@ -329,8 +329,6 @@ mod windows_place_text {
     const DEFAULT_PRIVATE_CANARY: &str = "QQQQQQQQQQ";
     const DEFAULT_OBSERVER_TIMEOUT_MS: u64 = 3_000;
     const SIGNAL_RENDERER_CLASS: &str = "Chrome_RenderWidgetHostHWND";
-    const COMPOSER_STEMS: &[&str] = &["message", "nachricht", "mensaje"];
-    const NON_COMPOSER_STEMS: &[&str] = &["search", "filter", "buscar"];
 
     #[derive(Clone, Debug)]
     struct WindowInfo {
@@ -429,6 +427,11 @@ mod windows_place_text {
         }
     }
 
+    fn refuse_before_typing(provider: &str, message: impl Into<String>) -> CommandError {
+        println!("provider={provider} typed_characters_before=0 typed_characters_after=0");
+        CommandError::exit1(message)
+    }
+
     pub fn run() -> Result<(), CommandError> {
         let mut clipboard_exposure = ClipboardExposureReporter::new();
         let args = Args::parse()?;
@@ -509,7 +512,11 @@ mod windows_place_text {
         let automation = automation()?;
         let root = app_accessibility_root(&automation, &args.app, discord.hwnd)?;
         wait_for_tree(&root, &automation)?;
-        let composer = find_composer(&root, &automation, &args.app)?;
+        let provider_rect = window_rect(discord.hwnd)
+            .ok_or_else(|| refuse_before_typing(&args.app, "window bounds not found"))?;
+        let provider_bounds = [provider_rect.left, provider_rect.top, provider_rect.right, provider_rect.bottom];
+        let composer = find_composer(&root, &automation, provider_bounds, &args.app)?;
+        println!("composer_discovered_by=role-state-geometry");
         println!("composer_name={:?}", element_name(&composer));
         let bounds = element_bounds(&composer).ok_or_else(|| {
             CommandError::exit1(format!("{} composer bounds not found", args.app))
@@ -950,6 +957,7 @@ mod windows_place_text {
     fn find_composer(
         root: &IUIAutomationElement,
         automation: &IUIAutomation,
+        provider_bounds: [i32; 4],
         app: &str,
     ) -> Result<IUIAutomationElement, CommandError> {
         let condition = unsafe { automation.CreateTrueCondition() }.map_err(|error| {
@@ -964,14 +972,14 @@ mod windows_place_text {
             let Ok(element) = (unsafe { found.GetElement(index) }) else {
                 continue;
             };
-            if element_is_composer(&element) {
+            if element_is_composer(&element) && is_lower_conversation_field(&element, provider_bounds) {
                 matches.push(element);
             }
         }
         match matches.len() {
             1 => Ok(matches.remove(0)),
-            0 => Err(CommandError::exit1(format!("{app} composer not found"))),
-            count => Err(CommandError::exit1(format!(
+            0 => Err(refuse_before_typing(app, format!("{app} composer not found"))),
+            count => Err(refuse_before_typing(app, format!(
                 "{app} composer ambiguous: {count} candidates"
             ))),
         }
@@ -1028,7 +1036,28 @@ mod windows_place_text {
         let read_only = unsafe { pattern.CurrentIsReadOnly() }
             .map(|value| value.as_bool())
             .unwrap_or(true);
-        enabled && focusable && !read_only && name_is_composer(&element_name(element))
+        enabled && focusable && !read_only
+    }
+
+    fn is_lower_conversation_field(
+        element: &IUIAutomationElement,
+        provider_bounds: [i32; 4],
+    ) -> bool {
+        let Some(bounds) = element_bounds(element) else {
+            return false;
+        };
+        let provider_width = provider_bounds[2].saturating_sub(provider_bounds[0]);
+        let provider_height = provider_bounds[3].saturating_sub(provider_bounds[1]);
+        if provider_width <= 0 || provider_height <= 0 {
+            return false;
+        }
+        let center_y = bounds[1].saturating_add(bounds[3]).saturating_div(2);
+        center_y >= provider_bounds[1].saturating_add(provider_height / 2)
+            && bounds[2].saturating_sub(bounds[0]) >= provider_width / 4
+            && bounds[0] >= provider_bounds[0]
+            && bounds[1] >= provider_bounds[1]
+            && bounds[2] <= provider_bounds[2]
+            && bounds[3] <= provider_bounds[3]
     }
 
     fn value_pattern(element: &IUIAutomationElement) -> Option<IUIAutomationValuePattern> {
@@ -1059,21 +1088,6 @@ mod windows_place_text {
         unsafe { element.CurrentName() }
             .map(|name| name.to_string())
             .unwrap_or_default()
-    }
-
-    fn name_is_composer(name: &str) -> bool {
-        let normalized = name
-            .trim()
-            .trim_end_matches('.')
-            .replace('\u{2026}', "")
-            .to_lowercase();
-        if NON_COMPOSER_STEMS
-            .iter()
-            .any(|stem| normalized.contains(stem))
-        {
-            return false;
-        }
-        COMPOSER_STEMS.iter().any(|stem| normalized.contains(stem))
     }
 
     fn name_is_send_button(name: &str) -> bool {
