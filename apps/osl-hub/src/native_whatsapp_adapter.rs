@@ -767,6 +767,7 @@ pub const WHATSAPP_COMPOSER_MATCHER: Uia2ComposerMatcher = Uia2ComposerMatcher {
         "code",
         "new chat",
         "caption",
+        "non-message",
     ],
 };
 
@@ -1896,6 +1897,66 @@ mod tests {
         let receipt = drive_whatsapp_composer_placement(&host, PAYLOAD, false);
         assert_eq!(receipt.status, WhatsAppPlacementStatus::Placed);
         assert_eq!(host.set_values.borrow().as_slice(), [CARRIER]);
+    }
+
+    #[test]
+    fn task_1065_non_message_editable_is_refused_and_the_good_placement_is_stable() {
+        const BOX: &str = "whatsapp-box-1065";
+        const PLACED_TEXT: &str = "whatsapp-place-1065";
+
+        let place = |editable_name: &str| {
+            let host = whatsapp_host(vec![composer(editable_name)]);
+            let receipt = drive_whatsapp_composer_placement(&host, PLACED_TEXT, false);
+            let placed_texts = host
+                .set_values
+                .borrow()
+                .iter()
+                .filter(|value| value.contains(PLACED_TEXT))
+                .map(|_| PLACED_TEXT)
+                .collect::<Vec<_>>();
+            (host, receipt, placed_texts)
+        };
+
+        let (_good_host, good_receipt, good) = place("Type a message");
+        assert_eq!(good_receipt.status, WhatsAppPlacementStatus::Placed);
+        assert_eq!(good, [PLACED_TEXT]);
+        assert_eq!(good.len(), 1);
+
+        // This deliberately contains the generic composer stem `message`.
+        // Accepting names by substring alone would place into this explicitly
+        // non-message field, so the negative name must win before placement.
+        let (changed_host, changed_receipt, changed) = place("non-message");
+        assert_eq!(
+            changed_receipt.status,
+            WhatsAppPlacementStatus::ComposerUnavailable
+        );
+        assert_eq!(
+            format!("{:?}", changed_receipt.status),
+            "ComposerUnavailable"
+        );
+        assert!(!changed_receipt.placed);
+        assert!(changed.is_empty());
+        assert!(changed_host.set_values.borrow().is_empty());
+
+        let (_restored_host, restored_receipt, restored) = place("Type a message");
+        assert_eq!(restored_receipt.status, WhatsAppPlacementStatus::Placed);
+        assert_eq!(restored, good);
+        assert_eq!(restored.len(), 1);
+
+        println!(
+            "TASK1065 good_box={BOX} placed_count={} placed_text={}",
+            good.len(),
+            good[0]
+        );
+        println!(
+            "TASK1065 changed_editable_field=non-message result=refused_by_name name={:?}",
+            changed_receipt.status
+        );
+        println!(
+            "TASK1065 restored_text={PLACED_TEXT} placed_count={} placed_text={}",
+            restored.len(),
+            restored[0]
+        );
     }
 
     #[test]
