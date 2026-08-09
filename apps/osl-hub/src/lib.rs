@@ -118,6 +118,7 @@ pub mod mail_owner_check;
 /// `desktop`: the reveal rule is what decides whether the app is visible at all,
 /// so it is testable in every build that can compile this crate.
 pub mod main_window_reveal;
+pub mod messenger_message_controls;
 pub mod messenger_whitelist_kinds;
 pub mod model_pack_install;
 pub mod models;
