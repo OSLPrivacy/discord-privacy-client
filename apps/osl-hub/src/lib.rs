@@ -284,6 +284,8 @@ pub mod signal_surface_finder;
 #[cfg(not(task3982_focused))]
 pub mod tor_pref;
 pub mod telegram_send_choices;
+#[cfg(feature = "core")]
+pub mod telegram_marked_message_deleter;
 pub mod whatsapp_place_reader;
 pub mod scrub_hosted {
     pub mod aol_mail_deleter;
