@@ -953,6 +953,10 @@ pub struct Uia2Editable {
     pub value_pattern: bool,
     pub enabled: bool,
     pub keyboard_focusable: bool,
+    /// Snapshot of UI Automation's current keyboard-focus state.  This is
+    /// deliberately distinct from `keyboard_focusable`: a composer may be
+    /// capable of receiving focus while another visible element owns it.
+    pub has_keyboard_focus: bool,
     pub read_only: bool,
 }
 
@@ -1938,6 +1942,9 @@ pub(crate) mod win32 {
             keyboard_focusable: unsafe { element.CurrentIsKeyboardFocusable() }
                 .map(|value| value.as_bool())
                 .unwrap_or(false),
+            has_keyboard_focus: unsafe { element.CurrentHasKeyboardFocus() }
+                .map(|value| value.as_bool())
+                .unwrap_or(false),
             read_only: pattern
                 .and_then(|pattern| unsafe { pattern.CurrentIsReadOnly() }.ok())
                 .map(|value| value.as_bool())
@@ -2769,6 +2776,7 @@ pub(crate) mod tests {
             value_pattern: true,
             enabled: true,
             keyboard_focusable: true,
+            has_keyboard_focus: true,
             read_only: false,
         }
     }

@@ -143,6 +143,7 @@ fn bound() -> BoundComposer {
             value_pattern: true,
             enabled: true,
             keyboard_focusable: true,
+            has_keyboard_focus: true,
             read_only: false,
         },
     }

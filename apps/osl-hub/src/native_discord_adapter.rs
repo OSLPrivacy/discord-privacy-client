@@ -17002,6 +17002,9 @@ mod windows {
                 keyboard_focusable: unsafe { element.CurrentIsKeyboardFocusable() }
                     .map(|value| value.as_bool())
                     .unwrap_or(false),
+                has_keyboard_focus: unsafe { element.CurrentHasKeyboardFocus() }
+                    .map(|value| value.as_bool())
+                    .unwrap_or(false),
                 read_only: pattern
                     .and_then(|pattern| unsafe { pattern.CurrentIsReadOnly() }.ok())
                     .map(|value| value.as_bool())
