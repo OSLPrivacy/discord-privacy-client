@@ -218,6 +218,7 @@ pub mod web_surface_adapter;
 pub mod x_window_composer;
 pub mod website_driver;
 pub mod whatsapp_accessibility;
+pub mod whatsapp_window_composer;
 pub mod whatsapp_qa_host;
 #[cfg(feature = "core")]
 pub mod whatsapp_qa_pairing;
