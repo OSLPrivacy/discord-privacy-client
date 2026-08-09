@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TASK 0180 group build list fixture</title>
+    <style>
+      html, body { width: 100%; min-height: 100%; margin: 0; }
+      body { background: #0a0a0a; }
+      #app { min-height: 520px; display: grid; place-items: center; padding: 28px; }
+      .task-0180-window {
+        width: min(620px, 100%);
+        overflow: hidden;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: var(--panel);
+        box-shadow: var(--shadow);
+      }
+      .task-0180-titlebar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        min-height: 36px;
+        padding: 0 14px;
+        border-bottom: 1px solid var(--line);
+        background: var(--panel-2);
+        color: var(--muted);
+        font-size: .78rem;
+      }
+      .task-0180-content { padding: 26px; }
+      .task-0180-context { margin: 0 0 18px; color: var(--muted); }
+      .task-0180-content .group-build-list {
+        padding: 18px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: var(--panel-2);
+      }
+      .task-0180-content .group-build-list h2 { margin: 0; font-size: 1.1rem; }
+      .task-0180-content .group-build-entry {
+        min-height: 42px;
+        padding: 9px 10px;
+        border: 1px solid var(--line-soft);
+        border-radius: var(--radius);
+        background: var(--panel);
+      }
+      .task-0180-content .group-build-member-id { font-weight: 650; }
+      .task-0180-content .group-build-label { color: var(--success); font-size: .9rem; }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module">
+      import "/src/styles.css";
+      import {
+        groupBuildListMarkup,
+        groupVerificationTickMarkup,
+        openGroupVerificationBuildList,
+      } from "/src/group-build-list.ts";
+
+      // The source roster deliberately includes a one-way person. The fixture
+      // mirrors 0178's server-side eligibility result before it reaches the
+      // 0179 component, so the captured list contains only two-way people.
+      const sourceRoster = Object.freeze([
+        { memberId: "Ari Patel", twoWayState: "two-way", buildState: "unmodified" },
+        { memberId: "Bea Morgan", twoWayState: "two-way", buildState: "modified" },
+        { memberId: "Cato One-way", twoWayState: "one-way", buildState: "modified" },
+      ]);
+      const buildEntries = sourceRoster.filter((member) => member.twoWayState === "two-way");
+      const model = openGroupVerificationBuildList("task-0180-linux-group", buildEntries);
+      document.querySelector("#app").innerHTML = `
+        <section class="task-0180-window" aria-label="OSL Linux group verification">
+          <header class="task-0180-titlebar"><span>OSL</span><span>Linux · Group verification</span></header>
+          <main class="task-0180-content">
+            <p class="task-0180-context">Study Circle · ${groupVerificationTickMarkup(buildEntries)} verified people</p>
+            ${groupBuildListMarkup(model)}
+          </main>
+        </section>`;
+      globalThis.__TASK0180_FACTS = Object.freeze({
+        sourceCount: sourceRoster.length,
+        filteredCount: buildEntries.length,
+        sourceOneWayMember: "Cato One-way",
+        displayedMembers: buildEntries.map((member) => member.memberId),
+        displayedLabels: buildEntries.map((member) => member.buildState),
+      });
+      document.documentElement.dataset.task0180 = "ready";
+    </script>
+  </body>
+</html>
