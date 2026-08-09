@@ -293,6 +293,34 @@ pub enum FirefoxServiceId {
     Icloud,
 }
 
+/// Fixed provider surfaces whose QA results are version-bound.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum ProviderVersionTarget {
+    Native(NativeAppId),
+    Browser(BrowserImportId),
+    FirefoxService(FirefoxServiceId),
+}
+
+pub const PROVIDER_VERSION_TARGETS: [ProviderVersionTarget; 17] = [
+    ProviderVersionTarget::Native(NativeAppId::Discord),
+    ProviderVersionTarget::Native(NativeAppId::Telegram),
+    ProviderVersionTarget::Native(NativeAppId::Signal),
+    ProviderVersionTarget::Native(NativeAppId::Whatsapp),
+    ProviderVersionTarget::Native(NativeAppId::Outlook),
+    ProviderVersionTarget::Browser(BrowserImportId::Chrome),
+    ProviderVersionTarget::Browser(BrowserImportId::Edge),
+    ProviderVersionTarget::Browser(BrowserImportId::Firefox),
+    ProviderVersionTarget::Browser(BrowserImportId::Brave),
+    ProviderVersionTarget::FirefoxService(FirefoxServiceId::Gmail),
+    ProviderVersionTarget::FirefoxService(FirefoxServiceId::Proton),
+    ProviderVersionTarget::FirefoxService(FirefoxServiceId::Tuta),
+    ProviderVersionTarget::FirefoxService(FirefoxServiceId::Yahoo),
+    ProviderVersionTarget::FirefoxService(FirefoxServiceId::Aol),
+    ProviderVersionTarget::FirefoxService(FirefoxServiceId::Gmx),
+    ProviderVersionTarget::FirefoxService(FirefoxServiceId::Maildotcom),
+    ProviderVersionTarget::FirefoxService(FirefoxServiceId::Icloud),
+];
+
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FirefoxStatus {
@@ -834,7 +862,7 @@ fn manifest(id: NativeAppId) -> &'static NativeAppManifest {
     }
 }
 
-pub(crate) fn native_app_display_name(id: NativeAppId) -> &'static str {
+pub fn native_app_display_name(id: NativeAppId) -> &'static str {
     manifest(id).display_name
 }
 
@@ -1633,13 +1661,13 @@ pub(crate) fn trusted_browser_executable_at(
 }
 
 #[cfg(any(target_os = "windows", test))]
-pub(crate) fn browser_display_name(id: BrowserImportId) -> &'static str {
+pub fn browser_display_name(id: BrowserImportId) -> &'static str {
     browser_import_manifest(id).display_name
 }
 
-#[cfg(any(target_os = "windows", test))]
-pub(crate) fn firefox_service_display_name(id: FirefoxServiceId) -> &'static str {
+pub fn firefox_service_display_name(id: FirefoxServiceId) -> &'static str {
     match id {
+        FirefoxServiceId::Messenger => "Messenger",
         FirefoxServiceId::Gmail => "Gmail",
         FirefoxServiceId::Outlook => "Outlook",
         FirefoxServiceId::Proton => "Proton Mail",
@@ -1649,6 +1677,29 @@ pub(crate) fn firefox_service_display_name(id: FirefoxServiceId) -> &'static str
         FirefoxServiceId::Gmx => "GMX Mail",
         FirefoxServiceId::Maildotcom => "mail.com",
         FirefoxServiceId::Icloud => "iCloud Mail",
+    }
+}
+
+pub fn provider_version_target_name(target: ProviderVersionTarget) -> &'static str {
+    match target {
+        ProviderVersionTarget::Native(id) => native_app_display_name(id),
+        ProviderVersionTarget::Browser(id) => match id {
+            BrowserImportId::Chrome => "Chrome",
+            BrowserImportId::Edge => "Edge",
+            BrowserImportId::Firefox => "Firefox",
+            BrowserImportId::Brave => "Brave",
+            BrowserImportId::Opera => "Opera",
+            BrowserImportId::DuckDuckGo => "DuckDuckGo",
+        },
+        ProviderVersionTarget::FirefoxService(id) => firefox_service_display_name(id),
+    }
+}
+
+pub fn provider_version_target_exact_version(target: ProviderVersionTarget) -> Option<String> {
+    match target {
+        ProviderVersionTarget::Native(id) => native_app_exact_version(id),
+        ProviderVersionTarget::Browser(id) => browser_import_exact_version(id),
+        ProviderVersionTarget::FirefoxService(id) => firefox_service_browser_exact_version(id),
     }
 }
 
@@ -1715,7 +1766,7 @@ fn trusted_executable_version(executable: &TrustedExecutable) -> Option<String> 
 }
 
 #[cfg(target_os = "windows")]
-pub(crate) fn native_app_exact_version(id: NativeAppId) -> Option<String> {
+pub fn native_app_exact_version(id: NativeAppId) -> Option<String> {
     match id {
         NativeAppId::Whatsapp => whatsapp_store_package_version(),
         NativeAppId::Outlook => outlook_store_package_version().or_else(|| {
@@ -1728,28 +1779,28 @@ pub(crate) fn native_app_exact_version(id: NativeAppId) -> Option<String> {
 }
 
 #[cfg(not(target_os = "windows"))]
-pub(crate) fn native_app_exact_version(_id: NativeAppId) -> Option<String> {
+pub fn native_app_exact_version(_id: NativeAppId) -> Option<String> {
     None
 }
 
 #[cfg(target_os = "windows")]
-pub(crate) fn browser_import_exact_version(id: BrowserImportId) -> Option<String> {
+pub fn browser_import_exact_version(id: BrowserImportId) -> Option<String> {
     browser_import_executable(browser_import_manifest(id))
         .and_then(|executable| trusted_executable_version(&executable))
 }
 
 #[cfg(not(target_os = "windows"))]
-pub(crate) fn browser_import_exact_version(_id: BrowserImportId) -> Option<String> {
+pub fn browser_import_exact_version(_id: BrowserImportId) -> Option<String> {
     None
 }
 
 #[cfg(target_os = "windows")]
-pub(crate) fn firefox_service_browser_exact_version(_id: FirefoxServiceId) -> Option<String> {
+pub fn firefox_service_browser_exact_version(_id: FirefoxServiceId) -> Option<String> {
     firefox_executable().and_then(|executable| trusted_executable_version(&executable))
 }
 
 #[cfg(not(target_os = "windows"))]
-pub(crate) fn firefox_service_browser_exact_version(_id: FirefoxServiceId) -> Option<String> {
+pub fn firefox_service_browser_exact_version(_id: FirefoxServiceId) -> Option<String> {
     None
 }
 
