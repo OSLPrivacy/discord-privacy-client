@@ -2,6 +2,10 @@
 /// capability digests and lifecycle metadata.
 import type { Env } from "../env.js";
 import { isPadmeLength, MAX_LIVE_BLOB_BYTES, MAX_LIVE_BLOB_ROWS } from "../lib/blob-limits.js";
+import {
+  attachmentRetentionLimitMessage,
+  parseAttachmentTier,
+} from "../lib/attachment-retention.js";
 import { applyBurn } from "../lib/burn-policy.js";
 import { parseDeleteGrant } from "../lib/delete-grant.js";
 import { constantTimeEqualHex, sha256Hex } from "../lib/digest.js";
@@ -74,8 +78,12 @@ export async function handleUpload(request: Request, env: Env): Promise<Response
     return error(400, "bad_content_length", "Content-Length must be an unsigned integer");
   }
   if (length !== null && Number(length) > MAX_BLOB_BYTES) return error(413, "too_large", `blob exceeds ${MAX_BLOB_BYTES} bytes`);
+  const tier = parseAttachmentTier(request.headers.get("x-osl-account-tier"));
+  if (tier === null) return error(400, "bad_account_tier", "X-OSL-Account-Tier must be free or pro");
   const ttl = parseUploadTtl(request.headers.get("x-osl-ttl-seconds"), request.headers.get("x-osl-expiry-mode"));
-  if (ttl === null) return error(400, "bad_ttl", "X-OSL-TTL-Seconds must be 3600 (1h), 86400 (24h), 259200 (72h), or 604800 (7d); default mode requires 604800");
+  if (ttl === null) return error(400, "bad_ttl", "X-OSL-TTL-Seconds must be 3600 (1h), 86400 (24h), 259200 (72h), 604800 (7d), or 2592000 (30d); default mode requires at least 604800");
+  const ttlLimitMessage = attachmentRetentionLimitMessage(tier, ttl.ttl);
+  if (ttlLimitMessage !== null) return error(400, "attachment_ttl_limit", ttlLimitMessage);
   const headers = uploadHeaders(request);
   if (!headers) return error(400, "bad_blob_metadata", "blob id, capability digests, class, and delivery tag are required");
   const body = await readBoundedBody(request, MAX_BLOB_BYTES);

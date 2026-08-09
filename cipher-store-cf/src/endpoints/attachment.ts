@@ -10,7 +10,6 @@
 import type { Env } from "../env.js";
 import {
   ATTACHMENT_TIER_LIMITS,
-  attachmentTierLimit,
   checkAttachmentTierLimit,
   type AttachmentTier,
   INCOMPLETE_SESSION_TTL_SECONDS,
@@ -23,6 +22,11 @@ import {
   MAX_LIVE_ATTACHMENT_ROWS,
   MAX_SEALED_ATTACHMENT_BYTES,
 } from "../lib/attachment-limits.js";
+import {
+  ATTACHMENT_RETENTION_SECONDS,
+  attachmentRetentionLimitMessage,
+  parseAttachmentTier,
+} from "../lib/attachment-retention.js";
 import {
   acquireAttachmentCompletionClaim,
   finalizeAttachmentReadyClaim,
@@ -43,13 +47,30 @@ const CAPABILITY_RE = /^[0-9a-f]{32}$/;
 const ID_RE = /^[0-9a-f]{32}$/;
 const DIRECT_UPLOAD_ID_PREFIX = "direct:";
 
-function parseAllowedTtlSeconds(raw: string | null): number | null {
+function parseAllowedTtlSeconds(
+  raw: string | null,
+  tier: AttachmentTier,
+): number | Response {
+  if (raw !== null && /^\d+$/.test(raw)) {
+    const requested = Number(raw);
+    const limitMessage = Number.isSafeInteger(requested)
+      ? attachmentRetentionLimitMessage(tier, requested)
+      : null;
+    if (limitMessage !== null) {
+      return error(
+        400,
+        "attachment_ttl_limit",
+        limitMessage,
+      );
+    }
+  }
   switch (raw) {
     case "3600": return 3600;
     case "86400": return 86400;
     case "259200": return 259200;
     case "604800": return 604800;
-    default: return null;
+    case "2592000": return 2592000;
+    default: return error(400, "bad_ttl", "unsupported attachment TTL");
   }
 }
 
@@ -65,11 +86,11 @@ function readSingleFetch(request: Request): number | null {
 }
 
 function readAccountTier(request: Request): AttachmentTier | Response {
-  const raw = request.headers.get("x-osl-account-tier")?.trim().toLowerCase() ?? "free";
-  if (attachmentTierLimit(raw) === null) {
+  const tier = parseAttachmentTier(request.headers.get("x-osl-account-tier"));
+  if (tier === null) {
     return error(400, "bad_account_tier", "X-OSL-Account-Tier must be free or pro");
   }
-  return raw as AttachmentTier;
+  return tier;
 }
 
 function enforceAccountTier(
@@ -463,8 +484,10 @@ async function reservationPoolExhausted(env: Env, size: number): Promise<boolean
 }
 
 export async function handleAttachmentSessionCreate(request: Request, env: Env): Promise<Response> {
-  const ttl = parseAllowedTtlSeconds(request.headers.get("x-osl-ttl-seconds"));
-  if (ttl === null) return error(400, "bad_ttl", "unsupported attachment TTL");
+  const tier = readAccountTier(request);
+  if (tier instanceof Response) return tier;
+  const ttl = parseAllowedTtlSeconds(request.headers.get("x-osl-ttl-seconds"), tier);
+  if (ttl instanceof Response) return ttl;
   const capability = readCapability(request);
   if (capability === null) return error(400, "bad_fetch_token", "invalid fetch token");
   const singleFetch = readSingleFetch(request);
@@ -473,8 +496,6 @@ export async function handleAttachmentSessionCreate(request: Request, env: Env):
   if (declared instanceof Response || declared === null) {
     return declared ?? error(400, "size_required", "X-OSL-Size-Bytes header required");
   }
-  const tier = readAccountTier(request);
-  if (tier instanceof Response) return tier;
   const tierRejected = enforceAccountTier(tier, declared, 1);
   if (tierRejected) return tierRejected;
 
@@ -784,8 +805,10 @@ export async function handleAttachmentComplete(request: Request, env: Env, id: s
 export async function handleAttachmentUpload(request: Request, env: Env): Promise<Response> {
   const declared = unsignedLength(request.headers.get("content-length"), MAX_DIRECT_ATTACHMENT_BYTES);
   if (declared instanceof Response) return declared;
-  const ttl = parseAllowedTtlSeconds(request.headers.get("x-osl-ttl-seconds"));
-  if (ttl === null) return error(400, "bad_ttl", "unsupported attachment TTL");
+  const tier = readAccountTier(request);
+  if (tier instanceof Response) return tier;
+  const ttl = parseAllowedTtlSeconds(request.headers.get("x-osl-ttl-seconds"), tier);
+  if (ttl instanceof Response) return ttl;
   const capability = readCapability(request);
   if (capability === null) return error(400, "bad_fetch_token", "invalid fetch token");
   const singleFetch = readSingleFetch(request);
@@ -803,8 +826,6 @@ export async function handleAttachmentUpload(request: Request, env: Env): Promis
   if (size === 0 || (typeof declared === "number" && declared !== size)) {
     return error(400, size === 0 ? "empty_body" : "content_length_mismatch", "invalid attachment length");
   }
-  const tier = readAccountTier(request);
-  if (tier instanceof Response) return tier;
   const tierRejected = enforceAccountTier(tier, size, 1);
   if (tierRejected) return tierRejected;
 
