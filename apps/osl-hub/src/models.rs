@@ -88,21 +88,33 @@ pub struct HomeTileCapabilityFacts {
     pub capability_claim: bool,
 }
 
-/// How an encrypted capsule would be handed to a service composer.
+/// The explicit action that prepares a cover for a carrier composer.
 ///
 /// These values are preferences only in this isolated preview. This crate does
 /// not implement keyboard control, clipboard writes, or platform automation.
+/// Cover insertion is deliberately a separate choice: it answers *how* the
+/// prepared cover enters a composer, not *what triggers* preparation.
 #[derive(Debug, Clone, Copy, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub enum SendMode {
     #[default]
-    #[serde(rename = "manual")]
-    Manual,
+    #[serde(rename = "enter")]
+    Enter,
     #[serde(rename = "clipboard")]
     Clipboard,
-    #[serde(rename = "double")]
-    DoubleEnter,
-    #[serde(rename = "single")]
-    SingleEnter,
+    #[serde(rename = "enter-x2")]
+    EnterX2,
+}
+
+impl SendMode {
+    pub const ALL: [Self; 3] = [Self::Enter, Self::EnterX2, Self::Clipboard];
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Enter => "Enter",
+            Self::EnterX2 => "Enter x2",
+            Self::Clipboard => "Clipboard",
+        }
+    }
 }
 
 /// How a future companion could place a user-approved capsule.
@@ -122,6 +134,32 @@ pub enum PlacementMode {
 pub enum CoverInsertion {
     InsertOnSend,
     TypeNaturally,
+}
+
+/// The backend result of choosing a send trigger.
+///
+/// Every supported trigger prepares a cover. The independently selected
+/// insertion choice is reported alongside it so callers cannot conflate the
+/// trigger with insertion behavior.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreparedCoverSend {
+    pub trigger: SendMode,
+    pub trigger_name: &'static str,
+    pub cover_prepared: bool,
+    pub cover_insertion: CoverInsertion,
+}
+
+pub const fn prepare_cover_for_send(
+    trigger: SendMode,
+    cover_insertion: CoverInsertion,
+) -> PreparedCoverSend {
+    PreparedCoverSend {
+        trigger,
+        trigger_name: trigger.name(),
+        cover_prepared: true,
+        cover_insertion,
+    }
 }
 
 /// The recovery/delivery policy explicitly selected during onboarding.
@@ -158,7 +196,7 @@ impl Default for OnboardingPreferences {
     fn default() -> Self {
         Self {
             onboarding_complete: false,
-            send_mode: SendMode::Manual,
+            send_mode: SendMode::Enter,
             placement_mode: PlacementMode::Atomic,
             cover_insertion: None,
             show_plaintext_preview: true,
@@ -211,20 +249,10 @@ impl<'de> Deserialize<'de> for OnboardingPreferences {
 impl OnboardingPreferences {
     /// Enforce the safety invariant at the native trust boundary.
     ///
-    /// Experimental Enter modes cannot be treated as fully configured unless
-    /// their exact risk acknowledgement is present. Non-experimental modes do
-    /// not retain a stale acknowledgement from an earlier selection.
+    /// Send triggers do not carry a hidden risk mode. A stale acknowledgement
+    /// from the retired five-mode UI is always discarded.
     pub fn fail_closed(mut self) -> Self {
-        match self.send_mode {
-            SendMode::DoubleEnter | SendMode::SingleEnter => {
-                if !self.acknowledge_experimental_send_risk {
-                    self.onboarding_complete = false;
-                }
-            }
-            SendMode::Manual | SendMode::Clipboard => {
-                self.acknowledge_experimental_send_risk = false;
-            }
-        }
+        self.acknowledge_experimental_send_risk = false;
         self
     }
 }
@@ -386,8 +414,8 @@ pub enum AndroidWorkspaceRefusalReason {
 #[cfg(test)]
 mod tests {
     use super::{
-        AndroidWorkspaceBoundary, AndroidWorkspaceExecution, AndroidWorkspacePolicy,
-        AndroidWorkspaceRefusalReason, AndroidWorkspaceStartDecision,
+        prepare_cover_for_send, AndroidWorkspaceBoundary, AndroidWorkspaceExecution,
+        AndroidWorkspacePolicy, AndroidWorkspaceRefusalReason, AndroidWorkspaceStartDecision,
         AndroidWorkspaceStartEvidence, CoverInsertion, ForwardSecrecyMode, OnboardingPreferences,
         PlacementMode, SendMode, ServiceKind, ServiceLaunchState,
     };
@@ -395,10 +423,9 @@ mod tests {
     #[test]
     fn send_modes_match_the_frontend_contract() {
         let cases = [
-            (SendMode::Manual, "\"manual\""),
+            (SendMode::Enter, "\"enter\""),
             (SendMode::Clipboard, "\"clipboard\""),
-            (SendMode::DoubleEnter, "\"double\""),
-            (SendMode::SingleEnter, "\"single\""),
+            (SendMode::EnterX2, "\"enter-x2\""),
         ];
 
         for (mode, expected) in cases {
@@ -408,7 +435,7 @@ mod tests {
 
         let default_contract = serde_json::json!({
             "onboardingComplete": false,
-            "sendMode": "manual",
+            "sendMode": "enter",
             "placementMode": "atomic",
             "coverInsertion": null,
             "showPlaintextPreview": true,
@@ -434,7 +461,7 @@ mod tests {
 
         let incomplete_risk_acknowledgement = serde_json::json!({
             "onboardingComplete": true,
-            "sendMode": "double",
+            "sendMode": "enter-x2",
             "placementMode": "atomic",
             "coverInsertion": null,
             "showPlaintextPreview": true,
@@ -443,7 +470,7 @@ mod tests {
             "acknowledgeExperimentalSendRisk": false,
         });
         assert!(
-            !serde_json::from_value::<OnboardingPreferences>(incomplete_risk_acknowledgement)
+            serde_json::from_value::<OnboardingPreferences>(incomplete_risk_acknowledgement)
                 .unwrap()
                 .onboarding_complete
         );
@@ -451,7 +478,19 @@ mod tests {
 
     #[test]
     fn send_modes_refuse_absent_or_unknown_authority() {
-        for raw in ["\"enter\"", "\"Double\"", "\"manual \"", "\"\"", "null"] {
+        for raw in [
+            "\"Manual\"",
+            "\"manual\"",
+            "\"Instant\"",
+            "\"instant\"",
+            "\"Match typing\"",
+            "\"match_typing\"",
+            "\"Double Enter\"",
+            "\"single\"",
+            "\"enter \"",
+            "\"\"",
+            "null",
+        ] {
             assert!(
                 serde_json::from_str::<SendMode>(raw).is_err(),
                 "accepted invalid send mode {raw}"
@@ -470,10 +509,31 @@ mod tests {
     }
 
     #[test]
-    fn experimental_modes_cannot_skip_risk_setup() {
+    fn all_three_send_triggers_prepare_covers_and_report_insertion_separately() {
+        let expected = ["Enter", "Enter x2", "Clipboard"];
+        let names: Vec<_> = SendMode::ALL.iter().map(|mode| mode.name()).collect();
+        assert_eq!(names, expected);
+
+        for trigger in SendMode::ALL {
+            for insertion in [CoverInsertion::InsertOnSend, CoverInsertion::TypeNaturally] {
+                let prepared = prepare_cover_for_send(trigger, insertion);
+                println!(
+                    "trigger={} cover_prepared={} cover_insertion={:?}",
+                    prepared.trigger_name, prepared.cover_prepared, prepared.cover_insertion
+                );
+                assert_eq!(prepared.trigger, trigger);
+                assert_eq!(prepared.trigger_name, trigger.name());
+                assert!(prepared.cover_prepared);
+                assert_eq!(prepared.cover_insertion, insertion);
+            }
+        }
+    }
+
+    #[test]
+    fn retired_risk_acknowledgement_is_not_retained() {
         let preferences = OnboardingPreferences {
             onboarding_complete: true,
-            send_mode: SendMode::SingleEnter,
+            send_mode: SendMode::EnterX2,
             placement_mode: PlacementMode::Atomic,
             cover_insertion: Some(CoverInsertion::InsertOnSend),
             show_plaintext_preview: true,
@@ -484,7 +544,8 @@ mod tests {
         }
         .fail_closed();
 
-        assert!(!preferences.onboarding_complete);
+        assert!(preferences.onboarding_complete);
+        assert!(!preferences.acknowledge_experimental_send_risk);
     }
 
     #[test]
