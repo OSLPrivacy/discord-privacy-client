@@ -11,10 +11,10 @@ use sha2::{Digest, Sha256};
 // at any point, and a scan test below pins that it never starts again.
 pub use crate::native_a11y::{
     acquire_uia2_editables, acquire_uia2_window, clear_uia2_composer, place_uia2_carrier,
-    resolve_uia2_composer, uia2_carrier_carries_submit, Uia2AcquireError, Uia2Acquired,
-    Uia2CallTimeout, Uia2ComposerError, Uia2ComposerMatcher, Uia2Editable, Uia2OwnedWindow,
-    Uia2PlacementRefusal, Uia2ResolvedWindow, Uia2Syscalls, Uia2TreeRoute, Uia2WakePolicy,
-    Uia2WindowPlan, Uia2WindowResolveError, Uia2WindowShape, WEBVIEW2_PROCESS_NAME,
+    read_uia2_composer_value, resolve_uia2_composer, uia2_carrier_carries_submit, Uia2AcquireError,
+    Uia2Acquired, Uia2CallTimeout, Uia2ComposerError, Uia2ComposerMatcher, Uia2Editable,
+    Uia2OwnedWindow, Uia2PlacementRefusal, Uia2ResolvedWindow, Uia2Syscalls, Uia2TreeRoute,
+    Uia2WakePolicy, Uia2WindowPlan, Uia2WindowResolveError, Uia2WindowShape, WEBVIEW2_PROCESS_NAME,
 };
 
 pub const WHATSAPP_ROOT_WINDOW_CLASS: &str = "WinUIDesktopWin32WindowClass";
@@ -842,6 +842,9 @@ pub struct WhatsAppLivePlacementReceipt {
     pub readback_exact: bool,
     /// UTF-8 byte count returned by the shared place-text read action.
     pub readback_bytes: usize,
+    /// UTF-8 byte count returned by the shared read action after a probe clear.
+    /// A successful write-then-clear probe leaves this at zero.
+    pub bytes_after_clear: usize,
     pub cleared: bool,
 }
 
@@ -859,6 +862,7 @@ impl WhatsAppLivePlacementReceipt {
             readback_contains_carrier: false,
             readback_exact: false,
             readback_bytes: 0,
+            bytes_after_clear: 0,
             cleared: false,
         }
     }
@@ -968,6 +972,7 @@ fn whatsapp_placement(
         readback_contains_carrier: false,
         readback_exact: false,
         readback_bytes: 0,
+        bytes_after_clear: 0,
         cleared: false,
     };
 
@@ -1018,9 +1023,17 @@ fn whatsapp_placement(
     placed.enter_sent = receipt.submit_shaped_observed;
 
     if clear_after {
-        match clear_uia2_composer(host, acquired, &composer) {
-            Ok(()) => placed.cleared = true,
-            Err(_) => placed.status = WhatsAppPlacementStatus::ProbeClearFailed,
+        let clear_result = clear_uia2_composer(host, acquired, &composer);
+        let after_clear = read_uia2_composer_value(host, acquired, &composer);
+        placed.bytes_after_clear = after_clear
+            .as_ref()
+            .ok()
+            .and_then(|value| value.as_deref())
+            .map_or(0, str::len);
+        if clear_result.is_ok() && after_clear.is_ok() && placed.bytes_after_clear == 0 {
+            placed.cleared = true;
+        } else {
+            placed.status = WhatsAppPlacementStatus::ProbeClearFailed;
         }
     }
     placed
