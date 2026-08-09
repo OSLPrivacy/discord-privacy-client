@@ -71,6 +71,33 @@ impl MessengerRowStateWriter {
             .find(|row| row.marked_cover.as_bytes() == marked_cover.as_bytes())
     }
 
+    /// Control behind Messenger's closed-eye button. The row stays marked,
+    /// but its ordinary carrier text replaces the protected text on screen.
+    pub fn close_marked_row_eye(
+        &mut self,
+        receiver: &MessengerTestAccount,
+        feed: &dyn MessengerRowFeed,
+        marked_cover: &str,
+    ) -> Result<MessengerVisibleRow, String> {
+        self.write_marked_row_state(receiver, feed, marked_cover, MessengerRowEyeState::Normal)
+    }
+
+    /// Control behind Messenger's open-eye button. Only the protected text
+    /// recorded for this exact marked row is selected for display.
+    pub fn open_marked_row_eye(
+        &mut self,
+        receiver: &MessengerTestAccount,
+        feed: &dyn MessengerRowFeed,
+        marked_cover: &str,
+    ) -> Result<MessengerVisibleRow, String> {
+        self.write_marked_row_state(
+            receiver,
+            feed,
+            marked_cover,
+            MessengerRowEyeState::Protected,
+        )
+    }
+
     /// Direct command body that writes one marked Messenger row's eye state.
     ///
     /// Normal shows the public carrier. Protected shows only the exact text in
