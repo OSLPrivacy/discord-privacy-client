@@ -1476,6 +1476,11 @@ fn task_1370_closed_osl_copy_receives_waiting_message_once_on_reopen() {
         "one encrypted OSL Chat row waits while the receiver is closed"
     );
 
+    // TASK 1615 negative fixture: remove the saved relay-history record before
+    // Bob reopens. Gate 1370 must turn red and name this exact missing message.
+    let saved_waiting_row = relay.posted_row(&alice.identity_id, &bob.identity_id);
+    relay.remove_inbox(&saved_waiting_row.id);
+
     bob.reopen_osl_chat_context(&bob_person_id);
     bob.activate();
     let opened = drain_osl_chat_text(&bob.core, &bob.security, &bob.broker, true)
@@ -1488,7 +1493,7 @@ fn task_1370_closed_osl_copy_receives_waiting_message_once_on_reopen() {
     assert_eq!(
         opened.messages.len(),
         1,
-        "the reopened copy receives exactly one message"
+        "the reopened copy is missing saved history message {WAITING_MESSAGE}"
     );
     assert_eq!(
         received_count, 1,
