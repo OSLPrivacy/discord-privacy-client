@@ -218,8 +218,8 @@ import { loadHubRecoveryKitUnsaved, setHubRecoveryKitUnsaved } from "./adapters"
 import { burnFeatureClaimsMarkup } from "./feature-claims";
 import { burnRevocationReceipt, type BurnRevocationReceipt } from "./burn-revocation-receipt";
 import { senderReceiptStatus } from "./receipt-status";
-import { attachmentProgressMarkup, parseAttachmentProgressEvent, type AttachmentProgressEvent } from "./attachment-progress";
-import { attachOslChatComposerDragAndDrop, attachmentTrayMarkup, createOslChatAttachmentTray, type OslChatAttachmentTrayState } from "./chat-attachment-drop";
+import { parseAttachmentProgressEvent, type AttachmentProgressEvent } from "./attachment-progress";
+import { attachOslChatComposerDragAndDrop, createOslChatAttachmentTray, type OslChatAttachmentTrayState } from "./chat-attachment-drop";
 import { destructStatusMarkup, type ServerDestructStatus } from "./destruct-status";
 import { offlineCapabilityStatus, type OfflineUnavailableCapability, type OslConnectionState } from "./offline-capability-status";
 import type { NativeDiscordOverlayOpenedBatch } from "./overlay-state";
@@ -5480,37 +5480,15 @@ function oslChatContent(): string {
   })}${settings}</main>`;
 }
 
-const OFFLINE_CAPABILITIES: readonly OfflineUnavailableCapability[] = [
-  "receiveNewMessages",
-  "sendMessage",
-  "lookUpNewContactKey",
-  "confirmBurnOnServer",
-  "enforceExpiryOnServer",
-  "enforceViewOnceOnServer",
-];
-
 /** Browser offline is a reliable negative signal; any other state stays unknown. */
 function oslRelayConnectionState(): OslConnectionState {
   return typeof navigator !== "undefined" && navigator.onLine === false ? "offline" : "unknown";
-}
-
-function offlineCapabilitiesMarkup(): string {
-  return `<section class="setting-line unavailable" data-osl-relay="offline" role="status"><span><strong>OSL is offline</strong>${OFFLINE_CAPABILITIES.map((capability) => {
-    const status = offlineCapabilityStatus(capability, "offline");
-    return `<small data-offline-capability="${capability}"><strong>${status.title}</strong> ${status.detail}</small>`;
-  }).join("")}</span></section>`;
 }
 
 function refuseOfflineCapability(capability: OfflineUnavailableCapability): boolean {
   if (oslRelayConnectionState() !== "offline") return false;
   showToast(offlineCapabilityStatus(capability, "offline").detail);
   return true;
-}
-
-function attachmentProgressMarkupForActiveChat(): string {
-  return [...attachmentProgressByContext.values()]
-    .map((event) => attachmentProgressMarkup(event))
-    .join("");
 }
 
 function bindAttachmentProgressEvents(): void {
@@ -8189,8 +8167,10 @@ function syncOslChatComposer(): void {
   const hasDraft = draft.value.trim().length > 0;
   const send = document.querySelector<HTMLButtonElement>("button.osl-chat-send");
   if (send) {
-    const contextReady = send.dataset.oslChatSendContext === "1";
-    send.disabled = !(contextReady && hasDraft && withinLimit);
+    // Verification is checked again at the send boundary. Keep the arrow
+    // clickable for a non-verified chat so it can explain the refusal in the
+    // blocked panel instead of looking like a silent, inert control.
+    send.disabled = !(hasDraft && withinLimit);
   }
   const count = document.querySelector<HTMLOutputElement>("#osl-chat-draft-count");
   if (count) {
@@ -8216,6 +8196,27 @@ function bindWorkspace(): void {
     oslChatSettingsPersonId = button.dataset.oslChatSettings ?? null;
     render();
   }));
+  document.querySelectorAll<HTMLButtonElement>("[data-osl-chat-filter]").forEach((button) => button.addEventListener("click", () => {
+    const filter = button.dataset.oslChatFilter;
+    if (filter === "direct" || filter === "groups" || filter === "enclaves") {
+      oslChatFilter = filter;
+      render();
+    }
+  }));
+  document.querySelector<HTMLInputElement>("#osl-chat-search")?.addEventListener("input", (event) => {
+    oslChatSearch = (event.currentTarget as HTMLInputElement).value;
+    render();
+  });
+  document.querySelector<HTMLButtonElement>("[data-osl-chat-blocked-close]")?.addEventListener("click", () => {
+    oslChatSendBlockedReason = null;
+    render();
+  });
+  document.querySelector<HTMLButtonElement>("[data-osl-chat-new]")?.addEventListener("click", () => showToast("Start a conversation from a verified friend profile"));
+  document.querySelector<HTMLButtonElement>("[data-osl-chat-profile]")?.addEventListener("click", () => showToast("Profile & Appearance is not available in this build"));
+  document.querySelector<HTMLButtonElement>(".osl-chat-emoji")?.addEventListener("click", () => {
+    setOslChatDraft(`${oslChatDraft}🙂`);
+    document.querySelector<HTMLTextAreaElement>("#osl-chat-draft")?.focus();
+  });
   document.querySelectorAll<HTMLButtonElement>("[data-friend-settings]").forEach((button) => button.addEventListener("click", () => {
     route = "home";
     friendsDialogOpen = true;
@@ -9260,7 +9261,7 @@ function decideOslChatVerificationWarning(personId: string, moment: "open-conver
 
 async function openOslChat(personId: string): Promise<void> {
   const person = hubPeople.find((candidate) => candidate.personId === personId);
-  if (!person || !peerIsVerified(person) || oslChatBusy) return;
+  if (!person || oslChatBusy) return;
   const queuedViewOnce = (oslChatUnread.get(personId) ?? 0) > 0
     ? (oslChatMessages.get(personId) ?? []).filter((message) => message.state === "opened")
     : [];
@@ -9268,6 +9269,7 @@ async function openOslChat(personId: string): Promise<void> {
   oslChatBusy = true;
   oslChatVerificationWarningSurface = "none";
   oslChatSettingsPersonId = null;
+  oslChatSendBlockedReason = null;
   render();
   let shouldRefresh = false;
   try {
@@ -9279,6 +9281,15 @@ async function openOslChat(personId: string): Promise<void> {
       return;
     }
     screenshotProtectionEnabled = true;
+    // A changed or not-yet-verified key may be inspected, but it is never
+    // given a sending context. This keeps the verification state visible and
+    // lets the composer explain its blocked send instead of hiding the chat.
+    if (!peerIsVerified(person)) {
+      activeOslChatPersonId = personId;
+      activeOslChatContext = null;
+      route = "osl-chat";
+      return;
+    }
     const context = await activateOslChatContext(personId);
     if (!context || epoch !== oslChatOperationEpoch) {
       showToast(withBackendReason("OSL Chat could not open", "activate_osl_chat_context"));
@@ -9601,7 +9612,22 @@ async function sendOslChat(event: SubmitEvent): Promise<void> {
   const personId = activeOslChatPersonId;
   const draft = oslChatDraft;
   const handshakeConfirmed = personId ? oslChatHandshakeConfirmed(oslChatMessages.get(personId) ?? []) : false;
-  if (!context?.scopeApproved || !personId || !handshakeConfirmed || oslChatBusy || !isHubPlaintext(draft) || refuseOfflineCapability("sendMessage")) return;
+  const person = personId ? hubPeople.find((candidate) => candidate.personId === personId) : null;
+  if (!personId || !person || !person.safetyNumberVerified || person.pendingKeyChange) {
+    oslChatSendBlockedReason = person?.pendingKeyChange
+      ? "This person’s key changed. Compare the safety number before sending anything."
+      : "This chat is not verified yet. Verify the safety number before sending anything.";
+    render();
+    return;
+  }
+  if (!context?.scopeApproved || !handshakeConfirmed) {
+    oslChatSendBlockedReason = !context?.scopeApproved
+      ? "This encrypted chat is not turned on for this friend yet."
+      : "OSL has not received a reply from this friend yet, so it cannot confirm they completed their side.";
+    render();
+    return;
+  }
+  if (oslChatBusy || !isHubPlaintext(draft) || refuseOfflineCapability("sendMessage")) return;
   const epoch = oslChatOperationEpoch;
   oslChatVerificationWarningSurface = decideOslChatVerificationWarning(personId, "prepare-send");
   oslChatBusy = true;
@@ -9637,6 +9663,7 @@ function resetOslChatUiState(clearMessages: boolean): void {
   oslChatBusy = false;
   oslChatAttachments = [];
   oslChatVerificationWarningSurface = "none";
+  oslChatSendBlockedReason = null;
   if (clearMessages) oslChatMessages.clear();
 }
 

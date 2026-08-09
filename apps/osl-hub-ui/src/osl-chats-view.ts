@@ -269,7 +269,6 @@ export function firstPartyOslServiceSurface(
   return FIRST_PARTY_OSL_SERVICE_SURFACES.find((surface) => surface.surfaceId === surfaceId)!;
 }
 
-const chatIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 17.5 3.5 20v-5.2A8 8 0 0 1 3 12c0-4.4 4-8 9-8s9 3.6 9 8-4 8-9 8a10 10 0 0 1-5-1.5Z"/></svg>';
 const settingsIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1a1.7 1.7 0 0 0 1.9.3A1.7 1.7 0 0 0 10 3v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/></svg>';
 const onceIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.2 12s3.5-5.5 9.8-5.5S21.8 12 21.8 12 18.3 17.5 12 17.5 2.2 12 2.2 12Z"/><circle cx="12" cy="12" r="2.7"/></svg>';
 const sendIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>';
@@ -329,18 +328,6 @@ export function submitsOslChatDraft(event: {
   if (event.key !== "Enter") return false;
   if (event.isComposing) return false;
   return !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey;
-}
-
-function deliveryLabel(state: OslChatDeliveryState): string {
-  switch (state) {
-    case "queued": return "Not sent";
-    case "sent": return "Sent";
-    case "delivered": return "Delivered";
-    case "received": return "Received";
-    case "opened": return "Opened";
-    case "expired": return "Expired";
-    case "failed": return "Failed";
-  }
 }
 
 function friendPreview(friend: OslChatFriend): string {
