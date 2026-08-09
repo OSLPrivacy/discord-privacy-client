@@ -162,6 +162,9 @@ pub mod mail_owner_check;
 pub mod main_window_reveal;
 #[cfg(not(task3982_focused))]
 pub mod messenger_whitelist_kinds;
+/// WhatsApp's browser-observation adapter for the shared Scrub message reader.
+/// It is gated before it consumes any browser rows.
+pub mod whatsapp_message_reader;
 pub mod model_pack_install;
 pub mod models;
 pub mod mullvad_window_host;
