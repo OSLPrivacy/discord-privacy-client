@@ -78,6 +78,8 @@ impl PreparedInstagramCover {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum InstagramCoverPreparationError {
     UnknownChoice(String),
+    UnknownTrigger(String),
+    UnknownCoverInsertion(String),
     RefusedSendFieldValue(&'static str),
 }
 
@@ -88,11 +90,101 @@ impl fmt::Display for InstagramCoverPreparationError {
                 f,
                 "unknown Instagram send choice {choice:?}; expected Manual, Double Enter, Single Enter, Instant, or Match typing"
             ),
+            Self::UnknownTrigger(trigger) => write!(
+                f,
+                "unknown Instagram send trigger {trigger:?}; expected Enter, Enter x2, or Clipboard"
+            ),
+            Self::UnknownCoverInsertion(insertion) => write!(
+                f,
+                "unknown Instagram cover insertion {insertion:?}; expected Insert on send or Type naturally"
+            ),
             Self::RefusedSendFieldValue(value) => {
                 write!(f, "refused Instagram send field value {value}")
             }
         }
     }
+}
+
+/// The ruled trigger set, kept separate from the protected composer's choice.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InstagramSendTrigger {
+    Enter,
+    EnterX2,
+    Clipboard,
+}
+
+impl InstagramSendTrigger {
+    pub const ALL: [Self; 3] = [Self::Enter, Self::EnterX2, Self::Clipboard];
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Enter => "Enter",
+            Self::EnterX2 => "Enter x2",
+            Self::Clipboard => "Clipboard",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Result<Self, InstagramCoverPreparationError> {
+        match name {
+            "Enter" => Ok(Self::Enter),
+            "Enter x2" => Ok(Self::EnterX2),
+            "Clipboard" => Ok(Self::Clipboard),
+            _ => Err(InstagramCoverPreparationError::UnknownTrigger(name.to_owned())),
+        }
+    }
+}
+
+/// How a prepared cover reaches Instagram's composer, independently of its
+/// send trigger.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InstagramCoverInsertion {
+    InsertOnSend,
+    TypeNaturally,
+}
+
+impl InstagramCoverInsertion {
+    pub const ALL: [Self; 2] = [Self::InsertOnSend, Self::TypeNaturally];
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::InsertOnSend => "Insert on send",
+            Self::TypeNaturally => "Type naturally",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Result<Self, InstagramCoverPreparationError> {
+        match name {
+            "Insert on send" => Ok(Self::InsertOnSend),
+            "Type naturally" => Ok(Self::TypeNaturally),
+            _ => Err(InstagramCoverPreparationError::UnknownCoverInsertion(
+                name.to_owned(),
+            )),
+        }
+    }
+}
+
+/// A cover prepared for a ruled trigger and an independently selected
+/// insertion mode.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PreparedInstagramTriggeredCover {
+    pub trigger: InstagramSendTrigger,
+    pub cover_insertion: InstagramCoverInsertion,
+    pub cover_text: String,
+    pub cover_bytes: usize,
+}
+
+/// Prepare a ruled trigger/insertion pair without placing or sending it.
+pub fn prepare_instagram_triggered_cover(
+    trigger_name: &str,
+    cover_insertion_name: &str,
+    cover_text: &str,
+) -> Result<PreparedInstagramTriggeredCover, InstagramCoverPreparationError> {
+    Ok(PreparedInstagramTriggeredCover {
+        trigger: InstagramSendTrigger::from_name(trigger_name)?,
+        cover_insertion: InstagramCoverInsertion::from_name(cover_insertion_name)?,
+        cover_text: cover_text.to_owned(),
+        cover_bytes: cover_text.len(),
+    })
 }
 
 impl std::error::Error for InstagramCoverPreparationError {}
