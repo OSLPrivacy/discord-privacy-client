@@ -17359,3 +17359,78 @@ img.osl-chat-avatar { display: block; object-fit: cover; }
 .home-launcher .home-app-section:not(.home-osl-section) .app-logo-plate .company-logo { width: 40px; height: 40px; }
 .home-launcher .module-unavailable > button:first-child:disabled { opacity: 1; }
 .home-launcher .home-module .app-tile-copy strong { font-size: 20px; }
+
+/* TASK 0209 focused Friends-tab appearance fixture. */
+.friends-tabs-fixture {
+  width: min(920px, calc(100% - 48px));
+  margin: 72px auto;
+  padding: 32px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+.friends-tabs-fixture h1 { margin: 0; font-size: 26px; line-height: 1.2; }
+.friends-tabs-fixture .fixture-intro { margin: 8px 0 24px; color: var(--muted); }
+.friends-tabs .tab-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+}
+.friends-tab {
+  min-height: 40px;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 650;
+}
+.friends-tab:hover:not(:disabled) { border-color: var(--line); background: var(--panel-2); color: var(--text); }
+.friends-tab.active { border-color: color-mix(in srgb, var(--brand) 60%, var(--line)); background: var(--brand-wash); color: var(--text); }
+.friends-tab .tab-count {
+  display: inline-grid;
+  min-width: 20px;
+  min-height: 20px;
+  place-items: center;
+  margin-left: 4px;
+  padding: 0 5px;
+  background: var(--panel-3);
+  color: var(--muted);
+  font-size: 12px;
+}
+.friends-tab.active .tab-count { background: var(--brand); color: var(--brand-ink); }
+.add-friend-button { margin-left: auto; }
+.friends-tab-results { padding-top: 18px; }
+.friend-tab-row {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 76px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+}
+.friend-tab-avatar {
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border-radius: 50% !important;
+  background: var(--brand-wash);
+  color: var(--brand);
+  font-size: 14px;
+  font-weight: 750;
+}
+.friend-tab-name, .friend-tab-detail { display: block; }
+.friend-tab-name { font-weight: 700; }
+.friend-tab-detail { margin-top: 2px; color: var(--muted); font-size: 13px; }
+.friend-tab-row .status-tag { justify-self: end; }
+@media (max-width: 720px) {
+  .friends-tabs-fixture { width: calc(100% - 24px); margin: 24px auto; padding: 20px; }
+  .friends-tabs .tab-bar { flex-wrap: wrap; }
+  .add-friend-button { margin-left: 0; }
+}
