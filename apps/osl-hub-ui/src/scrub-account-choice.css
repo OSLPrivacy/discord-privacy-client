@@ -1,3 +1,6 @@
+/* Colour values are the canonical OSL design tokens duplicated from
+   src/osl-tokens.ts (CSS cannot import TypeScript). osl-tokens.ts is the
+   authority; token names are noted beside each hex. */
 /* ---------------------------------------------------------------------------
    TASK 1402 -- the final setup step: which accounts Scrub may use.
 
@@ -8,13 +11,13 @@
    while no account is ticked, so the reason it cannot be pressed stays visible.
    --------------------------------------------------------------------------- */
 .scrub-account-screen {
-  --sa-bg: #080c0d;
-  --sa-card: #0d1114;
-  --sa-card-lit: #101619;
-  --sa-line: #2a343a;
-  --sa-text: #f4f7f8;
-  --sa-second: #b8c2c7;
-  --sa-accent: #2ac0f0;
+  --sa-bg: #080c0d; /* colour.background */
+  --sa-card: #0a0e10; /* colour.surface */
+  --sa-card-lit: #0f1416; /* colour.inputFill — the raised/selected card fill */
+  --sa-line: #2a343a; /* colour.border */
+  --sa-text: #f4f7f8; /* colour.text */
+  --sa-second: #97a3a9; /* colour.muted1 */
+  --sa-accent: #2ac0f0; /* colour.accent */
 
   box-sizing: border-box;
   width: 100%;

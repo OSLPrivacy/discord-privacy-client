@@ -16,9 +16,12 @@ use ipc::commands::is_discord_snowflake_shaped;
 use ipc::peer_map::{PeerEntry, WhitelistEntry};
 use ipc::scope::{Scope, ScopeInput, ScopeKind};
 use ipc::tofu::KeyBundle;
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
+
+pub use ipc::allowed_places::{AllowedPlaceQuery, AllowedPlaceRecord};
 
 use crate::core_bridge::HubCoreState;
 
@@ -28,6 +31,8 @@ const MAX_FRIEND_CODE_BYTES: usize = 8 * 1024;
 const MAX_SECURITY_STATE_BYTES: u64 = 8 * 1024 * 1024;
 const PEOPLE_FILE: &str = "hub_people.json";
 const SECURITY_PREFS_FILE: &str = "hub_security_preferences.json";
+const ONE_USE_INVITE_LINK_TTL_SECONDS: i64 = 7 * 24 * 60 * 60;
+const ONE_USE_INVITE_LINK_PREFIX: &str = "https://invite.osl.local/one-use/";
 const PEER_REPLAY_FILE: &str = "hub_peer_replay.json";
 const ATTACHMENT_BURN_FILE: &str = "scope_attachments.json";
 /// Receiver-side bilateral-burn replay state. Encrypted at rest, and keyed
@@ -59,6 +64,8 @@ const MAX_VISIBLE_WHITELIST_SCOPES: usize = 512;
 const DM_REACH_STORAGE_KEY: &str = "dm";
 const MAX_REACH_NARROWED_SCOPES_PER_PERSON: usize = 512;
 const MAX_STORAGE_KEY_BYTES: usize = 512;
+const MAX_ALLOWED_PLACE_FIELD_BYTES: usize = 512;
+const MAX_PROFILE_PICTURE_IMAGE_BYTES: usize = 2 * 1024 * 1024;
 const X25519_PUBLIC_BYTES: usize = 32;
 const ED25519_PUBLIC_BYTES: usize = 32;
 const ED25519_SIGNATURE_BYTES: usize = 64;
@@ -67,7 +74,6 @@ const RATCHET_PUBLIC_BYTES: usize = 32;
 const SAFETY_NUMBER_BUNDLE_REFUSAL: &str = "OSL friend key bundle is invalid";
 const SAFETY_NUMBER_MISMATCH_REFUSAL: &str = "OSL safety number does not match";
 const PENDING_KEY_CHANGE_REFUSAL: &str = "OSL friend key change state is incomplete";
-pub const FRIEND_BLOCKED_ERROR: &str = "friend blocked";
 
 #[derive(Debug, Default)]
 pub struct HubSecurityState {
@@ -117,13 +123,6 @@ pub struct RemoveFriendResult {
     pub revocation_queue_complete: bool,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FriendRelationship {
-    Accepted,
-    Blocked,
-}
-
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PersonDto {
@@ -136,7 +135,6 @@ pub struct PersonDto {
     pub whitelisted_scopes: Vec<PersonWhitelistScopeDto>,
     pub whitelisted_scopes_truncated: bool,
     pub pending_key_change: bool,
-    pub relationship: FriendRelationship,
     /// True when the user deliberately extended this person's trust to the
     /// other scopes they share. Never set by an ordinary scope approval.
     pub reach_broadened: bool,
@@ -174,21 +172,20 @@ pub struct ScopeSecurityDto {
     pub decrypt_display_enabled: bool,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupMemberPermissionRecord {
+    pub group_id: String,
+    pub member_id: String,
+    pub allowed: bool,
+}
+
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FriendAccountReachAccount {
     pub service_id: String,
     pub account_id: String,
     pub account_label: String,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FriendAccountReachChoiceRecord {
-    pub person_id: String,
-    pub service_id: String,
-    pub account_id: String,
-    pub broadened: bool,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
@@ -210,11 +207,93 @@ pub struct FriendAccountReachBulkResult {
     pub changed_count: usize,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FriendPageShareConversation {
+    pub storage_key: String,
+    pub conversation_label: String,
+    pub checked: bool,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FriendPageShareAccountChoice {
+    pub service_id: String,
+    pub account_id: String,
+    pub account_label: String,
+    pub checked: bool,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FriendPageShareAction {
+    pub action: String,
+    pub label: String,
+    pub removes_saved_choice: bool,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FriendPageShareData {
+    pub person_id: String,
+    pub accounts: Vec<FriendPageShareAccountChoice>,
+    pub conversations: Vec<FriendPageShareConversation>,
+    pub new_account_rule: String,
+    pub actions: Vec<FriendPageShareAction>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProtectedFriendProfilePictureImage {
+    pub media_type: String,
+    pub bytes_b64: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProtectedFriendProfilePictureRecord {
+    pub owner_osl_user_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<ProtectedFriendProfilePictureImage>,
+}
+
+impl ProtectedFriendProfilePictureRecord {
+    pub fn image_present(&self) -> bool {
+        self.image.is_some()
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AllowedPlaceDirectionState {
+    pub app: String,
+    pub kind: String,
+    pub first_account: String,
+    pub second_account: String,
+    pub first_to_second_stable_id: String,
+    pub second_to_first_stable_id: String,
+    pub first_to_second_allowed: bool,
+    pub second_to_first_allowed: bool,
+    pub state: String,
+}
+
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WhatsAppWhitelistKind {
     pub id: String,
     pub name: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OneUseInviteLink {
+    pub invite_id: String,
+    pub link: String,
+    pub recipient_label: String,
+    pub intended_use: String,
+    pub use_limit: u8,
+    pub expires_at: i64,
+    pub consumed_at: Option<i64>,
 }
 
 /// The minimum friend state needed to create a manual peer-messaging lease.
@@ -489,6 +568,10 @@ struct PersonMetadata {
     alias: Option<String>,
     #[serde(default)]
     safety_number_verified: bool,
+    #[serde(default)]
+    auto_whitelist: ipc::auto_whitelist_rules::AutoWhitelistChoice,
+    #[serde(default)]
+    auto_whitelist_future_accounts: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pending_ed25519_public: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -585,6 +668,40 @@ struct SecurityPreferences {
     /// so it can never outlive one.
     #[serde(default)]
     manual_approved_scope_people: BTreeMap<String, String>,
+    /// Local group-membership permission decisions, keyed by stable group id
+    /// and member id. The boolean is explicit so a denial is a stored state,
+    /// not inferred from a missing grant.
+    #[serde(default)]
+    group_member_permissions: BTreeMap<String, BTreeMap<String, bool>>,
+    /// Per accepted friend, the local service accounts that friend may reach.
+    /// Missing means unticked. Explicit denials are not stored, so choosing
+    /// "nowhere" removes rows and the absence fails closed.
+    #[serde(default)]
+    friend_account_reach_choices: BTreeMap<String, BTreeMap<String, bool>>,
+    /// Per accepted friend, conversation rows checked on the friend detail
+    /// sharing page. Missing means unticked; the actual conversation catalog
+    /// comes from the caller's current account/context inventory.
+    #[serde(default)]
+    friend_conversation_share_choices: BTreeMap<String, BTreeMap<String, bool>>,
+    /// Per accepted friend, whether future local accounts should be shared
+    /// automatically from the friend detail page.
+    #[serde(default)]
+    friend_new_account_share_rules: BTreeMap<String, bool>,
+    /// Identity-owned profile pictures for protected friend surfaces. Image
+    /// bytes are optional because an identity can reserve its record before the
+    /// operator chooses an image.
+    #[serde(default)]
+    protected_friend_profile_pictures: BTreeMap<String, ProtectedFriendProfilePictureRecord>,
+    /// Local allow decisions for places where protected OSL behavior is
+    /// permitted. Keyed by the canonical stable id so the decision reopens with
+    /// the same account-scoped security preferences as the rest of saved OSL.
+    #[serde(default)]
+    allowed_places: BTreeMap<String, AllowedPlaceRecord>,
+    /// Fresh one-use invite links for people who do not have an OSL username.
+    /// The record carries only a local label for the operator's roster context;
+    /// there is deliberately no OSL-name field to infer or later bind.
+    #[serde(default)]
+    one_use_invite_links: BTreeMap<String, OneUseInviteLink>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -872,6 +989,8 @@ pub fn add_friend_code(
             ed25519_public: parsed.payload.ed25519_public.clone(),
             alias,
             safety_number_verified: false,
+            auto_whitelist: ipc::auto_whitelist_rules::AutoWhitelistChoice::Never,
+            auto_whitelist_future_accounts: false,
             pending_ed25519_public: None,
             pending_key_bundle: None,
         },
@@ -1160,49 +1279,83 @@ pub fn set_friend_alias(
     person_dto(core, &person_id, &updated, &load_security_preferences()?)
 }
 
-pub fn set_friend_relationship(
-    core: &HubCoreState,
+pub fn set_group_member_permission(
     security: &HubSecurityState,
-    person_id: String,
-    relationship: FriendRelationship,
-) -> Result<PersonDto, String> {
-    let mut person = set_friend_alias(core, security, person_id, None)?;
-    person.relationship = relationship;
-    Ok(person)
-}
-
-pub fn set_friend_account_reach_choice(
-    _security: &HubSecurityState,
-    person_id: String,
-    service_id: String,
-    account_id: String,
-    broadened: bool,
-) -> Result<FriendAccountReachChoiceRecord, String> {
+    group_id: String,
+    member_id: String,
+    allowed: bool,
+) -> Result<GroupMemberPermissionRecord, String> {
     require_unlocked()?;
-    validate_person_id(&person_id)?;
-    Ok(FriendAccountReachChoiceRecord {
-        person_id,
-        service_id,
-        account_id,
-        broadened,
+    validate_group_member_permission_id(&group_id, "OSL group identifier is invalid")?;
+    validate_group_member_permission_id(&member_id, "OSL member identifier is invalid")?;
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL group-member permission state is unavailable".to_owned())?;
+    let path = config_dir()?.join(SECURITY_PREFS_FILE);
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
+    prefs.version = 2;
+    prefs
+        .group_member_permissions
+        .entry(group_id.clone())
+        .or_default()
+        .insert(member_id.clone(), allowed);
+    write_encrypted_json(&path, &prefs)?;
+    Ok(GroupMemberPermissionRecord {
+        group_id,
+        member_id,
+        allowed,
     })
 }
 
-pub fn list_friend_account_reach_choices(
-    _security: &HubSecurityState,
-    person_id: String,
-) -> Result<Vec<FriendAccountReachChoiceRecord>, String> {
+pub fn remove_group_member_permission(
+    security: &HubSecurityState,
+    group_id: String,
+    member_id: String,
+) -> Result<bool, String> {
     require_unlocked()?;
-    validate_person_id(&person_id)?;
-    Ok(Vec::new())
+    validate_group_member_permission_id(&group_id, "OSL group identifier is invalid")?;
+    validate_group_member_permission_id(&member_id, "OSL member identifier is invalid")?;
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL group-member permission state is unavailable".to_owned())?;
+    let path = config_dir()?.join(SECURITY_PREFS_FILE);
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
+    let removed = if let Some(members) = prefs.group_member_permissions.get_mut(&group_id) {
+        let removed = members.remove(&member_id).is_some();
+        if members.is_empty() {
+            prefs.group_member_permissions.remove(&group_id);
+        }
+        removed
+    } else {
+        false
+    };
+    if removed {
+        prefs.version = 2;
+        write_encrypted_json(&path, &prefs)?;
+    }
+    Ok(removed)
 }
 
-pub fn set_hub_friend_account_reach_everywhere(
-    security: &HubSecurityState,
-    person_id: String,
-    accounts: Vec<FriendAccountReachAccount>,
-) -> Result<FriendAccountReachBulkResult, String> {
-    set_hub_friend_account_reach_bulk(security, person_id, accounts, true, "everywhere")
+pub fn list_group_member_permissions(
+    _security: &HubSecurityState,
+) -> Result<Vec<GroupMemberPermissionRecord>, String> {
+    require_unlocked()?;
+    let prefs =
+        load_encrypted_json::<SecurityPreferences>(&config_dir()?.join(SECURITY_PREFS_FILE))?;
+    Ok(group_member_permission_records(&prefs))
+}
+
+pub fn list_group_member_permissions_for_group(
+    _security: &HubSecurityState,
+    group_id: String,
+) -> Result<Vec<GroupMemberPermissionRecord>, String> {
+    require_unlocked()?;
+    validate_group_member_permission_id(&group_id, "OSL group identifier is invalid")?;
+    let prefs =
+        load_encrypted_json::<SecurityPreferences>(&config_dir()?.join(SECURITY_PREFS_FILE))?;
+    Ok(group_member_permission_records_for_group(&prefs, &group_id))
 }
 
 pub fn set_hub_friend_account_reach_nowhere(
@@ -1210,64 +1363,370 @@ pub fn set_hub_friend_account_reach_nowhere(
     person_id: String,
     accounts: Vec<FriendAccountReachAccount>,
 ) -> Result<FriendAccountReachBulkResult, String> {
-    set_hub_friend_account_reach_bulk(security, person_id, accounts, false, "nowhere")
-}
-
-fn set_hub_friend_account_reach_bulk(
-    _security: &HubSecurityState,
-    person_id: String,
-    accounts: Vec<FriendAccountReachAccount>,
-    allowed: bool,
-    action: &str,
-) -> Result<FriendAccountReachBulkResult, String> {
     require_unlocked()?;
     validate_person_id(&person_id)?;
-    let records = accounts
-        .into_iter()
-        .map(|account| FriendAccountReachRecord {
-            person_id: person_id.clone(),
-            service_id: account.service_id,
-            account_id: account.account_id,
-            account_label: account.account_label,
-            allowed,
-        })
-        .collect::<Vec<_>>();
+    if accounts.is_empty() {
+        return Err("OSL friend account reach requires at least one owned account".to_owned());
+    }
+    let account_keys = validate_friend_account_reach_accounts(&accounts)?;
+
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL friend account reach is unavailable".to_owned())?;
+    let path = config_dir()?.join(SECURITY_PREFS_FILE);
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
+    let mut changed_count = 0;
+    if let Some(choices) = prefs.friend_account_reach_choices.get_mut(&person_id) {
+        for key in &account_keys {
+            if choices.remove(key).is_some() {
+                changed_count += 1;
+            }
+        }
+        if choices.is_empty() {
+            prefs.friend_account_reach_choices.remove(&person_id);
+        }
+    }
+    if changed_count > 0 {
+        prefs.version = 2;
+        write_encrypted_json(&path, &prefs)?;
+    }
+
     Ok(FriendAccountReachBulkResult {
-        action: action.to_owned(),
-        person_id,
-        changed_count: records.len(),
-        accounts: records,
+        action: "nowhere".to_owned(),
+        person_id: person_id.clone(),
+        accounts: accounts
+            .into_iter()
+            .map(|account| FriendAccountReachRecord {
+                person_id: person_id.clone(),
+                service_id: account.service_id,
+                account_id: account.account_id,
+                account_label: account.account_label,
+                allowed: false,
+            })
+            .collect(),
+        changed_count,
     })
 }
 
-const WHATSAPP_WHITELIST_KINDS: [(&str, &str); 6] = [
-    ("direct_message", "direct message"),
-    ("group_chat", "group chat"),
-    ("channel", "channel"),
-    ("community", "community"),
-    ("community_group", "community group"),
-    ("broadcast_list", "broadcast list"),
-];
-
-pub fn list_whatsapp_whitelist_kinds() -> Vec<WhatsAppWhitelistKind> {
-    WHATSAPP_WHITELIST_KINDS
-        .into_iter()
-        .map(|(id, name)| WhatsAppWhitelistKind {
-            id: id.to_owned(),
-            name: name.to_owned(),
-        })
-        .collect()
+pub fn read_friend_page_share_data(
+    _security: &HubSecurityState,
+    person_id: String,
+    accounts: Vec<FriendAccountReachAccount>,
+    conversations: Vec<FriendPageShareConversation>,
+) -> Result<FriendPageShareData, String> {
+    require_unlocked()?;
+    validate_person_id(&person_id)?;
+    let account_keys = validate_friend_account_reach_accounts(&accounts)?;
+    validate_friend_page_share_conversations(&conversations)?;
+    let prefs =
+        load_encrypted_json::<SecurityPreferences>(&config_dir()?.join(SECURITY_PREFS_FILE))?;
+    Ok(friend_page_share_data_from_preferences(
+        &person_id,
+        accounts,
+        account_keys,
+        conversations,
+        &prefs,
+    ))
 }
 
-pub fn resolve_whatsapp_whitelist_kind(id: &str) -> Result<WhatsAppWhitelistKind, String> {
-    WHATSAPP_WHITELIST_KINDS
-        .into_iter()
-        .find(|(kind_id, _)| *kind_id == id)
-        .map(|(id, name)| WhatsAppWhitelistKind {
-            id: id.to_owned(),
-            name: name.to_owned(),
-        })
-        .ok_or_else(|| format!("unsupported WhatsApp place kind: {id}"))
+pub fn save_friend_page_share_data(
+    security: &HubSecurityState,
+    person_id: String,
+    accounts: Vec<FriendPageShareAccountChoice>,
+    conversations: Vec<FriendPageShareConversation>,
+    new_account_rule: String,
+) -> Result<FriendPageShareData, String> {
+    require_unlocked()?;
+    validate_person_id(&person_id)?;
+    let new_account_rule = parse_friend_page_new_account_rule(&new_account_rule)?;
+    let account_catalog = friend_page_share_account_catalog(&accounts)?;
+    let conversation_catalog = friend_page_share_conversation_catalog(&conversations)?;
+
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL friend share choices are unavailable".to_owned())?;
+    let path = config_dir()?.join(SECURITY_PREFS_FILE);
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
+    prefs.version = 2;
+    set_checked_choices(
+        &mut prefs.friend_account_reach_choices,
+        &person_id,
+        accounts
+            .iter()
+            .map(|account| (friend_page_account_choice_key(account), account.checked)),
+    );
+    set_checked_choices(
+        &mut prefs.friend_conversation_share_choices,
+        &person_id,
+        conversations
+            .iter()
+            .map(|conversation| (conversation.storage_key.clone(), conversation.checked)),
+    );
+    if new_account_rule {
+        prefs
+            .friend_new_account_share_rules
+            .insert(person_id.clone(), true);
+    } else {
+        prefs.friend_new_account_share_rules.remove(&person_id);
+    }
+    write_encrypted_json(&path, &prefs)?;
+    read_friend_page_share_data(security, person_id, account_catalog, conversation_catalog)
+}
+
+pub fn remove_friend_page_share_data(
+    security: &HubSecurityState,
+    person_id: String,
+    accounts: Vec<FriendAccountReachAccount>,
+    conversations: Vec<FriendPageShareConversation>,
+) -> Result<FriendPageShareData, String> {
+    require_unlocked()?;
+    validate_person_id(&person_id)?;
+    let _account_keys = validate_friend_account_reach_accounts(&accounts)?;
+    validate_friend_page_share_conversations(&conversations)?;
+
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL friend share choices are unavailable".to_owned())?;
+    let path = config_dir()?.join(SECURITY_PREFS_FILE);
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
+    let removed = prefs
+        .friend_account_reach_choices
+        .remove(&person_id)
+        .is_some()
+        | prefs
+            .friend_conversation_share_choices
+            .remove(&person_id)
+            .is_some()
+        | prefs
+            .friend_new_account_share_rules
+            .remove(&person_id)
+            .is_some();
+    if removed {
+        prefs.version = 2;
+        write_encrypted_json(&path, &prefs)?;
+    }
+    read_friend_page_share_data(security, person_id, accounts, conversations)
+}
+
+pub fn cancel_friend_page_share_data(
+    security: &HubSecurityState,
+    person_id: String,
+    accounts: Vec<FriendAccountReachAccount>,
+    conversations: Vec<FriendPageShareConversation>,
+) -> Result<FriendPageShareData, String> {
+    read_friend_page_share_data(security, person_id, accounts, conversations)
+}
+
+pub fn set_protected_friend_profile_picture(
+    security: &HubSecurityState,
+    owner_osl_user_id: String,
+    image_bytes: Option<Vec<u8>>,
+) -> Result<ProtectedFriendProfilePictureRecord, String> {
+    require_unlocked()?;
+    validate_profile_picture_owner(&owner_osl_user_id)?;
+    let image = protected_friend_profile_picture_image(image_bytes)?;
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL profile-picture state is unavailable".to_owned())?;
+    let path = config_dir()?.join(SECURITY_PREFS_FILE);
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
+    prefs.version = 2;
+    let record = ProtectedFriendProfilePictureRecord {
+        owner_osl_user_id: owner_osl_user_id.clone(),
+        image,
+    };
+    prefs
+        .protected_friend_profile_pictures
+        .insert(owner_osl_user_id, record.clone());
+    write_encrypted_json(&path, &prefs)?;
+    Ok(record)
+}
+
+pub fn list_protected_friend_profile_pictures(
+    _security: &HubSecurityState,
+) -> Result<Vec<ProtectedFriendProfilePictureRecord>, String> {
+    require_unlocked()?;
+    let prefs =
+        load_encrypted_json::<SecurityPreferences>(&config_dir()?.join(SECURITY_PREFS_FILE))?;
+    Ok(protected_friend_profile_picture_records(&prefs))
+}
+
+pub fn list_whatsapp_whitelist_kinds() -> Vec<WhatsAppWhitelistKind> {
+    [
+        ("direct_message", "direct message"),
+        ("group_chat", "group chat"),
+        ("channel", "channel"),
+    ]
+    .into_iter()
+    .map(|(id, name)| WhatsAppWhitelistKind {
+        id: id.to_owned(),
+        name: name.to_owned(),
+    })
+    .collect()
+}
+
+pub fn add_allowed_place_record(
+    security: &HubSecurityState,
+    record: AllowedPlaceRecord,
+) -> Result<AllowedPlaceRecord, String> {
+    require_unlocked()?;
+    validate_allowed_place_record(&record)?;
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL allowed-place state is unavailable".to_owned())?;
+    let path = config_dir()?.join(SECURITY_PREFS_FILE);
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
+    prefs.version = 2;
+    prefs
+        .allowed_places
+        .insert(record.stable_id.clone(), record.clone());
+    write_encrypted_json(&path, &prefs)?;
+    Ok(record)
+}
+
+pub fn remove_allowed_place_record(
+    security: &HubSecurityState,
+    stable_id: String,
+) -> Result<bool, String> {
+    require_unlocked()?;
+    validate_allowed_place_id(&stable_id, "OSL allowed-place identifier is invalid")?;
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL allowed-place state is unavailable".to_owned())?;
+    let path = config_dir()?.join(SECURITY_PREFS_FILE);
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
+    let removed = prefs.allowed_places.remove(&stable_id).is_some();
+    if removed {
+        prefs.version = 2;
+        write_encrypted_json(&path, &prefs)?;
+    }
+    Ok(removed)
+}
+
+pub fn query_allowed_place_record(
+    _security: &HubSecurityState,
+    stable_id: String,
+) -> Result<Option<AllowedPlaceRecord>, String> {
+    require_unlocked()?;
+    validate_allowed_place_id(&stable_id, "OSL allowed-place identifier is invalid")?;
+    let prefs =
+        load_encrypted_json::<SecurityPreferences>(&config_dir()?.join(SECURITY_PREFS_FILE))?;
+    Ok(prefs.allowed_places.get(&stable_id).cloned())
+}
+
+pub fn query_allowed_place_allowed(
+    _security: &HubSecurityState,
+    query: AllowedPlaceQuery,
+) -> Result<bool, String> {
+    require_unlocked()?;
+    validate_allowed_place_record(&AllowedPlaceRecord {
+        person_name: Default::default(),
+        place_name: Default::default(),
+        app: query.app.clone(),
+        account: query.account.clone(),
+        kind: query.kind.clone(),
+        stable_id: query.stable_id.clone(),
+    })?;
+    let prefs =
+        load_encrypted_json::<SecurityPreferences>(&config_dir()?.join(SECURITY_PREFS_FILE))?;
+    Ok(prefs
+        .allowed_places
+        .get(&query.stable_id)
+        .is_some_and(|record| {
+            record.app == query.app && record.account == query.account && record.kind == query.kind
+        }))
+}
+
+pub fn list_allowed_place_records(
+    _security: &HubSecurityState,
+) -> Result<Vec<AllowedPlaceRecord>, String> {
+    require_unlocked()?;
+    let prefs =
+        load_encrypted_json::<SecurityPreferences>(&config_dir()?.join(SECURITY_PREFS_FILE))?;
+    Ok(prefs.allowed_places.values().cloned().collect())
+}
+
+pub fn compare_allowed_place_direction_state(
+    _security: &HubSecurityState,
+    app: String,
+    kind: String,
+    first_account: String,
+    second_account: String,
+) -> Result<AllowedPlaceDirectionState, String> {
+    require_unlocked()?;
+    validate_allowed_place_id(&app, "OSL allowed-place app is invalid")?;
+    validate_allowed_place_id(&kind, "OSL allowed-place kind is invalid")?;
+    validate_allowed_place_id(&first_account, "OSL allowed-place account is invalid")?;
+    validate_allowed_place_id(&second_account, "OSL allowed-place account is invalid")?;
+    if first_account == second_account {
+        return Err("OSL allowed-place accounts must be different".to_owned());
+    }
+    let first_to_second_stable_id =
+        allowed_place_stable_id(&app, &first_account, &kind, &second_account);
+    let second_to_first_stable_id =
+        allowed_place_stable_id(&app, &second_account, &kind, &first_account);
+    let prefs =
+        load_encrypted_json::<SecurityPreferences>(&config_dir()?.join(SECURITY_PREFS_FILE))?;
+    let first_to_second_allowed = prefs
+        .allowed_places
+        .contains_key(&first_to_second_stable_id);
+    let second_to_first_allowed = prefs
+        .allowed_places
+        .contains_key(&second_to_first_stable_id);
+    let state = match (first_to_second_allowed, second_to_first_allowed) {
+        (true, true) => "two-way",
+        (true, false) | (false, true) => "one-way",
+        (false, false) => "none",
+    }
+    .to_owned();
+    Ok(AllowedPlaceDirectionState {
+        app,
+        kind,
+        first_account,
+        second_account,
+        first_to_second_stable_id,
+        second_to_first_stable_id,
+        first_to_second_allowed,
+        second_to_first_allowed,
+        state,
+    })
+}
+
+pub fn create_one_use_invite_link(
+    security: &HubSecurityState,
+    recipient_label: String,
+) -> Result<OneUseInviteLink, String> {
+    require_unlocked()?;
+    let recipient_label = normalise_invite_recipient_label(&recipient_label)?;
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL one-use invite state is unavailable".to_owned())?;
+    let path = config_dir()?.join(SECURITY_PREFS_FILE);
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
+    prefs.version = 2;
+    let now = unix_timestamp_seconds()?;
+    let invite = fresh_one_use_invite_link(&recipient_label, now);
+    prefs
+        .one_use_invite_links
+        .insert(invite.invite_id.clone(), invite.clone());
+    write_encrypted_json(&path, &prefs)?;
+    Ok(invite)
+}
+
+pub fn list_one_use_invite_links(
+    _security: &HubSecurityState,
+) -> Result<Vec<OneUseInviteLink>, String> {
+    require_unlocked()?;
+    let prefs =
+        load_encrypted_json::<SecurityPreferences>(&config_dir()?.join(SECURITY_PREFS_FILE))?;
+    Ok(one_use_invite_link_records(&prefs))
 }
 
 /// Grant or revoke one friend's approval for exactly one scope.
@@ -2144,7 +2603,39 @@ pub fn apply_scoped_trust_grant(
     prefs
         .manual_approved_scope_people
         .insert(grant.storage_key().to_owned(), grant.person_id().to_owned());
+    let defaults = ipc::app_preferences::load_app_preferences(&dir.join("app_preferences.json"));
+    if defaults.new_friend_account_reach
+        == ipc::app_preferences::NewFriendAccountReach::AllSharedChats
+    {
+        prefs
+            .friend_account_reach_choices
+            .entry(grant.person_id().to_owned())
+            .or_default()
+            .insert(
+                format!("{}:{}", grant.service_id(), grant.account_id()),
+                true,
+            );
+    }
     write_encrypted_json(&path, &prefs)
+        .and_then(|_| apply_new_friend_defaults_to_people(&dir, grant.person_id(), defaults))
+}
+
+fn apply_new_friend_defaults_to_people(
+    dir: &Path,
+    person_id: &str,
+    defaults: ipc::app_preferences::AppPreferences,
+) -> Result<(), String> {
+    let path = dir.join(PEOPLE_FILE);
+    let mut people = load_people_file(dir)?;
+    let Some(metadata) = people.people.get_mut(person_id) else {
+        return Err("OSL friend is unknown".to_owned());
+    };
+    metadata.auto_whitelist = defaults.new_friend_auto_whitelist;
+    metadata.auto_whitelist_future_accounts = matches!(
+        defaults.new_friend_auto_whitelist,
+        ipc::auto_whitelist_rules::AutoWhitelistChoice::Always
+    );
+    write_encrypted_json(&path, &people)
 }
 
 /// Persist one uploaded prose-token blob in the encrypted burn ledger. The
@@ -4151,12 +4642,7 @@ fn validate_allowed_place_record(record: &AllowedPlaceRecord) -> Result<(), Stri
     {
         return Err("OSL Instagram allowed-place kind is invalid".to_owned());
     }
-    if record.app == "x"
-        && !matches!(
-            record.kind.as_str(),
-            "direct_message" | "public_post" | "group_direct_message" | "reply"
-        )
-    {
+    if record.app == "x" && !matches!(record.kind.as_str(), "direct_message" | "post") {
         return Err("OSL X allowed-place kind is invalid".to_owned());
     }
     validate_allowed_place_id(&record.stable_id, "OSL allowed-place identifier is invalid")?;
@@ -4178,17 +4664,6 @@ fn validate_allowed_place_id(value: &str, message: &str) -> Result<(), String> {
         || value.chars().any(char::is_whitespace)
     {
         return Err(message.to_owned());
-    }
-    Ok(())
-}
-fn validate_allowed_place_component(value: &str, label: &str) -> Result<(), String> {
-    if value.is_empty()
-        || value.len() > 80
-        || value
-            .bytes()
-            .any(|byte| !byte.is_ascii_alphanumeric() && !matches!(byte, b'-' | b'_'))
-    {
-        return Err(format!("OSL allowed-place {label} is invalid"));
     }
     Ok(())
 }
@@ -4226,410 +4701,6 @@ fn normalise_invite_recipient_label(value: &str) -> Result<String, String> {
         return Err("OSL invite recipient label is invalid".to_owned());
     }
     Ok(trimmed.to_owned())
-fn friend_account_reach_choice_records(
-    prefs: &SecurityPreferences,
-    person_id: &str,
-) -> Vec<FriendAccountReachChoiceRecord> {
-    prefs
-        .friend_account_reach_choices
-        .get(person_id)
-        .into_iter()
-        .flat_map(|accounts| accounts.values().cloned())
-        .collect()
-}
-
-fn app_notification_choice_records(
-    prefs: &SecurityPreferences,
-) -> Vec<AppNotificationChoiceRecord> {
-    prefs
-        .app_notification_choices
-        .iter()
-        .map(|(app_id, enabled)| AppNotificationChoiceRecord {
-            app_id: app_id.clone(),
-            enabled: *enabled,
-        })
-        .collect()
-}
-
-fn app_notification_choice_enabled(prefs: &SecurityPreferences, app_id: &str) -> bool {
-    prefs
-        .app_notification_choices
-        .get(app_id)
-        .copied()
-        .unwrap_or(false)
-}
-
-fn look_choice_records(prefs: &SecurityPreferences) -> Vec<LookChoiceRecord> {
-    prefs
-        .look_choices
-        .iter()
-        .map(|(name, value)| LookChoiceRecord {
-            name: name.clone(),
-            value: value.clone(),
-        })
-        .collect()
-}
-fn allowed_place_direction_key(app: &str, account: &str, kind: &str, stable_id: &str) -> String {
-    format!("{app}:{account}:{kind}:{stable_id}")
-}
-
-fn validate_allowed_place_direction(
-    app: &str,
-    first_account: &str,
-    second_account: &str,
-    kind: &str,
-) -> Result<(), String> {
-    validate_allowed_place_component(app, "app")?;
-    validate_allowed_place_component(kind, "kind")?;
-    if kind != "direct_message" {
-        return Err("OSL allowed-place kind is invalid".to_owned());
-    }
-    if first_account == second_account {
-        return Err("OSL allowed-place direction needs two different people".to_owned());
-    }
-    if app == "discord" {
-        if !is_discord_snowflake_shaped(first_account)
-            || !is_discord_snowflake_shaped(second_account)
-        {
-            return Err("OSL allowed-place Discord account is invalid".to_owned());
-        }
-    } else {
-        validate_allowed_place_component(first_account, "account")?;
-        validate_allowed_place_component(second_account, "account")?;
-    }
-    Ok(())
-}
-
-fn compare_allowed_place_direction_state_from_prefs(
-    prefs: &SecurityPreferences,
-    app: &str,
-    first_account: &str,
-    second_account: &str,
-    kind: &str,
-) -> Result<AllowedPlaceDirectionStateDto, String> {
-    validate_allowed_place_direction(app, first_account, second_account, kind)?;
-    let first_key = allowed_place_direction_key(app, first_account, kind, second_account);
-    let second_key = allowed_place_direction_key(app, second_account, kind, first_account);
-    let first_to_second = prefs.allowed_place_directions.contains(&first_key);
-    let second_to_first = prefs.allowed_place_directions.contains(&second_key);
-    let saved_directions = usize::from(first_to_second) + usize::from(second_to_first);
-    let state = match saved_directions {
-        0 => "none",
-        1 => "one-way",
-        2 => "two-way",
-        _ => unreachable!("only two directions are compared"),
-    }
-    .to_owned();
-    let verification_state = if saved_directions == 2 {
-        "visible"
-    } else {
-        "hidden"
-    }
-    .to_owned();
-    Ok(AllowedPlaceDirectionStateDto {
-        state,
-        verification_state,
-        saved_directions,
-        first_to_second,
-        second_to_first,
-    })
-}
-
-pub fn compare_allowed_place_direction_state(
-    app: String,
-    first_account: String,
-    second_account: String,
-    kind: String,
-) -> Result<AllowedPlaceDirectionStateDto, String> {
-    require_unlocked()?;
-    let prefs = load_security_preferences()?;
-    compare_allowed_place_direction_state_from_prefs(
-        &prefs,
-        &app,
-        &first_account,
-        &second_account,
-        &kind,
-    )
-}
-
-fn friend_account_reach_ticks_from_prefs(
-    prefs: &SecurityPreferences,
-    app: &str,
-    friend_account: &str,
-    owned_accounts: &[String],
-) -> Result<Vec<FriendAccountReachTickDto>, String> {
-    validate_allowed_place_component(app, "app")?;
-    let mut seen = BTreeSet::new();
-    let mut ticks = Vec::with_capacity(owned_accounts.len());
-    for account in owned_accounts {
-        if !seen.insert(account.as_str()) {
-            return Err("OSL owned account list contains a duplicate account".to_owned());
-        }
-        validate_allowed_place_direction(app, account, friend_account, "direct_message")?;
-        let key = allowed_place_direction_key(app, account, "direct_message", friend_account);
-        ticks.push(FriendAccountReachTickDto {
-            account: account.clone(),
-            ticked: prefs.allowed_place_directions.contains(&key),
-        });
-    }
-    Ok(ticks)
-}
-
-pub fn set_friend_account_reach_everywhere(
-    app: String,
-    friend_account: String,
-    owned_accounts: Vec<String>,
-) -> Result<FriendAccountReachEverywhereResult, String> {
-    require_unlocked()?;
-    let dir = config_dir()?;
-    let path = dir.join(SECURITY_PREFS_FILE);
-    let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
-    let mut seen = BTreeSet::new();
-    for account in &owned_accounts {
-        if !seen.insert(account.as_str()) {
-            return Err("OSL owned account list contains a duplicate account".to_owned());
-        }
-        validate_allowed_place_direction(&app, account, &friend_account, "direct_message")?;
-    }
-    prefs.version = 2;
-    for account in &owned_accounts {
-        prefs
-            .allowed_place_directions
-            .insert(allowed_place_direction_key(
-                &app,
-                account,
-                "direct_message",
-                &friend_account,
-            ));
-    }
-    write_encrypted_json(&path, &prefs)?;
-    let accounts =
-        friend_account_reach_ticks_from_prefs(&prefs, &app, &friend_account, &owned_accounts)?;
-    let ticked_count = accounts.iter().filter(|account| account.ticked).count();
-    Ok(FriendAccountReachEverywhereResult {
-        action: FRIEND_WIDE_WHITELIST_EVERYWHERE_ACTION.to_owned(),
-        command: FRIEND_WIDE_WHITELIST_EVERYWHERE_COMMAND.to_owned(),
-        app,
-        friend_account,
-        account_count: accounts.len(),
-        ticked_count,
-        accounts,
-    })
-}
-
-pub fn set_hub_friend_account_reach_everywhere(
-    security: &HubSecurityState,
-    person_id: String,
-    direct_account_list: Vec<HubFriendDirectAccountDto>,
-) -> Result<HubFriendAccountReachResultDto, String> {
-    set_hub_friend_account_reach(security, person_id, direct_account_list, true)
-}
-
-pub fn set_hub_friend_account_reach_nowhere(
-    security: &HubSecurityState,
-    person_id: String,
-    direct_account_list: Vec<HubFriendDirectAccountDto>,
-) -> Result<HubFriendAccountReachResultDto, String> {
-    set_hub_friend_account_reach(security, person_id, direct_account_list, false)
-}
-
-pub fn list_hub_friend_account_reach(
-    security: &HubSecurityState,
-    person_id: String,
-    direct_account_list: Vec<HubFriendDirectAccountDto>,
-) -> Result<HubFriendAccountReachResultDto, String> {
-    require_unlocked()?;
-    validate_person_id(&person_id)?;
-    let _transition = security
-        .transition
-        .lock()
-        .map_err(|_| "OSL manual peer settings are unavailable".to_owned())?;
-    let dir = config_dir()?;
-    let prefs_path = dir.join(SECURITY_PREFS_FILE);
-    let mut prefs = load_encrypted_json::<SecurityPreferences>(&prefs_path)?;
-    prefs.version = 2;
-    let changed_count = if prefs.future_account_auto_reach_people.contains(&person_id) {
-        apply_hub_friend_account_reach(&mut prefs, &person_id, &direct_account_list, true)?
-    } else {
-        validate_hub_friend_direct_accounts(&direct_account_list)?;
-        0
-    };
-    let rows = hub_friend_account_reach_rows(&prefs, &person_id, direct_account_list)?;
-    if changed_count > 0 {
-        write_encrypted_json(&prefs_path, &prefs)?;
-    }
-    let ticked_count = rows.iter().filter(|row| row.ticked).count();
-    let unticked_count = rows.len().saturating_sub(ticked_count);
-    Ok(HubFriendAccountReachResultDto {
-        action: "list".to_owned(),
-        person_id,
-        direct_account_list: rows,
-        ticked_count,
-        unticked_count,
-        changed_count,
-    })
-}
-
-fn set_hub_friend_account_reach(
-    security: &HubSecurityState,
-    person_id: String,
-    direct_account_list: Vec<HubFriendDirectAccountDto>,
-    ticked: bool,
-) -> Result<HubFriendAccountReachResultDto, String> {
-    require_unlocked()?;
-    validate_person_id(&person_id)?;
-    let _transition = security
-        .transition
-        .lock()
-        .map_err(|_| "OSL manual peer settings are unavailable".to_owned())?;
-    let dir = config_dir()?;
-    let prefs_path = dir.join(SECURITY_PREFS_FILE);
-    let mut prefs = load_encrypted_json::<SecurityPreferences>(&prefs_path)?;
-    prefs.version = 2;
-    if ticked {
-        prefs
-            .future_account_auto_reach_people
-            .insert(person_id.clone());
-    } else {
-        prefs.future_account_auto_reach_people.remove(&person_id);
-    }
-    let changed_count =
-        apply_hub_friend_account_reach(&mut prefs, &person_id, &direct_account_list, ticked)?;
-    let rows = hub_friend_account_reach_rows(&prefs, &person_id, direct_account_list)?;
-    write_encrypted_json(&prefs_path, &prefs)?;
-    let ticked_count = rows.iter().filter(|row| row.ticked).count();
-    let unticked_count = rows.len().saturating_sub(ticked_count);
-    Ok(HubFriendAccountReachResultDto {
-        action: if ticked { "everywhere" } else { "nowhere" }.to_owned(),
-        person_id,
-        direct_account_list: rows,
-        ticked_count,
-        unticked_count,
-        changed_count,
-    })
-}
-
-fn validate_hub_friend_direct_accounts(
-    direct_account_list: &[HubFriendDirectAccountDto],
-) -> Result<(), String> {
-    for account in direct_account_list {
-        validate_manual_peer_service_account(&account.service_id, &account.account_id)?;
-    }
-    Ok(())
-}
-
-fn apply_hub_friend_account_reach(
-    prefs: &mut SecurityPreferences,
-    person_id: &str,
-    direct_account_list: &[HubFriendDirectAccountDto],
-    ticked: bool,
-) -> Result<usize, String> {
-    let mut changed_count = 0usize;
-    for account in direct_account_list {
-        validate_manual_peer_service_account(&account.service_id, &account.account_id)?;
-        let storage_key =
-            manual_peer_scope_storage_key(&account.service_id, &account.account_id, person_id)?;
-        if ticked {
-            if prefs.burned_manual_scopes.contains(&storage_key) {
-                return Err(
-                    "This manual conversation was burned and cannot be reapproved".to_owned(),
-                );
-            }
-            let approved = prefs.manual_approved_scopes.insert(storage_key.clone());
-            let attributed = prefs
-                .manual_approved_scope_people
-                .insert(storage_key, person_id.to_owned())
-                .as_deref()
-                != Some(person_id);
-            if approved || attributed {
-                changed_count = changed_count.saturating_add(1);
-            }
-        } else if withdraw_manual_scope_grant(prefs, &storage_key) {
-            changed_count = changed_count.saturating_add(1);
-        }
-    }
-    Ok(changed_count)
-}
-
-fn hub_friend_account_reach_rows(
-    prefs: &SecurityPreferences,
-    person_id: &str,
-    direct_account_list: Vec<HubFriendDirectAccountDto>,
-) -> Result<Vec<HubFriendAccountReachRowDto>, String> {
-    direct_account_list
-        .into_iter()
-        .map(|account| {
-            let storage_key =
-                manual_peer_scope_storage_key(&account.service_id, &account.account_id, person_id)?;
-            Ok(HubFriendAccountReachRowDto {
-                ticked: manual_scope_preference_approved(prefs, &storage_key),
-                service_id: account.service_id,
-                account_id: account.account_id,
-                label: account.label,
-            })
-        })
-        .collect()
-}
-
-fn validate_group_verification_build_state(build_state: &str) -> Result<(), String> {
-    match build_state {
-        "unmodified" | "modified" => Ok(()),
-        _ => Err("OSL group verification build state is invalid".to_owned()),
-    }
-}
-
-fn list_group_verification_build_entries_from_prefs(
-    prefs: &SecurityPreferences,
-    app: &str,
-    local_account: &str,
-    group_id: &str,
-) -> Result<Vec<GroupVerificationBuildListEntryDto>, String> {
-    validate_allowed_place_component(app, "app")?;
-    validate_allowed_place_component(group_id, "group")?;
-    if app == "discord" {
-        if !is_discord_snowflake_shaped(local_account) || !is_discord_snowflake_shaped(group_id) {
-            return Err("OSL group verification Discord id is invalid".to_owned());
-        }
-    } else {
-        validate_allowed_place_component(local_account, "account")?;
-    }
-
-    let mut entries = Vec::new();
-    for record in prefs
-        .group_verification_build_list
-        .iter()
-        .filter(|record| record.group_id == group_id)
-    {
-        validate_allowed_place_direction(app, local_account, &record.member_id, "direct_message")?;
-        validate_group_verification_build_state(&record.build_state)?;
-        let two_way = compare_allowed_place_direction_state_from_prefs(
-            prefs,
-            app,
-            local_account,
-            &record.member_id,
-            "direct_message",
-        )?;
-        if two_way.state != "two-way" {
-            continue;
-        }
-        entries.push(GroupVerificationBuildListEntryDto {
-            member_id: record.member_id.clone(),
-            two_way_state: two_way.state,
-            build_state: record.build_state.clone(),
-        });
-    }
-    entries.sort_by(|left, right| left.member_id.cmp(&right.member_id));
-    Ok(entries)
-}
-
-pub fn list_group_verification_build_entries(
-    app: String,
-    local_account: String,
-    group_id: String,
-) -> Result<Vec<GroupVerificationBuildListEntryDto>, String> {
-    require_unlocked()?;
-    let prefs = load_security_preferences()?;
-    list_group_verification_build_entries_from_prefs(&prefs, &app, &local_account, &group_id)
 }
 
 fn manual_approved_scopes_for_person(
@@ -4714,7 +4785,6 @@ fn person_dto(
         whitelisted_scopes_truncated: whitelist_count > MAX_VISIBLE_WHITELIST_SCOPES,
         pending_key_change: metadata.pending_ed25519_public.is_some()
             || metadata.pending_key_bundle.is_some(),
-        relationship: FriendRelationship::Accepted,
         reach_broadened: reach_broadened_at.is_some(),
         reach_broadened_at: reach_broadened_at.flatten(),
         reach_narrowed_scopes,
@@ -4779,6 +4849,46 @@ fn validate_person_id(value: &str) -> Result<(), String> {
         return Err("OSL person id is invalid".to_owned());
     }
     Ok(())
+}
+
+fn validate_group_member_permission_id(value: &str, message: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > 128
+        || value
+            .bytes()
+            .any(|byte| !byte.is_ascii_alphanumeric() && !matches!(byte, b'-' | b'_'))
+    {
+        return Err(message.to_owned());
+    }
+    Ok(())
+}
+
+fn validate_profile_picture_owner(value: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > 128
+        || value
+            .bytes()
+            .any(|byte| !byte.is_ascii_alphanumeric() && !matches!(byte, b'-' | b'_'))
+    {
+        return Err("OSL profile-picture owner identity is invalid".to_owned());
+    }
+    Ok(())
+}
+
+fn protected_friend_profile_picture_image(
+    image_bytes: Option<Vec<u8>>,
+) -> Result<Option<ProtectedFriendProfilePictureImage>, String> {
+    image_bytes
+        .map(|bytes| {
+            if bytes.is_empty() || bytes.len() > MAX_PROFILE_PICTURE_IMAGE_BYTES {
+                return Err("OSL profile-picture image is invalid".to_owned());
+            }
+            Ok(ProtectedFriendProfilePictureImage {
+                media_type: "image/png".to_owned(),
+                bytes_b64: STANDARD.encode(bytes),
+            })
+        })
+        .transpose()
 }
 
 fn validate_manual_peer_scope_component(value: &str) -> Result<(), String> {
@@ -5112,6 +5222,13 @@ fn config_dir() -> Result<std::path::PathBuf, String> {
     keystore::osl_config_dir().map_err(|_| "OSL account storage is unavailable".to_owned())
 }
 
+fn unix_timestamp_seconds() -> Result<i64, String> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .map_err(|_| "OSL system clock is unavailable".to_owned())
+}
+
 fn load_encrypted_json<T: Default + for<'de> Deserialize<'de>>(path: &Path) -> Result<T, String> {
     let key = require_unlocked()?;
     load_encrypted_json_with_key(path, &key)
@@ -5298,99 +5415,6 @@ mod tests {
 
     const TEST_FILE_KEY: [u8; 32] = [0x91; 32];
 
-    #[test]
-    fn task_3742_whatsapp_kind_list_has_six_resolving_kinds_and_refuses_status() {
-        let expected = [
-            ("direct_message", "direct message"),
-            ("group_chat", "group chat"),
-            ("channel", "channel"),
-            ("community", "community"),
-            ("community_group", "community group"),
-            ("broadcast_list", "broadcast list"),
-        ];
-        let kinds = list_whatsapp_whitelist_kinds();
-        let ids = kinds
-            .iter()
-            .map(|kind| kind.id.as_str())
-            .collect::<Vec<_>>()
-            .join(",");
-        let names = kinds
-            .iter()
-            .map(|kind| kind.name.as_str())
-            .collect::<Vec<_>>()
-            .join(",");
-        println!("TASK3742_KIND_COUNT={}", kinds.len());
-        println!("TASK3742_KIND_IDS={ids}");
-        println!("TASK3742_KIND_NAMES={names}");
-        assert_eq!(kinds.len(), 6);
-        assert_eq!(
-            kinds
-                .iter()
-                .map(|kind| (kind.id.as_str(), kind.name.as_str()))
-                .collect::<Vec<_>>(),
-            expected
-        );
-
-        for (id, name) in expected {
-            let resolved = resolve_whatsapp_whitelist_kind(id).expect("known kind resolves");
-            println!(
-                "TASK3742_RESOLVED id={} name={} result=allowed",
-                resolved.id, resolved.name
-            );
-            assert_eq!(resolved.id, id);
-            assert_eq!(resolved.name, name);
-        }
-
-        let invented = run_task_3742_kind_probe("invented_kind");
-        let invented_stderr = String::from_utf8_lossy(&invented.stderr);
-        println!(
-            "TASK3742_INVENTED_KIND_EXIT={}",
-            invented.status.code().unwrap_or(-1)
-        );
-        println!("TASK3742_INVENTED_KIND_REFUSAL={}", invented_stderr.trim());
-        assert_eq!(invented.status.code(), Some(1));
-        assert!(invented_stderr.contains("invented_kind"));
-
-        for (task_id, kind) in [
-            ("1089a", "community"),
-            ("1089b", "community_group"),
-            ("1089c", "broadcast_list"),
-        ] {
-            let result = resolve_whatsapp_whitelist_kind(kind)
-                .map(|_| "allowed")
-                .unwrap_or("refusal");
-            println!("TASK3742_{task_id}_KIND={kind} RESULT={result}");
-            assert_eq!(result, "allowed");
-        }
-
-        let status_refusal = resolve_whatsapp_whitelist_kind("status").unwrap_err();
-        println!("TASK3742_STATUS_REFUSAL={status_refusal}");
-        assert!(status_refusal.contains("status"));
-    }
-
-    fn run_task_3742_kind_probe(kind: &str) -> std::process::Output {
-        std::process::Command::new(std::env::current_exe().expect("current test binary"))
-            .arg("task_3742_whatsapp_kind_probe_child")
-            .arg("--ignored")
-            .arg("--nocapture")
-            .env("TASK3742_KIND_PROBE", kind)
-            .output()
-            .expect("run task 3742 child probe")
-    }
-
-    #[test]
-    #[ignore]
-    fn task_3742_whatsapp_kind_probe_child() {
-        let kind = std::env::var("TASK3742_KIND_PROBE").expect("probe kind");
-        match resolve_whatsapp_whitelist_kind(&kind) {
-            Ok(resolved) => println!("TASK3742_KIND_PROBE_ALLOWED={}", resolved.id),
-            Err(refusal) => {
-                eprintln!("{refusal}");
-                std::process::exit(1);
-            }
-        }
-    }
-
     struct FileBackedSecurityHarness {
         dir: std::path::PathBuf,
         previous_active_account_dir: Option<std::path::PathBuf>,
@@ -5425,6 +5449,646 @@ mod tests {
             ipc::main_password::set_file_storage_key(self.previous_file_key);
             let _ = std::fs::remove_dir_all(&self.dir);
         }
+    }
+
+    #[test]
+    fn direct_group_member_permission_record_check_prints_one_group_and_member() {
+        let _harness = FileBackedSecurityHarness::new("group-member-permission");
+        let security = HubSecurityState::default();
+        let record = set_group_member_permission(
+            &security,
+            "group-0113".to_owned(),
+            "member-0113".to_owned(),
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            record,
+            GroupMemberPermissionRecord {
+                group_id: "group-0113".to_owned(),
+                member_id: "member-0113".to_owned(),
+                allowed: true,
+            }
+        );
+
+        let records = list_group_member_permissions(&security).unwrap();
+        println!(
+            "direct_group_member_permission_record group_id={} member_id={} allowed={}",
+            records[0].group_id, records[0].member_id, records[0].allowed
+        );
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].group_id, "group-0113");
+        assert_eq!(records[0].member_id, "member-0113");
+        assert!(records[0].allowed);
+    }
+
+    #[test]
+    fn direct_protected_friend_profile_picture_record_check_returns_one_owner_and_image_present_state(
+    ) {
+        let _harness = FileBackedSecurityHarness::new("protected-friend-profile-picture");
+        let security = HubSecurityState::default();
+        let record = set_protected_friend_profile_picture(
+            &security,
+            "identity-0230".to_owned(),
+            Some(vec![0x89, b'P', b'N', b'G', b'\r', b'\n']),
+        )
+        .unwrap();
+        assert_eq!(record.owner_osl_user_id, "identity-0230");
+        assert!(record.image_present());
+
+        let records = list_protected_friend_profile_pictures(&security).unwrap();
+        println!(
+            "direct_protected_friend_profile_picture_record owner_count={} owner_osl_user_id={} image_present={}",
+            records.len(),
+            records[0].owner_osl_user_id,
+            records[0].image_present()
+        );
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].owner_osl_user_id, "identity-0230");
+        assert!(records[0].image_present());
+    }
+
+    #[test]
+    fn direct_whitelist_nowhere_action_unticks_three_current_owned_accounts_for_one_friend() {
+        let harness = FileBackedSecurityHarness::new("friend-account-reach-nowhere");
+        let security = HubSecurityState::default();
+        let person_id = "hub-person-task-0257".to_owned();
+        let accounts = vec![
+            FriendAccountReachAccount {
+                service_id: "discord".to_owned(),
+                account_id: "account-0257-a".to_owned(),
+                account_label: "OLIVE-0257 Discord".to_owned(),
+            },
+            FriendAccountReachAccount {
+                service_id: "telegram".to_owned(),
+                account_id: "account-0257-b".to_owned(),
+                account_label: "OLIVE-0257 Telegram".to_owned(),
+            },
+            FriendAccountReachAccount {
+                service_id: "email".to_owned(),
+                account_id: "account-0257-c".to_owned(),
+                account_label: "OLIVE-0257 Mail".to_owned(),
+            },
+        ];
+        let seeded_choices = accounts
+            .iter()
+            .map(|account| (friend_account_reach_key(account), true))
+            .collect::<BTreeMap<_, _>>();
+        write_encrypted_json(
+            &harness.path().join(SECURITY_PREFS_FILE),
+            &SecurityPreferences {
+                version: 2,
+                friend_account_reach_choices: BTreeMap::from([(person_id.clone(), seeded_choices)]),
+                ..SecurityPreferences::default()
+            },
+        )
+        .unwrap();
+
+        let result =
+            set_hub_friend_account_reach_nowhere(&security, person_id.clone(), accounts).unwrap();
+        let unticked = result
+            .accounts
+            .iter()
+            .filter(|account| !account.allowed)
+            .count();
+        let ticked = result.accounts.len() - unticked;
+        let states = result
+            .accounts
+            .iter()
+            .map(|account| format!("{}={}", account.account_label, account.allowed))
+            .collect::<Vec<_>>()
+            .join("|");
+        println!(
+            "TASK0257 direct_account_list action={} friend={} rows={} unticked={} ticked={} changed_count={} states={}",
+            result.action,
+            result.person_id,
+            result.accounts.len(),
+            unticked,
+            ticked,
+            result.changed_count,
+            states
+        );
+
+        assert_eq!(result.action, "nowhere");
+        assert_eq!(result.person_id, person_id);
+        assert_eq!(result.accounts.len(), 3);
+        assert_eq!(unticked, 3);
+        assert_eq!(ticked, 0);
+        assert_eq!(result.changed_count, 3);
+        assert!(result.accounts.iter().all(|account| !account.allowed));
+
+        let stored: SecurityPreferences =
+            load_encrypted_json(&harness.path().join(SECURITY_PREFS_FILE)).unwrap();
+        assert!(
+            !stored.friend_account_reach_choices.contains_key(&person_id),
+            "nowhere removes explicit account reach grants so the friend is unticked everywhere"
+        );
+    }
+
+    #[test]
+    fn direct_friend_page_share_reads_return_separate_share_choices_for_two_friends() {
+        let _harness = FileBackedSecurityHarness::new("friend-page-share-data");
+        let security = HubSecurityState::default();
+        let friend_a = "hub-person-task-0836-a".to_owned();
+        let friend_b = "hub-person-task-0836-b".to_owned();
+        let account_catalog = vec![
+            FriendAccountReachAccount {
+                service_id: "discord".to_owned(),
+                account_id: "account-0836-discord".to_owned(),
+                account_label: "TASK0836 Discord".to_owned(),
+            },
+            FriendAccountReachAccount {
+                service_id: "telegram".to_owned(),
+                account_id: "account-0836-telegram".to_owned(),
+                account_label: "TASK0836 Telegram".to_owned(),
+            },
+        ];
+        let conversation_catalog = vec![
+            FriendPageShareConversation {
+                storage_key: "dm:conversation-0836-one".to_owned(),
+                conversation_label: "TASK0836 One".to_owned(),
+                checked: false,
+            },
+            FriendPageShareConversation {
+                storage_key: "gc:conversation-0836-two".to_owned(),
+                conversation_label: "TASK0836 Two".to_owned(),
+                checked: false,
+            },
+        ];
+
+        save_friend_page_share_data(
+            &security,
+            friend_a.clone(),
+            vec![
+                FriendPageShareAccountChoice {
+                    checked: true,
+                    service_id: account_catalog[0].service_id.clone(),
+                    account_id: account_catalog[0].account_id.clone(),
+                    account_label: account_catalog[0].account_label.clone(),
+                },
+                FriendPageShareAccountChoice {
+                    checked: false,
+                    service_id: account_catalog[1].service_id.clone(),
+                    account_id: account_catalog[1].account_id.clone(),
+                    account_label: account_catalog[1].account_label.clone(),
+                },
+            ],
+            vec![
+                FriendPageShareConversation {
+                    checked: true,
+                    ..conversation_catalog[0].clone()
+                },
+                FriendPageShareConversation {
+                    checked: false,
+                    ..conversation_catalog[1].clone()
+                },
+            ],
+            "on".to_owned(),
+        )
+        .unwrap();
+        save_friend_page_share_data(
+            &security,
+            friend_b.clone(),
+            vec![
+                FriendPageShareAccountChoice {
+                    checked: false,
+                    service_id: account_catalog[0].service_id.clone(),
+                    account_id: account_catalog[0].account_id.clone(),
+                    account_label: account_catalog[0].account_label.clone(),
+                },
+                FriendPageShareAccountChoice {
+                    checked: true,
+                    service_id: account_catalog[1].service_id.clone(),
+                    account_id: account_catalog[1].account_id.clone(),
+                    account_label: account_catalog[1].account_label.clone(),
+                },
+            ],
+            vec![
+                FriendPageShareConversation {
+                    checked: false,
+                    ..conversation_catalog[0].clone()
+                },
+                FriendPageShareConversation {
+                    checked: true,
+                    ..conversation_catalog[1].clone()
+                },
+            ],
+            "off".to_owned(),
+        )
+        .unwrap();
+        remove_friend_page_share_data(
+            &security,
+            friend_a.clone(),
+            account_catalog.clone(),
+            conversation_catalog.clone(),
+        )
+        .unwrap();
+        save_friend_page_share_data(
+            &security,
+            friend_a.clone(),
+            vec![
+                FriendPageShareAccountChoice {
+                    checked: true,
+                    service_id: account_catalog[0].service_id.clone(),
+                    account_id: account_catalog[0].account_id.clone(),
+                    account_label: account_catalog[0].account_label.clone(),
+                },
+                FriendPageShareAccountChoice {
+                    checked: false,
+                    service_id: account_catalog[1].service_id.clone(),
+                    account_id: account_catalog[1].account_id.clone(),
+                    account_label: account_catalog[1].account_label.clone(),
+                },
+            ],
+            vec![
+                FriendPageShareConversation {
+                    checked: true,
+                    ..conversation_catalog[0].clone()
+                },
+                FriendPageShareConversation {
+                    checked: false,
+                    ..conversation_catalog[1].clone()
+                },
+            ],
+            "on".to_owned(),
+        )
+        .unwrap();
+
+        let cancelled_a = cancel_friend_page_share_data(
+            &security,
+            friend_a.clone(),
+            account_catalog.clone(),
+            conversation_catalog.clone(),
+        )
+        .unwrap();
+        let read_a = read_friend_page_share_data(
+            &security,
+            friend_a.clone(),
+            account_catalog.clone(),
+            conversation_catalog.clone(),
+        )
+        .unwrap();
+        let read_b = read_friend_page_share_data(
+            &security,
+            friend_b.clone(),
+            account_catalog.clone(),
+            conversation_catalog.clone(),
+        )
+        .unwrap();
+
+        assert_eq!(cancelled_a, read_a, "cancel must read without overwriting");
+        assert_eq!(
+            read_a
+                .accounts
+                .iter()
+                .map(|row| row.checked)
+                .collect::<Vec<_>>(),
+            vec![true, false]
+        );
+        assert_eq!(
+            read_b
+                .accounts
+                .iter()
+                .map(|row| row.checked)
+                .collect::<Vec<_>>(),
+            vec![false, true]
+        );
+        assert_eq!(
+            read_a
+                .conversations
+                .iter()
+                .map(|row| row.checked)
+                .collect::<Vec<_>>(),
+            vec![true, false]
+        );
+        assert_eq!(
+            read_b
+                .conversations
+                .iter()
+                .map(|row| row.checked)
+                .collect::<Vec<_>>(),
+            vec![false, true]
+        );
+        assert_eq!(read_a.new_account_rule, "on");
+        assert_eq!(read_b.new_account_rule, "off");
+        let actions = read_a
+            .actions
+            .iter()
+            .map(|action| action.action.as_str())
+            .collect::<Vec<_>>()
+            .join("|");
+        assert_eq!(actions, "save|remove|cancel");
+        assert_eq!(read_b.actions, read_a.actions);
+
+        println!(
+            "TASK0836 direct_friend_share_reads friends=2 friend_a={} friend_a_accounts={} friend_a_conversations={} friend_a_new_account_rule={} friend_b={} friend_b_accounts={} friend_b_conversations={} friend_b_new_account_rule={} actions={} separate={}",
+            read_a.person_id,
+            friend_share_account_states(&read_a.accounts),
+            friend_share_conversation_states(&read_a.conversations),
+            read_a.new_account_rule,
+            read_b.person_id,
+            friend_share_account_states(&read_b.accounts),
+            friend_share_conversation_states(&read_b.conversations),
+            read_b.new_account_rule,
+            actions,
+            read_a.accounts != read_b.accounts
+                && read_a.conversations != read_b.conversations
+                && read_a.new_account_rule != read_b.new_account_rule
+        );
+    }
+
+    fn friend_share_account_states(accounts: &[FriendPageShareAccountChoice]) -> String {
+        accounts
+            .iter()
+            .map(|account| {
+                format!(
+                    "{}:{}={}",
+                    account.service_id, account.account_id, account.checked
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    fn friend_share_conversation_states(conversations: &[FriendPageShareConversation]) -> String {
+        conversations
+            .iter()
+            .map(|conversation| format!("{}={}", conversation.storage_key, conversation.checked))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    #[test]
+    fn direct_group_member_permission_commands_list_two_saved_members_for_one_group() {
+        let _harness = FileBackedSecurityHarness::new("group-member-permission-commands");
+        let security = HubSecurityState::default();
+        set_group_member_permission(
+            &security,
+            "group-0114".to_owned(),
+            "member-0114-a".to_owned(),
+            true,
+        )
+        .unwrap();
+        set_group_member_permission(
+            &security,
+            "group-0114".to_owned(),
+            "member-0114-b".to_owned(),
+            true,
+        )
+        .unwrap();
+        set_group_member_permission(
+            &security,
+            "group-0114".to_owned(),
+            "member-0114-removed".to_owned(),
+            true,
+        )
+        .unwrap();
+        set_group_member_permission(
+            &security,
+            "other-group-0114".to_owned(),
+            "member-0114-other".to_owned(),
+            true,
+        )
+        .unwrap();
+        assert!(remove_group_member_permission(
+            &security,
+            "group-0114".to_owned(),
+            "member-0114-removed".to_owned(),
+        )
+        .unwrap());
+
+        let records =
+            list_group_member_permissions_for_group(&security, "group-0114".to_owned()).unwrap();
+        let member_ids = records
+            .iter()
+            .map(|record| record.member_id.as_str())
+            .collect::<Vec<_>>()
+            .join(",");
+        println!(
+            "direct_group_member_permission_commands group_id=group-0114 saved_members={} member_ids={}",
+            records.len(),
+            member_ids
+        );
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].group_id, "group-0114");
+        assert_eq!(records[0].member_id, "member-0114-a");
+        assert!(records[0].allowed);
+        assert_eq!(records[1].group_id, "group-0114");
+        assert_eq!(records[1].member_id, "member-0114-b");
+        assert!(records[1].allowed);
+    }
+
+    #[test]
+    fn direct_whatsapp_whitelist_kinds_command_returns_exactly_three_named_kinds() {
+        let kinds = list_whatsapp_whitelist_kinds();
+        let names = kinds
+            .iter()
+            .map(|kind| kind.name.as_str())
+            .collect::<Vec<_>>()
+            .join(",");
+        println!(
+            "direct_whatsapp_whitelist_kinds count={} names={}",
+            kinds.len(),
+            names
+        );
+        assert_eq!(kinds.len(), 3);
+        assert_eq!(kinds[0].id, "direct_message");
+        assert_eq!(kinds[0].name, "direct message");
+        assert_eq!(kinds[1].id, "group_chat");
+        assert_eq!(kinds[1].name, "group chat");
+        assert_eq!(kinds[2].id, "channel");
+        assert_eq!(kinds[2].name, "channel");
+    }
+
+    #[test]
+    fn direct_create_one_use_invite_link_returns_different_unused_links() {
+        let _harness = FileBackedSecurityHarness::new("one-use-invite-links");
+        let security = HubSecurityState::default();
+        let first = create_one_use_invite_link(&security, "No OSL name 0217 A".to_owned()).unwrap();
+        let second =
+            create_one_use_invite_link(&security, "No OSL name 0217 B".to_owned()).unwrap();
+        let records = list_one_use_invite_links(&security).unwrap();
+        let unused = records
+            .iter()
+            .filter(|record| record.consumed_at.is_none() && record.use_limit == 1)
+            .count();
+        println!(
+            "direct_create_one_use_invite_links command_calls=2 unused_links={} different={} link1={} link2={}",
+            unused,
+            first.link != second.link,
+            first.link,
+            second.link
+        );
+
+        assert_eq!(records.len(), 2);
+        assert_eq!(unused, 2);
+        assert_ne!(first.invite_id, second.invite_id);
+        assert_ne!(first.link, second.link);
+        for record in records {
+            assert!(record.link.starts_with(ONE_USE_INVITE_LINK_PREFIX));
+            assert_eq!(record.intended_use, "space_admission");
+            assert_eq!(record.use_limit, 1);
+            assert!(record.consumed_at.is_none());
+            assert!(record.expires_at >= unix_timestamp_seconds().unwrap());
+        }
+    }
+
+    #[test]
+    fn direct_allowed_place_record_survives_close_reopen_query() {
+        let harness = FileBackedSecurityHarness::new("allowed-place-restart");
+        let security = HubSecurityState::default();
+        let record =
+            AllowedPlaceRecord::discord_direct_message("900000000000000001", "900000000000000003");
+        let stable_id = record.stable_id.clone();
+
+        let added = add_allowed_place_record(&security, record.clone()).unwrap();
+        assert_eq!(added, record);
+        let sealed_path = harness.path().join(SECURITY_PREFS_FILE);
+        let sealed = std::fs::read(&sealed_path).expect("security prefs written");
+        assert!(ipc::main_password::has_enc_magic(&sealed));
+        drop(security);
+
+        let reopened = HubSecurityState::default();
+        let queried = query_allowed_place_record(&reopened, stable_id.clone())
+            .unwrap()
+            .expect("saved allowed place after reopen");
+        let listed = list_allowed_place_records(&reopened).unwrap();
+        println!(
+            "TASK0104 allowed_place_restart added=1 closed=1 reopened=1 query_count={} query.app={} query.account={} query.kind={} query.stable_id={}",
+            listed.len(),
+            queried.app,
+            queried.account,
+            queried.kind,
+            queried.stable_id
+        );
+
+        assert_eq!(listed.len(), 1);
+        assert_eq!(queried.app, "discord");
+        assert_eq!(queried.account, "900000000000000001");
+        assert_eq!(queried.kind, "direct_message");
+        assert_eq!(
+            queried.stable_id,
+            "discord:900000000000000001:direct_message:900000000000000003"
+        );
+    }
+
+    #[test]
+    fn direct_allowed_place_direction_state_moves_from_one_way_to_two_way() {
+        let _harness = FileBackedSecurityHarness::new("allowed-place-two-way-state");
+        let security = HubSecurityState::default();
+        let first =
+            AllowedPlaceRecord::discord_direct_message("900000000000000170", "900000000000000171");
+        let second =
+            AllowedPlaceRecord::discord_direct_message("900000000000000171", "900000000000000170");
+
+        add_allowed_place_record(&security, first.clone()).unwrap();
+        let one_way = compare_allowed_place_direction_state(
+            &security,
+            "discord".to_owned(),
+            "direct_message".to_owned(),
+            first.account.clone(),
+            second.account.clone(),
+        )
+        .unwrap();
+        println!(
+            "TASK0170 allowed_place_direction saved_directions=1 state={} first_to_second={} second_to_first={}",
+            one_way.state, one_way.first_to_second_allowed, one_way.second_to_first_allowed
+        );
+        assert_eq!(one_way.state, "one-way");
+        assert!(one_way.first_to_second_allowed);
+        assert!(!one_way.second_to_first_allowed);
+
+        add_allowed_place_record(&security, second).unwrap();
+        let two_way = compare_allowed_place_direction_state(
+            &security,
+            "discord".to_owned(),
+            "direct_message".to_owned(),
+            "900000000000000170".to_owned(),
+            "900000000000000171".to_owned(),
+        )
+        .unwrap();
+        println!(
+            "TASK0170 allowed_place_direction saved_directions=2 state={} first_to_second={} second_to_first={}",
+            two_way.state, two_way.first_to_second_allowed, two_way.second_to_first_allowed
+        );
+        assert_eq!(two_way.state, "two-way");
+        assert!(two_way.first_to_second_allowed);
+        assert!(two_way.second_to_first_allowed);
+    }
+
+    #[test]
+    fn direct_allowed_place_commands_return_json_without_opening_osl_window() {
+        let _harness = FileBackedSecurityHarness::new("allowed-place-command-json");
+        let security = HubSecurityState::default();
+        let first =
+            AllowedPlaceRecord::discord_direct_message("900000000000000107", "900000000000000108");
+        let second =
+            AllowedPlaceRecord::discord_direct_message("900000000000000108", "900000000000000107");
+        let first_id = first.stable_id.clone();
+
+        let add_json = serde_json::to_value(add_allowed_place_record(&security, first).unwrap())
+            .expect("add command result serializes");
+        add_allowed_place_record(&security, second).unwrap();
+        let list_json = serde_json::to_value(list_allowed_place_records(&security).unwrap())
+            .expect("list command result serializes");
+        let query_json =
+            serde_json::to_value(query_allowed_place_record(&security, first_id.clone()).unwrap())
+                .expect("query command result serializes");
+        let allowed_json = serde_json::to_value(
+            query_allowed_place_allowed(
+                &security,
+                AllowedPlaceQuery {
+                    app: "discord".to_owned(),
+                    account: "900000000000000107".to_owned(),
+                    kind: "direct_message".to_owned(),
+                    stable_id: first_id.clone(),
+                },
+            )
+            .unwrap(),
+        )
+        .expect("allowed command result serializes");
+        let compare_json = serde_json::to_value(
+            compare_allowed_place_direction_state(
+                &security,
+                "discord".to_owned(),
+                "direct_message".to_owned(),
+                "900000000000000107".to_owned(),
+                "900000000000000108".to_owned(),
+            )
+            .unwrap(),
+        )
+        .expect("allowed query command result serializes");
+        let remove_json =
+            serde_json::to_value(remove_allowed_place_record(&security, first_id).unwrap())
+                .expect("remove command result serializes");
+
+        let list_count = list_json.as_array().map_or(0, Vec::len);
+        println!(
+            "TASK0107 allowed_place_command_json add={} remove={} list_count={} query_present={} allowed={} allowed_state={} first_to_second={} second_to_first={} window_opened=false",
+            add_json["stableId"].as_str().unwrap_or(""),
+            remove_json.as_bool().unwrap_or(false),
+            list_count,
+            !query_json.is_null(),
+            allowed_json.as_bool().unwrap_or(false),
+            compare_json["state"].as_str().unwrap_or(""),
+            compare_json["firstToSecondAllowed"].as_bool().unwrap_or(false),
+            compare_json["secondToFirstAllowed"].as_bool().unwrap_or(false)
+        );
+
+        assert_eq!(
+            add_json["stableId"],
+            "discord:900000000000000107:direct_message:900000000000000108"
+        );
+        assert_eq!(list_count, 2);
+        assert_eq!(
+            query_json["stableId"],
+            "discord:900000000000000107:direct_message:900000000000000108"
+        );
+        assert_eq!(allowed_json, true);
+        assert_eq!(compare_json["state"], "two-way");
+        assert_eq!(compare_json["firstToSecondAllowed"], true);
+        assert_eq!(compare_json["secondToFirstAllowed"], true);
+        assert_eq!(remove_json, true);
     }
 
     fn fresh_test_dir(label: &str) -> std::path::PathBuf {
@@ -5794,6 +6458,16 @@ mod tests {
         let core = HubCoreState::default();
         let security = HubSecurityState::default();
         install_self_identity(&core);
+        ipc::commands::cmd_osl_save_new_friend_defaults(
+            &core.osl,
+            ipc::commands::NewFriendDefaultsDto {
+                account_reach: "all_shared_chats".to_owned(),
+                auto_whitelist: "always".to_owned(),
+                verification_warnings: "disabled".to_owned(),
+            },
+            Some(harness.path().to_path_buf()),
+        )
+        .expect("saved new-friend defaults");
 
         let friend = keystore::generate_native_identity();
         let added = add_friend_code(&core, &security, friend_code_for_identity(&friend), None)
@@ -5887,6 +6561,24 @@ mod tests {
         )
         .expect("typed friend request adopts its scoped grant in the original core");
         {
+            let stored_people = load_people_file(harness.path()).unwrap();
+            let pending_friend = stored_people.people.get(&added.person_id).unwrap();
+            assert_eq!(
+                pending_friend.auto_whitelist,
+                ipc::auto_whitelist_rules::AutoWhitelistChoice::Never,
+                "pending or IPC-only requests must not apply new-friend defaults"
+            );
+            assert!(!pending_friend.auto_whitelist_future_accounts);
+            let stored: SecurityPreferences =
+                load_encrypted_json(&harness.path().join(SECURITY_PREFS_FILE)).unwrap();
+            assert!(
+                !stored
+                    .friend_account_reach_choices
+                    .contains_key(&added.person_id),
+                "pending or IPC-only requests must not tick account reach"
+            );
+        }
+        {
             let peer_map = core.osl.peer_map.lock().unwrap();
             let requester = peer_map
                 .get(&requester_discord_id)
@@ -5972,6 +6664,38 @@ mod tests {
                 .map(String::as_str),
             Some(added.person_id.as_str()),
             "manual approval must remain attributed to the accepted friend"
+        );
+        let account_key = format!("{}:{}", grant.service_id(), grant.account_id());
+        let account_allowed = stored
+            .friend_account_reach_choices
+            .get(added.person_id.as_str())
+            .and_then(|choices| choices.get(&account_key))
+            .copied()
+            .unwrap_or(false);
+        assert!(
+            account_allowed,
+            "accepted friend must inherit the saved current-account reach default"
+        );
+
+        let stored_people = load_people_file(harness.path()).unwrap();
+        let accepted_friend = stored_people.people.get(&added.person_id).unwrap();
+        assert_eq!(
+            accepted_friend.auto_whitelist,
+            ipc::auto_whitelist_rules::AutoWhitelistChoice::Always
+        );
+        assert!(accepted_friend.auto_whitelist_future_accounts);
+        let future_account_auto_whitelist = if accepted_friend.auto_whitelist_future_accounts {
+            "on"
+        } else {
+            "off"
+        };
+        println!(
+            "TASK0249 newly_accepted_friend person={} account={} account_allowed={} auto_whitelist={} future_account_auto_whitelist={}",
+            added.person_id,
+            account_key,
+            account_allowed,
+            accepted_friend.auto_whitelist.label(),
+            future_account_auto_whitelist
         );
 
         let people = list_people(&core).unwrap();
@@ -7462,6 +8186,72 @@ key"
     }
 
     #[test]
+    fn server_channel_burn_removes_the_marked_channel_message() {
+        let harness = FileBackedSecurityHarness::new("server-channel-burn-removes-mark");
+        let core = HubCoreState::default();
+        let security = HubSecurityState::default();
+        let channel_id = "task0530-server-channel";
+        let mark = "TASK0530 marked channel message still present";
+        write_encrypted_json(
+            &harness.path().join(SECURITY_PREFS_FILE),
+            &SecurityPreferences::default(),
+        )
+        .unwrap();
+        write_scope_blobs(
+            &harness.path().join("scope_blobs.json"),
+            &ipc::scope_blobs_file::ScopeBlobsFile::default(),
+        )
+        .unwrap();
+        let history_dir = harness.path().join("task0530-message-store");
+        let store = store::MessageStore::open(&history_dir, &[0x53; 32]).unwrap();
+        store
+            .put(&store::StoredMessage {
+                discord_message_id: "task0530-marked-channel-message".to_owned(),
+                channel_id: channel_id.to_owned(),
+                sender_discord_id: "task0530-sender".to_owned(),
+                sender_osl_user_id: "task0530-sender".to_owned(),
+                plaintext: mark.to_owned(),
+                decrypted_at: 1_900_530_000,
+                burned: false,
+            })
+            .unwrap();
+        *core.osl.message_store.lock().unwrap() = Some(store);
+
+        let result = burn_scope(
+            &core,
+            &security,
+            ScopeInput {
+                kind: ScopeKind::ServerChannel,
+                id: "task0530-server:task0530-server-channel".to_owned(),
+                server_id: Some("task0530-server".to_owned()),
+                channel_id: Some(channel_id.to_owned()),
+            },
+            Vec::new(),
+            true,
+            Vec::new(),
+        )
+        .expect("server-channel burn succeeds");
+        let after = ipc::commands::cmd_osl_load_channel_history(
+            &core.osl,
+            channel_id.to_owned(),
+            Some(10),
+        )
+        .expect("load channel history after burn");
+        let still_present = after.iter().any(|row| row.plaintext == mark);
+        println!(
+            "TASK0530 server_channel_burn rows_destroyed={} marked_channel_message_still_present={} marked=\"{}\"",
+            result.rows_destroyed, still_present, mark
+        );
+
+        assert!(
+            !still_present,
+            "marked channel message still present: marked=\"{}\" channel_id=\"{}\"",
+            mark, channel_id
+        );
+        assert_eq!(result.rows_destroyed, 1);
+    }
+
+    #[test]
     fn t1_t63_scope_burn_enters_dispatch_before_remote_effects() {
         let harness = FileBackedSecurityHarness::new("t1-63-burn-dispatch");
         let core = HubCoreState::default();
@@ -8397,4 +9187,32 @@ key"
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+/// Confirm that a local person row is an accepted, verified friend before a
+/// separate backend records account reach for that person.
+pub fn require_accepted_friend(core: &HubCoreState, person_id: &str) -> Result<(), String> {
+    require_unlocked()?;
+    validate_person_id(person_id)?;
+    let people = load_people_file(&config_dir()?)?;
+    let metadata = people
+        .people
+        .get(person_id)
+        .ok_or_else(|| "OSL friend is unknown".to_owned())?;
+    if !peer_is_verified(
+        people.version,
+        metadata.safety_number_verified,
+        metadata.pending_ed25519_public.is_some() || metadata.pending_key_bundle.is_some(),
+    ) {
+        return Err("OSL friend is not accepted".to_owned());
+    }
+    let peer = core
+        .osl
+        .peer_map
+        .lock()
+        .map_err(|_| "OSL peer state is unavailable".to_owned())?
+        .get(person_id)
+        .cloned()
+        .ok_or_else(|| "OSL friend key state is missing".to_owned())?;
+    validate_manual_peer_identity(person_id, metadata, &peer)
 }

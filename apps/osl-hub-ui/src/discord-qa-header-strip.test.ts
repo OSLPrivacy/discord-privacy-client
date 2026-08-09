@@ -45,10 +45,10 @@ describe("Discord QA header strip", () => {
     expect(controls).toContain('id="discord-qa-transcript-visibility"');
     expect(controls).toContain('id="discord-qa-toggle-composer"');
     expect(styles).toContain(
-      ".discord-qa-icon-control.composer.unlocked { color: #ff626e;",
+      ".discord-qa-icon-control.composer.unlocked { color: #e05656;", // colour.danger (osl-tokens.ts)
     );
     expect(styles).toContain(
-      ".discord-qa-icon-control.composer.locked { color: #5b8cff;",
+      ".discord-qa-icon-control.composer.locked { color: #3dd68c;", // colour.safe — the design draws the locked state green
     );
     expect(styles).toContain("left: 50%");
     expect(styles).toContain("transform: translate(-50%, -50%)");
@@ -70,7 +70,7 @@ describe("Discord QA header strip", () => {
     expect(source).toContain('data-open-burn="app"');
     expect(source).toContain('data-open-burn="chat"');
     expect(source).toContain('burnDialogOpen = true');
-    expect(source).toContain('input.value !== burnConfirmationPhrase(burnScope)');
+    expect(source).toContain('!acknowledgement.checked');
   });
 
   it("changes only an exact verified peer scope and fails closed", () => {

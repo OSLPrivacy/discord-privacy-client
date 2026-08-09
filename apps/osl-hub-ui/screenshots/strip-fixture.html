@@ -1,0 +1,361 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OSL Strip fixture</title>
+    <style>
+      /* SYNTHETIC CARRIER CHROME ONLY. These are deliberately the carrier's
+         own colours (Discord #313338 etc), per canon: the strip rides on top
+         of an app that keeps looking exactly like itself. Every OSL-owned
+         pixel on this page is painted by src/strip.css tokens instead. */
+      html, body { margin: 0; height: 100%; }
+      body { background: #080c0d; font-family: "Segoe UI", system-ui, sans-serif; overflow: hidden; }
+      #app { height: 100vh; display: flex; flex-direction: column; }
+      .carrier { flex: 1; display: flex; min-height: 0; color: #f2f3f5; }
+      .carrier-rail { width: 66px; flex-shrink: 0; background: #1c1d22; display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 12px 0; }
+      .carrier-app { width: 44px; height: 44px; border-radius: 50%; background: rgba(255,255,255,0.06); display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 16px; color: #dbdee1; }
+      .carrier-app.active { border-radius: 14px; background: rgba(42,192,240,0.14); box-shadow: 0 0 0 2px #2ac0f0; }
+      .carrier-side { width: 232px; flex-shrink: 0; background: #232428; display: flex; flex-direction: column; }
+      .carrier-side-head { height: 50px; flex-shrink: 0; display: flex; align-items: center; padding: 0 16px; border-bottom: 1px solid rgba(0,0,0,0.25); font-weight: 700; font-size: 15px; }
+      .carrier-channels { flex: 1; overflow-y: auto; padding: 12px 8px; }
+      .carrier-channels-label { font-size: 11px; font-weight: 700; letter-spacing: 0.04em; color: #949ba4; padding: 6px 8px 4px; text-transform: uppercase; }
+      .carrier-channel { display: flex; align-items: center; gap: 7px; padding: 7px 8px; border-radius: 4px; margin-bottom: 1px; cursor: pointer; color: #949ba4; background: transparent; border: 0; width: 100%; font: inherit; text-align: left; }
+      .carrier-channel.active { background: rgba(255,255,255,0.08); color: #f2f3f5; }
+      .carrier-channel .sigil { font-size: 17px; color: #949ba4; line-height: 1; }
+      .carrier-channel .name { font-size: 14.5px; font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .carrier-channel .protected-dot { width: 6px; height: 6px; border-radius: 50%; background: #2ac0f0; }
+      .carrier-user { height: 52px; flex-shrink: 0; display: flex; align-items: center; gap: 9px; padding: 0 12px; background: rgba(0,0,0,0.22); }
+      .carrier-user .avatar { width: 30px; height: 30px; border-radius: 50%; background: #5b64d6; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; color: #fff; }
+      .carrier-user .who { display: flex; flex-direction: column; }
+      .carrier-user .who strong { font-size: 13px; }
+      .carrier-user .who small { font-size: 11px; color: #949ba4; }
+      .carrier-main { flex: 1; display: flex; flex-direction: column; min-width: 0; background: #313338; }
+      .carrier-main-head { height: 50px; flex-shrink: 0; display: flex; align-items: center; gap: 9px; padding: 0 18px; border-bottom: 1px solid rgba(0,0,0,0.25); }
+      .carrier-main-head .sigil { font-size: 19px; color: #949ba4; }
+      .carrier-main-head .name { font-weight: 700; font-size: 15.5px; }
+      .carrier-main-head .rule { width: 1px; height: 20px; background: rgba(255,255,255,0.12); margin: 0 6px; }
+      .carrier-main-head .topic { font-size: 13px; color: #949ba4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .carrier-messages { flex: 1; overflow-y: auto; padding: 18px 18px 6px; }
+      .carrier-msg { display: flex; gap: 13px; padding: 7px 0; }
+      .carrier-msg .avatar { width: 38px; height: 38px; border-radius: 50%; flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 15px; color: #fff; }
+      .carrier-msg .head { display: flex; align-items: baseline; gap: 9px; }
+      .carrier-msg .head .who { font-weight: 600; font-size: 14.5px; }
+      .carrier-msg .head .when { font-size: 11px; color: #949ba4; }
+      .carrier-msg .body { font-size: 14.5px; line-height: 1.5; color: #dbdee1; margin-top: 2px; }
+      .carrier-composer-wrap { padding: 0 18px 18px; flex-shrink: 0; }
+      .carrier-composer-anchor { position: relative; }
+      .carrier-composer-outline { position: absolute; inset: -3px; width: calc(100% + 6px); height: calc(100% + 6px); pointer-events: none; overflow: visible; }
+      .carrier-composer { position: relative; display: flex; align-items: center; gap: 12px; background: #383a40; border-radius: 8px; padding: 12px 15px; }
+      .carrier-composer .plus { color: #949ba4; flex-shrink: 0; display: flex; }
+      .carrier-composer .placeholder { font-size: 14.5px; color: #949ba4; flex: 1; }
+      .carrier-composer .lock { display: flex; }
+    </style>
+  </head>
+  <body>
+    <div id="app" data-osl-strip-surface="1">
+      <div id="strip-mount" class="osl-strip-band"></div>
+      <div class="carrier">
+        <div class="carrier-rail" id="carrier-rail"></div>
+        <div class="carrier-side">
+          <div class="carrier-side-head">Frontier</div>
+          <div class="carrier-channels">
+            <div class="carrier-channels-label">Channels</div>
+            <div id="carrier-channel-list"></div>
+          </div>
+          <div class="carrier-user"><span class="avatar">K</span><span class="who"><strong>kestrel</strong><small>online</small></span></div>
+        </div>
+        <div class="carrier-main">
+          <div class="carrier-main-head">
+            <span class="sigil" id="carrier-active-sigil">#</span>
+            <span class="name" id="carrier-active-name">general</span>
+            <span class="rule"></span>
+            <span class="topic" id="carrier-active-topic"></span>
+          </div>
+          <div class="carrier-messages" id="carrier-messages"></div>
+          <div class="carrier-composer-wrap">
+            <div class="carrier-composer-anchor">
+            <svg class="carrier-composer-outline" id="carrier-wrap-svg" aria-hidden="true">
+              <rect id="carrier-wrap-line" x="0" y="0" width="100%" height="100%" rx="10" ry="10" pathLength="100" fill="none" stroke="#2ac0f0" stroke-width="1.6" stroke-dasharray="0 300"></rect>
+              <rect id="carrier-wrap-dot" x="0" y="0" width="100%" height="100%" rx="10" ry="10" pathLength="100" fill="none" stroke="#eaf9ff" stroke-width="2.4" stroke-linecap="round" stroke-dasharray="1.2 98.8" style="filter: drop-shadow(0 0 6px rgba(42,192,240,0.95)); opacity: 0"></rect>
+            </svg>
+            <div class="carrier-composer">
+              <span class="plus"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#949ba4" stroke-width="2" stroke-linecap="round"><path d="M12 5 v14 M5 12 h14"></path></svg></span>
+              <span class="placeholder" id="carrier-placeholder"></span>
+              <span class="lock" id="carrier-composer-lock"></span>
+            </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <script type="module">
+      import "../src/strip.css";
+      import { createOslStrip } from "../src/strip.ts";
+      import ghostUrl from "../src/assets/Ghost-white.svg";
+
+      const params = new URLSearchParams(window.location.search);
+
+      // ---- Fixture data (from the canon prototype's channel set) ----------
+      const channels = [
+        {
+          name: "general", sigil: "#", proven: true, protectedOn: true,
+          topic: "team channel · OSL active",
+          messages: [
+            { initial: "M", name: "Mara", av: "#2ac0f0", nameColor: "#2ac0f0", time: "9:02", cover: "sounds good, see you then 🙂", real: "bring the USB key — safe house, 6pm, come alone" },
+            { initial: "K", name: "kestrel", av: "#5b64d6", nameColor: "#f2f3f5", time: "9:03", cover: "haha for sure", real: "confirmed. burning this after." },
+            { initial: "T", name: "Theo", av: "#e0a83c", nameColor: "#e0a83c", time: "9:15", cover: "anyone up for lunch later?", real: null },
+          ],
+          roster: [
+            { id: "mara", name: "Mara", build: "verified", buildLabel: "VERIFIED BUILD 0.9.4", allowed: true, matched: true },
+            { id: "theo", name: "Theo", build: "verified", buildLabel: "VERIFIED BUILD 0.9.4", allowed: false, matched: true },
+            { id: "jules", name: "Jules", build: "modified", buildLabel: "MODIFIED BUILD", allowed: false, matched: false },
+          ],
+        },
+        {
+          name: "design-dm", sigil: "@", proven: true, protectedOn: true,
+          topic: "direct message · verify to allow",
+          messages: [
+            { initial: "S", name: "Sam", av: "#3dd68c", nameColor: "#3dd68c", time: "8:40", cover: "the mockups look great", real: "wire hits your account tonight, watch for it" },
+            { initial: "K", name: "kestrel", av: "#5b64d6", nameColor: "#f2f3f5", time: "8:41", cover: "thanks! shipping today", real: null },
+          ],
+          roster: [
+            { id: "sam", name: "Sam", build: "verified", buildLabel: "VERIFIED BUILD 2.3.9", allowed: false, matched: false },
+          ],
+        },
+        {
+          name: "announcements", sigil: "#", proven: true, protectedOn: false,
+          topic: "412 members · public room",
+          messages: [
+            { initial: "A", name: "admin", av: "#e05a5a", nameColor: "#e05a5a", time: "Mon", cover: "Server maintenance this weekend. Expect downtime.", real: null },
+            { initial: "J", name: "Jules", av: "#8a5be2", nameColor: "#b18cf0", time: "Mon", cover: "thanks for the heads up", real: null },
+          ],
+          roster: [
+            { id: "admin", name: "admin", build: "verified", buildLabel: "VERIFIED BUILD 0.9.4", allowed: false, matched: true },
+            { id: "jules", name: "Jules", build: "modified", buildLabel: "MODIFIED BUILD", allowed: false, matched: false },
+          ],
+        },
+        {
+          name: "off-topic-800", sigil: "#", proven: false, protectedOn: false,
+          topic: "OSL can't prove which chat this is",
+          messages: [
+            { initial: "R", name: "random", av: "#888888", nameColor: "#c9d1d6", time: "now", cover: "lol this channel is chaos", real: null },
+          ],
+          roster: [],
+        },
+      ];
+
+      const fixture = {
+        ch: Math.min(3, Math.max(0, Number(params.get("ch") ?? 0) || 0)),
+        protectionOn: params.get("lock") !== "off",
+        timerSeconds: 86_400,
+        onceArmed: params.get("once") === "1",
+        onceSeconds: 30,
+        plan: params.get("plan") === "pro" ? "pro" : "free",
+        revealed: false,
+        quick: { sendWith: "ENTER", cover: "WORDBANK", clip: "30 SEC", findable: "NO", wl: "ASK", warnings: true, keyChange: "WARN ME" },
+      };
+
+      // ---- Carrier rendering ---------------------------------------------
+      const railHost = document.querySelector("#carrier-rail");
+      railHost.innerHTML = ["D", "T", "S", "G"].map((letter, index) =>
+        `<span class="carrier-app${index === 0 ? " active" : ""}">${letter}</span>`).join("");
+
+      const lockSvg = (color) => `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="1.5"></rect><path d="M8 11 V7 a4 4 0 0 1 8 0 v4"></path></svg>`;
+      const unlockSvg = (color) => `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="1.5"></rect><path d="M8 11 V7 a4 4 0 0 1 7.5 -1.9"></path></svg>`;
+
+      function renderCarrier() {
+        const channel = channels[fixture.ch];
+        const list = document.querySelector("#carrier-channel-list");
+        list.innerHTML = channels.map((entry, index) =>
+          `<button class="carrier-channel${index === fixture.ch ? " active" : ""}" type="button" data-channel="${index}"><span class="sigil">${entry.sigil}</span><span class="name">${entry.name}</span>${entry.protectedOn ? '<span class="protected-dot" title="OSL protecting this chat"></span>' : ""}</button>`).join("");
+        for (const button of list.querySelectorAll("[data-channel]")) {
+          button.addEventListener("click", () => {
+            fixture.ch = Number(button.dataset.channel);
+            fixture.revealed = false;
+            renderCarrier();
+            updateStrip();
+          });
+        }
+        document.querySelector("#carrier-active-sigil").textContent = channel.sigil;
+        document.querySelector("#carrier-active-name").textContent = channel.name;
+        document.querySelector("#carrier-active-topic").textContent = channel.topic;
+        const messages = document.querySelector("#carrier-messages");
+        messages.innerHTML = channel.messages.map((message, index) => {
+          const protectedRow = message.real !== null && channel.protectedOn;
+          return `<div class="carrier-msg"><span class="avatar" style="background:${message.av}">${message.initial}</span><span style="min-width:0;flex:1"><span class="head"><span class="who" style="color:${message.nameColor}">${message.name}</span><span class="when">${message.time}</span></span><span class="body" data-message="${index}"${protectedRow ? ' data-protected="1"' : ""}></span></span></div>`;
+        }).join("");
+        renderMessageText();
+        renderComposer();
+      }
+
+      // TOGGLE-TO-REVEAL, the honest way: swapping textContent and NOTHING else.
+      // No banner, no tint, no colour shift — the row must look exactly as if
+      // the carrier natively showed different text.
+      function renderMessageText() {
+        const channel = channels[fixture.ch];
+        for (const body of document.querySelectorAll("[data-message]")) {
+          const message = channel.messages[Number(body.dataset.message)];
+          const protectedRow = message.real !== null && channel.protectedOn;
+          body.textContent = protectedRow && fixture.revealed ? message.real : message.cover;
+        }
+      }
+
+      function renderComposer() {
+        const channel = channels[fixture.ch];
+        const placeholder = document.querySelector("#carrier-placeholder");
+        placeholder.textContent = !channel.proven
+          ? "OSL can't see this box — don't send protected text here"
+          : fixture.protectionOn
+            ? `Message ${channel.sigil}${channel.name} · OSL will wrap it`
+            : `Message ${channel.sigil}${channel.name}`;
+        const lockHost = document.querySelector("#carrier-composer-lock");
+        lockHost.innerHTML = !channel.proven
+          ? unlockSvg("#e5383b")
+          : fixture.protectionOn ? lockSvg("#3dd68c") : unlockSvg("#e5383b");
+        const outline = document.querySelector("#carrier-wrap-svg");
+        outline.style.display = channel.proven && fixture.protectionOn ? "block" : "none";
+      }
+
+      // ---- Wrap animation (canon §4: rAF border trace, bezier solved) -----
+      const wrapLine = document.querySelector("#carrier-wrap-line");
+      const wrapDot = document.querySelector("#carrier-wrap-dot");
+      let wrapRaf = 0;
+      function wrapBezier(x1, y1, x2, y2) {
+        const cx = 3 * x1, bx = 3 * (x2 - x1) - cx, ax = 1 - cx - bx;
+        const cy = 3 * y1, by = 3 * (y2 - y1) - cy, ay = 1 - cy - by;
+        const xAt = (t) => ((ax * t + bx) * t + cx) * t;
+        const yAt = (t) => ((ay * t + by) * t + cy) * t;
+        return (x) => {
+          let t = x;
+          for (let i = 0; i < 6; i += 1) {
+            const e = xAt(t) - x, d = (3 * ax * t + 2 * bx) * t + cx;
+            if (Math.abs(d) < 1e-6) break;
+            t = Math.max(0, Math.min(1, t - e / d));
+          }
+          return yAt(t);
+        };
+      }
+      function wrapRun(ms = 1150) {
+        const ease = wrapBezier(0.16, 0.85, 0.2, 1);
+        cancelAnimationFrame(wrapRaf);
+        const start = performance.now();
+        const step = (now) => {
+          const u = Math.min(1, (now - start) / ms);
+          const len = 100 * ease(u);
+          wrapLine.setAttribute("stroke-dasharray", `${len} 300`);
+          wrapDot.setAttribute("stroke-dashoffset", String(-len));
+          wrapDot.style.opacity = u >= 1 ? "0" : u > 0.85 ? String(1 - (u - 0.85) / 0.15) : "1";
+          if (u < 1) wrapRaf = requestAnimationFrame(step);
+        };
+        wrapRaf = requestAnimationFrame(step);
+      }
+      function wrapSettled() {
+        cancelAnimationFrame(wrapRaf);
+        wrapLine.setAttribute("stroke-dasharray", "100 300");
+        wrapDot.style.opacity = "0";
+      }
+
+      // ---- Strip state ----------------------------------------------------
+      const NOT_BUILT = "Fixture control — cycles fixture state only";
+      function stripState() {
+        const channel = channels[fixture.ch];
+        return {
+          roomProven: channel.proven,
+          roomLabel: `${channel.sigil === "@" ? "DM" : "SCOPE"} · ${channel.sigil}${channel.name}`,
+          plan: fixture.plan,
+          planAction: { available: true },
+          homeAction: { available: true },
+          burn: { available: true },
+          whitelist: { available: true, roster: channel.roster },
+          timer: {
+            available: true,
+            seconds: fixture.timerSeconds,
+            presets: [
+              { label: "OFF", seconds: null, available: true },
+              { label: "1H", seconds: 3_600, available: true },
+              { label: "24H", seconds: 86_400, available: true },
+              { label: "7D", seconds: 604_800, available: true },
+              { label: "30D", seconds: 2_592_000, available: true },
+            ],
+            factLine: fixture.timerSeconds
+              ? `BACKSTOP · ${new Date(Date.now() + 30 * 86_400_000).toUTCString().replace("GMT", "UTC")}`
+              : "NO BACKSTOP",
+          },
+          once: { available: true, armed: fixture.onceArmed, seconds: fixture.onceSeconds },
+          lock: {
+            state: !channel.proven ? "unreachable" : fixture.protectionOn ? "on" : "off",
+            toggle: { available: channel.proven, reason: "OSL can't reach this composer" },
+          },
+          reveal: { available: channel.proven && channel.protectedOn, revealed: fixture.revealed,
+            reason: channel.proven ? "OSL is not protecting this room, so there is no cover text to look behind" : undefined },
+          quickSettings: [
+            { id: "warnings", name: "Warnings", kind: "toggle", on: fixture.quick.warnings, available: true },
+            { id: "key-change", name: "If a key or room changes", value: fixture.quick.keyChange, kind: "cycle", available: true },
+            { id: "cover", name: "Cover text", value: fixture.quick.cover, kind: "cycle", available: true },
+            { id: "send-with", name: "Send with", value: fixture.quick.sendWith, kind: "cycle", available: true },
+            { id: "clip", name: "Clipboard clears after", value: fixture.quick.clip, kind: "cycle", available: true },
+            { id: "findable", name: "Findable by strangers?", value: fixture.quick.findable, kind: "cycle", available: true },
+            { id: "wl", name: "Whitelist", value: fixture.quick.wl, kind: "cycle", available: true },
+            { id: "logs", name: "Logs", kind: "action", available: false, reason: "Proof receipts live in the OSL hub" },
+            { id: "all-settings", name: "All settings", kind: "gear", available: false, reason: "Settings live in the OSL hub" },
+          ],
+          windowControls: true,
+        };
+      }
+
+      const cycles = {
+        keyChange: ["WARN ME", "BLOCK SEND", "MARK ONLY"],
+        cover: ["WORDBANK", "AI"],
+        sendWith: ["ENTER", "ENTER ×2", "CLIPBOARD"],
+        clip: ["30 SEC", "NEVER", "MANUAL"],
+        findable: ["NO", "YES"],
+        wl: ["ASK", "AUTO", "STRICT"],
+      };
+      const quickKeyById = { "key-change": "keyChange", cover: "cover", "send-with": "sendWith", clip: "clip", findable: "findable", wl: "wl" };
+
+      const strip = createOslStrip(document.querySelector("#strip-mount"), {
+        logoUrl: ghostUrl,
+        actions: {
+          onRevealToggle: (revealed) => {
+            fixture.revealed = revealed;
+            renderMessageText();
+            updateStrip();
+          },
+          onTimerSelect: (seconds) => { fixture.timerSeconds = seconds ?? 0; updateStrip(); },
+          onOnceToggle: (armed) => { fixture.onceArmed = armed; updateStrip(); },
+          onLockToggle: () => {
+            fixture.protectionOn = !fixture.protectionOn;
+            renderComposer();
+            updateStrip();
+            if (fixture.protectionOn) wrapRun();
+          },
+          onQuickSetting: (id) => {
+            if (id === "warnings") { fixture.quick.warnings = !fixture.quick.warnings; updateStrip(); return; }
+            const key = quickKeyById[id];
+            if (!key) return;
+            const options = cycles[key];
+            fixture.quick[key] = options[(options.indexOf(fixture.quick[key]) + 1) % options.length];
+            updateStrip();
+          },
+          onWhitelistToggle: (personId) => {
+            const person = channels[fixture.ch].roster.find((entry) => entry.id === personId);
+            if (person && person.matched) { person.allowed = !person.allowed; updateStrip(); }
+          },
+        },
+      });
+
+      function updateStrip() { strip.update(stripState()); }
+
+      renderCarrier();
+      updateStrip();
+      if (channels[fixture.ch].proven && fixture.protectionOn) wrapSettled();
+      if (params.get("revealed") === "1") {
+        // Drive the real click handler, so this is a photograph of the actual
+        // toggle path rather than a forced fixture state.
+        document.querySelector('[data-chip="eye"]').click();
+      }
+      document.documentElement.dataset.fixtureReady = "osl-strip";
+    </script>
+  </body>
+</html>

@@ -18,7 +18,6 @@ export type DesktopServiceId =
   | "messenger"
   | "outlook"
   | "proton"
-  | "tuta"
   | "gmail"
   | "yahoo"
   | "aol"
@@ -168,7 +167,6 @@ export const desktopServicePolicies: readonly DesktopServicePolicy[] = [
   policy("messenger", "browserOnly"),
   policy("outlook", "verified"),
   policy("proton", "candidate"),
-  policy("tuta", "candidate"),
   policy("gmail", "browserOnly"),
   policy("yahoo", "browserOnly"),
   policy("aol", "browserOnly"),

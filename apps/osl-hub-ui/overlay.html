@@ -8,6 +8,10 @@
   </head>
   <body>
     <main class="overlay-shell" aria-label="OSL protected Discord conversation">
+      <!-- The OSL Strip band. Empty until overlay.ts mounts the chip bar into
+           it; display:none below 102px of window height (strip.css), so inside
+           the natively sized 736x58 composer window it occupies no pixel. -->
+      <div id="osl-strip" class="osl-strip-band"></div>
       <strong id="friend-label" class="sr-only">Private message</strong>
       <div id="osl-message-list" class="transcript-mount" aria-label="Messages prepared or opened in this OSL panel" hidden></div>
       <section id="write-pane" aria-label="Private message composer">

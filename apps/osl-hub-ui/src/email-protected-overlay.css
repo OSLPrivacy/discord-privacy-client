@@ -1,3 +1,6 @@
+/* Colour values are the canonical OSL design tokens duplicated from
+   src/osl-tokens.ts (CSS cannot import TypeScript). osl-tokens.ts is the
+   authority; token names are noted beside each hex. */
 /* ---------------------------------------------------------------------------
    TASK 1228 -- the shared protected email overlay: draft (compose) and
    reading, side by side in the fixture that captures both at once.
@@ -7,7 +10,7 @@
   width: 100%;
   min-height: 100%;
   padding: 32px;
-  background: #080c0d;
+  background: #080c0d; /* colour.background */
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 20px;
@@ -16,12 +19,12 @@
 
 .email-draft-overlay,
 .email-reading-overlay {
-  --eo-bg: #0d1114;
-  --eo-line: #2a343a;
-  --eo-text: #f4f7f8;
-  --eo-second: #b8c2c7;
-  --eo-muted: #97a3a9;
-  --eo-accent: #2ac0f0;
+  --eo-bg: #0a0e10; /* colour.surface */
+  --eo-line: #2a343a; /* colour.border */
+  --eo-text: #f4f7f8; /* colour.text */
+  --eo-second: #97a3a9; /* colour.muted1 */
+  --eo-muted: #8d989e; /* colour.muted2 */
+  --eo-accent: #2ac0f0; /* colour.accent */
 
   box-sizing: border-box;
   display: flex;
@@ -74,7 +77,7 @@
 
 .email-overlay-subject {
   padding: 8px 10px;
-  background: #101619;
+  background: #0f1416 /* colour.inputFill */;
   border: 1px solid var(--eo-line);
   color: var(--eo-text);
   font-family: inherit;
@@ -84,7 +87,7 @@
 .email-overlay-body {
   min-height: 96px;
   padding: 10px;
-  background: #101619;
+  background: #0f1416 /* colour.inputFill */;
   border: 1px solid var(--eo-line);
   color: var(--eo-text);
   font-family: inherit;
@@ -104,7 +107,7 @@
   display: block;
   margin-top: 4px;
   padding: 6px 8px;
-  background: #101619;
+  background: #0f1416 /* colour.inputFill */;
   border: 1px solid var(--eo-line);
   color: var(--eo-text);
   font-family: inherit;
@@ -124,7 +127,7 @@
   display: flex;
   justify-content: space-between;
   padding: 6px 10px;
-  background: #101619;
+  background: #0f1416 /* colour.inputFill */;
   border: 1px solid var(--eo-line);
   font-size: 12px;
 }
@@ -148,7 +151,7 @@
 .email-overlay-send-review {
   margin-top: 6px;
   padding: 14px 16px 16px;
-  background: #101619;
+  background: #0f1416 /* colour.inputFill */;
   border: 1px solid var(--eo-line);
   border-left: 2px solid var(--eo-accent);
   display: flex;
@@ -184,7 +187,7 @@
 .email-overlay-body-display {
   margin: 0;
   padding: 10px;
-  background: #101619;
+  background: #0f1416 /* colour.inputFill */;
   border: 1px solid var(--eo-line);
   font-size: 13px;
   line-height: 1.55;
@@ -193,7 +196,7 @@
 
 .email-overlay-timer-display {
   padding: 8px 10px;
-  background: #101619;
+  background: #0f1416 /* colour.inputFill */;
   border: 1px solid var(--eo-line);
   border-left: 2px solid var(--eo-accent);
   font-size: 12px;

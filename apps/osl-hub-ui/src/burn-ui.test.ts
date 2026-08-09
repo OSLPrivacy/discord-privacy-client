@@ -71,7 +71,7 @@ describe("truthful Burn UI", () => {
     expect(rendered).not.toMatch(/\b\d+%\b/);
   });
 
-  it("states deletion limits before typed local confirmation", () => {
+  it("states deletion limits before one checkbox acknowledgement", () => {
     const dialog = functionSource("burnDialogMarkup", "ownedConfirmationMarkup");
     expect(dialog).toContain("local decrypt material and caches");
     expect(dialog).toContain("revokes local approval, display, and expiry settings");
@@ -82,9 +82,14 @@ describe("truthful Burn UI", () => {
     expect(dialog).not.toContain("Incoming OSL messages are already included");
     expect(BurnGuaranteeCopy.items.find((item) => item.id === "connected_service_message")?.body).toContain("The service decides");
     expect(BurnGuaranteeCopy.items.find((item) => item.id === "already_opened_copies")?.body).toContain("screenshots");
-    expect(source).toContain("BURN CHAT");
-    expect(source).toContain("BURN APP");
-    expect(source).toContain("BURN ACCOUNT");
+    expect(dialog).toContain('id="burn-confirm-ack" type="checkbox"');
+    expect(dialog).toContain("I understand this cannot be undone.");
+    expect(dialog).toContain("burnScopeTruthMarkup(burnScope)");
+    expect(source).toContain("WHAT THIS DESTROYS");
+    expect(source).toContain("WHAT SURVIVES");
+    expect(source).toContain("Anything the other person already opened.");
+    expect(source).not.toContain("burnConfirmationPhrase");
+    expect(source).not.toContain('id="burn-confirm-input"');
     expect(dialog).toContain('id="burn-confirm-submit" type="submit" disabled');
   });
 

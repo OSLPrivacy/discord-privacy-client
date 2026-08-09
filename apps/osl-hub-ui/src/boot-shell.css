@@ -23,8 +23,10 @@
      are declared in styles.css, which is pulled in by the JS bundle -- i.e. by
      the very thing this shell exists to cover. A boot shell that waits for
      styles.css is a boot shell that does not boot. The literals below are the
-     dark-theme values of `--bg` (#0a0a0a), `--panel`/titlebar (#080808),
-     `--line` (#2a2a2a) and `--subtle` (#888) from styles.css:1..40; they are
+     canonical OSL design tokens (src/osl-tokens.ts, the authority):
+     colour.background #080c0d, colour.surface #0a0e10 for the titlebar,
+     colour.hairline #161b1e for the skeleton lines and colour.muted3 #66727a
+     for the label -- the same values styles.css:1..40 resolves to. They are
      duplicated on purpose and boot-shell.test.ts pins them to the originals so
      a palette change here cannot silently drift.
 
@@ -38,7 +40,7 @@
 /* Also on the root, so the very first paint -- and any overscroll gutter around
    the shell -- is OSL's surface rather than the user agent's white default. */
 :root {
-  background: #0a0a0a;
+  background: #080c0d; /* colour.background */
   color-scheme: dark;
 }
 
@@ -48,14 +50,14 @@
   display: grid;
   grid-template-rows: 44px minmax(0, 1fr);
   overflow: hidden;
-  background: #0a0a0a;
-  color: #888;
+  background: #080c0d; /* colour.background */
+  color: #66727a; /* colour.muted3 */
   font-family: "Segoe UI Variable Text", "Segoe UI", ui-sans-serif, system-ui, -apple-system, sans-serif;
 }
 
 .boot-shell-titlebar {
   min-height: 44px;
-  background: #080808;
+  background: #0a0e10; /* colour.surface */
 }
 
 .boot-shell-stage {
@@ -99,7 +101,7 @@
   height: 7px;
   display: block;
   border-radius: 6px;
-  background: #2a2a2a;
+  background: #161b1e; /* colour.hairline */
   transform-origin: left center;
   animation: boot-shell-line 1.35s cubic-bezier(.2, 0, 0, 1) infinite;
 }
@@ -118,7 +120,7 @@
 /* Deliberately NOT `@media (prefers-color-scheme: light)`.
    The shell paints before applyTheme() can read the stored preference, so it
    has to guess -- and the right guess is the one styles.css itself makes.
-   `:root` in styles.css is unconditionally dark (#0a0a0a); light only applies
+   `:root` in styles.css is unconditionally dark (#080c0d); light only applies
    once `:root[data-theme="light"]` is set, which is applyTheme()'s first act.
    A dark shell therefore agrees with the frame that follows it in every case,
    and a light-theme user sees the same single dark-to-light change they already

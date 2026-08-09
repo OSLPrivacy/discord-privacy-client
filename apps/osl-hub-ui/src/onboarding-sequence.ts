@@ -6,6 +6,10 @@
 export const ONBOARDING_SEQUENCE = [
   "welcome",
   "recovery",
+  // 2026-08-08, owner's review note (UI-FEEDBACK.txt): the stealth and burn
+  // passwords come IMMEDIATELY BEFORE the Pro code, not nine steps after it.
+  "passwords",
+  "burnpass",
   "pro",
   "forward-secrecy",
   "privacy",
@@ -15,8 +19,6 @@ export const ONBOARDING_SEQUENCE = [
   "cover",
   "silent-visible",
   "visibility",
-  "passwords",
-  "burnpass",
   "mullvad",
   "browser",
   // 2026-08-06: the tour left the onboarding spine on the owner's instruction.

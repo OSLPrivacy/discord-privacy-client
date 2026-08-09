@@ -1,3 +1,6 @@
+/* Colour values are the canonical OSL design tokens duplicated from
+   src/osl-tokens.ts (CSS cannot import TypeScript). osl-tokens.ts is the
+   authority; token names are noted beside each hex. */
 /* ---------------------------------------------------------------------------
    What should OSL delete? 2026-08-06 restyle.
 
@@ -19,10 +22,10 @@
 }
 
 .del-onboarding {
-  --del-faded: #66727a;
-  --del-quiet-line: #4a555b;
-  --del-good: #3dd68c;
-  --del-card-line: #1e2326;
+  --del-faded: #66727a; /* colour.muted3 */
+  --del-quiet-line: #4a555b; /* colour.muted5 */
+  --del-good: #3dd68c; /* colour.safe */
+  --del-card-line: #1e2326; /* colour.borderQuiet */
 
   width: 480px;
   max-width: 100%;

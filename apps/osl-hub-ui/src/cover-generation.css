@@ -1,3 +1,6 @@
+/* Colour values are the canonical OSL design tokens duplicated from
+   src/osl-tokens.ts (CSS cannot import TypeScript). osl-tokens.ts is the
+   authority; token names are noted beside each hex. */
 /*
  * Presentation only. T7-82 supplies the state and T7-70 imports this sheet;
  * keeping it here means the shipped `style-src 'self'` policy can render it.
@@ -14,8 +17,8 @@
   inset: 0 0 auto;
   height: 4px;
   overflow: hidden;
-  background: color-mix(in srgb, var(--brand, #06b6d4) 22%, transparent);
-  box-shadow: 0 1px 10px color-mix(in srgb, var(--brand, #06b6d4) 38%, transparent);
+  background: color-mix(in srgb, var(--brand, #2ac0f0 /* colour.accent */) 22%, transparent);
+  box-shadow: 0 1px 10px color-mix(in srgb, var(--brand, #2ac0f0 /* colour.accent */) 38%, transparent);
 }
 
 .cover-generation-progress-fill {
@@ -23,8 +26,8 @@
   width: 38%;
   height: 100%;
   border-radius: 0 999px 999px 0;
-  background: linear-gradient(90deg, #38bdf8, var(--brand, #06b6d4), #60a5fa);
-  box-shadow: 0 0 14px color-mix(in srgb, var(--brand, #06b6d4) 80%, transparent);
+  background: linear-gradient(90deg, #2ac0f0, var(--brand, #2ac0f0), #2ac0f0) /* colour.accent — the design has one cyan; the old Tailwind sky/blue gradient stops were not OSL colours */;
+  box-shadow: 0 0 14px color-mix(in srgb, var(--brand, #2ac0f0 /* colour.accent */) 80%, transparent);
   animation: cover-generation-progress 1.15s var(--ease-standard, cubic-bezier(.2, 0, 0, 1)) infinite;
   will-change: transform;
 }
@@ -36,11 +39,11 @@
   right: 20px;
   max-width: min(360px, calc(100vw - 40px));
   padding: 11px 14px;
-  border: 1px solid color-mix(in srgb, var(--brand, #06b6d4) 48%, var(--line, #2a2a2a));
+  border: 1px solid color-mix(in srgb, var(--brand, #2ac0f0 /* colour.accent */) 48%, var(--line, #161b1e /* colour.hairline */));
   border-radius: var(--radius, 6px);
-  background: color-mix(in srgb, var(--panel, #141414) 92%, #071722);
+  background: color-mix(in srgb, var(--panel, #0a0e10 /* colour.surface */) 92%, #0a0e10 /* colour.surface */);
   box-shadow: var(--shadow, 0 12px 34px rgba(0, 0, 0, .38));
-  color: var(--text, #e8e8e8);
+  color: var(--text, #f4f7f8 /* colour.text */);
   font-size: 13px;
   font-weight: 650;
   letter-spacing: .01em;

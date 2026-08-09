@@ -45,146 +45,29 @@ beforeEach(() => {
   localStore.clear();
 });
 
-interface TopBarControl {
-  id: string;
-  current: boolean;
-  ariaCurrent: boolean;
-  ariaLabel: string;
-  label: string;
-  classes: string;
-}
+describe("TASK 0816 Home launcher header", () => {
+  it("ships the launcher header with its logo, protection readout, notifications, and Settings", () => {
+    ui.__oslHubUiTest.reset({ route: "home", coreReady: true, storageMethod: "tpm-pcp" });
+    const shell = ui.__oslHubUiTest.renderRouteShell("home");
 
-/**
- * Every top-bar control in the bar, read out of the rendered markup.
- *
- * These specs run in vitest's node environment (there is no DOM here), so the
- * bar is parsed rather than queried. The slice is bounded to the command bar's
- * own <header> so nothing further down the shell can be mistaken for a control.
- */
-function topBarControls(shell: string): TopBarControl[] {
-  const barStart = shell.indexOf(`class="home-header home-command-bar"`);
-  expect(barStart, "the shell should contain the Home command bar").toBeGreaterThanOrEqual(0);
-  const bar = shell.slice(barStart, shell.indexOf("</header>", barStart));
-  return bar.split("<button ").slice(1).flatMap((chunk) => {
-    const id = /data-top-bar-control="([a-z]+)"/.exec(chunk)?.[1];
-    if (!id) return [];
-    const tag = chunk.slice(0, chunk.indexOf(">"));
-    return [{
-      id,
-      current: /data-current-page="true"/.test(tag),
-      ariaCurrent: /aria-current="page"/.test(tag),
-      ariaLabel: /aria-label="([^"]*)"/.exec(tag)?.[1] ?? "",
-      label: /<span class="home-top-bar-label">([^<]*)<\/span>/.exec(chunk)?.[1] ?? "",
-      classes: /^class="([^"]*)"/.exec(tag)?.[1] ?? "",
-    }];
-  });
-}
-
-describe("TASK 0816 Home top bar", () => {
-  it("names exactly five controls, in order, each with the word it is called", () => {
-    expect([...ui.homeTopBarControlIds]).toEqual(["logo", "friends", "notifications", "settings", "profile"]);
-    expect(ui.homeTopBarControlLabels).toEqual({
-      logo: "Home",
-      friends: "Friends",
-      notifications: "Notifications",
-      settings: "Settings",
-      profile: "Profile",
-    });
+    expect(shell).toContain('class="home-launcher-header"');
+    expect(shell).toContain('class="home-launcher-logo"');
+    expect(shell).toContain('class="home-status-readout"');
+    expect(shell).toContain('data-toggle-home-notifications');
+    expect(shell).toContain('data-route="settings"');
   });
 
-  it("resolves the current control from the page the owner is actually on", () => {
-    const page = (patch: Partial<Parameters<typeof ui.homeTopBarCurrentControl>[0]>) => ui.homeTopBarCurrentControl({
-      route: "home",
-      settingsSection: "account",
-      friendsDialogOpen: false,
-      profileSettingsFocus: false,
-      ...patch,
-    });
+  it("keeps the rebuilt launcher free of the superseded five-control top bar", () => {
+    ui.__oslHubUiTest.reset({ route: "home", coreReady: true, storageMethod: "tpm-pcp" });
+    const shell = ui.__oslHubUiTest.renderRouteShell("home");
 
-    expect(page({})).toBe("logo");
-    expect(page({ friendsDialogOpen: true })).toBe("friends");
-    expect(page({ route: "settings", settingsSection: "notifications" })).toBe("notifications");
-    expect(page({ route: "settings", settingsSection: "account" })).toBe("settings");
-    expect(page({ route: "settings", settingsSection: "account", profileSettingsFocus: true })).toBe("profile");
-    // Settings pages the top bar does not own still belong to the Settings control.
-    expect(page({ route: "settings", settingsSection: "apps" })).toBe("settings");
-    // Sidebar destinations are owned by nobody in this bar, and say so.
-    for (const route of ["inbox", "people", "privacy", "activity", "connections", "service"] as const) {
-      expect(page({ route })).toBeNull();
-    }
-    // The Friends dialog opens over Home, and wins over the route beneath it.
-    expect(page({ route: "settings", settingsSection: "notifications", friendsDialogOpen: true })).toBe("friends");
+    expect(shell).not.toContain('data-top-bar-control=');
+    expect(shell).not.toContain('class="home-header home-command-bar"');
   });
 
-  it("draws all five controls on every page the bar renders on", () => {
-    const { __oslHubUiTest } = ui;
-    for (const route of ["home", "settings", "inbox", "people", "privacy", "activity", "connections"] as const) {
-      __oslHubUiTest.reset({ route, coreReady: true, storageMethod: "tpm-pcp" });
-      const controls = topBarControls(__oslHubUiTest.renderRouteShell(route));
-      expect(controls.map((control) => control.id), `route ${route}`).toEqual([
-        "logo",
-        "friends",
-        "notifications",
-        "settings",
-        "profile",
-      ]);
-      expect(controls.map((control) => control.label), `route ${route}`).toEqual([
-        "Home",
-        "Friends",
-        "Notifications",
-        "Settings",
-        "Profile",
-      ]);
-    }
-  });
-
-  it("marks exactly one control current, and marks it three ways that agree", () => {
-    const { __oslHubUiTest } = ui;
-    type ResetPatch = NonNullable<Parameters<typeof __oslHubUiTest.reset>[0]>;
-    const cases: Array<{ name: string; patch: ResetPatch; route: "home" | "settings"; expected: string | null }> = [
-      { name: "Home", patch: { route: "home" }, route: "home", expected: "logo" },
-      { name: "Friends", patch: { route: "home", friendsDialogOpen: true }, route: "home", expected: "friends" },
-      { name: "Notifications", patch: { route: "settings", settingsSection: "notifications" }, route: "settings", expected: "notifications" },
-      { name: "Settings", patch: { route: "settings", settingsSection: "account" }, route: "settings", expected: "settings" },
-      { name: "Profile", patch: { route: "settings", settingsSection: "account", profileSettingsFocus: true }, route: "settings", expected: "profile" },
-      { name: "Inbox", patch: { route: "inbox" }, route: "home", expected: null },
-    ];
-
-    for (const scenario of cases) {
-      __oslHubUiTest.reset({ coreReady: true, storageMethod: "tpm-pcp", ...scenario.patch });
-      const shell = __oslHubUiTest.renderRouteShell(scenario.patch.route ?? scenario.route);
-      const controls = topBarControls(shell);
-      const current = controls.filter((control) => control.current);
-      expect(current.length, `${scenario.name} should mark ${scenario.expected === null ? "no" : "one"} control`)
-        .toBe(scenario.expected === null ? 0 : 1);
-      if (scenario.expected !== null) {
-        expect(current[0]?.id, scenario.name).toBe(scenario.expected);
-        // The three markers are written from one boolean; they must agree.
-        expect(current[0]?.ariaCurrent, `${scenario.name} aria-current`).toBe(true);
-        expect(current[0]?.classes, `${scenario.name} class`).toContain("current");
-      }
-      for (const control of controls.filter((candidate) => !candidate.current)) {
-        expect(control.ariaCurrent, `${scenario.name}/${control.id}`).toBe(false);
-      }
-    }
-  });
-
-  it("keeps the Settings device-protection status the bar took over", () => {
-    const { __oslHubUiTest } = ui;
-    __oslHubUiTest.reset({ route: "settings", coreReady: true, storageMethod: "tpm-pcp" });
-    expect(__oslHubUiTest.renderRouteShell("settings")).toContain('data-identity-protection="protected"');
-    // Home is the owner's own chrome and does not repeat the device status.
-    __oslHubUiTest.reset({ route: "home", coreReady: true, storageMethod: "tpm-pcp" });
-    const home = __oslHubUiTest.renderRouteShell("home");
-    const bar = home.slice(home.indexOf("home-command-bar"), home.indexOf("</header>"));
-    expect(bar).not.toContain("data-identity-protection");
-  });
-
-  it("styles the label so it cannot be shrunk, wrapped or ellipsised away", () => {
+  it("keeps the launcher styles single-line without the retired top-bar selectors", () => {
     const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
-    expect(styles).toMatch(/\.home-top-bar-control\s*\{[^}]*width:\s*auto[^}]*white-space:\s*nowrap/s);
-    expect(styles).toMatch(/\.home-top-bar-label\s*\{[^}]*white-space:\s*nowrap/s);
-    expect(styles).not.toMatch(/\.home-top-bar-label\s*\{[^}]*text-overflow:\s*ellipsis/s);
-    expect(styles).toMatch(/\.home-top-bar-control\.current\s*\{/);
+    expect(styles).toMatch(/\.home-launcher-header\s*\{/);
+    expect(styles).toMatch(/\.home-launcher-actions\s*\{/);
   });
 });

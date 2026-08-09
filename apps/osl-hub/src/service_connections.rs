@@ -1,7 +1,7 @@
 use crate::row_who_wrote_it::SharedRowWhoWroteIt;
 use crate::website_driver::{
     WebsiteControlKind, WebsiteDriver, WebsiteDriverError, WebsiteNamedControl,
-    WebsiteNamedControlRequest, WebsitePage, WebsitePlacementProof, WebsiteTextPlacement,
+    WebsiteNamedControlRequest, WebsitePage,
 };
 
 use std::collections::BTreeSet;
@@ -969,7 +969,6 @@ pub enum ServiceConnectionError {
     Driver(WebsiteDriverError),
     MissingComposeBox,
     MissingSendButton,
-    PlacementReadbackMismatch,
 }
 
 impl From<WebsiteDriverError> for ServiceConnectionError {
@@ -994,7 +993,7 @@ impl EmailServiceConnection {
 
     pub fn request_compose_controls(
         &self,
-        driver: &mut impl WebsiteDriver,
+        driver: &impl WebsiteDriver,
         page: &WebsitePage,
     ) -> Result<EmailComposeControls, ServiceConnectionError> {
         if self.service_id != "email" {
@@ -1021,26 +1020,6 @@ impl EmailServiceConnection {
         })
     }
 
-    pub fn place_cover_text(
-        &self,
-        driver: &mut impl WebsiteDriver,
-        controls: &EmailComposeControls,
-        cover_text: &str,
-    ) -> Result<WebsitePlacementProof, ServiceConnectionError> {
-        if self.service_id != "email" {
-            return Err(ServiceConnectionError::UnsupportedService);
-        }
-        let proof = driver.place_text(WebsiteTextPlacement {
-            page: controls.compose_box.page.clone(),
-            editable_box_name: controls.compose_box.name.clone(),
-            text: cover_text.to_owned(),
-        })?;
-        if proof.readback_text != cover_text {
-            return Err(ServiceConnectionError::PlacementReadbackMismatch);
-        }
-        Ok(proof)
-    }
-
     pub fn account_id(&self) -> &str {
         &self.account_id
     }
@@ -1049,13 +1028,13 @@ impl EmailServiceConnection {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::website_driver::{WebsiteDriverKind, WebsitePageRequest, WebsitePageText};
+    use crate::website_driver::{WebsiteDriverKind, WebsitePageSnapshot};
     use std::sync::Mutex;
+    use url::Url;
 
     #[derive(Default)]
     struct FixtureDriver {
         requested: Mutex<Vec<WebsiteNamedControlRequest>>,
-        readback_text: Option<String>,
     }
 
     impl FixtureDriver {
@@ -1074,35 +1053,26 @@ mod tests {
             WebsiteDriverKind::FakeTestBrowser
         }
 
-        fn find_page(
-            &mut self,
-            request: WebsitePageRequest,
-        ) -> Result<WebsitePage, WebsiteDriverError> {
+        fn find_page(&mut self, url: &Url) -> Result<WebsitePage, WebsiteDriverError> {
             Ok(WebsitePage {
-                target_id: Some("task-1205-fixture-page".to_owned()),
-                url: request.url,
+                target_id: "task-1205-fixture-page".to_owned(),
+                url: url.to_string(),
             })
         }
 
-        fn read_page(&mut self, page: &WebsitePage) -> Result<WebsitePageText, WebsiteDriverError> {
-            Ok(WebsitePageText {
-                page: page.clone(),
+        fn read_page(&self, page: &WebsitePage) -> Result<WebsitePageSnapshot, WebsiteDriverError> {
+            Ok(WebsitePageSnapshot {
                 title: "Task 1205 fixture".to_owned(),
-                text: "Task 1205 fixture".to_owned(),
-                controls: crate::website_driver::WebsitePageControls {
-                    editable_boxes: vec!["compose box".to_owned()],
-                    buttons: vec!["Send button".to_owned()],
-                    visible_message_areas: Vec::new(),
-                },
+                url: page.url.clone(),
             })
         }
 
         fn read_named_controls(
-            &mut self,
+            &self,
             page: &WebsitePage,
             required: &[WebsiteNamedControlRequest],
         ) -> Result<Vec<WebsiteNamedControl>, WebsiteDriverError> {
-            if page.target_id.as_deref() != Some("task-1205-fixture-page") {
+            if page.target_id != "task-1205-fixture-page" {
                 return Err(WebsiteDriverError::PageUnavailable);
             }
             self.requested
@@ -1127,55 +1097,29 @@ mod tests {
             }
             Ok(vec![
                 WebsiteNamedControl {
-                    page: page.clone(),
                     name: "compose box".to_owned(),
                     kind: WebsiteControlKind::EditableBox,
                 },
                 WebsiteNamedControl {
-                    page: page.clone(),
                     name: "Send button".to_owned(),
                     kind: WebsiteControlKind::Button,
                 },
             ])
-        }
-
-        fn place_text(
-            &mut self,
-            placement: WebsiteTextPlacement,
-        ) -> Result<WebsitePlacementProof, WebsiteDriverError> {
-            let readback_text = self
-                .readback_text
-                .clone()
-                .unwrap_or_else(|| placement.text.clone());
-            Ok(WebsitePlacementProof {
-                page: placement.page,
-                editable_box_name: placement.editable_box_name,
-                utf16_units: placement.text.encode_utf16().count(),
-                placed_sha256: String::new(),
-                readback_text,
-            })
-        }
-
-        fn press_named_control(
-            &mut self,
-            _control: WebsiteNamedControl,
-        ) -> Result<(), WebsiteDriverError> {
-            Ok(())
         }
     }
 
     #[test]
     fn task_1205_sample_email_connection_receives_compose_box_and_send_button_from_fixture() {
         let mut driver = FixtureDriver::default();
+        let url = Url::parse("https://mail.google.com/task-1205-fixture")
+            .expect("task 1205 fixture URL parses");
         let page = driver
-            .find_page(WebsitePageRequest {
-                url: "https://mail.google.com/task-1205-fixture".to_owned(),
-            })
+            .find_page(&url)
             .expect("task 1205 fixture page opens");
         let connection = EmailServiceConnection::new("email", "sample-email-account");
 
         let controls = connection
-            .request_compose_controls(&mut driver, &page)
+            .request_compose_controls(&driver, &page)
             .expect("sample email service connection receives fixture controls");
         let requested_names = driver.requested_names();
 
@@ -1202,65 +1146,6 @@ mod tests {
         assert_eq!(controls.compose_box.kind, WebsiteControlKind::EditableBox);
         assert_eq!(controls.send_button.name, "Send button");
         assert_eq!(controls.send_button.kind, WebsiteControlKind::Button);
-    }
-
-    #[test]
-    fn task_1211_service_connection_compares_placed_cover_text_with_driver_readback() {
-        const FIXTURE_BODY: &str = "TASK1211 exact fixture body: MAPLE-1211.";
-        const ONE_BYTE_CHANGED_READBACK: &str = "TASK1211 exact fixture body: MAPLE-1211!";
-
-        let connection = EmailServiceConnection::new("email", "sample-email-account");
-        let mut driver = FixtureDriver::default();
-        let page = driver
-            .find_page(WebsitePageRequest {
-                url: "https://mail.google.com/task-1211-fixture".to_owned(),
-            })
-            .expect("task 1211 fixture page opens");
-        let controls = connection
-            .request_compose_controls(&mut driver, &page)
-            .expect("task 1211 fixture controls are available");
-
-        let proof = connection
-            .place_cover_text(&mut driver, &controls, FIXTURE_BODY)
-            .expect("matching driver readback proves the placement");
-
-        assert_eq!(proof.readback_text, FIXTURE_BODY);
-        assert_eq!(proof.utf16_units, FIXTURE_BODY.encode_utf16().count());
-
-        let changed_bytes = FIXTURE_BODY
-            .bytes()
-            .zip(ONE_BYTE_CHANGED_READBACK.bytes())
-            .filter(|(left, right)| left != right)
-            .count()
-            + FIXTURE_BODY.len().abs_diff(ONE_BYTE_CHANGED_READBACK.len());
-        assert_eq!(changed_bytes, 1);
-
-        let mut mutated_driver = FixtureDriver {
-            readback_text: Some(ONE_BYTE_CHANGED_READBACK.to_owned()),
-            ..FixtureDriver::default()
-        };
-        let mutated_page = mutated_driver
-            .find_page(WebsitePageRequest {
-                url: "https://mail.google.com/task-1211-mutated-fixture".to_owned(),
-            })
-            .expect("task 1211 mutated fixture page opens");
-        let mutated_controls = connection
-            .request_compose_controls(&mut mutated_driver, &mutated_page)
-            .expect("task 1211 mutated fixture controls are available");
-
-        let mismatch = connection
-            .place_cover_text(&mut mutated_driver, &mutated_controls, FIXTURE_BODY)
-            .expect_err("one-byte changed fixture readback must fail the placement proof");
-
-        assert_eq!(mismatch, ServiceConnectionError::PlacementReadbackMismatch);
-
-        println!("TASK1211 service_connection=email");
-        println!("TASK1211 fixture_body={FIXTURE_BODY}");
-        println!("TASK1211 placement_readback={}", proof.readback_text);
-        println!("TASK1211 exact_readback_matches_fixture=true");
-        println!("TASK1211 one_byte_changed_readback={ONE_BYTE_CHANGED_READBACK}");
-        println!("TASK1211 one_byte_changed_count={changed_bytes}");
-        println!("TASK1211 one_byte_changed_fixture_fails=true");
     }
 
     #[test]
@@ -1435,43 +1320,4 @@ mod tests {
             "blank sender addresses must fail closed too"
         );
     }
-}
-
-pub const ICLOUD_CONTROL_NAMES: [&str; 4] = ["Compose", "Place", "Readback", "Send"];
-
-const GMAIL_CONTROL_REQUESTS: [WebsiteNamedControlRequest; 6] = [
-    WebsiteNamedControlRequest {
-        name: "compose",
-        kind: WebsiteControlKind::Button,
-    },
-
-const ICLOUD_CONTROL_REQUESTS: [WebsiteNamedControlRequest; 4] = [
-    WebsiteNamedControlRequest {
-        name: "Compose",
-        kind: WebsiteControlKind::Button,
-    },
-
-pub struct IcloudEmailFlowControls {
-    pub compose: WebsiteNamedControl,
-    pub place: WebsiteNamedControl,
-    pub readback: WebsiteNamedControl,
-    pub send: WebsiteNamedControl,
-}
-
-fn required_control(
-    controls: &[WebsiteNamedControl],
-    name: &'static str,
-    kind: WebsiteControlKind,
-) -> Result<WebsiteNamedControl, ServiceConnectionError> {
-    controls
-        .iter()
-        .find(|control| control.name == name && control.kind == kind)
-        .cloned()
-        .ok_or(ServiceConnectionError::MissingNamedTarget(name))
-}
-
-pub fn validate_icloud_control_mapping(
-    mapping: &[WebsiteNamedControlRequest],
-) -> Result<(), ServiceControlMappingError> {
-    validate_required_control_names(mapping, &ICLOUD_CONTROL_NAMES)
 }

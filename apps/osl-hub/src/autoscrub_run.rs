@@ -27,7 +27,6 @@ pub const MANIFEST_LIFETIME: Duration = Duration::from_secs(1_800);
 pub const RUN_CONSENT_LIFETIME: Duration = Duration::from_secs(300);
 pub const MAX_RUN_DURATION: Duration = Duration::from_secs(900);
 pub const PENDING_STEP_LIFETIME: Duration = Duration::from_secs(60);
-pub const MIN_REVIEWED_RUN_PACE_MILLISECONDS: u32 = 500;
 
 const DOCUMENTED_PROVIDER_DELETE_API: &str = "documented_provider_delete_api";
 const IMAP_PROVIDER_ID: &str = "imap";
@@ -1269,7 +1268,6 @@ pub enum AutoScrubRunPhase {
     Running,
     Stopping,
     Blocked,
-    Skipped,
     Complete,
     Failed,
 }
@@ -1296,160 +1294,17 @@ pub enum AutoScrubQuitGuardState {
     Refused,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub enum AutoScrubRunActionKind {
-    OpenAccount,
-    TryAgainAfterSignIn,
-    SkipThisAccount,
-    StopAllScanning,
-}
-
-impl AutoScrubRunActionKind {
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::OpenAccount => "Open account",
-            Self::TryAgainAfterSignIn => "Try again after sign-in",
-            Self::SkipThisAccount => "Skip this account",
-            Self::StopAllScanning => "Stop all scanning",
-        }
-    }
-}
-
 #[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AutoScrubRunAction {
-    pub action: AutoScrubRunActionKind,
-    pub label: &'static str,
-}
-
-impl AutoScrubRunAction {
-    fn new(action: AutoScrubRunActionKind) -> Self {
-        Self {
-            action,
-            label: action.label(),
-        }
-    }
-}
-
-#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AutoScrubRunSummary {
     pub run_id: String,
     pub service_id: ServiceKind,
-    pub account_id: String,
     pub phase: AutoScrubRunPhase,
     pub reviewed_item_count: u32,
     pub remaining_item_count: u32,
-    pub pace_milliseconds: u32,
     pub stop_requested: bool,
     pub mutation_allowed: bool,
     pub last_outcome: AutoScrubRunOutcome,
-    pub account_actions: Vec<AutoScrubRunAction>,
-}
-
-impl fmt::Debug for AutoScrubRunSummary {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("AutoScrubRunSummary")
-            .field("run_id", &self.run_id)
-            .field("service_id", &self.service_id)
-            .field("account_id", &"[REDACTED]")
-            .field("phase", &self.phase)
-            .field("reviewed_item_count", &self.reviewed_item_count)
-            .field("remaining_item_count", &self.remaining_item_count)
-            .field("stop_requested", &self.stop_requested)
-            .field("mutation_allowed", &self.mutation_allowed)
-            .field("last_outcome", &self.last_outcome)
-            .field("account_actions", &self.account_actions)
-            .finish()
-    }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum AutoScrubServiceConnectionEventKind {
-    Logout,
-    HumanCheck,
-    Suspension,
-}
-
-impl AutoScrubServiceConnectionEventKind {
-    fn stopped_state(self) -> ServiceConnectionState {
-        match self {
-            Self::Logout => ServiceConnectionState::StoppedOnLogout,
-            Self::HumanCheck => ServiceConnectionState::StoppedOnHumanCheck,
-            Self::Suspension => ServiceConnectionState::StoppedOnSuspension,
-        }
-    }
-
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Logout => "logout",
-            Self::HumanCheck => "human_check",
-            Self::Suspension => "suspension",
-        }
-    }
-}
-
-#[derive(Clone, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct AutoScrubServiceConnectionEvent {
-    pub service_id: ServiceKind,
-    pub account_id: String,
-    pub event: AutoScrubServiceConnectionEventKind,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ServiceConnectionState {
-    Running,
-    StoppedOnLogout,
-    StoppedOnHumanCheck,
-    StoppedOnSuspension,
-}
-
-impl ServiceConnectionState {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Running => "running",
-            Self::StoppedOnLogout => "stopped_on_logout",
-            Self::StoppedOnHumanCheck => "stopped_on_human_check",
-            Self::StoppedOnSuspension => "stopped_on_suspension",
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ServiceConnectionLogAction {
-    RecordState,
-}
-
-impl ServiceConnectionLogAction {
-    fn is_credential_action(self) -> bool {
-        false
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ServiceConnectionLogEntry {
-    pub run_id: String,
-    pub service_id: ServiceKind,
-    pub event: AutoScrubServiceConnectionEventKind,
-    pub state: ServiceConnectionState,
-    action: ServiceConnectionLogAction,
-}
-
-impl ServiceConnectionLogEntry {
-    pub fn event_label(&self) -> &'static str {
-        self.event.as_str()
-    }
-
-    pub fn state_label(&self) -> &'static str {
-        self.state.as_str()
-    }
-
-    pub fn is_credential_action(&self) -> bool {
-        self.action.is_credential_action()
-    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1477,7 +1332,6 @@ pub struct AutoScrubFleetStatus {
     pub stop_confirmation: AutoScrubStopConfirmationState,
     pub unattended_execution_allowed: bool,
     pub quit_guard: AutoScrubQuitGuardEstimate,
-    pub fleet_actions: Vec<AutoScrubRunAction>,
     pub runs: Vec<AutoScrubRunSummary>,
 }
 
@@ -1490,15 +1344,12 @@ pub enum AutoScrubRunConsent {
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AutoScrubReviewedRunRequest {
-    pub run_id: String,
     pub service_id: ServiceKind,
     pub account_id: String,
     pub review_token: String,
     pub plan_digest: String,
     pub reviewed_item_count: u32,
-    pub pace_milliseconds: u32,
     pub consent: AutoScrubRunConsent,
-    pub risk_agreement: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -1509,27 +1360,12 @@ pub struct AutoScrubAccountRunResult {
     pub result: &'static str,
 }
 
-#[derive(Clone, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct AutoScrubRunActionRequest {
-    pub run_id: String,
-    pub action: AutoScrubRunActionKind,
-}
-
 #[derive(Default)]
 struct AutoScrubRunStore {
     next_sequence: u64,
-    runs: Vec<AutoScrubRunRecord>,
-    service_connection_log: Vec<ServiceConnectionLogEntry>,
+    runs: Vec<AutoScrubRunSummary>,
     global_stop_requested: bool,
     stop_confirmation_required: bool,
-}
-
-#[derive(Clone, Debug)]
-struct AutoScrubRunRecord {
-    account_id: String,
-    service_connection_state: ServiceConnectionState,
-    summary: AutoScrubRunSummary,
 }
 
 static RUN_STORE: OnceLock<Mutex<AutoScrubRunStore>> = OnceLock::new();
@@ -1601,29 +1437,11 @@ where
     }
     for request in &requests {
         validate_reviewed_run_request(request)?;
-pub fn request_account_action(
-    state: &AppState,
-    request: AutoScrubRunActionRequest,
-) -> Result<AutoScrubFleetStatus, String> {
-    require_pro(state)?;
-    if !valid_opaque(&request.run_id, 80) {
-        return Err("AutoScrub account action request is invalid".to_owned());
     }
     let mut store = run_store()
         .lock()
         .map_err(|_| "AutoScrub run store is unavailable".to_owned())?;
     store.run_reviewed_account_plan_until_stop(requests, &mut stop_after_safe_step)
-    store.request_account_action(request)
-pub fn record_service_connection_event(
-    state: &AppState,
-    event: AutoScrubServiceConnectionEvent,
-) -> Result<AutoScrubFleetStatus, String> {
-    require_pro(state)?;
-    validate_service_connection_event(&event)?;
-    let mut store = run_store()
-        .lock()
-        .map_err(|_| "AutoScrub run store is unavailable".to_owned())?;
-    store.record_service_connection_event(event)
 }
 
 fn require_pro(state: &AppState) -> Result<(), String> {
@@ -1644,95 +1462,15 @@ impl AutoScrubRunStore {
         }
         self.next_sequence = self.next_sequence.saturating_add(1);
         self.runs.push(AutoScrubRunSummary {
-            run_id: request.run_id,
+            run_id: format!("autoscrub-run-{:04}", self.next_sequence),
             service_id: request.service_id,
-            account_id: request.account_id,
             phase: AutoScrubRunPhase::Running,
             reviewed_item_count: request.reviewed_item_count,
             remaining_item_count: request.reviewed_item_count,
-            pace_milliseconds: request.pace_milliseconds,
             stop_requested: false,
             mutation_allowed: false,
             last_outcome: AutoScrubRunOutcome::Held,
-            account_actions: Vec::new(),
-        self.runs.push(AutoScrubRunRecord {
-            account_id: request.account_id,
-            service_connection_state: ServiceConnectionState::Running,
-            summary: AutoScrubRunSummary {
-                run_id: format!("autoscrub-run-{:04}", self.next_sequence),
-                service_id: request.service_id,
-                phase: AutoScrubRunPhase::Running,
-                reviewed_item_count: request.reviewed_item_count,
-                remaining_item_count: request.reviewed_item_count,
-                stop_requested: false,
-                mutation_allowed: false,
-                last_outcome: AutoScrubRunOutcome::Held,
-            },
         });
-        Ok(self.fleet())
-    }
-
-    fn request_account_action(
-        &mut self,
-        request: AutoScrubRunActionRequest,
-    ) -> Result<AutoScrubFleetStatus, String> {
-        if request.action == AutoScrubRunActionKind::StopAllScanning {
-            return Ok(self.request_global_stop());
-        }
-        if self.global_stop_requested {
-            return Err(
-                "AutoScrub account action is unavailable after Stop all scanning".to_owned(),
-            );
-        }
-        let run = self
-            .runs
-            .iter_mut()
-            .find(|run| run.run_id == request.run_id)
-            .ok_or_else(|| "AutoScrub run was not found".to_owned())?;
-        match request.action {
-            AutoScrubRunActionKind::OpenAccount => {
-                if matches!(
-                    run.phase,
-                    AutoScrubRunPhase::Complete
-                        | AutoScrubRunPhase::Skipped
-                        | AutoScrubRunPhase::Stopping
-                ) {
-                    return Err("AutoScrub account action is unavailable for this run".to_owned());
-                }
-                run.phase = AutoScrubRunPhase::Running;
-                run.stop_requested = false;
-                run.last_outcome = AutoScrubRunOutcome::Held;
-            }
-            AutoScrubRunActionKind::TryAgainAfterSignIn => {
-                if !matches!(
-                    run.phase,
-                    AutoScrubRunPhase::Blocked | AutoScrubRunPhase::Failed
-                ) {
-                    return Err(
-                        "AutoScrub sign-in retry is available only after an account stop"
-                            .to_owned(),
-                    );
-                }
-                run.phase = AutoScrubRunPhase::Running;
-                run.stop_requested = false;
-                run.last_outcome = AutoScrubRunOutcome::Held;
-            }
-            AutoScrubRunActionKind::SkipThisAccount => {
-                if matches!(
-                    run.phase,
-                    AutoScrubRunPhase::Complete
-                        | AutoScrubRunPhase::Skipped
-                        | AutoScrubRunPhase::Stopping
-                ) {
-                    return Err("AutoScrub account action is unavailable for this run".to_owned());
-                }
-                run.phase = AutoScrubRunPhase::Skipped;
-                run.stop_requested = false;
-                run.mutation_allowed = false;
-                run.last_outcome = AutoScrubRunOutcome::Held;
-            }
-            AutoScrubRunActionKind::StopAllScanning => unreachable!(),
-        }
         Ok(self.fleet())
     }
 
@@ -1749,13 +1487,6 @@ impl AutoScrubRunStore {
             ) {
                 run.stop_requested = true;
             }
-            if matches!(
-                run.summary.phase,
-                AutoScrubRunPhase::Running | AutoScrubRunPhase::ReviewRequired
-            ) {
-                run.summary.phase = AutoScrubRunPhase::Stopping;
-            }
-            run.summary.stop_requested = true;
         }
         self.fleet()
     }
@@ -1857,31 +1588,6 @@ impl AutoScrubRunStore {
             results.push(account_result(&request, AUTOSCRUB_RESULT_FINISHED));
         }
         Ok(results)
-    fn record_service_connection_event(
-        &mut self,
-        event: AutoScrubServiceConnectionEvent,
-    ) -> Result<AutoScrubFleetStatus, String> {
-        let Some(run) = self.runs.iter_mut().find(|run| {
-            run.summary.service_id == event.service_id && run.account_id == event.account_id
-        }) else {
-            return Err(
-                "AutoScrub service connection event did not match an open account".to_owned(),
-            );
-        };
-        let state = event.event.stopped_state();
-        run.service_connection_state = state;
-        run.summary.phase = AutoScrubRunPhase::Blocked;
-        run.summary.stop_requested = true;
-        run.summary.mutation_allowed = false;
-        run.summary.last_outcome = AutoScrubRunOutcome::Held;
-        self.service_connection_log.push(ServiceConnectionLogEntry {
-            run_id: run.summary.run_id.clone(),
-            service_id: event.service_id,
-            event: event.event,
-            state,
-            action: ServiceConnectionLogAction::RecordState,
-        });
-        Ok(self.fleet())
     }
 
     fn fleet(&self) -> AutoScrubFleetStatus {
@@ -1891,11 +1597,6 @@ impl AutoScrubRunStore {
             .iter()
             .filter(|run| is_open_fleet_phase(run.phase))
             .cloned()
-            .cloned()
-            .map(|mut run| {
-                run.account_actions = account_actions_for(&run, self.global_stop_requested);
-                run
-            })
             .collect();
         AutoScrubFleetStatus {
             contract: CONTRACT,
@@ -1908,9 +1609,7 @@ impl AutoScrubRunStore {
             },
             unattended_execution_allowed: false,
             quit_guard: self.quit_guard(open_run_count),
-            fleet_actions: fleet_actions_for(open_run_count, self.global_stop_requested),
             runs,
-            runs: self.runs.iter().map(|run| run.summary.clone()).collect(),
         }
     }
 
@@ -1918,15 +1617,6 @@ impl AutoScrubRunStore {
         self.runs
             .iter()
             .filter(|run| is_open_fleet_phase(run.phase))
-            .filter(|run| {
-                matches!(
-                    run.summary.phase,
-                    AutoScrubRunPhase::ReviewRequired
-                        | AutoScrubRunPhase::Running
-                        | AutoScrubRunPhase::Stopping
-                        | AutoScrubRunPhase::Blocked
-                )
-            })
             .count()
     }
 
@@ -1979,62 +1669,18 @@ fn is_open_fleet_phase(phase: AutoScrubRunPhase) -> bool {
             | AutoScrubRunPhase::Stopping
             | AutoScrubRunPhase::Blocked
     )
-fn account_actions_for(
-    run: &AutoScrubRunSummary,
-    global_stop_requested: bool,
-) -> Vec<AutoScrubRunAction> {
-    if global_stop_requested || run.stop_requested {
-        return Vec::new();
-    }
-    match run.phase {
-        AutoScrubRunPhase::ReviewRequired | AutoScrubRunPhase::Running => vec![
-            AutoScrubRunAction::new(AutoScrubRunActionKind::OpenAccount),
-            AutoScrubRunAction::new(AutoScrubRunActionKind::SkipThisAccount),
-        ],
-        AutoScrubRunPhase::Blocked | AutoScrubRunPhase::Failed => vec![
-            AutoScrubRunAction::new(AutoScrubRunActionKind::TryAgainAfterSignIn),
-            AutoScrubRunAction::new(AutoScrubRunActionKind::SkipThisAccount),
-        ],
-        AutoScrubRunPhase::Stopping | AutoScrubRunPhase::Skipped | AutoScrubRunPhase::Complete => {
-            Vec::new()
-        }
-    }
-}
-
-fn fleet_actions_for(
-    open_run_count: usize,
-    global_stop_requested: bool,
-) -> Vec<AutoScrubRunAction> {
-    if open_run_count == 0 || global_stop_requested {
-        Vec::new()
-    } else {
-        vec![AutoScrubRunAction::new(
-            AutoScrubRunActionKind::StopAllScanning,
-        )]
-    }
 }
 
 fn honest_stop_estimate_seconds(runs: &[AutoScrubRunSummary]) -> u32 {
-fn honest_stop_estimate_seconds(runs: &[AutoScrubRunRecord]) -> u32 {
     runs.iter()
-        .filter(|run| run.summary.stop_requested)
-        .map(|run| run.summary.remaining_item_count.max(1).saturating_mul(30))
+        .filter(|run| run.stop_requested)
+        .map(|run| run.remaining_item_count.max(1).saturating_mul(30))
         .max()
         .unwrap_or(30)
 }
 
-fn validate_service_connection_event(
-    event: &AutoScrubServiceConnectionEvent,
-) -> Result<(), String> {
-    if !valid_opaque(&event.account_id, MAX_ACCOUNT_ID_BYTES) {
-        return Err("AutoScrub service connection event is invalid".to_owned());
-    }
-    Ok(())
-}
-
 fn validate_reviewed_run_request(request: &AutoScrubReviewedRunRequest) -> Result<(), String> {
-    if !valid_opaque(&request.run_id, MAX_RUN_ID_LEN)
-        || !valid_opaque(&request.account_id, MAX_ACCOUNT_ID_BYTES)
+    if !valid_opaque(&request.account_id, MAX_ACCOUNT_ID_BYTES)
         || !valid_opaque(&request.review_token, MAX_REVIEW_TOKEN_BYTES)
         || !valid_digest(&request.plan_digest)
         || request.reviewed_item_count == 0
@@ -2042,11 +1688,6 @@ fn validate_reviewed_run_request(request: &AutoScrubReviewedRunRequest) -> Resul
         || request.consent != AutoScrubRunConsent::ReviewedBatchOnly
     {
         return Err("AutoScrub reviewed run request is invalid".to_owned());
-    }
-    if request.pace_milliseconds < MIN_REVIEWED_RUN_PACE_MILLISECONDS {
-        return Err("below minimum pace".to_owned());
-    if !request.risk_agreement {
-        return Err("AutoScrub reviewed run request is missing consent".to_owned());
     }
     Ok(())
 }
@@ -2865,24 +2506,13 @@ mod production_fleet_tests {
         account_id: &str,
         reviewed_item_count: u32,
     ) -> AutoScrubReviewedRunRequest {
-        reviewed_request_for(service_id, account_id, reviewed_item_count)
-    }
-
-    fn reviewed_request_for(
-        service_id: ServiceKind,
-        account_id: &str,
-        reviewed_item_count: u32,
-    ) -> AutoScrubReviewedRunRequest {
         AutoScrubReviewedRunRequest {
-            run_id: format!("run-{reviewed_item_count}"),
             service_id,
             account_id: account_id.to_owned(),
             review_token: format!("review-token-{account_id}-{reviewed_item_count}"),
             plan_digest: "a".repeat(64),
             reviewed_item_count,
-            pace_milliseconds: MIN_REVIEWED_RUN_PACE_MILLISECONDS,
             consent: AutoScrubRunConsent::ReviewedBatchOnly,
-            risk_agreement: true,
         }
     }
 
@@ -2898,10 +2528,6 @@ mod production_fleet_tests {
         assert!(!first.global_stop_requested);
         assert!(!first.unattended_execution_allowed);
         assert_eq!(first.runs[0].phase, AutoScrubRunPhase::Running);
-        assert_eq!(
-            first.runs[0].pace_milliseconds,
-            MIN_REVIEWED_RUN_PACE_MILLISECONDS
-        );
         assert!(!first.runs[0].mutation_allowed);
 
         let second = start_reviewed_run(&state, reviewed_request(ServiceKind::Telegram, 5))
@@ -2938,18 +2564,17 @@ mod production_fleet_tests {
         assert_eq!(fleet_status(&free).unwrap_err(), PRO_REQUIRED);
 
         assert!(serde_json::from_str::<AutoScrubReviewedRunRequest>(
-            r#"{"runId":"run-1","serviceId":"discord","accountId":"acct-1","reviewToken":"review-1","planDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","reviewedItemCount":1,"consent":"reviewedBatchOnly","riskAgreement":true,"unattended":true}"#,
+            r#"{"serviceId":"discord","accountId":"acct-1","reviewToken":"review-1","planDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","reviewedItemCount":1,"consent":"reviewedBatchOnly","unattended":true}"#,
         )
         .is_err());
         assert!(serde_json::from_str::<AutoScrubReviewedRunRequest>(
-            r#"{"runId":"run-1","serviceId":"discord","accountId":"acct-1","reviewToken":"review-1","planDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","reviewedItemCount":1}"#,
+            r#"{"serviceId":"discord","accountId":"acct-1","reviewToken":"review-1","planDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","reviewedItemCount":1}"#,
         )
         .is_err());
     }
 
     #[test]
     fn task_1433_stop_request_requires_confirmation_before_it_takes_effect() {
-    fn task1441_skip_advances_to_next_account_and_retains_partial_results() {
         let _guard = crate::global_keystore_test_lock();
         reset_run_store_for_test();
         let state = state_with_license(LicenseState::Paid, "ACTIVE");
@@ -3067,289 +2692,6 @@ mod production_fleet_tests {
                 .runs
                 .iter()
                 .any(|run| run.service_id == ServiceKind::Telegram)
-        let first = start_reviewed_run(
-            &state,
-            reviewed_request_for(ServiceKind::Discord, "acct-alpha", 4),
-        )
-        .expect("first reviewed AutoScrub account");
-        let first_run_id = first.runs[0].run_id.clone();
-        start_reviewed_run(
-            &state,
-            reviewed_request_for(ServiceKind::Telegram, "acct-beta", 3),
-        )
-        .expect("second reviewed AutoScrub account");
-
-        {
-            let mut store = run_store().lock().expect("AutoScrub test run store lock");
-            let first = store
-                .runs
-                .iter_mut()
-                .find(|run| run.run_id == first_run_id)
-                .expect("first run remains in the store");
-            first.remaining_item_count = 2;
-            first.last_outcome = AutoScrubRunOutcome::Prepared;
-        }
-
-        let before = fleet_status(&state).expect("fleet status before skip");
-        let before_active = before
-            .runs
-            .iter()
-            .find(|run| run.phase == AutoScrubRunPhase::Running)
-            .expect("one account is active before skip");
-        let checked_before = before_active.reviewed_item_count - before_active.remaining_item_count;
-        assert_eq!(before_active.account_id, "acct-alpha");
-        assert_eq!(checked_before, 2);
-        assert!(before
-            .fleet_actions
-            .iter()
-            .any(|action| action.label == "Stop all scanning"));
-        assert!(before_active
-            .account_actions
-            .iter()
-            .any(|action| action.label == "Open account"));
-        assert!(before_active
-            .account_actions
-            .iter()
-            .any(|action| action.label == "Skip this account"));
-
-        let after = request_account_action(
-            &state,
-            AutoScrubRunActionRequest {
-                run_id: first_run_id.clone(),
-                action: AutoScrubRunActionKind::SkipThisAccount,
-            },
-        )
-        .expect("skip this account action succeeds");
-        let skipped = after
-            .runs
-            .iter()
-            .find(|run| run.run_id == first_run_id)
-            .expect("skipped account remains in returned results");
-        let after_active = after
-            .runs
-            .iter()
-            .find(|run| run.phase == AutoScrubRunPhase::Running)
-            .expect("next account is active after skip");
-        let checked_after = skipped.reviewed_item_count - skipped.remaining_item_count;
-
-        assert_eq!(skipped.account_id, "acct-alpha");
-        assert_eq!(skipped.phase, AutoScrubRunPhase::Skipped);
-        assert_eq!(checked_after, checked_before);
-        assert_eq!(after_active.account_id, "acct-beta");
-        assert_eq!(after.open_run_count, 1);
-        assert!(!skipped.mutation_allowed);
-        assert_eq!(
-            AutoScrubRunActionKind::TryAgainAfterSignIn.label(),
-            "Try again after sign-in"
-        );
-
-        println!(
-            "task1441_action_labels={},{},{},{}",
-            AutoScrubRunActionKind::OpenAccount.label(),
-            AutoScrubRunActionKind::TryAgainAfterSignIn.label(),
-            AutoScrubRunActionKind::SkipThisAccount.label(),
-            AutoScrubRunActionKind::StopAllScanning.label()
-        );
-        println!(
-            "task1441_before_active_account={}",
-            before_active.account_id
-        );
-        println!("task1441_after_active_account={}", after_active.account_id);
-        println!("task1441_skipped_account={}", skipped.account_id);
-        println!("task1441_skipped_phase={:?}", skipped.phase);
-        println!("task1441_skipped_checked_before={checked_before}");
-        println!("task1441_skipped_checked_after={checked_after}");
-        println!(
-            "task1441_open_run_count_after_skip={}",
-            after.open_run_count
-        );
-    fn task1440_logout_human_check_and_suspension_events_record_stop_state_without_credential_actions(
-    ) {
-        let _guard = crate::global_keystore_test_lock();
-        let state = state_with_license(LicenseState::Paid, "ACTIVE");
-        let fixtures = [
-            (
-                "acct-logout",
-                AutoScrubServiceConnectionEventKind::Logout,
-                ServiceConnectionState::StoppedOnLogout,
-            ),
-            (
-                "acct-human-check",
-                AutoScrubServiceConnectionEventKind::HumanCheck,
-                ServiceConnectionState::StoppedOnHumanCheck,
-            ),
-            (
-                "acct-suspension",
-                AutoScrubServiceConnectionEventKind::Suspension,
-                ServiceConnectionState::StoppedOnSuspension,
-            ),
-        ];
-        let mut states = Vec::new();
-        let mut credential_action_count = 0;
-
-        for forbidden_field in ["password", "code", "check"] {
-            let mut raw = serde_json::json!({
-                "serviceId": "discord",
-                "accountId": "acct-forbidden-credential-action",
-                "event": "logout",
-            });
-            raw[forbidden_field] = serde_json::json!("must-not-be-accepted");
-            assert!(
-                serde_json::from_value::<AutoScrubServiceConnectionEvent>(raw).is_err(),
-                "service connection events must not accept {forbidden_field} fields"
-            );
-        }
-
-        for (index, (account_id, event, expected_state)) in fixtures.iter().enumerate() {
-            reset_run_store_for_test();
-            start_reviewed_run(
-                &state,
-                reviewed_request_for(ServiceKind::Discord, account_id, (index + 1) as u32),
-            )
-            .expect("fixture AutoScrub run opens");
-            let fleet = record_service_connection_event(
-                &state,
-                AutoScrubServiceConnectionEvent {
-                    service_id: ServiceKind::Discord,
-                    account_id: (*account_id).to_owned(),
-                    event: *event,
-                },
-            )
-            .expect("fixture service connection event records");
-            let run = fleet
-                .runs
-                .first()
-                .expect("stopped account remains visible in fleet");
-            assert_eq!(run.service_id, ServiceKind::Discord);
-            assert_eq!(run.phase, AutoScrubRunPhase::Blocked);
-            assert!(run.stop_requested);
-            assert!(!run.mutation_allowed);
-            assert_eq!(expected_state.as_str(), event.stopped_state().as_str());
-
-            let store = run_store().lock().expect("AutoScrub test run store lock");
-            assert_eq!(store.service_connection_log.len(), 1);
-            let entry = &store.service_connection_log[0];
-            assert_eq!(entry.event, *event);
-            assert_eq!(entry.state, *expected_state);
-            states.push(format!("{}:{}", entry.event_label(), entry.state_label()));
-            credential_action_count += store
-                .service_connection_log
-                .iter()
-                .filter(|entry| entry.is_credential_action())
-                .count();
-            assert!(store.runs.iter().all(|run| !run.summary.mutation_allowed
-                && matches!(run.summary.phase, AutoScrubRunPhase::Blocked)));
-        }
-
-        assert_eq!(
-            states,
-            vec![
-                "logout:stopped_on_logout",
-                "human_check:stopped_on_human_check",
-                "suspension:stopped_on_suspension",
-            ]
-        );
-        assert_eq!(credential_action_count, 0);
-
-        println!("task1440_fixture_states={}", states.join(","));
-        println!("task1440_credential_action_count={credential_action_count}");
-    fn maple_run_refuses_pace_below_polite_limit_without_mutating_started_run() {
-        let _guard = crate::global_keystore_test_lock();
-        reset_run_store_for_test();
-        let state = state_with_license(LicenseState::Paid, "ACTIVE");
-        let request = reviewed_request(ServiceKind::Discord, 1);
-
-        let before = fleet_status(&state).expect("paid test state can read fleet before start");
-        println!("started-run count before: {}", before.open_run_count);
-        assert_eq!(before.open_run_count, 0);
-
-        let accepted =
-            start_reviewed_run(&state, request.clone()).expect("pace 500 milliseconds starts");
-        println!(
-            "maple-run records pace {} milliseconds",
-            accepted.runs[0].pace_milliseconds
-        );
-        println!(
-            "started-run count after pace 500: {}",
-            accepted.open_run_count
-        );
-        assert_eq!(accepted.open_run_count, 1);
-        assert_eq!(accepted.runs[0].pace_milliseconds, 500);
-
-        let mut too_fast = request;
-        too_fast.pace_milliseconds = 499;
-        let refused = start_reviewed_run(&state, too_fast).expect_err("pace 499 must be refused");
-        println!("pace 499 is refused as {refused}");
-        assert_eq!(refused, "below minimum pace");
-
-        let after = fleet_status(&state).expect("paid test state can read fleet after refusal");
-        println!(
-            "maple-run still records pace {} milliseconds",
-            after.runs[0].pace_milliseconds
-        );
-        println!(
-            "started-run count after refused pace change: {}",
-            after.open_run_count
-        );
-        assert_eq!(after.open_run_count, 1);
-        assert_eq!(after.runs[0].pace_milliseconds, 500);
-    fn task_1409_break_consent_bypass() {
-        let _guard = crate::global_keystore_test_lock();
-        reset_run_store_for_test();
-        let state = state_with_license(LicenseState::Paid, "ACTIVE");
-        let before = fleet_status(&state).expect("paid test state can read AutoScrub fleet");
-        println!(
-            "TASK1409_started-run-count-before={}",
-            before.open_run_count
-        );
-        assert_eq!(before.open_run_count, 0);
-
-        let yes_request = AutoScrubReviewedRunRequest {
-            run_id: "maple-run".to_owned(),
-            service_id: ServiceKind::Discord,
-            account_id: "discord-maple".to_owned(),
-            review_token: "review-token-maple".to_owned(),
-            plan_digest: "c".repeat(64),
-            reviewed_item_count: 1,
-            consent: AutoScrubRunConsent::ReviewedBatchOnly,
-            risk_agreement: true,
-        };
-        let after_yes = start_reviewed_run(&state, yes_request.clone())
-            .expect("risk agreement yes starts the reviewed Discord run");
-        assert_eq!(after_yes.open_run_count, 1);
-        assert_eq!(after_yes.runs.len(), 1);
-        assert_eq!(after_yes.runs[0].run_id, "maple-run");
-        assert_eq!(after_yes.runs[0].account_id, "discord-maple");
-        println!(
-            "TASK1409_after-run={} names {}",
-            after_yes.runs[0].run_id, after_yes.runs[0].account_id
-        );
-        println!(
-            "TASK1409_started-run-count-after-yes={}",
-            after_yes.open_run_count
-        );
-
-        let no_request = AutoScrubReviewedRunRequest {
-            risk_agreement: false,
-            ..yes_request
-        };
-        let refused = start_reviewed_run(&state, no_request)
-            .expect_err("risk agreement no must refuse as missing consent");
-        assert_eq!(refused, "AutoScrub reviewed run request is missing consent");
-        println!("TASK1409_agreement-no-refused=missing consent");
-
-        let after_no = fleet_status(&state).expect("paid test state can reread AutoScrub fleet");
-        assert_eq!(after_no.open_run_count, 1);
-        assert_eq!(after_no.runs.len(), 1);
-        assert_eq!(after_no.runs[0].run_id, "maple-run");
-        assert_eq!(after_no.runs[0].account_id, "discord-maple");
-        println!(
-            "TASK1409_after-refusal={} still names {}",
-            after_no.runs[0].run_id, after_no.runs[0].account_id
-        );
-        println!(
-            "TASK1409_started-run-count-after-no={}",
-            after_no.open_run_count
         );
     }
 
@@ -3359,16 +2701,13 @@ mod production_fleet_tests {
         reset_run_store_for_test();
         let state = state_with_license(LicenseState::Paid, "ACTIVE");
         let request = AutoScrubReviewedRunRequest {
-            run_id: "debug-run".to_owned(),
             service_id: ServiceKind::Discord,
             account_id: "acct-secret-debug-regression".to_owned(),
             review_token: "review-token-secret-debug-regression".to_owned(),
             plan_digest: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
                 .to_owned(),
             reviewed_item_count: 3,
-            pace_milliseconds: MIN_REVIEWED_RUN_PACE_MILLISECONDS,
             consent: AutoScrubRunConsent::ReviewedBatchOnly,
-            risk_agreement: true,
         };
 
         let debug = format!(

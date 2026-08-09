@@ -169,16 +169,16 @@ function escapeHtml(value: string): string {
     .replace(/"/g, "&quot;");
 }
 
-function attachmentRow(attachment: EmailOverlayAttachment, keyPrefix: string): string {
+function attachmentRow(attachment: EmailOverlayAttachment): string {
   return `<li class="email-overlay-file" data-file-name="${escapeHtml(attachment.name)}">
         <span class="email-overlay-file-name">${escapeHtml(attachment.name)}</span>
         <span class="email-overlay-file-size">${escapeHtml(attachment.sizeLabel)}</span>
       </li>`;
 }
 
-function attachmentList(attachments: readonly EmailOverlayAttachment[], keyPrefix: string, empty: string): string {
+function attachmentList(attachments: readonly EmailOverlayAttachment[], empty: string): string {
   if (attachments.length === 0) return `<li class="email-overlay-files-empty">${empty}</li>`;
-  return attachments.map((attachment) => attachmentRow(attachment, keyPrefix)).join("\n      ");
+  return attachments.map(attachmentRow).join("\n      ");
 }
 
 /**
@@ -214,7 +214,7 @@ export function emailDraftOverlayMarkup(state: EmailDraftOverlayState): string {
     </label>
   </div>
   <ul class="email-overlay-files" aria-label="Attached files">
-    ${attachmentList(state.attachments, "draft", "No files attached.")}
+    ${attachmentList(state.attachments, "No files attached.")}
     <li class="email-overlay-files-add"><button class="button email-overlay-add-file" type="button" id="email-draft-add-file">Add file</button></li>
   </ul>
   <div class="email-overlay-send-review" data-open="${state.reviewOpen}" aria-label="Send review">
@@ -242,7 +242,7 @@ export function emailReadingOverlayMarkup(state: EmailReadingOverlayState): stri
     Deletes in ${formatEmailOverlayCountdown(state.remainingSeconds)}
   </div>
   <ul class="email-overlay-files" aria-label="Attached files">
-    ${attachmentList(state.attachments, "reading", "No files attached.")}
+    ${attachmentList(state.attachments, "No files attached.")}
   </ul>
 </section>`;
 }

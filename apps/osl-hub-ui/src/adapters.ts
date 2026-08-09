@@ -2363,6 +2363,17 @@ export async function loadWebsiteLiveRunProgress(pageUrl: string): Promise<Websi
   } catch (error) { recordBackendFailure("read_protected_email_live_run_progress", error); return null; }
 }
 
+/** A validated snapshot of a protected-email website run's visible progress. */
+export interface WebsiteLiveRunProgress {
+  activeAccount: string;
+  currentPlace: string;
+  messagesChecked: number;
+  matches: number;
+  scrolls: number;
+  waits: number;
+  changes: number;
+}
+
 function parseWebsiteLiveRunProgress(value: unknown): WebsiteLiveRunProgress | null {
   if (!isRecord(value)
     || !exact(value, ["activeAccount", "currentPlace", "messagesChecked", "matches", "scrolls", "waits", "changes"])
@@ -2376,10 +2387,10 @@ function parseWebsiteLiveRunProgress(value: unknown): WebsiteLiveRunProgress | n
   return {
     activeAccount: value.activeAccount,
     currentPlace: value.currentPlace,
-    messagesChecked: value.messagesChecked,
-    matches: value.matches,
-    scrolls: value.scrolls,
-    waits: value.waits,
-    changes: value.changes,
+    messagesChecked: Number(value.messagesChecked),
+    matches: Number(value.matches),
+    scrolls: Number(value.scrolls),
+    waits: Number(value.waits),
+    changes: Number(value.changes),
   };
 }

@@ -1,3 +1,6 @@
+/* Colour values are the canonical OSL design tokens duplicated from
+   src/osl-tokens.ts (CSS cannot import TypeScript). osl-tokens.ts is the
+   authority; token names are noted beside each hex. */
 /* ---------------------------------------------------------------------------
    What should OSL check before you send? 2026-08-06 restyle.
 
@@ -20,10 +23,10 @@
 }
 
 .bs-onboarding {
-  --bs-quiet-line: #4a555b;
-  --bs-warn: #e59f3b;
-  --bs-good: #3dd68c;
-  --bs-card-line: #1e2326;
+  --bs-quiet-line: #4a555b; /* colour.muted5 */
+  --bs-warn: #f0a93a; /* colour.warning */
+  --bs-good: #3dd68c; /* colour.safe */
+  --bs-card-line: #1e2326; /* colour.borderQuiet */
 
   /* 720 so the heading fits on one line; everything under it is pulled back to
      the 640 the handoff asks for. Setting 720 on the heading alone did not work

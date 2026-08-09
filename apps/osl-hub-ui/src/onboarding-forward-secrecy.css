@@ -1,3 +1,6 @@
+/* Colour values are the canonical OSL design tokens duplicated from
+   src/osl-tokens.ts (CSS cannot import TypeScript). osl-tokens.ts is the
+   authority; token names are noted beside each hex. */
 /* ---------------------------------------------------------------------------
    What happens to old messages. 2026-08-06 restyle.
 
@@ -20,8 +23,8 @@
 }
 
 .fs-onboarding {
-  --fs-locked: #3dd68c;
-  --fs-open: #e59f3b;
+  --fs-locked: #3dd68c; /* colour.safe */
+  --fs-open: #f0a93a; /* colour.warning */
 
   width: 700px;
   max-width: 100%;

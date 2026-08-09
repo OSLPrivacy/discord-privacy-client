@@ -1,3 +1,8 @@
+/* DELIBERATELY NOT OSL design tokens (osl-tokens.ts): this overlay is drawn
+   directly over Discord's own composer/transcript and must read as Discord —
+   the design requires zero styling change on reveal. Every colour in this
+   sheet is Discord's, or annotates Discord's surface; repointing them to the
+   OSL palette would put a visible OSL-coloured seam inside Discord. */
 :root {
   --osl-overlay-text: #dbdee1;
   --osl-overlay-muted: #b5bac1;

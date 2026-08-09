@@ -187,6 +187,8 @@ export interface OslChatsViewModel {
    * Opening one is never gated by this -- that path is free (0591).
    */
   viewOnceCreationAllowed?: boolean;
+  /** Where a verified-peer warning is permitted to be shown for this view. */
+  verificationWarningSurface?: VerificationWarningSurface;
   homeLogoUrl?: string;
   /**
    * Remote attachment copies OSL asked the relay to delete and could NOT

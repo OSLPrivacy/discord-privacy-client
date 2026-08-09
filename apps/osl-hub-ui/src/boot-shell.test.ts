@@ -63,8 +63,8 @@ describe("static boot shell", () => {
 
   it("paints OSL's own dark surface rather than the user agent's white page", () => {
     const shellRules = declarations(bootShell);
-    expect(shellRules).toMatch(/:root\s*\{[^}]*background:\s*#0a0a0a/u);
-    expect(shellRules).toMatch(/\.boot-shell\s*\{[^}]*background:\s*#0a0a0a/u);
+    expect(shellRules).toMatch(/:root\s*\{[^}]*background:\s*#080c0d/u);
+    expect(shellRules).toMatch(/\.boot-shell\s*\{[^}]*background:\s*#080c0d/u);
   });
 
   it("pins its literal palette to the values styles.css declares", () => {
@@ -74,15 +74,15 @@ describe("static boot shell", () => {
     // change in styles.css that is not mirrored fails this test rather than
     // shipping a boot frame in the old colours.
     const root = styles.slice(styles.indexOf(":root {"), styles.indexOf("}", styles.indexOf(":root {")));
-    expect(root).toMatch(/--bg:\s*#0a0a0a;/u);
-    expect(root).toMatch(/--line:\s*#2a2a2a;/u);
-    expect(root).toMatch(/--subtle:\s*#888;/u);
-    expect(styles).toMatch(/\.desktop-titlebar\s*\{[^}]*background:\s*#080808/u);
+    expect(root).toMatch(/--bg:\s*#080c0d;/u); // colour.background (osl-tokens.ts)
+    expect(root).toMatch(/--line:\s*#161b1e;/u); // colour.hairline
+    expect(root).toMatch(/--subtle:\s*#66727a;/u); // colour.muted3
+    expect(styles).toMatch(/\.desktop-titlebar\s*\{[^}]*background:\s*#0a0e10/u); // colour.surface
 
     const shellRules = declarations(bootShell);
-    expect(shellRules).toMatch(/\.boot-shell-titlebar\s*\{[^}]*background:\s*#080808/u);
-    expect(shellRules).toMatch(/\.boot-shell-lines > span\s*\{[^}]*background:\s*#2a2a2a/u);
-    expect(shellRules).toMatch(/\.boot-shell\s*\{[^}]*color:\s*#888/u);
+    expect(shellRules).toMatch(/\.boot-shell-titlebar\s*\{[^}]*background:\s*#0a0e10/u); // colour.surface
+    expect(shellRules).toMatch(/\.boot-shell-lines > span\s*\{[^}]*background:\s*#161b1e/u); // colour.hairline
+    expect(shellRules).toMatch(/\.boot-shell\s*\{[^}]*color:\s*#66727a/u); // colour.muted3
   });
 
   it("commits to dark rather than following the OS", () => {

@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   enclaveServerScreen,
+  OSL_KEY_CHANGES_CHANNEL_ID,
+  OSL_KEY_CHANGES_CHANNEL_NAME,
+  requestEnclaveChannelDeletion,
+  requestEnclaveMessagePost,
   requestEnclaveServerChannels,
   requestEnclaveServerMembers,
   requestEnclaveServerMessages,
@@ -49,6 +53,7 @@ describe("TASK 1384 Enclave server access", () => {
     expect(firstScreen.channelRows.map((row) => row.name)).toEqual([
       "general-marked",
       "private-marked",
+      OSL_KEY_CHANGES_CHANNEL_NAME,
     ]);
     console.log(
       `TASK1384 first_screen requester=${namedMember} messages=${firstScreen.messageRows.length} marked=${firstScreen.messageRows[0]?.plaintext} members=${firstScreen.memberRows.length} member_names=${names(firstScreen.memberRows)} channels=${firstScreen.channelRows.length} channel_names=${names(firstScreen.channelRows)}`,
@@ -105,9 +110,43 @@ describe("TASK 1384 Enclave server access", () => {
     expect(afterScreen.channelRows.map((row) => row.name)).toEqual([
       "general-marked",
       "private-marked",
+      OSL_KEY_CHANGES_CHANNEL_NAME,
     ]);
     console.log(
       `TASK1384 after_screen requester=${namedMember} messages=${afterScreen.messageRows.length} marked=${afterScreen.messageRows[0]?.plaintext} members=${afterScreen.memberRows.length} member_names=${names(afterScreen.memberRows)} channels=${afterScreen.channelRows.length} channel_names=${names(afterScreen.channelRows)}`,
     );
+  });
+
+  it("materializes an immutable OSL-authored key-change channel in every enclave", () => {
+    const screen = enclaveServerScreen(server, namedMember);
+    const keyChanges = screen.channelRows.filter((channel) => channel.channelId === OSL_KEY_CHANGES_CHANNEL_ID);
+
+    expect(keyChanges).toEqual([{
+      channelId: OSL_KEY_CHANGES_CHANNEL_ID,
+      name: OSL_KEY_CHANGES_CHANNEL_NAME,
+      kind: "osl-key-changes",
+    }]);
+    expect(requestEnclaveMessagePost(server, namedMember, OSL_KEY_CHANGES_CHANNEL_ID)).toEqual({
+      ok: false,
+      reason: "keyChangesOslOnly",
+    });
+    expect(requestEnclaveChannelDeletion(server, namedMember, OSL_KEY_CHANGES_CHANNEL_ID)).toEqual({
+      ok: false,
+      reason: "keyChangesUndeletable",
+    });
+
+    const owner = "Enclave Owner";
+    const ownerSnapshot: EnclaveServerSnapshot = {
+      ...server,
+      members: [...server.members, { memberId: "member-owner", displayName: owner }],
+    };
+    expect(requestEnclaveMessagePost(ownerSnapshot, owner, OSL_KEY_CHANGES_CHANNEL_ID)).toEqual({
+      ok: false,
+      reason: "keyChangesOslOnly",
+    });
+    expect(requestEnclaveChannelDeletion(ownerSnapshot, owner, OSL_KEY_CHANGES_CHANNEL_ID)).toEqual({
+      ok: false,
+      reason: "keyChangesUndeletable",
+    });
   });
 });

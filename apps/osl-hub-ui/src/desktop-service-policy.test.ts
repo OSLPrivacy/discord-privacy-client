@@ -16,7 +16,6 @@ describe("Windows desktop service policy", () => {
       "whatsapp",
       "outlook",
       "proton",
-      "tuta",
     ] as const) {
       expect(requiresNativeDesktopSurface(id)).toBe(true);
     }

@@ -1,36 +1,16 @@
-//! Stable-place authorization for hosted Scrub-visible actions.
-//!
-//! A provider adapter may read, draft, place, or scrub only inside the stable
-//! place IDs the owner approved. Refusals happen before any action record is
-//! appended so an unlisted place stays silent.
-
-use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
-use std::fmt;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HostedPlaceList {
-    allowed_place_ids: BTreeSet<String>,
-}
-
-impl HostedPlaceList {
-    pub fn new(allowed_place_ids: impl IntoIterator<Item = String>) -> Self {
-        Self {
-            allowed_place_ids: allowed_place_ids.into_iter().collect(),
-        }
-    }
-
-    pub fn is_readable(&self, stable_place_id: &str) -> bool {
-        self.allowed_place_ids.contains(stable_place_id)
 //! Stable-place authorization for hosted Scrub-visible app actions.
 //!
 //! Provider adapters may read, draft, or place items only inside stable place
 //! IDs the owner marked as allowed. Refusals happen before any action record is
 //! appended, so an unlisted place stays silent.
 
-use sha2::{Digest, Sha256};
+use sha2::{
+    Digest,
+    Sha256,
+};
 use std::collections::BTreeMap;
 use std::fmt;
+use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostedAllowedPlaceRecord {
@@ -108,8 +88,6 @@ pub struct HostedPlaceActionRequest {
 }
 
 impl HostedPlaceActionRequest {
-    pub fn new(stable_place_id: impl Into<String>, item_id: impl Into<String>) -> Self {
-        Self {
     pub fn new(
         app: impl Into<String>,
         stable_place_id: impl Into<String>,
@@ -135,8 +113,6 @@ impl HostedPlaceActionRequest {
 pub enum HostedPlaceActionKind {
     Read,
     Draft,
-    SentItem,
-    ScrubItem,
     PlacedItem,
 }
 
@@ -145,8 +121,6 @@ impl HostedPlaceActionKind {
         match self {
             Self::Read => "read",
             Self::Draft => "draft",
-            Self::SentItem => "sent item",
-            Self::ScrubItem => "Scrub item",
             Self::PlacedItem => "placed item",
         }
     }
@@ -170,29 +144,10 @@ impl HostedPlaceActionLog {
         self.records.len()
     }
 
-    pub fn action_names(&self) -> Vec<&'static str> {
-        self.records
-            .iter()
-            .map(|record| record.kind.as_str())
-            .collect()
-    }
-
     pub fn records(&self) -> &[HostedPlaceActionRecord] {
         &self.records
     }
 
-    pub fn record_fingerprint(&self) -> String {
-        let mut hasher = Sha256::new();
-        for record in &self.records {
-            write_len_prefixed(&mut hasher, record.stable_place_id.as_bytes());
-            write_len_prefixed(&mut hasher, record.item_id.as_bytes());
-            write_len_prefixed(&mut hasher, record.kind.as_str().as_bytes());
-        }
-        hex(&hasher.finalize())
-    }
-
-    fn push(&mut self, request: &HostedPlaceActionRequest, kind: HostedPlaceActionKind) {
-        self.records.push(HostedPlaceActionRecord {
     fn push(&mut self, request: &HostedPlaceActionRequest, kind: HostedPlaceActionKind) {
         self.records.push(HostedPlaceActionRecord {
             app: request.app.clone(),
@@ -249,21 +204,11 @@ pub fn prepare_hosted_place_draft(
     record_action(places, log, request, HostedPlaceActionKind::Draft)
 }
 
-pub fn place_hosted_sent_item(
 pub fn place_hosted_item(
     places: &HostedPlaceList,
     log: &mut HostedPlaceActionLog,
     request: &HostedPlaceActionRequest,
 ) -> Result<HostedPlaceActionRecord, HostedPlaceActionError> {
-    record_action(places, log, request, HostedPlaceActionKind::SentItem)
-}
-
-pub fn scrub_hosted_item(
-    places: &HostedPlaceList,
-    log: &mut HostedPlaceActionLog,
-    request: &HostedPlaceActionRequest,
-) -> Result<HostedPlaceActionRecord, HostedPlaceActionError> {
-    record_action(places, log, request, HostedPlaceActionKind::ScrubItem)
     record_action(places, log, request, HostedPlaceActionKind::PlacedItem)
 }
 
@@ -282,7 +227,6 @@ fn authorize_place(
     places: &HostedPlaceList,
     request: &HostedPlaceActionRequest,
 ) -> Result<(), HostedPlaceActionError> {
-    if places.is_readable(&request.stable_place_id) {
     if places.is_readable(&request.app, &request.stable_place_id) {
         Ok(())
     } else {

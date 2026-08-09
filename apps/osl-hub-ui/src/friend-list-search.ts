@@ -1,4 +1,6 @@
-import type { FriendsTab } from "./friends-tabs";
+import type { FriendsTabId } from "./friends-tabs";
+
+type FriendsTab = FriendsTabId;
 
 export interface Friend {
   readonly id: string;

@@ -1,0 +1,385 @@
+/* The OSL Strip — the 44px chip bar that rides on top of a carrier app.
+   Canon: design-export README "Screens / Views > 4. Strip".
+
+   EVERY colour in this sheet is an OSL design token transcribed from
+   src/osl-tokens.ts (strip.test.ts asserts this file introduces no colour that
+   file does not bless). The synthetic carrier chrome beneath the bar in the
+   fixture deliberately uses the carrier's own colours and lives in the fixture
+   page, not here. */
+
+:root {
+  --osl-strip-surface: #0a0e10;          /* colour.surface */
+  --osl-strip-text: #f4f7f8;             /* colour.text */
+  --osl-strip-muted: #8d989e;            /* colour.muted2 */
+  --osl-strip-faint: #66727a;            /* colour.muted3 */
+  --osl-strip-heading: #3d474c;          /* colour.muted6 */
+  --osl-strip-disabled: #3d474c;         /* colour.muted6 */
+  --osl-strip-border: #2a343a;           /* colour.border */
+  --osl-strip-border-quiet: #1e2326;     /* colour.borderQuiet */
+  --osl-strip-hairline: #14191c;         /* colour.hairlineAlt */
+  --osl-strip-accent: #2ac0f0;           /* colour.accent */
+  --osl-strip-accent-dim: #17303a;       /* colour.accentBorderDim */
+  --osl-strip-safe: #3dd68c;             /* colour.safe */
+  --osl-strip-safe-dim: #1e3a2a;         /* colour.safeBorderDim */
+  --osl-strip-timer: #f0b429;            /* colour.timer */
+  --osl-strip-timer-dim: #3d2f10;        /* colour.timerBorderDim */
+  --osl-strip-warning: #f0a93a;          /* colour.warning */
+  --osl-strip-danger: #e5383b;           /* colour.dangerAlt */
+  --osl-strip-danger-dim: #3a1618;       /* colour.dangerBorderDim */
+  --osl-strip-pro: #a79bff;              /* colour.pro */
+  --osl-strip-pro-dim: #2f2a3d;          /* colour.proBorderDim */
+  --osl-strip-popup-surface: #0b1013;    /* colour.modalSurface */
+  --osl-strip-input: #0f1416;            /* colour.inputFill */
+  --osl-strip-wc-hover: #171d20;         /* header.windowControlHoverBg */
+  --osl-strip-wc-close: #c93636;         /* header.closeHoverBg */
+  --osl-strip-mono: Consolas, ui-monospace, monospace;   /* type.mono */
+  --osl-strip-sans: 'Segoe UI', system-ui, sans-serif;   /* type.interface */
+}
+
+/* Inside the natively sized 736x58 protected composer window there is no room
+   for a 44px band and painting one would cover the operator's own draft, so
+   the band only exists where the window actually has the height for it. */
+.osl-strip-band { display: none; }
+@media (min-height: 102px) { .osl-strip-band { display: block; } }
+/* A dedicated strip surface (fixture / future strip window) always shows it. */
+[data-osl-strip-surface="1"] .osl-strip-band { display: block; }
+
+.osl-strip {
+  position: relative;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  background: var(--osl-strip-surface);
+  border-bottom: 1px solid var(--osl-strip-accent-dim);
+  color: var(--osl-strip-text);
+  font-family: var(--osl-strip-sans);
+  user-select: none;
+  z-index: 30;
+}
+
+.osl-strip__cluster {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  flex-shrink: 0;
+}
+.osl-strip__cluster--left { gap: 8px; }
+.osl-strip__cluster--right { padding-right: 0; }
+.osl-strip__spring { flex: 1; }
+
+.osl-strip__divider {
+  width: 1px;
+  height: 20px;
+  background: var(--osl-strip-border-quiet);
+  margin: 0 3px;
+  flex-shrink: 0;
+}
+
+/* ---- Logo --------------------------------------------------------------- */
+
+.osl-strip__logo {
+  position: relative;
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.osl-strip__logo::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 40px;
+  height: 40px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  /* header.glow — the cyan radial treatment behind the ghost mark. */
+  background: radial-gradient(circle, rgba(42, 192, 240, 0.66) 0%, rgba(42, 192, 240, 0.205) 30%, transparent 70%);
+  pointer-events: none;
+}
+.osl-strip__logo img {
+  width: 24px;
+  height: 24px;
+  position: relative;
+  display: block;
+}
+.osl-strip__logo[aria-disabled="true"] { cursor: not-allowed; }
+.osl-strip__logo[aria-disabled="true"]::before { opacity: 0.45; }
+
+/* ---- Chips -------------------------------------------------------------- */
+
+.osl-strip__chip {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 28px;
+  padding: 0 10px;
+  background: transparent;
+  border: 1.5px solid var(--osl-strip-border);
+  border-radius: 2px;              /* shape.control — squares, not pills */
+  color: var(--osl-strip-text);
+  cursor: pointer;
+  transition: border-color 0.2s, color 0.2s, background 0.2s;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.osl-strip__chip--icon { width: 28px; padding: 0; justify-content: center; }
+.osl-strip__chip svg { display: block; flex-shrink: 0; }
+
+/* Chip faces are FACTS: the mono status style. No text-transform — the canon
+   faces are literal ("FREE", "ONCE OFF", "NO ROOM" arrive uppercase; the
+   timer face is deliberately lowercase, "1d"). */
+.osl-strip__face {
+  font-family: var(--osl-strip-mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+}
+
+.osl-strip__chip[data-tone="quiet"]:hover:not([aria-disabled="true"]) {
+  border-color: var(--osl-strip-accent);
+  color: var(--osl-strip-accent);
+}
+.osl-strip__chip[data-tone="muted"] { color: var(--osl-strip-muted); }
+.osl-strip__chip[data-tone="muted"]:hover:not([aria-disabled="true"]) {
+  border-color: var(--osl-strip-accent);
+  color: var(--osl-strip-accent);
+}
+.osl-strip__chip[data-tone="accent"] {
+  color: var(--osl-strip-accent);
+  border-color: var(--osl-strip-accent-dim);
+}
+.osl-strip__chip[data-tone="safe"] {
+  color: var(--osl-strip-safe);
+  border-color: var(--osl-strip-safe-dim);
+}
+.osl-strip__chip[data-tone="timer"] {
+  color: var(--osl-strip-timer);
+  border-color: var(--osl-strip-timer-dim);
+}
+.osl-strip__chip[data-tone="warning"] {
+  color: var(--osl-strip-warning);
+  border-color: var(--osl-strip-timer-dim);
+}
+.osl-strip__chip[data-tone="danger"] {
+  color: var(--osl-strip-danger);
+  border-color: var(--osl-strip-danger-dim);
+}
+.osl-strip__chip[data-chip="burn"][data-tone="danger"] { border-color: var(--osl-strip-danger); }
+.osl-strip__chip[data-chip="burn"][data-tone="danger"]:hover { background: rgba(229, 56, 59, 0.14); }
+.osl-strip__chip[data-tone="pro"] {
+  color: var(--osl-strip-pro);
+  border-color: var(--osl-strip-pro-dim);
+}
+.osl-strip__chip[data-tone="disabled"] {
+  color: var(--osl-strip-disabled);
+  border-color: var(--osl-strip-border-quiet);
+  cursor: not-allowed;
+}
+.osl-strip__chip[data-open="true"] {
+  color: var(--osl-strip-accent);
+  border-color: var(--osl-strip-accent);
+}
+
+/* ---- Window controls ---------------------------------------------------- */
+
+.osl-strip__wc {
+  width: 40px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--osl-strip-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.osl-strip__wc:hover { background: var(--osl-strip-wc-hover); color: var(--osl-strip-text); }
+.osl-strip__wc--close:hover { background: var(--osl-strip-wc-close); color: var(--osl-strip-text); }
+
+/* ---- Popovers ----------------------------------------------------------- */
+
+.osl-strip__backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: transparent;
+  border: 0;
+  padding: 0;
+}
+.osl-strip__popup {
+  position: absolute;
+  top: 48px;
+  z-index: 41;
+  background: var(--osl-strip-popup-surface);
+  border: 1px solid var(--osl-strip-border-quiet);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.6);   /* the one modal drop shadow */
+  color: var(--osl-strip-text);
+  font-family: var(--osl-strip-sans);
+}
+.osl-strip__popup--quick { left: 12px; width: 300px; padding: 2px 0 8px; }
+.osl-strip__popup--timer { right: 12px; width: 340px; padding: 16px 18px 14px; }
+.osl-strip__popup--whitelist { right: 12px; width: 360px; padding: 0; }
+
+.osl-strip__popup-heading {
+  font-family: var(--osl-strip-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--osl-strip-heading);
+  padding: 12px 16px 8px;
+}
+
+.osl-strip__qs-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 9px 16px;
+  border: 0;
+  background: transparent;
+  color: var(--osl-strip-text);
+  font-family: var(--osl-strip-sans);
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.osl-strip__qs-row:hover:not([aria-disabled="true"]) { background: var(--osl-strip-input); }
+.osl-strip__qs-row[aria-disabled="true"] { color: var(--osl-strip-disabled); cursor: not-allowed; }
+.osl-strip__qs-name { flex: 1; min-width: 0; }
+.osl-strip__qs-value {
+  font-family: var(--osl-strip-mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--osl-strip-muted);
+  white-space: nowrap;
+}
+.osl-strip__qs-row[aria-disabled="true"] .osl-strip__qs-value { color: var(--osl-strip-disabled); }
+.osl-strip__qs-row svg { flex-shrink: 0; display: block; }
+
+/* The 34x18 track, 1.5px border, 12px SQUARE knob. Never an iOS pill. */
+.osl-strip__qs-toggle {
+  width: 34px;
+  height: 18px;
+  flex-shrink: 0;
+  border: 1.5px solid var(--osl-strip-border);
+  display: flex;
+  align-items: center;
+  padding: 0 2px;
+  justify-content: flex-start;
+  background: transparent;
+  box-sizing: border-box;
+}
+.osl-strip__qs-toggle span { width: 12px; height: 12px; background: var(--osl-strip-heading); }
+.osl-strip__qs-row[data-on="true"] .osl-strip__qs-toggle {
+  justify-content: flex-end;
+  border-color: var(--osl-strip-accent);
+  background: #0f2a34;                    /* toggle.onTrackTint */
+}
+.osl-strip__qs-row[data-on="true"] .osl-strip__qs-toggle span { background: var(--osl-strip-accent); }
+
+/* Timer popup */
+.osl-strip__timer-title { font-size: 15px; font-weight: 600; }
+.osl-strip__timer-sub { font-size: 12.5px; color: var(--osl-strip-muted); margin-top: 3px; }
+.osl-strip__timer-presets { display: flex; gap: 7px; flex-wrap: wrap; margin-top: 12px; }
+.osl-strip__timer-preset {
+  padding: 7px 12px;
+  border: 1.5px solid var(--osl-strip-border);
+  border-radius: 2px;
+  background: transparent;
+  color: var(--osl-strip-muted);
+  font-family: var(--osl-strip-mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+.osl-strip__timer-preset:hover:not([aria-disabled="true"]) { border-color: var(--osl-strip-accent); color: var(--osl-strip-accent); }
+.osl-strip__timer-preset[data-selected="true"] { border-color: var(--osl-strip-timer); color: var(--osl-strip-timer); }
+.osl-strip__timer-preset[aria-disabled="true"] { color: var(--osl-strip-disabled); border-color: var(--osl-strip-border-quiet); cursor: not-allowed; }
+.osl-strip__timer-fact {
+  font-family: var(--osl-strip-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  color: var(--osl-strip-faint);
+  margin-top: 12px;
+}
+.osl-strip__timer-honesty {
+  font-size: 12.5px;
+  color: var(--osl-strip-faint);
+  line-height: 1.5;
+  margin-top: 8px;
+}
+
+/* Whitelist popup */
+.osl-strip__wl-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid var(--osl-strip-hairline);
+}
+.osl-strip__wl-title { font-size: 15px; font-weight: 600; }
+.osl-strip__wl-scope {
+  font-family: var(--osl-strip-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--osl-strip-heading);
+}
+.osl-strip__wl-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 16px;
+  border-bottom: 1px solid var(--osl-strip-hairline);
+}
+.osl-strip__wl-name { flex: 1; min-width: 0; font-size: 13px; font-weight: 600; }
+.osl-strip__wl-build {
+  display: block;
+  font-family: var(--osl-strip-mono);
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: 0.08em;
+  margin-top: 3px;
+}
+.osl-strip__wl-build[data-build="verified"] { color: var(--osl-strip-safe); }
+.osl-strip__wl-build[data-build="modified"] { color: var(--osl-strip-warning); }
+.osl-strip__wl-action {
+  font-family: var(--osl-strip-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  padding: 6px 11px;
+  border: 1.5px solid var(--osl-strip-border);
+  border-radius: 2px;
+  background: transparent;
+  color: var(--osl-strip-text);
+  cursor: pointer;
+  transition: border-color 0.2s, color 0.2s;
+  white-space: nowrap;
+}
+.osl-strip__wl-action[data-allowed="true"] { border-color: var(--osl-strip-accent); color: var(--osl-strip-accent); }
+.osl-strip__wl-action[aria-disabled="true"] { border-color: var(--osl-strip-border-quiet); color: var(--osl-strip-disabled); cursor: not-allowed; }
+.osl-strip__wl-note {
+  padding: 11px 16px;
+  font-size: 11.5px;
+  color: var(--osl-strip-faint);
+  line-height: 1.5;
+}

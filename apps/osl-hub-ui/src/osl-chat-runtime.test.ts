@@ -56,10 +56,12 @@ function openedBatch(messageId: string, plaintext: string): NativeDiscordOverlay
     decryptDisplayEnabled: true,
     deferredRows: 0,
     unrecognizedWireRows: 0,
+    contentGoneRows: 0,
   };
 }
 
 function emptyOpenedBatch(overrides: Partial<NativeDiscordOverlayOpenedBatch> = {}): NativeDiscordOverlayOpenedBatch {
+  const { contentGoneRows = 0, ...otherOverrides } = overrides;
   return {
     messages: [],
     pendingViewOnce: [],
@@ -68,7 +70,8 @@ function emptyOpenedBatch(overrides: Partial<NativeDiscordOverlayOpenedBatch> = 
     decryptDisplayEnabled: true,
     deferredRows: 0,
     unrecognizedWireRows: 0,
-    ...overrides,
+    ...otherOverrides,
+    contentGoneRows,
   };
 }
 

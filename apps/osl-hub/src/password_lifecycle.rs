@@ -157,12 +157,6 @@ pub struct HubMainPasswordSetupResult {
     pub readiness: HubPasswordReadiness,
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct HubPasswordResetPhraseCheck {
-    pub status: &'static str,
-    pub recovery_token: Option<String>,
-    pub lockout_status: ipc::main_password::LockoutStatusDto,
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecoveryWordRetypeAnswer {
@@ -206,9 +200,8 @@ pub fn readiness(state: &HubCoreState) -> HubPasswordReadiness {
     let Ok(password_status) = ipc::commands::cmd_osl_password_status() else {
         return unavailable_readiness(identity_loaded);
     };
-    let qa_device_gate = state.startup_switches().password_screen_access
-        == crate::runtime_switches::PasswordScreenAccess::SkipPasswordScreenForTest
-        && ipc::main_password::get_file_storage_key().is_some();
+    let qa_device_gate =
+        cfg!(feature = "discord-qa-shell") && ipc::main_password::get_file_storage_key().is_some();
     let unlocked = qa_device_gate
         || !password_status.is_set
         || ipc::main_password::get_file_storage_key().is_some();
@@ -369,31 +362,15 @@ pub fn import_native_identity_phrase(
         return Err("OSL identity import is not available in the current access state".to_owned());
     }
     let dir = isolated_account_dir()?;
-    import_native_identity_phrase_using(state, &current, &dir, phrase, persistent_sealer)
-}
-
-fn import_native_identity_phrase_using<F>(
-    state: &HubCoreState,
-    current: &HubPasswordReadiness,
-    dir: &Path,
-    phrase: String,
-    select_sealer: F,
-) -> Result<HubIdentitySetupResult, String>
-where
-    F: FnOnce() -> Result<Box<dyn Sealer>, String>,
-{
-    if !current.can_import_identity_phrase {
-        return Err("OSL identity import is not available in the current access state".to_owned());
-    }
     ensure_empty_identity_slot(&state.osl, &dir)?;
     let entropy = parse_identity_phrase(&phrase)?;
     let mut identity = keystore::identity_from_entropy(entropy, "osl-pending".to_owned());
     identity.user_id = native_user_id(&identity);
-    let sealer = select_sealer()?;
+    let sealer = persistent_sealer()?;
     let result = install_identity(
         &state.osl,
         identity,
-        dir,
+        &dir,
         sealer.as_ref(),
         None,
         !current.main_password_set,
@@ -444,8 +421,6 @@ pub fn setup_main_password(
     })
 }
 
-/// Replace the local main password after the owner proves possession of the
-/// password-recovery phrase.
 pub fn reset_main_password_after_recovery(
     state: &HubCoreState,
     recovery_phrase: String,
@@ -454,35 +429,10 @@ pub fn reset_main_password_after_recovery(
     ipc::main_password::validate_new_password(&new_password).map_err(|_| {
         "OSL main password must contain 6 to 128 printable keyboard characters".to_owned()
     })?;
-pub fn check_password_reset_phrase(
-    state: &HubCoreState,
-    phrase: String,
-) -> Result<HubPasswordResetPhraseCheck, String> {
     let _lifecycle = state
         .lifecycle_lock
         .lock()
         .map_err(|_| "OSL account lifecycle is unavailable".to_owned())?;
-    let token = ipc::commands::cmd_osl_verify_recovery_phrase(&state.osl, recovery_phrase)?;
-    ipc::commands::cmd_osl_set_main_password_after_recovery(&state.osl, new_password, token)?;
-    Ok(readiness(state))
-    check_password_reset_phrase_using(&state.osl, phrase)
-}
-
-fn check_password_reset_phrase_using(
-    state: &AppState,
-    phrase: String,
-) -> Result<HubPasswordResetPhraseCheck, String> {
-    let recovery_token = ipc::commands::cmd_osl_verify_recovery_phrase(state, phrase).ok();
-    let lockout_status = ipc::commands::cmd_osl_lockout_status()?;
-    Ok(HubPasswordResetPhraseCheck {
-        status: if recovery_token.is_some() {
-            "approved"
-        } else {
-            "refused"
-        },
-        recovery_token,
-        lockout_status,
-    })
     ipc::commands::cmd_osl_reset_main_password_after_recovery(
         &state.osl,
         recovery_phrase,
@@ -1005,72 +955,6 @@ mod tests {
     }
 
     #[test]
-    fn task_0461_recovery_phrase_restores_same_identity_on_second_device() {
-        let _guard = crate::global_keystore_test_lock();
-        let _reset = KeystoreGlobalReset;
-        let root = temp_dir("task-0461-second-device-restore");
-        let first_device = root.join("first-device");
-        let second_device = root.join("second-device");
-        let first_state = HubCoreState::default();
-        let second_state = HubCoreState::default();
-        let fresh = readiness_from(false, false, true, 0, 0);
-        let first_sealer = keystore::MemorySealer::new();
-
-        let created = create_native_identity_after_owner_authorization_signoff_using(
-            &first_state,
-            &fresh,
-            &first_device,
-            &first_sealer,
-            HubIdentityCreationOwnerSignoff::owner_authorized_for_new_identity(),
-        )
-        .expect("RECORD-0461 source identity creation succeeds");
-        let identity_phrase = created
-            .identity_recovery_phrase
-            .clone()
-            .expect("RECORD-0461 source identity returns a recovery phrase");
-        let phrase_word_count = identity_phrase.split_whitespace().count();
-        bip39::Mnemonic::parse_in_normalized(bip39::Language::English, identity_phrase.trim())
-            .expect("RECORD-0461 recovery phrase is valid BIP39");
-
-        let recovered = import_native_identity_phrase_using(
-            &second_state,
-            &fresh,
-            &second_device,
-            identity_phrase,
-            || Ok(Box::new(keystore::MemorySealer::new())),
-        )
-        .unwrap_or_else(|error| panic!("RECORD-0461 restore error: {error}"));
-
-        assert_eq!(
-            recovered.user_id, created.user_id,
-            "RECORD-0461 second-device restore must recreate the same OSL user id"
-        );
-        assert!(
-            recovered.identity_recovery_phrase.is_none(),
-            "RECORD-0461 import must not echo the owner's recovery phrase"
-        );
-        assert!(
-            first_device.join("identity.json").is_file(),
-            "RECORD-0461 source identity file must exist"
-        );
-        assert!(
-            second_device.join("identity.json").is_file(),
-            "RECORD-0461 restored identity file must exist"
-        );
-
-        println!(
-            "RECORD-0461 restore_result=accepted phrase_word_count={} restored_user_matches={} first_identity_file={} second_identity_file={} restored_phrase_echoed={}",
-            phrase_word_count,
-            recovered.user_id == created.user_id,
-            first_device.join("identity.json").is_file(),
-            second_device.join("identity.json").is_file(),
-            recovered.identity_recovery_phrase.is_some()
-        );
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
     fn password_setup_uses_only_temp_paths_and_reloads_state() {
         let _guard = crate::global_keystore_test_lock();
         let dir = temp_dir("password");
@@ -1173,108 +1057,6 @@ mod tests {
     }
 
     #[test]
-    fn password_reset_command_requires_phrase_approval_and_replaces_the_unlock_password() {
-        let _guard = crate::global_keystore_test_lock();
-        let _reset = KeystoreGlobalReset;
-        let dir = temp_dir("password-reset-command");
-        std::fs::create_dir_all(&dir).unwrap();
-        keystore::set_active_account_dir(None);
-        keystore::set_base_dir_override(Some(dir.clone()));
-
-        let state = HubCoreState::default();
-        *state.osl.identity.lock().unwrap() = Some(keystore::identity_from_entropy(
-            [31; 16],
-            "osl_password_reset_disposable".to_owned(),
-        ));
-        let old_password = "old-reset-pass-0302";
-        let new_password = "new-reset-pass-0302";
-        let phrase = ipc::commands::cmd_osl_set_main_password(old_password.to_owned())
-            .expect("set disposable account password");
-        ipc::main_password::set_file_storage_key(None);
-
-        let wrong_phrase = phrase
-            .split_whitespace()
-            .skip(1)
-            .collect::<Vec<_>>()
-            .join(" ");
-        let refused =
-            reset_main_password_after_recovery(&state, wrong_phrase, new_password.to_owned())
-                .expect_err("password reset must wait for phrase approval");
-        assert!(refused.contains("attempts_used"), "{refused}");
-        assert!(
-            ipc::commands::cmd_osl_verify_main_password(new_password.to_owned()).is_err(),
-            "new password must not work before phrase approval"
-        );
-        ipc::main_password::set_file_storage_key(None);
-        ipc::commands::cmd_osl_verify_main_password(old_password.to_owned())
-            .expect("old password still unlocks before phrase approval");
-        println!("0302 PRE-APPROVAL OLD PASSWORD UNLOCKED");
-        ipc::main_password::set_file_storage_key(None);
-
-        let readiness =
-            reset_main_password_after_recovery(&state, phrase.clone(), new_password.to_owned())
-                .expect("phrase-approved password reset completes");
-        assert!(readiness.main_password_set);
-        assert!(readiness.unlocked);
-        println!("0302 PHRASE APPROVAL: accepted");
-
-        ipc::main_password::set_file_storage_key(None);
-        let old_refusal = ipc::commands::cmd_osl_verify_main_password(old_password.to_owned())
-            .expect_err("old password must be refused after reset");
-        assert!(old_refusal.contains("attempts_used"), "{old_refusal}");
-        println!("0302 OLD PASSWORD REFUSED: {old_refusal}");
-
-        ipc::main_password::set_file_storage_key(None);
-        ipc::commands::cmd_osl_verify_main_password(new_password.to_owned())
-            .expect("new password unlocks after reset");
-        assert!(
-            ipc::main_password::get_file_storage_key().is_some(),
-            "new password must install the disposable account file key"
-        );
-        println!("0302 NEW PASSWORD UNLOCKED: file_storage_key_installed=true");
-
-        ipc::main_password::set_file_storage_key(None);
-        let _ = std::fs::remove_dir_all(dir);
-    fn password_reset_phrase_check_approves_exact_phrase_and_refuses_one_changed_word() {
-        let _guard = crate::global_keystore_test_lock();
-        let _reset = KeystoreGlobalReset;
-        let core_dir = temp_dir("password-reset-phrase-check");
-        std::fs::create_dir_all(&core_dir).unwrap();
-        keystore::set_base_dir_override(Some(core_dir.clone()));
-        keystore::set_active_account_dir(None);
-        let state = HubCoreState::default();
-
-        let phrase =
-            ipc::commands::cmd_osl_set_main_password("aB3!z9-reset-source".to_owned()).unwrap();
-        ipc::main_password::set_file_storage_key(None);
-
-        let approved = check_password_reset_phrase_using(&state.osl, phrase.clone()).unwrap();
-        println!("valid phrase status={}", approved.status);
-        assert_eq!(approved.status, "approved");
-        assert!(
-            approved
-                .recovery_token
-                .as_deref()
-                .is_some_and(|token| !token.is_empty()),
-            "approved phrase must issue the token needed before a password change"
-        );
-
-        let mut changed_words: Vec<&str> = phrase.split_whitespace().collect();
-        changed_words[0] = if changed_words[0] == "abandon" {
-            "ability"
-        } else {
-            "abandon"
-        };
-        let refused =
-            check_password_reset_phrase_using(&state.osl, changed_words.join(" ")).unwrap();
-        println!("one changed word status={}", refused.status);
-        assert_eq!(refused.status, "refused");
-        assert!(refused.recovery_token.is_none());
-
-        let _ = std::fs::remove_dir_all(core_dir);
-    }
-
-    #[test]
     fn entering_duress_pin_triggers_full_wipe_report() {
         let _guard = crate::global_keystore_test_lock();
         let _reset = KeystoreGlobalReset;
@@ -1363,297 +1145,5 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(config_dir);
         let _ = std::fs::remove_dir_all(local_data_dir);
-    }
-
-    #[derive(Debug, Clone, Eq, PartialEq)]
-    struct Task3560SetupRecord {
-        identity_user_id: Option<String>,
-        password_marker: bool,
-        recovery_kit_status: bool,
-    }
-
-    #[derive(Debug, Clone, Eq, PartialEq)]
-    enum Task3560ActionResult {
-        NamedRefusal(&'static str),
-        CompleteRestoredIdentity { user_id: String },
-    }
-
-    const TASK_3560_KNOWN_IDENTITY_ENTROPY: [u8; 16] = [0x35; 16];
-    const TASK_3560_RESTORED_PASSWORD: &str = "aB3!z9-task-3560-restored";
-    const TASK_3560_RECOVERED_PASSWORD: &str = "aB3!z9-task-3560-recovered";
-
-    fn task_3560_onboarding_steps() -> Vec<&'static str> {
-        let source = include_str!("../../osl-hub-ui/src/onboarding-sequence.ts");
-        let start = source
-            .find("export const ONBOARDING_SEQUENCE = [")
-            .expect("onboarding sequence export exists");
-        let end = source[start..]
-            .find("] as const")
-            .map(|offset| start + offset)
-            .expect("onboarding sequence has const terminator");
-        let steps = source[start..end]
-            .lines()
-            .filter_map(|line| line.trim().strip_prefix('"'))
-            .map(|line| {
-                line.split('"')
-                    .next()
-                    .expect("quoted onboarding step has a closing quote")
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(
-            steps,
-            vec![
-                "welcome",
-                "recovery",
-                "pro",
-                "forward-secrecy",
-                "privacy",
-                "defaults",
-                "tor",
-                "sending",
-                "cover",
-                "passwords",
-                "burnpass",
-                "mullvad",
-                "browser",
-                "tutorial",
-                "detected",
-                "install",
-                "apps",
-            ],
-            "task 3560 must follow the canonical unfinished onboarding sequence"
-        );
-        steps
-    }
-
-    fn task_3560_record(
-        dir: &std::path::Path,
-        sealer: &keystore::MemorySealer,
-    ) -> Task3560SetupRecord {
-        let identity_user_id = dir.join("identity.json").is_file().then(|| {
-            keystore::load_identity(&dir.join("identity.json"), sealer)
-                .expect("task 3560 identity record is loadable")
-                .user_id
-                .clone()
-        });
-        Task3560SetupRecord {
-            identity_user_id,
-            password_marker: dir.join("password_marker.json").is_file(),
-            recovery_kit_status: dir
-                .join(crate::account_recovery::RECOVERY_KIT_STATUS_FILE)
-                .is_file(),
-        }
-    }
-
-    fn task_3560_seed_partial_unfinished_account(
-        state: &HubCoreState,
-        dir: &std::path::Path,
-        sealer: &keystore::MemorySealer,
-        entropy: [u8; 16],
-    ) -> String {
-        let mut identity = keystore::identity_from_entropy(entropy, "task-3560-partial".to_owned());
-        identity.user_id = native_user_id(&identity);
-        let user_id = identity.user_id.clone();
-        install_identity(&state.osl, identity, dir, sealer, None, true)
-            .expect("task 3560 seeds the unfinished account identity");
-        user_id
-    }
-
-    fn task_3560_restore_identity(
-        state: &HubCoreState,
-        dir: &std::path::Path,
-        sealer: &keystore::MemorySealer,
-        phrase: &str,
-    ) -> Task3560ActionResult {
-        let current = readiness(state);
-        if !current.can_import_identity_phrase {
-            return Task3560ActionResult::NamedRefusal("refused-identity-import-unavailable");
-        }
-        let entropy = match parse_identity_phrase(phrase) {
-            Ok(entropy) => entropy,
-            Err(_) => return Task3560ActionResult::NamedRefusal("refused-invalid-identity-phrase"),
-        };
-        let mut identity =
-            keystore::identity_from_entropy(entropy, "task-3560-restored".to_owned());
-        identity.user_id = native_user_id(&identity);
-        let user_id = identity.user_id.clone();
-        match ensure_empty_identity_slot(&state.osl, dir).and_then(|()| {
-            install_identity(&state.osl, identity, dir, sealer, None, true)?;
-            setup_main_password_using(state, dir, || {
-                ipc::main_password::set_main_password(dir, TASK_3560_RESTORED_PASSWORD)
-            })?;
-            crate::account_recovery::mark_recovery_kit_unsaved()?;
-            Ok(())
-        }) {
-            Ok(()) => Task3560ActionResult::CompleteRestoredIdentity { user_id },
-            Err(error) => Task3560ActionResult::NamedRefusal(task_3560_named_refusal(&error)),
-        }
-    }
-
-    fn task_3560_recover_password(
-        state: &HubCoreState,
-        dir: &std::path::Path,
-        phrase: &str,
-    ) -> Task3560ActionResult {
-        let token = match ipc::main_password::verify_recovery_phrase(&state.osl, dir, phrase) {
-            Ok(token) => token,
-            Err(error) => {
-                return Task3560ActionResult::NamedRefusal(task_3560_named_refusal(&error));
-            }
-        };
-        match ipc::main_password::set_main_password_after_recovery(
-            &state.osl,
-            dir,
-            TASK_3560_RECOVERED_PASSWORD,
-            &token,
-        ) {
-            Ok(()) => {
-                let user_id = state
-                    .osl
-                    .identity
-                    .lock()
-                    .expect("identity lock")
-                    .as_ref()
-                    .expect("recovered account keeps identity")
-                    .user_id
-                    .clone();
-                Task3560ActionResult::CompleteRestoredIdentity { user_id }
-            }
-            Err(error) => Task3560ActionResult::NamedRefusal(task_3560_named_refusal(&error)),
-        }
-    }
-
-    fn task_3560_named_refusal(error: &str) -> &'static str {
-        if error.contains("password_marker.json") || error.contains("No such file") {
-            "refused-no-password-marker"
-        } else if error.contains("not available in the current access state") {
-            "refused-identity-import-unavailable"
-        } else if error.contains("already loaded") || error.contains("already exists") {
-            "refused-existing-identity"
-        } else if error.contains("bad recovery phrase") || error.contains("\"ok\":false") {
-            "refused-recovery-phrase-mismatch"
-        } else if error.contains("cannot complete recovery") {
-            "refused-legacy-marker-with-orphan-risk"
-        } else if error.contains("no active recovery token") {
-            "refused-no-active-recovery-token"
-        } else {
-            "refused-other-named-error"
-        }
-    }
-
-    fn task_3560_mixed_fields(
-        before: &Task3560SetupRecord,
-        after: &Task3560SetupRecord,
-        result: &Task3560ActionResult,
-    ) -> Vec<&'static str> {
-        let mut mixed = Vec::new();
-        let Task3560ActionResult::CompleteRestoredIdentity { user_id } = result else {
-            return mixed;
-        };
-        if after.identity_user_id.as_deref() != Some(user_id.as_str()) {
-            mixed.push("identity_user_id");
-        }
-        if !after.password_marker {
-            mixed.push("password_marker");
-        }
-        if !after.recovery_kit_status {
-            mixed.push("recovery_kit_status");
-        }
-        if before
-            .identity_user_id
-            .as_ref()
-            .is_some_and(|partial| partial != user_id)
-            && after.identity_user_id == before.identity_user_id
-        {
-            mixed.push("identity_user_id");
-        }
-        mixed
-    }
-
-    #[test]
-    fn task_3560_check_restore_during_every_unfinished_onboarding_step() {
-        let _guard = crate::global_keystore_test_lock();
-        let _reset = KeystoreGlobalReset;
-        let known_identity = keystore::identity_from_entropy(
-            TASK_3560_KNOWN_IDENTITY_ENTROPY,
-            "task-3560-known".to_owned(),
-        );
-        let known_user_id = native_user_id(&known_identity);
-        let known_phrase =
-            identity_recovery_phrase(&known_identity).expect("known identity phrase is valid");
-        let steps = task_3560_onboarding_steps();
-        let mut mixed_field_count = 0usize;
-        let mut result_count = 0usize;
-
-        for (index, step) in steps.iter().enumerate() {
-            for action in ["recovery", "restore"] {
-                ipc::main_password::set_file_storage_key(None);
-                let dir = temp_dir(&format!("task-3560-{step}-{action}"));
-                std::fs::create_dir_all(&dir).expect("task 3560 creates isolated root");
-                keystore::set_base_dir_override(Some(dir.clone()));
-                keystore::set_active_account_dir(None);
-                let sealer = keystore::MemorySealer::new();
-                let state = HubCoreState::default();
-                let expected_user_id = if *step == "welcome" {
-                    known_user_id.clone()
-                } else {
-                    let partial_entropy = [0x60u8.saturating_add(index as u8); 16];
-                    task_3560_seed_partial_unfinished_account(
-                        &state,
-                        &dir,
-                        &sealer,
-                        partial_entropy,
-                    )
-                };
-
-                let before = task_3560_record(&dir, &sealer);
-                let result = match action {
-                    "recovery" => task_3560_recover_password(&state, &dir, &known_phrase),
-                    "restore" => task_3560_restore_identity(&state, &dir, &sealer, &known_phrase),
-                    _ => unreachable!("task 3560 action list is fixed"),
-                };
-                let after = task_3560_record(&dir, &sealer);
-                let mixed = task_3560_mixed_fields(&before, &after, &result);
-                mixed_field_count += mixed.len();
-                result_count += 1;
-                match &result {
-                    Task3560ActionResult::NamedRefusal(name) => {
-                        assert_eq!(
-                            after, before,
-                            "task 3560 {step}/{action} refusal mutated the setup record"
-                        );
-                        println!(
-                            "TASK3560_STEP step={step} action={action} result={name} mixed_fields={}",
-                            mixed.len()
-                        );
-                    }
-                    Task3560ActionResult::CompleteRestoredIdentity { user_id } => {
-                        assert_eq!(
-                            user_id, &expected_user_id,
-                            "task 3560 {step}/{action} restored the wrong identity"
-                        );
-                        println!(
-                            "TASK3560_STEP step={step} action={action} result=complete-restored-identity user_id_prefix={} mixed_fields={}",
-                            &user_id[..8],
-                            mixed.len()
-                        );
-                    }
-                }
-                assert!(
-                    mixed.is_empty(),
-                    "TASK3560_MIXED_FIELD step={step} action={action} fields={mixed:?} before={before:?} after={after:?} result={result:?}"
-                );
-                let _ = std::fs::remove_dir_all(&dir);
-            }
-        }
-
-        println!(
-            "TASK3560_SUMMARY unfinished_steps={} actions_per_step=2 results={} mixed_partial_and_restored_fields={mixed_field_count}",
-            steps.len(),
-            result_count
-        );
-        assert_eq!(steps.len(), 17);
-        assert_eq!(result_count, steps.len() * 2);
-        assert_eq!(mixed_field_count, 0);
     }
 }

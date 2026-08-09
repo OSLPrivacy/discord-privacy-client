@@ -1,3 +1,6 @@
+/* Colour values are the canonical OSL design tokens duplicated from
+   src/osl-tokens.ts (CSS cannot import TypeScript). osl-tokens.ts is the
+   authority; token names are noted beside each hex. */
 /* ---------------------------------------------------------------------------
    Choose cover insertion. 2026-08-06 restyle.
 
@@ -103,10 +106,10 @@
   padding: 0 14px;
   border: 1px solid var(--osl-setup-field-line);
   border-radius: 2px;
-  background: #101315;
+  background: #0f1416; /* colour.inputFill */
   font-family: Consolas, "Cascadia Mono", "DejaVu Sans Mono", monospace;
   font-size: 14.5px;
-  color: #e8ecee;
+  color: #f4f7f8; /* colour.text */
   overflow: hidden;
 }
 

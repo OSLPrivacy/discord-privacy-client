@@ -80,8 +80,21 @@ beforeEach(() => {
 /** The six words the finish line names, verbatim. */
 const PLAN_NAMED_WORDS = ["Home", "Search", "Settings", "Friends", "Messages", "Profile"] as const;
 
-/** The five words the bar actually paints: 0816's build and screenshot contract. */
-const BAR_NAMED_WORDS = ["Home", "Friends", "Notifications", "Settings", "Profile"] as const;
+/**
+ * (The 0816 bar's own five words were Home, Friends, Notifications, Settings,
+ * Profile — recorded here for history; that bar no longer ships on Home.)
+ *
+ * HOME WAS REBUILT AS A LAUNCHER on the owner's 6-Aug ruling (DECISIONS.txt
+ * "UI WORKSTREAMS" item 1; PRODUCT.txt §2 "A launcher, not a dashboard").
+ * The 0816 five-word labelled bar no longer ships on Home: the shared header
+ * is icon-based (bell, gear, window controls) per the design export's
+ * "Shared header" spec, and the page has no <h1> title. These are the words
+ * the launcher actually paints — its regions' names — and the list the
+ * throwaway-copy mutation runs against. TASK 0819 (who: liam) still owes a
+ * re-judgment of its word finish line against this surface; this file
+ * records the measured state rather than pretending the old bar exists.
+ */
+const LAUNCHER_NAMED_WORDS = ["OSL Chat", "OSL Mail", "OSL Notes", "Scrub", "Social", "Email", "Friends", "Pending", "Verified", "Add"] as const;
 
 /**
  * Banned vocabulary, the same four families 0723 scans. `deep-simplicity` is
@@ -155,9 +168,19 @@ function sentencesOf(text: string): string[] {
   return (text.match(/[^.!?]+[.!?]+/gu) ?? []).map((sentence) => sentence.trim()).filter(Boolean);
 }
 
+/**
+ * Sentence candidates per TEXT NODE, not per flattened page: the launcher is
+ * mostly labels ("OSL Chat", "Social", tile captions) and flattening them let
+ * every label between two full stops concatenate into one fake ~90-word
+ * "sentence". A sentence can only exist inside a single rendered text node.
+ */
+function proseFragments(markup: string): string[] {
+  return markup.split(/<[^>]+>/gu).map((fragment) => visibleText(fragment)).filter((fragment) => /[.!?]/u.test(fragment));
+}
+
 function checkScreenWords(markup: string, namedWords: readonly string[]): ScreenWordsReport {
   const text = visibleText(markup);
-  const sentences = sentencesOf(text);
+  const sentences = proseFragments(markup).flatMap((fragment) => sentencesOf(fragment));
 
   return {
     title: pageTitle(markup),
@@ -194,56 +217,59 @@ function copyMissingWord(markup: string, word: string): string {
 
 const HOME_STATE = { route: "home", coreReady: true, storageMethod: "tpm-pcp" } as const;
 
-/** The bar itself: the command-bar <header>, sliced the way 0816's check slices it. */
+/** The launcher's shared header, sliced the way 0816's check sliced the bar. */
 function homeTopBarMarkup(): string {
   ui.__oslHubUiTest.reset({ ...HOME_STATE });
   const shell = ui.__oslHubUiTest.renderRouteShell("home");
-  const barStart = shell.indexOf(`<header class="home-header home-command-bar"`);
-  expect(barStart, "the Home shell should contain the command bar").toBeGreaterThanOrEqual(0);
+  const barStart = shell.indexOf(`<header class="home-launcher-header"`);
+  expect(barStart, "the Home shell should contain the launcher header").toBeGreaterThanOrEqual(0);
   return shell.slice(barStart, shell.indexOf("</header>", barStart) + "</header>".length);
 }
 
-/** The full rendered shell, sidebar and all, for the measured-absence sweep. */
+/** The full rendered shell for the measured-absence sweep. */
 function homeShellMarkup(): string {
   ui.__oslHubUiTest.reset({ ...HOME_STATE });
   return ui.__oslHubUiTest.renderRouteShell("home");
 }
 
-/** The screen the check reads: the bar plus the Home page it heads. */
+/** The screen the check reads: header, launcher body and Friends panel all
+ * live in the one shell now — there is no separate page under a bar. */
 function homeScreenMarkup(): string {
-  const bar = homeTopBarMarkup();
-  ui.__oslHubUiTest.reset({ ...HOME_STATE });
-  return bar + ui.__oslHubUiTest.renderWorkspaceContent("home");
+  return homeShellMarkup();
 }
 
 describe("TASK 0819 Home top bar words", () => {
-  it("reads the page title, the word count, and every named word this bar has", () => {
+  it("reads the word count and every named word the launcher paints", () => {
     const screen = homeScreenMarkup();
-    const report = checkScreenWords(screen, BAR_NAMED_WORDS);
+    const report = checkScreenWords(screen, LAUNCHER_NAMED_WORDS);
     const barWords = countWords(visibleText(homeTopBarMarkup()));
 
-    expect(report.title).toBe("Home");
+    // The launcher has no <h1> page title — the rebuild ruling removed the
+    // dashboard heading with the dashboard.
+    expect(report.title).toBe("");
     expect(report.wordsRead).toBeGreaterThanOrEqual(MIN_WORDS_READ);
     expect(report.missingWords).toEqual([]);
-    expect(report.presentWords).toEqual([...BAR_NAMED_WORDS]);
+    expect(report.presentWords).toEqual([...LAUNCHER_NAMED_WORDS]);
     expect(report.bannedHits).toEqual([]);
-    expect(failures(report, "Home")).toEqual([]);
+    expect(failures(report, "")).toEqual([]);
 
     console.log(
       `TASK-0819 title="${report.title}" words-read=${report.wordsRead} bar-words=${barWords}` +
-        ` named-present=${report.presentWords.length}/${BAR_NAMED_WORDS.length} named-missing=${report.missingWords.length}` +
+        ` named-present=${report.presentWords.length}/${LAUNCHER_NAMED_WORDS.length} named-missing=${report.missingWords.length}` +
         ` banned=${report.bannedHits.length} sentences=${report.sentences} longest-sentence=${report.longestSentenceWords}` +
-        ` failures=${failures(report, "Home").length}`,
+        ` failures=${failures(report, "").length}`,
     );
   });
 
-  it("records which of the finish line's six named words this bar really has", () => {
+  it("records which of the finish line's six named words this screen really has", () => {
     const report = checkScreenWords(homeScreenMarkup(), PLAN_NAMED_WORDS);
 
-    // Measured, not assumed: no Search control and no Messages control exist.
-    // See the header comment -- 0816 built five controls and this is them.
-    expect(report.presentWords).toEqual(["Home", "Settings", "Friends", "Profile"]);
-    expect(report.missingWords).toEqual(["Search", "Messages"]);
+    // Measured, not assumed. Post-rebuild the header is icon-based, so of the
+    // finish line's six words only "Friends" (the panel heading) is painted.
+    // TASK 0819 (who: liam, still open) owes a re-scoped finish line for the
+    // launcher; until then this records the truth instead of gaming it.
+    expect(report.presentWords).toEqual(["Friends"]);
+    expect(report.missingWords).toEqual(["Home", "Search", "Settings", "Messages", "Profile"]);
 
     // Not hiding in the shared chrome either: the full shell, sidebar and
     // window controls included, shows neither word anywhere an owner can read.
@@ -264,7 +290,7 @@ describe("TASK 0819 Home top bar words", () => {
       ["shell", homeShellMarkup()],
     ];
     const hits = surfaces.flatMap(([surface, markup]) =>
-      checkScreenWords(markup, BAR_NAMED_WORDS).bannedHits.map((hit) => `${surface}:${hit}`));
+      checkScreenWords(markup, LAUNCHER_NAMED_WORDS).bannedHits.map((hit) => `${surface}:${hit}`));
 
     expect(hits).toEqual([]);
     console.log(`TASK-0819 banned-word scan families=${BANNED_WORDS.length} surfaces=${surfaces.length} hits=${hits.length}`);
@@ -276,27 +302,28 @@ describe("TASK 0819 Home top bar words", () => {
     for (const { family, pattern } of BANNED_WORDS) {
       const sample = { "deep-simplicity": "a keyserver", scary: "an attacker", technical: "key exchange", overclaim: "military-grade" }[family];
       expect(sample, family).toBeDefined();
-      const doctored = screen.replace("</h1>", ` and ${sample}</h1>`);
-      const report = checkScreenWords(doctored, BAR_NAMED_WORDS);
+      // The launcher has no <h1>; inject into the first section heading instead.
+      const doctored = screen.replace("</h2>", ` and ${sample}</h2>`);
+      const report = checkScreenWords(doctored, LAUNCHER_NAMED_WORDS);
       expect(report.bannedHits.some((hit) => hit.startsWith(`${family}:`)), family).toBe(true);
-      expect(failures(report, "Home").length, family).toBeGreaterThan(0);
+      expect(failures(report, "").length, family).toBeGreaterThan(0);
       expect(pattern.test(sample!), family).toBe(true);
     }
   });
 
   it("fails on a throwaway copy of the screen missing 1 named word", () => {
     const screen = homeScreenMarkup();
-    for (const word of BAR_NAMED_WORDS) {
+    for (const word of LAUNCHER_NAMED_WORDS) {
       const throwaway = copyMissingWord(screen, word);
-      const report = checkScreenWords(throwaway, BAR_NAMED_WORDS);
-      const reasons = failures(report, "Home");
+      const report = checkScreenWords(throwaway, LAUNCHER_NAMED_WORDS);
+      const reasons = failures(report, "");
 
       expect(report.missingWords, word).toEqual([word]);
       expect(reasons, word).toContain(`missing named word: ${word}`);
       expect(reasons.length, word).toBeGreaterThan(0);
 
       // The intact screen passes the same check, so the failure is the deletion.
-      expect(failures(checkScreenWords(screen, BAR_NAMED_WORDS), "Home"), word).toEqual([]);
+      expect(failures(checkScreenWords(screen, LAUNCHER_NAMED_WORDS), ""), word).toEqual([]);
 
       console.log(`TASK-0819 throwaway-missing="${word}" words-read=${report.wordsRead} named-missing=${report.missingWords.length} failures=${reasons.length}`);
     }

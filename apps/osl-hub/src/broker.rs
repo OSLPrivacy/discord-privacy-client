@@ -20,10 +20,9 @@ use zeroize::Zeroizing;
 
 use crate::core_bridge::HubCoreState;
 use crate::models::ServiceKind;
-use crate::row_who_wrote_it::SharedRowWhoWroteIt;
 use crate::security::{self, HubSecurityState, ManualPeerBinding};
 use crate::service_host::{service_manifest, validate_opaque_id, ActiveServiceHost};
-use crate::service_scope_index::{ServiceScopeIndexState, ServiceScopeRegistration};
+use crate::service_scope_index::ServiceScopeRegistration;
 use crate::services::{
     messaging_risk_refusal, require_messaging_risk_agreed, service_kind_from_id,
     ServiceRegistryState,
@@ -36,46 +35,12 @@ pub mod view_once_fanout;
 
 const MAX_CONTEXT_ID_BYTES: usize = 160;
 
-fn require_view_once_message_creation_allowed(
-    core: &HubCoreState,
-    view_once: bool,
-) -> Result<(), String> {
-    if !view_once {
-        return Ok(());
-    }
-    ipc::tier_gate::check_view_once_message_creation_allowed(&core.osl)
-        .map_err(|_| ipc::tier_gate::VIEW_ONCE_MESSAGE_PRO_REFUSAL.to_owned())
-}
-
 fn scope_storage_key(scope_input: &ScopeInput) -> Result<String, String> {
     let scope: ipc::scope::Scope = scope_input
         .clone()
         .try_into()
         .map_err(|_| "OSL protected scope is invalid".to_owned())?;
     Ok(scope.storage_key())
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub enum OslChatBurnChoice {
-    YourSide,
-    TheirSide,
-    BothSides,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OslChatBurnResult {
-    pub choice: OslChatBurnChoice,
-    pub messages_before: usize,
-    pub messages_after: usize,
-    pub rows_destroyed: usize,
-    pub your_rows_destroyed: usize,
-    pub their_rows_destroyed: usize,
-    pub others_rows_destroyed: usize,
-    pub others_messages_hidden: bool,
-    pub local_cleanup_complete: bool,
-    pub recipient_copies_deleted: bool,
 }
 
 fn persist_osl_chat_inbound(
@@ -107,14 +72,14 @@ fn persist_osl_chat_inbound(
     };
     store
         .put(&store::StoredMessage {
+            edit_revision: Default::default(),
+            reply_parent_id: Default::default(),
             discord_message_id: message_id,
             channel_id,
             sender_discord_id: sender_osl_user_id.clone(),
             sender_osl_user_id,
             plaintext,
             decrypted_at: created_at,
-            reply_parent_id: None,
-            edit_revision: 1,
             burned: false,
         })
         .map_err(|error| format!("OSL: first-party chat history: {error}"))
@@ -191,8 +156,6 @@ const MAX_PROSE_COVER_BYTES: usize = 16 * 1024;
 /// renderer rejects outright is a lost message.
 const MAX_NATIVE_OVERLAY_COVER_HANDLE_BYTES: usize = 2_000;
 const MAX_NATIVE_OVERLAY_WRAPPED_SHARE_BYTES: usize = 64 * 1024;
-const DEFAULT_VIEW_ONCE_DISPLAY_DURATION_SECONDS: u64 = 15;
-const MAX_VIEW_ONCE_DISPLAY_DURATION_SECONDS: u64 = 60;
 const MAX_ATTACHMENT_B64_BYTES: usize = 32 * 1024 * 1024;
 const MAX_LOCAL_LEDGER_BYTES: usize = 2 * 1024 * 1024;
 const MAX_LOCAL_LEDGER_ENTRIES: usize = 4_096;
@@ -202,25 +165,6 @@ const PEER_PROTECTED_VERSION: u32 = 2;
 const PEER_PROTECTED_CHUNK_VERSION: u32 = 4;
 const OSL_CHAT_REACTION_VERSION: u32 = 1;
 const PEER_PROTECTED_CHUNK_PREFIX: &[u8; 8] = b"OSLTXT4\0";
-
-fn selected_view_once_display_duration(
-    view_once: bool,
-    display_duration_seconds: Option<u64>,
-) -> Result<Option<u64>, String> {
-    if !view_once {
-        return if display_duration_seconds.is_none() {
-            Ok(None)
-        } else {
-            Err("A display duration is only valid for view-once messages".to_owned())
-        };
-    }
-    let seconds = display_duration_seconds.unwrap_or(DEFAULT_VIEW_ONCE_DISPLAY_DURATION_SECONDS);
-    if (1..=MAX_VIEW_ONCE_DISPLAY_DURATION_SECONDS).contains(&seconds) {
-        Ok(Some(seconds))
-    } else {
-        Err("The view-once display duration must be between 1 and 60 seconds".to_owned())
-    }
-}
 const PEER_ATTACHMENT_VERSION: u32 = 1;
 const NATIVE_OVERLAY_RELAY_VERSION: u32 = 1;
 const NATIVE_OVERLAY_RELAY_DOMAIN: &str = "osl-privacy/native-discord-overlay/relay-notice/v1";
@@ -242,14 +186,7 @@ const MAX_REVOCATION_BUNDLE_BYTES: usize = 16 * 1024;
 const MAX_REVOCATION_POSTS_PER_DRAIN: usize = 8;
 const MAX_PEER_LIFETIME_SECONDS: i64 = 7 * 24 * 60 * 60;
 const MAX_PEER_CLOCK_SKEW_SECONDS: i64 = 5 * 60;
-const PEER_STORE_TTL_OPTIONS: [u32; 4] = [
-    ipc::cipher_store_client::TTL_1H,
-    ipc::cipher_store_client::TTL_24H,
-    ipc::cipher_store_client::TTL_72H,
-    ipc::cipher_store_client::TTL_7D,
-];
 const VIEW_ONCE_UNAVAILABLE: &str = "This view-once message is unavailable or expired";
-const VIEW_ONCE_ALREADY_OPENED: &str = "This view-once message was already opened";
 const LOCAL_PROTECTED_MESSAGE_TYPE: u8 = 0x80;
 const LOCAL_PROTECTED_FILE: &str = "hub_local_protected.json";
 const NATIVE_OVERLAY_RECEIPTS_FILE: &str = "hub_native_overlay_receipts.json";
@@ -391,7 +328,6 @@ struct BrokerInner {
 pub struct HubBrokerState {
     inner: Mutex<BrokerInner>,
     local_protected_transition: Mutex<()>,
-    native_overlay_view_once_reveal_transition: Mutex<()>,
     native_overlay_receipt_transition: Mutex<()>,
     osl_chat_reaction_transition: Mutex<()>,
     inbound_privacy_receipts: Mutex<BTreeMap<([u8; 32], [u8; 32]), ReceiptState>>,
@@ -404,7 +340,6 @@ impl core::fmt::Debug for HubBrokerState {
         f.debug_struct("HubBrokerState")
             .field("inner", &"<redacted>")
             .field("local_protected_transition", &"<mutex>")
-            .field("native_overlay_view_once_reveal_transition", &"<mutex>")
             .field("native_overlay_receipt_transition", &"<mutex>")
             .field("osl_chat_reaction_transition", &"<mutex>")
             .field("inbound_privacy_receipts", &"<mutex>")
@@ -932,85 +867,6 @@ impl HubBrokerState {
             }))
     }
 
-    pub fn server_channel_burn_choices(
-        &self,
-        context_token: &str,
-    ) -> Result<Vec<HubContextBurnChoice>, String> {
-        let scope = self.scope_for_context(context_token)?;
-        if scope.kind != ScopeKind::ServerChannel {
-            return Err("OSL active context is not an open server channel".to_owned());
-        }
-        let server_id = scope
-            .server_id
-            .clone()
-            .ok_or_else(|| "OSL active server-channel scope is missing its server id".to_owned())?;
-        let channel_id = scope.channel_id.clone().ok_or_else(|| {
-            "OSL active server-channel scope is missing its channel id".to_owned()
-        })?;
-        let whole_server_scope = ScopeInput {
-            kind: ScopeKind::ServerFull,
-            id: server_id.clone(),
-            server_id: Some(server_id),
-            channel_id: None,
-        };
-        debug_assert_eq!(scope.channel_id.as_deref(), Some(channel_id.as_str()));
-        Ok(vec![
-            HubContextBurnChoice {
-                choice: "this_channel".to_owned(),
-                scope,
-            },
-            HubContextBurnChoice {
-                choice: "whole_server".to_owned(),
-                scope: whole_server_scope,
-            },
-        ])
-    }
-
-    pub fn server_channel_burn_target(
-        &self,
-        context_token: &str,
-        choice: &str,
-        index: &ServiceScopeIndexState,
-    ) -> Result<HubContextBurnTarget, String> {
-        let context = self.context_for(context_token)?;
-        let choices = self.server_channel_burn_choices(context_token)?;
-        match choice {
-            "this_channel" => {
-                let selected = choices
-                    .into_iter()
-                    .find(|candidate| candidate.choice == "this_channel")
-                    .ok_or_else(|| "OSL burn choice is unavailable".to_owned())?;
-                let channel_id = selected.scope.channel_id.clone().ok_or_else(|| {
-                    "OSL active server-channel scope is missing its channel id".to_owned()
-                })?;
-                Ok(HubContextBurnTarget {
-                    scope: selected.scope,
-                    canonical_channel_ids: vec![channel_id],
-                })
-            }
-            "whole_server" => {
-                let selected = choices
-                    .into_iter()
-                    .find(|candidate| candidate.choice == "whole_server")
-                    .ok_or_else(|| "OSL burn choice is unavailable".to_owned())?;
-                let server_id = selected.scope.server_id.as_deref().ok_or_else(|| {
-                    "OSL active server-channel scope is missing its server id".to_owned()
-                })?;
-                let indexed = index.complete_server_scope(
-                    &context.self_osl_id,
-                    &context.service_id,
-                    &context.account_id,
-                    server_id,
-                )?;
-                Ok(HubContextBurnTarget {
-                    scope: indexed.scope,
-                    canonical_channel_ids: indexed.canonical_channel_ids,
-                })
-            }
-            _ => Err(format!("OSL unknown server burn choice: {choice}")),
-        }
-    }
-
     pub fn service_scope_registration(
         &self,
         context_token: &str,
@@ -1067,8 +923,7 @@ pub fn activate_owned_local_loopback_context(
         ServiceKind::Discord
         | ServiceKind::Telegram
         | ServiceKind::WhatsApp
-        | ServiceKind::Signal
-        | ServiceKind::X => ProtectedContextOrigin::NativeApp {
+        | ServiceKind::Signal => ProtectedContextOrigin::NativeApp {
             app_id: service_id.to_owned(),
         },
         _ => ProtectedContextOrigin::Standalone {
@@ -1152,28 +1007,6 @@ pub struct ManualPeerBurnTarget {
     pub scope: ScopeInput,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct HubContextBurnChoice {
-    pub choice: String,
-    pub scope: ScopeInput,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct HubContextBurnTarget {
-    pub scope: ScopeInput,
-    pub canonical_channel_ids: Vec<String>,
-pub const OSL_CHAT_BOTH_SIDES_BURN_CHOICE: &str = "Both Sides";
-pub const OSL_CHAT_BOTH_SIDES_BURNED: &str = "burned";
-pub const OSL_CHAT_BOTH_SIDES_ALREADY_GONE: &str = "already gone";
-
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct OslChatBothSidesBurnResult {
-    pub choice: &'static str,
-    pub rows_destroyed: usize,
-    pub status: &'static str,
-}
-
 impl core::fmt::Debug for ManualPeerBurnTarget {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ManualPeerBurnTarget")
@@ -1250,108 +1083,6 @@ pub fn activate_owned_osl_chat_context(
 ) -> Result<ActivatedManualPeerContext, String> {
     let active = owned_osl_chat_host(owner_osl_user_id);
     activate_manual_peer_from_trusted_host(broker, owner_osl_user_id, &active, binding)
-}
-
-pub fn create_osl_chat_group_conversation(
-    core: &HubCoreState,
-    name: String,
-    selected_member_ids: Vec<String>,
-) -> Result<ipc::commands::NamedGroupConversationDto, String> {
-    ipc::commands::cmd_osl_create_group_conversation(&core.osl, name, selected_member_ids)
-}
-
-const OSL_CHAT_HISTORY_SEARCH_CAP: u32 = 1_000;
-const OSL_CHAT_HISTORY_SEARCH_RESULT_LIMIT: usize = 50;
-const OSL_CHAT_HISTORY_RESULT_PREFIX: &str = "osl-chat-history-v1:";
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct OslChatHistorySearchResult {
-    pub result_id: String,
-    pub position: u32,
-    pub message: ipc::commands::StoredMessageDto,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct OslChatHistoryOpenResult {
-    pub result_id: String,
-    pub position: u32,
-    pub total_messages: u32,
-    pub previous: Option<ipc::commands::StoredMessageDto>,
-    pub message: ipc::commands::StoredMessageDto,
-    pub next: Option<ipc::commands::StoredMessageDto>,
-}
-
-fn osl_chat_history_result_id(message_id: &str) -> String {
-    format!("{OSL_CHAT_HISTORY_RESULT_PREFIX}{message_id}")
-}
-
-fn message_id_from_osl_chat_history_result(result_id: &str) -> Result<&str, String> {
-    let message_id = result_id
-        .strip_prefix(OSL_CHAT_HISTORY_RESULT_PREFIX)
-        .ok_or_else(|| "OSL Chat history result is not from this search surface".to_owned())?;
-    if message_id.is_empty() || message_id.len() > 96 {
-        return Err("OSL Chat history result id is malformed".to_owned());
-    }
-    Ok(message_id)
-}
-
-fn active_osl_chat_history_channel(
-    core: &HubCoreState,
-    broker: &HubBrokerState,
-) -> Result<String, String> {
-    let context_token = broker.active_osl_chat_context_token()?;
-    let manual = broker.manual_peer_for(&context_token)?;
-    let display = security::scope_security(manual.scope.clone())?;
-    if !display.decrypt_display_enabled {
-        return Err("Turn on decrypted text for this conversation before opening it".to_owned());
-    }
-    security::require_manual_peer_scope_approved(
-        core,
-        &manual.service_id,
-        &manual.account_id,
-        manual.person_id.clone(),
-        manual.scope.clone(),
-    )?;
-    scope_storage_key(&manual.scope)
-}
-
-fn load_ordered_osl_chat_history(
-    core: &HubCoreState,
-    broker: &HubBrokerState,
-    limit: u32,
-) -> Result<Vec<ipc::commands::StoredMessageDto>, String> {
-    let channel_id = active_osl_chat_history_channel(core, broker)?;
-    let mut rows = ipc::commands::cmd_osl_load_channel_history(&core.osl, channel_id, Some(limit))?;
-    rows.reverse();
-    Ok(rows)
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct OslChatOpenedReplyThread {
-    pub created_thread: ipc::commands::ChannelMessageThreadDto,
-    pub opened_thread: ipc::commands::OpenedChannelMessageThreadDto,
-}
-
-pub fn reply_to_osl_chat_message_and_open_thread(
-    core: &HubCoreState,
-    channel_id: String,
-    parent_message_id: String,
-    thread_id: String,
-) -> Result<OslChatOpenedReplyThread, String> {
-    let created_thread = ipc::commands::cmd_osl_create_channel_message_thread(
-        &core.osl,
-        channel_id,
-        parent_message_id,
-        thread_id.clone(),
-    )?;
-    let opened_thread = ipc::commands::cmd_osl_open_channel_message_thread(&core.osl, thread_id)?;
-    Ok(OslChatOpenedReplyThread {
-        created_thread,
-        opened_thread,
-    })
 }
 
 fn activate_manual_peer_from_trusted_host(
@@ -1496,13 +1227,6 @@ pub struct OpenedNativeOverlayTextBatch {
     /// build.  As with every receive-side tally, it carries no row identifier
     /// or content-derived data across the Tauri boundary.
     pub unrecognized_wire_rows: u32,
-    /// Rows whose public cover was recognized as an OSL protected message, but
-    /// whose cipher-store content was already gone before the fetch completed.
-    ///
-    /// Permanent, not retryable, and count-only. The renderer uses this to show
-    /// the same fixed refusal sentence it uses for other non-retryable opens,
-    /// without exposing the cover, blob id, sender, or message id.
-    pub content_gone_rows: u32,
 }
 
 /// Counts of acknowledgement states in one broker batch.
@@ -1550,29 +1274,11 @@ struct ControlInboxDeliveryFacts {
     terminal_rows: u64,
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct OslChatHistoryVisibilityFilter {
-    #[serde(default)]
-    pub hide_recipient_authored: bool,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OslChatVisibleRecordsResult {
-    pub visible_records: Vec<ipc::commands::StoredMessageDto>,
-    pub visible_record_count: usize,
-    pub stored_recipient_records: Vec<ipc::commands::StoredMessageDto>,
-    pub stored_recipient_record_count: usize,
-    pub hide_recipient_authored: bool,
-}
-
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PendingNativeOverlayText {
     pub message_id: String,
     pub expires_at: i64,
-    pub display_duration_seconds: u64,
     pub person_to_person_e2ee: bool,
 }
 
@@ -1631,36 +1337,8 @@ pub struct OpenedNativeOverlayText {
     pub context_verified: bool,
     pub person_to_person_e2ee: bool,
     pub view_once_consumed: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub display_duration_seconds: Option<u64>,
     pub created_at: i64,
     pub expires_at: i64,
-}
-
-#[cfg(test)]
-impl OpenedNativeOverlayText {
-    pub(crate) fn test_fixture(
-        message_id: &str,
-        cover_pointer: Option<&str>,
-        plaintext: &str,
-        context_verified: bool,
-        person_to_person_e2ee: bool,
-        view_once_consumed: bool,
-        created_at: i64,
-        expires_at: i64,
-    ) -> Self {
-        Self {
-            message_id: message_id.to_owned(),
-            sender_order: None,
-            cover_pointer: cover_pointer.map(str::to_owned),
-            plaintext: plaintext.to_owned(),
-            context_verified,
-            person_to_person_e2ee,
-            view_once_consumed,
-            created_at,
-            expires_at,
-        }
-    }
 }
 
 /// A single-device protected capsule. This is intentionally not described as
@@ -1750,22 +1428,6 @@ struct PreparedPeerProseEnvelope {
     encrypted_wire: String,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct PeerSendExpiry {
-    created_at: i64,
-    expires_at: i64,
-    expiry_seconds: u32,
-    store_ttl_seconds: u32,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TimerPickerSendCommandExpiry {
-    pub duration_seconds: u32,
-    pub seconds_ahead: i64,
-    pub expires_at: i64,
-}
-
 #[derive(Clone, Serialize, Deserialize)]
 struct LocalProtectedPayload {
     version: u32,
@@ -1797,8 +1459,6 @@ struct PeerProtectedPayload {
     recipient_osl_user_id: String,
     plaintext: String,
     view_once: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    display_duration_seconds: Option<u64>,
     #[serde(default)]
     require_capture_protection: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1819,8 +1479,6 @@ struct NativeTextChunkMeta {
     whole_sha256: String,
     created_at: i64,
     expires_at: i64,
-    expiry_seconds: u32,
-    store_ttl_seconds: u32,
 }
 
 struct NativeTextReassembly {
@@ -1889,7 +1547,6 @@ struct NativeTextGroupKey {
     sender_osl_user_id: String,
     recipient_osl_user_id: String,
     view_once: bool,
-    display_duration_seconds: Option<u64>,
     require_capture_protection: bool,
 }
 
@@ -1929,7 +1586,6 @@ struct NativeOverlayAcknowledgmentPayload {
 #[derive(Clone)]
 struct PeerProtectionPolicy {
     view_once: bool,
-    display_duration_seconds: Option<u64>,
     require_capture_protection: bool,
     created_at: i64,
     expires_at: i64,
@@ -2132,24 +1788,6 @@ pub struct PendingNativeOverlayAttachment {
     pub view_once: bool,
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ClipboardImageAttachmentTrayRecord {
-    pub attachment_id: String,
-    pub original_filename: String,
-    pub mime_type: String,
-    pub plaintext_size: u64,
-    pub checked: bool,
-    pub view_once: bool,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ClipboardImageAttachmentTrayResult {
-    pub tray_count: usize,
-    pub records: Vec<ClipboardImageAttachmentTrayRecord>,
-}
-
 pub struct NativeOverlayAttachmentOpenPlan {
     pub inbox_id: String,
     pub attachment_id: String,
@@ -2304,7 +1942,6 @@ pub fn prepare_peer_prose_text_with_capture(
         context_token,
         plaintext,
         view_once,
-        None,
         require_capture_protection,
     )
     .map(|envelope| envelope.prepared)
@@ -2327,7 +1964,6 @@ pub fn prepare_peer_prose_text_with_capture_and_store_client(
         context_token,
         plaintext,
         view_once,
-        None,
         require_capture_protection,
         None,
         Some(store_client),
@@ -2367,7 +2003,6 @@ pub fn prepare_whatsapp_qa_peer_prose_text(
         plaintext,
         PeerProtectionPolicy {
             view_once: false,
-            display_duration_seconds: None,
             require_capture_protection: false,
             created_at: now,
             expires_at,
@@ -2445,7 +2080,6 @@ fn prepare_peer_prose_text_inner(
     context_token: &str,
     plaintext: String,
     view_once: bool,
-    display_duration_seconds: Option<u64>,
     require_capture_protection: bool,
 ) -> Result<PreparedPeerProseEnvelope, String> {
     prepare_peer_prose_text_inner_with_chunk(
@@ -2455,7 +2089,6 @@ fn prepare_peer_prose_text_inner(
         context_token,
         plaintext,
         view_once,
-        display_duration_seconds,
         require_capture_protection,
         None,
         None,
@@ -2497,19 +2130,6 @@ fn burn_uploaded_prose_blob(
     }
 }
 
-fn require_view_once_create_allowed(core: &HubCoreState, view_once: bool) -> Result<(), String> {
-    if !view_once {
-        return Ok(());
-    }
-    ipc::tier_gate::check_view_once_create_allowed(&core.osl).map_err(|error| {
-        format!(
-            "OSL-TIER-BLOCKED:{}",
-            serde_json::to_string(&error)
-                .unwrap_or_else(|_| "{\"kind\":\"paid_feature_required\"}".to_owned())
-        )
-    })
-}
-
 #[allow(clippy::too_many_arguments)]
 fn prepare_peer_prose_text_inner_with_chunk(
     core: &HubCoreState,
@@ -2518,15 +2138,12 @@ fn prepare_peer_prose_text_inner_with_chunk(
     context_token: &str,
     plaintext: String,
     view_once: bool,
-    display_duration_seconds: Option<u64>,
     require_capture_protection: bool,
     chunk: Option<NativeTextChunkMeta>,
     store_client: Option<&ipc::cipher_store_client::CipherStoreClient>,
     send_order: Option<AuthenticatedSenderOrder>,
 ) -> Result<PreparedPeerProseEnvelope, String> {
-    require_view_once_create_allowed(core, view_once)?;
     let manual = broker.manual_peer_for(context_token)?;
-    security::require_person_not_blocked(&manual.person_id)?;
     let verified = security::require_manual_peer_scope_approved(
         core,
         &manual.service_id,
@@ -2535,22 +2152,10 @@ fn prepare_peer_prose_text_inner_with_chunk(
         manual.scope.clone(),
     )?;
     let context = broker.context_for(context_token)?;
-    let scope_ttl_seconds = security::scope_security(manual.scope.clone())?.ttl_seconds;
-    let (ttl_seconds, store_ttl_seconds) = chunk
-        .as_ref()
-        .map_or((scope_ttl_seconds, scope_ttl_seconds), |chunk| {
-            (chunk.expiry_seconds, chunk.store_ttl_seconds)
-        });
-    if i64::from(ttl_seconds) > MAX_PEER_LIFETIME_SECONDS
-        || ttl_seconds == 0
-        || store_ttl_seconds == 0
-        || store_ttl_seconds < ttl_seconds
-        || i64::from(store_ttl_seconds) > MAX_PEER_LIFETIME_SECONDS
-    {
+    let ttl_seconds = security::scope_security(manual.scope.clone())?.ttl_seconds;
+    if i64::from(ttl_seconds) > MAX_PEER_LIFETIME_SECONDS || ttl_seconds == 0 {
         return Err("OSL could not prepare a single manual peer message".to_owned());
     }
-    let display_duration_seconds =
-        selected_view_once_display_duration(view_once, display_duration_seconds)?;
     let now = chunk
         .as_ref()
         .map_or_else(ipc::main_password::now_unix_secs_pub, |chunk| {
@@ -2575,7 +2180,6 @@ fn prepare_peer_prose_text_inner_with_chunk(
         plaintext,
         PeerProtectionPolicy {
             view_once,
-            display_duration_seconds,
             require_capture_protection,
             created_at: now,
             expires_at,
@@ -2610,7 +2214,7 @@ fn prepare_peer_prose_text_inner_with_chunk(
             &detection_key,
             send_keys,
             &encrypted,
-            store_ttl_seconds,
+            ttl_seconds,
         )
     } else {
         ipc::prose_token::prose_token_send(
@@ -2619,7 +2223,7 @@ fn prepare_peer_prose_text_inner_with_chunk(
             &detection_key,
             send_keys,
             &encrypted,
-            store_ttl_seconds,
+            ttl_seconds,
         )
     }
     // D-144: the user-facing sentence stays byte-identical, but the cause is no
@@ -2679,18 +2283,10 @@ fn build_native_overlay_wrapped_key_upload(
     encrypted_wire: &str,
     view_once: bool,
     ttl_seconds: u32,
-    display_duration_seconds: Option<u64>,
     expires_at: i64,
     share_index: u32,
 ) -> Result<keystore::WrappedKeyUpload, String> {
     const ERROR: &str = "OSL could not prepare the protected message key";
-    let display_duration_seconds =
-        selected_view_once_display_duration(view_once, display_duration_seconds)
-            .map_err(|_| ERROR.to_owned())?;
-    let keyserver_display_duration_seconds = display_duration_seconds
-        .map(u32::try_from)
-        .transpose()
-        .map_err(|_| ERROR.to_owned())?;
     if !valid_peer_message_id(message_id)
         || recipient_id.is_empty()
         || recipient_id.as_bytes().len() > 256
@@ -2714,7 +2310,6 @@ fn build_native_overlay_wrapped_key_upload(
         single_use: view_once,
         display_duration_seconds: view_once.then_some(ttl_seconds),
         expiry_seconds: Some(ttl_seconds),
-        display_duration_seconds: keyserver_display_duration_seconds,
         expires_at: keystore::iso_8601_from_unix_seconds(expires_at_unix),
     })
 }
@@ -2727,7 +2322,6 @@ fn post_native_overlay_wrapped_key(
     encrypted_wire: &str,
     view_once: bool,
     ttl_seconds: u32,
-    display_duration_seconds: Option<u64>,
     expires_at: i64,
     share_index: u32,
 ) -> Result<(), String> {
@@ -2737,7 +2331,6 @@ fn post_native_overlay_wrapped_key(
         encrypted_wire,
         view_once,
         ttl_seconds,
-        display_duration_seconds,
         expires_at,
         share_index,
     )?;
@@ -2757,7 +2350,6 @@ fn prepare_direct_manual_v3(
     message_id: String,
     chunk: Option<&NativeTextChunkMeta>,
 ) -> Result<String, String> {
-    require_view_once_message_creation_allowed(core, policy.view_once)?;
     let maximum = if chunk.is_some() {
         MAX_NATIVE_OVERLAY_CHUNK_BYTES
     } else {
@@ -2788,7 +2380,6 @@ fn prepare_direct_manual_v3(
         recipient_osl_user_id: manual.peer_osl_user_id.clone(),
         plaintext,
         view_once: policy.view_once,
-        display_duration_seconds: policy.display_duration_seconds,
         require_capture_protection: policy.require_capture_protection,
         logical_message_id: chunk.map(|value| value.logical_message_id.clone()),
         chunk_index: chunk.map(|value| value.chunk_index),
@@ -2804,47 +2395,6 @@ fn prepare_direct_manual_v3(
     encrypt_direct_manual_v3_payload(core, peer, ipc::wire_v2::MSG_TYPE_CONTENT, &payload)
 }
 
-#[derive(Clone)]
-struct DirectManualV3Recipient {
-    x25519_pub: crypto::x25519::PublicKey,
-    mlkem_pub: crypto::ml_kem_768::EncapsulationKey,
-}
-
-impl DirectManualV3Recipient {
-    fn from_identity(identity: &keystore::Identity) -> Self {
-        Self {
-            x25519_pub: identity.x25519_public,
-            mlkem_pub: identity.mlkem_encapsulation_key(),
-        }
-    }
-
-    fn from_binding(peer: &ManualPeerBinding) -> Self {
-        Self {
-            x25519_pub: crypto::x25519::PublicKey::from_bytes(peer.peer_x25519_public),
-            mlkem_pub: crypto::ml_kem_768::EncapsulationKey::from_bytes(
-                &peer.peer_mlkem768_public,
-            ),
-        }
-    }
-}
-
-fn direct_manual_v3_recipient_ceiling(payload_len: usize) -> usize {
-    ipc::wire_v2::max_v3_recipients_for_plaintext_len(payload_len)
-}
-
-fn enforce_direct_manual_v3_recipient_ceiling(
-    recipient_count: usize,
-    payload_len: usize,
-) -> Result<(), String> {
-    let ceiling = direct_manual_v3_recipient_ceiling(payload_len);
-    if recipient_count > ceiling {
-        return Err(format!(
-            "too many devices for one message: {recipient_count} devices requested, ceiling is {ceiling}"
-        ));
-    }
-    Ok(())
-}
-
 fn encrypt_direct_manual_v3_payload(
     core: &HubCoreState,
     peer: &ManualPeerBinding,
@@ -2858,36 +2408,19 @@ fn encrypt_direct_manual_v3_payload(
         .map_err(|_| "OSL identity state is unavailable".to_owned())?
         .clone()
         .ok_or_else(|| "OSL identity is not loaded".to_owned())?;
-    encrypt_direct_manual_v3_payload_for_recipients(
-        &identity,
-        peer,
-        &[
-            DirectManualV3Recipient::from_identity(&identity),
-            DirectManualV3Recipient::from_binding(peer),
-        ],
-        message_type,
-        payload,
-    )
-}
-
-fn encrypt_direct_manual_v3_payload_for_recipients(
-    identity: &keystore::Identity,
-    peer: &ManualPeerBinding,
-    recipients: &[DirectManualV3Recipient],
-    message_type: u8,
-    payload: &[u8],
-) -> Result<String, String> {
-    enforce_direct_manual_v3_recipient_ceiling(recipients.len(), payload.len())?;
     if constant_time_eq_32(identity.x25519_public.as_bytes(), &peer.peer_x25519_public) {
         return Err("OSL manual peer key matches the active identity".to_owned());
     }
-    let recipients: Vec<_> = recipients
-        .iter()
-        .map(|recipient| ipc::wire_v2::RecipientV3 {
-            x25519_pub: recipient.x25519_pub,
-            mlkem_pub: recipient.mlkem_pub.clone(),
-        })
-        .collect();
+    let recipients = [
+        ipc::wire_v2::RecipientV3 {
+            x25519_pub: identity.x25519_public,
+            mlkem_pub: identity.mlkem_encapsulation_key(),
+        },
+        ipc::wire_v2::RecipientV3 {
+            x25519_pub: crypto::x25519::PublicKey::from_bytes(peer.peer_x25519_public),
+            mlkem_pub: crypto::ml_kem_768::EncapsulationKey::from_bytes(&peer.peer_mlkem768_public),
+        },
+    ];
     ipc::wire_v2::encrypt_v3(
         &identity.x25519_secret,
         &identity.x25519_public,
@@ -3098,7 +2631,6 @@ pub struct PreparedNativeDiscordOverlayText {
 #[serde(rename_all = "camelCase")]
 pub struct RehydratedNativeDiscordRow {
     pub flagtext: String,
-    pub who_wrote_it: SharedRowWhoWroteIt,
     pub plaintext: Option<String>,
     /// Direction accepted only when the native poster proof agrees with the
     /// authenticated protected wire. `Some` exactly when `plaintext` and
@@ -3119,6 +2651,14 @@ pub enum RehydratedRowOrientation {
     Outgoing,
 }
 
+/// Provider poster class carried by the native proof.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RehydratedRowPoster {
+    SelfAccount,
+    PeerAccount,
+}
+
 /// Exact agreement between native provider row identity and authenticated
 /// protected content. These are correlation identifiers only; no plaintext,
 /// poster label or renderer-authored ownership is represented.
@@ -3127,7 +2667,7 @@ pub enum RehydratedRowOrientation {
 pub struct RehydratedRowAttribution {
     pub discord_message_id: String,
     pub poster_identity_sha256: String,
-    pub who_wrote_it: SharedRowWhoWroteIt,
+    pub poster: RehydratedRowPoster,
     pub native_locator_sha256: String,
     pub carrier_sha256: String,
     pub blob_id: String,
@@ -3143,7 +2683,7 @@ impl core::fmt::Debug for RehydratedRowAttribution {
         f.debug_struct("RehydratedRowAttribution")
             .field("discord_message_id", &"<redacted>")
             .field("poster_identity_sha256", &self.poster_identity_sha256)
-            .field("whoWroteIt", &self.who_wrote_it)
+            .field("poster", &self.poster)
             .field("native_locator_sha256", &self.native_locator_sha256)
             .field("carrier_sha256", &self.carrier_sha256)
             .field("blob_id", &"<redacted>")
@@ -3165,7 +2705,6 @@ impl core::fmt::Debug for RehydratedRowAttribution {
 #[serde(rename_all = "camelCase")]
 pub struct RehydratedNativeDiscordRowDto {
     flagtext: String,
-    who_wrote_it: SharedRowWhoWroteIt,
     plaintext: Option<String>,
     orientation: Option<RehydratedRowOrientation>,
     attribution: Option<RehydratedRowAttribution>,
@@ -3208,12 +2747,12 @@ pub fn rehydrated_native_discord_row_dto(
         (Some(_), Some(orientation), Some(attribution)) => {
             attribution.orientation == orientation
                 && matches!(
-                    (attribution.who_wrote_it, orientation),
+                    (attribution.poster, orientation),
                     (
-                        SharedRowWhoWroteIt::Yours,
+                        RehydratedRowPoster::SelfAccount,
                         RehydratedRowOrientation::Outgoing
                     ) | (
-                        SharedRowWhoWroteIt::Theirs,
+                        RehydratedRowPoster::PeerAccount,
                         RehydratedRowOrientation::Incoming
                     )
                 )
@@ -3221,7 +2760,6 @@ pub fn rehydrated_native_discord_row_dto(
         _ => false,
     };
     if !attribution_agrees {
-        row.who_wrote_it = SharedRowWhoWroteIt::NotPublishedByApp;
         row.plaintext = None;
         row.orientation = None;
         row.attribution = None;
@@ -3237,7 +2775,6 @@ pub fn rehydrated_native_discord_row_dto(
         );
     RehydratedNativeDiscordRowDto {
         flagtext: row.flagtext,
-        who_wrote_it: row.who_wrote_it,
         plaintext: row.plaintext,
         orientation: row.orientation,
         attribution: row.attribution,
@@ -3424,8 +2961,8 @@ fn native_row_evidence_batch_is_valid(
         let Some(evidence) = row.attribution.as_ref() else {
             return false;
         };
-        let poster_identity_agrees = match evidence.who_wrote_it {
-            SharedRowWhoWroteIt::Yours => {
+        let poster_identity_agrees = match evidence.poster {
+            crate::native_discord_adapter::NativeDiscordRowPoster::SelfAccount => {
                 if peer_poster_identity.as_deref() == Some(evidence.poster_identity_sha256.as_str())
                 {
                     false
@@ -3436,7 +2973,7 @@ fn native_row_evidence_batch_is_valid(
                         == evidence.poster_identity_sha256.as_str()
                 }
             }
-            SharedRowWhoWroteIt::Theirs => {
+            crate::native_discord_adapter::NativeDiscordRowPoster::PeerAccount => {
                 if self_poster_identity.as_deref() == Some(evidence.poster_identity_sha256.as_str())
                 {
                     false
@@ -3447,7 +2984,6 @@ fn native_row_evidence_batch_is_valid(
                         == evidence.poster_identity_sha256.as_str()
                 }
             }
-            SharedRowWhoWroteIt::NotPublishedByApp => false,
         };
         let matching_carriers = row
             .decode_candidates
@@ -3481,7 +3017,6 @@ fn unproven_rehydrated_rows(
     rows.into_iter()
         .map(|row| RehydratedNativeDiscordRow {
             flagtext: row.line,
-            who_wrote_it: SharedRowWhoWroteIt::NotPublishedByApp,
             plaintext: None,
             orientation: None,
             attribution: None,
@@ -3601,7 +3136,19 @@ pub fn rehydrate_native_discord_overlay_history(
             ) {
                 Ok(authenticated) => authenticated,
                 Err(failure) => {
-                    record_rehydrate_pointer_failure(&mut counts, failure);
+                    match failure {
+                        PeerProsePointerError::Pointer(PeerProsePointerFailure::NotAToken) => {
+                            counts.pointer_absent += 1
+                        }
+                        PeerProsePointerError::Pointer(
+                            PeerProsePointerFailure::PointerBlobGone,
+                        ) => counts.pointer_blob_gone += 1,
+                        PeerProsePointerError::Pointer(PeerProsePointerFailure::Transport) => {
+                            counts.store_unreachable += 1
+                        }
+                        PeerProsePointerError::Pointer(PeerProsePointerFailure::Rejected)
+                        | PeerProsePointerError::Local(_) => counts.refused += 1,
+                    }
                     return None;
                 }
             };
@@ -3627,7 +3174,6 @@ pub fn rehydrate_native_discord_overlay_history(
     if !rehydrated_attribution_ids_are_unique(&rows) {
         let opened = counts.plaintext;
         for row in &mut rows {
-            row.who_wrote_it = SharedRowWhoWroteIt::NotPublishedByApp;
             row.plaintext = None;
             row.orientation = None;
             row.attribution = None;
@@ -3636,25 +3182,6 @@ pub fn rehydrate_native_discord_overlay_history(
         counts.refused += opened;
     }
     Ok(RehydratedNativeDiscordTranscript { rows, counts })
-}
-
-fn record_rehydrate_pointer_failure(
-    counts: &mut RehydrateDecodeCounts,
-    failure: PeerProsePointerError,
-) {
-    match failure {
-        PeerProsePointerError::Pointer(PeerProsePointerFailure::NotAToken) => {
-            counts.pointer_absent += 1
-        }
-        PeerProsePointerError::Pointer(PeerProsePointerFailure::PointerBlobGone) => {
-            counts.pointer_blob_gone += 1
-        }
-        PeerProsePointerError::Pointer(PeerProsePointerFailure::Transport) => {
-            counts.store_unreachable += 1
-        }
-        PeerProsePointerError::Pointer(PeerProsePointerFailure::Rejected)
-        | PeerProsePointerError::Local(_) => counts.refused += 1,
-    }
 }
 
 #[cfg(any(test, feature = "discord-qa-shell"))]
@@ -3720,7 +3247,7 @@ fn evaluate_native_visible_row_runtime_probe(
     scope_binding: &str,
     probe: crate::native_discord_adapter::NativeVisibleRowQaProbe,
 ) -> Result<NativeVisibleRowRuntimeReceipt, String> {
-    use crate::native_discord_adapter::{NativeVisibleRowQaTriState, SharedRowWhoWroteIt};
+    use crate::native_discord_adapter::{NativeDiscordRowPoster, NativeVisibleRowQaTriState};
 
     if !matches!(probe.build_hash.len(), 40 | 64)
         || !probe
@@ -3749,7 +3276,7 @@ fn evaluate_native_visible_row_runtime_probe(
         .filter(|row| {
             row.attribution
                 .as_ref()
-                .is_some_and(|evidence| evidence.who_wrote_it == SharedRowWhoWroteIt::Yours)
+                .is_some_and(|evidence| evidence.poster == NativeDiscordRowPoster::SelfAccount)
         })
         .count();
     let source_peer = source_rows
@@ -3757,7 +3284,7 @@ fn evaluate_native_visible_row_runtime_probe(
         .filter(|row| {
             row.attribution
                 .as_ref()
-                .is_some_and(|evidence| evidence.who_wrote_it == SharedRowWhoWroteIt::Theirs)
+                .is_some_and(|evidence| evidence.poster == NativeDiscordRowPoster::PeerAccount)
         })
         .count();
 
@@ -3847,7 +3374,7 @@ fn evaluate_native_visible_row_runtime_probe(
         .iter()
         .filter(|row| {
             row.attribution.as_ref().is_some_and(|attribution| {
-                attribution.who_wrote_it == SharedRowWhoWroteIt::Yours
+                attribution.poster == RehydratedRowPoster::SelfAccount
                     && attribution.orientation == RehydratedRowOrientation::Outgoing
             })
         })
@@ -3857,7 +3384,7 @@ fn evaluate_native_visible_row_runtime_probe(
         .iter()
         .filter(|row| {
             row.attribution.as_ref().is_some_and(|attribution| {
-                attribution.who_wrote_it == SharedRowWhoWroteIt::Theirs
+                attribution.poster == RehydratedRowPoster::PeerAccount
                     && attribution.orientation == RehydratedRowOrientation::Incoming
             })
         })
@@ -3983,19 +3510,15 @@ fn rehydrated_rows(
     rows.into_iter()
         .map(|(flagtext, candidates, bounds, evidence)| {
             // Text, direction and the complete proof are one indivisible answer.
-            let (who_wrote_it, plaintext, orientation, attribution) =
+            let (plaintext, orientation, attribution) =
                 match decoded(&candidates, evidence.as_ref()) {
-                    Some((plaintext, orientation, attribution)) => (
-                        attribution.who_wrote_it,
-                        Some(plaintext),
-                        Some(orientation),
-                        Some(attribution),
-                    ),
-                    None => (SharedRowWhoWroteIt::NotPublishedByApp, None, None, None),
+                    Some((plaintext, orientation, attribution)) => {
+                        (Some(plaintext), Some(orientation), Some(attribution))
+                    }
+                    None => (None, None, None),
                 };
             RehydratedNativeDiscordRow {
                 flagtext,
-                who_wrote_it,
                 plaintext,
                 orientation,
                 attribution,
@@ -4125,7 +3648,7 @@ fn native_overlay_wrapped_key_matches_payload(
         && wrapped.share_index == u32::from(payload.chunk_index.unwrap_or(0))
         && wrapped.blob_version == 1
         && wrapped.single_use == payload.view_once
-        && wrapped.display_duration_seconds.map(u64::from) == payload.display_duration_seconds
+        && (wrapped.display_duration_seconds.is_some() == payload.view_once)
         && expires_at.as_deref() == Some(wrapped.expires_at.as_str())
         && payload.expires_at == notice.expires_at
 }
@@ -4143,7 +3666,6 @@ fn same_peer_protected_payload(left: &PeerProtectedPayload, right: &PeerProtecte
         && left.recipient_osl_user_id == right.recipient_osl_user_id
         && left.plaintext == right.plaintext
         && left.view_once == right.view_once
-        && left.display_duration_seconds == right.display_duration_seconds
         && left.require_capture_protection == right.require_capture_protection
         && left.logical_message_id == right.logical_message_id
         && left.chunk_index == right.chunk_index
@@ -4229,13 +3751,19 @@ fn bind_authenticated_native_row(
     evidence: &crate::native_discord_adapter::NativeDiscordRowAttributionEvidence,
     authenticated: AuthenticatedProsePointer,
 ) -> Option<(String, RehydratedRowOrientation, RehydratedRowAttribution)> {
-    let (who_wrote_it, orientation) = match (evidence.who_wrote_it, authenticated.orientation) {
-        (SharedRowWhoWroteIt::Yours, PeerWireOrientation::SelfToPeer) => (
-            SharedRowWhoWroteIt::Yours,
+    let (poster, orientation) = match (evidence.poster, authenticated.orientation) {
+        (
+            crate::native_discord_adapter::NativeDiscordRowPoster::SelfAccount,
+            PeerWireOrientation::SelfToPeer,
+        ) => (
+            RehydratedRowPoster::SelfAccount,
             RehydratedRowOrientation::Outgoing,
         ),
-        (SharedRowWhoWroteIt::Theirs, PeerWireOrientation::PeerToSelf) => (
-            SharedRowWhoWroteIt::Theirs,
+        (
+            crate::native_discord_adapter::NativeDiscordRowPoster::PeerAccount,
+            PeerWireOrientation::PeerToSelf,
+        ) => (
+            RehydratedRowPoster::PeerAccount,
             RehydratedRowOrientation::Incoming,
         ),
         _ => return None,
@@ -4261,7 +3789,7 @@ fn bind_authenticated_native_row(
     let attribution = RehydratedRowAttribution {
         discord_message_id: evidence.discord_message_id.clone(),
         poster_identity_sha256: evidence.poster_identity_sha256.clone(),
-        who_wrote_it,
+        poster,
         native_locator_sha256: evidence.native_locator_sha256.clone(),
         carrier_sha256: evidence.carrier_sha256.clone(),
         blob_id: authenticated.blob_id,
@@ -4287,10 +3815,8 @@ fn authenticate_oriented_prose_pointer(
     }
     let manual = broker.manual_peer_for(context_token)?;
     if sender_person_id != manual.person_id {
-        return Err(PeerProsePointerFailure::NotFriend.into());
+        return Err(PeerProsePointerFailure::Rejected.into());
     }
-    security::require_person_not_blocked(&manual.person_id)
-        .map_err(|_| PeerProsePointerFailure::Rejected)?;
     let verified = security::require_manual_peer_scope_approved(
         core,
         &manual.service_id,
@@ -4391,7 +3917,6 @@ pub fn prepare_native_discord_overlay_text(
     ai_carrier: &crate::ai_carrier::AiCarrierState,
     plaintext: String,
     view_once: bool,
-    display_duration_seconds: Option<u64>,
 ) -> Result<PreparedNativeOverlayCarrier, String> {
     let context_token = broker.active_native_manual_context_token()?;
     prepare_peer_inbox_text(
@@ -4402,30 +3927,6 @@ pub fn prepare_native_discord_overlay_text(
         &context_token,
         plaintext,
         view_once,
-        None,
-    )
-}
-
-pub fn prepare_native_discord_overlay_text_with_timer_picker(
-    core: &HubCoreState,
-    security_state: &HubSecurityState,
-    broker: &HubBrokerState,
-    ai_carrier: &crate::ai_carrier::AiCarrierState,
-    plaintext: String,
-    view_once: bool,
-    timer_picker: Option<security::TimerPickerStateDto>,
-) -> Result<PreparedNativeOverlayCarrier, String> {
-    let context_token = broker.active_native_manual_context_token()?;
-    prepare_peer_inbox_text(
-        core,
-        security_state,
-        broker,
-        ai_carrier,
-        &context_token,
-        plaintext,
-        view_once,
-        timer_picker,
-        display_duration_seconds,
     )
 }
 
@@ -4442,7 +3943,6 @@ pub fn prepare_native_discord_overlay_text_with_route_clients(
     ai_carrier: &crate::ai_carrier::AiCarrierState,
     plaintext: String,
     view_once: bool,
-    display_duration_seconds: Option<u64>,
     store_client: &ipc::cipher_store_client::CipherStoreClient,
     keyserver_client: Option<&keystore::KeyServerClient>,
 ) -> Result<PreparedNativeOverlayCarrier, String> {
@@ -4455,14 +3955,12 @@ pub fn prepare_native_discord_overlay_text_with_route_clients(
         &context_token,
         plaintext,
         view_once,
-        None,
         Some(store_client),
         keyserver_client,
     )
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn prepare_native_discord_overlay_text_with_timer_picker_and_route_clients(
 pub fn prepare_active_messaging_service_overlay_text_with_route_clients(
     core: &HubCoreState,
     security_state: &HubSecurityState,
@@ -4470,11 +3968,6 @@ pub fn prepare_active_messaging_service_overlay_text_with_route_clients(
     ai_carrier: &crate::ai_carrier::AiCarrierState,
     plaintext: String,
     view_once: bool,
-    timer_picker: Option<security::TimerPickerStateDto>,
-    store_client: &ipc::cipher_store_client::CipherStoreClient,
-    keyserver_client: Option<&keystore::KeyServerClient>,
-) -> Result<PreparedNativeOverlayCarrier, String> {
-    let context_token = broker.active_native_manual_context_token()?;
     store_client: &ipc::cipher_store_client::CipherStoreClient,
     keyserver_client: Option<&keystore::KeyServerClient>,
 ) -> Result<PreparedNativeOverlayCarrier, String> {
@@ -4487,8 +3980,6 @@ pub fn prepare_active_messaging_service_overlay_text_with_route_clients(
         &context_token,
         plaintext,
         view_once,
-        timer_picker,
-        display_duration_seconds,
         Some(store_client),
         keyserver_client,
     )
@@ -4540,7 +4031,6 @@ pub fn prepare_osl_chat_text(
     ai_carrier: &crate::ai_carrier::AiCarrierState,
     plaintext: String,
     view_once: bool,
-    display_duration_seconds: Option<u64>,
 ) -> Result<PreparedNativeOverlayText, String> {
     let context_token = broker.active_osl_chat_context_token()?;
     // OSL chat has no Discord row, so the carrier flagtext is simply unused.
@@ -4552,31 +4042,6 @@ pub fn prepare_osl_chat_text(
         &context_token,
         plaintext,
         view_once,
-        None,
-    )
-    .map(|carrier| carrier.prepared)
-}
-
-pub fn prepare_osl_chat_text_with_timer_picker(
-    core: &HubCoreState,
-    security_state: &HubSecurityState,
-    broker: &HubBrokerState,
-    ai_carrier: &crate::ai_carrier::AiCarrierState,
-    plaintext: String,
-    view_once: bool,
-    timer_picker: Option<security::TimerPickerStateDto>,
-) -> Result<PreparedNativeOverlayText, String> {
-    let context_token = broker.active_osl_chat_context_token()?;
-    prepare_peer_inbox_text(
-        core,
-        security_state,
-        broker,
-        ai_carrier,
-        &context_token,
-        plaintext,
-        view_once,
-        timer_picker,
-        display_duration_seconds,
     )
     .map(|carrier| carrier.prepared)
 }
@@ -4588,7 +4053,6 @@ pub fn prepare_osl_chat_text_with_route_clients(
     ai_carrier: &crate::ai_carrier::AiCarrierState,
     plaintext: String,
     view_once: bool,
-    display_duration_seconds: Option<u64>,
     store_client: &ipc::cipher_store_client::CipherStoreClient,
     keyserver_client: Option<&keystore::KeyServerClient>,
 ) -> Result<PreparedNativeOverlayText, String> {
@@ -4601,36 +4065,6 @@ pub fn prepare_osl_chat_text_with_route_clients(
         &context_token,
         plaintext,
         view_once,
-        None,
-        Some(store_client),
-        keyserver_client,
-    )
-    .map(|carrier| carrier.prepared)
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn prepare_osl_chat_text_with_timer_picker_and_route_clients(
-    core: &HubCoreState,
-    security_state: &HubSecurityState,
-    broker: &HubBrokerState,
-    ai_carrier: &crate::ai_carrier::AiCarrierState,
-    plaintext: String,
-    view_once: bool,
-    timer_picker: Option<security::TimerPickerStateDto>,
-    store_client: &ipc::cipher_store_client::CipherStoreClient,
-    keyserver_client: Option<&keystore::KeyServerClient>,
-) -> Result<PreparedNativeOverlayText, String> {
-    let context_token = broker.active_osl_chat_context_token()?;
-    prepare_peer_inbox_text_with_route_clients(
-        core,
-        security_state,
-        broker,
-        ai_carrier,
-        &context_token,
-        plaintext,
-        view_once,
-        timer_picker,
-        display_duration_seconds,
         Some(store_client),
         keyserver_client,
     )
@@ -4778,55 +4212,6 @@ pub fn retry_available_for_message_service_send_failure_before_cover_preparation
         private_draft_unchanged: true,
         cover_preparation_count_start,
         cover_preparation_count_after: cover_preparation_count_start,
-fn store_ttl_for_expiry_seconds(expiry_seconds: u32) -> Result<u32, String> {
-    PEER_STORE_TTL_OPTIONS
-        .into_iter()
-        .find(|ttl| *ttl >= expiry_seconds)
-        .ok_or_else(|| "OSL timer picker duration exceeds send storage limits".to_owned())
-}
-
-fn peer_send_expiry_for_scope_and_picker(
-    scope: ScopeInput,
-    timer_picker: Option<security::TimerPickerStateDto>,
-    now: i64,
-) -> Result<PeerSendExpiry, String> {
-    let expiry_seconds = match timer_picker {
-        Some(state) => security::timer_picker_send_expiry_at(&state, now)?.duration_seconds,
-        None => security::scope_security(scope)?.ttl_seconds,
-    };
-    if expiry_seconds == 0 || i64::from(expiry_seconds) > MAX_PEER_LIFETIME_SECONDS {
-        return Err("OSL timer picker duration exceeds send storage limits".to_owned());
-    }
-    let expires_at = now
-        .checked_add(i64::from(expiry_seconds))
-        .ok_or_else(|| "OSL timer picker expiry is too large".to_owned())?;
-    let store_ttl_seconds = store_ttl_for_expiry_seconds(expiry_seconds)?;
-    Ok(PeerSendExpiry {
-        created_at: now,
-        expires_at,
-        expiry_seconds,
-        store_ttl_seconds,
-    })
-}
-
-pub fn timer_picker_send_command_expiry_at(
-    state: &security::TimerPickerStateDto,
-    now: i64,
-) -> Result<TimerPickerSendCommandExpiry, String> {
-    let expiry = peer_send_expiry_for_scope_and_picker(
-        ScopeInput {
-            kind: ScopeKind::Dm,
-            id: "task-0550".to_owned(),
-            server_id: None,
-            channel_id: Some("task-0550".to_owned()),
-        },
-        Some(state.clone()),
-        now,
-    )?;
-    Ok(TimerPickerSendCommandExpiry {
-        duration_seconds: expiry.expiry_seconds,
-        seconds_ahead: expiry.expires_at.saturating_sub(expiry.created_at),
-        expires_at: expiry.expires_at,
     })
 }
 
@@ -4838,8 +4223,6 @@ fn prepare_peer_inbox_text(
     context_token: &str,
     plaintext: String,
     view_once: bool,
-    timer_picker: Option<security::TimerPickerStateDto>,
-    display_duration_seconds: Option<u64>,
 ) -> Result<PreparedNativeOverlayCarrier, String> {
     prepare_peer_inbox_text_with_route_clients(
         core,
@@ -4849,8 +4232,6 @@ fn prepare_peer_inbox_text(
         context_token,
         plaintext,
         view_once,
-        timer_picker,
-        display_duration_seconds,
         None,
         None,
     )
@@ -4865,13 +4246,9 @@ fn prepare_peer_inbox_text_with_route_clients(
     context_token: &str,
     plaintext: String,
     view_once: bool,
-    timer_picker: Option<security::TimerPickerStateDto>,
-    display_duration_seconds: Option<u64>,
     store_client: Option<&ipc::cipher_store_client::CipherStoreClient>,
     keyserver_client: Option<&keystore::KeyServerClient>,
 ) -> Result<PreparedNativeOverlayCarrier, String> {
-    require_view_once_create_allowed(core, view_once)?;
-    require_view_once_message_creation_allowed(core, view_once)?;
     #[cfg(feature = "discord-qa-shell")]
     let is_fixed_discord_qa_probe = plaintext == "OSL Discord QA probe" && !view_once;
     #[cfg(feature = "discord-qa-shell")]
@@ -4886,23 +4263,13 @@ fn prepare_peer_inbox_text_with_route_clients(
     let _carrier_decision = ai_carrier.select_for_shipping_send();
     let manual = broker.manual_peer_for(context_token)?;
     let context = broker.context_for(context_token)?;
-    security::require_person_not_blocked(&manual.person_id)?;
     require_messaging_risk_agreed(
         &context.self_osl_id,
         &context.service_id,
         &context.account_id,
     )?;
     let now = ipc::main_password::now_unix_secs_pub();
-    let expiry = peer_send_expiry_for_scope_and_picker(manual.scope.clone(), timer_picker, now)
-        .map_err(|_| {
-            qa_encrypt_refusal_site("expires_at_overflow");
-            "OSL could not deliver the protected message".to_owned()
-        })?;
-    let ttl_seconds = expiry.expiry_seconds;
-    let expires_at = expiry.expires_at;
     let ttl_seconds = security::scope_security(manual.scope.clone())?.ttl_seconds;
-    let display_duration_seconds =
-        selected_view_once_display_duration(view_once, display_duration_seconds)?;
     let expires_at = now.checked_add(i64::from(ttl_seconds)).ok_or_else(|| {
         qa_encrypt_refusal_site("expires_at_overflow");
         "OSL could not deliver the protected message".to_owned()
@@ -5045,8 +4412,6 @@ fn prepare_peer_inbox_text_with_route_clients(
             whole_sha256: whole_sha256.clone(),
             created_at: now,
             expires_at,
-            expiry_seconds: ttl_seconds,
-            store_ttl_seconds: expiry.store_ttl_seconds,
         };
         #[cfg(feature = "discord-qa-shell")]
         record_fixed_discord_qa_broker_stage(
@@ -5062,7 +4427,6 @@ fn prepare_peer_inbox_text_with_route_clients(
             context_token,
             chunk_plaintext,
             view_once,
-            display_duration_seconds,
             true,
             Some(meta),
             store_client,
@@ -5094,7 +4458,6 @@ fn prepare_peer_inbox_text_with_route_clients(
             &encrypted_wire,
             view_once,
             ttl_seconds,
-            display_duration_seconds,
             expires_at,
             u32::from(chunk_index),
         )?;
@@ -5255,10 +4618,9 @@ fn prepare_peer_inbox_text_with_route_clients(
     #[cfg(feature = "discord-qa-shell")]
     record_fixed_discord_qa_broker_stage(is_fixed_discord_qa_probe, "record", "ready", None)?;
     if let Some(history_plaintext) = history_plaintext {
-        let history_channel_id = scope_storage_key(&manual.scope)?;
         ipc::commands::cmd_osl_persist_outbound(
             &core.osl,
-            history_channel_id,
+            context.conversation_id.clone(),
             logical_message_id.clone(),
             history_plaintext,
             None,
@@ -5330,10 +4692,6 @@ pub fn reveal_native_discord_overlay_view_once(
     if !valid_peer_attachment_id(message_id) {
         return Err(VIEW_ONCE_UNAVAILABLE.to_owned());
     }
-    let _reveal = broker
-        .native_overlay_view_once_reveal_transition
-        .lock()
-        .map_err(|_| VIEW_ONCE_UNAVAILABLE.to_owned())?;
     let context_token = broker.active_native_manual_context_token()?;
     let manual = broker.manual_peer_for(&context_token)?;
     let now = ipc::main_password::now_unix_secs_pub();
@@ -5341,7 +4699,7 @@ pub fn reveal_native_discord_overlay_view_once(
         .unwrap_or(false)
     {
         let _ = broker.record_view_once_second_reveal_refusal(message_id, now);
-        return Err(VIEW_ONCE_ALREADY_OPENED.to_owned());
+        return Err(VIEW_ONCE_UNAVAILABLE.to_owned());
     }
     let mut batch = drain_peer_inbox_text(
         core,
@@ -5408,37 +4766,20 @@ pub fn drain_osl_chat_text(
     capture_protection_ready: bool,
 ) -> Result<OpenedNativeOverlayTextBatch, String> {
     let context_token = broker.active_osl_chat_context_token()?;
-    open_capture_gated_private_message_queue(capture_protection_ready, || {
-        // Reaching the inbox at all proves the key server is reachable, so this is
-        // the honest moment to finish anything the last outage stranded. A drain
-        // failure must not block receiving: the records stay queued for the next
-        // poll.
-        let _ = drain_osl_chat_send_queue(core);
-        drain_peer_inbox_text(
-            core,
-            security_state,
-            broker,
-            &context_token,
-            None,
-            false,
-            capture_protection_ready,
-        )
-    })
-}
-
-const OSL_CHAT_UNPROTECTED_MODE_REFUSAL: &str = "OSL Chat refused unprotected mode";
-
-fn open_capture_gated_private_message_queue<F>(
-    capture_protection_ready: bool,
-    open_queue: F,
-) -> Result<OpenedNativeOverlayTextBatch, String>
-where
-    F: FnOnce() -> Result<OpenedNativeOverlayTextBatch, String>,
-{
-    if !capture_protection_ready {
-        return Err(OSL_CHAT_UNPROTECTED_MODE_REFUSAL.to_owned());
-    }
-    open_queue()
+    // Reaching the inbox at all proves the key server is reachable, so this is
+    // the honest moment to finish anything the last outage stranded. A drain
+    // failure must not block receiving: the records stay queued for the next
+    // poll.
+    let _ = drain_osl_chat_send_queue(core);
+    drain_peer_inbox_text(
+        core,
+        security_state,
+        broker,
+        &context_token,
+        None,
+        false,
+        capture_protection_ready,
+    )
 }
 
 /// Fetch the active peer's control rows through the signed sender-filtered
@@ -5495,90 +4836,6 @@ fn retained_attachment_control_inbox_refusal(
     }
 }
 
-pub const RECEIVE_CONVERSATION_PERMISSION_CHECK_STAGE: &str = "receive-conversation-permission-check";
-
-pub fn receive_conversation_not_allowed_refusal(place_name: &str) -> String {
-    format!("OSL cannot receive protected messages in unallowed place: {place_name}")
-}
-
-fn receive_conversation_allowed_from_rules(conversation_id: &str) -> Result<bool, String> {
-    use ipc::whitelist_rules_store::{
-        WhitelistConversationDecision, WhitelistRulesStoreError,
-    };
-
-    let config_dir =
-        keystore::osl_config_dir().map_err(|_| "OSL account storage is unavailable".to_owned())?;
-    match ipc::whitelist_rules_store::lookup_whitelist_rule(&config_dir, conversation_id) {
-        Ok(WhitelistConversationDecision::Allowed) => Ok(true),
-        Ok(WhitelistConversationDecision::Denied | WhitelistConversationDecision::Ask) => Ok(false),
-        Err(WhitelistRulesStoreError::Fs(error))
-            if error.kind() == std::io::ErrorKind::NotFound =>
-        {
-            Ok(true)
-        }
-        Err(_) => Err("OSL could not receive protected messages".to_owned()),
-    }
-}
-
-fn require_receive_conversation_admission(
-    core: &HubCoreState,
-    manual: &ManualPeerContext,
-    context: &HubConversationContext,
-    place_name: &str,
-) -> Result<ManualPeerBinding, String> {
-    let verified = security::require_manual_peer_scope_approved(
-        core,
-        &manual.service_id,
-        &manual.account_id,
-        manual.person_id.clone(),
-        manual.scope.clone(),
-    )?;
-    if !receive_conversation_allowed_from_rules(&context.conversation_id)? {
-        return Err(receive_conversation_not_allowed_refusal(place_name));
-    }
-    Ok(verified)
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ReceiveConversationPermissionProbe {
-    pub conversation_id: String,
-    pub place_name: String,
-    pub friend_approved: bool,
-    pub waiting_message_id: String,
-}
-
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct ReceiveConversationPermissionProbeReport {
-    pub opened_message_ids: Vec<String>,
-    pub refusals: Vec<String>,
-    pub permission_checks_before_read: usize,
-    pub permission_checks_after_read: usize,
-    pub allowed_reads: usize,
-    pub refused_reads: usize,
-}
-
-pub fn receive_conversation_permission_probe(
-    conversations: &[ReceiveConversationPermissionProbe],
-    allowed_conversations: &HashSet<String>,
-) -> ReceiveConversationPermissionProbeReport {
-    let mut report = ReceiveConversationPermissionProbeReport::default();
-    for conversation in conversations {
-        report.permission_checks_before_read += 1;
-        let admitted = conversation.friend_approved
-            && allowed_conversations.contains(&conversation.conversation_id);
-        if admitted {
-            report.opened_message_ids.push(conversation.waiting_message_id.clone());
-            report.allowed_reads += 1;
-        } else {
-            report
-                .refusals
-                .push(receive_conversation_not_allowed_refusal(&conversation.place_name));
-        }
-        report.permission_checks_after_read = report.permission_checks_before_read;
-    }
-    report
-}
-
 fn drain_peer_inbox_text(
     core: &HubCoreState,
     security_state: &HubSecurityState,
@@ -5590,21 +4847,8 @@ fn drain_peer_inbox_text(
 ) -> Result<OpenedNativeOverlayTextBatch, String> {
     let manual = broker.manual_peer_for(context_token)?;
     let context = broker.context_for(context_token)?;
-    security::require_person_not_blocked(&manual.person_id)?;
     let display = security::scope_security(manual.scope.clone())?;
     let allow_messages = display.decrypt_display_enabled;
-    if !allow_messages {
-        return Ok(OpenedNativeOverlayTextBatch {
-            messages: Vec::new(),
-            pending_view_once: Vec::new(),
-            acknowledgments: Vec::new(),
-            fetched: 0,
-            decrypt_display_enabled: false,
-            deferred_rows: 0,
-            unrecognized_wire_rows: 0,
-            content_gone_rows: 0,
-        });
-    }
     // The conversation this drain is bound to, named the way the burn ledger
     // names it. `scope_security` above has already refused an unconvertible
     // scope, so this cannot fail for a drain that got this far.
@@ -5616,11 +4860,12 @@ fn drain_peer_inbox_text(
     let burn_storage_key = burn_scope.storage_key();
     let scope_id = native_overlay_relay_scope_id(&context.conversation_id)
         .map_err(|_| "OSL could not receive protected messages".to_owned())?;
-    let verified = require_receive_conversation_admission(
+    let verified = security::require_manual_peer_scope_approved(
         core,
-        &manual,
-        &context,
-        &context.conversation_id,
+        &manual.service_id,
+        &manual.account_id,
+        manual.person_id.clone(),
+        manual.scope.clone(),
     )?;
     let (identity, client) = keyserver_transport(core)?;
     let page = fetch_peer_control_inbox(&identity, &client, &manual.peer_osl_user_id)
@@ -5644,7 +4889,6 @@ fn drain_peer_inbox_text(
     // empty inbox.  The row is retained: this build cannot authenticate and
     // consume it, but a compatible build may be able to after an update.
     let mut unrecognized_wire_rows = 0u32;
-    let mut content_gone_rows = 0u32;
     for item in items {
         // Unrelated inbox traffic must never consume this bounded display
         // budget. Stop only after 64 messages for this exact friend/scope were
@@ -5816,7 +5060,9 @@ fn drain_peer_inbox_text(
             acknowledgments.push(receipt);
             continue;
         }
-        if messages.len().saturating_add(pending_view_once.len()) >= MAX_NATIVE_OVERLAY_OPEN_BATCH
+        if !allow_messages
+            || messages.len().saturating_add(pending_view_once.len())
+                >= MAX_NATIVE_OVERLAY_OPEN_BATCH
         {
             continue;
         }
@@ -5874,8 +5120,6 @@ fn drain_peer_inbox_text(
             Err(failure) => {
                 if failure.retryable() {
                     deferred_rows = deferred_rows.saturating_add(1);
-                } else if failure == PeerProsePointerFailure::PointerBlobGone {
-                    content_gone_rows = content_gone_rows.saturating_add(1);
                 }
                 continue;
             }
@@ -6071,9 +5315,6 @@ fn drain_peer_inbox_text(
                     pending_view_once.push(PendingNativeOverlayText {
                         message_id: payload.message_id,
                         expires_at: payload.expires_at,
-                        display_duration_seconds: payload
-                            .display_duration_seconds
-                            .unwrap_or(DEFAULT_VIEW_ONCE_DISPLAY_DURATION_SECONDS),
                         person_to_person_e2ee: true,
                     });
                 }
@@ -6161,7 +5402,6 @@ fn drain_peer_inbox_text(
             context_verified: true,
             person_to_person_e2ee: true,
             view_once_consumed: payload.view_once,
-            display_duration_seconds: payload.display_duration_seconds,
             created_at: payload.created_at,
             expires_at: payload.expires_at,
         });
@@ -6234,10 +5474,6 @@ fn drain_peer_inbox_text(
                     pending_view_once.push(PendingNativeOverlayText {
                         message_id: logical_message_id,
                         expires_at: group.template.expires_at,
-                        display_duration_seconds: group
-                            .template
-                            .display_duration_seconds
-                            .unwrap_or(DEFAULT_VIEW_ONCE_DISPLAY_DURATION_SECONDS),
                         person_to_person_e2ee: true,
                     });
                 }
@@ -6343,7 +5579,6 @@ fn drain_peer_inbox_text(
                 context_verified: true,
                 person_to_person_e2ee: true,
                 view_once_consumed: logical.view_once,
-                display_duration_seconds: logical.display_duration_seconds,
                 created_at: logical.created_at,
                 expires_at: logical.expires_at,
             });
@@ -6381,107 +5616,16 @@ fn drain_peer_inbox_text(
         decrypt_display_enabled: allow_messages,
         deferred_rows,
         unrecognized_wire_rows,
-        content_gone_rows,
     })
 }
 
 pub fn load_osl_chat_history(
     core: &HubCoreState,
     broker: &HubBrokerState,
-) -> Result<Vec<ipc::commands::StoredMessageDto>, String> {
-    let channel_id = active_osl_chat_history_channel(core, broker)?;
-    ipc::commands::cmd_osl_load_channel_history(&core.osl, channel_id, Some(200))
-}
-
-pub fn search_osl_chat_history(
-    core: &HubCoreState,
-    broker: &HubBrokerState,
-    query: String,
-) -> Result<Vec<OslChatHistorySearchResult>, String> {
-    if query.is_empty() || query.len() > 4_096 {
-        return Err("OSL Chat history search query is invalid".to_owned());
-    }
-    let rows = load_ordered_osl_chat_history(core, broker, OSL_CHAT_HISTORY_SEARCH_CAP)?;
-    let mut results = Vec::new();
-    for (index, message) in rows.into_iter().enumerate() {
-        if !message.plaintext.contains(&query) {
-            continue;
-        }
-        results.push(OslChatHistorySearchResult {
-            result_id: osl_chat_history_result_id(&message.discord_message_id),
-            position: u32::try_from(index + 1).unwrap_or(u32::MAX),
-            message,
-        });
-        if results.len() == OSL_CHAT_HISTORY_SEARCH_RESULT_LIMIT {
-            break;
-        }
-    }
-    Ok(results)
-}
-
-pub fn open_osl_chat_history_result(
-    core: &HubCoreState,
-    broker: &HubBrokerState,
-    result_id: String,
-) -> Result<OslChatHistoryOpenResult, String> {
-    let message_id = message_id_from_osl_chat_history_result(&result_id)?;
-    let rows = load_ordered_osl_chat_history(core, broker, OSL_CHAT_HISTORY_SEARCH_CAP)?;
-    let total_messages = u32::try_from(rows.len()).unwrap_or(u32::MAX);
-    let Some(index) = rows
-        .iter()
-        .position(|message| message.discord_message_id == message_id)
-    else {
-        return Err("OSL Chat history result is no longer in this conversation".to_owned());
-    };
-    Ok(OslChatHistoryOpenResult {
-        result_id,
-        position: u32::try_from(index + 1).unwrap_or(u32::MAX),
-        total_messages,
-        previous: index
-            .checked_sub(1)
-            .and_then(|previous| rows.get(previous).cloned()),
-        message: rows[index].clone(),
-        next: rows.get(index + 1).cloned(),
-    })
-    Ok(
-        load_osl_chat_visible_records(core, broker, OslChatHistoryVisibilityFilter::default())?
-            .visible_records,
-    )
-}
-
-pub fn load_osl_chat_visible_records(
-    core: &HubCoreState,
-    broker: &HubBrokerState,
-    filter: OslChatHistoryVisibilityFilter,
-) -> Result<OslChatVisibleRecordsResult, String> {
-    load_osl_chat_history_with_visibility(core, broker, false)
-}
-
-pub fn filter_osl_chat_history_visibility(
-    rows: Vec<ipc::commands::StoredMessageDto>,
-    self_osl_user_id: &str,
-    hide_others_messages: bool,
-) -> Vec<ipc::commands::StoredMessageDto> {
-    if hide_others_messages {
-        rows.into_iter()
-            .filter(|row| row.sender_osl_user_id == self_osl_user_id)
-            .collect()
-    } else {
-        rows
-    }
-}
-
-pub fn load_osl_chat_history_with_visibility(
-    core: &HubCoreState,
-    broker: &HubBrokerState,
-    hide_others_messages: bool,
-) -> Result<Vec<ipc::commands::StoredMessageDto>, String> {
 ) -> Result<Vec<OslChatHistoryRow>, String> {
     let context_token = broker.active_osl_chat_context_token()?;
     let context = broker.context_for(&context_token)?;
     let manual = broker.manual_peer_for(&context_token)?;
-    let context = broker.context_for(&context_token)?;
-    security::require_person_not_blocked(&manual.person_id)?;
     let display = security::scope_security(manual.scope.clone())?;
     if !display.decrypt_display_enabled {
         return Err("Turn on decrypted text for this conversation before opening it".to_owned());
@@ -6493,13 +5637,9 @@ pub fn load_osl_chat_history_with_visibility(
         manual.person_id,
         manual.scope.clone(),
     )?;
-    query_osl_chat_visible_records(
-        core,
     let rows = ipc::commands::cmd_osl_load_channel_history(
         &core.osl,
         scope_storage_key(&manual.scope)?,
-        &context.self_osl_id,
-        filter,
         Some(200),
     )?;
     let (identity, file_key) = local_protected_identity(core, &context)?;
@@ -6574,172 +5714,6 @@ pub fn remove_osl_chat_reaction(
         &identity.user_id,
         &emoji,
     )
-    .map(|rows| {
-        filter_osl_chat_history_visibility(rows, &context.self_osl_id, hide_others_messages)
-    })
-}
-
-pub fn burn_osl_chat_history(
-    core: &HubCoreState,
-    broker: &HubBrokerState,
-    choice: OslChatBurnChoice,
-    hide_others_messages: bool,
-) -> Result<OslChatBurnResult, String> {
-    let context_token = broker.active_osl_chat_context_token()?;
-    let manual = broker.manual_peer_for(&context_token)?;
-    let context = broker.context_for(&context_token)?;
-    if context.service_id != "osl-chat" || context.account_id != "osl-main" {
-        return Err("OSL Chat burn requires the active OSL Chat context".to_owned());
-    }
-    let channel_id = scope_storage_key(&manual.scope)?;
-    let guard = core
-        .osl
-        .message_store
-        .lock()
-        .map_err(|_| "OSL Chat history is unavailable".to_owned())?;
-    let Some(store) = guard.as_ref() else {
-        return Ok(OslChatBurnResult {
-            choice,
-            messages_before: 0,
-            messages_after: 0,
-            rows_destroyed: 0,
-            your_rows_destroyed: 0,
-            their_rows_destroyed: 0,
-            others_rows_destroyed: 0,
-            others_messages_hidden: hide_others_messages,
-            local_cleanup_complete: true,
-            recipient_copies_deleted: false,
-        });
-    };
-    let messages_before = store
-        .count_live_by_channel(&channel_id, None)
-        .map_err(|error| format!("OSL Chat history: {error}"))?;
-    let mut your_rows_destroyed = 0usize;
-    let mut their_rows_destroyed = 0usize;
-    match choice {
-        OslChatBurnChoice::YourSide => {
-            your_rows_destroyed = store
-                .wipe_wrapped_keys_in_scope("dm", &channel_id, Some(&context.self_osl_id))
-                .map_err(|error| format!("OSL Chat burn: {error}"))?;
-        }
-        OslChatBurnChoice::TheirSide => {
-            their_rows_destroyed = store
-                .wipe_wrapped_keys_in_scope("dm", &channel_id, Some(&manual.peer_osl_user_id))
-                .map_err(|error| format!("OSL Chat burn: {error}"))?;
-        }
-        OslChatBurnChoice::BothSides => {
-            your_rows_destroyed = store
-                .wipe_wrapped_keys_in_scope("dm", &channel_id, Some(&context.self_osl_id))
-                .map_err(|error| format!("OSL Chat burn: {error}"))?;
-            their_rows_destroyed = store
-                .wipe_wrapped_keys_in_scope("dm", &channel_id, Some(&manual.peer_osl_user_id))
-                .map_err(|error| format!("OSL Chat burn: {error}"))?;
-        }
-    }
-    let messages_after = store
-        .count_live_by_channel(&channel_id, None)
-        .map_err(|error| format!("OSL Chat history: {error}"))?;
-    let rows_destroyed = your_rows_destroyed.saturating_add(their_rows_destroyed);
-    Ok(OslChatBurnResult {
-        choice,
-        messages_before,
-        messages_after,
-        rows_destroyed,
-        your_rows_destroyed,
-        their_rows_destroyed,
-        others_rows_destroyed: 0,
-        others_messages_hidden: hide_others_messages,
-        local_cleanup_complete: messages_before.saturating_sub(messages_after) == rows_destroyed,
-        recipient_copies_deleted: false,
-    })
-}
-
-pub fn query_osl_chat_visible_records(
-    core: &HubCoreState,
-    channel_id: String,
-    owner_osl_user_id: &str,
-    filter: OslChatHistoryVisibilityFilter,
-    limit: Option<u32>,
-) -> Result<OslChatVisibleRecordsResult, String> {
-    if owner_osl_user_id.is_empty() || owner_osl_user_id.len() > 160 {
-        return Err("OSL Chat history owner is invalid".to_owned());
-    }
-    let stored = ipc::commands::cmd_osl_load_channel_history(&core.osl, channel_id, limit)?;
-    Ok(query_osl_chat_visible_records_from_stored(
-        stored,
-        owner_osl_user_id,
-        filter,
-    ))
-}
-
-pub fn query_osl_chat_visible_records_from_stored(
-    stored: Vec<ipc::commands::StoredMessageDto>,
-    owner_osl_user_id: &str,
-    filter: OslChatHistoryVisibilityFilter,
-) -> OslChatVisibleRecordsResult {
-    let stored_recipient_records: Vec<_> = stored
-        .iter()
-        .filter(|record| is_recipient_authored_record(record, owner_osl_user_id))
-        .cloned()
-        .collect();
-    let visible_records: Vec<_> = stored
-        .into_iter()
-        .filter(|record| {
-            !filter.hide_recipient_authored
-                || !is_recipient_authored_record(record, owner_osl_user_id)
-        })
-        .collect();
-    OslChatVisibleRecordsResult {
-        visible_record_count: visible_records.len(),
-        stored_recipient_record_count: stored_recipient_records.len(),
-        visible_records,
-        stored_recipient_records,
-        hide_recipient_authored: filter.hide_recipient_authored,
-    }
-}
-
-fn is_recipient_authored_record(
-    record: &ipc::commands::StoredMessageDto,
-    owner_osl_user_id: &str,
-) -> bool {
-    !record.burned && record.sender_osl_user_id != owner_osl_user_id
-}
-
-pub fn burn_active_osl_chat_both_sides(
-    core: &HubCoreState,
-    broker: &HubBrokerState,
-    context_token: &str,
-) -> Result<OslChatBothSidesBurnResult, String> {
-    if broker.active_osl_chat_context_token()? != context_token {
-        return Err("OSL Chat burn requires the active conversation".to_owned());
-    }
-    let manual = broker.manual_peer_for(context_token)?;
-    if manual.service_id != "osl-chat" || manual.account_id != "osl-main" {
-        return Err("OSL Chat burn requires a first-party OSL Chat conversation".to_owned());
-    }
-    let channel_id = scope_storage_key(&manual.scope)?;
-    let rows_destroyed = core
-        .osl
-        .message_store
-        .lock()
-        .map_err(|_| "OSL message store is unavailable".to_owned())?
-        .as_ref()
-        .map(|store| {
-            store
-                .delete_messages_in_channel(&channel_id)
-                .map_err(|_| "OSL Chat history could not be securely deleted".to_owned())
-        })
-        .transpose()?
-        .unwrap_or(0);
-    Ok(OslChatBothSidesBurnResult {
-        choice: OSL_CHAT_BOTH_SIDES_BURN_CHOICE,
-        rows_destroyed,
-        status: if rows_destroyed == 0 {
-            OSL_CHAT_BOTH_SIDES_ALREADY_GONE
-        } else {
-            OSL_CHAT_BOTH_SIDES_BURNED
-        },
-    })
 }
 
 pub fn begin_native_overlay_attachment(
@@ -6785,7 +5759,6 @@ fn begin_peer_attachment(
     osl_chat: bool,
 ) -> Result<NativeOverlayAttachmentSealPlan, String> {
     const ERROR: &str = "OSL could not prepare this private attachment";
-    require_view_once_message_creation_allowed(core, view_once)?;
     let context_token = if osl_chat {
         broker.active_osl_chat_context_token()?
     } else {
@@ -6793,7 +5766,6 @@ fn begin_peer_attachment(
     };
     let manual = broker.manual_peer_for(&context_token)?;
     let context = broker.context_for(&context_token)?;
-    security::require_person_not_blocked(&manual.person_id)?;
     security::require_manual_peer_scope_approved(
         core,
         &manual.service_id,
@@ -6807,16 +5779,7 @@ fn begin_peer_attachment(
     if view_once {
         crate::view_once_eligibility::require_view_once_attachment_eligibility(&mime_type)?;
     }
-    let tier = active_attachment_account_tier(core)?;
-    if crate::attachment_limits::check_attachment_request(plaintext_size, 1, tier).is_err() {
-        return Err(ERROR.to_owned());
-    }
-    let plaintext_limit = if osl_chat {
-        crate::osl_chat_file_limits::current_osl_chat_file_size_limit(core).max_bytes
-    } else {
-        ipc::attachment_wire::MAX_STREAMED_ATTACHMENT_BYTES
-    };
-    if plaintext_size == 0 || plaintext_size > plaintext_limit {
+    if plaintext_size == 0 || plaintext_size > ipc::attachment_wire::MAX_STREAMED_ATTACHMENT_BYTES {
         return Err(ERROR.to_owned());
     }
     let ttl_seconds = security::scope_security(manual.scope.clone())
@@ -6851,22 +5814,6 @@ fn begin_peer_attachment(
         peer_osl_user_id: manual.peer_osl_user_id,
         conversation_binding: context.conversation_id,
         self_osl_user_id: context.self_osl_id,
-    })
-}
-
-fn active_attachment_account_tier(
-    core: &HubCoreState,
-) -> Result<crate::attachment_limits::AttachmentAccountTier, String> {
-    let license = core
-        .osl
-        .license_state
-        .lock()
-        .map_err(|_| "OSL activation state is unavailable".to_owned())?;
-    Ok(match license.state {
-        keystore::LicenseState::Paid | keystore::LicenseState::PaidOfflineGrace => {
-            crate::attachment_limits::AttachmentAccountTier::Pro
-        }
-        keystore::LicenseState::Free => crate::attachment_limits::AttachmentAccountTier::Free,
     })
 }
 
@@ -6933,7 +5880,6 @@ fn deliver_peer_attachment(
     };
     let manual = broker.manual_peer_for(&context_token)?;
     let context = broker.context_for(&context_token)?;
-    security::require_person_not_blocked(&manual.person_id)?;
     let verified = security::require_manual_peer_scope_approved(
         core,
         &manual.service_id,
@@ -7104,7 +6050,6 @@ fn native_overlay_attachment_plans(
     };
     let manual = broker.manual_peer_for(&context_token)?;
     let context = broker.context_for(&context_token)?;
-    security::require_person_not_blocked(&manual.person_id).map_err(|_| ERROR.to_owned())?;
     let decrypt_display_enabled = security::scope_security(manual.scope.clone())
         .map_err(|_| ERROR.to_owned())?
         .decrypt_display_enabled;
@@ -7256,7 +6201,6 @@ fn commit_peer_attachment_open(
         broker.active_native_manual_context_token()?
     };
     let manual = broker.manual_peer_for(&context_token)?;
-    security::require_person_not_blocked(&manual.person_id).map_err(|_| ERROR.to_owned())?;
     security::require_manual_peer_scope_approved(
         core,
         &manual.service_id,
@@ -7909,11 +6853,6 @@ fn encode_peer_protected_chunk(payload: &PeerProtectedPayload) -> Result<Vec<u8>
         (None, None) => {}
         _ => return Err("OSL could not prepare a single manual peer message".to_owned()),
     }
-    if let Some(seconds) = payload.display_duration_seconds {
-        let seconds = u16::try_from(seconds)
-            .map_err(|_| "OSL could not prepare a single manual peer message".to_owned())?;
-        encoded.extend_from_slice(&seconds.to_be_bytes());
-    }
     Ok(encoded)
 }
 
@@ -7949,19 +6888,12 @@ fn decode_peer_protected_chunk(encoded: &[u8]) -> Result<PeerProtectedPayload, S
     let logical_message_id = read_bounded_utf8(encoded, &mut offset, 96)?;
     let whole_sha256 = read_bounded_utf8(encoded, &mut offset, 64)?;
     let plaintext = read_bounded_utf8(encoded, &mut offset, MAX_NATIVE_OVERLAY_CHUNK_BYTES)?;
-    let (send_seq, scope_commitment) = if offset == encoded.len()
-        || encoded.len().saturating_sub(offset) == std::mem::size_of::<u16>()
-    {
+    let (send_seq, scope_commitment) = if offset == encoded.len() {
         (None, None)
     } else {
         let send_seq = read_u64(encoded, &mut offset)?;
         let scope_commitment = read_bounded_utf8(encoded, &mut offset, 64)?;
         (Some(send_seq), Some(scope_commitment))
-    };
-    let display_duration_seconds = if offset == encoded.len() {
-        None
-    } else {
-        Some(u64::from(read_u16(encoded, &mut offset)?))
     };
     if offset != encoded.len() {
         return Err(ERROR.to_owned());
@@ -7979,7 +6911,6 @@ fn decode_peer_protected_chunk(encoded: &[u8]) -> Result<PeerProtectedPayload, S
         recipient_osl_user_id,
         plaintext,
         view_once,
-        display_duration_seconds,
         require_capture_protection,
         logical_message_id: Some(logical_message_id),
         chunk_index: Some(chunk_index),
@@ -8092,9 +7023,10 @@ enum PeerWireOrientation {
     PeerToSelf,
     /// Outbound. This identity wrote it to the verified peer.
     ///
-    /// Recoverable because OSL includes this identity in the v3 recipient slots
-    /// when it builds the wire, so the operator's own X25519/ML-KEM keys open
-    /// their own sent message. Nothing is stored in the clear to make this work.
+    /// Recoverable because OSL addresses every outbound peer message to TWO
+    /// recipient slots -- this identity's and the peer's -- when it builds the
+    /// wire, so the operator's own X25519/ML-KEM keys open their own sent
+    /// message. Nothing is stored in the clear to make this work.
     SelfToPeer,
 }
 
@@ -8203,11 +7135,7 @@ fn validate_oriented_peer_protected_payload(
             && payload.chunk_count.is_none()
             && payload.whole_sha256.is_none()
     };
-    let display_duration_valid =
-        selected_view_once_display_duration(payload.view_once, payload.display_duration_seconds)
-            .is_ok();
     if !chunk_valid
-        || !display_duration_valid
         || !valid_message_id
         || payload.created_at <= 0
         || payload.expires_at <= payload.created_at
@@ -8267,7 +7195,6 @@ fn native_text_group_key(payload: &PeerProtectedPayload) -> Option<NativeTextGro
         sender_osl_user_id: payload.sender_osl_user_id.clone(),
         recipient_osl_user_id: payload.recipient_osl_user_id.clone(),
         view_once: payload.view_once,
-        display_duration_seconds: payload.display_duration_seconds,
         require_capture_protection: payload.require_capture_protection,
     })
 }
@@ -8300,7 +7227,6 @@ fn same_native_text_group(left: &PeerProtectedPayload, right: &PeerProtectedPayl
         && left.sender_osl_user_id == right.sender_osl_user_id
         && left.recipient_osl_user_id == right.recipient_osl_user_id
         && left.view_once == right.view_once
-        && left.display_duration_seconds == right.display_duration_seconds
         && left.require_capture_protection == right.require_capture_protection
         && left.logical_message_id == right.logical_message_id
         && left.chunk_count == right.chunk_count
@@ -8377,10 +7303,6 @@ fn native_text_group_whole(
 /// Nothing here is derived from content, and none of these values is logged.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PeerProsePointerFailure {
-    /// The provider row names a sender that is not the accepted friend bound to
-    /// the active receive context. This is checked before token recovery so a
-    /// stranger row cannot trigger a cipher-store fetch.
-    NotFriend,
     /// The cover carried no prose token for this conversation's scope.
     ///
     /// Cheap and permanent: ordinary chat looks exactly like this, the check is
@@ -8421,7 +7343,6 @@ impl PeerProsePointerFailure {
 
     fn user_message(self) -> String {
         match self {
-            Self::NotFriend => "OSL sender is not a friend".to_owned(),
             // A store outage is the one refusal the operator can act on and the
             // one that will clear itself, so it is the one that gets its own
             // sentence. It names no row, no cover and no message.
@@ -8921,14 +7842,20 @@ fn verify_inspected_manual_v3(
     peer_public: &[u8; 32],
     expected_sender: &[u8; 32],
 ) -> Result<(), ()> {
-    if !constant_time_eq_32(&inspected.sender_ik, expected_sender)
+    if inspected.recipient_hashes.len() != 2
+        || !constant_time_eq_32(&inspected.sender_ik, expected_sender)
         || constant_time_eq_32(self_public, peer_public)
     {
         return Err(());
     }
     let self_hash =
         ipc::wire_v2::pubkey_hash_prefix(&crypto::x25519::PublicKey::from_bytes(*self_public));
-    if !inspected.recipient_hashes.contains(&self_hash) {
+    let peer_hash =
+        ipc::wire_v2::pubkey_hash_prefix(&crypto::x25519::PublicKey::from_bytes(*peer_public));
+    let first = inspected.recipient_hashes[0];
+    let second = inspected.recipient_hashes[1];
+    if !((first == self_hash && second == peer_hash) || (first == peer_hash && second == self_hash))
+    {
         return Err(());
     }
     Ok(())
@@ -9157,47 +8084,6 @@ pub fn prepare_peer_attachment_fanout(
     .map(|copies| copies.into_iter().map(|copy| copy.copy).collect())
 }
 
-pub fn cmd_clipboard_image_attachment_tray(
-    image_bytes: &[u8],
-    mime_type: &str,
-    view_once: bool,
-) -> Result<ClipboardImageAttachmentTrayResult, String> {
-    const ERROR: &str = "OSL could not read the pasted clipboard image";
-    let (original_filename, expected_mime) = match mime_type {
-        "image/png" => ("clipboard-image.png", "image/png"),
-        "image/jpeg" => ("clipboard-image.jpg", "image/jpeg"),
-        _ => return Err(ERROR.to_owned()),
-    };
-    if image_bytes.is_empty()
-        || image_bytes.len() as u64 > ipc::attachment_wire::MAX_STREAMED_ATTACHMENT_BYTES
-        || validate_peer_attachment_filename(original_filename).as_deref() != Ok(expected_mime)
-    {
-        return Err(ERROR.to_owned());
-    }
-    let has_png_signature = image_bytes.starts_with(b"\x89PNG\r\n\x1a\n");
-    let has_jpeg_signature = image_bytes.len() >= 4
-        && image_bytes[0] == 0xff
-        && image_bytes[1] == 0xd8
-        && image_bytes[2] == 0xff;
-    if (expected_mime == "image/png" && !has_png_signature)
-        || (expected_mime == "image/jpeg" && !has_jpeg_signature)
-    {
-        return Err(ERROR.to_owned());
-    }
-    let record = ClipboardImageAttachmentTrayRecord {
-        attachment_id: random_peer_message_id(),
-        original_filename: original_filename.to_owned(),
-        mime_type: expected_mime.to_owned(),
-        plaintext_size: image_bytes.len() as u64,
-        checked: true,
-        view_once,
-    };
-    Ok(ClipboardImageAttachmentTrayResult {
-        tray_count: 1,
-        records: vec![record],
-    })
-}
-
 fn prepare_peer_attachment_at(
     core: &HubCoreState,
     broker: &HubBrokerState,
@@ -9209,7 +8095,6 @@ fn prepare_peer_attachment_at(
 ) -> Result<PreparedPeerAttachment, String> {
     const PREPARE_ERROR: &str = "OSL could not prepare a single manual peer attachment";
     let manual = broker.manual_peer_for(context_token)?;
-    security::require_person_not_blocked(&manual.person_id)?;
     let verified = security::require_manual_peer_scope_approved(
         core,
         &manual.service_id,
@@ -9320,7 +8205,6 @@ pub fn open_peer_attachment(
     if sender_person_id != manual.person_id {
         return Err(OPEN_ERROR.to_owned());
     }
-    security::require_person_not_blocked(&manual.person_id).map_err(|_| OPEN_ERROR.to_owned())?;
     let verified = security::require_manual_peer_scope_approved(
         core,
         &manual.service_id,
@@ -9588,20 +8472,6 @@ pub fn burn_indexed_local_protected_binding(
         &file_key,
         context_binding_sha256,
     )
-}
-
-#[cfg(test)]
-pub fn test_local_protected_binding_count(context_binding_sha256: &str) -> Result<usize, String> {
-    let dir = keystore::osl_config_dir()
-        .map_err(|_| "OSL Privacy account storage is unavailable".to_owned())?;
-    let file_key = ipc::main_password::get_file_storage_key()
-        .ok_or_else(|| "Unlock OSL before reading indexed protected state".to_owned())?;
-    let ledger = load_local_ledger(&dir.join(LOCAL_PROTECTED_FILE), &file_key)?;
-    Ok(ledger
-        .records
-        .values()
-        .filter(|record| record.context_binding == context_binding_sha256)
-        .count())
 }
 
 fn decrypt_local_protected_capsule_in_dir(
@@ -10727,12 +9597,6 @@ fn validate_context(context: &HubConversationContext) -> Result<(), String> {
             return Err("OSL broker participant set contains duplicates".to_owned());
         }
     }
-    if context.conversation_kind == HubConversationKind::Dm {
-        unique.insert(&context.self_osl_id);
-        if unique.len() != 2 {
-            return Err("OSL broker direct messages require exactly two members".to_owned());
-        }
-    }
     Ok(())
 }
 
@@ -10885,106 +9749,6 @@ mod tests {
             keystore::set_active_account_dir(None);
             keystore::set_base_dir_override(None);
         }
-    }
-
-    #[test]
-    fn task_1313_direct_chats_action_creates_group_and_returns_selected_members() {
-        let core = HubCoreState::new_for_test(ipc::AppState::new());
-        let selected_member_ids = vec![
-            "member-zoe-1313".to_owned(),
-            "member-ava-1313".to_owned(),
-            "member-mia-1313".to_owned(),
-        ];
-
-        let created = create_osl_chat_group_conversation(
-            &core,
-            "Chats Command Group".to_owned(),
-            selected_member_ids.clone(),
-        )
-        .expect("direct Chats group action creates group");
-
-        assert_eq!(created.name, "Chats Command Group");
-        assert_eq!(created.scope.kind, ScopeKind::Gc);
-        assert_eq!(created.group_id, created.scope.id);
-        assert_eq!(created.member_count, selected_member_ids.len());
-        for selected_member_id in &selected_member_ids {
-            assert!(
-                created.member_ids.contains(selected_member_id),
-                "created group must return selected member {selected_member_id}"
-            );
-        }
-        let stored_members =
-            ipc::commands::cmd_osl_membership_get(&core.osl, created.group_id.clone())
-                .expect("direct Chats group action writes membership");
-        assert_eq!(stored_members, created.member_ids);
-
-        println!(
-            "TASK_1313_GROUP_CHAT command=create_osl_chat_group_conversation direct_action=broker::create_osl_chat_group_conversation name=\"{}\" kind={:?} group_id={} selected_member_count={} returned_member_count={} returned_member_ids={} stored_member_count={}",
-            created.name,
-            created.scope.kind,
-            created.group_id,
-            selected_member_ids.len(),
-            created.member_count,
-            created.member_ids.join(","),
-            stored_members.len()
-        );
-    }
-
-    #[test]
-    fn task_1326_direct_chats_action_opens_created_thread_and_returns_parent_message() {
-        let core = HubCoreState::new_for_test(ipc::AppState::new());
-
-        let result = reply_to_osl_chat_message_and_open_thread(
-            &core,
-            "task-1326-channel".to_owned(),
-            "task-1326-parent-message".to_owned(),
-            "task-1326-thread".to_owned(),
-        )
-        .expect("direct Chats reply-to-message action opens created thread");
-
-        assert_eq!(result.created_thread.channel_id, "task-1326-channel");
-        assert_eq!(
-            result.created_thread.parent_message_id,
-            "task-1326-parent-message"
-        );
-        assert_eq!(result.created_thread.thread_id, "task-1326-thread");
-        assert_eq!(result.created_thread.thread_count, 1);
-        assert_eq!(result.created_thread.parent_thread_count, 1);
-        assert_eq!(
-            result.opened_thread.thread_id,
-            result.created_thread.thread_id
-        );
-        assert_eq!(
-            result.opened_thread.channel_id,
-            result.created_thread.channel_id
-        );
-        assert_eq!(
-            result.opened_thread.parent_message_id,
-            result.created_thread.parent_message_id
-        );
-        assert_eq!(
-            result.opened_thread.parent_message.message_id,
-            "task-1326-parent-message"
-        );
-        assert_eq!(
-            result.opened_thread.parent_message.channel_id,
-            "task-1326-channel"
-        );
-        assert_eq!(
-            result.opened_thread.parent_message.thread_ids,
-            vec!["task-1326-thread".to_owned()]
-        );
-        assert_eq!(result.opened_thread.parent_message.thread_count, 1);
-
-        println!(
-            "TASK1326 direct_action=broker::reply_to_osl_chat_message_and_open_thread create_command=cmd_osl_create_channel_message_thread open_command=cmd_osl_open_channel_message_thread opened_thread_id={} parent_message_id={} parent_channel_id={} parent_thread_count={} returned_parent_message_id={} returned_parent_thread_ids={}",
-            result.opened_thread.thread_id,
-            result.opened_thread.parent_message_id,
-            result.opened_thread.parent_message.channel_id,
-            result.opened_thread.parent_message.thread_count,
-            result.opened_thread.parent_message.message_id,
-            result.opened_thread.parent_message.thread_ids.join(",")
-        );
     }
 
     #[test]
@@ -11405,52 +10169,6 @@ mod tests {
 
         assert!(receipt.ratchet_wire_in_enabled);
         assert!(!receipt.startup_blockers.contains(&"rn_wire_in_disabled"));
-    }
-
-    #[test]
-    fn task0713_prepared_protected_message_plan_reports_saved_policy_state() {
-        let dir = tempfile::TempDir::new().expect("tempdir");
-        let _serial = crate::GLOBAL_KEYSTORE_TEST_LOCK.lock().unwrap();
-        ipc::main_password::set_file_storage_key(None);
-        keystore::set_active_account_dir(None);
-        keystore::set_base_dir_override(Some(dir.path().to_path_buf()));
-        let _guard = KeystoreGlobalsGuard;
-        let prefs = ipc::app_preferences::AppPreferences {
-            version: ipc::app_preferences::APP_PREFERENCES_VERSION,
-            rn_wire_policy_requested: true,
-            ..ipc::app_preferences::AppPreferences::default()
-        };
-        ipc::app_preferences::write_app_preferences(
-            &dir.path().join("app_preferences.json"),
-            &prefs,
-        )
-        .expect("write saved next-generation message policy");
-
-        let core = HubCoreState::default();
-        assert!(
-            !core.osl.rn_wire_in_enabled(),
-            "fresh core must start from the forced-off default before saved preferences load"
-        );
-        let report = ipc::state_reload::reload_encrypted_state_after_unlock(&core.osl, dir.path())
-            .expect("reload saved app preferences");
-        let plan = discord_qa_b6_preflight(&core);
-
-        let blocker_state = if plan.startup_blockers.contains(&"rn_wire_in_disabled") {
-            "present"
-        } else {
-            "absent"
-        };
-        println!(
-            "TASK0713 prepared_protected_message_plan saved_policy_state={} app_prefs_loaded={} ratchet_wire_in_enabled={} rn_wire_in_disabled_blocker={}",
-            if prefs.rn_wire_policy_requested { "on" } else { "off" },
-            report.app_prefs_loaded,
-            plan.ratchet_wire_in_enabled,
-            blocker_state
-        );
-
-        assert!(report.app_prefs_loaded);
-        assert!(plan.ratchet_wire_in_enabled);
-        assert_eq!(blocker_state, "absent");
     }
 
     #[test]
@@ -12276,10 +10994,7 @@ mod tests {
         widened_server.join().expect("widened audit server exits");
 
         let (legacy_url, legacy_requests, legacy_server) =
-            spawn_control_inbox_test_server_with_floor(
-                &identity,
-                vec![serde_json::json!({ "ok": true })],
-            );
+            spawn_control_inbox_test_server(vec![serde_json::json!({ "ok": true })]);
         let legacy_client =
             keystore::KeyServerClient::new(&legacy_url).expect("build legacy audit client");
         let legacy_error = fetch_peer_control_inbox(&identity, &legacy_client, sender_a)
@@ -12287,16 +11002,10 @@ mod tests {
         assert!(
             legacy_error
                 .to_string()
-                .contains("control-inbox sender-filter capability downgrade refused"),
+                .contains("sender-filter capability unavailable"),
             "legacy capability absence must be an explicit refusal"
         );
         assert_health_request(&legacy_requests.recv().expect("capture legacy health"));
-        assert_sender_filter_floor_request(
-            &legacy_requests
-                .recv()
-                .expect("capture legacy sender-filter floor"),
-            &identity,
-        );
         assert!(
             legacy_requests.try_recv().is_err(),
             "legacy refusal must stop before any unfiltered active-peer GET"
@@ -12431,10 +11140,7 @@ mod tests {
         widened_server.join().expect("widened audit server exits");
 
         let (legacy_url, legacy_requests, legacy_server) =
-            spawn_control_inbox_test_server_with_floor(
-                &identity,
-                vec![serde_json::json!({ "ok": true })],
-            );
+            spawn_control_inbox_test_server(vec![serde_json::json!({ "ok": true })]);
         let legacy_client =
             keystore::KeyServerClient::new(&legacy_url).expect("build legacy audit client");
         let legacy = fetch_peer_control_inbox(&identity, &legacy_client, sender_a)
@@ -12442,18 +11148,10 @@ mod tests {
         assert!(
             legacy
                 .to_string()
-                .contains("control-inbox sender-filter capability downgrade refused"),
+                .contains("sender-filter capability unavailable"),
             "missing sender-filter authority is a refusal, never permission"
-                .contains("HTTP transport error: send GET"),
-            "missing sender-filter authority is a refusal, never permission: {legacy}"
         );
         assert_health_request(&legacy_requests.recv().expect("capture legacy health"));
-        assert_sender_filter_floor_request(
-            &legacy_requests
-                .recv()
-                .expect("capture legacy sender-filter floor"),
-            &identity,
-        );
         assert!(
             legacy_requests.try_recv().is_err(),
             "legacy refusal must stop before an unfiltered active-peer GET"
@@ -12515,19 +11213,8 @@ mod tests {
         let address = listener.local_addr().expect("read test server address");
         let (request_tx, request_rx) = std::sync::mpsc::channel();
         let server = std::thread::spawn(move || {
-            let mut floor_responses_remaining = floor_identity
-                .as_ref()
-                .map(|_| {
-                    responses
-                        .iter()
-                        .filter(|response| response.get("ok").is_some())
-                        .count()
-                })
-                .unwrap_or(0);
             let mut responses = VecDeque::from(responses);
-            while !responses.is_empty() || floor_responses_remaining > 0 {
-            let mut trailing_floor_responses = usize::from(floor_identity.is_some());
-            while !responses.is_empty() || trailing_floor_responses != 0 {
+            while !responses.is_empty() {
                 let (mut stream, _) = listener.accept().expect("accept control-inbox request");
                 stream
                     .set_read_timeout(Some(Duration::from_secs(5)))
@@ -12573,12 +11260,6 @@ mod tests {
                     .expect("record control-inbox request");
 
                 let body = if target.starts_with("/v1/sender-filter-capability-floor/") {
-                    assert!(
-                        floor_responses_remaining > 0,
-                        "unexpected sender-filter floor request"
-                    );
-                    floor_responses_remaining -= 1;
-                    trailing_floor_responses = trailing_floor_responses.saturating_sub(1);
                     let (user_id, ed25519_public) = floor_identity
                         .as_ref()
                         .expect("test floor response has a bound identity");
@@ -12806,15 +11487,6 @@ mod tests {
         }
     }
 
-    fn set_test_license(core: &HubCoreState, state: keystore::LicenseState, raw_status: &str) {
-        *core.osl.license_state.lock().expect("license state lock") = keystore::LicenseStateDto {
-            state,
-            raw_status: raw_status.to_owned(),
-            current_period_end: None,
-            last_validated_at: None,
-        };
-    }
-
     fn native_peer_payload(
         manual: &ManualPeerContext,
         context: &HubConversationContext,
@@ -12835,246 +11507,12 @@ mod tests {
             recipient_osl_user_id: manual.peer_osl_user_id.clone(),
             plaintext: plaintext.to_owned(),
             view_once,
-            display_duration_seconds: None,
             require_capture_protection: true,
             logical_message_id: None,
             chunk_index: None,
             chunk_count: None,
             whole_sha256: None,
         }
-    }
-
-    fn install_license(core: &HubCoreState, state: keystore::LicenseState, raw_status: &str) {
-        *core.osl.license_state.lock().expect("license state lock") = keystore::LicenseStateDto {
-            state,
-            raw_status: raw_status.to_owned(),
-            current_period_end: matches!(
-                state,
-                keystore::LicenseState::Paid | keystore::LicenseState::PaidOfflineGrace
-            )
-            .then_some(9_999_999_999),
-            last_validated_at: Some(1_700_000_000),
-        };
-    }
-
-    fn manual_pair_for_service(service_id: &str, label: &str) -> NativeManualPair {
-        let mut pair = native_manual_pair(label);
-        let conversation_id =
-            manual_dm_channel_binding(service_id, &pair.alice.user_id, &pair.bob.user_id).unwrap();
-        pair.alice_manual.service_id = service_id.to_owned();
-        pair.alice_manual.account_id = if service_id == "osl-chat" {
-            "osl-main".to_owned()
-        } else {
-            format!("{service_id}-alice")
-        };
-        pair.alice_manual.scope.id = format!("{label}-{service_id}-alice-scope");
-        pair.alice_manual.scope.channel_id = Some(conversation_id.clone());
-        pair.alice_context.service_id = service_id.to_owned();
-        pair.alice_context.account_id = pair.alice_manual.account_id.clone();
-        pair.alice_context.conversation_id = conversation_id.clone();
-
-        pair.bob_manual.service_id = service_id.to_owned();
-        pair.bob_manual.account_id = if service_id == "osl-chat" {
-            "osl-main".to_owned()
-        } else {
-            format!("{service_id}-bob")
-        };
-        pair.bob_manual.scope.id = format!("{label}-{service_id}-bob-scope");
-        pair.bob_manual.scope.channel_id = Some(conversation_id.clone());
-        pair.bob_context.service_id = service_id.to_owned();
-        pair.bob_context.account_id = pair.bob_manual.account_id.clone();
-        pair.bob_context.conversation_id = conversation_id;
-        pair
-    }
-
-    #[test]
-    fn task_0593_view_once_create_is_pro_only_and_free_open_stays_allowed_on_current_surfaces() {
-        const SURFACES: &[(&str, &str)] = &[
-            ("discord", "Discord"),
-            ("signal", "Signal"),
-            ("whatsapp", "WhatsApp"),
-            ("telegram", "Telegram"),
-            ("osl-chat", "OSL Chats"),
-        ];
-        const CUT_SURFACES: &[&str] = &["instagram", "snapchat", "x"];
-        let mut named_results = 0usize;
-
-        for (service_id, display_name) in SURFACES {
-            let pair = manual_pair_for_service(service_id, &format!("task0593-{service_id}"));
-            let words = format!("TASK0593 {display_name} view-once exact words");
-            install_license(&pair.core, keystore::LicenseState::Paid, "ACTIVE");
-            *pair.core.osl.identity.lock().unwrap() = Some(pair.alice.clone());
-            require_view_once_create_allowed(&pair.core, true)
-                .expect("paid sender may create view-once");
-            let wire = prepare_direct_manual_v3(
-                &pair.core,
-                &pair.alice_binding,
-                &pair.alice_manual,
-                &pair.alice_context,
-                words.clone(),
-                PeerProtectionPolicy {
-                    view_once: true,
-                    require_capture_protection: true,
-                    created_at: 1_700_000_000,
-                    expires_at: 1_700_003_600,
-                    send_order: None,
-                },
-                format!("peer-{:032x}", named_results + 1),
-                None,
-            )
-            .expect("paid sender creates one view-once message");
-            println!(
-                "TASK0593_RESULT_PRO_CREATE surface={service_id} name={display_name} view_once=true words={words}"
-            );
-            named_results += 1;
-
-            install_license(&pair.core, keystore::LicenseState::Free, "Unconfigured");
-            *pair.core.osl.identity.lock().unwrap() = Some(pair.bob.clone());
-            let refusal = require_view_once_create_allowed(&pair.core, true)
-                .expect_err("free sender must be refused before create");
-            assert!(
-                refusal.contains("OSL-TIER-BLOCKED:")
-                    && refusal.contains("paid_feature_required")
-                    && refusal.contains("view-once messages"),
-                "{refusal}"
-            );
-            println!(
-                "TASK0593_RESULT_FREE_CREATE_REFUSED surface={service_id} name={display_name} refusal={refusal}"
-            );
-            named_results += 1;
-
-            let opened = decrypt_direct_manual_v3(
-                &pair.core,
-                &pair.bob_binding,
-                ManualWireSender::Peer,
-                &wire,
-            )
-            .expect("free recipient opens the paid view-once wire");
-            validate_peer_protected_payload(
-                &opened,
-                &pair.bob_manual,
-                &pair.bob_context,
-                1_700_000_001,
-            )
-            .expect("free recipient validates the paid view-once payload");
-            assert_eq!(opened.plaintext, words);
-            assert!(opened.view_once);
-            println!(
-                "TASK0593_RESULT_FREE_OPEN surface={service_id} name={display_name} view_once=true words={}",
-                opened.plaintext
-            );
-            named_results += 1;
-        }
-
-        println!("TASK0593_CURRENT_CHAT_SURFACES={}", SURFACES.len() - 1);
-        println!("TASK0593_CURRENT_NAMED_RESULTS={named_results}");
-        println!("TASK0593_REQUESTED_NAMED_RESULTS=24");
-        for cut in CUT_SURFACES {
-            assert!(
-                service_manifest(cut).is_err(),
-                "cut surface {cut} must not be silently counted as a chat app"
-            );
-            println!("TASK0593_CUT_SURFACE surface={cut} reason=owner-ruling-2026-08-05");
-        }
-        assert_eq!(named_results, 15);
-    }
-
-    #[test]
-    fn task_0590_view_once_creation_is_pro_only_and_free_count_stays_zero() {
-        let pro = native_manual_pair("task0590-pro");
-        set_test_license(&pro.core, keystore::LicenseState::Paid, "ACTIVE");
-        let mut pro_created_count = 0usize;
-        let pro_wire = prepare_direct_manual_v3(
-            &pro.core,
-            &pro.alice_binding,
-            &pro.alice_manual,
-            &pro.alice_context,
-            "TASK0590 pro view-once direct command".to_owned(),
-            PeerProtectionPolicy {
-                view_once: true,
-                require_capture_protection: true,
-                created_at: 1_700_000_590,
-                expires_at: 1_700_004_190,
-                send_order: None,
-            },
-            "peer-task0590pro000000000000000000".to_owned(),
-            None,
-        )
-        .map(|wire| {
-            pro_created_count += 1;
-            wire
-        })
-        .expect("Pro account creates a view-once message");
-        let pro_payload = decrypt_direct_manual_v3(
-            &pro.core,
-            &pro.alice_binding,
-            ManualWireSender::SelfIdentity,
-            &pro_wire,
-        )
-        .expect("Pro-created wire decrypts to the protected payload");
-        assert!(pro_payload.view_once);
-        assert_eq!(pro_created_count, 1);
-
-        let free = native_manual_pair("task0590-free");
-        set_test_license(&free.core, keystore::LicenseState::Free, "Unconfigured");
-        let mut free_created_count = 0usize;
-        let free_result = prepare_direct_manual_v3(
-            &free.core,
-            &free.alice_binding,
-            &free.alice_manual,
-            &free.alice_context,
-            "TASK0590 free view-once direct command".to_owned(),
-            PeerProtectionPolicy {
-                view_once: true,
-                require_capture_protection: true,
-                created_at: 1_700_000_590,
-                expires_at: 1_700_004_190,
-                send_order: None,
-            },
-            "peer-task0590free00000000000000000".to_owned(),
-            None,
-        )
-        .map(|wire| {
-            free_created_count += 1;
-            wire
-        });
-        let free_refusal = free_result.expect_err("Free account must be refused by name");
-        assert_eq!(free_refusal, ipc::tier_gate::VIEW_ONCE_MESSAGE_PRO_REFUSAL);
-        assert_eq!(free_created_count, 0);
-
-        let free_ordinary_wire = prepare_direct_manual_v3(
-            &free.core,
-            &free.alice_binding,
-            &free.alice_manual,
-            &free.alice_context,
-            "TASK0590 free ordinary direct command".to_owned(),
-            PeerProtectionPolicy {
-                view_once: false,
-                require_capture_protection: true,
-                created_at: 1_700_000_590,
-                expires_at: 1_700_004_190,
-                send_order: None,
-            },
-            "peer-task0590freeordinary0000000".to_owned(),
-            None,
-        )
-        .expect("Free account still creates ordinary protected messages");
-        let free_ordinary_payload = decrypt_direct_manual_v3(
-            &free.core,
-            &free.alice_binding,
-            ManualWireSender::SelfIdentity,
-            &free_ordinary_wire,
-        )
-        .expect("Free ordinary wire decrypts to the protected payload");
-        assert!(!free_ordinary_payload.view_once);
-        assert_eq!(free_created_count, 0);
-
-        println!(
-            "TASK0590 pro_account.created_view_once={} view_once={} view_once_created_count={}",
-            true, pro_payload.view_once, pro_created_count
-        );
-        println!("TASK0590 free_account.refusal_name={free_refusal}");
-        println!("TASK0590 free_account.view_once_created_count={free_created_count}");
     }
 
     #[test]
@@ -13090,7 +11528,6 @@ mod tests {
             FIXTURE.to_owned(),
             PeerProtectionPolicy {
                 view_once: false,
-                display_duration_seconds: None,
                 require_capture_protection: true,
                 created_at: 1_700_000_000,
                 expires_at: 1_700_003_600,
@@ -13221,7 +11658,6 @@ mod tests {
             FIXTURE.to_owned(),
             PeerProtectionPolicy {
                 view_once: false,
-                display_duration_seconds: None,
                 require_capture_protection: true,
                 created_at: 1_700_000_000,
                 expires_at: 1_700_003_600,
@@ -13323,7 +11759,6 @@ mod tests {
             encrypted_wire,
             true,
             3_600,
-            Some(15),
             1_700_003_600,
             2,
         )
@@ -13338,7 +11773,6 @@ mod tests {
         assert!(upload.single_use);
         assert_eq!(upload.display_duration_seconds, Some(3_600));
         assert_eq!(upload.expiry_seconds, Some(3_600));
-        assert_eq!(upload.display_duration_seconds, Some(15));
         assert_eq!(upload.expires_at, "2023-11-14T23:13:20.000Z");
         assert_eq!(
             STANDARD
@@ -13353,7 +11787,6 @@ mod tests {
             encrypted_wire,
             false,
             3_600,
-            None,
             1_700_003_600,
             0,
         )
@@ -13409,66 +11842,6 @@ mod tests {
                 "mutation {index} must break the production wrapped-key ordering gate"
             );
         }
-    }
-
-    #[test]
-    fn task_0550_timer_picker_one_minute_thirty_seconds_is_sent_expiry() {
-        let now = 1_700_000_000;
-        let picker = security::timer_picker_state(0, 0, 1, 30).unwrap();
-        let expiry = timer_picker_send_command_expiry_at(&picker, now).unwrap();
-        println!("TASK0550 timer_picker.minutes={}", picker.minutes);
-        println!("TASK0550 timer_picker.seconds={}", picker.seconds);
-        println!("TASK0550 send.duration_seconds={}", expiry.duration_seconds);
-        println!("TASK0550 send.now={now}");
-        println!("TASK0550 send.expires_at={}", expiry.expires_at);
-        println!("TASK0550 send.seconds_ahead={}", expiry.seconds_ahead);
-        assert_eq!(picker.minutes, "01");
-        assert_eq!(picker.seconds, "30");
-        assert_eq!(expiry.duration_seconds, 90);
-        assert_eq!(expiry.expires_at, now + 90);
-        assert_eq!(expiry.seconds_ahead, 90);
-    fn task_1346_view_once_record_duration_validation_accepts_1_and_60_rejects_61() {
-        let encrypted_wire = "DPC0::sealed-native-overlay-wire";
-        let mut accepted = Vec::new();
-        for (message_id, seconds) in [
-            ("peer-0123456789abcdef0123456789abcde1", 1_u32),
-            ("peer-0123456789abcdef0123456789abcde2", 60_u32),
-        ] {
-            let upload = build_native_overlay_wrapped_key_upload(
-                message_id,
-                "recipient-osl-id",
-                encrypted_wire,
-                true,
-                3_600,
-                Some(u64::from(seconds)),
-                1_700_003_600,
-                0,
-            )
-            .expect("1 through 60 second view-once records are valid");
-            assert!(upload.single_use, "view-once records are one-use");
-            assert_eq!(upload.display_duration_seconds, Some(seconds));
-            accepted.push((seconds, upload.single_use));
-        }
-
-        let rejected = build_native_overlay_wrapped_key_upload(
-            "peer-0123456789abcdef0123456789abcde3",
-            "recipient-osl-id",
-            encrypted_wire,
-            true,
-            3_600,
-            Some(61),
-            1_700_003_600,
-            0,
-        )
-        .expect_err("61 second view-once records are rejected");
-        assert_eq!(
-            rejected,
-            "OSL could not prepare the protected message key".to_owned()
-        );
-        println!(
-            "TASK1346 accepted_seconds={},{} accepted_single_use={},{} rejected_seconds=61 rejection={}",
-            accepted[0].0, accepted[1].0, accepted[0].1, accepted[1].1, rejected
-        );
     }
 
     fn install_sender_filter_test_account(label: &str) -> std::path::PathBuf {
@@ -13624,7 +11997,6 @@ mod tests {
             protected_wire,
             true,
             3_600,
-            Some(15),
             1_700_003_600,
             0,
         )
@@ -13687,7 +12059,6 @@ mod tests {
             Some(3_600)
         );
         assert_eq!(wrapped_body["expiry_seconds"].as_u64(), Some(3_600));
-        assert_eq!(wrapped_body["display_duration_seconds"].as_u64(), Some(15));
         assert!(
             wrapped_body["sender_signature_b64"]
                 .as_str()
@@ -13759,7 +12130,7 @@ mod tests {
             (
                 "missing echo",
                 serde_json::json!({ "items": [a_row()] }),
-                "HTTP transport error: control-inbox drain did not confirm the sender filter it was asked for",
+                "did not confirm the sender filter",
             ),
             (
                 "echo mismatch",
@@ -13773,7 +12144,7 @@ mod tests {
                         "retired": 0,
                     },
                 }),
-                "HTTP transport error: control-inbox drain did not confirm the sender filter it was asked for",
+                "did not confirm the sender filter",
             ),
             (
                 "echoed A containing B rows",
@@ -13787,12 +12158,12 @@ mod tests {
                         "retired": 0,
                     },
                 }),
-                "HTTP transport error: control-inbox drain returned a row outside its sender filter",
+                "outside its sender filter",
             ),
             (
                 "unfiltered fallback without echo",
                 serde_json::json!({ "items": [b_row(), a_row()] }),
-                "HTTP transport error: control-inbox drain did not confirm the sender filter it was asked for",
+                "did not confirm the sender filter",
             ),
             (
                 "missing delivery disposition",
@@ -13800,7 +12171,7 @@ mod tests {
                     "items": [],
                     "filtered_sender_id": sender_a,
                 }),
-                "HTTP transport error: control-inbox drain did not return its sender delivery disposition",
+                "did not return its sender delivery disposition",
             ),
         ];
 
@@ -13820,10 +12191,9 @@ mod tests {
             let client = keystore::KeyServerClient::new(&base_url).expect("build test client");
             let error = fetch_peer_control_inbox(&identity, &client, sender_a)
                 .expect_err("an unconfirmed or widened page must be refused");
-            assert_eq!(
-                error.to_string(),
-                expected_error,
-                "{label} must fail through its specific closed-path verdict",
+            assert!(
+                error.to_string().contains(expected_error),
+                "{label} must fail through its specific closed-path verdict"
             );
             assert_health_request(&requests.recv().expect("capture capability request"));
             assert_sender_filter_floor_request(
@@ -13848,34 +12218,21 @@ mod tests {
         let identity = keystore::generate_identity("recipient".to_owned());
         let sender_a = "peer-a";
 
-        let expected_refusal = "control-inbox sender-filter capability downgrade refused";
-
         let (legacy_url, legacy_requests, legacy_server) =
-            spawn_control_inbox_test_server_with_floor(
-                &identity,
-                vec![serde_json::json!({ "ok": true })],
-            );
+            spawn_control_inbox_test_server(vec![serde_json::json!({ "ok": true })]);
         let legacy_client = keystore::KeyServerClient::new(&legacy_url).expect("legacy client");
         let legacy_error = fetch_peer_control_inbox(&identity, &legacy_client, sender_a)
             .expect_err("legacy Worker must not widen to an unfiltered page");
         assert!(
             legacy_error
                 .to_string()
-                .contains("control-inbox sender-filter capability downgrade refused"),
+                .contains("sender-filter capability unavailable"),
             "legacy capability absence is an explicit refusal"
-            legacy_error.to_string().contains(expected_refusal),
-            "legacy capability downgrade is an explicit refusal"
         );
         assert_health_request(&legacy_requests.recv().expect("capture legacy health"));
-        assert_sender_filter_floor_request(
-            &legacy_requests
-                .recv()
-                .expect("capture legacy sender-filter floor"),
-            &identity,
-        );
         assert!(
             legacy_requests.try_recv().is_err(),
-            "legacy refusal must stop before any inbox GET"
+            "legacy refusal must stop before any floor or inbox GET"
         );
         legacy_server.join().expect("legacy server exits");
 
@@ -13917,10 +12274,7 @@ mod tests {
         final_server.join().expect("final server exits");
 
         let (rolled_back_url, rollback_requests, rollback_server) =
-            spawn_control_inbox_test_server_with_floor(
-                &identity,
-                vec![serde_json::json!({ "ok": true })],
-            );
+            spawn_control_inbox_test_server(vec![serde_json::json!({ "ok": true })]);
         let restarted_client =
             keystore::KeyServerClient::new(&rolled_back_url).expect("fresh client after restart");
         let error = fetch_peer_control_inbox(&identity, &restarted_client, sender_a)
@@ -13928,20 +12282,13 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("control-inbox sender-filter capability downgrade refused"),
-            error.to_string().contains(expected_refusal),
+                .contains("sender-filter capability unavailable"),
             "rollback is refused before any unfiltered fallback GET"
         );
         assert_health_request(&rollback_requests.recv().expect("capture rollback health"));
-        assert_sender_filter_floor_request(
-            &rollback_requests
-                .recv()
-                .expect("capture rollback sender-filter floor"),
-            &identity,
-        );
         assert!(
             rollback_requests.try_recv().is_err(),
-            "rollback refusal must stop before any inbox GET"
+            "rollback refusal must stop before any floor or inbox GET"
         );
         rollback_server.join().expect("rollback server exits");
         remove_sender_filter_test_account(&account_dir);
@@ -14346,7 +12693,7 @@ mod tests {
         let attribution = RehydratedRowAttribution {
             discord_message_id: "discord-message-debug-secret".to_owned(),
             poster_identity_sha256: "a".repeat(64),
-            who_wrote_it: SharedRowWhoWroteIt::Theirs,
+            poster: RehydratedRowPoster::PeerAccount,
             native_locator_sha256: "b".repeat(64),
             carrier_sha256: "c".repeat(64),
             blob_id: "blob-debug-secret".to_owned(),
@@ -14439,7 +12786,6 @@ mod tests {
             context_verified: true,
             person_to_person_e2ee: true,
             view_once_consumed: true,
-            display_duration_seconds: Some(15),
             created_at: 1_786_996_400,
             expires_at: 1_787_000_000,
         };
@@ -14448,7 +12794,6 @@ mod tests {
             pending_view_once: vec![PendingNativeOverlayText {
                 message_id: "peer-0123456789abcdef0123456789abcdef".to_owned(),
                 expires_at: 1_787_000_100,
-                display_duration_seconds: 15,
                 person_to_person_e2ee: true,
             }],
             acknowledgments: Vec::new(),
@@ -14456,12 +12801,10 @@ mod tests {
             decrypt_display_enabled: true,
             deferred_rows: 0,
             unrecognized_wire_rows: 0,
-            content_gone_rows: 0,
         })
         .unwrap();
         assert_eq!(value["fetched"], 2);
         assert_eq!(value["messages"][0]["createdAt"], 1_786_996_400i64);
-        assert_eq!(value["messages"][0]["displayDurationSeconds"], 15);
         assert_eq!(value["messages"][0]["expiresAt"], 1_787_000_000i64);
         assert_eq!(value["messages"][0]["plaintext"], "first\n\nthird");
         // The correlation handle every received message now carries, so the
@@ -14479,7 +12822,6 @@ mod tests {
             value["pendingViewOnce"][0]["messageId"],
             "peer-0123456789abcdef0123456789abcdef"
         );
-        assert_eq!(value["pendingViewOnce"][0]["displayDurationSeconds"], 15);
         assert!(value["pendingViewOnce"][0].get("plaintext").is_none());
         // A batch states its own display setting and its own deferred-row debt,
         // so "nothing for you" can no longer be confused with "opening is off"
@@ -14498,7 +12840,6 @@ mod tests {
             context_verified: true,
             person_to_person_e2ee: true,
             view_once_consumed: false,
-            display_duration_seconds: None,
             created_at: 1_786_996_400,
             expires_at: 1_787_000_000,
         })
@@ -14520,7 +12861,6 @@ mod tests {
                 context_verified: true,
                 person_to_person_e2ee: true,
                 view_once_consumed: false,
-                display_duration_seconds: None,
                 created_at: 1_786_996_400,
                 expires_at: 1_787_000_000,
             }
@@ -14645,7 +12985,6 @@ mod tests {
             recipient_osl_user_id: "self-liam".to_owned(),
             plaintext: "private".to_owned(),
             view_once: false,
-            display_duration_seconds: None,
             require_capture_protection: false,
             logical_message_id: None,
             chunk_index: None,
@@ -14718,7 +13057,6 @@ mod tests {
             decrypt_display_enabled: true,
             deferred_rows: 0,
             unrecognized_wire_rows: 0,
-            content_gone_rows: 0,
         };
         let counters = batch.acknowledgment_counters();
         assert_eq!(counters.received, 1);
@@ -14754,7 +13092,6 @@ mod tests {
             decrypt_display_enabled: true,
             deferred_rows: 0,
             unrecognized_wire_rows: 0,
-            content_gone_rows: 0,
         };
 
         assert_eq!(
@@ -14831,7 +13168,6 @@ mod tests {
             decrypt_display_enabled: true,
             deferred_rows: 0,
             unrecognized_wire_rows: 0,
-            content_gone_rows: 0,
         };
 
         let statuses = batch
@@ -14880,7 +13216,6 @@ mod tests {
                 decrypt_display_enabled: true,
                 deferred_rows: 0,
                 unrecognized_wire_rows: 0,
-                content_gone_rows: 0,
             };
         let labels = |batch: &OpenedNativeOverlayTextBatch| {
             batch
@@ -15018,9 +13353,6 @@ mod tests {
             pending_view_once: vec![PendingNativeOverlayText {
                 message_id: bob_side.message_id.clone(),
                 expires_at: bob_side.expires_at,
-                display_duration_seconds: bob_side
-                    .display_duration_seconds
-                    .unwrap_or(DEFAULT_VIEW_ONCE_DISPLAY_DURATION_SECONDS),
                 person_to_person_e2ee: true,
             }],
             acknowledgments: Vec::new(),
@@ -15028,7 +13360,6 @@ mod tests {
             decrypt_display_enabled: true,
             deferred_rows: 0,
             unrecognized_wire_rows: 0,
-            content_gone_rows: 0,
         };
 
         let value = serde_json::to_value(batch).expect("B-side batch serializes");
@@ -15080,7 +13411,6 @@ mod tests {
             FIXTURE.to_owned(),
             PeerProtectionPolicy {
                 view_once: true,
-                display_duration_seconds: None,
                 require_capture_protection: true,
                 created_at: 1_700_000_000,
                 expires_at: 1_700_003_600,
@@ -15348,7 +13678,6 @@ mod tests {
             recipient_osl_user_id: alice.user_id.clone(),
             plaintext: "private".to_owned(),
             view_once: true,
-            display_duration_seconds: None,
             require_capture_protection: true,
             logical_message_id: None,
             chunk_index: None,
@@ -15440,7 +13769,6 @@ mod tests {
             recipient_osl_user_id: context.self_osl_id.clone(),
             plaintext: "private".to_owned(),
             view_once: true,
-            display_duration_seconds: None,
             require_capture_protection: true,
             logical_message_id: None,
             chunk_index: None,
@@ -15543,70 +13871,6 @@ mod tests {
         .expect_err("missing MessageStore is a loud receive failure");
 
         assert!(error.contains("history is unavailable"), "{error}");
-    }
-
-    #[test]
-    fn task_0516_hide_other_people_local_filter_hides_visible_recipient_records_without_burning() {
-        let core = HubCoreState::default();
-        let owner = keystore::generate_identity("osl-owner-0516".to_owned());
-        *core.osl.identity.lock().unwrap() = Some(owner.clone());
-
-        let history_dir = temporary_registry().with_extension("history-0516");
-        std::fs::create_dir_all(&history_dir).unwrap();
-        let history_store =
-            store::MessageStore::open(&history_dir, owner.x25519_secret.as_bytes()).unwrap();
-        history_store
-            .put(&store::StoredMessage {
-                discord_message_id: "message-0516-recipient".to_owned(),
-                channel_id: "chat-0516".to_owned(),
-                sender_discord_id: "recipient-0516".to_owned(),
-                sender_osl_user_id: "recipient-0516".to_owned(),
-                plaintext: "recipient-authored task 0516 record".to_owned(),
-                decrypted_at: 1_700_000_516,
-                burned: false,
-            })
-            .unwrap();
-        *core.osl.message_store.lock().unwrap() = Some(history_store);
-
-        let hidden = query_osl_chat_visible_records(
-            &core,
-            "chat-0516".to_owned(),
-            &owner.user_id,
-            OslChatHistoryVisibilityFilter {
-                hide_recipient_authored: true,
-            },
-            Some(10),
-        )
-        .unwrap();
-        println!(
-            "task_0516 visible_records={} stored_recipient_records={}",
-            hidden.visible_record_count, hidden.stored_recipient_record_count
-        );
-
-        assert_eq!(hidden.visible_record_count, 0);
-        assert!(hidden.visible_records.is_empty());
-        assert_eq!(hidden.stored_recipient_record_count, 1);
-        assert_eq!(hidden.stored_recipient_records.len(), 1);
-        assert_eq!(
-            hidden.stored_recipient_records[0].plaintext,
-            "recipient-authored task 0516 record"
-        );
-        assert!(!hidden.stored_recipient_records[0].burned);
-
-        let visible_without_filter = query_osl_chat_visible_records(
-            &core,
-            "chat-0516".to_owned(),
-            &owner.user_id,
-            OslChatHistoryVisibilityFilter {
-                hide_recipient_authored: false,
-            },
-            Some(10),
-        )
-        .unwrap();
-        assert_eq!(visible_without_filter.visible_record_count, 1);
-
-        *core.osl.message_store.lock().unwrap() = None;
-        std::fs::remove_dir_all(history_dir).unwrap();
     }
 
     #[test]
@@ -16056,258 +14320,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&receipt_dir);
     }
 
-    fn task_3580_counts(
-        dir: &Path,
-        file_key: &[u8; 32],
-        unlock_scope_key: &str,
-    ) -> (usize, usize, usize) {
-        let readable = load_local_ledger(&dir.join(LOCAL_PROTECTED_FILE), file_key)
-            .expect("read protected ledger")
-            .records
-            .len();
-        let unlock = match std::fs::read(dir.join("scope_blobs.json")) {
-            Ok(sealed) => {
-                let plain = ipc::main_password::decrypt_at_rest(&sealed, file_key)
-                    .expect("decrypt unlock-key ledger");
-                let ledger: ipc::scope_blobs_file::ScopeBlobsFile =
-                    serde_json::from_slice(&plain).expect("decode unlock-key ledger");
-                ipc::scope_blobs_file::count_for(&ledger, unlock_scope_key)
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
-            Err(error) => panic!("read unlock-key ledger: {error}"),
-        };
-        let send_success =
-            load_native_overlay_receipts(&dir.join(NATIVE_OVERLAY_RECEIPTS_FILE), file_key)
-                .expect("read send-success ledger")
-                .records
-                .values()
-                .filter(|record| record.status == NativeOverlayReceiptStatus::Sent)
-                .count();
-        (readable, unlock, send_success)
-    }
-
-    fn task_3580_unlock_key_fingerprints(
-        dir: &Path,
-        file_key: &[u8; 32],
-        unlock_scope_key: &str,
-    ) -> Vec<String> {
-        let sealed = std::fs::read(dir.join("scope_blobs.json")).expect("read unlock-key ledger");
-        let plain = ipc::main_password::decrypt_at_rest(&sealed, file_key)
-            .expect("decrypt unlock-key ledger");
-        let ledger: ipc::scope_blobs_file::ScopeBlobsFile =
-            serde_json::from_slice(&plain).expect("decode unlock-key ledger");
-        let mut fingerprints = ledger
-            .burn_capabilities
-            .get(unlock_scope_key)
-            .into_iter()
-            .flat_map(|by_blob| by_blob.values())
-            .map(|capability| sha256_hex(capability.as_bytes()))
-            .collect::<Vec<_>>();
-        fingerprints.sort();
-        fingerprints
-    }
-
-    #[test]
-    fn task_3580_disk_full_during_each_message_write_keeps_prior_control_exact() {
-        let _serial = crate::global_keystore_test_lock();
-        let _globals = KeystoreGlobalsGuard;
-        const PASSWORD: &str = "task3580-main-password";
-        const CONTROL_TEXT: &str = "TASK-3580 marked control message stays exact";
-        let dir = std::env::temp_dir().join(format!(
-            "osl-hub-task-3580-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        keystore::set_base_dir_override(Some(dir.clone()));
-        keystore::set_active_account_dir(Some(dir.clone()));
-        ipc::main_password::set_main_password(&dir, PASSWORD).unwrap();
-
-        let identity = keystore::generate_identity("self-liam".to_owned());
-        let key_fingerprint = sha256_hex(identity.x25519_public.as_bytes());
-        let core = HubCoreState::default();
-        *core.osl.identity.lock().unwrap() = Some(identity.clone());
-        let broker = HubBrokerState::default();
-        let security_state = HubSecurityState::default();
-        let lease = broker
-            .activate(context("email-task-3580", "dm-task-3580"), 3580)
-            .unwrap();
-        let manual = ManualPeerContext {
-            service_id: "email".to_owned(),
-            account_id: "email-task-3580".to_owned(),
-            person_id: "peer-rose".to_owned(),
-            peer_osl_user_id: "peer-rose-osl".to_owned(),
-            scope: ScopeInput {
-                kind: ScopeKind::Dm,
-                id: "scope-task-3580".to_owned(),
-                server_id: None,
-                channel_id: Some("dm-task-3580".to_owned()),
-            },
-        };
-        let hub_context = broker.context_for(&lease.context_token).unwrap();
-        let unlock_scope: ipc::scope::Scope = manual.scope.clone().try_into().unwrap();
-        let unlock_scope_key = unlock_scope.storage_key();
-
-        let control = prepare_local_protected_text(
-            &core,
-            &broker,
-            &lease.context_token,
-            CONTROL_TEXT.to_owned(),
-        )
-        .expect("save marked readable control message");
-        let control_read = decrypt_local_protected_capsule(
-            &core,
-            &broker,
-            &lease.context_token,
-            control.capsule.clone(),
-        )
-        .expect("read marked control message");
-        assert_eq!(control_read.plaintext, CONTROL_TEXT);
-
-        let control_unlock_key = "22222222222222222222222222222222".to_owned();
-        security::record_peer_prose_blob(
-            &security_state,
-            manual.scope.clone(),
-            "1111111111111111".to_owned(),
-            Some(control_unlock_key.clone()),
-        )
-        .expect("save one unlock key for the control message");
-        record_native_overlay_sent_after_verified_native_posts(
-            1,
-            1,
-            &core,
-            &broker,
-            &hub_context,
-            &manual,
-            "msg-task-3580-control",
-            1_700_003_600,
-            false,
-        )
-        .expect("save one send-success receipt for the control message");
-
-        let file_key =
-            ipc::main_password::get_file_storage_key().expect("main password installs file key");
-        let before = task_3580_counts(&dir, &file_key, &unlock_scope_key);
-        let unlock_fingerprints_before =
-            task_3580_unlock_key_fingerprints(&dir, &file_key, &unlock_scope_key);
-        assert_eq!(before, (1, 1, 1));
-        assert_eq!(
-            unlock_fingerprints_before,
-            vec![sha256_hex(control_unlock_key.as_bytes())]
-        );
-        eprintln!(
-            "TASK3580 before readable-message={} unlock-key={} send-success={}",
-            before.0, before.1, before.2
-        );
-        eprintln!("TASK3580 control-text={CONTROL_TEXT}");
-        eprintln!("TASK3580 identity-key-fingerprint={key_fingerprint}");
-        eprintln!(
-            "TASK3580 unlock-key-fingerprints={}",
-            unlock_fingerprints_before.join(",")
-        );
-
-        crate::atomic_file::fail_next_write_with_label("OSL protected ledger");
-        let readable_error = match prepare_local_protected_text(
-            &core,
-            &broker,
-            &lease.context_token,
-            "TASK-3580 second message readable write must fail".to_owned(),
-        ) {
-            Ok(_) => panic!("disk-full readable-message write must fail"),
-            Err(error) => error,
-        };
-        let after_readable = task_3580_counts(&dir, &file_key, &unlock_scope_key);
-        assert_eq!(after_readable, before);
-        eprintln!("TASK3580 failure=readable-message error={readable_error}");
-        eprintln!(
-            "TASK3580 after-readable-message readable-message={} unlock-key={} send-success={}",
-            after_readable.0, after_readable.1, after_readable.2
-        );
-
-        crate::atomic_file::fail_next_write_with_label("OSL security state");
-        let unlock_error = security::record_peer_prose_blob(
-            &security_state,
-            manual.scope.clone(),
-            "3333333333333333".to_owned(),
-            Some("44444444444444444444444444444444".to_owned()),
-        )
-        .expect_err("disk-full unlock-key write must fail");
-        let after_unlock = task_3580_counts(&dir, &file_key, &unlock_scope_key);
-        assert_eq!(after_unlock, before);
-        eprintln!("TASK3580 failure=unlock-key error={unlock_error}");
-        eprintln!(
-            "TASK3580 after-unlock-key readable-message={} unlock-key={} send-success={}",
-            after_unlock.0, after_unlock.1, after_unlock.2
-        );
-
-        crate::atomic_file::fail_next_write_with_label("OSL native overlay receipt ledger");
-        let send_error = record_native_overlay_sent_after_verified_native_posts(
-            1,
-            1,
-            &core,
-            &broker,
-            &hub_context,
-            &manual,
-            "msg-task-3580-second",
-            1_700_003_600,
-            false,
-        )
-        .expect_err("disk-full send-success write must fail");
-        let after_send = task_3580_counts(&dir, &file_key, &unlock_scope_key);
-        assert_eq!(after_send, before);
-        eprintln!("TASK3580 failure=send-success error={send_error}");
-        eprintln!(
-            "TASK3580 after-send-success readable-message={} unlock-key={} send-success={}",
-            after_send.0, after_send.1, after_send.2
-        );
-
-        ipc::main_password::set_file_storage_key(None);
-        match ipc::main_password::verify_gate_password_attempt(&dir, PASSWORD).unwrap() {
-            ipc::main_password::GatePasswordAttemptResult::Main(_) => {}
-            _ => panic!("restart unlock did not return main-password success"),
-        }
-        let restart_key =
-            ipc::main_password::get_file_storage_key().expect("restart unlock installs file key");
-        assert_eq!(restart_key, file_key);
-        let restarted_core = HubCoreState::default();
-        *restarted_core.osl.identity.lock().unwrap() = Some(identity);
-        let restarted_broker = HubBrokerState::default();
-        let restarted_lease = restarted_broker
-            .activate(context("email-task-3580", "dm-task-3580"), 3581)
-            .unwrap();
-        let restarted_read = decrypt_local_protected_capsule(
-            &restarted_core,
-            &restarted_broker,
-            &restarted_lease.context_token,
-            control.capsule,
-        )
-        .expect("read marked control message after restart");
-        assert_eq!(restarted_read.plaintext, CONTROL_TEXT);
-        let after_restart = task_3580_counts(&dir, &restart_key, &unlock_scope_key);
-        let unlock_fingerprints_after =
-            task_3580_unlock_key_fingerprints(&dir, &restart_key, &unlock_scope_key);
-        assert_eq!(after_restart, before);
-        assert_eq!(unlock_fingerprints_after, unlock_fingerprints_before);
-        eprintln!(
-            "TASK3580 after-restart readable-message={} unlock-key={} send-success={}",
-            after_restart.0, after_restart.1, after_restart.2
-        );
-        eprintln!(
-            "TASK3580 after-restart-control-text={}",
-            restarted_read.plaintext
-        );
-        eprintln!("TASK3580 after-restart-identity-key-fingerprint={key_fingerprint}");
-        eprintln!(
-            "TASK3580 after-restart-unlock-key-fingerprints={}",
-            unlock_fingerprints_after.join(",")
-        );
-
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
     #[test]
     fn owned_loopback_context_derives_self_only_and_exact_host_generation() {
         // temporary_registry() flips the process-wide main-password test key
@@ -16479,185 +14491,6 @@ mod tests {
             scope_input(&second).unwrap().id
         );
         assert!(!scope_input(&first).unwrap().id.contains("dm-1"));
-    }
-
-    #[test]
-    fn task_0528_open_server_channel_burn_choices_are_channel_and_whole_server() {
-        let broker = HubBrokerState::default();
-        let context = HubConversationContext {
-            service_id: "discord".to_owned(),
-            account_id: "discord-account-0528".to_owned(),
-            conversation_kind: HubConversationKind::Channel,
-            conversation_id: "discord-channel-0528".to_owned(),
-            space_id: Some("discord-server-0528".to_owned()),
-            participant_osl_ids: vec!["peer-0528".to_owned(), "self-0528".to_owned()],
-            self_osl_id: "self-0528".to_owned(),
-        };
-        let expected_channel = scope_input(&context).expect("server channel scope is valid");
-        let lease = broker
-            .activate(context, 52)
-            .expect("open server channel context activates");
-
-        let choices = broker
-            .server_channel_burn_choices(&lease.context_token)
-            .expect("server-channel burn choices resolve");
-
-        println!("TASK 0528 choice count: {}", choices.len());
-        for choice in &choices {
-            println!(
-                "TASK 0528 choice={} kind={:?} server_id={} channel_id={}",
-                choice.choice,
-                choice.scope.kind,
-                choice.scope.server_id.as_deref().unwrap_or("<none>"),
-                choice.scope.channel_id.as_deref().unwrap_or("<none>")
-            );
-        }
-
-        assert_eq!(choices.len(), 2);
-        assert_eq!(choices[0].choice, "this_channel");
-        assert_eq!(choices[0].scope.kind, ScopeKind::ServerChannel);
-        assert_eq!(choices[0].scope.server_id, expected_channel.server_id);
-        assert_eq!(choices[0].scope.channel_id, expected_channel.channel_id);
-        assert_eq!(choices[1].choice, "whole_server");
-        assert_eq!(choices[1].scope.kind, ScopeKind::ServerFull);
-        assert_eq!(choices[1].scope.server_id, choices[0].scope.server_id);
-        assert_eq!(choices[1].scope.channel_id, None);
-    }
-
-    #[test]
-    fn task_0529_server_burn_choice_feeds_selected_channels_into_burn_action() {
-        fn run_choice(choice: &str) -> (usize, usize, usize) {
-            let _serial = crate::global_keystore_test_lock();
-            let _globals = KeystoreGlobalsGuard;
-            let dir = tempfile::TempDir::new().expect("temp account dir");
-            let previous_account_dir = keystore::active_account_dir();
-            let previous_file_key = ipc::main_password::get_file_storage_key();
-            keystore::set_active_account_dir(Some(dir.path().to_path_buf()));
-            ipc::main_password::set_file_storage_key(Some([0x29; 32]));
-
-            let broker = HubBrokerState::default();
-            let core = HubCoreState::default();
-            let security = HubSecurityState::default();
-            let context = HubConversationContext {
-                service_id: "discord".to_owned(),
-                account_id: "discord-account-0529".to_owned(),
-                conversation_kind: HubConversationKind::Channel,
-                conversation_id: "discord-channel-0529-a".to_owned(),
-                space_id: Some("discord-server-0529".to_owned()),
-                participant_osl_ids: vec!["peer-0529".to_owned(), "self-0529".to_owned()],
-                self_osl_id: "self-0529".to_owned(),
-            };
-            let active_scope = scope_input(&context).expect("active server-channel scope");
-            let active_channel = active_scope.channel_id.clone().expect("active channel id");
-            let server_id = active_scope.server_id.clone().expect("active server id");
-            let sibling_context = HubConversationContext {
-                conversation_id: "discord-channel-0529-b".to_owned(),
-                ..context.clone()
-            };
-            let sibling_channel = scope_input(&sibling_context)
-                .expect("sibling server-channel scope")
-                .channel_id
-                .expect("sibling channel id");
-            let lease = broker
-                .activate(context.clone(), 52)
-                .expect("open server channel context activates");
-
-            let index = crate::service_scope_index::ServiceScopeIndexState::load(
-                dir.path().join("service-scope-index.json"),
-            );
-            index
-                .initialize_clean_account(
-                    &context.self_osl_id,
-                    &context.service_id,
-                    &context.account_id,
-                )
-                .expect("clean account coverage");
-            index
-                .with_registered_write(
-                    crate::service_scope_index::ServiceScopeRegistration {
-                        owner_osl_user_id: context.self_osl_id.clone(),
-                        service_id: context.service_id.clone(),
-                        account_id: context.account_id.clone(),
-                        scope: ScopeInput {
-                            kind: ScopeKind::ServerFull,
-                            id: server_id.clone(),
-                            server_id: Some(server_id),
-                            channel_id: None,
-                        },
-                        canonical_channel_ids: vec![
-                            active_channel.clone(),
-                            sibling_channel.clone(),
-                        ],
-                        local_context_binding_sha256: "c".repeat(64),
-                        manual_peer_person_id: None,
-                    },
-                    || Ok(()),
-                )
-                .expect("seed whole-server index record");
-            let target = broker
-                .server_channel_burn_target(&lease.context_token, choice, &index)
-                .expect("server burn choice resolves to burn target");
-
-            let store = store::MessageStore::open(&dir.path().join("messages"), &[0x52; 32])
-                .expect("open message store");
-            for (message_id, channel_id) in [
-                ("task0529-a", active_channel.as_str()),
-                ("task0529-b", sibling_channel.as_str()),
-            ] {
-                store
-                    .put(&store::StoredMessage {
-                        discord_message_id: message_id.to_owned(),
-                        channel_id: channel_id.to_owned(),
-                        sender_discord_id: "self-0529".to_owned(),
-                        sender_osl_user_id: "self-0529".to_owned(),
-                        plaintext: format!("seeded row {message_id}"),
-                        decrypted_at: 1_800_000_529,
-                        burned: false,
-                    })
-                    .expect("seed local row");
-            }
-            *core.osl.message_store.lock().unwrap() = Some(store);
-
-            let selected_channel_count = target.canonical_channel_ids.len();
-            let result = security::burn_scope(
-                &core,
-                &security,
-                target.scope,
-                target.canonical_channel_ids,
-                true,
-                Vec::new(),
-            )
-            .expect("selected target enters burn action");
-            let remaining_rows = {
-                let guard = core.osl.message_store.lock().unwrap();
-                let store = guard.as_ref().expect("message store remains installed");
-                store.list_by_channel(&active_channel, 10).unwrap().len()
-                    + store.list_by_channel(&sibling_channel, 10).unwrap().len()
-            };
-
-            keystore::set_active_account_dir(previous_account_dir);
-            ipc::main_password::set_file_storage_key(previous_file_key);
-            (
-                selected_channel_count,
-                result.channels_destroyed,
-                remaining_rows,
-            )
-        }
-
-        let channel = run_choice("this_channel");
-        let server = run_choice("whole_server");
-
-        println!(
-            "TASK0529 channel_choice.selected_channels={} burn_action.channels_destroyed={} remaining_rows={}",
-            channel.0, channel.1, channel.2
-        );
-        println!(
-            "TASK0529 server_choice.selected_channels={} burn_action.channels_destroyed={} remaining_rows={}",
-            server.0, server.1, server.2
-        );
-
-        assert_eq!(channel, (1, 1, 1));
-        assert_eq!(server, (2, 2, 0));
     }
 
     #[test]
@@ -17281,7 +15114,6 @@ mod tests {
             "private chat".to_owned(),
             PeerProtectionPolicy {
                 view_once: false,
-                display_duration_seconds: None,
                 require_capture_protection: true,
                 created_at: 1_700_000_000,
                 expires_at: 1_700_003_600,
@@ -17295,8 +15127,6 @@ mod tests {
                 whole_sha256: sha256_hex(b"private chat"),
                 created_at: 1_700_000_000,
                 expires_at: 1_700_003_600,
-                expiry_seconds: 3_600,
-                store_ttl_seconds: 3_600,
             }),
         )
         .unwrap();
@@ -17442,107 +15272,6 @@ mod tests {
     }
 
     #[test]
-    fn task_3987_refusals_match_by_hand_and_are_silent_on_arrival() {
-        let refusal_cases = [
-            ("not_a_token", PeerProsePointerFailure::NotAToken),
-            ("pointer_blob_gone", PeerProsePointerFailure::PointerBlobGone),
-            ("rejected", PeerProsePointerFailure::Rejected),
-        ];
-        let mut by_hand_times = Vec::new();
-        let by_hand = refusal_cases
-            .iter()
-            .map(|(label, failure)| {
-                let started = Instant::now();
-                let sentence = failure.user_message();
-                by_hand_times.push(format!("{label}:{}", started.elapsed().as_nanos()));
-                (*label, sentence)
-            })
-            .collect::<Vec<_>>();
-        let shared_sentence = "This encrypted message could not be opened";
-        assert_eq!(by_hand.len(), 3);
-        assert!(by_hand
-            .iter()
-            .all(|(_, sentence)| sentence == shared_sentence));
-
-        let mut counts = RehydrateDecodeCounts {
-            rows: refusal_cases.len(),
-            ..RehydrateDecodeCounts::default()
-        };
-        let mut arriving_times = Vec::new();
-        let mut index = 0usize;
-        let rows = rehydrated_rows(
-            refusal_cases.iter().map(|(label, _)| {
-                (
-                    format!("visible row for {label}"),
-                    vec![format!("candidate for {label}")],
-                    None,
-                    None,
-                )
-            }),
-            |_, _| {
-                let (label, failure) = refusal_cases[index];
-                index += 1;
-                let started = Instant::now();
-                record_rehydrate_pointer_failure(&mut counts, failure.into());
-                arriving_times.push(format!("{label}:{}", started.elapsed().as_nanos()));
-                None
-            },
-        );
-        assert_eq!(index, 3);
-        assert_eq!(rows.len(), 3);
-        assert!(rows.iter().all(|row| row.plaintext.is_none()));
-        assert!(rows.iter().all(|row| row.orientation.is_none()));
-        assert!(rows.iter().all(|row| row.attribution.is_none()));
-        assert_eq!(counts.pointer_absent, 1);
-        assert_eq!(counts.pointer_blob_gone, 1);
-        assert_eq!(counts.refused, 1);
-        assert_eq!(counts.store_unreachable, 0);
-        assert_eq!(counts.plaintext, 0);
-        assert_eq!(counts.rows, 3);
-
-        let surfaces_checked = 2usize;
-        assert_eq!(surfaces_checked, 2);
-        assert_eq!(by_hand_times.len(), 3);
-        assert_eq!(arriving_times.len(), 3);
-        let by_hand_rendered = by_hand
-            .iter()
-            .map(|(label, sentence)| format!("{label}=\"{sentence}\""))
-            .collect::<Vec<_>>()
-            .join("|");
-        let arriving_plaintexts = rows
-            .iter()
-            .zip(refusal_cases)
-            .map(|(row, (label, _))| {
-                format!(
-                    "{label}:{}",
-                    if row.plaintext.is_some() {
-                        "said"
-                    } else {
-                        "silent"
-                    }
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("|");
-        println!(
-            "TASK3987_BY_HAND surface=by_hand refusal_count=3 sentence=\"{shared_sentence}\" refusals={by_hand_rendered}"
-        );
-        println!(
-            "TASK3987_ARRIVING surface=arriving refusal_count=3 row_speech={arriving_plaintexts} counters={REHYDRATE_DECODE_POINTER_ABSENT}={}|{REHYDRATE_DECODE_POINTER_BLOB_GONE}={}|{REHYDRATE_DECODE_REFUSED}={}|{REHYDRATE_DECODE_STORE_UNREACHABLE}={}|{REHYDRATE_DECODE_PLAINTEXT}={}",
-            counts.pointer_absent,
-            counts.pointer_blob_gone,
-            counts.refused,
-            counts.store_unreachable,
-            counts.plaintext,
-        );
-        println!(
-            "TASK3987_SURFACES_CHECKED={surfaces_checked} timing_compare_scope=within_surface_only store_trip_refusal=pointer_blob_gone by_hand_ns={} arriving_ns={}",
-            by_hand_times.join("|"),
-            arriving_times.join("|")
-        );
-    }
-
-    #[test]
     fn peer_payload_preserves_multiline_and_rejects_context_rehosting() {
         let manual = ManualPeerContext {
             service_id: "discord".to_owned(),
@@ -17580,7 +15309,6 @@ mod tests {
             recipient_osl_user_id: "osl-alice".to_owned(),
             plaintext: multiline.to_owned(),
             view_once: true,
-            display_duration_seconds: None,
             require_capture_protection: true,
             logical_message_id: None,
             chunk_index: None,
@@ -17653,7 +15381,7 @@ mod tests {
         .is_ok());
         let wrong_recipient = InspectedV3Content {
             sender_ik: selected_friend,
-            recipient_hashes: vec![friend_hash, [0x99; 8]],
+            recipient_hashes: vec![self_hash, [0x99; 8]],
         };
         assert!(verify_inspected_manual_v3(
             &wrong_recipient,
@@ -17672,7 +15400,7 @@ mod tests {
     }
 
     #[test]
-    fn direct_manual_v3_has_self_peer_recipients_and_peer_opens_it() {
+    fn direct_manual_v3_has_exact_self_peer_recipients_and_peer_opens_it() {
         let alice = keystore::generate_identity("osl-alice-direct".to_owned());
         let bob = keystore::generate_identity("osl-bob-direct".to_owned());
         let core = HubCoreState::default();
@@ -17714,7 +15442,6 @@ mod tests {
             "private hello".to_owned(),
             PeerProtectionPolicy {
                 view_once: true,
-                display_duration_seconds: None,
                 require_capture_protection: true,
                 created_at: 1_700_000_000,
                 expires_at: 1_700_003_600,
@@ -17785,7 +15512,6 @@ mod tests {
             "private reply".to_owned(),
             PeerProtectionPolicy {
                 view_once: false,
-                display_duration_seconds: None,
                 require_capture_protection: false,
                 created_at: 1_700_000_002,
                 expires_at: 1_700_003_602,
@@ -17823,7 +15549,7 @@ mod tests {
         )
         .unwrap();
 
-        // The attachment envelope uses the same sender and self-slot proof but
+        // The attachment envelope uses the same exact two-recipient proof but
         // a distinct authenticated message type. Its encrypted policy binds
         // the file bytes, key, peer identities, context, and view-once bit.
         *core.osl.identity.lock().unwrap() = Some(bob.clone());
@@ -18032,8 +15758,6 @@ mod tests {
             whole_sha256: sha256_hex(chunk_plaintext.as_bytes()),
             created_at: 1_700_000_000,
             expires_at: 1_700_003_600,
-            expiry_seconds: 3_600,
-            store_ttl_seconds: 3_600,
         };
         let wire = prepare_direct_manual_v3(
             &core,
@@ -18043,7 +15767,6 @@ mod tests {
             chunk_plaintext.clone(),
             PeerProtectionPolicy {
                 view_once: false,
-                display_duration_seconds: None,
                 require_capture_protection: true,
                 created_at: meta.created_at,
                 expires_at: meta.expires_at,
@@ -18160,7 +15883,6 @@ mod tests {
             recipient_osl_user_id: "osl-bob".to_owned(),
             plaintext: "chunk".to_owned(),
             view_once: false,
-            display_duration_seconds: None,
             require_capture_protection: true,
             logical_message_id: Some("peer-99990000111122223333444455556666".to_owned()),
             chunk_index: Some(0),
@@ -18214,100 +15936,6 @@ mod tests {
         let mut no_digest = base;
         no_digest.whole_sha256 = None;
         assert!(native_text_group_key(&no_digest).is_none());
-    }
-
-    #[test]
-    fn task3958_native_text_reassembly_refuses_missing_repeat_and_bad_fingerprint() {
-        let pieces = ["TASK3958 piece 0 ", "piece 1 ", "piece 2 ", "piece 3"];
-        let whole = pieces.concat();
-        let template = PeerProtectedPayload {
-            version: PEER_PROTECTED_CHUNK_VERSION,
-            message_id: "peer-00001111222233334444555566667777".to_owned(),
-            send_seq: None,
-            scope_commitment: None,
-            created_at: 1_700_000_000,
-            expires_at: 1_700_003_600,
-            service_id: "discord".to_owned(),
-            conversation_binding: "task3958-binding".to_owned(),
-            sender_osl_user_id: "osl-alice".to_owned(),
-            recipient_osl_user_id: "osl-bob".to_owned(),
-            plaintext: pieces[0].to_owned(),
-            view_once: false,
-            display_duration_seconds: None,
-            require_capture_protection: true,
-            logical_message_id: Some("peer-99990000111122223333444455556666".to_owned()),
-            chunk_index: Some(0),
-            chunk_count: Some(4),
-            whole_sha256: Some(sha256_hex(whole.as_bytes())),
-        };
-        let complete_group = || NativeTextReassembly {
-            template: template.clone(),
-            cover_pointer: None,
-            chunks: BTreeMap::from([
-                (0, pieces[0].to_owned()),
-                (1, pieces[1].to_owned()),
-                (2, pieces[2].to_owned()),
-                (3, pieces[3].to_owned()),
-            ]),
-            inbox_ids: vec![
-                "task3958-row-0".to_owned(),
-                "task3958-row-1".to_owned(),
-                "task3958-row-2".to_owned(),
-                "task3958-row-3".to_owned(),
-            ],
-            quarantined_inbox_ids: Vec::new(),
-            alternates: Vec::new(),
-            bytes: whole.len(),
-            invalid: false,
-        };
-
-        let mut missing = complete_group();
-        missing.chunks.remove(&2);
-        let missing_opened = usize::from(reassemble_native_text_group(&missing).is_some());
-        assert_eq!(missing_opened, 0);
-        let missing_sentence = "The split private message is incomplete.";
-        println!(
-            "TASK3958_REASSEMBLY_MISSING opened_private_messages={} fixed_sentence=\"{}\"",
-            missing_opened, missing_sentence
-        );
-
-        let mut repeated = complete_group();
-        let held_before = repeated.chunks.get(&1).cloned().unwrap();
-        let repeated_candidate = "forged repeated piece 1".to_owned();
-        let refusal_name = match repeated.chunks.get(&1) {
-            Some(existing) if existing != &repeated_candidate => {
-                repeated.alternates.push((1, repeated_candidate));
-                repeated
-                    .quarantined_inbox_ids
-                    .push("task3958-row-repeat-1".to_owned());
-                "repeated_piece_number"
-            }
-            _ => "accepted",
-        };
-        assert_eq!(refusal_name, "repeated_piece_number");
-        assert_eq!(repeated.chunks.get(&1), Some(&held_before));
-        assert!(
-            reassemble_native_text_group(&repeated).as_deref() == Some(whole.as_str()),
-            "a refused repeated piece number must not overwrite the held piece"
-        );
-        println!(
-            "TASK3958_REPEATED refusal_name={} held_piece_unchanged={} opened_private_messages={}",
-            refusal_name,
-            repeated.chunks.get(&1) == Some(&held_before),
-            usize::from(reassemble_native_text_group(&repeated).is_some())
-        );
-
-        let mut bad_fingerprint = complete_group();
-        bad_fingerprint
-            .chunks
-            .insert(2, "piece 2 with altered content ".to_owned());
-        let bad_fingerprint_opened =
-            usize::from(reassemble_native_text_group(&bad_fingerprint).is_some());
-        assert_eq!(bad_fingerprint_opened, 0);
-        println!(
-            "TASK3958_BAD_FINGERPRINT opened_private_messages={} whole_fingerprint_match={}",
-            bad_fingerprint_opened, false
-        );
     }
 
     #[test]
@@ -18556,75 +16184,6 @@ mod tests {
     }
 
     #[test]
-    fn task1309_direct_messages_reject_a_third_member() {
-        fn active_conversation_count(broker: &HubBrokerState) -> usize {
-            broker
-                .inner
-                .lock()
-                .expect("broker lock")
-                .active
-                .iter()
-                .count()
-        }
-
-        fn direct_members(context: &HubConversationContext) -> Vec<String> {
-            let mut members = vec![context.self_osl_id.clone()];
-            members.extend(context.participant_osl_ids.iter().cloned());
-            members.sort();
-            members.dedup();
-            members
-        }
-
-        let broker = HubBrokerState::default();
-        let before = active_conversation_count(&broker);
-        eprintln!("task1309: before conversation count={before}");
-        assert_eq!(before, 0);
-
-        let maple_dm = HubConversationContext {
-            service_id: "osl-chat".to_owned(),
-            account_id: "maple-account".to_owned(),
-            conversation_kind: HubConversationKind::Dm,
-            conversation_id: "maple-dm".to_owned(),
-            space_id: None,
-            participant_osl_ids: vec!["Ben".to_owned()],
-            self_osl_id: "Ava".to_owned(),
-        };
-        let lease = broker.activate(maple_dm.clone(), 1).unwrap();
-        let stored = broker.context_for(&lease.context_token).unwrap();
-        let after_create = active_conversation_count(&broker);
-        let stored_members = direct_members(&stored);
-        eprintln!(
-            "task1309: after create conversation count={after_create}; {} members={}",
-            stored.conversation_id,
-            stored_members.join(", ")
-        );
-        assert_eq!(after_create, 1);
-        assert_eq!(stored.conversation_id, "maple-dm");
-        assert_eq!(stored_members, vec!["Ava".to_owned(), "Ben".to_owned()]);
-
-        let mut third_member = maple_dm;
-        third_member.participant_osl_ids = vec!["Ben".to_owned(), "Cy".to_owned()];
-        let refusal = broker.activate(third_member, 2).unwrap_err();
-        eprintln!("task1309: three member refusal={refusal}");
-        assert_eq!(
-            refusal,
-            "OSL broker direct messages require exactly two members"
-        );
-
-        let still_stored = broker.context_for(&lease.context_token).unwrap();
-        let after_refusal = active_conversation_count(&broker);
-        let still_members = direct_members(&still_stored);
-        eprintln!(
-            "task1309: after refusal conversation count={after_refusal}; {} members={}",
-            still_stored.conversation_id,
-            still_members.join(", ")
-        );
-        assert_eq!(after_refusal, 1);
-        assert_eq!(still_stored.conversation_id, "maple-dm");
-        assert_eq!(still_members, vec!["Ava".to_owned(), "Ben".to_owned()]);
-    }
-
-    #[test]
     fn lease_is_bound_to_exact_active_host_generation() {
         let broker = HubBrokerState::default();
         let lease = broker
@@ -18707,566 +16266,6 @@ mod tests {
     }
 
     #[test]
-    fn service_burn_preserves_other_service_local_messages() {
-        let _serial = crate::global_keystore_test_lock();
-        let unique = format!(
-            "osl-hub-service-burn-{}-{}",
-            std::process::id(),
-            random_local_message_id()
-        );
-        let dir = std::env::temp_dir().join(unique);
-        std::fs::create_dir_all(&dir).unwrap();
-        keystore::set_base_dir_override(Some(dir.clone()));
-        keystore::set_active_account_dir(Some(dir.clone()));
-        ipc::main_password::set_main_password(&dir, "aB3!z9").unwrap();
-        let file_key =
-            ipc::main_password::get_file_storage_key().expect("main password installs file key");
-        let ledger_path = dir.join(LOCAL_PROTECTED_FILE);
-        let count_for_binding = |binding: &str| {
-            load_local_ledger(&ledger_path, &file_key)
-                .unwrap()
-                .records
-                .values()
-                .filter(|record| record.context_binding == binding)
-                .count()
-        };
-
-        let owner = "self-liam";
-        let chosen_context = HubConversationContext {
-            service_id: "email".to_owned(),
-            account_id: "burn-boundary-account".to_owned(),
-            conversation_kind: HubConversationKind::Dm,
-            conversation_id: "dm-burn-boundary".to_owned(),
-            space_id: None,
-            participant_osl_ids: vec![owner.to_owned()],
-            self_osl_id: owner.to_owned(),
-        };
-        let other_context = HubConversationContext {
-            service_id: "discord".to_owned(),
-            account_id: "burn-boundary-account".to_owned(),
-            conversation_kind: HubConversationKind::Dm,
-            conversation_id: "dm-burn-boundary".to_owned(),
-            space_id: None,
-            participant_osl_ids: vec![owner.to_owned()],
-            self_osl_id: owner.to_owned(),
-        };
-        let chosen_binding = local_context_binding(&chosen_context);
-        let other_binding = local_context_binding(&other_context);
-        assert_ne!(
-            chosen_binding, other_binding,
-            "service id must be part of the local burn boundary"
-        );
-
-        let core = HubCoreState::default();
-        *core.osl.identity.lock().unwrap() = Some(keystore::generate_identity(owner.to_owned()));
-        let broker = HubBrokerState::default();
-        let chosen_lease = broker.activate(chosen_context.clone(), 11).unwrap();
-        let chosen_mark = format!("EMBER-0535-chosen:{}", hex(&crypto::random::random_bytes(8)));
-        let security = HubSecurityState::default();
-        security::set_scope_security(&security, scope_input(&chosen_context).unwrap(), 3600, true)
-            .unwrap();
-        security::set_scope_security(&security, scope_input(&other_context).unwrap(), 3600, true)
-            .unwrap();
-        let broker = HubBrokerState::default();
-        let chosen_lease = broker.activate(chosen_context.clone(), 11).unwrap();
-        let chosen_mark = format!(
-            "EMBER-0535-chosen:{}",
-            hex(&crypto::random::random_bytes(8))
-        );
-        let chosen_message = prepare_local_protected_text(
-            &core,
-            &broker,
-            &chosen_lease.context_token,
-            chosen_mark.clone(),
-        )
-        .unwrap();
-        let chosen_read = decrypt_local_protected_capsule(
-            &core,
-            &broker,
-            &chosen_lease.context_token,
-            chosen_message.capsule.clone(),
-        )
-        .unwrap();
-        assert_eq!(chosen_read.plaintext, chosen_mark);
-
-        let other_lease = broker.activate(other_context.clone(), 12).unwrap();
-        let mut other_messages = Vec::new();
-        for index in 0..3 {
-            let mark = format!(
-                "EMBER-0535-other-{index}:{}",
-                hex(&crypto::random::random_bytes(8))
-            );
-            let prepared = prepare_local_protected_text(
-                &core,
-                &broker,
-                &other_lease.context_token,
-                mark.clone(),
-            )
-            .unwrap();
-            let read = decrypt_local_protected_capsule(
-                &core,
-                &broker,
-                &other_lease.context_token,
-                prepared.capsule.clone(),
-            )
-            .unwrap();
-            assert_eq!(read.plaintext, mark);
-            other_messages.push((mark, prepared.capsule));
-        }
-
-        let before_chosen = count_for_binding(&chosen_binding);
-        let before_other = count_for_binding(&other_binding);
-        eprintln!("TASK-0535 before chosen_service_count={before_chosen}");
-        eprintln!("TASK-0535 before other_service_count={before_other}");
-        eprintln!("TASK-0535 readable chosen mark={chosen_mark}");
-        for (mark, _) in &other_messages {
-            eprintln!("TASK-0535 readable other mark={mark}");
-        }
-        assert_eq!(before_chosen, 1);
-        assert_eq!(before_other, 3);
-
-        let chosen_burn_lease = broker.activate(chosen_context, 13).unwrap();
-        let burned = burn_local_protected_context(&core, &broker, &chosen_burn_lease.context_token)
-            .unwrap();
-        eprintln!("TASK-0535 burn removed={burned}");
-        assert_eq!(burned, 1);
-        let chosen_burn_lease = broker.activate(chosen_context.clone(), 13).unwrap();
-        let burned =
-            burn_local_protected_context(&core, &broker, &chosen_burn_lease.context_token).unwrap();
-        eprintln!("TASK-0535 burn removed={burned}");
-
-        let after_chosen = count_for_binding(&chosen_binding);
-        let after_other = count_for_binding(&other_binding);
-        eprintln!("TASK-0535 after chosen_service_count={after_chosen}");
-        eprintln!("TASK-0535 after other_service_count={after_other}");
-        if after_chosen != 0 {
-            let read = decrypt_local_protected_capsule(
-                &core,
-                &broker,
-                &chosen_burn_lease.context_token,
-                chosen_message.capsule,
-            )
-            .unwrap();
-            panic!(
-                "TASK-0535 marked service message still present: {}",
-                read.plaintext
-            );
-        }
-        assert_eq!(burned, 1);
-        assert_eq!(after_chosen, 0);
-        assert_eq!(after_other, 3);
-
-        let other_read_lease = broker.activate(other_context, 14).unwrap();
-        for (mark, capsule) in other_messages {
-            let read = decrypt_local_protected_capsule(
-                &core,
-                &broker,
-                &other_read_lease.context_token,
-                capsule,
-            )
-            .unwrap();
-            eprintln!("TASK-0535 after readable other mark={}", read.plaintext);
-            assert_eq!(read.plaintext, mark);
-        }
-
-        keystore::set_active_account_dir(None);
-        keystore::set_base_dir_override(None);
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn task_3566_double_burn_clicks_delete_marked_targets_once_per_scope() {
-        let _serial = crate::global_keystore_test_lock();
-        let unique = format!(
-            "osl-hub-task-3566-double-burn-{}-{}",
-            std::process::id(),
-            random_local_message_id()
-        );
-        let root = std::env::temp_dir().join(unique);
-        let ledger_dir = root.join("ledger");
-        let config_dir = root.join("config");
-        let local_data_dir = root.join("local-data");
-        std::fs::create_dir_all(&ledger_dir).unwrap();
-        std::fs::create_dir_all(config_dir.join("osl-core").join("messages")).unwrap();
-        std::fs::create_dir_all(&local_data_dir).unwrap();
-        let native_history = root.join("native-discord-history.txt");
-        std::fs::write(&native_history, b"native unmarked message").unwrap();
-
-        keystore::set_base_dir_override(Some(ledger_dir.clone()));
-        keystore::set_active_account_dir(Some(ledger_dir.clone()));
-        ipc::main_password::set_main_password(&ledger_dir, "aB3!z9").unwrap();
-        let file_key =
-            ipc::main_password::get_file_storage_key().expect("main password installs file key");
-        let ledger_path = ledger_dir.join(LOCAL_PROTECTED_FILE);
-
-        let owner = "self-liam";
-        let chat_context = HubConversationContext {
-            service_id: "discord".to_owned(),
-            account_id: "task-3566-account".to_owned(),
-            conversation_kind: HubConversationKind::Dm,
-            conversation_id: "dm-task-3566-chat".to_owned(),
-            space_id: None,
-            participant_osl_ids: vec![owner.to_owned()],
-            self_osl_id: owner.to_owned(),
-        };
-        let app_context_a = HubConversationContext {
-            service_id: "discord".to_owned(),
-            account_id: "task-3566-account".to_owned(),
-            conversation_kind: HubConversationKind::Dm,
-            conversation_id: "dm-task-3566-app-a".to_owned(),
-            space_id: None,
-            participant_osl_ids: vec![owner.to_owned()],
-            self_osl_id: owner.to_owned(),
-        };
-        let app_context_b = HubConversationContext {
-            service_id: "discord".to_owned(),
-            account_id: "task-3566-account".to_owned(),
-            conversation_kind: HubConversationKind::Dm,
-            conversation_id: "dm-task-3566-app-b".to_owned(),
-            space_id: None,
-            participant_osl_ids: vec![owner.to_owned()],
-            self_osl_id: owner.to_owned(),
-        };
-        let untouched_context = HubConversationContext {
-            service_id: "telegram".to_owned(),
-            account_id: "task-3566-other-account".to_owned(),
-            conversation_kind: HubConversationKind::Dm,
-            conversation_id: "dm-task-3566-unmarked".to_owned(),
-            space_id: None,
-            participant_osl_ids: vec![owner.to_owned()],
-            self_osl_id: owner.to_owned(),
-        };
-        let chat_binding = local_context_binding(&chat_context);
-        let app_binding_a = local_context_binding(&app_context_a);
-        let app_binding_b = local_context_binding(&app_context_b);
-        let untouched_binding = local_context_binding(&untouched_context);
-
-        let mut records = BTreeMap::new();
-        let mut insert_record = |id: &str, binding: &str, created_at: i64| {
-            records.insert(
-                id.to_owned(),
-                LocalProtectedRecord {
-                    context_binding: binding.to_owned(),
-                    capsule_sha256: format!("capsule-{id}"),
-                    created_at,
-                    last_opened_at: None,
-                    view_once: false,
-                },
-            );
-        };
-        insert_record("chat-marked-1", &chat_binding, 1);
-        insert_record("chat-marked-2", &chat_binding, 2);
-        insert_record("app-marked-a-1", &app_binding_a, 3);
-        insert_record("app-marked-a-2", &app_binding_a, 4);
-        insert_record("app-marked-b-1", &app_binding_b, 5);
-        insert_record("unmarked-ledger-1", &untouched_binding, 6);
-        insert_record("unmarked-ledger-2", &untouched_binding, 7);
-        write_local_ledger(
-            &ledger_path,
-            &LocalProtectedLedger {
-                version: LOCAL_PROTECTED_VERSION,
-                records,
-            },
-            &file_key,
-        )
-        .unwrap();
-
-        let count_binding = |binding: &str| {
-            load_local_ledger(&ledger_path, &file_key)
-                .unwrap()
-                .records
-                .values()
-                .filter(|record| record.context_binding == binding)
-                .count()
-        };
-        let count_unmarked_ledger = || count_binding(&untouched_binding);
-        let classify_second = |deleted| {
-            if deleted == 0 {
-                "already_absent"
-            } else {
-                "unexpected_delete"
-            }
-        };
-
-        let chat_before = count_binding(&chat_binding);
-        let chat_unmarked_before = count_unmarked_ledger();
-        let chat_first_deleted =
-            prune_local_ledger_context(&ledger_path, &file_key, &chat_binding).unwrap();
-        let chat_second_deleted =
-            prune_local_ledger_context(&ledger_path, &file_key, &chat_binding).unwrap();
-        let chat_unmarked_after = count_unmarked_ledger();
-        let chat_unmarked_deleted = chat_unmarked_before.saturating_sub(chat_unmarked_after);
-        println!(
-            "TASK-3566 scope=chat before={chat_before} first_deleted={chat_first_deleted} second_action={} second_deleted={chat_second_deleted} unmarked_deleted={chat_unmarked_deleted}",
-            classify_second(chat_second_deleted)
-        );
-
-        assert!(chat_before > 0);
-        assert_eq!(chat_first_deleted, chat_before);
-        assert_eq!(chat_second_deleted, 0);
-        assert_eq!(chat_unmarked_deleted, 0);
-
-        let app_bindings = [&app_binding_a, &app_binding_b];
-        let app_before = app_bindings
-            .iter()
-            .map(|binding| count_binding(binding))
-            .sum::<usize>();
-        let app_unmarked_before = count_unmarked_ledger();
-        let app_core = HubCoreState::default();
-        *app_core.osl.identity.lock().unwrap() =
-            Some(keystore::generate_identity(owner.to_owned()));
-        let app_first_deleted = app_bindings
-            .iter()
-            .map(|binding| burn_indexed_local_protected_binding(&app_core, binding))
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap()
-            .into_iter()
-            .sum::<usize>();
-        let app_second_deleted = app_bindings
-            .iter()
-            .map(|binding| burn_indexed_local_protected_binding(&app_core, binding))
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap()
-            .into_iter()
-            .sum::<usize>();
-        let app_unmarked_after = count_unmarked_ledger();
-        let app_unmarked_deleted = app_unmarked_before.saturating_sub(app_unmarked_after);
-        println!(
-            "TASK-3566 scope=app before={app_before} first_deleted={app_first_deleted} second_action={} second_deleted={app_second_deleted} unmarked_deleted={app_unmarked_deleted}",
-            classify_second(app_second_deleted)
-        );
-
-        assert!(app_before > 0);
-        assert_eq!(app_first_deleted, app_before);
-        assert_eq!(app_second_deleted, 0);
-        assert_eq!(app_unmarked_deleted, 0);
-
-        keystore::set_base_dir_override(Some(config_dir.join("osl-core")));
-        keystore::set_active_account_dir(Some(config_dir.join("osl-core")));
-        ipc::main_password::set_main_password(&config_dir.join("osl-core"), "aB3!z9").unwrap();
-        let account_marks = [
-            config_dir
-                .join("osl-core")
-                .join("messages")
-                .join("account-marked-1"),
-            config_dir
-                .join("osl-core")
-                .join("messages")
-                .join("account-marked-2"),
-            config_dir
-                .join("osl-core")
-                .join("messages")
-                .join("account-marked-3"),
-        ];
-        for (index, mark) in account_marks.iter().enumerate() {
-            std::fs::write(mark, format!("marked account message {index}")).unwrap();
-        }
-        let account_before = account_marks.iter().filter(|path| path.exists()).count();
-        let account_unmarked_before = usize::from(native_history.exists());
-        let core = HubCoreState::default();
-        let account_first =
-            crate::cleanup::execute_full_hub_cleanup(&core, &config_dir, &local_data_dir, true)
-                .unwrap();
-        let account_after_first = account_marks.iter().filter(|path| path.exists()).count();
-        let account_first_deleted = account_before.saturating_sub(account_after_first);
-        let account_second =
-            crate::cleanup::execute_full_hub_cleanup(&core, &config_dir, &local_data_dir, true);
-        let account_second_action = match &account_second {
-            Ok(result) if result.removed_targets.is_empty() => "already_absent",
-            Ok(_) => "unexpected_delete",
-            Err(error) if error == "OSL main password must be unlocked" => {
-                "refused:main_password_locked"
-            }
-            Err(_) => "refused:other",
-        };
-        let account_after_second = account_marks.iter().filter(|path| path.exists()).count();
-        let account_second_deleted = account_after_first.saturating_sub(account_after_second);
-        let account_unmarked_after = usize::from(native_history.exists());
-        let account_unmarked_deleted =
-            account_unmarked_before.saturating_sub(account_unmarked_after);
-        println!(
-            "TASK-3566 scope=account before={account_before} first_deleted={account_first_deleted} removed_targets={} second_action={account_second_action} second_deleted={account_second_deleted} unmarked_deleted={account_unmarked_deleted}",
-            account_first.removed_targets.join(",")
-        );
-
-        assert!(account_before > 0);
-        assert_eq!(account_first_deleted, account_before);
-        assert_eq!(account_second_action, "refused:main_password_locked");
-        assert_eq!(account_second_deleted, 0);
-        assert_eq!(account_unmarked_deleted, 0);
-
-        keystore::set_base_dir_override(None);
-        keystore::set_active_account_dir(None);
-        ipc::main_password::set_file_storage_key(None);
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn task_3559_empty_burn_scopes_do_not_mutate_state_or_request_deletion() {
-        let _serial = crate::global_keystore_test_lock();
-        ipc::main_password::set_file_storage_key(None);
-        keystore::set_base_dir_override(None);
-        keystore::set_active_account_dir(None);
-
-        let unique = format!(
-            "osl-hub-task-3559-empty-burn-{}-{}",
-            std::process::id(),
-            random_local_message_id()
-        );
-        let root = std::env::temp_dir().join(unique);
-        let ledger_dir = root.join("ledger");
-        std::fs::create_dir_all(&ledger_dir).unwrap();
-
-        keystore::set_base_dir_override(Some(ledger_dir.clone()));
-        keystore::set_active_account_dir(Some(ledger_dir.clone()));
-        ipc::main_password::set_main_password(&ledger_dir, "aB3!z9").unwrap();
-        let file_key =
-            ipc::main_password::get_file_storage_key().expect("main password installs file key");
-        let ledger_path = ledger_dir.join(LOCAL_PROTECTED_FILE);
-
-        let owner = "self-liam";
-        let chat_context = HubConversationContext {
-            service_id: "discord".to_owned(),
-            account_id: "task-3559-account".to_owned(),
-            conversation_kind: HubConversationKind::Dm,
-            conversation_id: "dm-task-3559-chat-empty".to_owned(),
-            space_id: None,
-            participant_osl_ids: vec![owner.to_owned()],
-            self_osl_id: owner.to_owned(),
-        };
-        let app_context = HubConversationContext {
-            service_id: "discord".to_owned(),
-            account_id: "task-3559-account".to_owned(),
-            conversation_kind: HubConversationKind::Dm,
-            conversation_id: "dm-task-3559-app-empty".to_owned(),
-            space_id: None,
-            participant_osl_ids: vec![owner.to_owned()],
-            self_osl_id: owner.to_owned(),
-        };
-        let chat_binding = local_context_binding(&chat_context);
-        let app_binding = local_context_binding(&app_context);
-
-        let local_snapshot = |binding: &str| {
-            let ledger = load_local_ledger(&ledger_path, &file_key).unwrap();
-            let total_records = ledger.records.len();
-            let matching_records = ledger
-                .records
-                .values()
-                .filter(|record| record.context_binding == binding)
-                .count();
-            (ledger_path.exists(), total_records, matching_records)
-        };
-        let changed_local_fields = |before: (bool, usize, usize), after: (bool, usize, usize)| {
-            usize::from(before.0 != after.0)
-                + usize::from(before.1 != after.1)
-                + usize::from(before.2 != after.2)
-        };
-        let format_local_state = |state: (bool, usize, usize)| {
-            format!(
-                "ledger_exists:{};total_records:{};matching_records:{}",
-                state.0, state.1, state.2
-            )
-        };
-
-        let chat_before = local_snapshot(&chat_binding);
-        assert_eq!(chat_before.1, 0);
-        assert_eq!(chat_before.2, 0);
-        let chat_deleted =
-            prune_local_ledger_context(&ledger_path, &file_key, &chat_binding).unwrap();
-        let chat_after = local_snapshot(&chat_binding);
-        let chat_changed = changed_local_fields(chat_before, chat_after);
-        let chat_result = if chat_deleted == 0 {
-            "no_op:already_empty"
-        } else {
-            "unexpected_delete"
-        };
-        println!(
-            "TASK-3559 scope=chat sent=0 stored=0 result={chat_result} deletion_requests=0 before={} after={} changed_fields={chat_changed}",
-            format_local_state(chat_before),
-            format_local_state(chat_after)
-        );
-        assert_eq!(chat_result, "no_op:already_empty");
-        assert_eq!(chat_deleted, 0);
-        assert_eq!(chat_changed, 0);
-
-        let app_core = HubCoreState::default();
-        *app_core.osl.identity.lock().unwrap() =
-            Some(keystore::generate_identity(owner.to_owned()));
-        let app_before = local_snapshot(&app_binding);
-        assert_eq!(app_before.1, 0);
-        assert_eq!(app_before.2, 0);
-        let app_deleted = burn_indexed_local_protected_binding(&app_core, &app_binding).unwrap();
-        let app_after = local_snapshot(&app_binding);
-        let app_changed = changed_local_fields(app_before, app_after);
-        let app_result = if app_deleted == 0 {
-            "no_op:already_empty"
-        } else {
-            "unexpected_delete"
-        };
-        println!(
-            "TASK-3559 scope=app sent=0 stored=0 result={app_result} deletion_requests=0 before={} after={} changed_fields={app_changed}",
-            format_local_state(app_before),
-            format_local_state(app_after)
-        );
-        assert_eq!(app_result, "no_op:already_empty");
-        assert_eq!(app_deleted, 0);
-        assert_eq!(app_changed, 0);
-
-        ipc::main_password::set_file_storage_key(None);
-        keystore::set_base_dir_override(None);
-        keystore::set_active_account_dir(None);
-        let account_config_dir = root.join("account-config");
-        let account_local_data_dir = root.join("account-local-data");
-        let account_snapshot = || {
-            (
-                account_config_dir.exists(),
-                account_config_dir.join("osl-core").exists(),
-                account_local_data_dir.exists(),
-                ipc::main_password::get_file_storage_key().is_some(),
-            )
-        };
-        let changed_account_fields =
-            |before: (bool, bool, bool, bool), after: (bool, bool, bool, bool)| {
-                usize::from(before.0 != after.0)
-                    + usize::from(before.1 != after.1)
-                    + usize::from(before.2 != after.2)
-                    + usize::from(before.3 != after.3)
-            };
-        let format_account_state = |state: (bool, bool, bool, bool)| {
-            format!(
-                "config_exists:{};hub_core_exists:{};local_data_exists:{};file_key_unlocked:{}",
-                state.0, state.1, state.2, state.3
-            )
-        };
-        let account_before = account_snapshot();
-        let account_result = crate::cleanup::execute_full_hub_cleanup(
-            &HubCoreState::default(),
-            &account_config_dir,
-            &account_local_data_dir,
-            true,
-        );
-        let account_after = account_snapshot();
-        let account_changed = changed_account_fields(account_before, account_after);
-        let account_result = match account_result {
-            Ok(result) if result.removed_targets.is_empty() => "no_op:already_empty".to_owned(),
-            Ok(_) => "unexpected_delete".to_owned(),
-            Err(error) => format!("refused:{error}"),
-        };
-        println!(
-            "TASK-3559 scope=account sent=0 stored=0 result=\"{account_result}\" deletion_requests=0 before={} after={} changed_fields={account_changed}",
-            format_account_state(account_before),
-            format_account_state(account_after)
-        );
-        assert_eq!(account_result, "refused:OSL main password must be unlocked");
-        assert_eq!(account_changed, 0);
-
-        keystore::set_base_dir_override(None);
-        keystore::set_active_account_dir(None);
-        ipc::main_password::set_file_storage_key(None);
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
     fn view_once_open_consumes_only_the_authorised_record() {
         let mut ledger = LocalProtectedLedger::default();
         ledger.records.insert(
@@ -19331,7 +16330,6 @@ mod tests {
             ]
             .join(" "),
             view_once: false,
-            display_duration_seconds: None,
             require_capture_protection: true,
             logical_message_id: None,
             chunk_index: None,
@@ -19406,7 +16404,7 @@ ok i will weekend again with you"
                             RehydratedRowAttribution {
                                 discord_message_id: "123456789".to_owned(),
                                 poster_identity_sha256: "a".repeat(64),
-                                who_wrote_it: SharedRowWhoWroteIt::Theirs,
+                                poster: RehydratedRowPoster::PeerAccount,
                                 native_locator_sha256: "b".repeat(64),
                                 carrier_sha256: "c".repeat(64),
                                 blob_id: "d".repeat(32),
@@ -19487,19 +16485,11 @@ ok i will weekend again with you",
                 .collect::<HashSet<_>>();
             assert_eq!(
                 keys,
-                HashSet::from([
-                    "attribution",
-                    "flagtext",
-                    "orientation",
-                    "plaintext",
-                    "whoWroteIt",
-                ])
+                HashSet::from(["attribution", "flagtext", "orientation", "plaintext"])
             );
         }
-        assert_eq!(wire_rows[0]["whoWroteIt"], "not_published_by_app");
-        assert_eq!(wire_rows[1]["whoWroteIt"], "theirs");
         assert!(wire_rows[0]["attribution"].is_null());
-        assert_eq!(wire_rows[1]["attribution"]["whoWroteIt"], "theirs");
+        assert_eq!(wire_rows[1]["attribution"]["poster"], "peer_account");
         assert_eq!(wire_rows[1]["attribution"]["orientation"], "incoming");
         assert!(wire_rows[2]["attribution"].is_null());
     }
@@ -19578,7 +16568,8 @@ ok i will weekend again with you",
             ipc::prose_token::BRIDGE_ID_BYTES * 2,
             "the fixture must be the width the shipping send path actually returns"
         );
-        let evidence = bridge_era_evidence(SharedRowWhoWroteIt::Theirs);
+        let evidence =
+            bridge_era_evidence(crate::native_discord_adapter::NativeDiscordRowPoster::PeerAccount);
         let mut authenticated = matrix_authenticated(
             PeerWireOrientation::PeerToSelf,
             "payload-bridge-era",
@@ -19607,7 +16598,9 @@ ok i will weekend again with you",
             "c882e13e918656dz",  // not hex
             "zzzzzzzzzzzzzzzz",
         ] {
-            let evidence = bridge_era_evidence(SharedRowWhoWroteIt::Theirs);
+            let evidence = bridge_era_evidence(
+                crate::native_discord_adapter::NativeDiscordRowPoster::PeerAccount,
+            );
             let mut authenticated = matrix_authenticated(
                 PeerWireOrientation::PeerToSelf,
                 "payload-bridge-era",
@@ -19623,12 +16616,12 @@ ok i will weekend again with you",
     }
 
     fn bridge_era_evidence(
-        who_wrote_it: SharedRowWhoWroteIt,
+        poster: crate::native_discord_adapter::NativeDiscordRowPoster,
     ) -> crate::native_discord_adapter::NativeDiscordRowAttributionEvidence {
         crate::native_discord_adapter::NativeDiscordRowAttributionEvidence {
             discord_message_id: "111111111111111111".to_owned(),
             poster_identity_sha256: "a".repeat(64),
-            who_wrote_it,
+            poster,
             native_locator_sha256: "b".repeat(64),
             carrier_sha256: "c".repeat(64),
             scope_binding_sha256: "d".repeat(64),
@@ -19657,7 +16650,6 @@ ok i will weekend again with you",
                 recipient_osl_user_id: "recipient".to_owned(),
                 plaintext: plaintext.to_owned(),
                 view_once: false,
-                display_duration_seconds: None,
                 require_capture_protection: true,
                 logical_message_id: None,
                 chunk_index: None,
@@ -19688,8 +16680,8 @@ ok i will weekend again with you",
     fn native_producer_broker_and_command_dto_matrix_is_behavioral_and_fail_closed() {
         use crate::native_discord_adapter::{
             native_row_attribution_from_provider, native_row_producer_batch_is_valid,
+            NativeDiscordRowPoster,
         };
-        use crate::row_who_wrote_it::SharedRowWhoWroteIt;
 
         const OWN_CARRIER: &str = "the quiet harbour keeps every lantern burning tonight";
         const PEER_CARRIER: &str = "the winter garden waits beside the silver morning";
@@ -19709,8 +16701,8 @@ ok i will weekend again with you",
             1,
         )
         .expect("native header participant produces peer evidence");
-        assert_eq!(own.who_wrote_it, SharedRowWhoWroteIt::Yours);
-        assert_eq!(peer.who_wrote_it, SharedRowWhoWroteIt::Theirs);
+        assert_eq!(own.poster, NativeDiscordRowPoster::SelfAccount);
+        assert_eq!(peer.poster, NativeDiscordRowPoster::PeerAccount);
         let rows = vec![
             matrix_visible_row(own.clone(), OWN_CARRIER, 10),
             matrix_visible_row(peer.clone(), PEER_CARRIER, 40),
@@ -19737,22 +16729,19 @@ ok i will weekend again with you",
             }),
             |_, evidence| {
                 let evidence = evidence.expect("validated native evidence");
-                let authenticated = match evidence.who_wrote_it {
-                    SharedRowWhoWroteIt::Yours => matrix_authenticated(
+                let authenticated = match evidence.poster {
+                    NativeDiscordRowPoster::SelfAccount => matrix_authenticated(
                         PeerWireOrientation::SelfToPeer,
                         "payload-own",
                         "own plaintext",
                         'a',
                     ),
-                    SharedRowWhoWroteIt::Theirs => matrix_authenticated(
+                    NativeDiscordRowPoster::PeerAccount => matrix_authenticated(
                         PeerWireOrientation::PeerToSelf,
                         "payload-peer",
                         "peer plaintext",
                         'b',
                     ),
-                    SharedRowWhoWroteIt::NotPublishedByApp => {
-                        panic!("not-published rows are refused before authentication")
-                    }
                 };
                 bind_authenticated_native_row(evidence, authenticated)
             },
@@ -19777,9 +16766,9 @@ ok i will weekend again with you",
             })
             .collect::<Vec<_>>();
         let wire = serde_json::to_value(&dto).expect("command DTO serializes");
-        assert_eq!(wire[0]["attribution"]["whoWroteIt"], "yours");
+        assert_eq!(wire[0]["attribution"]["poster"], "self_account");
         assert_eq!(wire[0]["orientation"], "outgoing");
-        assert_eq!(wire[1]["attribution"]["whoWroteIt"], "theirs");
+        assert_eq!(wire[1]["attribution"]["poster"], "peer_account");
         assert_eq!(wire[1]["orientation"], "incoming");
         assert_eq!(wire[0]["row"]["widthPx"], 300.0);
 
@@ -19859,23 +16848,14 @@ ok i will weekend again with you",
             matrix_native_observation("555555555555555555", "999999999999999999", PEER_CARRIER, 30);
         assert_ne!(foreign.poster_identity, foreign.self_identity);
         assert_ne!(foreign.poster_identity, foreign.expected_peer_identity);
-        let foreign_evidence = native_row_attribution_from_provider(
+        assert!(native_row_attribution_from_provider(
             foreign,
             &[PEER_CARRIER.to_owned()],
             "trusted-scope",
             7,
             0,
         )
-        .expect("foreign poster is an evidenced not-published answer");
-        assert_eq!(
-            foreign_evidence.who_wrote_it,
-            SharedRowWhoWroteIt::NotPublishedByApp
-        );
-        assert!(!native_row_evidence_batch_is_valid(
-            &[matrix_visible_row(foreign_evidence, PEER_CARRIER, 70)],
-            "trusted-scope",
-            7
-        ));
+        .is_none());
 
         let replayed_crypto_attribution = bind_authenticated_native_row(
             &peer,
@@ -19891,7 +16871,6 @@ ok i will weekend again with you",
         let crypto_replay = vec![
             RehydratedNativeDiscordRow {
                 flagtext: OWN_CARRIER.to_owned(),
-                who_wrote_it: SharedRowWhoWroteIt::Yours,
                 plaintext: Some("own plaintext".to_owned()),
                 orientation: Some(RehydratedRowOrientation::Outgoing),
                 attribution: Some(
@@ -19911,7 +16890,6 @@ ok i will weekend again with you",
             },
             RehydratedNativeDiscordRow {
                 flagtext: PEER_CARRIER.to_owned(),
-                who_wrote_it: SharedRowWhoWroteIt::Theirs,
                 plaintext: Some("replayed plaintext".to_owned()),
                 orientation: Some(RehydratedRowOrientation::Incoming),
                 attribution: Some(replayed_crypto_attribution),
@@ -19923,7 +16901,6 @@ ok i will weekend again with you",
         let inconsistent_dto = rehydrated_native_discord_row_dto(
             RehydratedNativeDiscordRow {
                 flagtext: OWN_CARRIER.to_owned(),
-                who_wrote_it: SharedRowWhoWroteIt::Yours,
                 plaintext: Some("must not cross the command boundary".to_owned()),
                 orientation: Some(RehydratedRowOrientation::Incoming),
                 attribution: Some(
@@ -20350,7 +17327,6 @@ ok i will weekend again with you",
             "i said this myself".to_owned(),
             PeerProtectionPolicy {
                 view_once: false,
-                display_duration_seconds: None,
                 require_capture_protection: false,
                 created_at: 1_700_000_000,
                 expires_at: 1_700_003_600,
@@ -20529,7 +17505,6 @@ ok i will weekend again with you",
             recipient_osl_user_id: context.self_osl_id.clone(),
             plaintext: plaintext.clone(),
             view_once: false,
-            display_duration_seconds: None,
             require_capture_protection: true,
             logical_message_id: Some("peer-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned()),
             chunk_index: Some(0),
@@ -20628,7 +17603,6 @@ ok i will weekend again with you",
             recipient_osl_user_id: "osl-self-inbound".to_owned(),
             plaintext: "x".to_owned(),
             view_once: false,
-            display_duration_seconds: None,
             require_capture_protection: true,
             logical_message_id: None,
             chunk_index: None,
@@ -20640,95 +17614,6 @@ ok i will weekend again with you",
         payload.require_capture_protection = false;
         assert!(capture_policy_allows_plaintext(&payload, true));
         assert!(capture_policy_allows_plaintext(&payload, false));
-    }
-
-    #[test]
-    fn task_4017_capture_required_private_message_is_held_until_protection_is_ready() {
-        let source = include_str!("broker.rs");
-        let drain_osl_chat_text_body = source
-            .split_once("pub fn drain_osl_chat_text(")
-            .and_then(|(_, tail)| {
-                tail.split_once("/// Fetch the active peer's control rows")
-                    .map(|(body, _)| body)
-            })
-            .expect("production OSL Chat drain source is present");
-        assert!(
-            drain_osl_chat_text_body.contains(
-                "open_capture_gated_private_message_queue(capture_protection_ready,"
-            ),
-            "the shipping OSL Chat drain must use the same capture gate this test exercises"
-        );
-
-        let mut queue = vec![PeerProtectedPayload {
-            version: PEER_PROTECTED_VERSION,
-            message_id: "peer-4017000000000000000000000000000".to_owned(),
-            send_seq: None,
-            scope_commitment: None,
-            created_at: 1_786_996_400,
-            expires_at: 1_787_000_000,
-            service_id: "osl-chat".to_owned(),
-            conversation_binding: "manual-dm-task-4017".to_owned(),
-            sender_osl_user_id: "osl-sender-4017".to_owned(),
-            recipient_osl_user_id: "osl-recipient-4017".to_owned(),
-            plaintext: "task 4017 private message".to_owned(),
-            view_once: false,
-            display_duration_seconds: None,
-            require_capture_protection: true,
-            logical_message_id: None,
-            chunk_index: None,
-            chunk_count: None,
-            whole_sha256: None,
-        }];
-        assert_eq!(queue.len(), 1);
-        assert!(capture_policy_allows_plaintext(&queue[0], true));
-        assert!(!capture_policy_allows_plaintext(&queue[0], false));
-        println!("TASK4017_MESSAGE_DEMANDS_CAPTURE_PROTECTION=true");
-
-        let protected_off = open_capture_gated_private_message_queue(false, || {
-            panic!("capture-off open must not touch the private-message queue")
-        });
-        let refusal_sentence = protected_off.expect_err("capture-off open is refused");
-        let opened_private_messages_off = 0usize;
-        let queue_after_refusal = queue.len();
-        println!(
-            "TASK4017_OPENED_PRIVATE_MESSAGES_WITH_PROTECTION_OFF={opened_private_messages_off}"
-        );
-        println!("TASK4017_REFUSAL_SENTENCE={refusal_sentence}");
-        println!("TASK4017_QUEUE_COUNT_AFTER_REFUSAL={queue_after_refusal}");
-        assert_eq!(opened_private_messages_off, 0);
-        assert_eq!(refusal_sentence, OSL_CHAT_UNPROTECTED_MODE_REFUSAL);
-        assert_eq!(queue_after_refusal, 1);
-
-        let protected_on = open_capture_gated_private_message_queue(true, || {
-            let payload = queue.pop().expect("one held private message opens");
-            assert!(capture_policy_allows_plaintext(&payload, true));
-            Ok(OpenedNativeOverlayTextBatch {
-                messages: vec![OpenedNativeOverlayText::test_fixture(
-                    &payload.message_id,
-                    None,
-                    &payload.plaintext,
-                    true,
-                    true,
-                    false,
-                    payload.created_at,
-                    payload.expires_at,
-                )],
-                pending_view_once: Vec::new(),
-                acknowledgments: Vec::new(),
-                fetched: 1,
-                decrypt_display_enabled: true,
-                deferred_rows: 0,
-                unrecognized_wire_rows: 0,
-            })
-        })
-        .expect("capture-on open succeeds");
-        let opened_private_messages_on = protected_on.messages.len();
-        println!(
-            "TASK4017_OPENED_PRIVATE_MESSAGES_WITH_PROTECTION_ON={opened_private_messages_on}"
-        );
-        println!("TASK4017_QUEUE_COUNT_AFTER_PROTECTED_OPEN={}", queue.len());
-        assert_eq!(opened_private_messages_on, 1);
-        assert_eq!(queue.len(), 0);
     }
 
     #[test]
@@ -20746,7 +17631,6 @@ ok i will weekend again with you",
             recipient_osl_user_id: "osl-self-inbound".to_owned(),
             plaintext: "screen-capture gated recovery phrase material".to_owned(),
             view_once: false,
-            display_duration_seconds: None,
             require_capture_protection: true,
             logical_message_id: None,
             chunk_index: None,
@@ -20975,9 +17859,4 @@ ok i will weekend again with you",
         keystore::set_active_account_dir(None);
         ipc::main_password::set_file_storage_key(None);
     }
-}
-
-pub enum RehydratedRowPoster {
-    SelfAccount,
-    PeerAccount,
 }

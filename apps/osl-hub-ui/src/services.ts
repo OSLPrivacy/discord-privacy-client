@@ -1,12 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { isTauriRuntime } from "./preferences";
 
-export type ServiceId = "discord" | "telegram" | "email" | "signal" | "whatsapp" | "messenger";
+export type ServiceId = "discord" | "telegram" | "email" | "signal" | "whatsapp" | "x" | "instagram" | "messenger";
 export type ConnectionState = "demoLinked" | "notLinked";
-export type EmailProvider = "gmail" | "outlook" | "proton" | "tuta" | "yahoo" | "aol" | "gmx" | "maildotcom" | "icloud";
+export type EmailProvider = "gmail" | "outlook" | "proton" | "yahoo" | "aol" | "gmx" | "maildotcom" | "icloud";
 export type ServiceCategory = "consumer" | "enterprise";
-export type LaunchState = "available" | "comingSoon";
-export type OfferedEmailProvider = "gmail" | "outlook" | "proton" | "yahoo" | "aol" | "gmx" | "maildotcom" | "icloud" | "tuta";
+/** `comingSoon` is reserved for OSL Mail and OSL Notes. */
+export type LaunchState = "available" | "unavailable" | "comingSoon";
+export type OfferedEmailProvider = "gmail" | "outlook" | "proton" | "yahoo" | "aol" | "gmx" | "maildotcom" | "icloud";
 export type HomeAppId = Exclude<ServiceId, "email"> | OfferedEmailProvider;
 export type HomeAppVisibility = "launch" | "later";
 export type HomeAppSection = "social" | "email" | "later";
@@ -238,6 +239,8 @@ export interface HomeAppCatalogEntry {
   visibility: HomeAppVisibility;
   section: HomeAppSection;
   launchState: LaunchState;
+  /** Exact evidence shown on hover for a disabled Home tile. */
+  unavailableReason: string | null;
   linked: boolean;
   accountCount: number;
   setupEligible: boolean;
@@ -340,14 +343,14 @@ export const AndroidSurface = {
   },
 };
 
-const serviceIds: readonly ServiceId[] = ["discord", "telegram", "email", "signal", "whatsapp", "messenger"];
+const serviceIds: readonly ServiceId[] = ["discord", "telegram", "email", "signal", "whatsapp", "x", "instagram", "messenger"];
 const connectionStates: readonly ConnectionState[] = ["demoLinked", "notLinked"];
-const emailProviders: readonly EmailProvider[] = ["gmail", "outlook", "proton", "tuta", "yahoo", "aol", "gmx", "maildotcom", "icloud"];
+const emailProviders: readonly EmailProvider[] = ["gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud"];
 const maxAccountsPerService = 10;
 const nativeAppIds: readonly NativeAppId[] = ["discord", "telegram", "signal", "whatsapp", "outlook"];
 const browserImportIds: readonly BrowserImportId[] = ["chrome", "edge", "firefox", "brave", "opera", "duckduckgo"];
 const firefoxServiceIds: readonly HomeAppId[] = [
-  "messenger", "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud", "tuta",
+  "messenger", "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud",
 ];
 const nativeAppSupportStatuses: readonly NativeAppSupportStatus[] = [
   "available", "beta", "experimental", "comingSoon", "externallyBlocked", "noClaim",
@@ -390,12 +393,12 @@ const nativePreviewApps: readonly NativeApp[] = [
   // Those are different assertions, so allowlist rule 5's "conflicting" clause
   // applies and the answer is no claim, with the disagreement named.
   { id: "telegram", displayName: "Telegram", availability: "installable", supportStatus: "noClaim", carrierEvidence: "provenLiveWithReceipt", deliveryEvidence: "neverProvenLive", claimBlockers: [], claimNote: "OSL has carried cover text through Telegram's composer and earned a live carry receipt for it -- the only surface that has. But OSL's own support matrix still records Telegram as externally blocked, which is a claim about Telegram rather than about us. Those disagree, so OSL makes no claim about it.", statusPage: { capability: "live carry capability is proven; delivery is not live-proven", generatedLabel: "Not claimed", explanation: "OSL has carried cover text through Telegram's composer and earned a live carry receipt for it -- the only surface that has. But OSL's own support matrix still records Telegram as externally blocked, which is a claim about Telegram rather than about us. Those disagree, so OSL makes no claim about it." }, protectedMode: "unavailable", isolatedProfileAvailable: true, supportsOverlay: false },
-  { id: "signal", displayName: "Signal", availability: "installable", supportStatus: "comingSoon", carrierEvidence: "builtNeverProvenLive", deliveryEvidence: "neverProvenLive", claimBlockers: ["send-input-generalisation"], claimNote: "A Signal adapter profile exists and has never been driven against the live client. Signal's adapter also refuses synthesised input by design, which is the only technique any surface has been shown to land by, so nothing is proven here.", statusPage: { capability: "carrier capability is wired but not live-proven", generatedLabel: "Coming later", explanation: "A Signal adapter profile exists and has never been driven against the live client. Signal's adapter also refuses synthesised input by design, which is the only technique any surface has been shown to land by, so nothing is proven here." }, protectedMode: "unavailable", isolatedProfileAvailable: true, supportsOverlay: false },
+  { id: "signal", displayName: "Signal", availability: "installable", supportStatus: "noClaim", carrierEvidence: "builtNeverProvenLive", deliveryEvidence: "neverProvenLive", claimBlockers: ["send-input-generalisation"], claimNote: "A Signal adapter profile exists and has never been driven against the live client. Signal's adapter also refuses synthesised input by design, which is the only technique any surface has been shown to land by, so nothing is proven here.", statusPage: { capability: "carrier capability is wired but not live-proven", generatedLabel: "Not claimed", explanation: "A Signal adapter profile exists and has never been driven against the live client. Signal's adapter also refuses synthesised input by design, which is the only technique any surface has been shown to land by, so nothing is proven here." }, protectedMode: "unavailable", isolatedProfileAvailable: true, supportsOverlay: false },
   // D-234. Measured against the live client and REFUSED -- not unfinished work.
   // Same badge as Signal, different state, and the sentence is what keeps them
   // apart.
-  { id: "whatsapp", displayName: "WhatsApp", availability: "installable", supportStatus: "comingSoon", carrierEvidence: "measuredAndRefused", deliveryEvidence: "neverProvenLive", claimBlockers: ["send-input-generalisation"], claimNote: "OSL measured WhatsApp's composer against the live client and the write did not land: the value reaches the accessibility layer and the message document stays empty. This is a refused technique, not unfinished work, so nothing is proven here.", statusPage: { capability: "carrier write capability was measured and refused", generatedLabel: "Coming later", explanation: "OSL measured WhatsApp's composer against the live client and the write did not land: the value reaches the accessibility layer and the message document stays empty. This is a refused technique, not unfinished work, so nothing is proven here." }, protectedMode: "unavailable", isolatedProfileAvailable: false, supportsOverlay: false },
-  { id: "outlook", displayName: "Outlook", availability: "unavailable", supportStatus: "comingSoon", carrierEvidence: "notBuilt", deliveryEvidence: "notDeliverable", claimBlockers: [], claimNote: "No Outlook desktop carrier is wired. There is no adapter to prove and nothing is sent through Outlook today.", statusPage: { capability: "no carrier capability is wired", generatedLabel: "Coming later", explanation: "No Outlook desktop carrier is wired. There is no adapter to prove and nothing is sent through Outlook today." }, protectedMode: "unavailable", isolatedProfileAvailable: false, supportsOverlay: false },
+  { id: "whatsapp", displayName: "WhatsApp", availability: "installable", supportStatus: "noClaim", carrierEvidence: "measuredAndRefused", deliveryEvidence: "neverProvenLive", claimBlockers: ["send-input-generalisation"], claimNote: "OSL measured WhatsApp's composer against the live client and the write did not land: the value reaches the accessibility layer and the message document stays empty. This is a refused technique, not unfinished work, so nothing is proven here.", statusPage: { capability: "carrier write capability was measured and refused", generatedLabel: "Not claimed", explanation: "OSL measured WhatsApp's composer against the live client and the write did not land: the value reaches the accessibility layer and the message document stays empty. This is a refused technique, not unfinished work, so nothing is proven here." }, protectedMode: "unavailable", isolatedProfileAvailable: false, supportsOverlay: false },
+  { id: "outlook", displayName: "Outlook", availability: "unavailable", supportStatus: "noClaim", carrierEvidence: "notBuilt", deliveryEvidence: "notDeliverable", claimBlockers: [], claimNote: "No Outlook desktop carrier is wired. There is no adapter to prove and nothing is sent through Outlook today.", statusPage: { capability: "no carrier capability is wired", generatedLabel: "Not claimed", explanation: "No Outlook desktop carrier is wired. There is no adapter to prove and nothing is sent through Outlook today." }, protectedMode: "unavailable", isolatedProfileAvailable: false, supportsOverlay: false },
 ];
 
 interface HomeAppDefinition {
@@ -406,26 +409,25 @@ interface HomeAppDefinition {
   visibility: HomeAppVisibility;
   section: HomeAppSection;
   defaultLaunchState: LaunchState;
+  unavailableReason: string | null;
 }
 
 const homeAppDefinitions: readonly HomeAppDefinition[] = [
   homeApp("discord", "Discord", "discord"),
-  // P-28/P-48 applies to every unsupported tile in the original app roster,
-  // not just the native-account setup branch. Keep the specs visible for
-  // roadmap signaling, but only Discord can present as a working integration.
-  homeApp("telegram", "Telegram", "telegram", null, "launch", "comingSoon"),
-  homeApp("signal", "Signal", "signal", null, "launch", "comingSoon"),
-  homeApp("whatsapp", "WhatsApp", "whatsapp", null, "launch", "comingSoon"),
-  homeApp("messenger", "Messenger", "messenger", null, "launch", "comingSoon"),
-  homeApp("gmail", "Gmail", "email", "gmail", "launch", "comingSoon"),
-  homeApp("outlook", "Outlook", "email", "outlook", "launch", "comingSoon"),
-  homeApp("proton", "Proton Mail", "email", "proton", "launch", "comingSoon"),
-  homeApp("yahoo", "Yahoo Mail", "email", "yahoo", "launch", "comingSoon"),
-  homeApp("aol", "AOL Mail", "email", "aol", "launch", "comingSoon"),
-  homeApp("gmx", "GMX", "email", "gmx", "launch", "comingSoon"),
-  homeApp("maildotcom", "Mail.com", "email", "maildotcom", "launch", "comingSoon"),
-  homeApp("icloud", "iCloud Mail", "email", "icloud", "launch", "comingSoon"),
-  homeApp("tuta", "Tuta", "email", "tuta", "launch", "comingSoon"),
+  homeApp("telegram", "Telegram", "telegram", null, "launch", "unavailable", "OSL has a live composer carry receipt, but delivery back to OSL has never been proven and the support records conflict."),
+  homeApp("signal", "Signal", "signal", null, "launch", "unavailable", "Signal's adapter refuses synthesised input, the only technique shown to land text, and no live send-and-receive proof exists."),
+  homeApp("whatsapp", "WhatsApp", "whatsapp", null, "launch", "unavailable", "OSL measured WhatsApp's composer: the write reaches accessibility but the message document stays empty, so it cannot send."),
+  homeApp("x", "X", "x", null, "launch", "unavailable", "X exists only as a test fixture; no production carrier adapter or send-and-receive proof exists."),
+  homeApp("instagram", "Instagram", "instagram", null, "launch", "unavailable", "Instagram has no composer channel, so OSL has no path to place a message or prove delivery."),
+  homeApp("messenger", "Messenger", "messenger", null, "launch", "unavailable", "Messenger has no recorded send-and-receive proof, so OSL cannot claim a working carrier."),
+  homeApp("gmail", "Gmail", "email", "gmail", "launch", "unavailable", "Gmail has no mailbox reader, so OSL cannot offer a protected mail path that the recipient can open."),
+  homeApp("outlook", "Outlook", "email", "outlook", "launch", "unavailable", "Outlook has no mailbox reader, so OSL cannot offer a protected mail path that the recipient can open."),
+  homeApp("proton", "Proton Mail", "email", "proton", "launch", "unavailable", "Proton Mail has no mailbox reader, so OSL cannot offer a protected mail path that the recipient can open."),
+  homeApp("yahoo", "Yahoo Mail", "email", "yahoo", "launch", "unavailable", "Yahoo Mail has no mailbox reader, so OSL cannot offer a protected mail path that the recipient can open."),
+  homeApp("aol", "AOL Mail", "email", "aol", "launch", "unavailable", "AOL Mail has no mailbox reader, so OSL cannot offer a protected mail path that the recipient can open."),
+  homeApp("gmx", "GMX", "email", "gmx", "launch", "unavailable", "GMX has no mailbox reader, so OSL cannot offer a protected mail path that the recipient can open."),
+  homeApp("maildotcom", "Mail.com", "email", "maildotcom", "launch", "unavailable", "Mail.com has no mailbox reader, so OSL cannot offer a protected mail path that the recipient can open."),
+  homeApp("icloud", "iCloud Mail", "email", "icloud", "launch", "unavailable", "iCloud Mail has no mailbox reader, so OSL cannot offer a protected mail path that the recipient can open."),
 ];
 
 const previewRegistry: unknown = [
@@ -434,7 +436,9 @@ const previewRegistry: unknown = [
   service("email", "Email", "EM", 2, "consumer", "available"),
   service("signal", "Signal", "SG", 3, "consumer", "available"),
   service("whatsapp", "WhatsApp", "WA", 4, "consumer", "available"),
-  service("messenger", "Facebook Messenger", "MS", 5, "consumer", "available"),
+  service("x", "X", "X", 5, "consumer", "unavailable"),
+  service("instagram", "Instagram", "IG", 6, "consumer", "unavailable"),
+  service("messenger", "Facebook Messenger", "MS", 7, "consumer", "available"),
 ];
 
 export async function loadLinkedServices(): Promise<LinkedService[]> {
@@ -1231,6 +1235,7 @@ export function homeAppsFromServices(services: readonly LinkedService[]): HomeAp
       visibility: definition.visibility,
       section: definition.section,
       launchState,
+      unavailableReason: definition.unavailableReason,
       linked: accountCount > 0,
       accountCount,
       setupEligible,
@@ -1302,7 +1307,7 @@ export function parseLinkedServices(raw: unknown): LinkedService[] | null {
     if (!isDisplayString(candidate.displayName, 80)) return null;
     if (!isDisplayString(candidate.sidebarGlyph, 8) || typeof candidate.sidebarOrder !== "number" || !Number.isSafeInteger(candidate.sidebarOrder) || candidate.sidebarOrder < 0 || candidate.sidebarOrder > 255) return null;
     if (candidate.category !== "consumer" && candidate.category !== "enterprise") return null;
-    if (candidate.launchState !== "available" && candidate.launchState !== "comingSoon") return null;
+    if (candidate.launchState !== "available" && candidate.launchState !== "unavailable" && candidate.launchState !== "comingSoon") return null;
     if (typeof candidate.supportsNativePreview !== "boolean" || typeof candidate.supportsProtectedPreview !== "boolean") return null;
     if (!Array.isArray(candidate.accounts) || candidate.accounts.length > 10) return null;
 
@@ -1360,9 +1365,11 @@ function homeApp(
   provider: OfferedEmailProvider | null = null,
   visibility: HomeAppVisibility = "launch",
   defaultLaunchState: LaunchState = "available",
+  unavailableReason: string | null = null,
 ): HomeAppDefinition {
   const section: HomeAppSection = visibility === "later" ? "later" : serviceId === "email" ? "email" : "social";
-  return { id, displayName, serviceId, provider, visibility, section, defaultLaunchState };
+  if (defaultLaunchState === "unavailable" && !unavailableReason) throw new Error(`${displayName} needs an unavailable reason`);
+  return { id, displayName, serviceId, provider, visibility, section, defaultLaunchState, unavailableReason };
 }
 
 function isOpaqueAccountId(value: unknown): value is string {

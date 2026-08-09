@@ -64,12 +64,6 @@ function check(app: NativeApp, markup = tileStatusPageMarkup(app)) {
   });
 }
 
-function find(catalog: readonly NativeApp[], id: string): NativeApp {
-  const app = catalog.find((candidate) => candidate.id === id);
-  expect(app, `the catalog should carry ${id}`).toBeDefined();
-  return app as NativeApp;
-}
-
 /** The placing-only service, found by its label rather than named by hand. */
 function placingOnly(catalog: readonly NativeApp[]): NativeApp {
   const placing = catalog.filter((app) => tileStatusCapabilityLabel(tileStatusCapabilityFacts(app)) === "Placing only");

@@ -147,12 +147,10 @@ export type ScopedProfileFieldName = "displayName" | "aboutLine" | "status" | "c
 /** Local editing state for the profile pane dialog: which scope is selected and each scope's editable record. */
 export class OslProfilePaneState {
   private readonly records = new Map<string, ScopedProfileRecord>();
-  private readonly scopeOrder: OslProfileScope[];
   selectedKey: string;
 
   constructor(records: ScopedProfileRecord[]) {
     for (const record of records) this.records.set(scopeStorageKey(record.scope), cloneRecord(record));
-    this.scopeOrder = records.map((record) => record.scope);
     this.selectedKey = "global";
   }
 
@@ -250,6 +248,9 @@ export function oslProfilePaneMarkup(state: OslProfilePaneState): string {
   return `<dialog class="friends-dialog osl-profile-pane-dialog" id="osl-profile-pane-dialog" aria-labelledby="osl-profile-pane-title"><div class="friends-dialog-card"><header><div><span>Profile</span><h2 id="osl-profile-pane-title">${escapeHtml(scopeLabel(selectedRecord.scope))}</h2></div><button class="icon-button" id="osl-profile-pane-close" type="button" aria-label="Close profile settings">×</button></header><div class="settings-list"><div class="profile-scope-rows">${rowsMarkup}</div>${profileFieldsMarkup(selectedKey, fields)}</div><footer class="profile-pane-footer"><p>${escapeHtml(PROFILE_PANE_FOOTER)}</p></footer></div></dialog>`;
 }
 
+// Seeded USER profile data: card backgrounds and avatar colours are the
+// user's own persisted choices (custom hex is allowed by the design), not UI
+// chrome — DELIBERATELY not osl-tokens.ts values.
 export function seededProfilePaneRecords(): ScopedProfileRecord[] {
   return [
     {

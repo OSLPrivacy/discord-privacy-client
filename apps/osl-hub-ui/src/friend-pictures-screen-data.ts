@@ -11,6 +11,9 @@ const FIXTURE_PICTURE = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAA
 
 export const FRIEND_PICTURES_SCREEN_WINDOW = { width: 900, height: 760 } as const;
 
+// The fallback colours below stand in for backend-provided per-person data
+// (a user's persisted avatar colour), not UI chrome — DELIBERATELY not
+// osl-tokens.ts values.
 export const FRIEND_PICTURES_SCREEN_OWN: OwnPicture = {
   picture: FIXTURE_PICTURE,
   fallbackLetter: "N",

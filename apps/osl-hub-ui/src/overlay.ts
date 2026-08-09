@@ -1,5 +1,9 @@
 import "@fontsource-variable/inter/wght.css";
 import "./overlay.css";
+import "./strip.css";
+import oslStripGhostMarkUrl from "./assets/Ghost-white.svg";
+import { createOslStrip, type OslStripHandle } from "./strip";
+import type { OslStripState, StripQuickSettingRow, StripTimerPreset } from "./strip-state";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { checkedBackendResponse, lastBackendFailure, recordBackendFailure, recordInvalidBackendResponse } from "./backend-failure";
@@ -227,6 +231,14 @@ let activeVisualRecipe: DiscordVisualRecipe | null = null;
 let activeNativeSurface: NativeSurfaceCapture | undefined;
 let lockEngaged = true;
 
+// ---- OSL Strip (the 44px chip bar) ----------------------------------------
+// Declared here, before the first `applyLockEngaged(true)` below runs at module
+// evaluation, so syncOslStrip() never touches a let still in its dead zone.
+let oslStrip: OslStripHandle | null = null;
+let stripRevealDesired = false;
+let stripRevealSyncing = false;
+let stripRevealRetryTimer: number | undefined;
+
 /**
  * The lock is encryption only, and it governs exactly one thing on screen: who
  * owns the message box. Lock on, OSL's composer is over Discord's, because the
@@ -244,6 +256,7 @@ function applyLockEngaged(engaged: boolean): void {
   // engagement that is over. The next raise is a fresh one and gets its own.
   if (!engaged) caretGrantedForEngagement = false;
   else focusEngagedProtectedDraft();
+  syncOslStrip();
 }
 
 // ENGAGE EDGE: the caret, not just the window.
@@ -1091,6 +1104,7 @@ function refreshControls(): void {
   ttl.disabled = sendBusy || securityBusy || !overlayReady;
   decryptDisplay.disabled = sendBusy || securityBusy || !overlayReady;
   viewOnce.disabled = sendBusy || !overlayReady || !viewOnceEnabled;
+  syncOslStrip();
 }
 
 function setBusy(busy: boolean): void {
@@ -1867,7 +1881,13 @@ function resetBurnConfirmation(): void {
 }
 
 burnChat.addEventListener("click", (event) => {
-  const step = burnConfirmation.step(performance.now(), event.isTrusted);
+  handleBurnActivation(event.isTrusted);
+});
+
+// Shared by the legacy Burn button above and the strip's flame chip: both are
+// the same two-step confirmation against the same in-memory arm state.
+function handleBurnActivation(trusted: boolean): void {
+  const step = burnConfirmation.step(performance.now(), trusted);
   if (step === "ignored") return;
   if (step === "armed") {
     burnChat.textContent = "Confirm burn";
@@ -1901,7 +1921,7 @@ burnChat.addEventListener("click", (event) => {
     clearMessageBubbles();
     status.textContent = `OSL chat burned. ${result.localProtectedRowsDestroyed} local protected rows removed. ${remote} Discord history and recipient copies were not deleted.`;
   })();
-});
+}
 
 function clearGestureTimer(): void {
   if (gestureTimer !== undefined) window.clearTimeout(gestureTimer);
@@ -2428,6 +2448,192 @@ void listen<boolean>(OVERLAY_SESSION_EVENT, ({ payload }) => {
 
 void initializeOverlay();
 
-const viewOnceControl = requireElement<HTMLElement>("[data-osl-view-once-control='protected-view-once']");
+// ---------------------------------------------------------------------------
+// The OSL Strip — the 44px chip bar (canon README "Screens / Views > 4. Strip").
+//
+// Inside this natively sized 736x58 composer window the band has no room, so
+// strip.css keeps it display:none below 102px of window height; the wiring
+// below still runs, which means the moment the native side allocates a strip
+// band the bar appears already live. The fixture page
+// (screenshots/strip-fixture.html) renders the same component full-size.
+//
+// HONESTY MAP for this window: the room is proven exactly when the backend has
+// verified a protected session (`overlayReady` — geometry alone is never proof,
+// per external_overlay.rs). Controls with no backend reachable from this
+// window render greyed with the reason in their tooltip; nothing is faked.
 
-const viewOnceReason = requireElement<HTMLElement>("#protected-view-once-reason");
+const STRIP_NOT_BUILT_REASON = "Not built yet — no engine backs this setting";
+const STRIP_HUB_ONLY_NAV_REASON = "Opens from the OSL hub window — this protected window can't navigate";
+
+function stripSendModeFace(): string {
+  return sendMode.value === "double" ? "ENTER ×2" : sendMode.value === "single" ? "ENTER" : "MANUAL";
+}
+
+function stripQuickSettings(): readonly StripQuickSettingRow[] {
+  return [
+    {
+      id: "cover-text",
+      name: "Cover text",
+      value: coverTextEnabled ? "WORDBANK" : "OFF",
+      kind: "cycle",
+      available: false,
+      reason: "Covertext is toggled from the trusted OSL header — this window reports it and cannot change it",
+    },
+    { id: "send-with", name: "Send with", value: stripSendModeFace(), kind: "cycle", available: !sendMode.disabled, reason: "Needs a verified protected session" },
+    { id: "warnings", name: "Warnings", kind: "toggle", on: true, available: false, reason: STRIP_NOT_BUILT_REASON },
+    { id: "key-change", name: "If a key or room changes", value: "BLOCK SEND", kind: "cycle", available: false, reason: "Sends fail closed today; the warn/mark modes are not built yet" },
+    { id: "clipboard", name: "Clipboard clears after", value: "—", kind: "cycle", available: false, reason: STRIP_NOT_BUILT_REASON },
+    { id: "findable", name: "Findable by strangers?", value: "—", kind: "cycle", available: false, reason: STRIP_NOT_BUILT_REASON },
+    { id: "whitelist-mode", name: "Whitelist", value: "ASK", kind: "cycle", available: false, reason: STRIP_NOT_BUILT_REASON },
+    { id: "logs", name: "Logs", kind: "action", available: false, reason: "Proof receipts live in the OSL hub window" },
+    { id: "all-settings", name: "All settings", kind: "gear", available: false, reason: STRIP_HUB_ONLY_NAV_REASON },
+  ];
+}
+
+function stripTimerPresets(): readonly StripTimerPreset[] {
+  const unsupported = "The engine supports 1 hour to 7 days here — nothing shorter, longer, or off yet";
+  return [
+    { label: "OFF", seconds: null, available: false, reason: unsupported },
+    { label: "1H", seconds: 3_600, available: true },
+    { label: "1D", seconds: 86_400, available: true },
+    { label: "3D", seconds: 259_200, available: true },
+    { label: "7D", seconds: 604_800, available: true },
+    { label: "30D", seconds: 2_592_000, available: false, reason: unsupported },
+  ];
+}
+
+function overlayStripState(): OslStripState {
+  const roomProven = overlayReady;
+  const viewOnceTierReason = document.querySelector<HTMLElement>("#protected-view-once-reason")
+    ?.textContent?.trim() || "View once is unavailable";
+  const deletesBy = new Date(Date.now() + confirmedTtlSeconds * 1_000)
+    .toUTCString()
+    .replace("GMT", "UTC");
+  return {
+    roomProven,
+    roomLabel: friendLabel.textContent?.trim() || "Private message",
+    plan: viewOnceEnabled ? "pro" : "free",
+    planAction: { available: false, reason: STRIP_HUB_ONLY_NAV_REASON },
+    homeAction: { available: false, reason: STRIP_HUB_ONLY_NAV_REASON },
+    burn: {
+      available: !burnChat.disabled,
+      reason: "Burn needs a verified protected session",
+    },
+    whitelist: {
+      roster: null,
+      available: false,
+      reason: "The whitelist roster lives in the OSL hub for now — this window can't read or change it",
+    },
+    timer: {
+      seconds: confirmedTtlSeconds,
+      presets: stripTimerPresets(),
+      available: !ttl.disabled,
+      reason: roomProven ? "Saving protection…" : undefined,
+      factLine: `IF SENT NOW · OSL STOPS DECRYPTING BY ${deletesBy}`,
+      tooltip: `OSL stops decrypting ${expiryLabel(confirmedTtlSeconds)} after delivery — it cannot stop a screenshot`,
+    },
+    once: {
+      armed: viewOnce.checked,
+      seconds: null,
+      available: !viewOnce.disabled,
+      reason: viewOnceEnabled ? "Busy — try again in a moment" : viewOnceTierReason,
+    },
+    lock: {
+      state: !overlayReady ? "unreachable" : lockEngaged ? "on" : "off",
+      toggle: {
+        available: false,
+        reason: "The lock is raised and lowered from the OSL hub — this window only reports it",
+      },
+    },
+    reveal: {
+      revealed: stripRevealDesired,
+      available: overlayReady,
+      reason: "OSL has no verified protected session here, so there is nothing it could truthfully reveal",
+    },
+    quickSettings: stripQuickSettings(),
+    windowControls: false,
+  };
+}
+
+function stripRevealToggle(revealed: boolean): void {
+  stripRevealDesired = revealed;
+  syncOslStrip();
+  void syncStripReveal();
+}
+
+/**
+ * Reconcile the eye toggle onto the persisted decrypt-display policy.
+ *
+ * saveSecurity() drops calls while a save is in flight, so a press-and-release
+ * quicker than one native round trip would otherwise leave the display in
+ * whichever state the first call captured. This loop always converges on the
+ * last requested toggle state. When the person hides plaintext, its fail-closed
+ * tail removes it locally even if the native save refuses, then retries.
+ */
+async function syncStripReveal(): Promise<void> {
+  if (stripRevealSyncing) return;
+  stripRevealSyncing = true;
+  try {
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      if (!overlayReady) break;
+      if (securityBusy) {
+        await new Promise((resolve) => window.setTimeout(resolve, 60));
+        continue;
+      }
+      if (decryptDisplay.checked === stripRevealDesired && decryptDisplayEnabled === stripRevealDesired) break;
+      decryptDisplay.checked = stripRevealDesired;
+      await saveSecurity();
+    }
+  } finally {
+    stripRevealSyncing = false;
+    if (!stripRevealDesired && decryptDisplayEnabled) {
+      // Fail closed: the eye was toggled off, so nothing may stay revealed,
+      // whatever the native save just said.
+      decryptDisplayEnabled = false;
+      decryptDisplay.checked = false;
+      applyDecryptDisplayVisibility(false);
+      // The stored policy still says "revealed"; keep trying to persist the
+      // hide so a later state refresh cannot repaint plaintext unasked.
+      if (stripRevealRetryTimer !== undefined) window.clearTimeout(stripRevealRetryTimer);
+      stripRevealRetryTimer = window.setTimeout(() => {
+        stripRevealRetryTimer = undefined;
+        void syncStripReveal();
+      }, 500);
+    }
+    syncOslStrip();
+  }
+}
+
+function syncOslStrip(): void {
+  const mount = document.querySelector<HTMLElement>("#osl-strip");
+  if (!mount) return;
+  if (!oslStrip) {
+    oslStrip = createOslStrip(mount, {
+      logoUrl: oslStripGhostMarkUrl,
+      actions: {
+        onRevealToggle: stripRevealToggle,
+        onBurn: (trusted) => { handleBurnActivation(trusted); },
+        onTimerSelect: (seconds) => {
+          if (seconds === null) return;
+          if (!NATIVE_OVERLAY_TTL_OPTIONS.includes(seconds as NativeOverlayTtlSeconds)) return;
+          ttl.value = String(seconds);
+          void saveSecurity();
+        },
+        onOnceToggle: (armed) => {
+          if (viewOnce.disabled) return;
+          viewOnce.checked = armed;
+          syncOslStrip();
+        },
+        onQuickSetting: (id) => {
+          if (id !== "send-with" || sendMode.disabled) return;
+          const cycle = ["button", "double", "single"] as const;
+          const index = cycle.indexOf(sendMode.value as (typeof cycle)[number]);
+          sendMode.value = cycle[(index + 1) % cycle.length];
+          sendMode.dispatchEvent(new Event("change"));
+          syncOslStrip();
+        },
+      },
+    });
+  }
+  oslStrip.update(overlayStripState());
+}

@@ -15,8 +15,11 @@ const ruling = JSON.parse(readFileSync(new URL("data/surface-ruling-2026-08-05.j
 const sorted = (values: readonly string[]) => [...values].sort();
 const unique = (values: readonly string[]) => sorted([...new Set(values)]);
 const browserOnlyChatCarriers = ["messenger"] as const;
+// The 2026-08-05 data record is intentionally historical; the later owner
+// ruling cuts Tuta from every shipping UI surface without rewriting that record.
+const shippingEmailCarriers = ruling.email_carriers.filter((id) => id !== "tuta");
 const serviceIds = unique([...ruling.chat_carriers, "email"]);
-const homeAppIds = unique([...ruling.chat_carriers, ...ruling.email_carriers]);
+const homeAppIds = unique([...ruling.chat_carriers, ...shippingEmailCarriers]);
 const nativeAppIds = unique([
   ...ruling.chat_carriers.filter((id) => !browserOnlyChatCarriers.includes(id as typeof browserOnlyChatCarriers[number])),
   ...ruling.native_email_carriers,
@@ -220,17 +223,17 @@ describe("surface ruling synchronization", () => {
     assertSameSet("Rust mass_cleanup manifest", rustServiceAliasRefs(rustFunctionBody(massCleanupRs, "compiled_manifest")), serviceIds);
 
     assertSameSet("TS ServiceId union", tsUnion(servicesTs, "ServiceId"), serviceIds);
-    assertSameSet("TS EmailProvider union", tsUnion(servicesTs, "EmailProvider"), ruling.email_carriers);
-    assertSameSet("TS OfferedEmailProvider union", tsUnion(servicesTs, "OfferedEmailProvider"), ruling.email_carriers);
+    assertSameSet("TS EmailProvider union", tsUnion(servicesTs, "EmailProvider"), shippingEmailCarriers);
+    assertSameSet("TS OfferedEmailProvider union", tsUnion(servicesTs, "OfferedEmailProvider"), shippingEmailCarriers);
     assertSameSet("TS NativeAppId union", tsUnion(servicesTs, "NativeAppId"), nativeAppIds);
     assertSameSet("TS services.ts serviceIds", tsConstArray(servicesTs, "serviceIds"), serviceIds);
-    assertSameSet("TS services.ts emailProviders", tsConstArray(servicesTs, "emailProviders"), ruling.email_carriers);
-    assertSameSet("TS services.ts firefoxServiceIds", tsConstArray(servicesTs, "firefoxServiceIds"), ["messenger", ...ruling.email_carriers]);
+    assertSameSet("TS services.ts emailProviders", tsConstArray(servicesTs, "emailProviders"), shippingEmailCarriers);
+    assertSameSet("TS services.ts firefoxServiceIds", tsConstArray(servicesTs, "firefoxServiceIds"), ["messenger", ...shippingEmailCarriers]);
     assertSameSet("TS homeAppDefinitions", [...servicesTs.matchAll(/homeApp\("([a-z][a-z0-9]*)"/g)].map((match) => match[1]), homeAppIds);
     assertSameSet("TS autoscrub serviceIds", tsConstArray(autoscrubTs, "serviceIds"), serviceIds);
     assertSameSet("TS service-guide serviceIds", tsConstSet(serviceGuideTs, "serviceIds"), serviceIds);
-    assertSameSet("TS browserServiceQaIds", tsConstArray(browserQaTs, "browserServiceQaIds"), ruling.email_carriers);
-    assertSameSet("TS desktopServicePolicies", [...desktopPolicyTs.matchAll(/policy\("([a-z][a-z0-9]*)"/g)].map((match) => match[1]), homeAppIds);
+    assertSameSet("TS browserServiceQaIds", tsConstArray(browserQaTs, "browserServiceQaIds"), shippingEmailCarriers);
+    assertSameSet("TS desktopServicePolicies", [...desktopPolicyTs.matchAll(/policy\("([a-z][a-z0-9]*)"/g)].map((match) => match[1]), [...homeAppIds, "instagram", "x"]);
 
     assertSameSet("services.test validRegistry fixture", quotedValues(servicesTestTs.slice(servicesTestTs.indexOf("function validRegistry"), servicesTestTs.indexOf("return ids.map"))), serviceIds);
     assertSameSet("mass-cleanup.test fixture", tsConstArray(massCleanupTestTs, "serviceIds"), serviceIds);

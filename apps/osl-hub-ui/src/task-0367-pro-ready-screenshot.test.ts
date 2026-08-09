@@ -228,7 +228,7 @@ describe("TASK 0367 Pro ready screenshot", () => {
 
   it("captures the fixed active-Pro onboarding screen with readable controls", async () => {
     const markup = await proReadyMarkup();
-    expect(markup).toContain(">Pro is ready</h1>");
+    expect(markup).toContain(">OSL Pro is ready</h1>");
     expect(markup).toContain(">Continue</button>");
     expect(markup).toContain(">Back</button>");
 
@@ -269,7 +269,7 @@ describe("TASK 0367 Pro ready screenshot", () => {
       const ax = await cdp.send<{ nodes: Array<{ role?: { value?: string }; name?: { value?: string } }> }>("Accessibility.getFullAXTree", {}, sessionId);
       const treeItems = ax.nodes.map((node) => `${node.role?.value ?? ""}:${node.name?.value ?? ""}`);
       const treeText = treeItems.join("\n");
-      expect(treeText).toContain("heading:Pro is ready");
+      expect(treeText).toContain("heading:OSL Pro is ready");
       expect(treeText).toContain("button:Continue");
       expect(treeText).toContain("button:Back");
 
@@ -314,14 +314,14 @@ describe("TASK 0367 Pro ready screenshot", () => {
       expect(backRegion.uniqueColors).toBeGreaterThan(8);
 
       console.log(`TASK0367_WINDOW_SIZE=${WINDOW_SIZE.width}x${WINDOW_SIZE.height}`);
-      console.log(`TASK0367_SCREEN_TREE=heading:Pro is ready|button:Continue|button:Back`);
+      console.log(`TASK0367_SCREEN_TREE=heading:OSL Pro is ready|button:Continue|button:Back`);
       console.log(`TASK0367_IMAGE_PATH=${path.relative(process.cwd(), SCREENSHOT_PATH)}`);
       console.log(`TASK0367_PNG_DIMENSIONS=${facts.width}x${facts.height}`);
       console.log(`TASK0367_PNG_BYTES=${facts.bytes}`);
       console.log(`TASK0367_PNG_SHA256=${facts.sha256}`);
       console.log(`TASK0367_PNG_UNIQUE_COLORS=${whole.uniqueColors}`);
       console.log(`TASK0367_PNG_DOMINANT_RATIO=${whole.dominantRatio.toFixed(4)}`);
-      console.log(`TASK0367_IMAGE_REGION_TITLE=Pro is ready unique_colors=${titleRegion.uniqueColors} pixels=${titleRegion.pixels}`);
+      console.log(`TASK0367_IMAGE_REGION_TITLE=OSL Pro is ready unique_colors=${titleRegion.uniqueColors} pixels=${titleRegion.pixels}`);
       console.log(`TASK0367_IMAGE_REGION_CONTINUE=Continue unique_colors=${continueRegion.uniqueColors} pixels=${continueRegion.pixels}`);
       console.log(`TASK0367_IMAGE_REGION_BACK=Back unique_colors=${backRegion.uniqueColors} pixels=${backRegion.pixels}`);
       await cdp.send("Target.closeTarget", { targetId }).catch(() => undefined);

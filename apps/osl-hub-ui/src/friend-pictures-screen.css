@@ -1,3 +1,6 @@
+/* Colour values are the canonical OSL design tokens duplicated from
+   src/osl-tokens.ts (CSS cannot import TypeScript). osl-tokens.ts is the
+   authority; token names are noted beside each hex. */
 /*
   Friend pictures screen (TASK 0788). Every rule lives here rather than on a
   `style` attribute: the shipped CSP is `style-src 'self'`, so inline styling
@@ -83,7 +86,7 @@
   justify-content: center;
   font-size: 18px;
   font-weight: 600;
-  color: #04110f;
+  color: #08161a; /* avatarGlyph — dark glyph on the avatar tile colour */
 }
 
 .friend-pictures-own-actions {
@@ -204,7 +207,7 @@
   justify-content: center;
   font-size: 14px;
   font-weight: 600;
-  color: #04110f;
+  color: #08161a; /* avatarGlyph — dark glyph on the avatar tile colour */
 }
 
 .friend-pictures-preview-row {

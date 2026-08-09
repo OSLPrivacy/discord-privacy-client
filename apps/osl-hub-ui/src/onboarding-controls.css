@@ -1,3 +1,6 @@
+/* Colour values are the canonical OSL design tokens duplicated from
+   src/osl-tokens.ts (CSS cannot import TypeScript). osl-tokens.ts is the
+   authority; token names are noted beside each hex. */
 /* ---------------------------------------------------------------------------
    Shared onboarding controls. 2026-08-06.
 
@@ -6,15 +9,15 @@
    what must look identical everywhere lives here.
    --------------------------------------------------------------------------- */
 :root {
-  --osl-setup-bg: #080c0d;
-  --osl-setup-card: #0d1114;
-  --osl-setup-line: #2a343a;
-  --osl-setup-field-line: #2a2f33;
-  --osl-setup-text: #f4f7f8;
-  --osl-setup-second: #b8c2c7;
-  --osl-setup-muted: #97a3a9;
-  --osl-setup-quiet: #66727a;
-  --osl-setup-accent: #2ac0f0;
+  --osl-setup-bg: #080c0d; /* colour.background */
+  --osl-setup-card: #0a0e10; /* colour.surface */
+  --osl-setup-line: #2a343a; /* colour.border */
+  --osl-setup-field-line: #2a343a; /* colour.border */
+  --osl-setup-text: #f4f7f8; /* colour.text */
+  --osl-setup-second: #97a3a9; /* colour.muted1 */
+  --osl-setup-muted: #8d989e; /* colour.muted2 */
+  --osl-setup-quiet: #66727a; /* colour.muted3 */
+  --osl-setup-accent: #2ac0f0; /* colour.accent */
 }
 
 .osl-radio { flex: 0 0 auto; }

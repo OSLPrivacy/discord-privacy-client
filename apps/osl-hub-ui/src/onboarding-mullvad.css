@@ -1,3 +1,6 @@
+/* Colour values are the canonical OSL design tokens duplicated from
+   src/osl-tokens.ts (CSS cannot import TypeScript). osl-tokens.ts is the
+   authority; token names are noted beside each hex. */
 /* ---------------------------------------------------------------------------
    Mullvad. 2026-08-06 restyle.
 
@@ -20,10 +23,10 @@
 }
 
 .mv-screen {
-  --mv-card-line: #1e2326;
-  --mv-quiet-line: #4a555b;
-  --mv-found: #3dd68c;
-  --mv-missing: #e59f3b;
+  --mv-card-line: #1e2326; /* colour.borderQuiet */
+  --mv-quiet-line: #4a555b; /* colour.muted5 */
+  --mv-found: #3dd68c; /* colour.safe */
+  --mv-missing: #f0a93a; /* colour.warning */
 
   width: 440px;
   max-width: 100%;
@@ -150,7 +153,7 @@
   font-family: inherit;
   font-size: 14px;
   font-weight: 400;
-  color: #8a969c;
+  color: #8d989e; /* colour.muted2 */
   cursor: pointer;
   transition: color .2s;
 }

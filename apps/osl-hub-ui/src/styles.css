@@ -3,34 +3,38 @@
   --font-display: "Inter Variable", Inter, "Segoe UI Variable Display", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "Cascadia Mono", "SFMono-Regular", Consolas, ui-monospace, monospace;
   font-family: var(--font-ui);
-  color: #e8e8e8;
-  background: #0a0a0a;
+  color: #f4f7f8; /* colour.text */
+  background: #080c0d; /* colour.background */
   font-synthesis: none;
   color-scheme: dark;
 
-  /* Authoritative oslprivacy.com palette. */
-  --bg: #0a0a0a;
-  --panel: #141414;
-  --panel-2: #191919;
-  --panel-3: #202020;
-  --line: #2a2a2a;
-  --line-soft: #202020;
+  /* Authoritative OSL design palette.
+     Values are the canonical design tokens from src/osl-tokens.ts (transcribed
+     from OSL-AUDITS/reference/design-export-2026-08-06/README.md "Design
+     Tokens"). CSS cannot import TypeScript, so each hex is duplicated here with
+     its token name; osl-tokens.ts is the authority if they ever disagree. */
+  --bg: #080c0d; /* colour.background */
+  --panel: #0a0e10; /* colour.surface */
+  --panel-2: #0b1013; /* colour.modalSurface */
+  --panel-3: #0f1416; /* colour.inputFill */
+  --line: #161b1e; /* colour.hairline */
+  --line-soft: #131719; /* colour.hairlineQuiet */
   --line-strong: var(--line);
-  --text: #e8e8e8;
-  --muted: #9aa0a6;
+  --text: #f4f7f8; /* colour.text */
+  --muted: #97a3a9; /* colour.muted1 */
   --text-muted: var(--muted);
-  --subtle: #888;
-  --brand: #06b6d4;
+  --subtle: #66727a; /* colour.muted3 */
+  --brand: #2ac0f0; /* colour.accent */
   --cyan: var(--brand);
-  --brand-hover: #0891b2;
-  --brand-ink: #0a0a0a;
-  --brand-wash: rgba(6, 182, 212, .1);
-  --success: #49c58a;
-  --warn: #f2b84b;
+  --brand-hover: #2ac0f0; /* colour.accent — the design has one cyan; hover changes what is cyan, not which cyan */
+  --brand-ink: #071013; /* checkbox.onCheck — dark ink on a cyan fill */
+  --brand-wash: rgba(42, 192, 240, .1); /* colour.accent at 10% */
+  --success: #3dd68c; /* colour.safe */
+  --warn: #f0a93a; /* colour.warning (key-changed amber); timers use colour.timer #f0b429 */
   --warning: var(--warn);
-  --danger: #ef626b;
-  --scrollbar-thumb: #4d5968;
-  --scrollbar-track: #141414;
+  --danger: #e05656; /* colour.danger */
+  --scrollbar-thumb: #4a555b; /* colour.muted5 */
+  --scrollbar-track: #0a0e10; /* colour.surface */
   --radius: 6px;
   --shadow: 0 12px 34px rgba(0, 0, 0, .38);
   --motion-fast: 160ms;
@@ -726,7 +730,7 @@ code {
   display: flex;
   align-items: center;
   border-bottom: 0;
-  background: #080808;
+  background: #0a0e10; /* colour.surface */
   color: var(--text);
   user-select: none;
 }
@@ -906,8 +910,8 @@ code {
 
 .window-controls .window-close:hover,
 .window-controls .window-close:focus-visible {
-  background: #b42c36;
-  color: #fff;
+  background: #c93636; /* header.closeHoverBg */
+  color: #fff; /* design README: close hover is #c93636 + white */
 }
 
 
@@ -1391,6 +1395,20 @@ code {
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
+/* The design record's rule is global: "Reduced-motion is respected globally."
+   These entrance fades ignored it, which is also why every screenshot the
+   capture harness took (it emulates reduced motion) landed mid-fade and
+   photographed the whole app at partial opacity. */
+@media (prefers-reduced-motion: reduce) {
+  .view-enter,
+  .tool-enter,
+  .view-enter .tutorial-grid article,
+  .view-enter .home-app-section,
+  .loading-logo,
+  .signin-logo,
+  .unlock-logo-stage .osl-logo { animation: none; }
+}
+
 
 
 
@@ -1556,6 +1574,17 @@ code {
 
 
 
+/* The auth-screen tokens, named after the canonical sheet (src/osl-tokens.ts).
+   Defined at :root so every signin-* rule below resolves them; the mark carries
+   its own #080c0d field, so the screen behind it must be exactly that value. */
+:root {
+  --signin-bg: #080c0d; /* colour.background */
+  --signin-text: #f4f7f8; /* colour.text */
+  --signin-border: #2a343a; /* colour.border */
+  --signin-muted: #97a3a9; /* colour.muted1 */
+  --signin-accent: #2ac0f0; /* colour.accent */
+}
+
 .signin-lock-screen {
   position: fixed;
   inset: 0;
@@ -1595,31 +1624,92 @@ code {
 
 
 
-.welcome-choice-screen h1 {
-  position: absolute;
-  top: calc(50% - 252px);
-  margin: 0;
+/* ---------------------------------------------------------------------------
+   Sign-in password step (Sign In Final.dc.html, real export 2026-08-08).
+   The entry skeleton with the password row taking the button's column: mark,
+   field, ONE outline submit with the lock, then the quiet links. Field and
+   button share the 321px column so nothing introduces a second axis.
+   --------------------------------------------------------------------------- */
+.signin-password-screen .unlock-form {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  width: 321px;
+  gap: 12px;
+}
+
+.signin-password-row {
+  position: relative;
+  display: block;
+  height: 48px;
+}
+
+.signin-password-row input {
+  width: 100%;
+  height: 48px;
+  min-height: 48px;
+  padding: 0 56px 0 14px;
+  border: 1.65px solid var(--signin-border);
+  border-radius: 2.2px;
+  background: transparent;
+  font-family: inherit;
+  font-size: 15.5px;
   color: var(--signin-text);
-  font-family: "Onest Variable", Onest, var(--font-ui);
-  font-size: 36px;
-  font-weight: 650;
+  transition: border-color .2s;
 }
 
+.signin-password-row input::placeholder { color: var(--signin-muted); }
 
-
-
-
-.welcome-choice-column {
-  --signin-rise: 8px;
+/* Rest is quiet #2a343a like every canon input; cyan only while focused. */
+.signin-password-row input:focus {
+  border-color: var(--signin-accent);
+  outline: none;
+  box-shadow: none;
 }
 
+/* The eye lives INSIDE the row, not floating at the field's corner. */
+.signin-password-row .password-eye {
+  position: absolute;
+  inset: 0 0 0 auto;
+  width: 48px;
+  min-width: 44px;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--signin-muted);
+}
 
+.signin-password-row .password-eye:hover,
+.signin-password-row .password-eye:focus-visible { color: var(--signin-text); background: transparent; }
 
+.signin-password-screen .unlock-error {
+  margin: 0;
+  min-height: 0;
+  font-size: 13px;
+  color: #e5383b; /* colour.dangerAlt */
+  text-align: center;
+}
 
+.signin-password-screen .unlock-error:empty { display: none; }
 
-.welcome-choice-actions {
-  display: grid;
-  gap: 11px;
+/* Held, not greyed: canon renders the one button at full strength while it
+   waits for a password. `:not(:hover)` keeps the cyan hover alive. */
+.signin-password-screen #identity-password-submit:disabled { opacity: 1; cursor: default; }
+
+.signin-password-screen #identity-password-submit:disabled:not(:hover):not(:focus-visible) {
+  color: var(--signin-text);
+  border-color: var(--signin-border);
+}
+
+/* Forgot password? and Back, side by side in the recovery link's quiet voice. */
+.signin-quiet-links {
+  display: flex;
+  justify-content: center;
+  gap: 44px;
 }
 
 
@@ -1820,7 +1910,6 @@ code {
 
 
 
-.onboarding-unlock .unlock-card > .text-back { margin-top: 0; }
 
 
 
@@ -3759,7 +3848,7 @@ code {
 
 
 
-.header-protection-control.active { color: #a5f3fc; border-color: rgba(35, 166, 190, .55); background: rgba(22, 78, 90, .72); }
+.header-protection-control.active { color: #2ac0f0; /* colour.accent */ border-color: #1c3a45; /* colour.accentBorderDim2 */ background: rgba(42, 192, 240, .12); /* colour.accent wash */ }
 
 
 
@@ -6662,6 +6751,9 @@ code {
 
 
 
+/* Theme-mod preview swatches below keep their own hexes on purpose: each one
+   previews a USER-selectable theme palette (theme-mod.ts, validated on import),
+   so these are the palettes being depicted, not OSL UI colours. */
 .theme-swatch {
   position: relative;
   height: 31px;
@@ -6744,6 +6836,67 @@ code {
 
 
 .settings-section > header .settings-actions { margin: 0; }
+
+.data-allowance-settings { margin-top: 2px; }
+
+.data-allowance-balance {
+  padding: 14px 0 16px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.data-allowance-balance > strong,
+.data-allowance-balance > small { display: block; }
+
+.data-allowance-balance > strong { font-size: 24px; letter-spacing: -.03em; }
+
+.data-allowance-balance > small { margin-top: 4px; color: var(--muted); font-size: 12px; }
+
+.data-allowance-meter {
+  height: 7px;
+  margin-top: 12px;
+  overflow: hidden;
+  border-radius: 99px;
+  background: var(--line-soft);
+}
+
+.data-allowance-meter > span { display: block; height: 100%; background: var(--accent); }
+
+.data-allowance-meter.is-unavailable > span { width: 18%; background: repeating-linear-gradient(135deg, var(--muted) 0 5px, transparent 5px 10px); }
+
+.data-allowance-ledger-note {
+  margin: 0 0 16px;
+  padding: 10px 12px;
+  border-left: 2px solid #f0a93a;
+  background: color-mix(in srgb, #f0a93a 8%, transparent);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.data-allowance-ledger-note strong { color: var(--text); }
+
+.data-allowance-row { align-items: flex-start; padding: 10px 0; }
+
+.data-allowance-row > strong { flex: 0 0 auto; color: var(--muted); font-size: 12px; }
+
+.privacy-choice-list { display: grid; }
+
+.privacy-choice {
+  min-height: 58px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line-soft);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  cursor: pointer;
+}
+
+.privacy-choice input { accent-color: var(--accent); }
+
+.privacy-choice strong,
+.privacy-choice small { display: block; }
+
+.privacy-choice small { margin-top: 3px; color: var(--muted); font-size: 12px; }
 
 
 
@@ -7540,11 +7693,15 @@ code {
 
 
 
+/* Home launcher layout. Flex row: the launcher column takes the remainder,
+   the Friends panel is a fixed 340px flex item WHEN RENDERED — the old grid
+   reserved a clamp(286px,23vw,360px) right column for a friends rail that was
+   never in the DOM, leaving a permanent dead band (structural-home.md bug 3). */
 .home-dashboard {
   min-height: 0;
   overflow: hidden;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) clamp(286px, 23vw, 360px);
+  display: flex;
+  align-items: stretch;
   background: var(--bg);
 }
 
@@ -7552,16 +7709,20 @@ code {
 
 
 
+/* One scrollable flow column, natural heights — exactly what the design file
+   does. The previous rule (`display:grid; grid-template-rows:minmax(0,1fr);
+   overflow:hidden`) declared ONE collapsing row for TWO children, so the
+   protection summary spilled across the tiles and the Email row fell below
+   the clip and vanished (structural-home.md bug 1). Never reintroduce a
+   fixed-row grid here. */
 .home-primary {
+  position: relative;
+  flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
-  padding: clamp(22px, 3.2vw, 46px);
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
-  display: grid;
-  grid-template-rows: minmax(0, 1fr);
-  align-content: start;
-  gap: clamp(18px, 2.5vh, 28px);
-  scrollbar-width: thin;
 }
 
 
@@ -7581,18 +7742,11 @@ code {
 
 
 
-.home-apps > header { margin-bottom: 12px; }
-
-
-
-
-
-.home-apps { min-height: 0; display: grid; grid-template-rows: auto repeat(3, minmax(0, 1fr)); gap: 10px; }
-
-
-
-
-.home-app-section { min-height: 0; }
+/* `.home-apps { grid-template-rows: auto repeat(3, minmax(0,1fr)) }` used to
+   live here and collapsed the OSL/Social/Email sections against each other
+   (structural-home.md bug 1, second half). The wrapper is gone from the
+   markup; sections now stack at natural height inside .home-launcher-scroll. */
+.home-app-section { min-height: auto; }
 
 
 
@@ -7603,7 +7757,6 @@ code {
 
 
 
-.home-apps h2 { margin: 3px 0 0; font-size: 18px; font-weight: 600; }
 
 
 
@@ -7613,6 +7766,539 @@ code {
   display: grid;
   grid-template-columns: repeat(9, minmax(62px, 1fr));
   gap: clamp(6px, .8vw, 10px);
+}
+
+
+
+
+/* ==== Home launcher (rebuild, DECISIONS.txt "UI WORKSTREAMS" item 1) ====
+   Shared 58px header — README §"Shared header": #0a0e10, 1px #161b1e bottom
+   border, 28px left padding, logo + 44px cyan radial glow, 18px white stroke
+   icons at 24px gaps, divider, 46×58 window controls. */
+
+.home-launcher-top {
+  --chrome-row-height: 58px;
+  background: #0a0e10;
+  box-shadow: inset 0 -1px 0 #161b1e;
+}
+
+.home-launcher-header {
+  height: 58px;
+  min-height: 58px;
+  padding: 0 0 0 28px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.home-launcher-left { display: flex; align-items: center; gap: 14px; min-width: 0; }
+
+.home-launcher-logo {
+  position: relative;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  cursor: pointer;
+}
+
+.home-launcher-logo img { position: relative; width: 32px; height: 32px; display: block; }
+
+.home-logo-glow {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 44px;
+  height: 44px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: radial-gradient(circle, rgb(42 192 240 / 66%) 0%, rgb(42 192 240 / 20.5%) 30%, transparent 70%);
+  pointer-events: none;
+}
+
+.home-launcher-brand { font-size: 16px; font-weight: 600; letter-spacing: .02em; color: var(--text); }
+
+.home-launcher-actions { display: flex; align-items: center; gap: 24px; margin-right: 10px; }
+
+.home-launcher-icon {
+  position: relative;
+  padding: 2px;
+  border: 0;
+  display: flex;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  transition: color .2s;
+}
+
+.home-launcher-icon:hover,
+.home-launcher-icon:focus-visible { color: var(--brand); }
+
+.home-launcher-icon svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.home-launcher-icon .home-command-dot {
+  position: absolute;
+  top: -1px;
+  right: -1px;
+  width: 7px;
+  height: 7px;
+  background: #e5383b;
+  border: 2px solid #0a0e10;
+}
+
+/* The data readout — PRODUCT.txt §2 keeps exactly one status affordance on
+   Home, "always visible, in the header". Placement subject to open owner task
+   0825; the derivation (tasks 0820–0827) lives in homeStatusSnapshot(). */
+.home-status-readout {
+  min-width: 0;
+  max-width: 300px;
+  padding: 2px 0;
+  border: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+  background: transparent;
+  color: var(--text);
+  text-align: right;
+  cursor: pointer;
+}
+
+.home-status-readout strong { max-width: 100%; overflow: hidden; font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+
+.home-status-readout small { max-width: 100%; overflow: hidden; color: var(--subtle); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+
+.data-allowance-readout strong { color: var(--accent); }
+
+.home-status-readout[data-home-protection-state="protected"] strong { color: #3dd68c; }
+
+.home-status-readout:not([data-home-protection-state="protected"]) strong { color: #f0a93a; }
+
+/* Bell popover (design Home.dc.html:33–49). */
+.home-bell-anchor { position: relative; display: flex; }
+
+.home-notifications-popover {
+  position: absolute;
+  top: 34px;
+  right: -8px;
+  z-index: 30;
+  width: 320px;
+  border: 1px solid #1e2326;
+  display: flex;
+  flex-direction: column;
+  background: #0d1114;
+  box-shadow: 0 18px 40px rgb(0 0 0 / 45%);
+}
+
+.home-notifications-popover > header {
+  padding: 12px 16px;
+  border-bottom: 1px solid #1e2326;
+  color: #66727a;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+
+.home-notification-item {
+  width: 100%;
+  padding: 12px 16px;
+  border: 0;
+  border-bottom: 1px solid #1e2326;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  transition: background .15s;
+}
+
+.home-notification-item:last-child { border-bottom: 0; }
+
+.home-notification-item:hover { background: #101519; }
+
+.home-notification-item .home-notification-row { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+
+.home-notification-item .home-notification-row span { font-size: 13.5px; font-weight: 600; }
+
+.home-notification-item .home-notification-row time { color: #4a555b; font-size: 11.5px; }
+
+.home-notification-item small { color: #97a3a9; font-size: 12.5px; }
+
+.home-notification-attention { cursor: default; }
+
+.home-notification-attention .button { margin-top: 6px; align-self: flex-start; }
+
+.home-notification-empty { cursor: default; }
+
+/* Launcher body: single scrollable centred column. */
+.home-launcher-tools {
+  position: absolute;
+  top: 26px;
+  right: 28px;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+
+.home-tune,
+.home-friends-reopen {
+  padding: 2px;
+  border: 0;
+  display: flex;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  transition: color .2s;
+}
+
+.home-tune:hover,
+.home-tune:focus-visible,
+.home-friends-reopen:hover,
+.home-friends-reopen:focus-visible { color: var(--brand); }
+
+.home-tune[aria-pressed="true"] { color: var(--brand); }
+
+.home-tune svg,
+.home-friends-reopen svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.home-launcher-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; scrollbar-width: thin; }
+
+.home-launcher-column { max-width: 1032px; margin: 0 auto; padding: 48px 48px 72px; }
+
+/* Four equal bordered OSL app tiles — the canonical button idiom: bordered,
+   transparent-to-dark fill, cyan border + lift on hover. */
+.home-launcher .home-osl-section .app-grid { grid-template-columns: repeat(4, 1fr); gap: 14px; }
+
+.home-launcher .app-tile { position: relative; }
+
+.home-launcher .home-module {
+  border: 1px solid #1e2326;
+  border-radius: 2px;
+  background: #0d1114;
+  transition: border-color .2s, transform .25s cubic-bezier(.34, 1.56, .64, 1);
+}
+
+.home-launcher .home-module:hover { border-color: var(--brand); transform: translateY(-2px); }
+
+.home-launcher .home-module > button:first-child {
+  padding: 26px 0 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  text-align: center;
+}
+
+.home-launcher .home-module > button:first-child:hover { transform: none; }
+
+.home-launcher .home-module .app-logo-plate {
+  width: auto;
+  aspect-ratio: auto;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+}
+
+.home-launcher .home-module .app-logo-plate svg {
+  width: 28px;
+  height: 28px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.home-launcher .home-module .app-tile-copy strong { font-size: 14.5px; white-space: nowrap; }
+
+/* SOCIAL / EMAIL rows: circular brand tiles. */
+.home-launcher .home-app-section { margin-top: 44px; padding: 0; border-top: 0; }
+
+.home-launcher .home-osl-section { margin-top: 0; }
+
+.home-launcher .home-app-section > h2 {
+  margin: 0 0 16px;
+  color: #66727a;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+
+.home-launcher .home-app-section:not(.home-osl-section) .app-grid { grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 8px; }
+
+/* The tile's dimming carries the honesty claim; apply it ONCE. The article
+   already fades unavailable tiles, so the disabled button inside must not
+   fade again (stacked opacities rendered tiles at ~.23), and the brand logo
+   keeps its colour — the caption + dim carry the "not yet" message. */
+.home-launcher .app-tile.app-unavailable > button:first-child:disabled { opacity: 1; }
+
+/* Module tiles keep their full-strength border (the design draws all four
+   tile frames alike); only the CONTENT dims when the module is unavailable. */
+.home-launcher .home-module.module-unavailable { opacity: 1; }
+
+.home-launcher .module-unavailable > button:first-child:disabled { opacity: .42; }
+
+.home-launcher .app-tile.app-unavailable .app-logo-plate { filter: none; }
+
+.home-launcher .home-app-section .app-tile { padding: 8px 0 6px; gap: 9px; }
+
+.home-launcher .home-app-section .app-tile-copy { min-width: 0; max-width: 100%; display: flex; flex-direction: column; align-items: center; }
+
+.home-launcher .home-app-section .app-logo-plate { width: 62px; border-radius: 16px; }
+
+.home-launcher .home-app-section .app-tile-copy strong { font-size: 12.5px; }
+
+.home-launcher .home-app-section .app-tile-copy small { overflow: hidden; max-width: 100%; font-size: 10px; letter-spacing: 0; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Edit mode: red square minus to hide, green square plus to bring back
+   (design tune-mode badges). Keyboard move buttons stay for a11y. */
+.home-launcher .tile-edit-controls { inset: 6px 6px auto auto; }
+
+.home-launcher .tile-remove {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #e5383b;
+  color: #080c0d;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.home-launcher .tile-hidden .tile-remove { background: #3dd68c; }
+
+/* Keyboard reorder buttons: kept for a11y (the design has no keyboard story;
+   don't regress task 5009's arrows), drawn as quiet dark squares under the
+   red/green badge so they read as controls, not as part of it. */
+.home-launcher .tile-keyboard-controls { display: flex; flex-direction: column; gap: 2px; }
+
+.home-launcher .tile-keyboard-controls button {
+  width: 18px;
+  height: 14px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #1e2326;
+  color: #8d989e;
+  font-size: 9px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.home-launcher .tile-keyboard-controls button:disabled { opacity: .35; cursor: default; }
+
+.home-launcher .tile-edit-controls { flex-direction: column; align-items: flex-end; gap: 2px; }
+
+/* Friends panel, right, 340px, collapsible (design Home.dc.html:108–230). */
+.home-friends-panel {
+  flex: 0 0 340px;
+  width: 340px;
+  min-height: 0;
+  border-left: 1px solid #1e2326;
+  display: flex;
+  flex-direction: column;
+  background: #0a0e10;
+}
+
+.home-friends-scroll { flex: 1 1 auto; min-height: 0; padding: 22px 24px 0; overflow-y: auto; scrollbar-width: thin; }
+
+.home-friends-head { display: flex; align-items: center; gap: 10px; }
+
+.home-friends-head h2 { margin: 0; font-size: 20px; font-weight: 600; }
+
+.home-friends-collapse {
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  display: flex;
+  align-items: center;
+  background: transparent;
+  color: #66727a;
+  cursor: pointer;
+  transition: color .2s;
+}
+
+.home-friends-collapse:hover,
+.home-friends-collapse:focus-visible { color: var(--text); }
+
+.home-friends-collapse svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+.home-friends-add {
+  margin-top: 20px;
+  border: 1px solid #2a343a;
+  display: flex;
+  background: #101315;
+  transition: border-color .2s;
+}
+
+.home-friends-add:focus-within { border-color: var(--brand); }
+
+.home-friends-add input {
+  flex: 1;
+  min-width: 0;
+  height: 38px;
+  padding: 0 12px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 13px;
+}
+
+.home-friends-add input:focus { outline: none; }
+
+.home-friends-add button {
+  flex-shrink: 0;
+  padding: 0 16px;
+  border: 0;
+  border-left: 1px solid #1e2326;
+  background: transparent;
+  color: var(--text);
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color .2s;
+}
+
+.home-friends-add button:hover,
+.home-friends-add button:focus-visible { color: var(--brand); }
+
+.home-friends-label {
+  margin: 24px 0 0;
+  color: #66727a;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+
+.home-friends-list { display: flex; flex-direction: column; }
+
+.home-friends-row {
+  width: 100%;
+  padding: 12px 0;
+  border: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+}
+
+.home-friends-verified-row { cursor: pointer; transition: background .15s; }
+
+.home-friends-verified-row:hover { background: #101519; }
+
+.home-friends-verified-row > svg { width: 16px; height: 16px; fill: none; stroke: #66727a; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+.home-friends-avatar {
+  flex: 0 0 36px;
+  width: 36px;
+  height: 36px;
+  border: 1px solid rgb(42 192 240 / 25%);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgb(42 192 240 / 12%);
+  color: var(--brand);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.home-friends-avatar.pending {
+  border-color: rgb(229 56 59 / 30%);
+  background: rgb(229 56 59 / 10%);
+  color: #e5383b;
+}
+
+.home-friends-name { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+
+.home-friends-name strong { overflow: hidden; font-size: 14px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+
+.home-friends-name small { color: #97a3a9; font-size: 12px; }
+
+.home-friends-name small.verified { color: #3dd68c; }
+
+.home-friends-row-actions { display: flex; align-items: center; gap: 8px; }
+
+.home-friends-accept {
+  padding: 6px 12px;
+  border: 1.5px solid #2a343a;
+  background: transparent;
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color .2s, color .2s;
+}
+
+.home-friends-accept:hover,
+.home-friends-accept:focus-visible { border-color: var(--brand); color: var(--brand); }
+
+.home-friends-decline {
+  padding: 6px 4px;
+  border: 0;
+  background: transparent;
+  color: #66727a;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color .2s;
+}
+
+.home-friends-decline:hover,
+.home-friends-decline:focus-visible { color: #e5383b; }
+
+.home-friends-empty { margin: 6px 0 0; color: #4a555b; font-size: 12px; }
+
+.home-friends-foot {
+  padding: 16px 24px;
+  border-top: 1px solid #1e2326;
+  color: #4a555b;
+  font-size: 12px;
+}
+
+.home-friends-foot code { color: #66727a; font-size: 11.5px; }
+
+@media (max-width: 1100px) {
+  .home-friends-panel { flex-basis: 300px; width: 300px; }
 }
 
 
@@ -7645,6 +8331,8 @@ code {
 
 
 
+/* Service tiles: other companies' brand colours on their own logos/tiles.
+   Deliberately NOT repointed to OSL design tokens. */
 .app-tile[data-service-kind="discord"] { --service: #5865f2; }
 
 
@@ -9270,7 +9958,7 @@ code {
   min-height: 32px;
   border: 1px solid var(--line);
   border-radius: 7px;
-  background: color-mix(in srgb, var(--panel) 88%, #0b1720);
+  background: color-mix(in srgb, var(--panel) 88%, #0a0e10); /* colour.surface */
   font: inherit;
 }
 
@@ -9297,7 +9985,7 @@ code {
 
 
 
-.discord-qa-control.danger { color: #ff626e; border-color: rgba(255, 74, 89, .38); }
+.discord-qa-control.danger { color: #e05656; /* colour.danger */ border-color: #3a1618; /* colour.dangerBorderDim */ }
 
 
 
@@ -9323,7 +10011,7 @@ code {
   height: 21px;
   display: grid;
   place-items: center;
-  color: #ff5968;
+  color: #e05656; /* colour.danger */
 }
 
 
@@ -9335,7 +10023,7 @@ code {
   width: 19px;
   height: 19px;
   object-fit: contain;
-  color: #ff5968;
+  color: #e05656; /* colour.danger */
 }
 
 
@@ -9360,8 +10048,8 @@ code {
   display: grid;
   place-items: center;
   border-radius: 50%;
-  color: #ffd1d5;
-  background: #221114;
+  color: #f0a9ab; /* colour.dangerText */
+  background: #3a1618; /* colour.dangerBorderDim */
 }
 
 
@@ -9405,10 +10093,10 @@ code {
   display: inline-flex;
   align-items: center;
   gap: 0;
-  border: 1px solid rgba(71, 190, 209, .34);
+  border: 1px solid #1c3a45; /* colour.accentBorderDim2 */
   border-radius: 7px;
-  color: #8bdbea;
-  background: color-mix(in srgb, var(--panel) 88%, #0b1720);
+  color: #2ac0f0; /* colour.accent */
+  background: color-mix(in srgb, var(--panel) 88%, #0a0e10); /* colour.surface */
   font-size: 11px;
   font-weight: 700;
   letter-spacing: .035em;
@@ -9429,7 +10117,7 @@ code {
   min-height: 30px;
   border-width: 0 0 0 1px;
   border-radius: 0;
-  color: #8bdbea;
+  color: #2ac0f0; /* colour.accent */
   font-size: 18px;
   line-height: 1;
 }
@@ -9468,22 +10156,22 @@ code {
 
 
 
-.discord-qa-icon-control.visible { color: #49d58a; border-color: rgba(73, 213, 138, .42); }
+.discord-qa-icon-control.visible { color: #3dd68c; /* colour.safe */ border-color: #26543c; /* colour.safeBorderDim2 */ }
 
 
 
 
-.discord-qa-icon-control.hidden { color: #ff626e; border-color: rgba(255, 74, 89, .38); }
+.discord-qa-icon-control.hidden { color: #e05656; /* colour.danger */ border-color: #3a1618; /* colour.dangerBorderDim */ }
 
 
 
 
-.discord-qa-icon-control.composer.unlocked { color: #ff626e; border-color: rgba(255, 74, 89, .38); }
+.discord-qa-icon-control.composer.unlocked { color: #e05656; /* colour.danger — lock open = red (design: Strip lock) */ border-color: #3a1618; /* colour.dangerBorderDim */ }
 
 
 
 
-.discord-qa-icon-control.composer.locked { color: #5b8cff; border-color: rgba(91, 140, 255, .48); }
+.discord-qa-icon-control.composer.locked { color: #3dd68c; /* colour.safe — design: lock is GREEN when locked, not blue */ border-color: #26543c; /* colour.safeBorderDim2 */ }
 
 
 
@@ -9940,12 +10628,12 @@ code {
 
 
 
-.osl-chat-handshake-warning { margin: 0; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--warn-soft, rgba(255, 176, 32, .12)); color: var(--text); font-size: 12px; line-height: 1.45; }
+.osl-chat-handshake-warning { margin: 0; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--warn-soft, rgba(240, 169, 58, .12) /* colour.warning wash */); color: var(--text); font-size: 12px; line-height: 1.45; }
 
 
 
 
-.osl-chat-build-warning { margin: 0; padding: 10px 16px; border-width: 0 0 1px 3px; border-radius: 0; background: var(--warn-soft, rgba(255, 176, 32, .12)); color: var(--text); font-size: 12px; line-height: 1.45; }
+.osl-chat-build-warning { margin: 0; padding: 10px 16px; border-width: 0 0 1px 3px; border-radius: 0; background: var(--warn-soft, rgba(240, 169, 58, .12) /* colour.warning wash */); color: var(--text); font-size: 12px; line-height: 1.45; }
 
 
 
@@ -10091,7 +10779,7 @@ code {
 
 
 
-.osl-chat-send { width: 44px; min-height: 44px; border: 0; background: var(--brand); color: #001014; display: grid; place-items: center; cursor: pointer; }
+.osl-chat-send { width: 44px; min-height: 44px; border: 0; background: var(--brand); color: #071013; /* checkbox.onCheck — ink on cyan */ display: grid; place-items: center; cursor: pointer; }
 
 
 
@@ -10124,8 +10812,6 @@ code {
    outranks `*`, so these keep their shape while every corner in the product
    stays hard. Anything with an actual corner is deliberately absent from this
    list. */
-.home-profile-dock,
-.home-profile-dock > span,
 .dot,
 .app-account-dot,
 .home-command-dot,
@@ -10796,7 +11482,7 @@ code {
   flex: 0 0 22px;
   display: grid;
   place-items: center;
-  color: #111;
+  color: #071013; /* checkbox.onCheck — dark ink on the --warn fill */
   font-weight: 900;
   clip-path: polygon(50% 0, 100% 100%, 0 100%);
   background: var(--warn);
@@ -11171,8 +11857,7 @@ code {
 
 .home-logo-button,
 .home-command-icon,
-.home-section-action,
-.home-profile-dock {
+.home-section-action {
   appearance: none;
   border: 1px solid transparent;
   background: transparent;
@@ -11253,7 +11938,7 @@ code {
   display: grid;
   place-items: center;
   background: var(--danger);
-  color: #fff;
+  color: #f4f7f8; /* colour.text */
   font-size: 11px;
   font-weight: 700;
   line-height: 1;
@@ -11276,36 +11961,10 @@ code {
 
 
 
-.home-app-section,
-.home-app-section:first-child {
-  max-width: 1280px;
-  margin: 0 auto;
-  padding: 24px 0;
-  border-top: 1px solid var(--line-soft);
-}
-
-
-
-
-.home-app-section > header {
-  min-height: 36px;
-  margin: 0 0 10px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-
-
-
-.home-app-section > header h2 {
-  margin: 0;
-  color: var(--subtle);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: .15em;
-  text-transform: uppercase;
-}
+/* The old dashboard's `.home-app-section` band styling (1280px centring,
+   24px bands, hairline border-top dividers, per-section header rows) is gone
+   with the Home rebuild — the launcher sections in the "Home launcher" block
+   own this markup now, and the design draws no dividers between rows. */
 
 
 
@@ -11322,179 +11981,25 @@ code {
 
 
 
-.home-dashboard .app-grid {
-  grid-template-columns: repeat(8, minmax(96px, 1fr));
-  column-gap: 20px;
-  row-gap: 18px;
-  justify-content: stretch;
-}
-
-
-
-
-.home-dashboard .home-osl-section .app-grid {
-  grid-template-columns: repeat(3, 104px);
-  column-gap: 38px;
-}
-
-
-
-
-.home-dashboard .app-tile {
-  width: 100%;
-  min-width: 0;
-  min-height: 113px;
-  border: 0;
-  background: transparent;
-}
-
-
-
-
-.home-dashboard .app-tile > button:first-child {
-  width: 100%;
-  min-width: 0;
-  min-height: 113px;
-  padding: 5px 4px 2px;
-  border: 0;
-  display: grid;
-  place-items: center;
-  align-content: center;
-  gap: 9px;
-  background: transparent;
-}
-
-
-
-
-.home-dashboard .app-tile > button:first-child:hover { border-color: transparent; background: transparent; }
-
-
-
-
-.home-dashboard .app-logo-plate,
-.home-dashboard .app-tile[data-service-kind] .app-logo-plate {
-  width: 68px;
-  height: 68px;
-  border: 0;
-  border-radius: 0;
-  display: grid;
-  place-items: center;
-  background: transparent;
-  box-shadow: none;
-}
-
-
-
-
-.home-dashboard .app-logo-plate .company-logo { width: 46px; height: 46px; }
-
-
-
-
-.home-dashboard .osl-module-logo svg {
-  width: 36px;
-  height: 36px;
-  fill: none;
-  stroke: currentColor;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 1.7;
-}
-
-
-
-
-.home-dashboard .app-tile-copy {
-  width: 100%;
-  min-height: 30px;
-  display: flex;
-  align-items: flex-start;
-  justify-content: center;
-}
-
-
-
-
-.home-dashboard .app-tile-copy strong {
-  max-width: 100%;
-  font-size: 12px;
-  font-weight: 630;
-  line-height: 15px;
-  overflow-wrap: anywhere;
-  text-align: center;
-}
-
-
-
-
+/* A second, older `.home-dashboard` tile-layout system used to live here — a
+   lane-merge union (commit a9028edc5) that re-declared the grids (3×104px OSL
+   columns, 8-column app rows) and stripped the tile plates. It fought the
+   launcher rules above and was one cause of structural-home.md bug 1. The
+   launcher layout in the "Home launcher" section is the only Home tile
+   system now; do not add `.home-dashboard` tile overrides below it. */
 .home-dashboard .module-unavailable { opacity: .42; }
 
 
 
 
-.home-dashboard .app-tile > button:first-child:hover .app-logo-plate { opacity: .78; transform: scale(1.04); }
-
-
-
-
-.home-profile-dock {
-  position: fixed;
-  z-index: 24;
-  right: 26px;
-  bottom: 24px;
-  width: 50px;
-  height: 50px;
-  padding: 4px;
-  border-color: var(--line);
-  border-radius: 50%;
-  display: grid;
-  place-items: center;
-  background: var(--panel);
-  box-shadow: 0 12px 36px rgb(0 0 0 / 28%);
-}
-
-
-
-
-.home-profile-dock > span {
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
-  display: grid;
-  place-items: center;
-  background: color-mix(in srgb, var(--brand) 18%, var(--panel-2));
-  color: var(--brand);
-  font-size: 12px;
-  font-weight: 700;
-}
-
-
-
-
-.home-profile-dock > .in-dom-tooltip {
-  left: auto;
-  right: calc(100% + 10px);
-  top: 50%;
-  bottom: auto;
-  max-width: min(14rem, calc(100vw - 96px));
-  transform: translateY(-50%);
-  overflow-wrap: anywhere;
-  text-align: right;
-}
-
-
-
-
-.home-profile-dock > strong { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+/* The fixed 50px profile dock is deleted with the Home rebuild: the design
+   has no profile control on Home at all, and the dock's tooltip/label wrapped
+   at ~2 characters against the viewport edge (structural-home.md bug 2). */
 
 
 
 
 
-@media (max-width: 1120px) {
-  .home-dashboard .app-grid { grid-template-columns: repeat(6, minmax(88px, 1fr)); }
-}
 
 
 .discord-qa-whitelist #discord-qa-whitelist-roster {
@@ -13738,16 +14243,16 @@ code {
 
 
 .password-screen {
-  --pw-bg: #080c0d;
-  --pw-card: #141719;
-  --pw-card-line: #1e2326;
-  --pw-field: #101315;
-  --pw-field-line: #2a2f33;
-  --pw-text: #f4f7f8;
-  --pw-muted: #97a3a9;
-  --pw-second: #b8c2c7;
-  --pw-accent: #2ac0f0;
-  --pw-error: #e5383b;
+  --pw-bg: #080c0d; /* colour.background */
+  --pw-card: #0a0e10; /* colour.surface */
+  --pw-card-line: #1e2326; /* colour.borderQuiet */
+  --pw-field: #0f1416; /* colour.inputFill */
+  --pw-field-line: #2a343a; /* colour.border */
+  --pw-text: #f4f7f8; /* colour.text */
+  --pw-muted: #8d989e; /* colour.muted2 */
+  --pw-second: #97a3a9; /* colour.muted1 */
+  --pw-accent: #2ac0f0; /* colour.accent */
+  --pw-error: #e5383b; /* colour.dangerAlt */
 
   width: 700px;
   display: block;
@@ -13956,11 +14461,11 @@ code {
   padding: 13px 0;
   border: 1px solid var(--pw-card-line);
   border-radius: 2px;
-  background: #141719;
+  background: #0a0e10; /* colour.surface */
   font-family: "Onest Variable", Onest, var(--font-ui);
   font-size: 15px;
   font-weight: 500;
-  color: #b8c2c7;
+  color: #97a3a9; /* colour.muted1 */
   cursor: pointer;
   transition: color .2s;
 }
@@ -14042,9 +14547,9 @@ code {
   min-height: 46px;
   margin: 0 0 14px;
   padding: 0 12px;
-  border: 1px solid #2a2f33;
+  border: 1px solid #2a343a; /* colour.border */
   border-radius: 2px;
-  background: #101315;
+  background: #0f1416; /* colour.inputFill */
   font-family: inherit;
   font-size: 15px;
   letter-spacing: .04em;
@@ -14096,6 +14601,39 @@ code {
   margin-top: 20px;
   align-self: center;
 }
+
+
+
+
+
+/* Canon Pro Code carries no boxed chrome below the quiet Skip. The docked Back
+   row keeps its behaviour but speaks in the same quiet voice, not as a third
+   button style on a two-control screen. */
+.onboarding-pro .onboarding-nav { justify-content: center; margin-top: 6px; }
+
+.onboarding-pro .onboarding-nav .onboarding-back {
+  flex: 0 0 auto;
+  width: auto;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  font-family: "Source Sans 3 Variable", "Source Sans 3", var(--font-ui);
+  font-size: 15.5px;
+  font-weight: 500;
+  color: var(--signin-muted);
+  transition: color .2s;
+}
+
+.onboarding-pro .onboarding-nav .onboarding-back:hover,
+.onboarding-pro .onboarding-nav .onboarding-back:focus-visible {
+  color: var(--signin-text);
+  background: transparent;
+}
+
+.onboarding-pro .onboarding-nav .onboarding-back::before { content: "\2190\00a0"; }
 
 
 
@@ -15020,8 +15558,8 @@ code {
 
 
 .discord-qa-whitelist-toggle.off-list {
-  color: #ffcf70;
-  border-color: rgba(255, 207, 112, .45);
+  color: #f0b429; /* colour.timer */
+  border-color: #3d2f10; /* colour.timerBorderDim */
 }
 
 
@@ -15029,8 +15567,8 @@ code {
 
 
 .discord-qa-whitelist-toggle.on-list {
-  color: #49d58a;
-  border-color: rgba(73, 213, 138, .45);
+  color: #3dd68c; /* colour.safe */
+  border-color: #26543c; /* colour.safeBorderDim2 */
 }
 
 
@@ -15552,7 +16090,7 @@ code {
 .osl-thread-reply-textarea:focus {
   outline: none;
   border-color: var(--brand);
-  box-shadow: 0 0 0 2px rgba(6, 182, 212, 0.1);
+  box-shadow: 0 0 0 2px rgba(42, 192, 240, .1); /* colour.accent wash */
 }
 
 
@@ -15632,7 +16170,7 @@ code {
 .osl-friend-initial {
   display: grid;
   place-items: center;
-  color: #fff;
+  color: #08161a; /* avatarGlyph — dark glyph on the avatar tile colour */
   font-weight: 700;
   font-size: 13px;
 }
@@ -15892,7 +16430,7 @@ code {
 .osl-chat-thread-reply-bar:focus-within { border-color: color-mix(in srgb, var(--brand) 72%, var(--line)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--brand) 28%, transparent); }
 
 
-.osl-chat-thread-reply-send { width: 44px; min-height: 44px; border: 0; background: var(--brand); color: #001014; display: grid; place-items: center; cursor: pointer; }
+.osl-chat-thread-reply-send { width: 44px; min-height: 44px; border: 0; background: var(--brand); color: #071013; /* checkbox.onCheck — ink on cyan */ display: grid; place-items: center; cursor: pointer; }
 
 
 .osl-chat-thread-reply-send:disabled { border-color: var(--line); background: var(--panel-2); color: var(--muted); cursor: default; }

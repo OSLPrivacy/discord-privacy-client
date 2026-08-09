@@ -44,6 +44,7 @@ function batch(messages: readonly PlannedMessage[], nowSeconds: number): NativeD
     decryptDisplayEnabled: true,
     deferredRows: 0,
     unrecognizedWireRows: 0,
+    contentGoneRows: 0,
   };
 }
 

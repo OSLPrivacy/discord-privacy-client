@@ -1,3 +1,6 @@
+/* Colour values are the canonical OSL design tokens duplicated from
+   src/osl-tokens.ts (CSS cannot import TypeScript). osl-tokens.ts is the
+   authority; token names are noted beside each hex. */
 /* TASK 1305 - plain chat composer. Layout only; every colour comes from the
    palette in styles.css so the composer follows the theme. */
 
@@ -128,8 +131,8 @@
   padding: 8px 16px;
   border: none;
   border-radius: var(--radius);
-  background: var(--accent, #3b82f6);
-  color: #fff;
+  background: var(--accent, #2ac0f0 /* colour.accent */);
+  color: #071013; /* checkbox.onCheck — dark ink on the cyan fill */
   font-weight: 600;
   cursor: pointer;
 }

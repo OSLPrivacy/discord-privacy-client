@@ -20,7 +20,8 @@
     "screenshot:pro-code": "node screenshots/capture-pro-code.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run && node --test screenshots/*.test.mjs",
-    "test:node": "node --test screenshots/*.test.mjs"
+    "test:node": "node --test screenshots/*.test.mjs",
+    "screenshot:all": "node screenshots/capture-all-routes.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.15.30",

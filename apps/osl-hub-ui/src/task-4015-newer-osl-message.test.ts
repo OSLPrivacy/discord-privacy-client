@@ -29,6 +29,7 @@ describe("TASK 4015 newer OSL message notice", () => {
       decryptDisplayEnabled: true,
       deferredRows: 0,
       unrecognizedWireRows: 1,
+      contentGoneRows: 0,
     };
     const source = readRelative("./native-overlay-status.ts");
     const screenSentence = receiveStatusText(batch);

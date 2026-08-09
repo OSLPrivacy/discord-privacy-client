@@ -135,7 +135,7 @@ describe("TASK 0344 privacy and sending controls", () => {
       "#onboarding-back": [backButton],
     });
     ui.__oslHubUiTest.reset({ route: "onboarding", onboardingRoute: "sending" });
-    expect(ui.__oslHubUiTest.renderOnboardingRoute("sending")).toContain("Privacy and sending");
+    expect(ui.__oslHubUiTest.renderOnboardingRoute("sending")).toContain("Sending behavior");
     expect(savedPreferences()).toHaveLength(0);
     const initialSaveCount = savedPreferences().length;
     ui.__oslHubUiTest.bindOnboarding();
@@ -207,9 +207,11 @@ describe("TASK 0344 privacy and sending controls", () => {
 
     ui.__oslHubUiTest.reset({ route: "onboarding", onboardingRoute: "sending" });
     backButton.dispatch("click");
-    expect(ui.__oslHubUiTest.snapshot().onboardingRoute).toBe("tor");
-    const torMarkup = ui.__oslHubUiTest.renderOnboardingRoute("tor");
-    expect(torMarkup).toContain("Connection choice");
+    // Back is ONE step: sending's predecessor in the spine is the defaults
+    // review (the old double-step to "tor" skipped a screen).
+    expect(ui.__oslHubUiTest.snapshot().onboardingRoute).toBe("defaults");
+    const defaultsMarkup = ui.__oslHubUiTest.renderOnboardingRoute("defaults");
+    expect(defaultsMarkup).toContain("What should OSL delete?");
 
     console.info([
       `TASK0344_INITIAL_SAVED_CHOICES=${initialSaveCount}`,
@@ -228,8 +230,8 @@ describe("TASK 0344 privacy and sending controls", () => {
       `TASK0344_CONTINUE_CAPTURE=${String(continueSave?.["windowCaptureEnabled"])}`,
       `TASK0344_CONTINUE_ROUTE=cover`,
       `TASK0344_COVER_HEADING=Choose cover insertion`,
-      `TASK0344_BACK_ROUTE=tor`,
-      `TASK0344_BACK_PAGE=Connection choice`,
+      `TASK0344_BACK_ROUTE=defaults`,
+      `TASK0344_BACK_PAGE=What should OSL delete?`,
     ].join("\n"));
   }, MODULE_RELOAD_BUDGET_MS);
 });

@@ -15,12 +15,15 @@ describe("onboarding welcome content", () => {
   const welcome = functionSource("welcomeOnboardingContent", "proSetupContent");
   const entry = functionSource("entryScreenContent", "welcomeOnboardingContent");
 
-  it("shows the Welcome choice screen and keeps removed introduction copy out", () => {
-    expect(welcome).toContain('<section class="signin-card signin-lock-screen welcome-choice-screen" aria-labelledby="route-heading">');
-    expect(welcome).toContain('<h1 id="route-heading" tabindex="-1">Welcome</h1>');
-    expect(welcome).toContain('<button class="signin-unlock" data-onboarding="create" type="button"><span class="signin-unlock-label">Create</span>');
-    expect(welcome).toContain('<button class="signin-unlock" data-onboarding="import" type="button"><span class="signin-unlock-label">Restore</span>');
-    expect(welcome).toContain('<button class="signin-unlock" data-onboarding="unlock" type="button"><span class="signin-unlock-label">Unlock</span>');
+  it("renders the canonical entry skeleton for both branches and keeps removed introduction copy out", () => {
+    // Real design export 2026-08-08: first run is Create Account.dc.html and a
+    // returning device is Sign In Final.dc.html -- the SAME bare skeleton with
+    // one button and the quiet recovery link. The interim three-button
+    // "Welcome" chooser is gone with the invented spec that drew it.
+    expect(welcome).toContain('entryScreenContent("Sign in", signinLockIcon(), "unlock")');
+    expect(welcome).toContain('entryScreenContent("Create account", signinPlusIcon(), "create")');
+    expect(welcome).not.toContain("welcome-choice-screen");
+    expect(welcome).not.toContain(">Welcome</h1>");
 
     // Code only: the function's own comment lists the copy that was removed in
     // order to explain why, so the "it stays removed" check must not read it.

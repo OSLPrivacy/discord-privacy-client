@@ -123,7 +123,7 @@ describe("TASK 0335 silent-visible controls", () => {
     record(`TASK0335_UNKNOWN saved=${__oslHubUiTest.snapshot().silentVisibleMode} route=${__oslHubUiTest.snapshot().onboardingRoute}`);
 
     cont.dispatch("click");
-    expect(__oslHubUiTest.snapshot()).toMatchObject({ onboardingRoute: "passwords", silentVisibleMode: "VISIBLE" });
+    expect(__oslHubUiTest.snapshot()).toMatchObject({ onboardingRoute: "mullvad", silentVisibleMode: "VISIBLE" });
     record(`TASK0335_CONTINUE route=${__oslHubUiTest.snapshot().onboardingRoute} saved=${__oslHubUiTest.snapshot().silentVisibleMode}`);
 
     __oslHubUiTest.reset({ route: "onboarding", onboardingRoute: "silent-visible" });

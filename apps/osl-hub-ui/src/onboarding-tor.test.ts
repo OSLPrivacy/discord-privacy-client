@@ -8,17 +8,17 @@ import {
 } from "./onboarding-tor";
 
 describe("Tor onboarding choice", () => {
-  // 2026-08-06: the screen used to start with nothing selected and a disabled
-  // Continue. Liam's redesign starts on Tor. The route is still saved on
-  // Continue, so what the backend receives is still what is on screen.
-  it("starts on Tor and can continue", () => {
+  // The shipped default is Direct until the packaged tunnel proof is green.
+  // The route is still saved on Continue, so what the backend receives is what
+  // is on screen.
+  it("starts on Direct and can continue", () => {
     const state = initialTorOnboardingState();
     const markup = onboardingTorMarkup(state);
 
-    expect(state.choice).toBe("tor");
+    expect(state.choice).toBe("direct");
     expect(canContinuePastTorChoice(state)).toBe(true);
-    expect(markup).toMatch(/value="tor"[^>]*checked/u);
-    expect(markup).not.toMatch(/value="direct"[^>]*checked/u);
+    expect(markup).toMatch(/value="direct"[^>]*checked/u);
+    expect(markup).not.toMatch(/value="tor"[^>]*checked/u);
     expect(markup).not.toContain("disabled");
   });
 
@@ -27,7 +27,7 @@ describe("Tor onboarding choice", () => {
 
     expect(markup).toContain('value="tor"');
     expect(markup).toContain('value="direct"');
-    expect(markup).toContain(">Connection choice</h1>");
+    expect(markup).toContain(">Choose how OSL connects</h1>");
     expect(markup).toContain('aria-label="Tor"');
     expect(markup).toContain('aria-label="direct"');
     expect(markup).not.toMatch(/recommended|more private|safer/iu);

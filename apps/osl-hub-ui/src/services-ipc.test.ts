@@ -52,7 +52,7 @@ import {
 
 const discordApp: HomeAppCatalogEntry = {
   id: "discord", displayName: "Discord", serviceId: "discord", provider: null,
-  visibility: "launch", section: "social", launchState: "available", linked: false,
+  visibility: "launch", section: "social", launchState: "available", unavailableReason: null, linked: false,
   accountCount: 0, setupEligible: true,
 };
 
@@ -489,15 +489,15 @@ describe("browser-owned import IPC", () => {
     mocks.invoke
       .mockResolvedValueOnce({ availability: "installed" })
       .mockResolvedValueOnce({ started: true, packageId: "Mozilla.Firefox" })
-      .mockResolvedValueOnce({ serviceId: "tuta", started: true });
+      .mockResolvedValueOnce({ serviceId: "proton", started: true });
 
     await expect(loadFirefoxStatus()).resolves.toEqual({ availability: "installed" });
     await expect(installFirefox()).resolves.toBeUndefined();
-    await expect(launchFirefoxService("tuta")).resolves.toBeUndefined();
+    await expect(launchFirefoxService("proton")).resolves.toBeUndefined();
     expect(mocks.invoke.mock.calls).toEqual([
       ["get_firefox_status"],
       ["install_firefox"],
-      ["launch_firefox_service", { serviceId: "tuta" }],
+      ["launch_firefox_service", { serviceId: "proton" }],
     ]);
   });
 

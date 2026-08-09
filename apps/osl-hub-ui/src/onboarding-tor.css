@@ -1,3 +1,6 @@
+/* Colour values are the canonical OSL design tokens duplicated from
+   src/osl-tokens.ts (CSS cannot import TypeScript). osl-tokens.ts is the
+   authority; token names are noted beside each hex. */
 /* ---------------------------------------------------------------------------
    Choose how OSL connects. 2026-08-06 restyle.
 
@@ -12,21 +15,21 @@
   margin: 0;
   padding: 0;
   border: 0;
-  background: #080c0d;
+  background: #080c0d; /* colour.background */
   display: grid;
   place-items: center;
   align-content: center;
 }
 
 .tor-onboarding {
-  --tor-bg: #080c0d;
-  --tor-card: #0d1114;
-  --tor-line: #2a343a;
-  --tor-text: #f4f7f8;
-  --tor-second: #b8c2c7;
-  --tor-muted: #97a3a9;
-  --tor-caption: #66727a;
-  --tor-accent: #2ac0f0;
+  --tor-bg: #080c0d; /* colour.background */
+  --tor-card: #0a0e10; /* colour.surface */
+  --tor-line: #2a343a; /* colour.border */
+  --tor-text: #f4f7f8; /* colour.text */
+  --tor-second: #97a3a9; /* colour.muted1 */
+  --tor-muted: #8d989e; /* colour.muted2 */
+  --tor-caption: #66727a; /* colour.muted3 */
+  --tor-accent: #2ac0f0; /* colour.accent */
 
   width: 700px;
   max-width: 100%;

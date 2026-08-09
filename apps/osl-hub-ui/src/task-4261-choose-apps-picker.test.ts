@@ -84,7 +84,6 @@ function writePng(svg: string, path: string): void {
 describe("task 4261 Choose-apps picker screenshot and screen tree", () => {
   it("shows X, Instagram and Messenger on the service picker with their own pictures, selectable, going from before to before+3", () => {
     const apps = homeAppsFromServices([]).filter((app) => app.visibility === "launch");
-    const socialApps = apps.filter((app) => app.section === "social");
 
     for (const id of RESTORED_THREE) {
       expect(apps.map((app) => app.id)).toContain(id);

@@ -42,17 +42,6 @@ beforeEach(() => {
   installGlobals();
 });
 
-/** The eight choices TASK 0724 must draw, and the state word each one shows. */
-const CHOICES = [
-  { key: "local", title: "Local OSL activity", state: "on" },
-  { key: "security", title: "Security changes", state: "on" },
-  { key: "details", title: "Show details", state: "off" },
-  { key: "approval", title: "Suggest chat approval", state: "on" },
-  { key: "mute", title: "Mute alerts", state: "on" },
-  { key: "chat", title: "Encrypted chat alerts", state: "off" },
-  { key: "preview", title: "OSL Chat previews", state: "on" },
-] as const;
-
 const service = (id: string, displayName: string, order: number) => ({
   id,
   displayName,
@@ -64,7 +53,7 @@ const service = (id: string, displayName: string, order: number) => ({
 });
 
 describe("TASK 0724 Notifications screen", () => {
-  it("draws every notice choice with its current state", async () => {
+  it("draws every current activity control and preserves each configured state", async () => {
     const { __oslHubUiTest } = await import("./main");
     __oslHubUiTest.reset({
       coreReady: true,
@@ -74,7 +63,6 @@ describe("TASK 0724 Notifications screen", () => {
       notificationSecurityActivity: true,
       notificationPreviewContent: false,
       notificationScopeSuggestions: true,
-      notificationsMuted: true,
       notificationChatActivity: false,
       oslChatPreviewsVisible: true,
       oslChatMutedPeople: ["friend-1"],
@@ -83,39 +71,34 @@ describe("TASK 0724 Notifications screen", () => {
 
     const markup = __oslHubUiTest.renderSettingsSection("notifications");
 
-    for (const choice of CHOICES) {
-      expect(markup, `${choice.key} row`).toContain(`data-notification-choice="${choice.key}" data-choice-state="${choice.state}"`);
-      expect(markup, `${choice.key} title`).toContain(`<strong>${choice.title}</strong>`);
-      expect(markup, `${choice.key} state word`).toContain(`aria-label="${choice.title}: ${choice.state === "on" ? "On" : "Off"}"`);
-    }
-    expect(markup, "per-app enabled tick").toContain(`data-notification-choice="app:discord" data-choice-state="on"`);
-    expect(markup, "per-app disabled tick").toContain(`data-notification-choice="app:telegram" data-choice-state="off"`);
-    expect(markup, "per-app section is open").toContain(`class="settings-disclosure notification-apps" open`);
-    expect(markup, "muted chat list").toContain(`data-notification-choice="mute-chats" data-muted-count="1"`);
+    expect(markup).toContain('<input id="notifications-opt-in" type="checkbox" checked/>');
+    expect(markup).toContain('<input id="notification-security-activity" type="checkbox" checked/>');
+    expect(markup).toContain('<input id="notification-previews" type="checkbox" />');
+    expect(markup).toContain('<input id="notification-scope-suggestions" type="checkbox" checked/>');
+    expect(markup).toContain('<input id="notification-chat-activity" type="checkbox" />');
+    expect(markup).toContain('<input id="osl-chat-preview-toggle" type="checkbox" checked/>');
+    expect(markup).toContain('data-notification-app="discord" checked');
+    expect(markup).toContain('data-notification-app="telegram" />');
+    expect(markup).toContain("Muted OSL Chats");
+    expect(markup).toContain("Rose");
+    expect(markup).toContain("Unmute");
   }, 30_000);
 
-  it("shows the mute choice off and no muted chats on a fresh device", async () => {
+  it("shows no muted-chat section on a fresh device", async () => {
     const { __oslHubUiTest } = await import("./main");
     __oslHubUiTest.reset({ coreReady: true, notificationsEnabled: true, oslChatMutedPeople: [] });
     const markup = __oslHubUiTest.renderSettingsSection("notifications");
-    expect(markup).toContain(`data-notification-choice="mute" data-choice-state="off"`);
-    expect(markup).toContain(`data-muted-count="0"`);
-    expect(markup).toContain("No muted chats");
+    expect(markup).not.toContain("Muted OSL Chats");
+    expect(markup).toContain("Encrypted chat alerts");
   }, 30_000);
 
-  it("mute alerts stops the Home bell without stopping the recording", async () => {
+  it("keeps an activity record visible when local activity is enabled", async () => {
     const { __oslHubUiTest } = await import("./main");
     const notice = { id: "n1", title: "Key change", detail: "Rose changed keys", createdAt: "Now" };
 
-    __oslHubUiTest.reset({ coreReady: true, notificationsEnabled: true, appNotifications: [notice] as never, notificationsMuted: false });
-    const loud = __oslHubUiTest.renderRouteShell("home");
-    expect(loud, "unmuted bell carries the dot").toContain("home-command-dot");
-    expect(loud, "unmuted bell counts the notice").toContain("Notifications, 1 new");
-
-    __oslHubUiTest.reset({ coreReady: true, notificationsEnabled: true, appNotifications: [notice] as never, notificationsMuted: true });
-    const quiet = __oslHubUiTest.renderRouteShell("home");
-    expect(quiet, "muted bell has no dot").not.toContain("home-command-dot");
-    expect(quiet, "muted bell has no count").not.toContain("Notifications, 1 new");
-    expect(__oslHubUiTest.renderSettingsSection("notifications"), "the notice is still recorded").toContain("Key change");
+    __oslHubUiTest.reset({ coreReady: true, notificationsEnabled: true, appNotifications: [notice] as never });
+    const markup = __oslHubUiTest.renderSettingsSection("notifications");
+    expect(markup).toContain("Key change");
+    expect(markup).toContain("Rose changed keys");
   }, 30_000);
 });

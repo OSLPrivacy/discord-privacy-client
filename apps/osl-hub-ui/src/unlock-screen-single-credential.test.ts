@@ -340,7 +340,7 @@ describe("D80 unlock screen renders one credential input", () => {
     const markup = __oslHubUiTest.renderOnboardingRoute("unlock");
     const nodes = parseRendered(markup);
 
-    expect(nodes.find((node) => node.tag === "h1")?.text).toBe("Unlock");
+    expect(nodes.find((node) => node.tag === "h1")?.text).toBe("Sign in");
 
     const inputs = nodes.filter((node) => node.tag === "input");
     expect(inputs).toHaveLength(1);
@@ -367,7 +367,7 @@ describe("D80 unlock screen renders one credential input", () => {
 
     expect(unlock).toContain('data-onboarding="account-recovery"');
     expect(recovery).toContain('data-account-recovery-phrase');
-    expect(recovery).toContain("Password reset");
+    expect(recovery).toContain("Forgot password?");
   }, MODULE_RELOAD_BUDGET_MS);
 
   it("records show, unlock, forgot, back, and wrong-password results with one saved account", async () => {
@@ -475,7 +475,7 @@ describe("D80 unlock screen renders one credential input", () => {
       savedAccountCount: JSON.parse(harness.storage.get(savedAccountKey) ?? "[]").length,
       showFirst: firstShowResult,
       showSecond: secondShowResult,
-      forgot: { route: forgotSnapshot.route, onboardingRoute: forgotSnapshot.onboardingRoute, heading: "Password reset" },
+      forgot: { route: forgotSnapshot.route, onboardingRoute: forgotSnapshot.onboardingRoute, heading: "Forgot password?" },
       back: { route: backSnapshot.route, onboardingRoute: backSnapshot.onboardingRoute, control: "Sign in" },
       wrong: wrongResult,
       unlock: { route: unlockSnapshot.route },
@@ -486,7 +486,7 @@ describe("D80 unlock screen renders one credential input", () => {
     expect(firstShowResult).toEqual({ type: "text", value: "saved-password", label: "Hide password" });
     expect(secondShowResult).toEqual({ type: "password", value: "saved-password", label: "Show password" });
     expect(forgotSnapshot).toMatchObject({ route: "onboarding", onboardingRoute: "account-recovery" });
-    expect(forgotMarkup).toContain("Password reset");
+    expect(forgotMarkup).toContain("Forgot password?");
     expect(backSnapshot).toMatchObject({ route: "onboarding", onboardingRoute: "welcome" });
     expect(backMarkup).toContain('data-onboarding="unlock"');
     expect(backMarkup).toContain("Sign in");

@@ -37,6 +37,7 @@ function peerModel(patch: Partial<PeerProtectedSheetModel>): PeerProtectedSheetM
     pane: "write",
     ttlSeconds: 3_600,
     viewOnce: false,
+    viewOnceCreationAllowed: false,
     decryptDisplayEnabled: true,
     busy: false,
     draft: "keyboard protected send",
@@ -46,6 +47,7 @@ function peerModel(patch: Partial<PeerProtectedSheetModel>): PeerProtectedSheetM
     receipt: null,
     handshakeConfirmed: true,
     status: "",
+    directionState: null,
     ...patch,
   };
 }

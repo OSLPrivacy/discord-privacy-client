@@ -4,8 +4,8 @@ import { describe, expect, it } from "vitest";
 import { appsAndSendingScreenMarkup, type AppsAndSendingModel } from "./apps-and-sending-screen";
 import {
   PLAIN_ENGLISH_BANNED_WORDS,
-  checkScreenWords,
-  findBannedWords,
+  checkPlainEnglishScreenWords,
+  findPlainEnglishBannedWords,
   screenTitle,
   visibleWords,
   type ScreenWordsExpectation,
@@ -60,7 +60,7 @@ function expectation(): ScreenWordsExpectation {
 describe("TASK 0763 Apps and sending screen words", () => {
   it("reads the screen: right title, enough words, every named word, zero banned words", () => {
     const markup = appsAndSendingScreenMarkup(savedModel());
-    const report = checkScreenWords(markup, expectation());
+    const report = checkPlainEnglishScreenWords(markup, expectation());
 
     console.log(
       `TASK 0763 report: title=${JSON.stringify(report.title)} words=${report.wordCount} ` +
@@ -90,11 +90,11 @@ describe("TASK 0763 Apps and sending screen words", () => {
     expect(words).toContain("Save");
     // A word only reachable through an attribute must not count as present.
     const attributeOnly = '<section aria-label="Remove app"><h1>Apps and sending</h1></section>';
-    expect(checkScreenWords(attributeOnly, expectation()).missing).toContain("Remove app");
+    expect(checkPlainEnglishScreenWords(attributeOnly, expectation()).missing).toContain("Remove app");
 
     // The save note ends "after you save." -- prose is not the Save button.
     const noteOnly = "<h1>Apps and sending</h1><p>Changes apply to new messages after you save.</p>";
-    expect(checkScreenWords(noteOnly, expectation()).missing).toContain("Save");
+    expect(checkPlainEnglishScreenWords(noteOnly, expectation()).missing).toContain("Save");
   });
 
   it("fails on a throwaway copy of the screen that is missing one named word", () => {
@@ -103,7 +103,7 @@ describe("TASK 0763 Apps and sending screen words", () => {
     for (const word of NAMED_WORDS) {
       // A throwaway string copy -- the screen module is not touched.
       const broken = markup.split(word).join("");
-      const report = checkScreenWords(broken, expectation());
+      const report = checkPlainEnglishScreenWords(broken, expectation());
 
       expect(broken).not.toBe(markup);
       expect(report.missing).toEqual([word]);
@@ -122,18 +122,18 @@ describe("TASK 0763 Apps and sending screen words", () => {
         "Send messages",
         `Send messages by ${banned}`,
       );
-      const report = checkScreenWords(jargon, expectation());
+      const report = checkPlainEnglishScreenWords(jargon, expectation());
       expect(report.banned.map((hit) => hit.term.toLowerCase())).toContain(banned.toLowerCase());
       expect(report.ok).toBe(false);
       console.log(`TASK 0763 mutant: said ${JSON.stringify(banned)} -> ok=${report.ok} banned=${JSON.stringify(report.banned)}`);
     }
 
     // Plural and singular both trip the ban, so a reworded screen cannot slip through.
-    expect(findBannedWords("<p>one keyserver</p>", contractBannedConcepts())).toHaveLength(1);
-    expect(findBannedWords("<p>two keyservers</p>", contractBannedConcepts())).toHaveLength(1);
+    expect(findPlainEnglishBannedWords("<p>one keyserver</p>", contractBannedConcepts())).toHaveLength(1);
+    expect(findPlainEnglishBannedWords("<p>two keyservers</p>", contractBannedConcepts())).toHaveLength(1);
 
     const tooShort = "<h1>Apps and sending</h1><p>Connected apps Send messages Remove app Save</p>";
-    const shortReport = checkScreenWords(tooShort, expectation());
+    const shortReport = checkPlainEnglishScreenWords(tooShort, expectation());
     expect(shortReport.missing).toEqual([]);
     expect(shortReport.wordCount).toBeLessThan(LEAST_WORDS);
     expect(shortReport.enoughWords).toBe(false);

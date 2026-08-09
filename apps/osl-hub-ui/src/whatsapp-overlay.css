@@ -1,6 +1,11 @@
+/* OSL protected-composer overlay drawn over WhatsApp. OSL's own chrome uses
+   the canonical design tokens from src/osl-tokens.ts (the authority; CSS
+   cannot import TypeScript). The shell ground and the send button keep
+   WhatsApp's own colours ON PURPOSE so the overlay sits visually inside
+   WhatsApp's composer area — do not repoint those to OSL tokens. */
 :root {
   font-family: "Inter Variable", Inter, "Segoe UI Variable Text", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
-  color: #e8e8e8;
+  color: #f4f7f8; /* colour.text */
   background: transparent;
   font-synthesis: none;
 }
@@ -26,13 +31,13 @@ body { padding: 0; }
   width: 100%;
   height: 100%;
   padding: 6px 10px;
-  border: 1px solid rgba(6, 182, 212, .72);
+  border: 1px solid rgba(42, 192, 240, .72); /* colour.accent — OSL is acting */
   border-radius: 0;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto auto;
   align-items: center;
   column-gap: 9px;
-  background: rgba(17, 27, 33, .992);
+  background: rgba(17, 27, 33, .992); /* WhatsApp's own dark panel (#111b21): kept so the shell blends into WhatsApp, NOT an OSL token */
   box-shadow: none;
 }
 
@@ -41,9 +46,9 @@ body { padding: 0; }
   place-items: center;
   min-width: 28px;
   height: 22px;
-  border: 1px solid rgba(6, 182, 212, .74);
-  color: #67e8f9;
-  background: rgba(6, 182, 212, .10);
+  border: 1px solid rgba(42, 192, 240, .74); /* colour.accent */
+  color: #2ac0f0; /* colour.accent */
+  background: rgba(42, 192, 240, .10); /* colour.accent wash */
   font-size: 11px;
   font-weight: 700;
   letter-spacing: .08em;
@@ -60,17 +65,17 @@ body { padding: 0; }
   border: 0;
   resize: none;
   overflow: hidden;
-  color: #e8e8e8;
+  color: #f4f7f8; /* colour.text */
   background: transparent;
   font: inherit;
   font-size: 14px;
   line-height: 20px;
 }
-.wa-draft-field textarea::placeholder { color: #a5adb3; }
+.wa-draft-field textarea::placeholder { color: #97a3a9; /* colour.muted1 */ }
 .wa-draft-field textarea:focus { outline: none; }
 .wa-overlay-shell:focus-within {
-  border-color: rgba(6, 182, 212, .9);
-  outline: 1px solid rgba(6, 182, 212, .35);
+  border-color: rgba(42, 192, 240, .9); /* colour.accent */
+  outline: 1px solid rgba(42, 192, 240, .35);
   outline-offset: -2px;
 }
 
@@ -78,20 +83,20 @@ body { padding: 0; }
   grid-column: 3;
   display: grid;
   gap: 1px;
-  color: #9aa0a6;
+  color: #97a3a9; /* colour.muted1 */
   font-size: 11px;
   white-space: nowrap;
 }
 
-#overlay-status { color: #9fc9c2; font-size: 11px; }
+#overlay-status { color: #2ac0f0; /* colour.accent — status line announces OSL acting */ font-size: 11px; }
 #protected-send {
   grid-column: 4;
   min-width: 52px;
   height: 30px;
-  border: 1px solid rgba(6, 182, 212, .55);
+  border: 1px solid rgba(42, 192, 240, .55); /* colour.accent */
   border-radius: 0;
   color: #d7fff7;
-  background: #075e54;
+  background: #075e54; /* WhatsApp's own green: the send control deliberately reads as WhatsApp-native, NOT an OSL token */
   font: inherit;
   font-size: 12px;
   font-weight: 700;

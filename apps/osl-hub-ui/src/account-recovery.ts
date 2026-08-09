@@ -109,7 +109,7 @@ export function recoveryScreenMarkup(flow: AccountRecoveryFlow): string {
 
   const error = flow.error ? `<p class="unlock-error" role="alert">${flow.error}</p>` : "";
   if (flow.step === "password") {
-    return `<section class="setup-surface recovery-surface"><h1 id="route-heading" tabindex="-1">Choose a new password</h1><p>Use a new password to unlock this device. Your recovery phrase is not saved here.</p><form data-account-recovery-password novalidate><label for="account-recovery-new-password">New password</label><input id="account-recovery-new-password" name="newPassword" type="password" minlength="6" maxlength="128" autocomplete="new-password" required/><label for="account-recovery-confirm-password">Confirm new password</label><input id="account-recovery-confirm-password" name="confirmPassword" type="password" minlength="6" maxlength="128" autocomplete="new-password" required/>${error}<button class="button primary" type="submit">Reset password</button></form></section>`;
+    return `<section class="setup-surface recovery-surface"><h1 id="route-heading" tabindex="-1">Choose a new password</h1><p>Use a new password to unlock this device. Your recovery phrase is not saved here.</p><form data-account-recovery-password novalidate><label for="account-recovery-new-password">New password</label><input id="account-recovery-new-password" name="newPassword" type="password" minlength="6" maxlength="128" autocomplete="new-password" required/><label for="account-recovery-confirm-password">Confirm new password</label><input id="account-recovery-confirm-password" name="confirmPassword" type="password" minlength="6" maxlength="128" autocomplete="new-password" required/>${error}<button class="stealth-submit" type="submit"><span>Reset password</span></button></form></section>`;
   }
 
   // 2026-08-06 restyle. Built from the same parts as the restore and password
@@ -118,7 +118,7 @@ export function recoveryScreenMarkup(flow: AccountRecoveryFlow): string {
   // similar names and different consequences is the confusion worth spending a
   // line on.
   return `<section class="stealth-screen restore-screen forgot-screen" aria-labelledby="route-heading">
-    <h1 id="route-heading" tabindex="-1" class="stealth-title forgot-title">Password reset</h1>
+    <h1 id="route-heading" tabindex="-1" class="stealth-title forgot-title">Forgot password?</h1>
     <p class="stealth-quiet">Your password recovery phrase sets a new password. It is not your identity phrase</p>
     <form class="password-form stealth-form" data-account-recovery-phrase novalidate>
       <span class="restore-label-row"><label for="account-recovery-phrase">Password recovery phrase</label><em>stays on this device</em></span>

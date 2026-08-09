@@ -54,7 +54,7 @@ const SHAPES: Record<OnboardingPasswordRole, RoleShape> = {
     badge: `<circle class="st-badge-disc st-badge-danger" cx="86" cy="8" r="7"/><path class="st-badge-mark st-badge-cross" d="M83.2 5.2 L88.8 10.8 M88.8 5.2 L83.2 10.8"/>`,
     badgeLabel: "a workspace is erased when the burn password is entered",
     newLabel: "New burn password",
-    next: "mullvad",
+    next: "pro",
     confirmation: true,
     destructive: true,
   },

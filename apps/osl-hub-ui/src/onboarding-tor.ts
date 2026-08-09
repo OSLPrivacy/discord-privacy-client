@@ -8,10 +8,10 @@ export interface TorOnboardingState {
   choice: TorChoice;
 }
 
-// 2026-08-06: Liam's redesign selects Tor by default rather than starting with
-// nothing chosen. The route is still SAVED on Continue, so the preference the
-// backend receives is still the one on screen.
-export const initialTorOnboardingState = (): TorOnboardingState => ({ choice: "tor" });
+// The shipped default remains Direct until the packaged default-answers tunnel
+// proof passes. The route is still SAVED on Continue, so the backend receives
+// the choice shown on screen.
+export const initialTorOnboardingState = (): TorOnboardingState => ({ choice: "direct" });
 
 // The previous state is intentionally unused: choosing a route REPLACES it.
 export function chooseTorRoute(_state: TorOnboardingState, choice: Exclude<TorChoice, null>): TorOnboardingState {
@@ -81,7 +81,7 @@ export function onboardingTorMarkup(state: TorOnboardingState): string {
   };
 
   return `<section class="tor-onboarding" aria-labelledby="tor-onboarding-heading">
-    <h1 id="tor-onboarding-heading" tabindex="-1" class="tor-title">Connection choice</h1>
+    <h1 id="tor-onboarding-heading" tabindex="-1" class="tor-title">Choose how OSL connects</h1>
     <fieldset class="tor-choice-grid"><legend class="sr-only">Connection route</legend>
       ${card("tor", "Use Tor", torDiagram(), "travel time · 2–6 s")}
       ${card("direct", "Connect directly", directDiagram(), "travel time · under 1 s")}
