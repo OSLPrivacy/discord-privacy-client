@@ -50,7 +50,8 @@ describe("TASK1021 Telegram whitelist controls", () => {
     expect((allowed.match(/data-telegram-whitelist-controls/gu) ?? []).length).toBe(1);
     expect((allowed.match(/data-telegram-verification-tick="visible"/gu) ?? []).length).toBe(1);
     expect(unallowed).toBe("");
-    expect(group).toBe("");
+    expect(group).toContain("data-telegram-whitelist-controls");
+    expect(group).toContain('data-telegram-place-kind="group_chat"');
 
     console.log(`TASK1021 allowed_two_way_direct_message_controls=${(allowed.match(/data-telegram-whitelist-controls/gu) ?? []).length} verification_ticks=${(allowed.match(/data-telegram-verification-tick="visible"/gu) ?? []).length} unallowed_place_controls=${(unallowed.match(/data-telegram-whitelist-controls/gu) ?? []).length} group_chat_controls=${(group.match(/data-telegram-whitelist-controls/gu) ?? []).length}`);
   });
