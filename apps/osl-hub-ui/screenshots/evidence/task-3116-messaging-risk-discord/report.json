@@ -1,0 +1,119 @@
+{
+  "schema": "task-3116-messaging-risk-discord/v1",
+  "window": {
+    "width": 1024,
+    "height": 700
+  },
+  "screen": {
+    "viewport": {
+      "width": 1024,
+      "height": 700
+    },
+    "service": "discord",
+    "title": "Messaging risk",
+    "facts": [
+      "OSL controls the app",
+      "this may break that service's rules",
+      "the account may be suspended",
+      "OSL cannot remove that risk",
+      "you can turn it off"
+    ],
+    "terms": "Read service terms",
+    "termsButton": "BUTTON",
+    "tickType": "checkbox",
+    "ticked": false,
+    "back": "Back",
+    "continue": "Continue",
+    "continueDisabled": true,
+    "titleBox": {
+      "x": 48,
+      "y": 40,
+      "width": 928,
+      "height": 31.1875,
+      "right": 976,
+      "bottom": 71.1875
+    },
+    "factsBox": {
+      "x": 48,
+      "y": 122.1875,
+      "width": 928,
+      "height": 267.96875,
+      "right": 976,
+      "bottom": 390.15625
+    },
+    "termsBox": {
+      "x": 48,
+      "y": 412.15625,
+      "width": 170,
+      "height": 44,
+      "right": 218,
+      "bottom": 456.15625
+    },
+    "tickBox": {
+      "x": 48,
+      "y": 478.15625,
+      "width": 928,
+      "height": 21,
+      "right": 976,
+      "bottom": 499.15625
+    },
+    "footerBox": {
+      "x": 48,
+      "y": 521.15625,
+      "width": 928,
+      "height": 133.390625,
+      "right": 976,
+      "bottom": 654.546875
+    }
+  },
+  "image": {
+    "path": "discord-messaging-risk.png",
+    "bytes": 29087,
+    "sha256": "20048350780afc6c6f64daf7267f5068a37a67944309509d85300d1a8e1d7292",
+    "width": 1024,
+    "height": 700,
+    "distinctColors": 2128,
+    "crops": {
+      "title": {
+        "width": 928,
+        "height": 32,
+        "pixels": 29696,
+        "distinctColors": 392,
+        "saturatedPixels": 1049,
+        "meanColor": "20,23,24"
+      },
+      "facts": {
+        "width": 928,
+        "height": 269,
+        "pixels": 249632,
+        "distinctColors": 552,
+        "saturatedPixels": 4173,
+        "meanColor": "16,20,23"
+      },
+      "terms": {
+        "width": 170,
+        "height": 45,
+        "pixels": 7650,
+        "distinctColors": 285,
+        "saturatedPixels": 618,
+        "meanColor": "27,31,31"
+      },
+      "tick": {
+        "width": 928,
+        "height": 22,
+        "pixels": 20416,
+        "distinctColors": 295,
+        "saturatedPixels": 703,
+        "meanColor": "13,17,18"
+      },
+      "footer": {
+        "width": 928,
+        "height": 134,
+        "pixels": 124352,
+        "distinctColors": 409,
+        "saturatedPixels": 386,
+        "meanColor": "9,13,14"
+      }
+    }
+  }
+}
