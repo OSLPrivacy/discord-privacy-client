@@ -4422,7 +4422,8 @@ function workspaceShellMarkup(): string {
   // shell unchanged — the ruling removes the rail from Home, not the screens
   // it pointed at.
   if (route === "home" || route === "osl-chat") {
-    return `<div class="hub-layout home-launcher-shell"><section class="hub-workspace"><div class="desktop-top-row home-launcher-top" data-tauri-drag-region="deep">${homeLauncherHeader()}${desktopWindowControlsMarkup()}</div>${workspaceContent()}</section></div>${workspaceProtectedSheetMarkup()}`;
+    const header = route === "osl-chat" ? homeHeader() : homeLauncherHeader();
+    return `<div class="hub-layout home-launcher-shell ${route === "osl-chat" ? "osl-chats-shell" : ""}"><section class="hub-workspace"><div class="desktop-top-row home-launcher-top" data-tauri-drag-region="deep">${header}${desktopWindowControlsMarkup()}</div>${workspaceContent()}</section></div>${workspaceProtectedSheetMarkup()}`;
   }
   return `<div class="hub-layout with-primary-sidebar">${primarySidebarMarkup()}<section class="hub-workspace"><div class="desktop-top-row" data-tauri-drag-region="deep">${trustedHeader()}${desktopWindowControlsMarkup()}</div>${workspaceContent()}</section></div>${workspaceProtectedSheetMarkup()}`;
 }
