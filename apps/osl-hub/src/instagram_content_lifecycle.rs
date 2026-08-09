@@ -147,7 +147,7 @@ pub fn cmd_instagram_set_view_once(
     now: i64,
     display_seconds: u32,
 ) -> Result<InstagramContentExpiry, InstagramContentCommandError> {
-    if display_seconds == 0 || display_seconds > INSTAGRAM_MAX_TIMER_SECONDS {
+    if display_seconds == 0 || display_seconds > INSTAGRAM_DEFAULT_VIEW_ONCE_SECONDS {
         return Err(InstagramContentCommandError::InvalidLifetime {
             seconds: display_seconds,
         });
