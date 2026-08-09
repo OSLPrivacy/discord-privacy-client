@@ -169,6 +169,7 @@ pub mod native_discord_adapter;
 #[cfg(not(task3982_focused))]
 pub mod native_outlook_adapter;
 pub mod native_signal_adapter;
+pub mod signal_place_reader;
 pub mod signal_surface_finder;
 pub mod native_telegram_adapter;
 #[cfg(not(task3982_focused))]
