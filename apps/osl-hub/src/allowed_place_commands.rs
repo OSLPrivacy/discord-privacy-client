@@ -185,6 +185,8 @@ pub fn allowed_place_tick_json(
 ) -> Result<AllowedPlaceCommandJson, String> {
     if app == ipc::allowed_places::APP_TELEGRAM {
         ipc::allowed_places::normalize_telegram_whitelist_kind(&kind)?;
+    } else if app == "whatsapp" {
+        ipc::auto_whitelist_rules::parse_whatsapp_whitelist_kind(&kind)?;
     }
     with_headless_store(store_dir, |security| {
         let state = security::compare_allowed_place_direction_state(
