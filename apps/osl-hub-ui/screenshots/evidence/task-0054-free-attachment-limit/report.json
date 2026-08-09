@@ -1,0 +1,76 @@
+{
+  "schema": "task-0054-free-attachment-limit/v1",
+  "window": {
+    "width": 1440,
+    "height": 900
+  },
+  "file": {
+    "name": "quarterly-records-26-mb.pdf",
+    "bytes": 27262976
+  },
+  "free": {
+    "title": "OSL Chats",
+    "tier": "Free · 25 MB per file",
+    "refusal": "quarterly-records-26-mb.pdf was not added26 MB (27,262,976 bytes) is over the Free limit of 25 MB per file.Upgrade to Pro",
+    "picker": "Choose file",
+    "upgradeOffers": 1,
+    "refusalBox": {
+      "x": 28,
+      "y": 520.46875,
+      "width": 1384,
+      "height": 120.890625
+    },
+    "tierBox": {
+      "x": 28,
+      "y": 496.53125,
+      "width": 1384,
+      "height": 15.9375
+    },
+    "upgradeBox": {
+      "x": 41,
+      "y": 584.359375,
+      "width": 109,
+      "height": 44
+    }
+  },
+  "image": {
+    "path": "free-26-mb-refusal-linux.png",
+    "bytes": 59477,
+    "sha256": "14b9b4387bb32e7700e1b6afa524aaee67fcbe5c1541d003223ffc629882fba7",
+    "width": 1440,
+    "height": 900,
+    "distinctColors": 5901,
+    "crops": {
+      "tier": {
+        "width": 1384,
+        "height": 17,
+        "pixels": 23528,
+        "distinctColors": 212,
+        "saturatedPixels": 253,
+        "meanColor": "21,21,21"
+      },
+      "refusal": {
+        "width": 1384,
+        "height": 122,
+        "pixels": 168848,
+        "distinctColors": 1265,
+        "saturatedPixels": 10135,
+        "meanColor": "45,35,37"
+      },
+      "upgrade": {
+        "width": 109,
+        "height": 45,
+        "pixels": 4905,
+        "distinctColors": 218,
+        "saturatedPixels": 4672,
+        "meanColor": "7,168,196"
+      }
+    }
+  },
+  "pro": {
+    "tier": "Pro · 1 GB per file",
+    "offers": 0,
+    "refusal": ""
+  },
+  "proPassesFreeReview": false
+}

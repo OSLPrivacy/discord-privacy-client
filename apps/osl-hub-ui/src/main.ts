@@ -76,7 +76,7 @@ import { entitlementCopy } from "./entitlement-copy";
 import { entitlementView } from "./entitlement-view";
 import { chooseDetectedAccountOpening, detectedOpeningChoiceKey } from "./detected-account-opening";
 import { bindProtectedTextBoxShortcutGuards } from "./protected-box-shortcuts";
-import { attachmentTierLimit } from "./attachment-tier-limit";
+import { attachmentTierLimit, attachmentTierRefusal, type AttachmentTierRefusal } from "./attachment-tier-limit";
 import {
   escapeHtml,
   closeEmbeddedServiceHost,
@@ -899,6 +899,7 @@ let chatAppearancePane: "profile" | "background" | "messages" = "profile";
 const chatProfileAppearanceState = new OslProfilePaneState(seededProfilePaneRecords());
 let safetyNumberPanelPersonId: string | null = null;
 let oslChatAttachments: NativeOverlayPendingAttachment[] = [];
+let oslChatAttachmentRefusal: AttachmentTierRefusal | null = null;
 const oslChatDropTray: OslChatAttachmentTrayState = createOslChatAttachmentTray();
 const oslMailDropTray = createAttachmentTrayActions();
 let buildIntegrityStatus: BuildIntegrityStatus | null = null;
@@ -6096,8 +6097,11 @@ function oslChatContent(): string {
   const settingsPerson = oslChatSettingsPersonId ? hubPeople.find((person) => person.personId === oslChatSettingsPersonId) ?? null : null;
   const settings = settingsPerson ? renderOslChatFriendSettings(settingsPerson) : "";
   const attachmentLimit = attachmentTierLimit(licenseState.access);
+  const attachmentRefusal = oslChatAttachmentRefusal
+    ? `<aside class="attachment-limit-refusal" data-attachment-limit-refusal="${attachmentLimit.tierLabel.toLowerCase()}" role="alert"><strong>${escapeHtml(oslChatAttachmentRefusal.filename)} was not added</strong><p><b>${oslChatAttachmentRefusal.displayedSize}</b> (${oslChatAttachmentRefusal.exactBytes.toLocaleString("en-US")} bytes) is over the ${attachmentLimit.tierLabel} limit of ${attachmentLimit.perFileLimitLabel} per file.</p>${oslChatAttachmentRefusal.upgradeOffer ? `<button class="button primary compact" data-attachment-upgrade-offer type="button">Upgrade to Pro</button>` : ""}</aside>`
+    : "";
   const attachments = activeOslChatContext?.scopeApproved
-    ? `<section class="osl-chat-attachments" aria-label="Encrypted attachments"><header><strong>Attachments</strong><button class="button compact" id="osl-chat-attach" type="button" ${oslChatBusy ? "disabled" : ""}>Choose file</button></header><small>${attachmentLimit.tierLabel} · ${attachmentLimit.perFileLimitLabel} per file</small>${[...attachmentProgressByContext.values()].map((event) => attachmentProgressMarkup(event, torOnboarding.choice)).join("")}${oslChatAttachments.length ? oslChatAttachments.map((item) => `<button class="setting-line" data-osl-chat-attachment="${escapeHtml(item.attachmentId)}" type="button" ${oslChatBusy ? "disabled" : ""}><span><strong>${escapeHtml(item.originalFilename)}</strong><small>${item.viewOnce ? "View once · " : ""}${item.plaintextSize.toLocaleString("en-US")} bytes</small></span>${statusTag("Open")}</button>`).join("") : `<p>No pending attachments.</p>`}<small>Opening a received view-once item is free. Images open in OSL's capture-resistant viewer. Other supported files open temporarily in their Windows viewer, which may allow capture.</small></section>`
+    ? `<section class="osl-chat-attachments" aria-label="Encrypted attachments"><header><strong>Attachments</strong><button class="button compact" id="osl-chat-attach" type="button" ${oslChatBusy ? "disabled" : ""}>Choose file</button></header><small data-attachment-tier-limit="${attachmentLimit.tierLabel.toLowerCase()}">${attachmentLimit.tierLabel} · ${attachmentLimit.perFileLimitLabel} per file</small>${attachmentRefusal}${[...attachmentProgressByContext.values()].map((event) => attachmentProgressMarkup(event, torOnboarding.choice)).join("")}${oslChatAttachments.length ? oslChatAttachments.map((item) => `<button class="setting-line" data-osl-chat-attachment="${escapeHtml(item.attachmentId)}" type="button" ${oslChatBusy ? "disabled" : ""}><span><strong>${escapeHtml(item.originalFilename)}</strong><small>${item.viewOnce ? "View once · " : ""}${item.plaintextSize.toLocaleString("en-US")} bytes</small></span>${statusTag("Open")}</button>`).join("") : `<p>No pending attachments.</p>`}<small>Opening a received view-once item is free. Images open in OSL's capture-resistant viewer. Other supported files open temporarily in their Windows viewer, which may allow capture.</small></section>`
     : "";
   const droppedFiles = oslChatDropTray.attachments.length
     ? attachmentTrayMarkup(oslChatDropTray)
@@ -10915,6 +10919,7 @@ function resetOslChatUiState(clearMessages: boolean): void {
   oslChatDraft = "";
   oslChatBusy = false;
   oslChatAttachments = [];
+  oslChatAttachmentRefusal = null;
   oslChatVerificationWarningSurface = "none";
   oslChatSendBlockedReason = null;
   startSomethingChoice = null;
@@ -12590,6 +12595,7 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   activeOslChatPersonId = null;
   activeOslChatContext = null;
   oslChatBusy = false;
+  oslChatAttachmentRefusal = null;
   serviceAccountPickerOpen = false;
   friendsDialogOpen = false;
   homeEditMode = false;
@@ -13221,9 +13227,14 @@ export const __oslHubUiTest = {
       scopeApproved: true,
     };
     oslChatAttachments = [];
+    oslChatAttachmentRefusal = null;
   },
   setLicenseAccess(access: HubLicenseState["access"]): void {
     licenseState = { ...licenseState, access };
+    oslChatAttachmentRefusal = null;
+  },
+  refuseOslChatAttachmentForCapture(filename: string, exactBytes: number): void {
+    oslChatAttachmentRefusal = attachmentTierRefusal(licenseState.access, filename, exactBytes);
   },
   renderOslChatAttachmentPicker(): string {
     route = "osl-chat";

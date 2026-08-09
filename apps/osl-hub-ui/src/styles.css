@@ -13960,6 +13960,21 @@ img.osl-chat-avatar { display: block; object-fit: cover; }
 .osl-chat-attachments > small { color: var(--subtle); font-size: 11px; line-height: 1.45; }
 
 
+.attachment-limit-refusal {
+  display: grid;
+  gap: 7px;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--danger) 55%, var(--line));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--danger) 10%, var(--panel));
+}
+
+.attachment-limit-refusal strong { color: var(--text); font-size: 13px; }
+.attachment-limit-refusal p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
+.attachment-limit-refusal b { color: var(--text); }
+.attachment-limit-refusal .button { justify-self: start; }
+
+
 
 
 .osl-chat-attachments > .setting-line {
