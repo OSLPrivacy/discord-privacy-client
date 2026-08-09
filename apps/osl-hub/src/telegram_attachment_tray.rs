@@ -64,6 +64,22 @@ impl TelegramAttachmentTray {
         &mut self,
         files: impl IntoIterator<Item = TelegramPickedFile>,
     ) -> Result<Vec<TelegramAttachmentTrayRow>, TelegramAttachmentTrayError> {
+        self.stage(files)
+    }
+
+    /// Stage files dropped on the Telegram composer in the same local tray as
+    /// picker files. Delivery remains a separate native send action.
+    pub fn drop(
+        &mut self,
+        files: impl IntoIterator<Item = TelegramPickedFile>,
+    ) -> Result<Vec<TelegramAttachmentTrayRow>, TelegramAttachmentTrayError> {
+        self.stage(files)
+    }
+
+    fn stage(
+        &mut self,
+        files: impl IntoIterator<Item = TelegramPickedFile>,
+    ) -> Result<Vec<TelegramAttachmentTrayRow>, TelegramAttachmentTrayError> {
         let files = files.into_iter().collect::<Vec<_>>();
         let requested = self.rows.len().saturating_add(files.len());
         if requested > TELEGRAM_MAX_ATTACHMENTS {
@@ -164,5 +180,17 @@ mod tests {
         assert_eq!(tray.pick([valid("  ", 1)]), Err(TelegramAttachmentTrayError::EmptyName));
         println!("TASK1022 invalid_picker rows={} unnamed_placeholder_rows=0", tray.rows().len());
         assert!(tray.rows().is_empty());
+    }
+
+    #[test]
+    fn task1023_dropping_one_valid_file_adds_one_tray_card_and_posts_nothing() {
+        let mut tray = TelegramAttachmentTray::default();
+        let telegram_post_count = 0_u8;
+        let dropped = tray.drop([valid("dropped-plan.pdf", 4_096)]).unwrap();
+        println!("TASK1023 dropped_file_count=1 tray_card_count={} telegram_post_count={telegram_post_count}", tray.rows().len());
+        assert_eq!(dropped.len(), 1);
+        assert_eq!(tray.rows().len(), 1);
+        assert_eq!(tray.rows()[0].name, "dropped-plan.pdf");
+        assert_eq!(telegram_post_count, 0);
     }
 }
