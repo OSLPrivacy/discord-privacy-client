@@ -229,6 +229,9 @@ pub use state::AppState;
 #[cfg(test)]
 mod task_0278_remove_friend_not_block;
 
+#[cfg(test)]
+mod task_3617_complex_emoji_roundtrip;
+
 use serde::Serialize;
 use thiserror::Error;
 
