@@ -1,0 +1,43 @@
+{
+  "exactValidCard": {
+    "name": "whatsapp-valid-card-1085.bin",
+    "size": 8388608,
+    "kind": "file"
+  },
+  "invalidAttachmentInputs": [
+    {
+      "id": "17-files",
+      "files": [
+        { "name": "whatsapp-01.txt", "size": 1, "kind": "file" },
+        { "name": "whatsapp-02.txt", "size": 1, "kind": "file" },
+        { "name": "whatsapp-03.txt", "size": 1, "kind": "file" },
+        { "name": "whatsapp-04.txt", "size": 1, "kind": "file" },
+        { "name": "whatsapp-05.txt", "size": 1, "kind": "file" },
+        { "name": "whatsapp-06.txt", "size": 1, "kind": "file" },
+        { "name": "whatsapp-07.txt", "size": 1, "kind": "file" },
+        { "name": "whatsapp-08.txt", "size": 1, "kind": "file" },
+        { "name": "whatsapp-09.txt", "size": 1, "kind": "file" },
+        { "name": "whatsapp-10.txt", "size": 1, "kind": "file" },
+        { "name": "whatsapp-11.txt", "size": 1, "kind": "file" },
+        { "name": "whatsapp-12.txt", "size": 1, "kind": "file" },
+        { "name": "whatsapp-13.txt", "size": 1, "kind": "file" },
+        { "name": "whatsapp-14.txt", "size": 1, "kind": "file" },
+        { "name": "whatsapp-15.txt", "size": 1, "kind": "file" },
+        { "name": "whatsapp-16.txt", "size": 1, "kind": "file" },
+        { "name": "whatsapp-17.txt", "size": 1, "kind": "file" }
+      ]
+    },
+    {
+      "id": "over-8-MB",
+      "files": [
+        { "name": "whatsapp-over-8-MB.bin", "size": 8388609, "kind": "file" }
+      ]
+    },
+    {
+      "id": "folder",
+      "files": [
+        { "name": "whatsapp-folder-1085", "size": 4096, "kind": "folder" }
+      ]
+    }
+  ]
+}
