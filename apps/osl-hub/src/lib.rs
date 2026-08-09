@@ -235,6 +235,7 @@ pub mod scrub_evidence_manifest;
 #[cfg(not(task3982_focused))]
 pub mod shared_conversation_scroll;
 pub mod signal_place_reader;
+pub mod signal_direct_message_check;
 pub mod signal_surface_finder;
 #[cfg(not(task3982_focused))]
 pub mod tor_pref;
