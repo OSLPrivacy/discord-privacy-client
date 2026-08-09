@@ -221,6 +221,8 @@ pub mod native_window_host;
 /// The adapter has no typing or scrolling operation.
 pub mod signal_message_reader;
 #[cfg(feature = "core")]
+pub mod signal_marked_message_deleter;
+#[cfg(feature = "core")]
 pub mod osl_chat_attachment_download_permission;
 #[cfg(feature = "core")]
 pub mod osl_chat_attachment_filename;
@@ -228,8 +230,6 @@ pub mod osl_chat_attachment_filename;
 pub mod osl_chat_content_name;
 #[cfg(feature = "core")]
 pub mod osl_chat_alert_words;
-#[cfg(feature = "core")]
-pub mod osl_chat_attachment_filename;
 #[cfg(feature = "core")]
 pub mod osl_chat_drag_drop;
 #[cfg(feature = "core")]
