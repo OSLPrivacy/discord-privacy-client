@@ -166,6 +166,13 @@ pub struct TelegramLivePlacementReceipt {
     pub settled_ms: u64,
     pub writable_composer_count: usize,
     pub readback_contains_carrier: bool,
+    /// The shared place-text read returned exactly the bytes supplied by the
+    /// caller, not merely a string containing them.
+    pub readback_exact: bool,
+    pub readback_bytes: usize,
+    /// Provider bytes observed through the shared read action after the shared
+    /// clear action. A successful write-then-clear probe requires zero.
+    pub bytes_after_clear: usize,
     /// The substrate's own error, carried verbatim so a mutant transcript names
     /// the rung that broke instead of a status that lost the detail.
     pub acquire_error: Option<Uia2AcquireError>,
@@ -182,6 +189,9 @@ impl TelegramLivePlacementReceipt {
             settled_ms: 0,
             writable_composer_count: 0,
             readback_contains_carrier: false,
+            readback_exact: false,
+            readback_bytes: 0,
+            bytes_after_clear: 0,
             acquire_error: None,
         }
     }
@@ -319,6 +329,8 @@ fn place_through_substrate(
             }
             receipt.placed = placement.placed;
             receipt.readback_contains_carrier = placement.readback_holds_carrier;
+            receipt.readback_exact = placement.readback_exact;
+            receipt.readback_bytes = placement.readback_bytes;
             receipt.status = TelegramPlacementStatus::Placed;
             (receipt, Some(TelegramPlacedComposer { acquired, composer }))
         }
@@ -365,7 +377,15 @@ pub fn probe_telegram_composer_write_then_clear(
     let (mut receipt, placed) = place_through_substrate(host, request);
     if let Some(placed) = placed {
         let before_clear = host.submit_shaped_calls();
-        if clear_uia2_composer(host, placed.acquired, &placed.composer).is_err() {
+        let clear_result = clear_uia2_composer(host, placed.acquired, &placed.composer);
+        let after_clear =
+            crate::native_a11y::read_uia2_composer_value(host, placed.acquired, &placed.composer);
+        receipt.bytes_after_clear = after_clear
+            .as_ref()
+            .ok()
+            .and_then(|value| value.as_deref())
+            .map_or(0, str::len);
+        if clear_result.is_err() || after_clear.is_err() || receipt.bytes_after_clear != 0 {
             receipt.placed = false;
             receipt.status = TelegramPlacementStatus::ProbeClearFailed;
         }

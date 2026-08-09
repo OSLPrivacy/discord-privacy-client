@@ -1283,6 +1283,13 @@ pub struct Uia2PlacementReceipt {
     /// fields, and A-00 nearly discarded the decisive Discord result to an
     /// exact-equality check.
     pub readback_holds_carrier: bool,
+    /// Exact byte equality is reported separately from containment. Most live
+    /// providers may decorate a field while still preserving the carrier, but
+    /// a carry-proof can require the stronger result without reimplementing
+    /// placement or reading in a provider adapter.
+    pub readback_exact: bool,
+    /// UTF-8 byte count returned by the provider's own ValuePattern read-back.
+    pub readback_bytes: usize,
     /// Derived from the backend's own submit-shaped counter, never from a
     /// literal. If this is ever true the placement is refused.
     pub submit_shaped_observed: bool,
@@ -1352,6 +1359,8 @@ pub fn place_uia2_carrier(
     let readback_holds_carrier = readback
         .as_deref()
         .is_some_and(|value| value.contains(carrier));
+    let readback_exact = readback.as_deref() == Some(carrier);
+    let readback_bytes = readback.as_deref().map_or(0, str::len);
     let submit_shaped_observed = host.submit_shaped_calls() > baseline;
     if submit_shaped_observed {
         return Err(Uia2PlacementRefusal::SubmitShaped);
@@ -1363,6 +1372,8 @@ pub fn place_uia2_carrier(
     Ok(Uia2PlacementReceipt {
         placed: true,
         readback_holds_carrier,
+        readback_exact,
+        readback_bytes,
         submit_shaped_observed,
     })
 }
