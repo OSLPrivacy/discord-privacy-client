@@ -3705,6 +3705,11 @@ fn send_native_discord_overlay_carrier(
             require_same_overlay_context(&app, epoch, &host)?;
             let placement_context =
                 NativeDiscordPlacementContext::new(&placement_scope_binding, mode);
+            // This is the last decision before the native writer can stage its
+            // marked carrier.  Discord may close after the earlier host/context
+            // proof, in which case the overlay guard clears this epoch and we
+            // must refuse without creating a placed or clipboard mark.
+            carrier_placement.allow_marked_placement(epoch)?;
             let receipt = composer.place_carrier(
                 &app.state::<NativeWindowHostState>(),
                 &owner,

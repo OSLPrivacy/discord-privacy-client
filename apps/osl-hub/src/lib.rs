@@ -234,6 +234,7 @@ pub mod osl_mail;
 pub mod osl_profile;
 pub mod owner_presence;
 pub mod overlay_follow;
+pub mod placement_close;
 #[cfg(feature = "core")]
 #[cfg(not(task3982_focused))]
 pub mod peer_attachment_io;

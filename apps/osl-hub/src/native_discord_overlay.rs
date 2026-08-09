@@ -407,6 +407,16 @@ impl Drop for CarrierPlacementGuard<'_> {
     }
 }
 
+impl CarrierPlacementGuard<'_> {
+    /// Re-check the overlay's exact session at the last safe point before a
+    /// carrier writer can create a marked placement.  If Discord closed after
+    /// the overlay opened, its guard has cleared this epoch and the writer must
+    /// leave both the application's text and the clipboard unmarked.
+    pub(crate) fn allow_marked_placement(&self, epoch: u64) -> Result<(), String> {
+        osl_privacy_hub::placement_close::allow_marked_placement(self.state.is_ready(epoch))
+    }
+}
+
 impl Default for OverlaySessionState {
     fn default() -> Self {
         Self {
