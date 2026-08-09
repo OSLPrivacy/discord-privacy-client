@@ -1,0 +1,7 @@
+[package]
+name = "task-1137-instagram-send-choices"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
