@@ -751,6 +751,9 @@ let oslChatVerificationWarningSurface: VerificationWarningSurface = "none";
 let oslChatPreviewsVisible = true;
 let oslChatMutedPeople = new Set<string>();
 let oslChatSettingsPersonId: string | null = null;
+let oslChatFilter: "direct" | "groups" | "enclaves" = "direct";
+let oslChatSearch = "";
+let oslChatSendBlockedReason: string | null = null;
 let oslChatAttachments: NativeOverlayPendingAttachment[] = [];
 const oslChatDropTray: OslChatAttachmentTrayState = createOslChatAttachmentTray();
 let buildIntegrityStatus: BuildIntegrityStatus | null = null;
@@ -4418,7 +4421,7 @@ function workspaceShellMarkup(): string {
   // and the Friends panel down the right. Every other route keeps the hub
   // shell unchanged — the ruling removes the rail from Home, not the screens
   // it pointed at.
-  if (route === "home") {
+  if (route === "home" || route === "osl-chat") {
     return `<div class="hub-layout home-launcher-shell"><section class="hub-workspace"><div class="desktop-top-row home-launcher-top" data-tauri-drag-region="deep">${homeLauncherHeader()}${desktopWindowControlsMarkup()}</div>${workspaceContent()}</section></div>${workspaceProtectedSheetMarkup()}`;
   }
   return `<div class="hub-layout with-primary-sidebar">${primarySidebarMarkup()}<section class="hub-workspace"><div class="desktop-top-row" data-tauri-drag-region="deep">${trustedHeader()}${desktopWindowControlsMarkup()}</div>${workspaceContent()}</section></div>${workspaceProtectedSheetMarkup()}`;
