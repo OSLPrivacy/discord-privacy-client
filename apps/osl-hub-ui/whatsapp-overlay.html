@@ -9,6 +9,8 @@
   <body>
     <main class="wa-overlay-shell" aria-label="OSL protected WhatsApp composer">
       <span class="wa-trust-mark" title="Locked: this field belongs to OSL, not WhatsApp" aria-label="Locked OSL-owned field">🔒</span>
+      <button id="whatsapp-attachment-picker" class="wa-attachment-picker" type="button" aria-label="Choose protected attachments" title="Choose protected attachments">+</button>
+      <input id="whatsapp-attachment-input" class="sr-only" type="file" multiple aria-label="Choose protected attachments" />
       <label class="wa-draft-field wa-private-box" for="protected-draft">
         <span class="sr-only">Private message</span>
         <textarea id="protected-draft" rows="1" autocomplete="off" spellcheck="true" aria-describedby="draft-bytes overlay-status" placeholder="Write privately in OSL"></textarea>
@@ -18,6 +20,7 @@
         <span id="draft-bytes" role="status" aria-live="polite" aria-atomic="true">0 / 1000 bytes</span>
       </div>
       <button id="protected-send" type="button" disabled aria-label="Encrypt and copy protected message">Copy</button>
+      <section id="whatsapp-attachment-tray" class="wa-attachment-tray" aria-label="Unsent protected attachments" aria-live="polite"></section>
     </main>
     <script type="module" src="/src/whatsapp-overlay.ts"></script>
   </body>

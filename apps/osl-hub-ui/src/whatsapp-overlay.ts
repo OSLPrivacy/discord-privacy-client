@@ -3,6 +3,12 @@ import { invoke } from "@tauri-apps/api/core";
 import "./whatsapp-overlay.css";
 import { parseWhatsAppPreparedCarrier } from "./whatsapp-overlay-prepare";
 import { reconcileWhatsAppPrivateBox } from "./whatsapp-private-box";
+import {
+  addDroppedWhatsAppAttachmentFiles,
+  addPickedWhatsAppAttachmentFiles,
+  type WhatsAppAttachmentFile,
+  type WhatsAppAttachmentTray,
+} from "./whatsapp-attachment-tray";
 
 function requireElement<T extends Element>(selector: string): T {
   const element = document.querySelector<T>(selector);
@@ -14,9 +20,31 @@ const draft = requireElement<HTMLTextAreaElement>("#protected-draft");
 const counter = requireElement<HTMLElement>("#draft-bytes");
 const status = requireElement<HTMLElement>("#overlay-status");
 const copy = requireElement<HTMLButtonElement>("#protected-send");
+const attachmentPicker = requireElement<HTMLButtonElement>("#whatsapp-attachment-picker");
+const attachmentInput = requireElement<HTMLInputElement>("#whatsapp-attachment-input");
+const attachmentTray = requireElement<HTMLElement>("#whatsapp-attachment-tray");
 
 let composing = false;
 let busy = false;
+let attachments: WhatsAppAttachmentTray = { cards: [], rejected: [] };
+
+function renderAttachmentTray(): void {
+  const cards = attachments.cards.map((card) => {
+    const item = document.createElement("div");
+    item.className = "wa-attachment-card";
+    item.textContent = `${card.name} · ${card.sizeLabel} · Unsent`;
+    return item;
+  });
+  attachmentTray.replaceChildren(...cards);
+  if (attachments.rejected.length) status.textContent = attachments.rejected.at(-1) ?? "Attachment was not added.";
+}
+
+function stageAttachments(files: Iterable<WhatsAppAttachmentFile>, source: "picker" | "drop"): void {
+  attachments = source === "picker"
+    ? addPickedWhatsAppAttachmentFiles(attachments, files)
+    : addDroppedWhatsAppAttachmentFiles(attachments, files);
+  renderAttachmentTray();
+}
 
 function reconcileDraft(): void {
   const state = reconcileWhatsAppPrivateBox(draft.value);
@@ -50,4 +78,24 @@ copy.addEventListener("click", async () => {
   }
 });
 
+attachmentPicker.addEventListener("click", () => attachmentInput.click());
+attachmentInput.addEventListener("change", () => {
+  stageAttachments(attachmentInput.files ?? [], "picker");
+  attachmentInput.value = "";
+});
+for (const eventName of ["dragenter", "dragover"] as const) {
+  attachmentTray.addEventListener(eventName, (event) => {
+    event.preventDefault();
+    attachmentTray.classList.add("is-dragging");
+  });
+}
+for (const eventName of ["dragleave", "drop"] as const) {
+  attachmentTray.addEventListener(eventName, (event) => {
+    event.preventDefault();
+    attachmentTray.classList.remove("is-dragging");
+    if (eventName === "drop") stageAttachments(event.dataTransfer?.files ?? [], "drop");
+  });
+}
+
 reconcileDraft();
+renderAttachmentTray();
