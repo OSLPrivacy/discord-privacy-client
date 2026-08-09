@@ -14,15 +14,26 @@ pub trait SharedTextActions {
     fn clear_text(&mut self) -> Result<(), String>;
 }
 
+/// Text that the shared native placement job may put into a composer.
+///
+/// A literal space is content and must survive the read-back check unchanged.
+/// A line break is different: native composers disagree about whether it
+/// creates a second line or commits the message, so the common job refuses it
+/// before it reads, stages, or places anything.
+pub fn validate_placement_text(text: &str) -> Result<(), String> {
+    if text.is_empty() || text.chars().any(|ch| matches!(ch, '\n' | '\r')) {
+        return Err("marked text must be one non-empty line".to_owned());
+    }
+    Ok(())
+}
+
 /// Place exact text, prove the read-back byte-for-byte, and clear it without
 /// invoking any provider send control.
 pub fn place_read_back_and_clear(
     actions: &mut impl SharedTextActions,
     mark: &str,
 ) -> Result<SharedTextPlacementReceipt, String> {
-    if mark.is_empty() {
-        return Err("marked text must contain at least one byte".to_owned());
-    }
+    validate_placement_text(mark)?;
     let before_readback = actions.read_back_text()?;
     if !before_readback.is_empty() {
         return Err(format!("composer was not empty before placement: {before_readback:?}"));
@@ -776,9 +787,7 @@ mod windows_place_text {
                     }
                 }
             }
-            if text.is_empty() || text.chars().any(|ch| matches!(ch, '\n' | '\r')) {
-                return Err(CommandError::usage("text must be one non-empty line"));
-            }
+            super::validate_placement_text(&text).map_err(CommandError::usage)?;
             if wait_timeout_seconds == 0 {
                 return Err(CommandError::usage(
                     "--wait-timeout-seconds must be a positive integer",
