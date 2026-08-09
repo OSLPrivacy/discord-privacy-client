@@ -610,6 +610,115 @@ impl SharedConversationScrollablePlace for InstagramDirectMessagePagePlace {
     }
 }
 
+/// Create a consent-gated, one-screen-at-a-time Telegram Scrub viewport.
+pub fn telegram_desktop_chat_page_place_for_scrub(
+    owner_osl_user_id: &str,
+    account_id: &str,
+    place_id: &str,
+    desktop_machine: &TelegramDesktopMachine,
+    page_size: usize,
+) -> Result<TelegramDesktopChatPagePlace, String> {
+    validate_conversation_message_place_id(place_id)?;
+    if page_size == 0 {
+        return Err("Telegram message page size must be at least one".to_owned());
+    }
+    let place = desktop_machine
+        .places
+        .iter()
+        .find(|place| place.place_id == place_id)
+        .cloned()
+        .ok_or_else(|| "Telegram conversation place not found".to_owned())?;
+    let messages = read_telegram_desktop_shared_messages(
+        owner_osl_user_id,
+        account_id,
+        place_id,
+        desktop_machine,
+    )?;
+    Ok(TelegramDesktopChatPagePlace {
+        place,
+        messages,
+        current_page: 0,
+        page_size,
+        one_screen_scrolls: 0,
+        stop_when_reading_page: None,
+        stop_request_callback: None,
+    })
+}
+
+/// A bounded, read-only Telegram conversation viewport for the shared reader.
+pub struct TelegramDesktopChatPagePlace {
+    place: TelegramDesktopPlace,
+    messages: Vec<SharedConversationMessage>,
+    current_page: usize,
+    page_size: usize,
+    one_screen_scrolls: usize,
+    stop_when_reading_page: Option<usize>,
+    stop_request_callback: Option<Box<dyn Fn() -> Result<(), String>>>,
+}
+
+impl std::fmt::Debug for TelegramDesktopChatPagePlace {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TelegramDesktopChatPagePlace")
+            .field("place", &self.place)
+            .field("message_count", &self.messages.len())
+            .field("current_page", &self.current_page)
+            .field("page_size", &self.page_size)
+            .field("one_screen_scrolls", &self.one_screen_scrolls)
+            .finish()
+    }
+}
+
+impl TelegramDesktopChatPagePlace {
+    pub fn message_count(&self) -> usize {
+        self.messages.len()
+    }
+
+    pub fn one_screen_scroll_count(&self) -> usize {
+        self.one_screen_scrolls
+    }
+
+    fn current_page_number(&self) -> usize {
+        self.current_page.saturating_add(1)
+    }
+
+    pub fn request_stop_when_reading_page(
+        &mut self,
+        page_number: usize,
+        callback: impl Fn() -> Result<(), String> + 'static,
+    ) {
+        self.stop_when_reading_page = Some(page_number);
+        self.stop_request_callback = Some(Box::new(callback));
+    }
+}
+
+impl SharedConversationScrollablePlace for TelegramDesktopChatPagePlace {
+    fn read_current_screen(&self) -> Result<Vec<SharedPlaceMessage>, String> {
+        if self.stop_when_reading_page == Some(self.current_page_number()) {
+            if let Some(callback) = &self.stop_request_callback {
+                callback()?;
+            }
+        }
+        let start = self.current_page.saturating_mul(self.page_size);
+        let end = start
+            .saturating_add(self.page_size)
+            .min(self.messages.len());
+        Ok(self.messages[start..end]
+            .iter()
+            .map(|message| SharedPlaceMessage::new(&message.message_id, &message.text))
+            .collect())
+    }
+
+    fn scroll_one_screen(&mut self) -> Result<bool, String> {
+        let next_start = (self.current_page + 1).saturating_mul(self.page_size);
+        if next_start >= self.messages.len() {
+            return Ok(false);
+        }
+        self.current_page += 1;
+        self.one_screen_scrolls += 1;
+        Ok(true)
+    }
+}
+
 /// One message observed by the Instagram browser accessibility reader.
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
