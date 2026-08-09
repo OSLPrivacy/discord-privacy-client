@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en" data-fixture-os="linux">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OSL group whitelist fixture</title>
+    <style>
+      :root { color-scheme: dark; font-family: Inter, system-ui, sans-serif; }
+      * { box-sizing: border-box; }
+      body { min-width: 100vw; min-height: 100vh; margin: 0; background: #101517; color: #edf5f4; }
+      .linux-titlebar { height: 34px; padding: 8px 14px; background: #171e20; border-bottom: 1px solid #2d393b; color: #a7b7b8; font-size: 12px; }
+      main { min-height: calc(100vh - 34px); padding: 52px 74px; background: radial-gradient(circle at 83% 10%, #183438 0, #101517 32%); }
+      .surface { max-width: 880px; padding: 34px; border: 1px solid #314245; border-radius: 12px; background: #162023; box-shadow: 0 20px 48px rgba(0, 0, 0, .28); }
+      h1 { margin: 0 0 8px; font-size: 27px; letter-spacing: -.02em; }
+      .intro { max-width: 560px; margin: 0; color: #adc0c1; line-height: 1.5; }
+      .conversation { display: grid; gap: 11px; margin-top: 32px; }
+      .chat-line { display: flex; justify-content: space-between; max-width: 500px; padding: 12px 14px; border: 1px solid #2f3e41; border-radius: 8px; background: #11191b; color: #cddadb; }
+      .chat-line small { color: #84999b; }
+      .discord-qa-whitelist { position: fixed; top: 104px; right: 72px; z-index: 2; }
+      #discord-qa-whitelist-roster { min-height: 38px; padding: 0 13px; border: 1px solid #50868c; border-radius: 6px 6px 0 0; background: #1c555a; color: #f4ffff; font: inherit; font-size: 14px; font-weight: 700; letter-spacing: .035em; text-transform: uppercase; }
+      .whitelist-roster-dropdown { width: 338px; padding: 8px; border: 1px solid #4b7479; border-radius: 8px 0 8px 8px; background: #1b292c; box-shadow: 0 16px 34px rgba(0, 0, 0, .38); }
+      .whitelist-dropdown-list { display: grid; max-height: 610px; gap: 4px; overflow-y: auto; padding-right: 3px; }
+      .whitelist-dropdown-row { min-height: 44px; display: grid; grid-template-columns: 20px minmax(0, 1fr); align-items: center; gap: 10px; padding: 7px 8px; border-radius: 6px; }
+      .whitelist-dropdown-row:hover { background: #263b3e; }
+      .whitelist-dropdown-row input { width: 17px; height: 17px; margin: 0; accent-color: #4dd2be; }
+      .whitelist-dropdown-row span, .whitelist-dropdown-row small { min-width: 0; }
+      .whitelist-dropdown-row strong, .whitelist-dropdown-row small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .whitelist-dropdown-row strong { color: #f4fbfa; font-size: 14px; font-weight: 650; }
+      .whitelist-dropdown-row small { margin-top: 2px; color: #a9c0c1; font-size: 12px; }
+      .whitelist-dropdown-list::-webkit-scrollbar { width: 8px; }
+      .whitelist-dropdown-list::-webkit-scrollbar-thumb { border-radius: 8px; background: #5a777b; }
+    </style>
+  </head>
+  <body>
+    <div class="linux-titlebar">OSL — protected group</div>
+    <main>
+      <section class="surface" aria-labelledby="screen-title">
+        <h1 id="screen-title">Protected group</h1>
+        <p class="intro">Only the people checked in this list can receive protected messages in this group. Each person keeps their own permission.</p>
+        <div class="conversation" aria-label="Protected conversation preview">
+          <div class="chat-line"><span>Welcome back. Your group is protected.</span><small>now</small></div>
+          <div class="chat-line"><span>Choose who is allowed before sending.</span><small>now</small></div>
+        </div>
+      </section>
+    </main>
+    <div class="discord-qa-whitelist" role="group" aria-label="Connected verified peer whitelist">
+      <button id="discord-qa-whitelist-roster" type="button" aria-haspopup="menu" aria-controls="whitelist-roster-dropdown" aria-expanded="true">Whitelist</button>
+      <div class="whitelist-roster-dropdown" id="whitelist-roster-dropdown" role="menu" aria-label="Group whitelist">
+        <div class="whitelist-dropdown-list">
+          <label class="whitelist-dropdown-row" data-whitelist-dropdown-row="ada"><input type="checkbox" data-whitelist-person-checkbox="ada" checked /><span><strong>Ada Lovelace</strong><small>Whitelisted</small></span></label>
+          <label class="whitelist-dropdown-row" data-whitelist-dropdown-row="grace"><input type="checkbox" data-whitelist-person-checkbox="grace" /><span><strong>Grace Hopper</strong><small>Not whitelisted</small></span></label>
+          <label class="whitelist-dropdown-row" data-whitelist-dropdown-row="katherine"><input type="checkbox" data-whitelist-person-checkbox="katherine" checked /><span><strong>Katherine Johnson</strong><small>Whitelisted</small></span></label>
+          <label class="whitelist-dropdown-row" data-whitelist-dropdown-row="dorothy"><input type="checkbox" data-whitelist-person-checkbox="dorothy" /><span><strong>Dorothy Vaughan</strong><small>Not whitelisted</small></span></label>
+          <label class="whitelist-dropdown-row" data-whitelist-dropdown-row="mary"><input type="checkbox" data-whitelist-person-checkbox="mary" checked /><span><strong>Mary Jackson</strong><small>Whitelisted</small></span></label>
+          <label class="whitelist-dropdown-row" data-whitelist-dropdown-row="radia"><input type="checkbox" data-whitelist-person-checkbox="radia" /><span><strong>Radia Perlman</strong><small>Not whitelisted</small></span></label>
+          <label class="whitelist-dropdown-row" data-whitelist-dropdown-row="annie"><input type="checkbox" data-whitelist-person-checkbox="annie" checked /><span><strong>Annie Easley</strong><small>Whitelisted</small></span></label>
+          <label class="whitelist-dropdown-row" data-whitelist-dropdown-row="margaret"><input type="checkbox" data-whitelist-person-checkbox="margaret" checked /><span><strong>Margaret Hamilton</strong><small>Whitelisted</small></span></label>
+          <label class="whitelist-dropdown-row" data-whitelist-dropdown-row="ellen"><input type="checkbox" data-whitelist-person-checkbox="ellen" /><span><strong>Ellen Ochoa</strong><small>Not whitelisted</small></span></label>
+          <label class="whitelist-dropdown-row" data-whitelist-dropdown-row="valerie"><input type="checkbox" data-whitelist-person-checkbox="valerie" checked /><span><strong>Valerie Thomas</strong><small>Whitelisted</small></span></label>
+          <label class="whitelist-dropdown-row" data-whitelist-dropdown-row="hedy"><input type="checkbox" data-whitelist-person-checkbox="hedy" /><span><strong>Hedy Lamarr</strong><small>Not whitelisted</small></span></label>
+          <label class="whitelist-dropdown-row" data-whitelist-dropdown-row="sister"><input type="checkbox" data-whitelist-person-checkbox="sister" checked /><span><strong>Sister Mary Kenneth Keller</strong><small>Whitelisted</small></span></label>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>
