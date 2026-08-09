@@ -20,10 +20,15 @@ pub struct PlacementWindowState {
     pub app_has_focus: bool,
     pub app_is_covered: bool,
     pub app_is_minimized: bool,
+    /// The composer's rectangle is still on a display Windows reports as
+    /// available.  A monitor can disappear after focus was acquired, leaving
+    /// an otherwise focused window at a stale virtual-desktop coordinate.
+    pub app_display_available: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PlacementInterruption {
+    DisplayDisconnected,
     FocusChanged,
     AppCovered,
     AppMinimized,
@@ -32,6 +37,7 @@ pub enum PlacementInterruption {
 impl PlacementInterruption {
     pub const fn name(self) -> &'static str {
         match self {
+            Self::DisplayDisconnected => "display disconnected",
             Self::FocusChanged => "focus changed",
             Self::AppCovered => "app covered",
             Self::AppMinimized => "app minimized",
@@ -43,9 +49,10 @@ pub trait PlacementWindowGuard {
     fn state_before_place(&mut self) -> Result<PlacementWindowState, String>;
 }
 
-fn guard_placement_window(guard: &mut impl PlacementWindowGuard) -> Result<(), String> {
-    let state = guard.state_before_place()?;
-    let interruption = if !state.app_has_focus {
+fn placement_interruption(state: PlacementWindowState) -> Option<PlacementInterruption> {
+    if !state.app_display_available {
+        Some(PlacementInterruption::DisplayDisconnected)
+    } else if !state.app_has_focus {
         Some(PlacementInterruption::FocusChanged)
     } else if state.app_is_covered {
         Some(PlacementInterruption::AppCovered)
@@ -53,7 +60,12 @@ fn guard_placement_window(guard: &mut impl PlacementWindowGuard) -> Result<(), S
         Some(PlacementInterruption::AppMinimized)
     } else {
         None
-    };
+    }
+}
+
+fn guard_placement_window(guard: &mut impl PlacementWindowGuard) -> Result<(), String> {
+    let state = guard.state_before_place()?;
+    let interruption = placement_interruption(state);
     if let Some(interruption) = interruption {
         return Err(format!(
             "placement refused: {} before text was put down",
@@ -90,6 +102,7 @@ pub fn place_read_back_and_clear(
                 app_has_focus: true,
                 app_is_covered: false,
                 app_is_minimized: false,
+                app_display_available: true,
             })
         }
     }
@@ -1200,7 +1213,18 @@ mod windows_place_text {
             let app_has_focus = foreground_window()
                 .is_some_and(|foreground| same_root(foreground.hwnd, self.app_root));
             let app_is_minimized = unsafe { IsIconic(self.app_root) } != 0;
-            let app_is_covered = element_bounds(self.composer).is_none_or(|bounds| {
+            let virtual_left = unsafe { GetSystemMetrics(SM_XVIRTUALSCREEN) };
+            let virtual_top = unsafe { GetSystemMetrics(SM_YVIRTUALSCREEN) };
+            let virtual_right = virtual_left + unsafe { GetSystemMetrics(SM_CXVIRTUALSCREEN) };
+            let virtual_bottom = virtual_top + unsafe { GetSystemMetrics(SM_CYVIRTUALSCREEN) };
+            let bounds = element_bounds(self.composer);
+            let app_display_available = bounds.is_some_and(|[left, top, right, bottom]| {
+                left < virtual_right
+                    && right > virtual_left
+                    && top < virtual_bottom
+                    && bottom > virtual_top
+            });
+            let app_is_covered = bounds.is_none_or(|bounds| {
                 let [left, top, right, bottom] = bounds;
                 let point = POINT {
                     x: left + (right - left) / 3,
@@ -1210,13 +1234,14 @@ mod windows_place_text {
                 hit.is_null() || !same_root(hit, self.app_root)
             });
             println!(
-                "placement_boundary_focus={} placement_boundary_covered={} placement_boundary_minimized={}",
-                app_has_focus, app_is_covered, app_is_minimized
+                "placement_boundary_focus={} placement_boundary_covered={} placement_boundary_minimized={} placement_boundary_display_available={}",
+                app_has_focus, app_is_covered, app_is_minimized, app_display_available
             );
             Ok(super::PlacementWindowState {
                 app_has_focus,
                 app_is_covered,
                 app_is_minimized,
+                app_display_available,
             })
         }
     }

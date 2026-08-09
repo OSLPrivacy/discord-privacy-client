@@ -34,6 +34,7 @@ const INTERRUPTIONS: [(&str, PlacementWindowState); 3] = [
             app_has_focus: false,
             app_is_covered: false,
             app_is_minimized: false,
+            app_display_available: true,
         },
     ),
     (
@@ -42,6 +43,7 @@ const INTERRUPTIONS: [(&str, PlacementWindowState); 3] = [
             app_has_focus: true,
             app_is_covered: true,
             app_is_minimized: false,
+            app_display_available: true,
         },
     ),
     (
@@ -50,6 +52,7 @@ const INTERRUPTIONS: [(&str, PlacementWindowState); 3] = [
             app_has_focus: true,
             app_is_covered: false,
             app_is_minimized: true,
+            app_display_available: true,
         },
     ),
 ];
