@@ -837,6 +837,12 @@ pub struct WhatsAppLivePlacementReceipt {
     pub woke: bool,
     pub elements: usize,
     pub readback_contains_carrier: bool,
+    /// Exact byte equality from the shared place-text job's read-back.  Keep
+    /// this separate from containment: the general placement seam permits a
+    /// provider-decorated value, while a carry proof can require exact bytes.
+    pub readback_exact: bool,
+    /// UTF-8 byte count returned by the shared place-text read action.
+    pub readback_bytes: usize,
     pub cleared: bool,
 }
 
@@ -852,6 +858,8 @@ impl WhatsAppLivePlacementReceipt {
             woke: false,
             elements: 0,
             readback_contains_carrier: false,
+            readback_exact: false,
+            readback_bytes: 0,
             cleared: false,
         }
     }
@@ -959,6 +967,8 @@ fn whatsapp_placement(
         woke: acquired.woke,
         elements: acquired.elements,
         readback_contains_carrier: false,
+        readback_exact: false,
+        readback_bytes: 0,
         cleared: false,
     };
 
@@ -1004,6 +1014,8 @@ fn whatsapp_placement(
     let mut placed = bound(WhatsAppPlacementStatus::Placed);
     placed.placed = receipt.placed;
     placed.readback_contains_carrier = receipt.readback_holds_carrier;
+    placed.readback_exact = receipt.readback_exact;
+    placed.readback_bytes = receipt.readback_bytes;
     placed.enter_sent = receipt.submit_shaped_observed;
 
     if clear_after {
