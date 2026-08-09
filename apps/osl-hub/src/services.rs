@@ -81,6 +81,7 @@ pub enum ConversationPlaceKind {
     /// from a generic group so the reviewed browser reader does not erase the
     /// service-specific destination shape.
     GroupChat,
+    NoteToSelf,
     Community,
     BroadcastList,
     Channel,
@@ -97,6 +98,7 @@ impl ConversationPlaceKind {
             Self::DirectMessage => "direct_message",
             Self::Group => "group",
             Self::GroupChat => "group_chat",
+            Self::NoteToSelf => "note_to_self",
             Self::Community => "community",
             Self::BroadcastList => "broadcast_list",
             Self::Channel => "channel",
@@ -1748,6 +1750,7 @@ fn validate_conversation_place(place: &ConversationPlaceCandidate) -> Result<(),
         ConversationPlaceKind::DirectMessage
         | ConversationPlaceKind::Group
         | ConversationPlaceKind::GroupChat
+        | ConversationPlaceKind::NoteToSelf
         | ConversationPlaceKind::Community
         | ConversationPlaceKind::BroadcastList
         | ConversationPlaceKind::PublicPost
