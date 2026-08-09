@@ -5453,33 +5453,31 @@ function oslChatContent(): string {
       previewVisible: chatPreviewHidingVisible(oslChatPreviewsVisible),
       unreadCount: oslChatUnread.get(person.personId) ?? 0,
       handshakeConfirmed: oslChatHandshakeConfirmed(messages),
+      pendingKeyChange: person.pendingKeyChange,
+      online: person.personId === activeOslChatPersonId,
+      timeLabel: last?.timestampLabel ?? "",
     };
   });
-  const approval = activeOslChatPersonId && activeOslChatContext && !activeOslChatContext.scopeApproved && activeOslChatContext.suggestion === "offer_approval"
-    ? `<div class="osl-chat-approval"><span><strong>Turn on this encrypted chat</strong><small>Approves only this OSL friend.</small></span><button class="button primary compact" id="osl-chat-approve" type="button" ${oslChatBusy ? "disabled" : ""}>Enable</button></div>`
-    : "";
   const settingsPerson = oslChatSettingsPersonId ? hubPeople.find((person) => person.personId === oslChatSettingsPersonId) ?? null : null;
   const settings = settingsPerson ? oslChatFriendSettingsMarkup(settingsPerson) : "";
-  const attachments = activeOslChatContext?.scopeApproved && pro
-    ? `<section class="osl-chat-attachments" aria-label="Encrypted attachments"><header><strong>Attachments</strong><button class="button compact" id="osl-chat-attach" type="button" ${oslChatBusy ? "disabled" : ""}>Choose file</button></header>${attachmentProgressMarkupForActiveChat()}${oslChatAttachments.length ? oslChatAttachments.map((item) => `<button class="setting-line" data-osl-chat-attachment="${escapeHtml(item.attachmentId)}" type="button" ${oslChatBusy ? "disabled" : ""}><span><strong>${escapeHtml(item.originalFilename)}</strong><small>${item.viewOnce ? "View once · " : ""}${item.plaintextSize.toLocaleString("en-US")} bytes</small></span>${statusTag("Open")}</button>`).join("") : `<p>No pending attachments.</p>`}${oslChatDropTray.attachments.length ? attachmentTrayMarkup(oslChatDropTray) : ""}<small>Images open in OSL's capture-resistant viewer. Other supported files open temporarily in their Windows viewer, which may allow capture.</small></section>`
-    : "";
-  const receipt = activeOslChatPersonId
-    ? oslChatSenderReceiptMarkup(oslChatMessages.get(activeOslChatPersonId) ?? [])
-    : "";
-  const offlineStatus = oslRelayConnectionState() === "offline" ? offlineCapabilitiesMarkup() : "";
-  return `<main class="content-viewport osl-chat-page"><header class="osl-chat-page-header"><button class="text-button" id="osl-chat-back" type="button" ${oslChatBusy ? "disabled" : ""}>Back</button><h1 id="route-heading" tabindex="-1">OSL Chats</h1><button class="text-button" id="osl-chat-refresh" type="button" ${activeOslChatContext?.scopeApproved && !oslChatBusy ? "" : "disabled"}>Refresh</button></header>${approval}${oslChatsViewMarkup({
+  return `<main class="osl-chat-page" aria-label="OSL Chats">${oslChatsViewMarkup({
     friends,
     activePersonId: activeOslChatPersonId,
     messages: activeOslChatPersonId ? oslChatMessages.get(activeOslChatPersonId) ?? [] : [],
     draft: oslChatDraft,
     busy: oslChatBusy,
     viewOnce: oslChatViewOnce,
-    homeLogoUrl: oslVectorLogoUrl,
+    viewOnceCreationAllowed: pro,
+    profileDisplayName: claimedOslUsername || "OSL profile",
+    conversationFilter: oslChatFilter,
+    searchQuery: oslChatSearch,
+    sendBlockedReason: oslChatSendBlockedReason,
+    attachmentAvailable: Boolean(activeOslChatContext?.scopeApproved && pro),
     deletionUnconfirmed: oslChatDeletionUnconfirmed,
     buildIntegrity: buildIntegrityStatus,
     verificationWarningSurface: oslChatVerificationWarningSurface,
     buildWarning: installedBuildChatWarning,
-  })}${offlineStatus}${receipt}${attachments}${settings}</main>`;
+  })}${settings}</main>`;
 }
 
 const OFFLINE_CAPABILITIES: readonly OfflineUnavailableCapability[] = [
