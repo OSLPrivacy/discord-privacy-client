@@ -49,8 +49,9 @@ use crate::native_a11y::{
 };
 #[cfg(task1067_direct)]
 use crate::native_whatsapp_adapter::{
-    probe_whatsapp_composer_write_then_clear, WhatsAppPlacementStatus, WHATSAPP_CARRIER_PREFIX,
-    WHATSAPP_DESKTOP_PROCESS_NAME, WHATSAPP_ROOT_WINDOW_CLASS, WHATSAPP_UIA2_WINDOW_PLAN,
+    drive_whatsapp_composer_placement, probe_whatsapp_composer_write_then_clear,
+    WhatsAppPlacementStatus, WHATSAPP_CARRIER_PREFIX, WHATSAPP_DESKTOP_PROCESS_NAME,
+    WHATSAPP_ROOT_WINDOW_CLASS, WHATSAPP_UIA2_WINDOW_PLAN,
 };
 #[cfg(not(task1067_direct))]
 use osl_privacy_hub::native_a11y::{
@@ -59,8 +60,9 @@ use osl_privacy_hub::native_a11y::{
 };
 #[cfg(not(task1067_direct))]
 use osl_privacy_hub::native_whatsapp_adapter::{
-    probe_whatsapp_composer_write_then_clear, WhatsAppPlacementStatus, WHATSAPP_CARRIER_PREFIX,
-    WHATSAPP_DESKTOP_PROCESS_NAME, WHATSAPP_ROOT_WINDOW_CLASS, WHATSAPP_UIA2_WINDOW_PLAN,
+    drive_whatsapp_composer_placement, probe_whatsapp_composer_write_then_clear,
+    WhatsAppPlacementStatus, WHATSAPP_CARRIER_PREFIX, WHATSAPP_DESKTOP_PROCESS_NAME,
+    WHATSAPP_ROOT_WINDOW_CLASS, WHATSAPP_UIA2_WINDOW_PLAN,
 };
 
 mod fixture {
@@ -73,17 +75,33 @@ const WEBVIEW_HWND: isize = 10_671;
 const RENDERER_HWND: isize = 10_672;
 const SHELL_PROCESS_ID: u32 = 10_670;
 const WEBVIEW_PROCESS_ID: u32 = 10_671;
+const TASK1068_TEXT: &str = "whatsapp-text-1068";
+const TASK1068_CHANGED_PLACED_BYTE: u8 = b'x';
 
 struct WhatsAppPlacementHost {
     value: RefCell<Option<String>>,
     writes: RefCell<Vec<Vec<u8>>>,
+    change_before_read_back: RefCell<bool>,
+    changed_read_back: RefCell<Option<Vec<u8>>>,
+    task1068_events: RefCell<Vec<&'static str>>,
 }
 
 impl WhatsAppPlacementHost {
     fn new() -> Self {
+        Self::with_one_byte_read_back_change(false)
+    }
+
+    fn changing_one_placed_byte_before_read_back() -> Self {
+        Self::with_one_byte_read_back_change(true)
+    }
+
+    fn with_one_byte_read_back_change(change_before_read_back: bool) -> Self {
         Self {
             value: RefCell::new(None),
             writes: RefCell::new(Vec::new()),
+            change_before_read_back: RefCell::new(change_before_read_back),
+            changed_read_back: RefCell::new(None),
+            task1068_events: RefCell::new(Vec::new()),
         }
     }
 
@@ -194,6 +212,9 @@ impl Uia2Syscalls for WhatsAppPlacementHost {
         assert_eq!(element.name, "Type a message");
         self.writes.borrow_mut().push(value.as_bytes().to_vec());
         *self.value.borrow_mut() = Some(value.to_owned());
+        if !value.is_empty() {
+            self.task1068_events.borrow_mut().push("placed");
+        }
         Ok(true)
     }
 
@@ -207,7 +228,26 @@ impl Uia2Syscalls for WhatsAppPlacementHost {
         assert_eq!(hwnd, RENDERER_HWND);
         assert_eq!(route, Uia2TreeRoute::UiaNative);
         assert_eq!(element.name, "Type a message");
-        Ok(self.value.borrow().clone())
+        let mut value = self.value.borrow_mut();
+        let mut change_before_read_back = self.change_before_read_back.borrow_mut();
+        if *change_before_read_back {
+            if let Some(placed) = value.as_mut() {
+                let mut changed = placed.as_bytes().to_vec();
+                let index = changed
+                    .iter()
+                    .position(|byte| *byte != TASK1068_CHANGED_PLACED_BYTE)
+                    .expect("placed WhatsApp text has a byte that can be changed to x");
+                changed[index] = TASK1068_CHANGED_PLACED_BYTE;
+                *placed = String::from_utf8(changed.clone())
+                    .expect("changing one ASCII byte keeps the WhatsApp read-back UTF-8");
+                *self.changed_read_back.borrow_mut() = Some(changed);
+                self.task1068_events
+                    .borrow_mut()
+                    .push("changed-before-read-back");
+                *change_before_read_back = false;
+            }
+        }
+        Ok(value.clone())
     }
 
     fn submit_shaped_calls(&self) -> usize {
@@ -215,6 +255,75 @@ impl Uia2Syscalls for WhatsAppPlacementHost {
     }
 
     fn settle(&self, _millis: u64) {}
+}
+
+fn task1068_results(host: &WhatsAppPlacementHost) -> Result<Vec<String>, WhatsAppPlacementStatus> {
+    let receipt = drive_whatsapp_composer_placement(host, TASK1068_TEXT, false);
+    if receipt.status == WhatsAppPlacementStatus::Placed && receipt.placed && receipt.readback_exact
+    {
+        Ok(vec![TASK1068_TEXT.to_owned()])
+    } else {
+        Err(receipt.status)
+    }
+}
+
+#[test]
+fn task_1068_changed_placed_byte_is_refused_and_good_whatsapp_result_is_unchanged() {
+    let good_host = WhatsAppPlacementHost::new();
+    let good = task1068_results(&good_host)
+        .expect("good whatsapp-text-1068 must pass exact WhatsApp read-back");
+    assert_eq!(good, [TASK1068_TEXT]);
+
+    let changed_host = WhatsAppPlacementHost::changing_one_placed_byte_before_read_back();
+    let refusal =
+        task1068_results(&changed_host).expect_err("changed placed byte x must be refused by name");
+    assert_eq!(refusal, WhatsAppPlacementStatus::ReadbackMismatch);
+    assert_eq!(
+        changed_host.task1068_events.borrow().as_slice(),
+        ["placed", "changed-before-read-back"],
+        "fault injection must occur after placement and before the returned read-back"
+    );
+
+    let writes = changed_host.writes.borrow();
+    assert_eq!(writes.len(), 1, "the refused attempt places exactly once");
+    {
+        let changed = changed_host.changed_read_back.borrow();
+        let changed = changed
+            .as_deref()
+            .expect("the placed WhatsApp byte was changed before read-back");
+        assert_eq!(changed, b"xSL1.WA.whatsapp-text-1068");
+        assert_eq!(
+            changed
+                .iter()
+                .zip(writes[0].iter())
+                .filter(|(actual, placed)| actual != placed)
+                .count(),
+            1,
+            "fault injection must alter exactly one placed byte"
+        );
+    }
+    drop(writes);
+
+    let restored_host = WhatsAppPlacementHost::new();
+    let restored = task1068_results(&restored_host)
+        .expect("restored whatsapp-text-1068 must pass exact WhatsApp read-back");
+    assert_eq!(restored, good);
+
+    println!(
+        "TASK1068 text={TASK1068_TEXT} result_count={} result_name={}",
+        good.len(),
+        good[0]
+    );
+    println!(
+        "TASK1068 changed_placed_byte={} changed_readback=xSL1.WA.whatsapp-text-1068 result=refused refusal_name={refusal:?}",
+        char::from(TASK1068_CHANGED_PLACED_BYTE)
+    );
+    println!("TASK1068 mutation_order=placed,changed-before-read-back changed_byte_count=1");
+    println!(
+        "TASK1068 restored_text={TASK1068_TEXT} result_count={} result_name={}",
+        restored.len(),
+        restored[0]
+    );
 }
 
 #[test]
