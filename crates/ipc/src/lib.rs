@@ -75,6 +75,7 @@ pub mod recovery;
 /// Direct message-service burn/download operations whose observable item
 /// changes are gated by the shared service-reply validator.
 pub mod service_reply_operations;
+pub mod signal_whitelist;
 // OSL-RN ciphertexts are single-use.  This sealed cache lets transcript
 // rendering reuse an already-decrypted payload without advancing the ratchet.
 pub mod rn_plaintext_cache;
