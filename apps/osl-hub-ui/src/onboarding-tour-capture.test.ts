@@ -118,8 +118,6 @@ function button(x: number, y: number, width: number, label: string, primary = fa
 function captureSvg(screenTree: TourScreenTree): string {
   const { width, height } = LINUX_ONBOARDING_SCREEN_WINDOW;
   const [first, last] = screenTree.steps;
-  const fixtureNames = LINUX_ONBOARDING_SCREEN_FIXTURES.names.join(" / ");
-  const fixturePhrase = LINUX_ONBOARDING_SCREEN_FIXTURES.phrases[0];
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
     <rect width="1280" height="800" fill="#080c0d"/>
@@ -136,8 +134,6 @@ function captureSvg(screenTree: TourScreenTree): string {
     <text x="920" y="342" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="18" fill="#b8c2c7">Final tour step before app selection</text>
     ${button(742, 482, 174, last.controls[0])}
     ${button(942, 482, 174, last.controls[1], true)}
-    <text x="640" y="676" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="16" fill="#66727a">${svgEscape(fixtureNames)}</text>
-    <text x="640" y="706" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="14" fill="#4a555b">${svgEscape(fixturePhrase)}</text>
   </svg>`;
 }
 
@@ -165,8 +161,6 @@ describe("task 0376 Quick tour screenshot", () => {
     const imageText = [
       screenTree.title,
       ...screenTree.controls,
-      ...LINUX_ONBOARDING_SCREEN_FIXTURES.names,
-      LINUX_ONBOARDING_SCREEN_FIXTURES.phrases[0],
     ];
 
     expect(first.eyebrow).toContain("Quick tour");
@@ -175,11 +169,17 @@ describe("task 0376 Quick tour screenshot", () => {
     expect(last.controls).toEqual(["Back", "Choose apps"]);
     expect(screenTree.controls).toEqual(["Back", "Next", "Choose apps"]);
     expect(LINUX_ONBOARDING_SCREEN_WINDOW).toEqual({ height: 800, width: 1280 });
-    expect(LINUX_ONBOARDING_SCREEN_FIXTURES.accounts.map((account) => account.ownerName)).toEqual(["Alma Reed", "Miles Chen"]);
 
     const svg = captureSvg(screenTree);
     for (const text of imageText) {
       expect(svg).toContain(svgEscape(text));
+    }
+    // The capture depicts the shipped tour screens; fixture people and the
+    // placeholder recovery-phrase wordlist must never be painted onto them.
+    for (const fixtureText of [...LINUX_ONBOARDING_SCREEN_FIXTURES.names, ...LINUX_ONBOARDING_SCREEN_FIXTURES.phrases]) {
+      expect(svg).not.toContain(svgEscape(fixtureText));
+      expect(firstMarkup).not.toContain(fixtureText);
+      expect(lastMarkup).not.toContain(fixtureText);
     }
     writePng(svg, PNG_PATH);
 

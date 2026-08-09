@@ -34,8 +34,6 @@ function svgEscape(value: string): string {
 function captureSvg(screenTree: { title: string; controls: string[] }): string {
   const { width, height } = LINUX_ONBOARDING_SCREEN_WINDOW;
   const [silent, visible, cont, back] = screenTree.controls;
-  const fixtureNames = LINUX_ONBOARDING_SCREEN_FIXTURES.names.join(" / ");
-  const fixturePhrase = LINUX_ONBOARDING_SCREEN_FIXTURES.phrases[0];
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
     <rect width="1280" height="800" fill="#080c0d"/>
@@ -48,8 +46,6 @@ function captureSvg(screenTree: { title: string; controls: string[] }): string {
     <rect x="348" y="488" width="584" height="58" rx="2" fill="#080c0d" stroke="#2a343a" stroke-width="2"/>
     <text x="640" y="526" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="23" font-weight="700" fill="#f4f7f8">${svgEscape(cont)}</text>
     <text x="640" y="578" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="600" fill="#b8c2c7">${svgEscape(back)}</text>
-    <text x="640" y="676" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="16" fill="#66727a">${svgEscape(fixtureNames)}</text>
-    <text x="640" y="706" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="14" fill="#4a555b">${svgEscape(fixturePhrase)}</text>
   </svg>`;
 }
 
@@ -74,18 +70,23 @@ describe("task 0363 capture visibility screenshot", () => {
     const imageText = [
       screenTree.title,
       ...screenTree.controls,
-      ...LINUX_ONBOARDING_SCREEN_FIXTURES.names,
-      LINUX_ONBOARDING_SCREEN_FIXTURES.phrases[0],
     ];
 
     expect(screenTree.title).toBe(CAPTURE_VISIBILITY_TITLE);
     expect(screenTree.controls).toEqual([...CAPTURE_VISIBILITY_CONTROLS]);
     expect(LINUX_ONBOARDING_SCREEN_WINDOW).toEqual({ width: 1280, height: 800 });
-    expect(LINUX_ONBOARDING_SCREEN_FIXTURES.accounts.map((account) => account.ownerName)).toEqual(["Alma Reed", "Miles Chen"]);
 
     const svg = captureSvg(screenTree);
     for (const text of imageText) {
       expect(svg).toContain(svgEscape(text));
+    }
+    // The capture depicts the shipped screen; test fixture people and the
+    // placeholder recovery-phrase wordlist must never be painted onto it. A
+    // privacy screen showing a 12-word phrase-shaped list teaches people the
+    // wrong thing about what is safe to show.
+    for (const fixtureText of [...LINUX_ONBOARDING_SCREEN_FIXTURES.names, ...LINUX_ONBOARDING_SCREEN_FIXTURES.phrases]) {
+      expect(svg).not.toContain(svgEscape(fixtureText));
+      expect(markup).not.toContain(fixtureText);
     }
     writePng(svg, PNG_PATH);
 
@@ -103,7 +104,6 @@ describe("task 0363 capture visibility screenshot", () => {
       pngBytes: png.byteLength,
       pngSignature: signature,
       window: LINUX_ONBOARDING_SCREEN_WINDOW,
-      fixtures: LINUX_ONBOARDING_SCREEN_FIXTURES,
       screenTree,
       imageText,
       identify,

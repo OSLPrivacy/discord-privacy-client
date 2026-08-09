@@ -125,6 +125,63 @@ describe("home workspace hierarchy", () => {
     expect(protectedCopy).not.toMatch(/keyservers?|ratchets?|receipts?|browser profiles?|provider adapters?/iu);
   });
 
+  it("cannot read Protected while checks are unrun and people are unreviewed", () => {
+    // Audit capture 0816: the shipped Home read "Protected -- Device
+    // protection confirmed." while, on the same screen, connected apps were
+    // NOT CHECKED and two people needed review. The headline must be derived
+    // from those checks: unknown is not protected.
+    const { __oslHubUiTest } = ui;
+    __oslHubUiTest.reset({
+      route: "home",
+      coreReady: true,
+      storageMethod: "tpm-pcp",
+      services: [{
+        id: "discord",
+        displayName: "Discord",
+        sidebarGlyph: "D",
+        sidebarOrder: 1,
+        category: "consumer",
+        launchState: "available",
+        supportsNativePreview: true,
+        supportsProtectedPreview: true,
+        accounts: [],
+      }],
+      servicesChecked: false,
+      hubPeople: [
+        { personId: "pending-one", alias: "Pending one" },
+        { personId: "pending-two", alias: "Pending two" },
+      ],
+    });
+    const markup = __oslHubUiTest.renderWorkspaceContent("home");
+    const copy = visibleText(markup);
+
+    expect(markup).not.toContain('data-home-protection-state="protected"');
+    expect(copy).not.toMatch(/Device protection confirmed/iu);
+    expect(copy).not.toMatch(/\bProtected\b/u);
+    expect(markup).toContain('data-home-protection-state="needs-attention"');
+    expect(copy).toMatch(/2 things need your attention/u);
+    expect(copy).toMatch(/2 people need your review/u);
+    expect(copy).toMatch(/Connected apps have not been checked/u);
+
+    // With every person verified and only the app check unrun, Home still
+    // must not claim protection: it says what is actually true instead.
+    __oslHubUiTest.reset({
+      route: "home",
+      coreReady: true,
+      storageMethod: "tpm-pcp",
+      services: [],
+      servicesChecked: false,
+      hubPeople: [{ personId: "verified", alias: "Verified friend", safetyNumberVerified: true }],
+    });
+    const uncheckedMarkup = __oslHubUiTest.renderWorkspaceContent("home");
+    const uncheckedCopy = visibleText(uncheckedMarkup);
+
+    expect(uncheckedMarkup).not.toContain('data-home-protection-state="protected"');
+    expect(uncheckedMarkup).toContain('data-home-protection-state="not-checked"');
+    expect(uncheckedCopy).toMatch(/Not checked yet/u);
+    expect(uncheckedCopy).not.toMatch(/\bProtected\b/u);
+  });
+
   it("states first-run Home in words an owner can act on, never build jargon", () => {
     // The shipped first-run Home read "Finish account protection -- source
     // linked . bootstrap required", in both the "Needs attention" summary and
@@ -152,7 +209,15 @@ describe("home workspace hierarchy", () => {
   it("implements Home as the protection status destination", () => {
     expect(home).toContain("${homeDestinationContent()}");
     expect(destination).toContain('data-home-destination="protection-status"');
-    expect(destination).toContain('data-home-protection-state="${deviceProtected ? "protected" : "needs-attention"}"');
+    // The headline must be DERIVED from every dependent check via
+    // homeOverallStatus -- never a two-input boolean with an optimistic
+    // default. See home-protection-state.test.ts for the honesty sweep.
+    expect(destination).toContain('data-home-protection-state="${overall.state}"');
+    expect(destination).toContain("homeOverallStatus({");
+    expect(destination).toContain("connectedApps: connectedAppsState");
+    expect(destination).toContain("pendingFriendReviews");
+    expect(destination).toContain("verifiedFriends");
+    expect(destination).not.toContain('deviceProtected ? "Protected"');
     expect(destination).toContain("identityProtectionStatus(core.readiness.storageMethod)");
     expect(destination).toContain("coreReadinessLabel(core.readiness)");
     expect(destination).toContain("Connected apps");

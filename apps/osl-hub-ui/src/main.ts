@@ -179,7 +179,7 @@ import { freshStartCleanupPresentation, freshStartLimitationsMarkup } from "./fr
 import { loadAutoScrubRunFleetStatus, requestAutoScrubGlobalStop } from "./autoscrub-unattended-run";
 import { oslMailStage, type OslMailStage } from "./desktop-service-policy";
 import { webSurfaceLabel, type WebSurfaceCapability } from "./web-surface-label";
-import { homeProtectionState } from "./home-protection-state";
+import { homeOverallStatus, homeProtectionState } from "./home-protection-state";
 import {
   OSL_MAIL_NAMED_SEND_REQUIRED,
   burnOslMailbox,
@@ -4828,7 +4828,6 @@ export function homePrimaryAction(): void {
 function homeDestinationContent(): string {
   const coreReady = isCoreProtectionReady(core.readiness);
   const protection = identityProtectionStatus(core.readiness.storageMethod);
-  const deviceProtected = coreReady && protection.state === "protected";
   const launchableApps = homeAppsFromServices(services).filter((app) => app.visibility === "launch");
   const connectableApps = launchableApps.filter((app) => app.launchState === "available");
   const roadmapApps = launchableApps.filter((app) => app.launchState !== "available");
@@ -4844,7 +4843,20 @@ function homeDestinationContent(): string {
   // data-profile-settings data-open-friends data-notification-settings data-home-module="osl-chats"
   const recommended = homePrimaryRecommendation();
   const recommendedAction = primaryActionButton(recommended, `data-home-primary-issue="${recommended.issue}"`);
-  const attention = !deviceProtected || pendingFriendReviews > 0 || connectedApps.length === 0 || verifiedFriends === 0
+  // The headline is DERIVED from every check this screen reports. It must
+  // never claim more than the rows below it can prove: an unrun check or an
+  // unreviewed person forbids the word "Protected" (design rule 1: never imply
+  // protection that isn't there).
+  const overall = homeOverallStatus({
+    coreReady,
+    coreDetail: coreReadinessLabel(core.readiness),
+    storageProtected: protection.state === "protected",
+    storageDetail: protection.detail,
+    connectedApps: connectedAppsState,
+    pendingFriendReviews,
+    verifiedFriends,
+  });
+  const attention = overall.state !== "protected"
     ? `<div class="setting-line home-status-row" role="status"><span><strong>${escapeHtml(recommended.title)}</strong><small>${escapeHtml(recommended.detail)}</small></span>${statusTag("Needs attention")}</div>`
     : "";
   const activityDetail = recentActivity
@@ -4856,7 +4868,7 @@ function homeDestinationContent(): string {
     ? `<button class="button compact" data-notification-settings type="button">${recentActivity ? "Review" : "Turn on"}</button>`
     : `${statusTag("Quiet")}`;
   const connectedAppsDetail = `${connectedApps.length.toLocaleString("en-US")} of ${connectableApps.length.toLocaleString("en-US")} ready${roadmapApps.length ? ` · ${roadmapApps.length.toLocaleString("en-US")} coming soon` : ""}`;
-  return `<section class="home-protection-summary" aria-labelledby="route-heading" data-home-destination="protection-status"><h1 id="route-heading" tabindex="-1">Home</h1><div class="setting-line home-overall-state" data-home-protection-state="${deviceProtected ? "protected" : "needs-attention"}"><span><strong>${deviceProtected ? "Protected" : "Needs attention"}</strong><small>${escapeHtml(coreReady ? protection.detail : coreReadinessLabel(core.readiness))}</small></span>${recommendedAction}</div>${attention}<div class="settings-list home-protection-facts" aria-label="Protection status"><div class="setting-line"><span><strong>Connected apps</strong><small>${connectedAppsDetail}</small></span>${statusTag(connectedAppsState.label, connectedAppsState.statusTone === "ok" ? "ok" : "")}</div><div class="setting-line"><span><strong>Trusted people</strong><small>${verifiedFriends.toLocaleString("en-US")} verified${pendingFriendReviews ? `, ${pendingFriendReviews.toLocaleString("en-US")} need review` : ""}</small></span><button class="button compact" data-open-friends type="button">${pendingFriendReviews ? "Review" : "Manage"}</button></div><div class="setting-line"><span><strong>Recent protection</strong><small>${escapeHtml(activityDetail)}</small></span>${activityAction}</div></div></section>`;
+  return `<section class="home-protection-summary" aria-labelledby="route-heading" data-home-destination="protection-status"><h1 id="route-heading" tabindex="-1">Home</h1><div class="setting-line home-overall-state" data-home-protection-state="${overall.state}"><span><strong>${escapeHtml(overall.headline)}</strong><small>${escapeHtml(overall.detail)}</small></span>${recommendedAction}</div>${attention}<div class="settings-list home-protection-facts" aria-label="Protection status"><div class="setting-line"><span><strong>Connected apps</strong><small>${connectedAppsDetail}</small></span>${statusTag(connectedAppsState.label, connectedAppsState.statusTone === "ok" ? "ok" : "")}</div><div class="setting-line"><span><strong>Trusted people</strong><small>${verifiedFriends.toLocaleString("en-US")} verified${pendingFriendReviews ? `, ${pendingFriendReviews.toLocaleString("en-US")} need review` : ""}</small></span><button class="button compact" data-open-friends type="button">${pendingFriendReviews ? "Review" : "Manage"}</button></div><div class="setting-line"><span><strong>Recent protection</strong><small>${escapeHtml(activityDetail)}</small></span>${activityAction}</div></div></section>`;
 }
 
 function workspaceContent(): string {
@@ -11992,10 +12004,6 @@ function homeScrubRunCardMarkup(run: AutoScrubRunSummary): string {
   const serviceName = autoScrubRunServiceName(run.serviceId);
   const phaseLabel = run.phase === "reviewRequired" ? "Review required" : run.phase === "stopping" ? "Stopping" : run.phase === "blocked" ? "Needs attention" : "Scanning";
   return `<article class="scrub-run-card" data-home-scrub-run-card="${escapeHtml(run.serviceId)}" data-scrub-run-phase="${run.phase}" role="status"><span class="scrub-run-card-dot" aria-hidden="true"></span><span class="scrub-run-card-copy"><strong>${escapeHtml(serviceName)} Scrub running</strong><small>${phaseLabel} · ${run.reviewedItemCount.toLocaleString("en-US")} reviewed</small></span></article>`;
-}
-
-function openAutoScrubRuns(): readonly AutoScrubRunSummary[] {
-  return autoScrubFleetStatus?.runs.filter((run) => OPEN_AUTO_SCRUB_RUN_PHASES.includes(run.phase)) ?? [];
 }
 
 // One roster tick box changed: issue exactly one group-member add or remove

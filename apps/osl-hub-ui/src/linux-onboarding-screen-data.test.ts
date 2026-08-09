@@ -104,6 +104,34 @@ describe("fixed Linux onboarding screen data", () => {
     console.info("TASK-0324-SCREEN-DATA", JSON.stringify([first, second]));
   });
 
+  it("keeps fixture people and placeholder phrases out of every rendered onboarding screen", () => {
+    // The fixtures exist for capture bookkeeping only. Audit captures 0363 and
+    // 0376 showed them drawn onto onboarding screen images; nothing the render
+    // path produces may contain them.
+    const { __oslHubUiTest } = ui;
+    const screens: Record<string, string> = {};
+
+    __oslHubUiTest.reset({ route: "onboarding", onboardingRoute: "create" });
+    screens.create = __oslHubUiTest.renderOnboardingRoute("create");
+    __oslHubUiTest.reset({ route: "onboarding", onboardingRoute: "welcome", bootstrapStatus: "passwordRequired" });
+    screens.welcome = __oslHubUiTest.renderOnboardingRoute("welcome");
+    __oslHubUiTest.reset({ route: "onboarding", onboardingRoute: "pro" });
+    screens.pro = __oslHubUiTest.renderOnboardingRoute("pro");
+    __oslHubUiTest.reset({ route: "onboarding", onboardingRoute: "unlock" });
+    screens.unlock = __oslHubUiTest.renderOnboardingRoute("unlock");
+
+    const fixtureTexts = [
+      ...LINUX_ONBOARDING_SCREEN_FIXTURES.names,
+      ...LINUX_ONBOARDING_SCREEN_FIXTURES.phrases,
+      ...LINUX_ONBOARDING_SCREEN_FIXTURES.accounts.flatMap((account) => [account.handle, account.ownerName]),
+    ];
+    for (const [name, markup] of Object.entries(screens)) {
+      for (const fixtureText of fixtureTexts) {
+        expect(markup, `${name} screen must not render fixture text ${JSON.stringify(fixtureText)}`).not.toContain(fixtureText);
+      }
+    }
+  });
+
   it("rejects missing required controls", () => {
     const missingContinue = prepareFixedLinuxOnboardingScreenData("linux-onboarding-screen-data-red", {
       "create-account": "<button>Create account</button>",
