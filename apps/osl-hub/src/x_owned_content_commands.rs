@@ -11,7 +11,9 @@ use std::collections::BTreeSet;
 
 use crate::row_who_wrote_it::SharedRowWhoWroteIt;
 
-const MAX_EXPIRY_SECONDS: u64 = 90 * 24 * 60 * 60;
+const MAX_TIMER_SECONDS: u64 = 30 * 24 * 60 * 60;
+const MAX_VIEW_ONCE_SECONDS: u64 = 60;
+const MAX_BURN_CONTROL_SECONDS: u64 = 90 * 24 * 60 * 60;
 
 /// The five exact lifecycle commands exposed for a reviewed X row.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -69,7 +71,29 @@ pub enum XOwnedContentCommandError {
     EmptyTargetId,
     DuplicateTargetId(String),
     TargetIsNotOwned(String),
-    InvalidExpirySeconds,
+    InvalidExpirySeconds {
+        command: XOwnedContentCommand,
+        requested_seconds: u64,
+        maximum_seconds: u64,
+    },
+}
+
+impl XOwnedContentCommandError {
+    /// Stable name of the changed request value that caused the refusal.
+    ///
+    /// Exact whole-day values use the plan-facing `N-days` spelling; all other
+    /// lifetimes use `N-seconds`.  Ownership refusals name the unowned target,
+    /// so callers never have to infer which visible row was rejected.
+    pub fn refusal_name(&self) -> String {
+        match self {
+            Self::EmptyTargetSet => "empty-target-set".to_owned(),
+            Self::EmptyTargetId => "empty-target-id".to_owned(),
+            Self::DuplicateTargetId(id) | Self::TargetIsNotOwned(id) => id.clone(),
+            Self::InvalidExpirySeconds {
+                requested_seconds, ..
+            } => lifetime_name(*requested_seconds),
+        }
+    }
 }
 
 impl fmt::Display for XOwnedContentCommandError {
@@ -84,8 +108,18 @@ impl fmt::Display for XOwnedContentCommandError {
                     "X command target {id:?} is not authored by the signed-in account"
                 )
             }
-            Self::InvalidExpirySeconds => {
-                f.write_str("X command expiry must be between 1 second and 90 days")
+            Self::InvalidExpirySeconds {
+                command,
+                requested_seconds,
+                maximum_seconds,
+            } => {
+                write!(
+                    f,
+                    "X {} request {} is refused: expiry must be between 1-second and {}",
+                    command.name(),
+                    lifetime_name(*requested_seconds),
+                    lifetime_name(*maximum_seconds),
+                )
             }
         }
     }
@@ -174,8 +208,19 @@ fn command_for_owned_content(
     now_ms: u64,
     lifetime_seconds: u64,
 ) -> Result<XOwnedContentCommandReceipt, XOwnedContentCommandError> {
-    if !(1..=MAX_EXPIRY_SECONDS).contains(&lifetime_seconds) {
-        return Err(XOwnedContentCommandError::InvalidExpirySeconds);
+    let maximum_seconds = match command {
+        XOwnedContentCommand::Timer => MAX_TIMER_SECONDS,
+        XOwnedContentCommand::ViewOnce => MAX_VIEW_ONCE_SECONDS,
+        XOwnedContentCommand::BurnYourSide
+        | XOwnedContentCommand::BurnTheirSide
+        | XOwnedContentCommand::BurnBothSides => MAX_BURN_CONTROL_SECONDS,
+    };
+    if !(1..=maximum_seconds).contains(&lifetime_seconds) {
+        return Err(XOwnedContentCommandError::InvalidExpirySeconds {
+            command,
+            requested_seconds: lifetime_seconds,
+            maximum_seconds,
+        });
     }
     if targets.is_empty() {
         return Err(XOwnedContentCommandError::EmptyTargetSet);
@@ -205,6 +250,15 @@ fn command_for_owned_content(
         target_ids,
         expires_at_ms: now_ms.saturating_add(lifetime_seconds.saturating_mul(1_000)),
     })
+}
+
+fn lifetime_name(seconds: u64) -> String {
+    const DAY_SECONDS: u64 = 24 * 60 * 60;
+    if seconds > 0 && seconds % DAY_SECONDS == 0 {
+        format!("{}-days", seconds / DAY_SECONDS)
+    } else {
+        format!("{seconds}-seconds")
+    }
 }
 
 #[cfg(test)]
