@@ -48,6 +48,7 @@ import { peopleDestinationHeaderMarkup } from "./people-destination-header";
 import { lastBackendFailure, recordBackendFailure } from "./backend-failure";
 import { unlockAttemptWarning } from "./unlock-attempts";
 import { chatPreviewHidingVisible } from "./entitlement-gates";
+import { oslChatFriendSettingsMarkup } from "./chat-settings-dialog";
 import { entitlementCopy } from "./entitlement-copy";
 import { entitlementView } from "./entitlement-view";
 import {
@@ -139,7 +140,6 @@ import { browserLogo, serviceLogo, providerLogo } from "./logos";
 import { activateLocalLoopbackContext, activateManualPeerContext, activateNativeManualPeerContext, activateOslChatContext, addOslFriend, addOslFriendByUsername, answerHubChatApprovalSuggestion, burnActiveHubContext, burnHubServiceAccount, captureProtectionEnforced, closeOslChatContext, copyHubFriendInvite, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubRevocationStatus, getHubServiceBurnReadiness, getOslUsernameStatus, isHubPlaintext, isNormalizedOslUsername, listHubIdentities, listHubPeople, listOslChatHistory, loadActiveContextSecurity, loadAppNotifications, loadFriendProfile, openOslChatText, openPeerProseText, peerIsVerified, prepareLocalProtectedText, prepareOslChatText, preparePeerProseText, recoverHubIdentitySlot, saveActiveContextSecurity, revokeActiveHubFriendScope, setActiveHubFriendPermission, setActiveHubFriendReach, setHubChatApprovalSuggestionChoice, setHubFriendNickname, setLocalProtectedSheetOpen, setNativeDiscordProtectedOverlayOpen, setNativeDiscordProtectedOverlayOpenForQa, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, viewHubRecoveryPhrase, type AppNotification, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type LocalPrivacyScanResult, type ManualPeerContext, type PersistedLocalPrivacyScanResult } from "./adapters";
 import { blankLocalProtectedModel, isLocalTtlSeconds, loadOrCreateLocalConversationId, localProtectedSheetMarkup, validLocalChatLabel, type LocalProtectedPane, type LocalProtectedSheetModel } from "./local-protected-sheet";
 import { blankPeerProtectedModel, boundedPeerProtectedDraft, peerProtectedDraftByteFeedback, peerProtectedSheetMarkup, type PeerProtectedPane, type PeerProtectedSheetModel } from "./peer-protected-sheet";
-import { peerIntegrityMarkup } from "./peer-integrity";
 import oslLogoUrl from "../../osl-hub/icons/icon-cyan.png";
 import oslVectorLogoUrl from "./assets/logo-mark.svg";
 import oslGhostMarkUrl from "./assets/Ghost-white.svg";
@@ -148,11 +148,10 @@ import { clearPersistedLocalScrubExport, persistLocalScrubExport } from "./scrub
 import {
   defaultScrubConsentGateState,
   evaluateScrubConsentGate,
-  scrubConsentGatedRouteMarkup,
   type ScrubConsentGateRequest,
   type ScrubConsentGateState,
 } from "./scrub-consent-gate";
-import type { ScrubRouteState, ScrubRouteStep } from "./scrub-route";
+import type { ScrubRouteStep } from "./scrub-route";
 import { buildScrubReviewList, type ScrubReviewRow } from "./scrub-review-list";
 import { computeScopeFingerprint, type ScrubScopeFingerprintInput } from "./scrub-scope-fingerprint";
 import { nextServiceGuideStep, parseServiceGuideState, previousServiceGuideStep, type ServiceGuideStep } from "./service-guide";
@@ -189,9 +188,17 @@ export {
   type AutoscrubUnattendedRunResult,
 } from "./autoscrub-unattended-run";
 import { initializeThemePreference, themeStorageKey, type ThemeChoice } from "./theme-preference";
+import { accentChoices, avatarChoices, backgroundChoices, createAppearancePreferencesEditor, loadAppearancePreferences, movementChoices, trayPictureChoices, windowPositionChoices, type AppearancePreferences } from "./appearance-preferences";
+import { appearanceSettingsContent } from "./appearance-settings-section";
+import { homeLauncherBody } from "./home-launcher-body";
+import { privacyDestinationContent as renderPrivacyDestinationContent } from "./privacy-settings-section";
+import { privacySettingsContent } from "./scrub-settings-section";
+import { passwordSecuritySettingsContent } from "./security-settings-section";
+import { whitelistRosterMarkup, whitelistRosterPersonMarkup } from "./whitelisting-settings-section";
 import { inDomTooltipMarkup } from "./in-dom-tooltip";
 import { applyOslChatDraftToElement, firstPartyOslSurfaceContract, OSL_CHAT_KEY_CHANGED_REFUSAL_REASON, OSL_CHAT_MAX_DRAFT_BYTES, oslChatDraftBytes, oslChatHandshakeConfirmed, oslChatsViewMarkup, senderReceiptStateFor, type OslChatMessage } from "./osl-chats-view";
 import { createOslChatDeliveryRuntime, mergeOslChatTimeline, oslChatHistoryMessages, receivedOslChatBatchMessage, type OslChatDeliveryHost } from "./osl-chat-runtime";
+import { createOslChatTypingController, OSL_CHAT_TYPING_INCOMING_EVENT, OSL_CHAT_TYPING_OUTGOING_EVENT, type OslChatTypingPreferences, type OslChatTypingSignal } from "./typing-indicator";
 import { peopleReverificationNoticeMarkup } from "./people-reverification-notice";
 import { parseEnclaveAudience, type EnclaveAudience } from "./osl-collab";
 import { addFriendFailureStatus, bindFriendRemovalControls, bindMainWindowFocusChanges, friendHandshakeDetail, friendHandshakeSummary, friendInviteCardMarkup, friendRemovalButtonMarkup, friendTrustAction, friendVerificationCopy, inviteCopyFailureToast, onboardingPaintDecision, ownedConfirmationSubmitDisabled, RecoveryCaptureGate, removeHubFriend, shouldClearRemovedFriendChat, verificationSubmission, type FriendVerificationCopy } from "./ui-behavior";
@@ -4064,7 +4071,16 @@ function workspaceProtectedSheetMarkup(): string {
     : activeEmbeddedHost
       ? peerProtectedSheetMarkup(peerProtectedSheet, hubPeople)
       : "";
-  return `${protectedSheet}${nativeDiscordProtectPickerMarkup()}${whitelistRosterMarkup()}${peopleDialogMarkup()}${friendsDialogMarkup()}${scrubReviewDialogMarkup()}${burnDialogMarkup()}${ownedConfirmationMarkup()}${updateDialogMarkup()}`;
+  const active = whitelistRosterOpen ? activeVerifiedDiscordQaPeer() : null;
+  const whitelist = whitelistRosterMarkup({
+    open: whitelistRosterOpen,
+    activePersonId: active?.person.personId ?? null,
+    activeScopeApproved: active?.context.scopeApproved === true,
+    busy: discordQaHeaderBusy !== null,
+    people: hubPeople,
+    scopeLimit: whitelistRosterScopeLimit,
+  }, { friendScopeLabel, narrowedScopeLabel, whitelistReachLine });
+  return `${protectedSheet}${nativeDiscordProtectPickerMarkup()}${whitelist}${peopleDialogMarkup()}${friendsDialogMarkup()}${scrubReviewDialogMarkup()}${burnDialogMarkup()}${ownedConfirmationMarkup()}${updateDialogMarkup()}`;
 }
 
 function renderWorkspace(): void {
@@ -4575,6 +4591,22 @@ function homePrimaryRecommendation(): HomePrimaryActionPlan {
   });
 }
 
+export function privacyDestinationContent(): string {
+  return renderPrivacyDestinationContent({
+    proActive: licenseState.access === "pro" || licenseState.access === "offlineGrace",
+    primary: privacyPrimaryActionPlan(),
+    scanBusy: privacyScanBusy,
+    hasScanResult: privacyScanResult !== null,
+    timer,
+    protectionReviewOpen: privacyProtectionReviewOpen,
+    protectionPreset,
+    screenshotProtectionEnabled,
+    publicPostGuardCarrierPreviewMarkup: publicPostGuardCarrierPreviewMarkup(),
+    scrubCategoryChooserMarkup: scrubCategoryChooserMarkup(true),
+    privacyScanResultsMarkup: privacyScanResultsMarkup(),
+  }, statusTag);
+}
+
 export function homePrimaryAction(): void {
   const plan = homePrimaryRecommendation();
   if (plan.target.kind === "route") {
@@ -4650,62 +4682,19 @@ function workspaceContent(): string {
   if (route === "osl-servers") return oslServersContent();
   if (route === "settings") return settingsContent();
   if (route === "service" && activeService) return serviceContent();
-  const launchableHomeApps = homeAppsFromServices(services).filter((app) => app.visibility === "launch");
-  const roadmapHomeApps = launchableHomeApps.filter((app) => app.launchState !== "available");
-  const rememberedHomeApps = new Set<HomeAppId>(hasExplicitOnboardingAppSelection
-    ? selectedOnboardingApps
-    : [
-        ...selectedOnboardingApps,
-        ...launchableHomeApps.filter((app) => app.linked || savedNativeApps.has(app.id as NativeAppId)).map((app) => app.id),
-      ]);
-  const selectedHomeApps = hasExplicitOnboardingAppSelection || rememberedHomeApps.size
-    ? launchableHomeApps.filter((app) => app.launchState === "available" && rememberedHomeApps.has(app.id))
-    : launchableHomeApps.filter((app) => app.launchState === "available");
-  const homeApps = [...selectedHomeApps, ...roadmapHomeApps.filter((app) => !selectedHomeApps.some((selected) => selected.id === app.id))];
-  const modules = [
-    { id: "osl-chats", name: "OSL Chat", available: true },
-    { id: "osl-mail", name: "OSL Mail", available: false },
-    { id: "osl-notes", name: "OSL Notes", available: false },
-    { id: "scrub", name: "Scrub", available: true },
-  ] as const;
-  const byId = new Map(homeApps.map((app) => [app.id, app]));
-  const moduleById = new Map(modules.map((module) => [module.id, module]));
-  const defaultIds = [...homeApps.map((app) => app.id), ...modules.map((module) => module.id)];
-  const orderedIds = [...homeTileOrder.filter((id) => defaultIds.includes(id as HomeAppId)), ...defaultIds.filter((id) => !homeTileOrder.includes(id))];
-  const renderHomeTile = (id: string, index: number): string => {
-    const hidden = hiddenHomeTiles.has(id);
-    if (hidden && !homeEditMode) return "";
-    const controls = homeEditMode ? `<span class="tile-edit-controls"><button class="tile-remove" type="button" data-tile-toggle="${escapeHtml(id)}" aria-label="${hidden ? "Show" : "Remove"} ${escapeHtml(id)}">${hidden ? "+" : "−"}</button><span class="tile-keyboard-controls"><button type="button" data-tile-move="${escapeHtml(id)}:-1" ${index === 0 ? "disabled" : ""} aria-label="Move before">←</button><button type="button" data-tile-move="${escapeHtml(id)}:1" ${index === orderedIds.length - 1 ? "disabled" : ""} aria-label="Move after">→</button></span></span>` : "";
-    const module = moduleById.get(id as typeof modules[number]["id"]);
-    if (module) return `<article class="app-tile home-module ${module.available ? "" : "module-unavailable"} ${hidden ? "tile-hidden" : ""}" data-tile-id="${module.id}" draggable="${homeEditMode}" data-module-kind="${module.id}"><button class="in-dom-tooltip-anchor" type="button" data-home-module="${module.id}" ${module.available ? "" : "disabled"} aria-label="${escapeHtml(module.available ? module.name : `${module.name}, coming later`)}"><span class="app-logo-plate osl-module-logo" aria-hidden="true">${homeModuleIcon(module.id)}</span><span class="app-tile-copy"><strong>${module.name}</strong></span>${inDomTooltipMarkup(module.available ? module.name : `${module.name} · Coming later`)}</button>${controls}</article>`;
-    const app = byId.get(id as HomeAppId);
-    if (!app) return "";
-    const state = app.linked ? "OSL profile ready" : app.launchState === "available" ? "Set up" : "Coming later";
-    const pending = appLaunchPendingId === app.id;
-    const available = app.launchState === "available";
-    const disabled = !available || Boolean(appLaunchPendingId);
-    // The tile's caption is the app's CLAIM, not a single hardcoded word.
-    // "Coming soon" on every unlaunchable tile collapsed four different states
-    // into one sentence, and said "planned" about surfaces OSL has already built
-    // and driven (D-206) or measured and had refused (D-234). Where the backend
-    // has a claim for this app, that claim is what the tile says; where it does
-    // not, the tile keeps the roadmap wording it always had.
-    const claim = nativeApps.find((candidate) => candidate.id === app.id as NativeAppId);
-    const caption = claim ? nativeClaimLabel(claim.supportStatus) : "Coming soon";
-    const claimTitle = claim ? ` title="${escapeHtml(claim.claimNote)}"` : "";
-    return `<article class="app-tile ${available ? "" : "app-unavailable"} ${hidden ? "tile-hidden" : ""} ${pending ? "pending" : ""}" data-tile-id="${app.id}" draggable="${homeEditMode}" data-service-kind="${app.serviceId ?? "none"}" data-launch-state="${app.launchState}" data-claim-status="${claim ? claim.supportStatus : "comingSoon"}" aria-disabled="${available ? "false" : "true"}"><button id="home-app-${app.id}" type="button" ${available ? `data-home-app="${app.id}"` : ""} aria-label="${escapeHtml(`${app.displayName}, ${pending ? "Opening" : state}`)}"${claimTitle} ${disabled ? "disabled" : ""}><span class="app-logo-plate">${homeAppLogo(app)}</span><span class="app-tile-copy"><strong>${escapeHtml(app.displayName)}</strong>${pending ? "<small>Opening…</small>" : available ? "" : `<small>${escapeHtml(caption)}</small>`}</span></button>${controls}</article>`;
-  };
-  const socialIds = new Set(homeApps.filter((app) => app.provider === null).map((app) => app.id));
-  const emailIds = new Set(homeApps.filter((app) => app.provider !== null).map((app) => app.id));
-  const socialTiles = orderedIds.filter((id) => socialIds.has(id as HomeAppId)).map(renderHomeTile).join("");
-  const emailTiles = orderedIds.filter((id) => emailIds.has(id as HomeAppId)).map(renderHomeTile).join("");
-  const oslTiles = orderedIds.filter((id) => moduleById.has(id as typeof modules[number]["id"])).map(renderHomeTile).join("");
-  const organizeButton = (label: string) => `<button class="home-section-action in-dom-tooltip-anchor" data-edit-home type="button" aria-label="${homeEditMode ? "Finish arranging" : `Customize ${label}`}">${homeCommandIcon("organize")}${inDomTooltipMarkup(homeEditMode ? "Done" : `Customize ${label}`)}</button>`;
-  const oslSection = oslTiles ? `<section class="home-app-section home-osl-section"><div class="app-grid" aria-label="OSL tools">${oslTiles}</div></section>` : "";
-  const activeIdentity = hubIdentities.find((identity) => identity.active);
-  const profileName = activeIdentity?.label?.trim() || "OSL Profile";
-  const profileInitial = profileName.slice(0, 1).toLocaleUpperCase();
-  return `<main id="home-navigation" class="content-viewport home-dashboard ${homeEditMode ? "editing" : ""}"><section class="home-primary">${homeDestinationContent()}<section class="home-apps" aria-labelledby="route-heading"><div class="home-app-groups">${oslSection}${socialTiles ? `<section class="home-app-section"><header><h2>Social</h2>${organizeButton("social apps")}</header><div class="app-grid" aria-label="Social apps">${socialTiles}</div></section>` : ""}${emailTiles ? `<section class="home-app-section"><header><h2>Email</h2>${organizeButton("email apps")}</header><div class="app-grid" aria-label="Email apps">${emailTiles}</div></section>` : ""}</div></section></section><button class="home-profile-dock in-dom-tooltip-anchor" data-route="settings" data-profile-settings type="button" aria-label="Open your OSL profile"><span aria-hidden="true">${escapeHtml(profileInitial)}</span><strong>${escapeHtml(profileName)}</strong>${inDomTooltipMarkup(profileName)}</button></main>`;
+  return homeLauncherBody({
+    services,
+    nativeApps,
+    savedNativeApps,
+    selectedOnboardingApps,
+    hasExplicitOnboardingAppSelection,
+    homeTileOrder,
+    hiddenHomeTiles,
+    homeEditMode,
+    appLaunchPendingId,
+    hubIdentities,
+    homeDestinationContent: homeDestinationContent(),
+  }, { homeModuleIcon, homeAppLogo, homeCommandIcon, nativeClaimLabel });
 }
 
 function parsedEnclaveAudiences(records: unknown[]): EnclaveAudience[] {
@@ -5039,7 +5028,14 @@ function oslChatContent(): string {
     ? `<div class="osl-chat-approval"><span><strong>Turn on this encrypted chat</strong><small>Approves only this OSL friend.</small></span><button class="button primary compact" id="osl-chat-approve" type="button" ${oslChatBusy ? "disabled" : ""}>Enable</button></div>`
     : "";
   const settingsPerson = oslChatSettingsPersonId ? hubPeople.find((person) => person.personId === oslChatSettingsPersonId) ?? null : null;
-  const settings = settingsPerson ? oslChatFriendSettingsMarkup(settingsPerson) : "";
+  const settings = settingsPerson ? oslChatFriendSettingsMarkup(settingsPerson, {
+    activePersonId: activeOslChatPersonId,
+    activeScopeApproved: activeOslChatContext?.scopeApproved === true,
+    muted: oslChatMutedPeople.has(settingsPerson.personId),
+    previewsVisible: oslChatPreviewsVisible,
+    typingPreferences: oslChatTypingPreferences,
+    busy: oslChatBusy,
+  }) : "";
   const attachmentCreation = pro
     ? `<button class="button compact" id="osl-chat-attach" type="button" ${oslChatBusy || activeOslChatKeyChanged ? "disabled" : ""}>Choose file</button>`
     : `<span class="quiet-note">Pro is required to make an attachment.</span>`;
@@ -5155,13 +5151,6 @@ function bindAttachmentDeletionEvents(): void {
 export function oslChatSenderReceiptMarkup(messages: readonly OslChatMessage[]): string {
   const receipt = senderReceiptStatus(senderReceiptStateFor(messages));
   return `<p class="setting-line osl-chat-receipt-status" data-osl-chat-receipt-confirmed="${receipt.confirmed}"><span><strong>Delivery receipt</strong><small>${receipt.label}</small></span></p>`;
-}
-
-function oslChatFriendSettingsMarkup(person: HubPerson): string {
-  const isActive = activeOslChatPersonId === person.personId;
-  const approved = isActive && activeOslChatContext?.scopeApproved === true;
-  const muted = oslChatMutedPeople.has(person.personId);
-  return `<dialog class="friends-dialog osl-chat-settings-dialog" id="osl-chat-settings-dialog" aria-labelledby="osl-chat-settings-title"><div class="friends-dialog-card"><header><div><span>Encrypted chat</span><h2 id="osl-chat-settings-title">${escapeHtml(person.alias ?? "Verified friend")}</h2></div><button class="icon-button" id="osl-chat-settings-close" type="button" aria-label="Close chat settings">×</button></header><div class="settings-list">${peerIntegrityMarkup("unknown")}<label class="setting-line interactive"><span><strong>Mute notifications</strong><small>Messages still arrive without creating a local alert.</small></span><input id="osl-chat-mute-toggle" type="checkbox" ${muted ? "checked" : ""}/></label><label class="setting-line interactive"><span><strong>Message previews</strong><small>Hide previews on this device.</small></span><input id="osl-chat-preview-toggle" type="checkbox" ${chatPreviewHidingVisible(oslChatPreviewsVisible) ? "checked" : ""}/></label><div class="setting-line"><span><strong>Chat permission</strong><small>${approved ? "This friend may exchange encrypted OSL messages with you." : "Open this friend to configure its exact chat permission."}</small></span>${isActive ? `<button class="button compact ${approved ? "danger" : "primary"}" id="osl-chat-permission-toggle" type="button" ${oslChatBusy ? "disabled" : ""}>${approved ? "Revoke" : "Enable"}</button>` : `<button class="button compact" data-osl-chat-open="${escapeHtml(person.personId)}" type="button">Open chat</button>`}</div></div></div></dialog>`;
 }
 
 function oslServersContent(): string {
@@ -5415,46 +5404,6 @@ function whitelistReachLine(person: HubPerson): string {
 // was deliberately widened, and the controls that change either. Reach and
 // revocation are separate actions, and both only ever act on the verified
 // friend behind the live protected context.
-function whitelistRosterPersonMarkup(person: HubPerson, activePersonId: string | null, busy: boolean, activeScopeApproved: boolean): string {
-  const nickname = person.alias ?? "Unnamed friend";
-  const isActive = activePersonId === person.personId;
-  const visibleScopes = person.whitelistedScopes.slice(0, whitelistRosterScopeLimit);
-  const hiddenScopeCount = Math.max(0, person.whitelistCount - visibleScopes.length);
-  const scopeRows = visibleScopes.map((scope) => {
-    const label = friendScopeLabel(scope);
-    return `<div class="whitelist-roster-scope"><span class="friend-scope">${escapeHtml(label)}${scope.userSpecific ? ` <small>only this person</small>` : ""}</span><div class="discord-qa-whitelist" role="group" aria-label="Trust for ${escapeHtml(label)}"><button class="in-dom-tooltip-anchor" type="button" data-whitelist-scope-key="${escapeHtml(scope.storageKey)}" aria-label="Approve ${escapeHtml(label)} for ${escapeHtml(nickname)}" disabled>+${inDomTooltipMarkup("Already approved")}</button><button class="in-dom-tooltip-anchor" type="button" data-whitelist-scope-remove="${escapeHtml(person.personId)}" data-whitelist-scope-key="${escapeHtml(scope.storageKey)}" aria-label="Revoke ${escapeHtml(label)} for ${escapeHtml(nickname)}" ${!isActive || busy ? "disabled" : ""}>−${inDomTooltipMarkup(isActive ? "Revoke this chat now" : "Open this person's protected chat to revoke")}</button></div></div>`;
-  }).join("");
-  const narrowedRows = person.reachNarrowedScopes.slice(0, whitelistRosterScopeLimit).map((key) => {
-    const label = narrowedScopeLabel(key);
-    return `<div class="whitelist-roster-scope narrowed"><span class="friend-scope narrowed">${escapeHtml(label)} <small>taken back</small></span><div class="discord-qa-whitelist" role="group" aria-label="Trust for ${escapeHtml(label)}"><button class="in-dom-tooltip-anchor" type="button" data-whitelist-scope-key="${escapeHtml(key)}" aria-label="Approve ${escapeHtml(label)} for ${escapeHtml(nickname)}" disabled>+${inDomTooltipMarkup("Approve this chat from inside it")}</button><button class="in-dom-tooltip-anchor" type="button" data-whitelist-scope-remove="${escapeHtml(person.personId)}" data-whitelist-scope-key="${escapeHtml(key)}" aria-label="Revoke ${escapeHtml(label)} for ${escapeHtml(nickname)}" disabled>−${inDomTooltipMarkup("Not approved")}</button></div></div>`;
-  }).join("");
-  const scopes = scopeRows || `<span class="friend-none">No chats approved</span>`;
-  const truncated = hiddenScopeCount > 0 || person.whitelistedScopesTruncated
-    ? `<small class="whitelist-roster-truncated">${hiddenScopeCount > 0 ? `${hiddenScopeCount} more approved ${hiddenScopeCount === 1 ? "chat is" : "chats are"}` : "More approved chats are"} stored locally and not listed here.</small>`
-    : "";
-  // Reach widens trust that already exists, so it needs a recorded approval
-  // or the approved chat the user is standing in — the hub enforces the same rule.
-  const reachDisabled = !isActive || busy || (!person.reachBroadened && person.whitelistCount === 0 && !activeScopeApproved);
-  const reachButton = `<button class="button compact in-dom-tooltip-anchor" type="button" data-whitelist-reach="${escapeHtml(person.personId)}" data-whitelist-reach-next="${person.reachBroadened ? "off" : "on"}" aria-pressed="${person.reachBroadened}" ${reachDisabled ? "disabled" : ""}>${person.reachBroadened ? "Limit reach" : "Extend reach"}${inDomTooltipMarkup(person.reachBroadened ? "Withdraw reach across the chats you share" : "Extend this trust to the other chats you share")}</button>`;
-  const reachNote = isActive ? "" : `<small class="whitelist-roster-note">Open this person's protected chat to change their reach or revoke a chat.</small>`;
-  return `<article class="whitelist-roster-row person-row" data-whitelist-person="${escapeHtml(person.personId)}"><header><div><strong>${escapeHtml(nickname)}</strong><small>${escapeHtml(whitelistReachLine(person))}</small></div>${reachButton}</header><div class="whitelist-roster-scopes">${scopes}${narrowedRows}</div>${truncated}${reachNote}</article>`;
-}
-
-function whitelistRosterMarkup(): string {
-  if (!whitelistRosterOpen) return "";
-  const active = activeVerifiedDiscordQaPeer();
-  const activePersonId = active?.person.personId ?? null;
-  const activeScopeApproved = active?.context.scopeApproved === true;
-  const busy = discordQaHeaderBusy !== null;
-  // Everyone OSL recorded trust for, plus the person whose protected chat is
-  // open, so their reach can be widened from here without hunting for a row.
-  const roster = hubPeople.filter((person) => person.whitelistCount > 0 || person.reachNarrowedScopes.length > 0 || person.personId === activePersonId);
-  const rows = roster.length
-    ? roster.map((person) => whitelistRosterPersonMarkup(person, activePersonId, busy, activeScopeApproved)).join("")
-    : `<div class="empty-state"><strong>Nobody is whitelisted yet</strong><p>Approve a verified friend inside a chat; they appear here with the chats they cover.</p></div>`;
-  return `<dialog class="friends-dialog whitelist-roster-dialog" id="whitelist-roster-dialog" aria-labelledby="whitelist-roster-title"><div class="friends-dialog-card"><header><h2 id="whitelist-roster-title">Whitelisted people</h2><button class="icon-button" id="whitelist-roster-close" type="button" aria-label="Close whitelist">×</button></header><p class="scope-approval-note">Approving a chat never widens anyone's reach. Extending reach is a separate, recorded choice, and a chat you take back stays revoked even while reach is on.</p><div class="whitelist-roster-list">${rows}</div></div></dialog>`;
-}
-
 function nativeDiscordProtectPickerMarkup(): string {
   if (!nativeProtectPickerOpen || activeNativeHostId !== "discord") return "";
   const friends = hubPeople.filter((person) => person.safetyNumberVerified && !person.pendingKeyChange);
@@ -5646,12 +5595,27 @@ function settingsContent(): string {
 }
 
 function settingsSectionContent(): string {
-  if (settingsSection === "account") return `${identitySettingsContent()}${settingsDivider()}${passwordSecuritySettingsContent()}${accountAdvancedSettingsContent()}${renderRecoveryStatesSettings()}`;
+  if (settingsSection === "account") return `${identitySettingsContent()}${settingsDivider()}${passwordSecuritySettingsContent({ bootstrapStatus: core.readiness.bootstrapStatus, passwordRoleStatus }, passwordEyeIcon)}${accountAdvancedSettingsContent()}${renderRecoveryStatesSettings()}`;
   if (settingsSection === "apps") return `${serviceAccountsSettingsContent()}${optionalComponentsSettingsContent()}${sendingSettingsContent()}`;
-  if (settingsSection === "scrub") return privacySettingsContent();
+  if (settingsSection === "scrub") return privacySettingsContent({
+    proActive: licenseState.access === "pro" || licenseState.access === "offlineGrace",
+    scanBusy: privacyScanBusy,
+    findingCount: privacyScanResult?.findings.length ?? null,
+    consentRequest: localScrubConsentRequest,
+    consentState: localScrubConsentState,
+    routeStep: localScrubRouteStep,
+    routeOpened: localScrubRouteOpened,
+    routeAccountSelected: localScrubRouteAccountSelected,
+    routeCategories: [...localScrubRouteCategories],
+    timer,
+    screenshotProtectionEnabled,
+    scrubCategoryChooserMarkup: scrubCategoryChooserMarkup(),
+    privacyScanResultsMarkup: privacyScanResultsMarkup(),
+    autoScrubAssistantMarkup: autoScrubAssistantMarkup(licenseState.access === "pro" || licenseState.access === "offlineGrace"),
+  });
   if (settingsSection === "cleanup") return massCleanupSettingsContent();
   if (settingsSection === "notifications") return notificationSettingsContent();
-  if (settingsSection === "appearance") return appearanceSettingsContent();
+  if (settingsSection === "appearance") return appearanceSettingsContent(appearancePreferences, themeChoice);
   return updateSettingsContent();
 }
 
@@ -5666,51 +5630,6 @@ function optionalComponentsSettingsContent(): string {
   const transfer = deviceTransferManifestScreen();
   const sourceChoice = oldDeviceCopyDecisionView(initialOldDeviceCopyDecision({ importConfirmed: false }));
   return `<details class="settings-disclosure" data-optional-components><summary><span><strong>${picker.title}</strong><small>${picker.introductoryCopy}</small></span></summary><div class="settings-list">${picker.components.map((item) => `<div class="setting-line"><span><strong>${escapeHtml(item.displayName)} · ${escapeHtml(item.size)}</strong><small>${escapeHtml(item.withoutIt)}</small></span></div>`).join("")}<p>${escapeHtml(autoScrubConsentPrompt("each service"))}</p><p data-autoscrub-install="${scrub.allowed ? "allowed" : "blocked"}">AutoScrub installation is blocked until separate explicit consent is recorded.</p>${manager.features.map((feature) => `<p>${escapeHtml(feature.detail)}</p>`).join("")}<h3>${escapeHtml(transfer.title)}</h3>${transfer.sections.map((section) => `<p><strong>${escapeHtml(section.heading)}:</strong> ${escapeHtml(section.items.join(", "))}</p>`).join("")}<p>${sourceChoice.mode === "unavailable" ? "Transfer source-copy choice appears only after a confirmed import." : ""}</p>${renderDeadmanScreen(selectDeadmanAction("lock", ""))}</div></details>`;
-}
-
-export function privacyDestinationContent(): string {
-  const proActive = licenseState.access === "pro" || licenseState.access === "offlineGrace";
-  const primary = privacyPrimaryActionPlan();
-  const scanActions = `<div class="privacy-scan-actions"><label class="button primary ${privacyScanBusy ? "disabled" : ""}" for="privacy-export-input">${privacyScanBusy ? "Scanning..." : "Choose export"}</label><input id="privacy-export-input" class="sr-only" type="file" accept=".txt,.json,.csv,text/plain,application/json,text/csv" ${privacyScanBusy ? "disabled" : ""}/>${privacyScanResult ? `<button class="button" id="clear-privacy-scan" type="button">Clear results</button>` : ""}</div>`;
-  const policyGroups = [
-    ["Before I send", "Risk warnings, public-post checks, and attachment cleaning.", "On in Balanced"],
-    ["After I send", `Message timers default to ${timer}; view-once media and retention reviews stay off until you choose them.`, "Review first"],
-    ["Incoming content", "Link, scam, tracker, and file warnings run on this device when available.", "Local checks"],
-    ["My history", "Manual scan and guided review for old messages, posts, and email exports.", "Free scan"],
-    ["My exposure", "Old accounts, breach reminders, broker guidance, and privacy drift checks.", "Coming in stages"],
-  ] as const;
-  const tools = [
-    ["History Cleanup", "Find old posts, messages, and email to review."],
-    ["Attachment Guard", "Remove location, device, and document metadata before upload."],
-    ["Email Privacy", "Block tracking pixels, identify redirect trackers, and sanitize links."],
-    ["Exposure Inventory", "Show old accounts, breached identifiers, and public exposure."],
-    ["Privacy Drift Watch", "Notice when an app changes settings, permissions, or connection state."],
-    ["Scam Shield", "Warn about suspicious links, impersonation, and payment requests."],
-    ["Data Removal", "Guide broker requests and verify results instead of counting requests as success."],
-    ["Encrypted Capsule", "Send protected files or notes when the recipient does not use OSL."],
-  ] as const;
-  const policyCards = policyGroups.map(([name, detail, state]) => `<article class="privacy-policy-card">${statusTag(state)}<h3>${name}</h3><p>${detail}</p></article>`).join("");
-  const toolRows = tools.map(([name, detail], index) => `<article class="setting-line privacy-tool-row"><span><strong>${name}</strong><small>${detail}</small></span>${statusTag(index === 0 ? "Available" : proActive ? "Pro planned" : "Pro")}</article>`).join("");
-  const cleanupState = proActive ? "Manual queue planned" : "Pro manual queue";
-  const protectionReview = privacyProtectionReviewOpen
-    ? `<section class="privacy-review-card" data-privacy-protection-review><div><span class="privacy-local-mark">PROTECTION REVIEW</span><h2>Review or change protection</h2><p>Check the Balanced policy, app exceptions, cleanup limits, and local warning choices before OSL changes anything.</p></div><button class="button compact" data-route="settings" data-settings="scrub" type="button">Open detailed review</button></section>`
-    : "";
-  const presetCopy: Record<ProtectionPreset, { title: string; detail: string }> = {
-    basic: {
-      title: "Basic",
-      detail: "Account health, email tracker blocking, attachment metadata warnings, and exposure alerts.",
-    },
-    balanced: {
-      title: "Balanced",
-      detail: "Basic account health plus local before-send warnings, attachment cleaning, monthly cleanup review, and private OSL suggestions for verified contacts.",
-    },
-    maximum: {
-      title: "Maximum",
-      detail: "Balanced protection plus stricter public-post checks, optional VPN-required actions, and OSL protection required for chosen contacts.",
-    },
-  };
-  const activePreset = presetCopy[protectionPreset];
-  return `<main class="content-viewport privacy-destination" aria-labelledby="route-heading"><header class="destination-header"><div><p class="eyebrow">Privacy</p><h1 id="route-heading" tabindex="-1">Privacy</h1><p>Review what OSL will do before it changes anything.</p></div><button class="button primary" data-privacy-primary-action data-route="${primary.route}" data-review-target="${primary.reviewTarget}" type="button">Review or change protection</button></header>${protectionReview}<section class="privacy-preset-panel" aria-labelledby="privacy-preset-title"><div><span class="privacy-local-mark">ACTIVE PRESET</span><h2 id="privacy-preset-title">${activePreset.title}</h2><p>${activePreset.detail}</p></div><button class="button compact" data-change-protection-preset type="button">Change preset</button></section><section class="privacy-policy-stack" id="privacy-protection-review" aria-labelledby="privacy-policy-title"><header><div><h2 id="privacy-policy-title">Global policy</h2><p>Inherited from ${activePreset.title} until you make an exception.</p></div>${statusTag("Deletion off")}</header><p class="privacy-policy-path">${activePreset.title} preset / app / account / conversation exception</p><div class="privacy-policy-grid">${policyCards}</div></section>${publicPostGuardCarrierPreviewMarkup()}<section class="privacy-review-card manual-scrub-card"><div><span class="privacy-local-mark">FREE · THIS DEVICE ONLY</span><h2>Recommended action</h2><h3>Review an export</h3><p>Choose a TXT, CSV, or JSON message export. OSL suggests items; you decide what to review. Nothing is deleted by this build.</p></div>${scanActions}</section>${scrubCategoryChooserMarkup(true)}${privacyScanResultsMarkup()}<section class="settings-list privacy-tools" aria-labelledby="privacy-tools-title"><header><h2 id="privacy-tools-title">Solo privacy tools</h2><p>Useful even when nobody else uses OSL.</p></header>${toolRows}</section><section class="settings-list privacy-limits" aria-labelledby="privacy-limits-title"><header><h2 id="privacy-limits-title">Proof and limits</h2><p>OSL refuses actions it cannot verify.</p></header><div class="setting-line"><span><strong>Cleanup</strong><small>${cleanupState}; every batch must be scanned, shown, previewed, confirmed, executed, and checked.</small></span>${statusTag("No auto delete")}</div><div class="setting-line"><span><strong>Service messages</strong><small>Apps, people, exports, backups, and opened copies may retain content.</small></span>${statusTag("Limit shown")}</div><div class="setting-line"><span><strong>Window protection</strong><small>Applied to OSL's own window when available. Cameras, malware, and modified recipients can still capture content.</small></span>${statusTag(screenshotProtectionEnabled ? "Active" : "Unavailable")}</div></section></main>`;
 }
 
 function massCleanupActionLabel(action: string): string {
@@ -5805,28 +5724,6 @@ function accountUnlocked(): boolean {
     // there is. Reading it as unlocked is how "Protected \u2014 Device
     // protection confirmed" came to sit above an account nothing could open.
     && core.readiness.bootstrapStatus !== "identityKeyLost";
-}
-
-function passwordSecuritySettingsContent(): string {
-  const passwordAction = core.readiness.bootstrapStatus === "setupRequired"
-    ? `<button class="button primary" data-onboarding-action="create">Create password</button>`
-    : core.readiness.bootstrapStatus === "passwordRequired"
-      ? `<button class="button primary" data-onboarding-action="unlock">Unlock OSL</button>`
-      : core.readiness.bootstrapStatus === "identityKeyLost"
-        ? `<span class="setting-status"><span class="dot"></span>This device can no longer open this account</span><button class="button primary" data-onboarding-action="import">Restore with recovery phrase</button>`
-        : `<span class="setting-status"><span class="dot"></span>Password configured and unlocked</span><button class="button" type="button" data-lock-session="now">Lock now</button>`;
-  const roleForm = (role: "stealth" | "burn", configured: boolean, wired: boolean): string => {
-    const title = role === "stealth" ? "Stealth password" : "Burn password";
-    const consequence = role === "stealth" ? "decoy screen" : "account burn";
-    if (!wired) {
-      return `<section class="password-role unavailable" aria-disabled="true"><div><strong>${title}</strong><small>${configured ? "Stored but inactive" : "Unavailable"}</small></div><p>The ${consequence} login action is not available in this build. OSL will not let you create or rely on it.</p></section>`;
-    }
-    return `<details class="password-role"><summary><span><strong>${title}</strong><small>${configured ? "Configured" : "Not set"}</small></span><span>›</span></summary><form data-password-role="${role}" data-password-remove="${configured}"><label>Current password<div class="password-input-row"><input id="${role}-current" name="current" type="password" minlength="6" maxlength="128" autocomplete="current-password" required/><button class="password-eye" type="button" data-password-toggle="${role}-current" aria-label="Show current password">${passwordEyeIcon()}</button></div></label>${configured ? "" : `<label>New ${role} password<div class="password-input-row"><input id="${role}-alternate" name="alternate" type="password" minlength="6" maxlength="128" autocomplete="new-password" required/><button class="password-eye" type="button" data-password-toggle="${role}-alternate" aria-label="Show new password">${passwordEyeIcon()}</button></div></label>`}<button class="button ${configured ? "danger" : "primary"}" type="submit">${configured ? "Remove" : "Set password"}</button><p class="password-role-note">Active at login for ${consequence}.</p></form></details>`;
-  };
-  const roles = passwordRoleStatus
-    ? `<div class="security-shortcuts">${roleForm("stealth", passwordRoleStatus.stealthPasswordSet, passwordRoleStatus.stealthActionWired)}${roleForm("burn", passwordRoleStatus.burnPasswordSet, passwordRoleStatus.burnActionWired)}</div>`
-    : `<div class="settings-unavailable"><strong>Password roles unavailable</strong><span>Unlock OSL and reopen Settings.</span></div>`;
-  return `<section class="settings-section password-security"><header><div><h3>Password & security</h3><p>Protects encrypted storage on this device.</p></div><div class="settings-actions">${passwordAction}</div></header><details class="settings-disclosure"><summary>Alternate passwords</summary><div>${roles}</div></details></section>`;
 }
 
 function accountAdvancedSettingsContent(): string {
@@ -6047,27 +5944,6 @@ async function changeSendingMode(mode: SendMode): Promise<void> {
     showToast("Sending preference could not be saved");
   }
   render();
-}
-
-function privacySettingsContent(): string {
-  const proActive = licenseState.access === "pro" || licenseState.access === "offlineGrace";
-  const scanActions = `<div class="privacy-scan-actions"><label class="button primary ${privacyScanBusy ? "disabled" : ""}" for="privacy-export-input">${privacyScanBusy ? "Scanning…" : "Choose export"}</label><input id="privacy-export-input" class="sr-only" type="file" accept=".txt,.json,.csv,text/plain,application/json,text/csv" ${privacyScanBusy ? "disabled" : ""}/>${privacyScanResult ? `<button class="button" id="clear-privacy-scan" type="button">Clear results</button>` : ""}</div>`;
-  const routeState: ScrubRouteState = {
-    accounts: [{ id: "local-export", label: "Local message export", detail: "TXT, CSV, or JSON on this device" }],
-    selectedAccountIds: localScrubRouteAccountSelected ? ["local-export"] : [],
-    selectedCategories: [...localScrubRouteCategories],
-    scan: { state: privacyScanBusy ? "scanning" : privacyScanResult ? "complete" : "not-started", findings: privacyScanResult?.findings.length ?? 0 },
-  };
-  const consent = evaluateScrubConsentGate(localScrubConsentRequest, localScrubConsentState);
-  const gatedRoute = scrubConsentGatedRouteMarkup(
-    localScrubConsentRequest,
-    localScrubConsentState,
-    routeState,
-    localScrubRouteStep,
-    localScrubRouteOpened,
-  );
-  const scanControls = consent.allowed && localScrubRouteOpened && localScrubRouteStep === "scan" ? scanActions : "";
-  return `<h2>Scrub</h2><p class="scrub-local-promise"><strong>Your messages never leave this device.</strong> Every scan and review stays local.</p>${gatedRoute}${scanControls}${scrubCategoryChooserMarkup()}${privacyScanResultsMarkup()}${autoScrubAssistantMarkup(proActive)}<details class="safety-disclosure scrub-safety"><summary>Before deleting anything</summary><div><p><strong>Use at your own risk.</strong> Suggestions can be wrong. Check every message first.</p><p>Deletion can be irreversible. Apps, people, services, exports, and backups may retain copies. Only a service recheck can verify removal within its stated coverage.</p><p>Automatic deletion is unavailable in this build until the native one-shot reviewed-consent capability is available. Connect IMAP for read-only verification.</p><p>This build only gives manual directions. It does not delete app messages. Check the original app and delete each message yourself.</p></div></details><details class="privacy-technical settings-disclosure"><summary>Privacy and technical details</summary><div class="setting-line"><span>Default key expiry</span><strong>${timer}</strong></div><div class="setting-line"><span>Remote app access</span><strong>Blocked</strong></div><div class="setting-line"><span><strong>Windows capture resistance</strong><small>Always applied to OSL’s own window. Cameras, malware, and modified recipients can still capture content.</small></span><strong>${screenshotProtectionEnabled ? "Active" : "Unavailable"}</strong></div></details>`;
 }
 
 function autoScrubAssistantMarkup(proActive: boolean): string {
@@ -6406,10 +6282,6 @@ function activationSettingsContent(): string {
     : "Optional Pro module: separate install and license required; base OSL stays available.";
   const clear = licenseState.status === "UNCONFIGURED" ? "" : `<button class="button compact" id="clear-activation-code" type="button">Clear activation</button>`;
   return `<details class="license-card settings-disclosure"><summary><span><strong>Plan</strong><small>${escapeHtml(copy.title)}</small></span>${statusTag(escapeHtml(licenseState.status === "UNCONFIGURED" ? "Free" : licenseState.status), pro ? "active" : "")}</summary><div data-entitlement-banner="${entitlement.banner}" data-entitlement-cta="${entitlement.cta}"><p>${escapeHtml(copy.detail)}</p><p>For view-once items, making one needs Pro; opening one is free.</p><p>Paste the activation code shown after checkout. No email is required.</p><p class="quiet-note">${moduleAccess}</p><form id="activation-form" class="license-form"><label for="activation-code">Activation code</label><div><input id="activation-code" inputmode="text" maxlength="23" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="OSL-XXXX-XXXX-XXXX-XXXX" required/><button class="button primary" type="submit">Activate Pro</button>${clear}</div></form></div></details>`;
-}
-
-function appearanceSettingsContent(): string {
-  return `<h2>Appearance</h2><p>Choose a theme. Arrange apps with Edit on Home.</p><div class="theme-grid">${(["system", "dark", "light"] as ThemeChoice[]).map((choice) => `<button class="theme-card ${themeChoice === choice ? "selected" : ""}" data-theme-choice="${choice}"><span class="theme-swatch ${choice}"></span><strong>${choice[0].toUpperCase()}${choice.slice(1)}</strong><small>${choice === "system" ? "Follow this device" : `${choice} interface`}</small></button>`).join("")}</div>`;
 }
 
 function developerSettingsContent(): string {
@@ -10738,12 +10610,15 @@ export const __oslHubUiTest = {
     options: { active?: boolean; busy?: boolean; activeScopeApproved?: boolean } = {},
   ): string {
     const full = testHubPerson(person);
-    return whitelistRosterPersonMarkup(
-      full,
-      options.active === false ? null : full.personId,
-      options.busy ?? false,
-      options.activeScopeApproved ?? false,
-    );
+    const state = {
+      open: true,
+      activePersonId: options.active === false ? null : full.personId,
+      activeScopeApproved: options.activeScopeApproved ?? false,
+      busy: options.busy ?? false,
+      people: [full],
+      scopeLimit: whitelistRosterScopeLimit,
+    };
+    return whitelistRosterPersonMarkup(full, state, { friendScopeLabel, narrowedScopeLabel, whitelistReachLine });
   },
   snapshot(): {
     route: Route;
