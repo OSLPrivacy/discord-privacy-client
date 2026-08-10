@@ -35,6 +35,9 @@ pub mod password;
 pub mod pending_rotation;
 pub mod prekeys;
 pub mod proof_challenge;
+/// Gate-controlled policy for outside proving services at the public-name
+/// account-proof boundary.
+pub mod public_name_proving_services;
 pub mod recipients;
 mod recoverable_file;
 pub mod sealer;
@@ -103,6 +106,10 @@ pub use prekeys::{
     SpkEntry, REPLENISH_DOMAIN, SPK_ROTATION_INTERVAL_SECONDS,
 };
 pub use proof_challenge::{ProofChallenge, PROOF_CHALLENGE_NONCE_BYTES};
+pub use public_name_proving_services::{
+    allowed_proving_services, required_outside_proof_count, validate_proving_service,
+    ProvingServiceError,
+};
 pub use recipients::{
     account_dir, active_account_dir, get_recipients, get_recipients_from_path, osl_base_dir,
     osl_config_dir, set_active_account_dir, set_base_dir_override, RecipientError,
