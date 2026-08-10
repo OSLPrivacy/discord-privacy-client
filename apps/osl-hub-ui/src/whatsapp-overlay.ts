@@ -1,7 +1,6 @@
 import "@fontsource-variable/inter/wght.css";
 import { invoke } from "@tauri-apps/api/core";
 import "./whatsapp-overlay.css";
-import { parseWhatsAppPreparedCarrier } from "./whatsapp-overlay-prepare";
 import { reconcileWhatsAppPrivateBox } from "./whatsapp-private-box";
 import {
   addDroppedWhatsAppAttachmentFiles,
@@ -9,6 +8,7 @@ import {
   type WhatsAppAttachmentFile,
   type WhatsAppAttachmentTray,
 } from "./whatsapp-attachment-tray";
+import { parseWhatsAppCoverInsertionSetting, parseWhatsAppSendTrigger, prepareWhatsAppSelectedCover, whatsappPreparedSendReport } from "./whatsapp-send";
 
 function requireElement<T extends Element>(selector: string): T {
   const element = document.querySelector<T>(selector);
@@ -23,6 +23,8 @@ const copy = requireElement<HTMLButtonElement>("#protected-send");
 const attachmentPicker = requireElement<HTMLButtonElement>("#whatsapp-attachment-picker");
 const attachmentInput = requireElement<HTMLInputElement>("#whatsapp-attachment-input");
 const attachmentTray = requireElement<HTMLElement>("#whatsapp-attachment-tray");
+const trigger = requireElement<HTMLSelectElement>("#prepared-cover-trigger");
+const coverInsertion = requireElement<HTMLSelectElement>("#cover-insertion-setting");
 
 let composing = false;
 let busy = false;
@@ -64,12 +66,14 @@ copy.addEventListener("click", async () => {
   reconcileDraft();
   status.textContent = "Revalidating and encrypting.";
   try {
-    const prepared = parseWhatsAppPreparedCarrier(
-      await invoke("prepare_whatsapp_qa_protected_text", { plaintext }),
+    const prepared = await prepareWhatsAppSelectedCover(
+      parseWhatsAppSendTrigger(trigger.value),
+      parseWhatsAppCoverInsertionSetting(coverInsertion.value),
+      () => invoke("prepare_whatsapp_qa_protected_text", { plaintext }),
     );
-    await navigator.clipboard.writeText(prepared.coverText);
+    await navigator.clipboard.writeText(prepared.carrier.coverText);
     draft.value = "";
-    status.textContent = "Protected carrier copied. Paste and send in this chat.";
+    status.textContent = whatsappPreparedSendReport(prepared);
   } catch {
     status.textContent = "Context changed or copy failed. Nothing was sent.";
   } finally {
