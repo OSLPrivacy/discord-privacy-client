@@ -31,7 +31,7 @@ import { isTauriRuntime, loadOnboardingPreferences, saveOnboardingPreferences } 
 import { chooseForwardSecrecyMode, initialForwardSecrecyOnboardingState, onboardingForwardSecrecyMarkup, type ForwardSecrecyChoice, type ForwardSecrecyOnboardingState } from "./onboarding-forward-secrecy";
 import { onboardingPasswordRoleContent as passwordRoleContent } from "./password-roles";
 import { backOnboardingPasswordRole, canSetOnboardingPasswordRole, continueOnboardingPasswordRole, skipOnboardingPasswordRole, togglePasswordVisibility, type OnboardingPasswordRoleValues } from "./onboarding-password-role";
-import { applyTorBootstrapStatus, chooseTorRoute, initialTorOnboardingState, onboardingTorMarkup, type TorOnboardingState } from "./onboarding-tor";
+import { applyTorBootstrapStatus, chooseBridgeUsage, chooseLocalNetworkUsage, chooseTorRoute, initialTorOnboardingState, onboardingTorMarkup, type TorOnboardingState } from "./onboarding-tor";
 import { applyTorSidecarEvent, initialTorBootStatus } from "./tor-boot-orchestrator";
 import { chooseCoverInsertion, initialCoverInsertionChoice, onboardingCoverMarkup, type CoverInsertionChoice } from "./onboarding-cover";
 import { chooseSilentVisibleMode, onboardingSilentVisibleMarkup, type SilentVisibleMode } from "./onboarding-silent-visible";
@@ -4104,6 +4104,14 @@ function bindOnboarding(): void {
       render();
     }
   }));
+  document.querySelector<HTMLInputElement>("#tor-bridge")?.addEventListener("change", (event) => {
+    torOnboarding = chooseBridgeUsage(torOnboarding, (event.currentTarget as HTMLInputElement).checked);
+    render();
+  });
+  document.querySelector<HTMLInputElement>("#local-network")?.addEventListener("change", (event) => {
+    torOnboarding = chooseLocalNetworkUsage(torOnboarding, (event.currentTarget as HTMLInputElement).checked);
+    render();
+  });
   document.querySelector<HTMLButtonElement>("[data-tor-choice-continue]")?.addEventListener("click", () => {
     if (torOnboarding.choice === null) return;
     if (torOnboarding.choice === "tor") {

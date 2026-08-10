@@ -1,5 +1,5 @@
 import "./onboarding-tor.css";
-import { choiceRadio, continueButton } from "./onboarding-controls";
+import { choiceRadio, continueButton, onOffToggle } from "./onboarding-controls";
 import { firstRunTorScreenMarkup, type TorBootStatus } from "./tor-boot-orchestrator";
 
 /** The network route must be chosen explicitly during onboarding. */
@@ -7,6 +7,14 @@ export type TorChoice = "tor" | "direct" | null;
 
 export interface TorOnboardingState {
   choice: TorChoice;
+  usingBridge: boolean;
+  /** Local-network features expose the device's local network, which conflicts
+   * with the location privacy Tor provides. Keep this in the same state
+   * transition as the Tor route so an on-screen state can never contain both. */
+  localNetworkEnabled: boolean;
+  /** A visible explanation is required whenever one privacy choice disables the
+   * other, rather than silently changing a switch behind the person's back. */
+  conflictNotice: string | null;
   /** Null while choosing a route; populated exclusively from the sidecar
    * orchestrator's onStatus callback once a Tor attempt starts. */
   bootstrapStatus: TorBootStatus | null;
@@ -16,18 +24,54 @@ export interface TorOnboardingState {
 // default-answer send proof is re-run green over the owned tunnel. The latest
 // adjudicated proof is red, so selecting Tor here would be an unapproved flip.
 export const SHIPPED_CONNECTION_DEFAULT: Exclude<TorChoice, null> = "direct";
-export const initialTorOnboardingState = (): TorOnboardingState => ({ choice: SHIPPED_CONNECTION_DEFAULT, bootstrapStatus: null });
+export const initialTorOnboardingState = (): TorOnboardingState => ({
+  choice: SHIPPED_CONNECTION_DEFAULT,
+  usingBridge: false,
+  localNetworkEnabled: false,
+  conflictNotice: null,
+  bootstrapStatus: null,
+});
 
 // Direct cancels any Tor attempt. Re-selecting Tor preserves the status stream
 // projection so a radio re-render cannot rewind visible progress.
 export function chooseTorRoute(state: TorOnboardingState, choice: Exclude<TorChoice, null>): TorOnboardingState {
-  return { choice, bootstrapStatus: choice === "tor" ? state.bootstrapStatus : null };
+  const disablesLocalNetwork = choice === "tor" && state.localNetworkEnabled;
+  return {
+    ...state,
+    choice,
+    localNetworkEnabled: disablesLocalNetwork ? false : state.localNetworkEnabled,
+    conflictNotice: disablesLocalNetwork
+      ? "Local network was turned off because Tor hides where you are, while local network access needs to see your local network."
+      : null,
+    bootstrapStatus: choice === "tor" ? state.bootstrapStatus : null,
+  };
+}
+
+/** Turn local-network features on or off. Enabling them selects Direct and
+ * disables Tor in the same atomic state update: no render can show both on. */
+export function chooseLocalNetworkUsage(state: TorOnboardingState, localNetworkEnabled: boolean): TorOnboardingState {
+  const disablesTor = localNetworkEnabled && state.choice === "tor";
+  return {
+    ...state,
+    choice: disablesTor ? "direct" : state.choice,
+    localNetworkEnabled,
+    conflictNotice: disablesTor
+      ? "Tor was turned off because Tor hides where you are, while local network access needs to see your local network."
+      : null,
+    bootstrapStatus: disablesTor ? null : state.bootstrapStatus,
+  };
+}
+
+/** Keep bridge use as part of the pending Tor choice until Continue persists
+ * both values together at the native boundary. */
+export function chooseBridgeUsage(state: TorOnboardingState, usingBridge: boolean): TorOnboardingState {
+  return { ...state, usingBridge };
 }
 
 /** Feed one status projection from startTorBootOrchestrator into the actual
  * first-run Tor route. There is no independent spinner or percentage clock. */
 export function applyTorBootstrapStatus(state: TorOnboardingState, bootstrapStatus: TorBootStatus): TorOnboardingState {
-  return { choice: "tor", bootstrapStatus };
+  return { ...state, choice: "tor", localNetworkEnabled: false, conflictNotice: null, bootstrapStatus };
 }
 
 /** Guards the Continue handler. A null choice can still arrive from a restored session. */
@@ -101,6 +145,10 @@ export function onboardingTorMarkup(state: TorOnboardingState): string {
       ${card("tor", "Tor", torDiagram(), "travel time · 2–6 s")}
       ${card("direct", "Direct", directDiagram(), "travel time · under 1 s")}
     </fieldset>
+    ${state.choice === "tor" ? `<div class="tor-bridge-choice"><span class="tor-bridge-label">Using a bridge</span>${onOffToggle("tor-bridge", state.usingBridge, "Using a bridge")}</div>` : ""}
+    <div class="tor-local-network-choice"><span class="tor-bridge-label">Local network</span>${onOffToggle("local-network", state.localNetworkEnabled, "Use local network")}</div>
+    <p class="tor-local-network-explanation">Tor hides where you are. Local network access needs to see your local network, so they cannot both be on.</p>
+    ${state.conflictNotice === null ? "" : `<p class="tor-local-network-notice" role="status">${state.conflictNotice}</p>`}
     <div class="tor-mullvad-status" aria-label="Mullvad status"><strong>Mullvad</strong><span>You can use both. Neither replaces the other.</span></div>
     <div class="setup-footer onboarding-actions">${continueButton("data-tor-choice-continue", "tor-continue")}</div>
   </section>`;
