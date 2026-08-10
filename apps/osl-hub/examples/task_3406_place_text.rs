@@ -125,6 +125,61 @@ mod task_3407_tests {
     }
 }
 
+/// Provider-neutral actions used by the one shared place-text job.
+///
+/// A provider may locate controls and report readiness in its own read-only
+/// adapter, but it cannot replace `paste_text`: every rich editor is driven by
+/// this same editor-visible paste action.
+pub trait SharedPlaceTextActions {
+    fn read_back_text(&mut self) -> Result<String, String>;
+    fn paste_text(&mut self, text: &str) -> Result<(), String>;
+    fn editor_accepts_message(&mut self) -> Result<bool, String>;
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SharedPlaceTextReceipt {
+    pub placed_bytes: usize,
+    pub readback_bytes: usize,
+    pub readback_exact: bool,
+    pub editor_accepts_message: bool,
+}
+
+/// Put one marked string through the shared editor-visible action, read it back
+/// byte-for-byte, and require the provider's own readiness state to agree.
+pub fn place_text_through_shared_job(
+    actions: &mut impl SharedPlaceTextActions,
+    marked: &str,
+) -> Result<SharedPlaceTextReceipt, String> {
+    if marked.is_empty()
+        || marked
+            .chars()
+            .any(|character| matches!(character, '\r' | '\n'))
+    {
+        return Err("shared place-text requires one non-empty line".to_owned());
+    }
+    if !actions.read_back_text()?.is_empty() {
+        return Err("shared place-text requires an empty message box".to_owned());
+    }
+
+    actions.paste_text(marked)?;
+    let readback = actions.read_back_text()?;
+    let readback_exact = readback.as_bytes() == marked.as_bytes();
+    if !readback_exact {
+        return Err("shared place-text read-back changed the marked bytes".to_owned());
+    }
+    let editor_accepts_message = actions.editor_accepts_message()?;
+    if !editor_accepts_message {
+        return Err("provider editor did not make its send control available".to_owned());
+    }
+
+    Ok(SharedPlaceTextReceipt {
+        placed_bytes: marked.len(),
+        readback_bytes: readback.len(),
+        readback_exact,
+        editor_accepts_message,
+    })
+}
+
 #[cfg(target_os = "windows")]
 mod windows_place_text {
     use super::{compare_readback, printable_char, ReadbackComparison};
@@ -144,8 +199,8 @@ mod windows_place_text {
     use windows::Win32::UI::Accessibility::{
         AccessibleObjectFromWindow, CUIAutomation, IAccessible, IUIAutomation,
         IUIAutomationElement, IUIAutomationValuePattern, NotifyWinEvent, TreeScope_Subtree,
-        UIA_DocumentControlTypeId, UIA_EditControlTypeId, UIA_TextControlTypeId,
-        UIA_ValuePatternId,
+        UIA_ButtonControlTypeId, UIA_DocumentControlTypeId, UIA_EditControlTypeId,
+        UIA_TextControlTypeId, UIA_ValuePatternId,
     };
     use windows_sys::Win32::Foundation::{CloseHandle, BOOL, HWND, LPARAM, POINT, RECT, TRUE};
     use windows_sys::Win32::System::DataExchange::{
@@ -166,10 +221,11 @@ mod windows_place_text {
         MOUSEEVENTF_VIRTUALDESK, MOUSEINPUT, VK_CONTROL,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, GetAncestor, GetCursorPos, GetForegroundWindow, GetSystemMetrics,
-        GetWindowRect, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
-        IsWindowVisible, SetCursorPos, SetForegroundWindow, ShowWindow, WindowFromPoint, GA_ROOT,
-        SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_RESTORE,
+        EnumChildWindows, EnumWindows, GetAncestor, GetClassNameW, GetCursorPos,
+        GetForegroundWindow, GetSystemMetrics, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
+        GetWindowThreadProcessId, IsWindowVisible, SetCursorPos, SetForegroundWindow, ShowWindow,
+        WindowFromPoint, GA_ROOT, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
+        SM_YVIRTUALSCREEN, SW_RESTORE,
     };
 
     const DEFAULT_APP: &str = "Discord";
@@ -186,6 +242,7 @@ mod windows_place_text {
     // lane/g: the standalone clipboard observer.
     const DEFAULT_PRIVATE_CANARY: &str = "QQQQQQQQQQ";
     const DEFAULT_OBSERVER_TIMEOUT_MS: u64 = 3_000;
+    const SIGNAL_RENDERER_CLASS: &str = "Chrome_RenderWidgetHostHWND";
     const COMPOSER_STEMS: &[&str] = &["message", "nachricht", "mensaje"];
     const NON_COMPOSER_STEMS: &[&str] = &["search", "filter", "buscar"];
 
@@ -272,6 +329,7 @@ mod windows_place_text {
         if let Some(observer) = args.observer {
             return run_clipboard_observer(observer);
         }
+        let signal_mode = app_is_signal(&args.app);
         let initial = foreground_window()
             .ok_or_else(|| CommandError::exit1("Windows reported no foreground window"))?;
         println!(
@@ -341,9 +399,9 @@ mod windows_place_text {
 
         let _com = initialize_com()?;
         let automation = automation()?;
-        let root = discord_accessibility_root(&automation, discord.hwnd)?;
+        let root = app_accessibility_root(&automation, &args.app, discord.hwnd)?;
         wait_for_tree(&root, &automation)?;
-        let composer = find_composer(&root, &automation)?;
+        let composer = find_composer(&root, &automation, &args.app)?;
         println!("composer_name={:?}", element_name(&composer));
         let bounds = element_bounds(&composer).ok_or_else(|| {
             CommandError::exit1(format!("{} composer bounds not found", args.app))
@@ -362,6 +420,15 @@ mod windows_place_text {
                 args.app
             )));
         }
+        if signal_mode {
+            let send_before = send_button_available(&root, &automation)?;
+            println!("TASK1033_SIGNAL_SEND_BEFORE_AVAILABLE={send_before}");
+            if send_before {
+                return Err(CommandError::exit1(
+                    "Signal send button was available before placement",
+                ));
+            }
+        }
 
         let snapshot = snapshot_clipboard()
             .map_err(|error| CommandError::exit1(format!("clipboard snapshot failed: {error}")))?;
@@ -372,15 +439,42 @@ mod windows_place_text {
         };
         stage_clipboard_text(&args.text)
             .map_err(|error| CommandError::exit1(format!("clipboard stage failed: {error}")))?;
-        send_ctrl_v().map_err(CommandError::exit1)?;
-        thread::sleep(Duration::from_millis(320));
+        let shared_receipt = {
+            let mut actions = WindowsSharedPlaceTextActions {
+                composer: &composer,
+                root: &root,
+                automation: &automation,
+                require_send_button: signal_mode,
+            };
+            super::place_text_through_shared_job(&mut actions, &args.text)
+                .map_err(|error| CommandError::exit1(format!("{} {error}", args.app)))?
+        };
+
+        let readback = value_of(&composer).unwrap_or_default();
+        println!("readback={readback:?}");
+        if signal_mode {
+            println!(
+                "TASK1033_SIGNAL_MARKED_BYTES={}",
+                shared_receipt.placed_bytes
+            );
+            println!(
+                "TASK1033_SIGNAL_READBACK_BYTES={}",
+                shared_receipt.readback_bytes
+            );
+            println!(
+                "TASK1033_SIGNAL_READBACK_EXACT={}",
+                shared_receipt.readback_exact
+            );
+            println!(
+                "TASK1033_SIGNAL_SEND_AFTER_AVAILABLE={}",
+                shared_receipt.editor_accepts_message
+            );
+        }
         if args.wait_before_read_ms > 0 {
             println!("waiting_before_read_ms={}", args.wait_before_read_ms);
             thread::sleep(Duration::from_millis(args.wait_before_read_ms));
         }
-
         let readback = value_of(&composer).unwrap_or_default();
-        println!("readback={readback:?}");
         let comparison = compare_readback(&args.text, &readback);
         println!("{}", comparison.status_line());
         restorer
@@ -618,12 +712,54 @@ mod windows_place_text {
         })
     }
 
-    fn discord_accessibility_root(
+    struct WindowsSharedPlaceTextActions<'a> {
+        composer: &'a IUIAutomationElement,
+        root: &'a IUIAutomationElement,
+        automation: &'a IUIAutomation,
+        require_send_button: bool,
+    }
+
+    impl super::SharedPlaceTextActions for WindowsSharedPlaceTextActions<'_> {
+        fn read_back_text(&mut self) -> Result<String, String> {
+            value_of(self.composer)
+                .ok_or_else(|| "message box read-back was unavailable".to_owned())
+        }
+
+        fn paste_text(&mut self, _text: &str) -> Result<(), String> {
+            // The caller staged `text` on the clipboard. This is the one shared
+            // editor-visible placement action for every supported native app.
+            send_ctrl_v()?;
+            thread::sleep(Duration::from_millis(320));
+            Ok(())
+        }
+
+        fn editor_accepts_message(&mut self) -> Result<bool, String> {
+            if self.require_send_button {
+                return send_button_available(self.root, self.automation)
+                    .map_err(|error| error.message);
+            }
+            Ok(value_of(self.composer).is_some_and(|value| !value.is_empty()))
+        }
+    }
+
+    fn app_accessibility_root(
         automation: &IUIAutomation,
+        app: &str,
         hwnd: HWND,
     ) -> Result<IUIAutomationElement, CommandError> {
+        if app_is_signal(app) {
+            let renderer =
+                find_child_window_by_class(hwnd, SIGNAL_RENDERER_CLASS).ok_or_else(|| {
+                    CommandError::exit1("Signal renderer accessibility window not found")
+                })?;
+            let _ = wake_electron_accessibility(renderer);
+            return unsafe {
+                automation.ElementFromHandle(windows::Win32::Foundation::HWND(renderer as _))
+            }
+            .map_err(|error| CommandError::exit1(format!("Signal UIA root failed: {error:?}")));
+        }
         let accessible = wake_electron_accessibility(hwnd)
-            .ok_or_else(|| CommandError::exit1("Discord accessibility wake failed"))?;
+            .ok_or_else(|| CommandError::exit1(format!("{app} accessibility wake failed")))?;
         unsafe { automation.ElementFromIAccessible(&accessible, 0) }
             .map_err(|error| CommandError::exit1(format!("MSAA bridge failed: {error:?}")))
     }
@@ -691,6 +827,7 @@ mod windows_place_text {
     fn find_composer(
         root: &IUIAutomationElement,
         automation: &IUIAutomation,
+        app: &str,
     ) -> Result<IUIAutomationElement, CommandError> {
         let condition = unsafe { automation.CreateTrueCondition() }.map_err(|error| {
             CommandError::exit1(format!("UI Automation condition failed: {error:?}"))
@@ -710,11 +847,41 @@ mod windows_place_text {
         }
         match matches.len() {
             1 => Ok(matches.remove(0)),
-            0 => Err(CommandError::exit1("Discord composer not found")),
+            0 => Err(CommandError::exit1(format!("{app} composer not found"))),
             count => Err(CommandError::exit1(format!(
-                "Discord composer ambiguous: {count} candidates"
+                "{app} composer ambiguous: {count} candidates"
             ))),
         }
+    }
+
+    /// Read-only readiness proof. Placement remains the shared Ctrl+V action;
+    /// this query merely proves the rich editor accepted that paste into its
+    /// own private message state.
+    fn send_button_available(
+        root: &IUIAutomationElement,
+        automation: &IUIAutomation,
+    ) -> Result<bool, CommandError> {
+        let condition = unsafe { automation.CreateTrueCondition() }.map_err(|error| {
+            CommandError::exit1(format!("UI Automation condition failed: {error:?}"))
+        })?;
+        let found = unsafe { root.FindAll(TreeScope_Subtree, &condition) }.map_err(|error| {
+            CommandError::exit1(format!("UI Automation tree walk failed: {error:?}"))
+        })?;
+        let length = unsafe { found.Length() }.unwrap_or(0);
+        for index in 0..length {
+            let Ok(element) = (unsafe { found.GetElement(index) }) else {
+                continue;
+            };
+            if unsafe { element.CurrentControlType() }.ok() != Some(UIA_ButtonControlTypeId)
+                || !name_is_send_button(&element_name(&element))
+            {
+                continue;
+            }
+            return Ok(unsafe { element.CurrentIsEnabled() }
+                .map(|value| value.as_bool())
+                .unwrap_or(false));
+        }
+        Ok(false)
     }
 
     fn element_is_composer(element: &IUIAutomationElement) -> bool {
@@ -786,6 +953,15 @@ mod windows_place_text {
         COMPOSER_STEMS.iter().any(|stem| normalized.contains(stem))
     }
 
+    fn name_is_send_button(name: &str) -> bool {
+        let normalized = name
+            .trim()
+            .trim_end_matches('.')
+            .replace('\u{2026}', "")
+            .to_lowercase();
+        normalized == "send" || normalized == "send message" || normalized.contains("send message")
+    }
+
     fn element_bounds(element: &IUIAutomationElement) -> Option<[i32; 4]> {
         let rect = unsafe { element.CurrentBoundingRectangle() }.ok()?;
         let left = rect.left as i32;
@@ -817,6 +993,35 @@ mod windows_place_text {
         let info = window_info(hwnd);
         if window_matches(&info, &search.wanted) {
             search.found.push(info);
+        }
+        TRUE
+    }
+
+    struct ChildWindowSearch {
+        class_name: String,
+        found: HWND,
+    }
+
+    fn find_child_window_by_class(parent: HWND, class_name: &str) -> Option<HWND> {
+        let mut search = ChildWindowSearch {
+            class_name: class_name.to_owned(),
+            found: ptr::null_mut(),
+        };
+        unsafe {
+            EnumChildWindows(
+                parent,
+                Some(collect_child_window_by_class),
+                (&mut search as *mut ChildWindowSearch) as LPARAM,
+            );
+        }
+        (!search.found.is_null()).then_some(search.found)
+    }
+
+    unsafe extern "system" fn collect_child_window_by_class(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let search = unsafe { &mut *(lparam as *mut ChildWindowSearch) };
+        if class_name(hwnd) == search.class_name {
+            search.found = hwnd;
+            return 0;
         }
         TRUE
     }
@@ -1177,6 +1382,17 @@ mod windows_place_text {
         path.rsplit(['\\', '/']).next().map(str::to_owned)
     }
 
+    fn class_name(hwnd: HWND) -> String {
+        let mut buffer = [0u16; 256];
+        let length = unsafe { GetClassNameW(hwnd, buffer.as_mut_ptr(), buffer.len() as i32) };
+        if length <= 0 {
+            return String::new();
+        }
+        OsString::from_wide(&buffer[..length as usize])
+            .to_string_lossy()
+            .into_owned()
+    }
+
     fn normalize(value: &str) -> String {
         value.to_ascii_lowercase()
     }
@@ -1218,6 +1434,10 @@ mod windows_place_text {
             .chars()
             .filter(|private| observations.iter().any(|seen| seen.contains(*private)))
             .collect()
+    }
+
+    fn app_is_signal(app: &str) -> bool {
+        normalize(app.trim_end_matches(".exe")) == "signal"
     }
 }
 
