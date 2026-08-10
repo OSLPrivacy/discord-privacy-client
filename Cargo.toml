@@ -15,6 +15,7 @@ members = [
     "crates/sensitive-classify",
     "crates/store",
     "tests/task-4609-topup-driver",
+    "tests/task-4611-crypto-topup-driver",
     # OSL-RN is integrated through `crates/ipc/src/wire_rn.rs`, including
     # production version-selection and session-state paths. The compile-time
     # fuse is open in this build; real OSL-RN traffic remains closed by the

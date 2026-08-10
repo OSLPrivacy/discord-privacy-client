@@ -48,6 +48,7 @@ pub mod cipher_store_client;
 pub mod commands;
 pub mod control_inbox_dead_letter;
 pub mod control_messages;
+pub mod crypto_top_up;
 pub mod decoy_mp4;
 pub mod destruct_ack;
 pub mod email_send_modes;
