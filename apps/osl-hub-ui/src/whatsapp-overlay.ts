@@ -69,6 +69,7 @@ copy.addEventListener("click", async () => {
     const prepared = await prepareWhatsAppSelectedCover(
       parseWhatsAppSendTrigger(trigger.value),
       parseWhatsAppCoverInsertionSetting(coverInsertion.value),
+      { privateText: plaintext, foundBox: true },
       () => invoke("prepare_whatsapp_qa_protected_text", { plaintext }),
     );
     await navigator.clipboard.writeText(prepared.carrier.coverText);

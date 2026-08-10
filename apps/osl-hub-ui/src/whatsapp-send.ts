@@ -11,6 +11,11 @@ export interface WhatsAppPreparedSend {
   posted: false;
 }
 
+export interface WhatsAppSendReadiness {
+  privateText: string;
+  foundBox: boolean;
+}
+
 const triggers: readonly WhatsAppSendTrigger[] = ["Enter", "Enter x2", "Clipboard"];
 const insertionSettings: readonly WhatsAppCoverInsertionSetting[] = ["insert-on-send", "type-naturally"];
 
@@ -18,7 +23,7 @@ export const whatsappCoverInsertionLabel = (setting: WhatsAppCoverInsertionSetti
   setting === "insert-on-send" ? "Insert on send" : "Type naturally";
 
 export function parseWhatsAppSendTrigger(value: string): WhatsAppSendTrigger {
-  if (!triggers.includes(value as WhatsAppSendTrigger)) throw new Error("unsupported WhatsApp preparation trigger");
+  if (!triggers.includes(value as WhatsAppSendTrigger)) throw new Error(`unsupported WhatsApp preparation trigger: ${value}`);
   return value as WhatsAppSendTrigger;
 }
 
@@ -31,8 +36,11 @@ export function parseWhatsAppCoverInsertionSetting(value: string): WhatsAppCover
 export async function prepareWhatsAppSelectedCover(
   trigger: WhatsAppSendTrigger,
   coverInsertion: WhatsAppCoverInsertionSetting,
+  readiness: WhatsAppSendReadiness,
   prepare: () => Promise<unknown>,
 ): Promise<WhatsAppPreparedSend> {
+  if (readiness.privateText.length === 0) throw new Error(`WhatsApp ${trigger} refused: empty-text`);
+  if (!readiness.foundBox) throw new Error(`WhatsApp ${trigger} refused: missing-box`);
   return { trigger, carrier: parseWhatsAppPreparedCarrier(await prepare()), coverInsertion, posted: false };
 }
 

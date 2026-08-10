@@ -8,7 +8,7 @@ describe("WhatsApp selected-cover send controls", () => {
     const cases = [["Enter", "insert-on-send", "Insert on send"], ["Enter x2", "type-naturally", "Type naturally"], ["Clipboard", "insert-on-send", "Insert on send"]] as const;
     for (const [triggerName, insertionName, insertionLabel] of cases) {
       const prepare = vi.fn().mockResolvedValue(carrier());
-      const prepared = await prepareWhatsAppSelectedCover(parseWhatsAppSendTrigger(triggerName), parseWhatsAppCoverInsertionSetting(insertionName), prepare);
+      const prepared = await prepareWhatsAppSelectedCover(parseWhatsAppSendTrigger(triggerName), parseWhatsAppCoverInsertionSetting(insertionName), { privateText: "protected hello", foundBox: true }, prepare);
       expect(prepare).toHaveBeenCalledOnce();
       expect(prepared).toMatchObject({ trigger: triggerName, coverInsertion: insertionName, posted: false });
       expect(whatsappPreparedSendReport(prepared)).toBe(`Prepared cover via ${triggerName}. Cover insertion: ${insertionLabel}. Nothing was posted.`);
