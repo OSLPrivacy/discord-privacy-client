@@ -68,12 +68,20 @@ pub struct TelegramSendPreparationReceipt {
 pub fn prepare_telegram_send(
     trigger: &str,
     cover_insertion: TelegramCoverInsertion,
-    cover: &[u8],
+    private_text: &[u8],
 ) -> Result<TelegramSendPreparationReceipt, String> {
+    let trigger = TelegramSendTrigger::parse(trigger)?;
+    if private_text.is_empty() {
+        return Err(format!(
+            "OSL: Telegram send refused: empty private text for trigger '{}'",
+            trigger.label()
+        ));
+    }
+
     Ok(TelegramSendPreparationReceipt {
-        trigger: TelegramSendTrigger::parse(trigger)?,
+        trigger,
         cover_insertion,
-        cover: cover.to_vec(),
+        cover: private_text.to_vec(),
     })
 }
 
