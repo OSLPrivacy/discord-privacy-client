@@ -39,6 +39,33 @@ fn task_3406_command_measures_clipboard_exposure_and_second_process_visibility()
 }
 
 #[test]
+fn task_5091_reports_measured_clipboard_exposure_and_zero_when_never_staged() {
+    use osl_privacy_hub::shared_place_text::ClipboardExposure;
+    use std::time::{Duration, Instant};
+
+    let untouched = ClipboardExposure::default();
+    assert_eq!(untouched.milliseconds(), 0);
+
+    let staged_at = Instant::now();
+    let mut measured = ClipboardExposure::default();
+    measured.staged(staged_at);
+    let known_delay = Duration::from_millis(17);
+    std::thread::sleep(known_delay);
+    measured.restored(Instant::now());
+    let reported = measured.milliseconds();
+    assert!(
+        reported >= known_delay.as_millis() && reported <= known_delay.as_millis() + 100,
+        "clipboard exposure {reported}ms was outside the known-delay tolerance"
+    );
+
+    assert!(TASK_3406.contains("let mut clipboard_exposure = ClipboardExposureReporter::new()"));
+    assert!(TASK_3406.contains("clipboard_exposure.exposure.staged(staged_at)"));
+    assert!(TASK_3406.contains("clipboard_exposure.exposure.restored(Instant::now())"));
+    assert!(TASK_3406.contains("println!(\"clipboard_exposure_ms={}\", self.exposure.milliseconds())"));
+    assert!(TASK_3406.contains("println!(\"clipboard_exposure_ms=0\")"));
+}
+
+#[test]
 fn task_3769_refuses_private_canary_clipboard_payload() {
     use osl_privacy_hub::shared_place_text::ClipboardCoverText;
 

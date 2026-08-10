@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SharedTextPlacementReceipt {
     pub placed_bytes: usize,
@@ -142,6 +144,38 @@ pub struct SharedPlaceTextReceipt {
     pub readback_bytes: usize,
     pub readback_exact: bool,
     pub editor_accepts_message: bool,
+}
+
+/// Tracks only the interval in which this command's staged text can be read
+/// from the system clipboard. A command that exits before staging has no such
+/// interval and consequently reports zero.
+#[derive(Debug, Default)]
+pub struct ClipboardExposure {
+    staged_at: Option<Instant>,
+    restored_at: Option<Instant>,
+}
+
+impl ClipboardExposure {
+    pub fn staged(&mut self, staged_at: Instant) {
+        self.staged_at = Some(staged_at);
+        self.restored_at = None;
+    }
+
+    pub fn restored(&mut self, restored_at: Instant) {
+        if self.staged_at.is_some() {
+            self.restored_at = Some(restored_at);
+        }
+    }
+
+    pub fn milliseconds(&self) -> u128 {
+        match (self.staged_at, self.restored_at) {
+            (Some(staged_at), Some(restored_at)) => {
+                restored_at.saturating_duration_since(staged_at).as_millis()
+            }
+            (Some(staged_at), None) => staged_at.elapsed().as_millis(),
+            (None, _) => 0,
+        }
+    }
 }
 
 /// A clipboard payload proven not to contain any character from the private
@@ -341,6 +375,27 @@ mod windows_place_text {
         }
     }
 
+    /// Reports at scope exit so every command path has one result. It is
+    /// declared before `ClipboardRestorer`, so unwinding restores the clipboard
+    /// before this report is emitted.
+    struct ClipboardExposureReporter {
+        exposure: super::ClipboardExposure,
+    }
+
+    impl ClipboardExposureReporter {
+        fn new() -> Self {
+            Self {
+                exposure: super::ClipboardExposure::default(),
+            }
+        }
+    }
+
+    impl Drop for ClipboardExposureReporter {
+        fn drop(&mut self) {
+            println!("clipboard_exposure_ms={}", self.exposure.milliseconds());
+        }
+    }
+
     #[derive(Debug)]
     pub struct CommandError {
         pub code: i32,
@@ -364,6 +419,7 @@ mod windows_place_text {
     }
 
     pub fn run() -> Result<(), CommandError> {
+        let mut clipboard_exposure = ClipboardExposureReporter::new();
         let args = Args::parse()?;
         // lane/g: --clipboard-observer watches the clipboard instead of placing
         // text, so it returns before any window work below.
@@ -485,7 +541,7 @@ mod windows_place_text {
             .map_err(CommandError::exit1)?;
         let staged_at = stage_clipboard_text(&text)
             .map_err(|error| CommandError::exit1(format!("clipboard stage failed: {error}")))?;
-        let _ = staged_at;
+        clipboard_exposure.exposure.staged(staged_at);
         let shared_receipt = {
             let mut actions = WindowsSharedPlaceTextActions {
                 composer: &composer,
@@ -527,6 +583,7 @@ mod windows_place_text {
         restorer
             .restore()
             .map_err(|error| CommandError::exit1(format!("clipboard restore failed: {error}")))?;
+        clipboard_exposure.exposure.restored(Instant::now());
         let after_digest = snapshot_clipboard()
             .map_err(|error| CommandError::exit1(format!("clipboard resnapshot failed: {error}")))?
             .digest();
@@ -1513,6 +1570,7 @@ fn main() {
 
 #[cfg(not(target_os = "windows"))]
 fn main() {
+    println!("clipboard_exposure_ms=0");
     eprintln!("task_3406_place_text requires Windows");
     std::process::exit(2);
 }
