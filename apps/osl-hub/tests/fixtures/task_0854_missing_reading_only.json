@@ -9,7 +9,26 @@
         "opening": true,
         "realTwoPersonProtectedMessaging": true
       },
+      "deliveryProof": {
+        "serviceId": "discord",
+        "protectedMessageId": "protected-msg-0854",
+        "senderPersonId": "person-alice-0854",
+        "recipientPersonId": "person-bob-0854",
+        "protectedMessageReceived": true,
+        "receivedByRealOtherPerson": true
+      },
       "statusData": { "generatedLabel": "Ready" }
+    },
+    {
+      "tileId": "placing-and-reading-control",
+      "capabilityFacts": {
+        "serviceId": "discord",
+        "placing": true,
+        "reading": true,
+        "opening": true,
+        "realTwoPersonProtectedMessaging": true
+      },
+      "statusData": { "generatedLabel": "Placing and reading" }
     },
     {
       "tileId": "placing-only-control",

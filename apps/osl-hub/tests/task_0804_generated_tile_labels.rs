@@ -1,10 +1,20 @@
 use osl_privacy_hub::models::ServiceKind;
-use osl_privacy_hub::services::{generated_tile_label, ServiceCapabilityFacts};
+use osl_privacy_hub::services::{
+    generated_tile_label, ProtectedDeliveryProof, ServiceCapabilityFacts,
+};
 
 #[test]
-fn task_0804_direct_label_generation_returns_all_five_tile_labels() {
+fn task_0804_direct_label_generation_returns_all_six_tile_labels() {
+    let ready_facts = facts(true, true, true, true);
+    let proof = matching_proof();
+    assert_eq!(generated_tile_label(ready_facts, Some(&proof)), "Ready");
+
     let cases = [
-        ("ready", facts(true, true, true, true), "Ready"),
+        (
+            "placing_and_reading_without_proof",
+            facts(true, true, true, true),
+            "Placing and reading",
+        ),
         (
             "placing_only",
             facts(true, false, true, false),
@@ -28,7 +38,7 @@ fn task_0804_direct_label_generation_returns_all_five_tile_labels() {
     ];
 
     for (case, input, expected) in cases {
-        let actual = generated_tile_label(input);
+        let actual = generated_tile_label(input, None);
         println!(
             "TASK0804_GENERATED_TILE_LABEL case={case} placing={} reading={} opening={} real_two_person_protected_messaging={} label={actual}",
             input.placing,
@@ -37,6 +47,17 @@ fn task_0804_direct_label_generation_returns_all_five_tile_labels() {
             input.real_two_person_protected_messaging
         );
         assert_eq!(actual, expected, "{case} generated the wrong tile label");
+    }
+}
+
+fn matching_proof() -> ProtectedDeliveryProof {
+    ProtectedDeliveryProof {
+        service_id: ServiceKind::Discord,
+        protected_message_id: "protected-msg-0804".to_owned(),
+        sender_person_id: "person-alice-0804".to_owned(),
+        recipient_person_id: "person-bob-0804".to_owned(),
+        protected_message_received: true,
+        received_by_real_other_person: true,
     }
 }
 

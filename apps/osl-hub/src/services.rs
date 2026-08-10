@@ -1180,6 +1180,35 @@ pub struct ServiceCapabilityFacts {
     pub real_two_person_protected_messaging: bool,
 }
 
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProtectedDeliveryProof {
+    pub service_id: ServiceKind,
+    pub protected_message_id: String,
+    pub sender_person_id: String,
+    pub recipient_person_id: String,
+    pub protected_message_received: bool,
+    pub received_by_real_other_person: bool,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ServiceReadyLabel {
+    Ready,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServiceReadyDecision {
+    pub service_id: ServiceKind,
+    pub label: Option<ServiceReadyLabel>,
+    pub refusal: Option<String>,
+}
+
+pub const READY_REQUIRES_REAL_TWO_PERSON_CAPABILITY: &str =
+    "ready_requires_real_two_person_protected_messaging_capability";
+pub const READY_REQUIRES_MATCHING_DELIVERY_PROOF: &str = "ready_requires_matching_delivery_proof";
+
 #[derive(Debug, Clone, Copy, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ServiceControlCapability {
@@ -1245,6 +1274,59 @@ pub fn service_capability_facts(service_id: &str) -> Option<ServiceCapabilityFac
     service_capability_facts_for_kind(service_id)
 }
 
+pub fn direct_service_ready_label(
+    service_id: &str,
+    delivery_proof: Option<&ProtectedDeliveryProof>,
+) -> Result<ServiceReadyLabel, &'static str> {
+    let facts =
+        service_capability_facts(service_id).ok_or(READY_REQUIRES_REAL_TWO_PERSON_CAPABILITY)?;
+    direct_service_ready_label_for_facts(facts, delivery_proof)
+}
+
+pub fn direct_service_ready_label_for_facts(
+    facts: ServiceCapabilityFacts,
+    delivery_proof: Option<&ProtectedDeliveryProof>,
+) -> Result<ServiceReadyLabel, &'static str> {
+    if !facts.real_two_person_protected_messaging {
+        return Err(READY_REQUIRES_REAL_TWO_PERSON_CAPABILITY);
+    }
+    let Some(delivery_proof) = delivery_proof else {
+        return Err(READY_REQUIRES_MATCHING_DELIVERY_PROOF);
+    };
+    if !delivery_proof_matches_ready_rule(facts.service_id, delivery_proof) {
+        return Err(READY_REQUIRES_MATCHING_DELIVERY_PROOF);
+    }
+    Ok(ServiceReadyLabel::Ready)
+}
+
+pub fn ready_decisions_from_service_proof_records(
+    proof_records: &[ProtectedDeliveryProof],
+) -> Vec<ServiceReadyDecision> {
+    service_descriptors()
+        .into_iter()
+        .filter(|descriptor| descriptor.launch_state == ServiceLaunchState::Available)
+        .filter_map(|descriptor| {
+            let facts = service_capability_facts_for_kind(descriptor.id)?;
+            let matching_proof = proof_records
+                .iter()
+                .find(|proof| delivery_proof_matches_ready_rule(descriptor.id, proof));
+            let decision = direct_service_ready_label_for_facts(facts, matching_proof);
+            Some(match decision {
+                Ok(label) => ServiceReadyDecision {
+                    service_id: descriptor.id,
+                    label: Some(label),
+                    refusal: None,
+                },
+                Err(refusal) => ServiceReadyDecision {
+                    service_id: descriptor.id,
+                    label: None,
+                    refusal: Some(refusal.to_owned()),
+                },
+            })
+        })
+        .collect()
+}
+
 pub fn installed_service_screen_trees() -> Vec<ServiceScreenTree> {
     installed_service_capability_facts()
         .into_iter()
@@ -1287,9 +1369,14 @@ pub fn drawn_controls_without_capability_record(
         .count()
 }
 
-pub fn generated_tile_label(facts: ServiceCapabilityFacts) -> &'static str {
-    if facts.real_two_person_protected_messaging || (facts.placing && facts.reading) {
+pub fn generated_tile_label(
+    facts: ServiceCapabilityFacts,
+    delivery_proof: Option<&ProtectedDeliveryProof>,
+) -> &'static str {
+    if direct_service_ready_label_for_facts(facts, delivery_proof).is_ok() {
         "Ready"
+    } else if facts.placing && facts.reading {
+        "Placing and reading"
     } else if facts.placing {
         "Placing only"
     } else if facts.reading {
@@ -1743,6 +1830,19 @@ pub fn open_shared_mailbox_message(
         ownership,
         body: message.body.clone(),
     })
+}
+
+fn delivery_proof_matches_ready_rule(
+    service_id: ServiceKind,
+    proof: &ProtectedDeliveryProof,
+) -> bool {
+    proof.service_id == service_id
+        && proof.protected_message_received
+        && proof.received_by_real_other_person
+        && !proof.protected_message_id.trim().is_empty()
+        && !proof.sender_person_id.trim().is_empty()
+        && !proof.recipient_person_id.trim().is_empty()
+        && proof.sender_person_id != proof.recipient_person_id
 }
 
 fn service_capability_facts_for_kind(service_id: ServiceKind) -> Option<ServiceCapabilityFacts> {

@@ -9,12 +9,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use osl_privacy_hub::services::{generated_tile_label, ServiceCapabilityFacts};
+use osl_privacy_hub::services::{
+    generated_tile_label, ProtectedDeliveryProof, ServiceCapabilityFacts,
+};
 use serde::Deserialize;
 
 const ALL_LABELS_FIXTURE: &str = "tests/fixtures/task_0854_all_label_types.json";
-const EXPECTED_HOME_LABELS: [&str; 5] = [
+const EXPECTED_HOME_LABELS: [&str; 6] = [
     "Ready",
+    "Placing and reading",
     "Placing only",
     "Reading only",
     "Opens the app",
@@ -32,6 +35,8 @@ struct StatusFixture {
 struct StatusTile {
     tile_id: String,
     capability_facts: ServiceCapabilityFacts,
+    #[serde(default)]
+    delivery_proof: Option<ProtectedDeliveryProof>,
     status_data: DirectStatusData,
 }
 
@@ -75,7 +80,7 @@ fn task_0854_direct_status_data_matches_one_home_tile_of_every_label_type() {
             "fixture repeats tile id {}",
             tile.tile_id
         );
-        let home_label = generated_tile_label(tile.capability_facts);
+        let home_label = generated_tile_label(tile.capability_facts, tile.delivery_proof.as_ref());
         let status_label = tile.status_data.generated_label.as_str();
         let agrees = status_label == home_label;
         println!(
