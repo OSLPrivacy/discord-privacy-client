@@ -63,7 +63,6 @@ pub mod friend_service_name;
 pub mod group_manifest;
 pub mod half_restored_surface;
 pub(crate) mod group_send;
-pub mod half_restored_surface;
 pub mod irreversible_action;
 pub mod license_lifecycle;
 pub mod log_id;
