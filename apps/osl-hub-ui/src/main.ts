@@ -5905,10 +5905,10 @@ export function connectionsDestinationContent(): string {
   const apps = homeAppsFromServices(services).filter((app) => app.visibility === "launch");
   const accountRows = apps.length
     ? apps.map((app) => {
-        const state = app.linked ? `${app.accountCount} local ${app.accountCount === 1 ? "profile" : "profiles"}` : app.launchState === "available" ? "Not set up" : "Coming later";
+        const state = app.linked ? `${app.accountCount} local ${app.accountCount === 1 ? "profile" : "profiles"}` : app.launchState === "available" ? "Not set up" : app.id === "messenger" ? "Cannot send yet" : "Coming later";
         const action = app.launchState === "available"
           ? `<button class="button compact" data-home-app="${app.id}" type="button">${app.linked ? "Open" : "Set up"}</button>`
-          : `<button class="button compact" disabled>Coming later</button>`;
+          : `<button class="button compact" disabled>${app.id === "messenger" ? "Cannot send yet" : "Coming later"}</button>`;
         return `<article class="connection-row connection-account-row" data-connection-app="${app.id}" data-connection-account="${app.id}"><div>${homeAppLogo(app)}<span><strong>${escapeHtml(app.displayName)}</strong><small>${escapeHtml(state)}</small></span></div>${action}</article>`;
       }).join("")
     : `<div class="empty-state"><strong>No account catalog loaded</strong><p>Reconnect when apps are available on this device.</p></div>`;
@@ -6984,10 +6984,10 @@ function accountAdvancedSettingsContent(): string {
 
 function serviceAccountsSettingsContent(): string {
   const rows = homeAppsFromServices(services).filter((app) => app.visibility === "launch").map((app) => {
-    const state = app.linked ? `${app.accountCount} local ${app.accountCount === 1 ? "profile" : "profiles"}` : app.launchState === "available" ? "Not set up" : "Coming later";
+    const state = app.linked ? `${app.accountCount} local ${app.accountCount === 1 ? "profile" : "profiles"}` : app.launchState === "available" ? "Not set up" : app.id === "messenger" ? "Cannot send yet" : "Coming later";
     const action = app.launchState === "available"
       ? `<button class="button compact" data-home-app="${app.id}" ${appLaunchPendingId ? "disabled" : ""}>${appLaunchPendingId === app.id ? "Opening…" : app.linked ? "Open" : "Set up"}</button>`
-      : `<button class="button compact" disabled>Coming later</button>`;
+      : `<button class="button compact" disabled>${app.id === "messenger" ? "Cannot send yet" : "Coming later"}</button>`;
     return `<article><div>${homeAppLogo(app)}<span><strong>${escapeHtml(app.displayName)}</strong><small>${state}</small></span></div>${action}</article>`;
   }).join("");
   const supportedBrowsers = browserImports.filter((browser) => browser.installed && browser.id !== "duckduckgo");
