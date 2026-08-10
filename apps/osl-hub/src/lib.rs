@@ -1009,6 +1009,9 @@ pub mod shared_marked_message_deleter;
 pub mod signal_destination_binding;
 #[cfg(feature = "core")]
 pub mod signal_extra_device_sender;
+pub mod signal_send_action;
+#[path = "../examples/task_3406_place_text.rs"]
+pub mod shared_place_text;
 #[cfg(feature = "core")]
 pub mod spaces;
 #[cfg(feature = "core")]
