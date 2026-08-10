@@ -100,18 +100,6 @@ pub(crate) fn account_usability_snapshot_at(
     ipc::unfinished_onboarding::account_usability_snapshot(directory, key)
 }
 
-/// Refuses the normal first-run completion transition until the encrypted,
-/// account-scoped recovery-word confirmation record exists.
-pub fn require_recovery_word_confirmation() -> Result<(), String> {
-    if recovery_setup_state()?
-        .recovery_confirmed_at_unix_seconds
-        .is_some()
-    {
-        return Ok(());
-    }
-    Err("Confirm the requested recovery words before finishing setup".to_owned())
-}
-
 /// Native trust boundary for the normal false-to-true setup finish.
 ///
 /// Saves that leave setup unfinished, and later preference changes for an
