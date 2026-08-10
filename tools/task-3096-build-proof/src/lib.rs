@@ -51,12 +51,50 @@ pub enum BuildProofCheck {
     CannotTell,
 }
 
+/// Why OSL cannot make a build claim about another person's app.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CannotTellReason {
+    MissingProof,
+    ExpiredProof,
+    OldBuild,
+    UnavailableProof,
+}
+
+/// Plain, person-facing output from the build-proof checker.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BuildProofAnswer {
+    Unmodified,
+    Modified,
+    CannotTell(CannotTellReason),
+}
+
+pub const CANNOT_TELL_MISSING_PROOF: &str =
+    "OSL cannot check this person's app because its proof is missing.";
+pub const CANNOT_TELL_EXPIRED_PROOF: &str =
+    "OSL cannot check this person's app because its proof has expired.";
+pub const CANNOT_TELL_OLD_BUILD: &str =
+    "OSL cannot check this person's app because that OSL build is too old.";
+pub const CANNOT_TELL_UNAVAILABLE_PROOF: &str = "OSL cannot check this person's app.";
+
 impl fmt::Display for BuildProofCheck {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::Unmodified => "unmodified",
             Self::Modified => "modified",
             Self::CannotTell => "cannot tell",
+        })
+    }
+}
+
+impl fmt::Display for BuildProofAnswer {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Unmodified => "unmodified",
+            Self::Modified => "modified",
+            Self::CannotTell(CannotTellReason::MissingProof) => CANNOT_TELL_MISSING_PROOF,
+            Self::CannotTell(CannotTellReason::ExpiredProof) => CANNOT_TELL_EXPIRED_PROOF,
+            Self::CannotTell(CannotTellReason::OldBuild) => CANNOT_TELL_OLD_BUILD,
+            Self::CannotTell(CannotTellReason::UnavailableProof) => CANNOT_TELL_UNAVAILABLE_PROOF,
         })
     }
 }
@@ -165,6 +203,65 @@ pub fn check_build_proof_file(
         return BuildProofCheck::CannotTell;
     };
     check_build_proof(
+        Some(&signed),
+        trusted_public_key,
+        observed_build_fingerprint,
+        checked_at_unix_seconds,
+    )
+}
+
+/// Produce the person-facing answer while preserving why the check could not
+/// be made. A schema older than the current signed-proof schema is an old build
+/// fact, so it must not be presented as a clean build claim.
+pub fn check_build_proof_wording(
+    signed: Option<&SignedBuildProof>,
+    trusted_public_key: Option<[u8; 32]>,
+    observed_build_fingerprint: &str,
+    checked_at_unix_seconds: u64,
+) -> BuildProofAnswer {
+    let Some(signed) = signed else {
+        return BuildProofAnswer::CannotTell(CannotTellReason::MissingProof);
+    };
+    if signed.schema_version < SIGNED_PROOF_SCHEMA_VERSION {
+        return BuildProofAnswer::CannotTell(CannotTellReason::OldBuild);
+    }
+    let Some(trusted_public_key) = trusted_public_key else {
+        return BuildProofAnswer::CannotTell(CannotTellReason::UnavailableProof);
+    };
+    if validate_fingerprint(observed_build_fingerprint).is_err()
+        || verify_signed_build_proof(signed, trusted_public_key).is_err()
+        || checked_at_unix_seconds < signed.proof.made_at_unix_seconds
+    {
+        return BuildProofAnswer::CannotTell(CannotTellReason::UnavailableProof);
+    }
+    if checked_at_unix_seconds >= signed.proof.stops_counting_at_unix_seconds {
+        return BuildProofAnswer::CannotTell(CannotTellReason::ExpiredProof);
+    }
+
+    if signed.proof.build_fingerprint == observed_build_fingerprint {
+        BuildProofAnswer::Unmodified
+    } else {
+        BuildProofAnswer::Modified
+    }
+}
+
+/// Read one proof and return wording suitable for showing beside a person.
+pub fn check_build_proof_file_wording(
+    proof_path: Option<&Path>,
+    trusted_public_key: Option<[u8; 32]>,
+    observed_build_fingerprint: &str,
+    checked_at_unix_seconds: u64,
+) -> BuildProofAnswer {
+    let Some(proof_path) = proof_path else {
+        return BuildProofAnswer::CannotTell(CannotTellReason::MissingProof);
+    };
+    let Ok(bytes) = fs::read(proof_path) else {
+        return BuildProofAnswer::CannotTell(CannotTellReason::MissingProof);
+    };
+    let Ok(signed) = serde_json::from_slice::<SignedBuildProof>(&bytes) else {
+        return BuildProofAnswer::CannotTell(CannotTellReason::UnavailableProof);
+    };
+    check_build_proof_wording(
         Some(&signed),
         trusted_public_key,
         observed_build_fingerprint,

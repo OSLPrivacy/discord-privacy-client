@@ -8,6 +8,7 @@ use std::{
 use ed25519_dalek::SigningKey;
 use task_3096_build_proof::{
     make_build_proof, sign_build_proof, BuildProofInput, SignedBuildProof,
+    CANNOT_TELL_MISSING_PROOF, CANNOT_TELL_UNAVAILABLE_PROOF,
 };
 
 const ORIGINAL: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -106,7 +107,7 @@ fn checker_returns_all_three_required_answers() {
 
     assert_eq!(good_answer, "unmodified");
     assert_eq!(changed_answer, "modified");
-    assert_eq!(missing_answer, "cannot tell");
+    assert_eq!(missing_answer, CANNOT_TELL_MISSING_PROOF);
 
     println!("TASK3098_GOOD proof_count=1 answer={good_answer}");
     println!("TASK3098_CHANGED changed_build_fingerprint_count=1 answer={changed_answer}");
@@ -131,13 +132,16 @@ fn uncertainty_never_becomes_a_modification_claim() {
     let missing_path = temporary.0.join("does-not-exist.proof.json");
     assert_eq!(
         answer(&invoke(Some(&tampered_path), Some(&trusted_key))),
-        "cannot tell"
+        CANNOT_TELL_UNAVAILABLE_PROOF
     );
     assert_eq!(
         answer(&invoke(Some(&missing_path), Some(&trusted_key))),
-        "cannot tell"
+        CANNOT_TELL_MISSING_PROOF
     );
-    assert_eq!(answer(&invoke(Some(&proof_path), None)), "cannot tell");
+    assert_eq!(
+        answer(&invoke(Some(&proof_path), None)),
+        CANNOT_TELL_UNAVAILABLE_PROOF
+    );
 
     println!(
         "TASK3098_UNCERTAIN tampered=1 missing_file=1 missing_trust_root=1 answer=cannot_tell"
