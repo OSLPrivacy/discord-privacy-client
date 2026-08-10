@@ -9,14 +9,27 @@ mod fixture {
     include!("fixtures/task_1033_marked_bytes.rs");
 }
 
+const TASK1034_TEXT: &str = "signal-text-1034";
+const TASK1034_CHANGED_PLACED_BYTE: u8 = b'x';
+
 #[derive(Default)]
 struct SignalRichEditor {
     visible_text: String,
     editor_owned_text: String,
     shared_paste_calls: usize,
+    change_before_read_back: bool,
+    changed_read_back: Option<Vec<u8>>,
+    task1034_events: Vec<&'static str>,
 }
 
 impl SignalRichEditor {
+    fn changing_one_placed_byte_before_read_back() -> Self {
+        Self {
+            change_before_read_back: true,
+            ..Self::default()
+        }
+    }
+
     /// Models ValuePattern-style mutation behind the rich editor's back: the
     /// pixels/readback change, but Signal's private message state does not.
     fn mutate_visible_value_only(&mut self, text: &str) {
@@ -30,6 +43,19 @@ impl SignalRichEditor {
 
 impl SharedPlaceTextActions for SignalRichEditor {
     fn read_back_text(&mut self) -> Result<String, String> {
+        if self.change_before_read_back && !self.visible_text.is_empty() {
+            let mut changed = self.visible_text.as_bytes().to_vec();
+            let index = changed
+                .iter()
+                .position(|byte| *byte != TASK1034_CHANGED_PLACED_BYTE)
+                .expect("placed Signal text has a byte that can be changed to x");
+            changed[index] = TASK1034_CHANGED_PLACED_BYTE;
+            self.visible_text = String::from_utf8(changed.clone())
+                .expect("changing one ASCII byte keeps the Signal read-back UTF-8");
+            self.changed_read_back = Some(changed);
+            self.task1034_events.push("changed-before-read-back");
+            self.change_before_read_back = false;
+        }
         Ok(self.visible_text.clone())
     }
 
@@ -37,6 +63,7 @@ impl SharedPlaceTextActions for SignalRichEditor {
         self.shared_paste_calls += 1;
         self.visible_text = text.to_owned();
         self.editor_owned_text = text.to_owned();
+        self.task1034_events.push("placed");
         Ok(())
     }
 
@@ -168,4 +195,71 @@ fn task_1033_visible_only_mutation_goes_red_at_signal_readiness() {
     println!("TASK1033_MUTANT_EDITOR_OWNED_BYTES=0");
     println!("TASK1033_MUTANT_SEND_BUTTON_AVAILABLE=false");
     println!("TASK1033_MUTANT_RESULT=red");
+}
+
+fn task1034_results(editor: &mut SignalRichEditor) -> Result<Vec<String>, String> {
+    place_text_through_shared_job(editor, TASK1034_TEXT)?;
+    Ok(vec![TASK1034_TEXT.to_owned()])
+}
+
+#[test]
+fn task_1034_changed_placed_byte_is_refused_and_good_signal_result_is_unchanged() {
+    let mut good_editor = SignalRichEditor::default();
+    let good = task1034_results(&mut good_editor)
+        .expect("good signal-text-1034 must pass exact Signal read-back");
+    assert_eq!(good, [TASK1034_TEXT]);
+    assert_eq!(good.len(), 1);
+
+    let mut changed_editor = SignalRichEditor::changing_one_placed_byte_before_read_back();
+    let refusal = task1034_results(&mut changed_editor)
+        .expect_err("changed placed byte x must be refused by name");
+    assert_eq!(
+        refusal,
+        "shared place-text read-back changed the marked bytes"
+    );
+    assert_eq!(
+        changed_editor.task1034_events,
+        ["placed", "changed-before-read-back"],
+        "fault injection must occur after placement and before returned read-back"
+    );
+    assert_eq!(
+        changed_editor.shared_paste_calls, 1,
+        "the refused attempt places exactly once"
+    );
+    let changed = changed_editor
+        .changed_read_back
+        .as_deref()
+        .expect("the placed Signal byte was changed before read-back");
+    assert_eq!(changed, b"xignal-text-1034");
+    assert_eq!(
+        changed
+            .iter()
+            .zip(TASK1034_TEXT.as_bytes())
+            .filter(|(actual, placed)| actual != placed)
+            .count(),
+        1,
+        "fault injection must alter exactly one placed byte"
+    );
+
+    let mut restored_editor = SignalRichEditor::default();
+    let restored = task1034_results(&mut restored_editor)
+        .expect("restored signal-text-1034 must pass exact Signal read-back");
+    assert_eq!(restored, good);
+    assert_eq!(restored.len(), 1);
+
+    println!(
+        "TASK1034 good_text={TASK1034_TEXT} result_count={} result_name={}",
+        good.len(),
+        good[0]
+    );
+    println!(
+        "TASK1034 changed_placed_byte={} changed_readback=xignal-text-1034 result=refused refusal_name={refusal}",
+        char::from(TASK1034_CHANGED_PLACED_BYTE)
+    );
+    println!("TASK1034 mutation_order=placed,changed-before-read-back changed_byte_count=1");
+    println!(
+        "TASK1034 restored_text={TASK1034_TEXT} result_count={} result_name={}",
+        restored.len(),
+        restored[0]
+    );
 }
