@@ -83,6 +83,9 @@ export function saveChatBackgroundSettings(chatId: string, settings: ChatBackgro
   const clean = normaliseSettings(settings, DEFAULT_CHAT_BACKGROUND_SETTINGS);
   if (clean.scope === "every-chat") {
     storage.setItem(CHAT_BACKGROUND_GLOBAL_STORAGE_KEY, JSON.stringify(clean));
+    // A global choice supersedes old per-chat overrides; otherwise a chat that
+    // was previously customized would not observe the newly selected default.
+    storage.setItem(CHAT_BACKGROUND_BY_CHAT_STORAGE_KEY, JSON.stringify({}));
     return;
   }
   const existing = readJson(storage, CHAT_BACKGROUND_BY_CHAT_STORAGE_KEY);
