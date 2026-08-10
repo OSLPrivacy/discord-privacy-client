@@ -1,6 +1,7 @@
 use ipc::commands::cmd_osl_list_email_send_modes;
 use ipc::email_send_modes::{
-    apply_email_composer_input, EmailComposerInput, EmailComposerInputEffect, EmailSendMode,
+    apply_email_composer_input, prepare_hidden_email_subject, EmailComposerInput,
+    EmailComposerInputEffect, EmailSendMode, DEFAULT_PLAIN_EMAIL_SUBJECT,
 };
 
 #[test]
@@ -79,4 +80,32 @@ fn task_1223_email_enter_adds_line_in_all_five_modes() {
     );
 
     assert_eq!(line_insertions, 5);
+}
+
+#[test]
+fn task_3139_empty_hidden_email_subject_defaults_and_typed_subject_stays_exact() {
+    let empty = prepare_hidden_email_subject("");
+    let typed_input = "CUSTOM-3139  Mixed Case / punctuation! ";
+    let typed = prepare_hidden_email_subject(typed_input);
+
+    let saved_choice = DEFAULT_PLAIN_EMAIL_SUBJECT;
+    let default_read_back = empty.read_back();
+    let typed_read_back = typed.read_back();
+    let typed_change_count = usize::from(typed_read_back != typed_input);
+
+    println!("TASK3139 empty_subject={default_read_back:?}");
+    println!("TASK3139 typed_subject={typed_read_back:?}");
+    println!("TASK3139 typed_subject_change_count={typed_change_count}");
+    println!("TASK3139 saved_choice={saved_choice:?}");
+    println!("TASK3139 choice_read_back={default_read_back:?}");
+
+    assert_eq!(default_read_back, "Quick note");
+    assert_eq!(default_read_back, saved_choice);
+    assert_eq!(typed_read_back, typed_input);
+    assert_eq!(typed_change_count, 0);
+
+    // Sending consumes the prepared value and still returns the exact subject
+    // that was read back, rather than resolving the default a second time.
+    assert_eq!(empty.into_subject(), saved_choice);
+    assert_eq!(typed.into_subject(), typed_input);
 }
