@@ -1,0 +1,8 @@
+# The seven claims required before feature work starts.
+zero-build-blockers
+one-build-with-switches
+capture
+two-copies
+three-machine-roster
+three-different-carrier-accounts
+truthful-attachment-limits
