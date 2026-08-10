@@ -1,4 +1,3 @@
-import { oslChatDropTargetAttributes } from "./osl-chat-drop-target";
 import type { VerificationWarningSurface } from "./verification-warning";
 import { viewOnceControlMarkup } from "./view-once-tier";
 
@@ -596,7 +595,7 @@ function activeThread(model: OslChatsViewModel, friend: OslChatFriend): string {
     ${deletionUnconfirmedRow(model.deletionUnconfirmed ?? 0)}
     <form class="osl-chat-composer${keyChanged ? " is-key-blocked" : ""}" data-osl-chat-compose="${escapeHtml(friend.personId)}"${keyChanged ? ' aria-disabled="true"' : ""}>
       <label for="osl-chat-draft">Message</label>
-      <div class="osl-chat-composer-bar"><button class="osl-chat-attach" id="osl-chat-attach" type="button" aria-label="Attach a file" ${model.attachmentAvailable && !model.busy && !keyChanged ? "" : 'disabled title="Attachments are available in this approved chat with OSL Pro"'}>${attachIcon}</button><textarea id="osl-chat-draft" ${oslChatDropTargetAttributes()} rows="1" placeholder="${keyChanged ? "Verify the key change before you send anything" : `Message ${escapeHtml(friend.nickname)}`}" autocomplete="off" spellcheck="true" aria-describedby="osl-chat-draft-count osl-chat-readiness" ${keyChanged ? "disabled" : ""}>${escapeHtml(model.draft)}</textarea>${viewOnceControlMarkup({
+      <div class="osl-chat-composer-bar"><button class="osl-chat-attach" id="osl-chat-attach" type="button" aria-label="Attach a file" ${model.attachmentAvailable && !model.busy && !keyChanged ? "" : 'disabled title="Attachments are available in this approved chat with OSL Pro"'}>${attachIcon}</button><textarea id="osl-chat-draft" rows="1" placeholder="${keyChanged ? "Verify the key change before you send anything" : `Message ${escapeHtml(friend.nickname)}`}" autocomplete="off" spellcheck="true" aria-describedby="osl-chat-draft-count osl-chat-readiness" ${keyChanged ? "disabled" : ""}>${escapeHtml(model.draft)}</textarea>${viewOnceControlMarkup({
         id: "osl-chat-view-once",
         layout: "composer",
         className: "osl-chat-view-once",
