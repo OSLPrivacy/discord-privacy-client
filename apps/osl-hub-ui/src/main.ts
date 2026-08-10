@@ -189,8 +189,11 @@ export {
   type AutoscrubUnattendedRunResult,
 } from "./autoscrub-unattended-run";
 import { initializeThemePreference, themeStorageKey, type ThemeChoice } from "./theme-preference";
-import { accentChoices, avatarChoices, backgroundChoices, createAppearancePreferencesEditor, loadAppearancePreferences, movementChoices, trayPictureChoices, windowPositionChoices, type AppearancePreferences } from "./appearance-preferences";
+import { accentChoices, avatarChoices, backgroundChoices, loadAppearancePreferences, resetAppearancePreferences, saveAppearancePreferences, windowPositionChoices, type AppearancePreferences } from "./appearance-preferences";
 import { appearanceSettingsContent } from "./appearance-settings-section";
+import { appearanceLivePreviewMarkup } from "./appearance-live-preview";
+import { OslProfilePaneState, seededProfilePaneRecords } from "./osl-profile-pane";
+import { attachSettingsProfileBlock } from "./settings-profile-block";
 import { homeLauncherBody } from "./home-launcher-body";
 import { privacyDestinationContent as renderPrivacyDestinationContent } from "./privacy-settings-section";
 import { privacySettingsContent } from "./scrub-settings-section";
@@ -581,6 +584,7 @@ let decryptDisplay = true;
 let themeChoice: ThemeChoice = initializeThemePreference(localStorage);
 let appearancePreferences: AppearancePreferences = loadAppearancePreferences(localStorage);
 let savedAppearancePreferences: AppearancePreferences = { ...appearancePreferences };
+const appearanceProfileDraft = new OslProfilePaneState(seededProfilePaneRecords().filter((record) => record.scope.kind === "global"));
 let sidebarOrder: string[] = [];
 let hiddenServices = new Set<string>();
 let homeEditMode = false;
@@ -5623,7 +5627,7 @@ function settingsSectionContent(): string {
   });
   if (settingsSection === "cleanup") return massCleanupSettingsContent();
   if (settingsSection === "notifications") return notificationSettingsContent();
-  if (settingsSection === "appearance") return appearanceSettingsContent(appearancePreferences, themeChoice);
+  if (settingsSection === "appearance") return appearanceSettingsContent(appearancePreferences, themeChoice, appearanceProfileDraft.record("global")!);
   return updateSettingsContent();
 }
 
@@ -7752,6 +7756,16 @@ function bindWorkspace(): void {
     const accent = button.dataset.appearanceAccent;
     if (accent && accentChoices.includes(accent as typeof accentChoices[number])) saveAppearance({ ...appearancePreferences, accent: accent as typeof accentChoices[number] });
   }));
+  const profileMount = document.querySelector<HTMLElement>("[data-settings-profile-mount]");
+  if (profileMount) {
+    attachSettingsProfileBlock(profileMount, appearanceProfileDraft, {
+      onProfileChange: (record) => {
+        const preview = document.querySelector<HTMLElement>("[data-appearance-honest-preview]");
+        const accent = ({ cyan: "#2ac0f0", violet: "#a28af8", coral: "#ff977f" } as const)[appearancePreferences.accent];
+        if (preview) preview.outerHTML = appearanceLivePreviewMarkup(record, accent);
+      },
+    });
+  }
   document.querySelectorAll<HTMLButtonElement>("[data-appearance-background]").forEach((button) => button.addEventListener("click", () => {
     const background = button.dataset.appearanceBackground;
     if (background && backgroundChoices.includes(background as typeof backgroundChoices[number])) saveAppearance({ ...appearancePreferences, background: background as typeof backgroundChoices[number] });
