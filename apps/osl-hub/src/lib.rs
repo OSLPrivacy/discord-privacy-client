@@ -939,8 +939,6 @@ pub mod device_pairing;
 #[path = "../../../src-tauri/src/bootstrap.rs"]
 pub mod original_bootstrap;
 pub mod osl_chat_danger_row;
-pub mod osl_enclave_role_ability;
-pub mod osl_enclave_roles;
 pub mod pro_marked_deletion;
 pub mod pro_marked_deletion_outcomes;
 pub mod proton_fake_page;

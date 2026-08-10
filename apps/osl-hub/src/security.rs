@@ -303,6 +303,48 @@ pub struct LookChoiceRecord {
     pub value: String,
 }
 
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ChatApprovalSuggestionChoice {
+    Off,
+    #[default]
+    On,
+}
+
+impl ChatApprovalSuggestionChoice {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::On => "on",
+        }
+    }
+}
+
+impl std::str::FromStr for ChatApprovalSuggestionChoice {
+    type Err = String;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "off" | "disabled" | "false" => Ok(Self::Off),
+            "on" | "enabled" | "true" => Ok(Self::On),
+            _ => Err("OSL chat approval suggestion choice must be off or on".to_owned()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatApprovalSuggestionChoiceDto {
+    pub choice: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppNotificationChoiceRecord {
+    pub app_id: String,
+    pub enabled: bool,
+}
+
 /// Receipt for a reset constrained to one Settings screen.
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -721,6 +763,10 @@ struct SecurityPreferences {
     /// Device-local visual choices. Unknown names are refused before mutation.
     #[serde(default)]
     look_choices: BTreeMap<String, String>,
+    #[serde(default)]
+    chat_approval_suggestion: ChatApprovalSuggestionChoice,
+    #[serde(default)]
+    app_notification_choices: BTreeMap<String, bool>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -1705,6 +1751,79 @@ pub fn list_look_choices(_security: &HubSecurityState) -> Result<Vec<LookChoiceR
     require_unlocked()?;
     let prefs = load_security_preferences()?;
     Ok(look_choice_records(&prefs))
+}
+
+pub fn chat_approval_suggestion_choice() -> Result<ChatApprovalSuggestionChoiceDto, String> {
+    require_unlocked()?;
+    let prefs = load_security_preferences()?;
+    Ok(ChatApprovalSuggestionChoiceDto {
+        choice: prefs.chat_approval_suggestion.as_str().to_owned(),
+    })
+}
+
+pub fn save_chat_approval_suggestion_choice(
+    security: &HubSecurityState,
+    choice: String,
+) -> Result<ChatApprovalSuggestionChoiceDto, String> {
+    require_unlocked()?;
+    let choice = choice.parse::<ChatApprovalSuggestionChoice>()?;
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL chat approval suggestion state is unavailable".to_owned())?;
+    let path = config_dir()?.join(SECURITY_PREFS_FILE);
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
+    prefs.version = 2;
+    prefs.chat_approval_suggestion = choice;
+    write_encrypted_json(&path, &prefs)?;
+    Ok(ChatApprovalSuggestionChoiceDto {
+        choice: choice.as_str().to_owned(),
+    })
+}
+
+pub fn set_app_notification_choice(
+    security: &HubSecurityState,
+    app_id: String,
+    enabled: bool,
+) -> Result<AppNotificationChoiceRecord, String> {
+    validate_app_notification_id(&app_id)?;
+    require_unlocked()?;
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL app notification state is unavailable".to_owned())?;
+    let path = config_dir()?.join(SECURITY_PREFS_FILE);
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
+    prefs.version = 2;
+    prefs.app_notification_choices.insert(app_id.clone(), enabled);
+    write_encrypted_json(&path, &prefs)?;
+    Ok(AppNotificationChoiceRecord { app_id, enabled })
+}
+
+pub fn app_notification_enabled_before_notice(
+    _security: &HubSecurityState,
+    app_id: String,
+) -> Result<bool, String> {
+    validate_app_notification_id(&app_id)?;
+    require_unlocked()?;
+    let prefs = load_security_preferences()?;
+    Ok(prefs
+        .app_notification_choices
+        .get(&app_id)
+        .copied()
+        .unwrap_or(false))
+}
+
+fn validate_app_notification_id(value: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > 64
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err("OSL app notification identifier is invalid".to_owned());
+    }
+    Ok(())
 }
 
 /// Restore only the preferences owned by one named Settings screen.
