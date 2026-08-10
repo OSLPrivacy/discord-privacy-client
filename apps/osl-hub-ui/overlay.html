@@ -8,6 +8,7 @@
   </head>
   <body>
     <main class="overlay-shell" aria-label="OSL protected Discord conversation">
+      <div id="osl-strip" class="osl-strip-band"></div>
       <strong id="friend-label" class="sr-only">Private message</strong>
       <div id="osl-message-list" class="transcript-mount" aria-label="Messages prepared or opened in this OSL panel" hidden></div>
       <section id="write-pane" aria-label="Private message composer">
@@ -16,8 +17,8 @@
           <div class="native-composer-backdrop" aria-hidden="true"></div>
           <!-- The seen half of the failed-send signal. #overlay-send-warning below is
                announced but lives in .composer-toolbar, which has no room (and under
-               data-native-composer-capture no display at all) in the natively sized
-               736x58 protected window. This banner is a child of .composer-box on
+               data-native-composer-capture no display at all) in the 736x58 native
+               composer track. This banner is a child of .composer-box on
                purpose: that rectangle is the only thing OSL paints, so the notice
                needs no window height that does not exist and adds no opaque pixel
                outside OSL's own composer. It is not a second live region -- the

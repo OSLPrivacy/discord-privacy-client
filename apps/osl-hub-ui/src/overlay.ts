@@ -1,5 +1,9 @@
 import "@fontsource-variable/inter/wght.css";
 import "./overlay.css";
+import "./strip.css";
+import oslStripGhostMarkUrl from "./assets/Ghost-white.svg";
+import { createOslStrip, type OslStripHandle } from "./strip";
+import type { OslStripState, StripQuickSettingRow, StripTimerPreset } from "./strip-state";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { checkedBackendResponse, lastBackendFailure, recordBackendFailure, recordInvalidBackendResponse } from "./backend-failure";
@@ -76,8 +80,8 @@ const c4NativeReceipt = requireElement<HTMLOutputElement>("#native-carrier-recei
 const sendWarning = requireElement<HTMLOutputElement>("#overlay-send-warning");
 // The seen half of that same signal, and the reason this exists at all: the
 // persistent notice above is announced but never displayed. It sits in
-// `.composer-toolbar`, and this window is sized natively to Discord's measured
-// composer rectangle -- 736x58 logical pixels, live -- where the toolbar is
+// `.composer-toolbar`, and this composer's native track is Discord's measured
+// rectangle -- 736x58 logical pixels, live -- where the toolbar is
 // flex-shrunk to nothing and, under `data-native-composer-capture`, set to
 // `display: none` outright. A send that never reached Discord therefore looked
 // exactly like one that did.
@@ -238,6 +242,9 @@ let activeVisualRecipe: DiscordVisualRecipe | null = null;
 // an image data URL, four rectangles, a colour and four font facts.
 let activeNativeSurface: NativeSurfaceCapture | undefined;
 let lockEngaged = true;
+let oslStrip: OslStripHandle | null = null;
+let stripRevealSyncing = false;
+let stripModuleReady = false;
 
 /**
  * The lock is encryption only, and it governs exactly one thing on screen: who
@@ -256,6 +263,7 @@ function applyLockEngaged(engaged: boolean): void {
   // engagement that is over. The next raise is a fresh one and gets its own.
   if (!engaged) caretGrantedForEngagement = false;
   else focusEngagedProtectedDraft();
+  syncOslStrip();
 }
 
 // ENGAGE EDGE: the caret, not just the window.
@@ -1102,6 +1110,7 @@ function refreshControls(): void {
   placementMode.disabled = sendBusy || !overlayReady || !discordMarkerAvailable;
   ttl.disabled = sendBusy || securityBusy || !overlayReady;
   viewOnce.disabled = sendBusy || !overlayReady || !viewOnceEnabled;
+  syncOslStrip();
 }
 
 function setBusy(busy: boolean): void {
@@ -1667,7 +1676,8 @@ async function sendDraft(): Promise<void> {
       // this copy survives the churn on `status` described above, and stays
       // up until one of the two clear points documented at their call sites.
       sendWarning.textContent = failureNotice;
-      // ...and to the band that the natively sized 736x58 window can actually
+      // ...and to the band that the natively sized 736x58 composer track can
+      // actually
       // show, because everything above this line is announcement only: the
       // element it was written to has no room in this window, which is how a
       // failed send came to look identical to a successful one.
@@ -1878,7 +1888,11 @@ function resetBurnConfirmation(): void {
 }
 
 burnChat.addEventListener("click", (event) => {
-  const step = burnConfirmation.step(performance.now(), event.isTrusted);
+  handleBurnActivation(event.isTrusted);
+});
+
+function handleBurnActivation(trusted: boolean): void {
+  const step = burnConfirmation.step(performance.now(), trusted);
   if (step === "ignored") return;
   if (step === "armed") {
     burnChat.textContent = "Confirm burn";
@@ -1912,7 +1926,7 @@ burnChat.addEventListener("click", (event) => {
     clearMessageBubbles();
     status.textContent = `OSL chat burned. ${result.localProtectedRowsDestroyed} local protected rows removed. ${remote} Discord history and recipient copies were not deleted.`;
   })();
-});
+}
 
 function clearGestureTimer(): void {
   if (gestureTimer !== undefined) window.clearTimeout(gestureTimer);
@@ -2421,4 +2435,120 @@ void listen<boolean>(OVERLAY_SESSION_EVENT, ({ payload }) => {
   void initializeOverlay();
 });
 
+const STRIP_NOT_BUILT_REASON = "Not built yet — no engine backs this setting";
+const STRIP_HUB_ONLY_NAV_REASON = "Opens from the OSL hub window — this protected window can't navigate";
+
+function stripSendModeFace(): string {
+  return sendMode.value === "double" ? "ENTER ×2" : sendMode.value === "single" ? "ENTER" : "MANUAL";
+}
+
+function stripQuickSettings(): readonly StripQuickSettingRow[] {
+  return [
+    { id: "cover-text", name: "Cover text", value: coverTextEnabled ? "WORDBANK" : "OFF", kind: "cycle", available: false, reason: "Covertext is changed in the trusted OSL window" },
+    { id: "send-with", name: "Send with", value: stripSendModeFace(), kind: "cycle", available: !sendMode.disabled, reason: "Needs a verified protected session" },
+    { id: "warnings", name: "Warnings", kind: "toggle", on: true, available: false, reason: STRIP_NOT_BUILT_REASON },
+    { id: "key-change", name: "If a key or room changes", value: "BLOCK SEND", kind: "cycle", available: false, reason: "Protected sends already fail closed" },
+    { id: "clipboard", name: "Clipboard clears after", value: "—", kind: "cycle", available: false, reason: STRIP_NOT_BUILT_REASON },
+    { id: "findable", name: "Findable by strangers?", value: "—", kind: "cycle", available: false, reason: STRIP_NOT_BUILT_REASON },
+    { id: "whitelist-mode", name: "Whitelist", value: "ASK", kind: "cycle", available: false, reason: STRIP_NOT_BUILT_REASON },
+    { id: "logs", name: "Logs", kind: "action", available: false, reason: "Proof receipts live in the OSL hub window" },
+    { id: "all-settings", name: "All settings", kind: "gear", available: false, reason: STRIP_HUB_ONLY_NAV_REASON },
+  ];
+}
+
+function stripTimerPresets(): readonly StripTimerPreset[] {
+  const unsupported = "The engine supports 1 hour to 7 days here";
+  return [
+    { label: "OFF", seconds: null, available: false, reason: unsupported },
+    { label: "1H", seconds: 3_600, available: true },
+    { label: "1D", seconds: 86_400, available: true },
+    { label: "3D", seconds: 259_200, available: true },
+    { label: "7D", seconds: 604_800, available: true },
+    { label: "30D", seconds: 2_592_000, available: false, reason: unsupported },
+  ];
+}
+
+function overlayStripState(): OslStripState {
+  const roomProven = overlayReady;
+  return {
+    roomProven,
+    roomLabel: friendLabel.textContent?.trim() || "Private message",
+    plan: viewOnceEnabled ? "pro" : "free",
+    planAction: { available: false, reason: STRIP_HUB_ONLY_NAV_REASON },
+    homeAction: { available: false, reason: STRIP_HUB_ONLY_NAV_REASON },
+    burn: { available: !burnChat.disabled, reason: "Burn needs a verified protected session" },
+    whitelist: { roster: null, available: false, reason: "The whitelist roster lives in the OSL hub for now" },
+    timer: {
+      seconds: confirmedTtlSeconds,
+      presets: stripTimerPresets(),
+      available: !ttl.disabled,
+      reason: roomProven ? "Saving protection…" : undefined,
+      factLine: `IF SENT NOW · OSL STOPS DECRYPTING BY ${new Date(Date.now() + confirmedTtlSeconds * 1_000).toUTCString().replace("GMT", "UTC")}`,
+      tooltip: `OSL stops decrypting ${expiryLabel(confirmedTtlSeconds)} after delivery — it cannot stop a screenshot`,
+    },
+    once: { armed: viewOnce.checked, seconds: null, available: !viewOnce.disabled, reason: viewOnceEnabled ? "Busy — try again" : "Making one needs Pro" },
+    lock: { state: !overlayReady ? "unreachable" : lockEngaged ? "on" : "off", toggle: { available: false, reason: "The trusted OSL window controls the lock" } },
+    reveal: { revealed: decryptDisplayEnabled, available: overlayReady && !securityBusy, reason: "OSL has no verified protected session here" },
+    quickSettings: stripQuickSettings(),
+    windowControls: true,
+  };
+}
+
+async function setStripReveal(revealed: boolean): Promise<void> {
+  if (!overlayReady || securityBusy || stripRevealSyncing) return;
+  const previous = decryptDisplayEnabled;
+  stripRevealSyncing = true;
+  decryptDisplayEnabled = revealed;
+  applyDecryptDisplayVisibility(revealed);
+  syncOslStrip();
+  const saved = await setNativeDiscordOverlaySecurity(confirmedTtlSeconds, revealed);
+  stripRevealSyncing = false;
+  if (!saved) {
+    decryptDisplayEnabled = previous;
+    applyDecryptDisplayVisibility(previous);
+    status.textContent = "That visibility change was not saved.";
+  } else {
+    decryptDisplayEnabled = saved.decryptDisplayEnabled;
+    applyDecryptDisplayVisibility(decryptDisplayEnabled);
+    if (decryptDisplayEnabled) requestRealtimeDrain();
+  }
+  syncOslStrip();
+}
+
+function syncOslStrip(): void {
+  if (!stripModuleReady) return;
+  const mount = document.querySelector<HTMLElement>("#osl-strip");
+  if (!mount) return;
+  if (!oslStrip) {
+    oslStrip = createOslStrip(mount, {
+      logoUrl: oslStripGhostMarkUrl,
+      actions: {
+        onRevealToggle: (revealed) => { void setStripReveal(revealed); },
+        onBurn: handleBurnActivation,
+        onTimerSelect: (seconds) => {
+          if (seconds === null || !NATIVE_OVERLAY_TTL_OPTIONS.includes(seconds as NativeOverlayTtlSeconds)) return;
+          ttl.value = String(seconds);
+          void saveSecurity();
+        },
+        onOnceToggle: (armed) => {
+          if (viewOnce.disabled) return;
+          viewOnce.checked = armed;
+          syncOslStrip();
+        },
+        onQuickSetting: (id) => {
+          if (id !== "send-with" || sendMode.disabled) return;
+          const cycle = ["button", "double", "single"] as const;
+          const index = cycle.indexOf(sendMode.value as (typeof cycle)[number]);
+          sendMode.value = cycle[(index + 1) % cycle.length];
+          sendMode.dispatchEvent(new Event("change"));
+          syncOslStrip();
+        },
+      },
+    });
+  }
+  oslStrip.update(overlayStripState());
+}
+
+stripModuleReady = true;
+syncOslStrip();
 void initializeOverlay();
