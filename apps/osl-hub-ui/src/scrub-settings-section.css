@@ -1,0 +1,121 @@
+.scrub-settings-section {
+  width: min(680px, 100%);
+}
+
+.scrub-settings-heading p {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-family: "Source Sans 3 Variable", "Source Sans 3", sans-serif;
+  font-size: 9px;
+  line-height: 1.3;
+}
+
+.scrub-settings-heading p strong {
+  color: var(--text);
+}
+
+.scrub-scope-rows {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+}
+
+.scrub-scope-label {
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.2;
+  margin-bottom: 5px;
+}
+
+.scrub-scope-row {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.scrub-scope-row > summary,
+.scrub-autoscrub-scope > .autoscrub-disclosure > summary {
+  min-height: 0;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  color: var(--text);
+  cursor: pointer;
+  list-style: none;
+}
+
+.scrub-scope-row > summary::-webkit-details-marker,
+.scrub-autoscrub-scope > .autoscrub-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.scrub-autoscrub-scope > .autoscrub-disclosure > summary > span {
+  min-width: 0;
+  display: flex;
+  flex: 1;
+}
+
+.scrub-scope-short {
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.2;
+}
+
+.scrub-autoscrub-scope > .autoscrub-disclosure > summary span {
+  font-size: 0;
+}
+
+.scrub-autoscrub-scope > .autoscrub-disclosure > summary span::after {
+  content: "Auto";
+  color: var(--muted);
+  font-family: var(--fact-font);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .12em;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.scrub-autoscrub-scope > .autoscrub-disclosure > summary small {
+  display: none;
+}
+
+.scrub-scope-body {
+  padding: 0 0 16px;
+}
+
+.scrub-scope-body > :first-child {
+  margin-top: 0;
+}
+
+.scrub-scope-body p {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.scrub-autoscrub-scope > .autoscrub-disclosure {
+  margin: 0;
+  border: 0 !important;
+  border-radius: 0;
+  background: transparent;
+}
+
+.scrub-autoscrub-scope > .autoscrub-disclosure > summary {
+  border: 0;
+}
+
+.scrub-autoscrub-scope > .autoscrub-disclosure > section {
+  margin: 0 0 16px;
+}
+
+.scrub-settings-section .privacy-technical {
+  border: 0 !important;
+  background: transparent !important;
+  opacity: 1 !important;
+}
+
+.scrub-settings-section .scrub-category-details {
+  margin: 0;
+}
