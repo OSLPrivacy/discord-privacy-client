@@ -5449,6 +5449,19 @@ code {
 .osl-chat-friend-preview { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .osl-chat-friend-copy strong { font-size: 13px; font-weight: 600; }
 .osl-chat-friend-preview { margin-top: 2px; color: var(--muted); font-size: 11px; }
+.osl-consent-mark,
+.osl-build-proof-mark { margin-left: 5px; vertical-align: middle; }
+.osl-consent-mark { display: inline-grid; place-items: center; width: 14px; height: 14px; border-radius: 50%; background: var(--brand); color: var(--brand-ink); }
+.osl-consent-mark svg { width: 10px; height: 10px; fill: none; stroke: currentColor; stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
+.osl-build-proof-mark { display: inline-flex; max-width: 118px; height: 18px; padding: 0 5px 0 4px; align-items: center; gap: 3px; border: 1px solid currentColor; border-radius: 3px; font-size: 9px; font-weight: 650; line-height: 1; }
+.osl-build-proof-mark.is-unmodified { color: var(--success, #257a4b); background: color-mix(in srgb, currentColor 7%, transparent); }
+.osl-build-proof-mark.is-modified { color: var(--danger, #a53b3b); background: color-mix(in srgb, currentColor 8%, transparent); }
+.osl-build-proof-mark.is-cannot-tell { color: var(--warn, #9b6415); background: color-mix(in srgb, currentColor 8%, transparent); }
+.osl-build-proof-mark svg { width: 11px; height: 11px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.osl-build-proof-mark > span { display: inline; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: inherit; font-size: inherit; letter-spacing: 0; }
+.osl-chat-thread-header h2 .osl-consent-mark { display: inline-grid; width: 13px; height: 13px; }
+.osl-chat-thread-header h2 .osl-consent-mark svg { width: 9px; height: 9px; }
+.osl-chat-thread-header h2 .osl-build-proof-mark { display: inline-flex; max-width: 132px; }
 .osl-chat-friend-settings,
 .osl-chat-thread-settings { width: 44px; min-height: 44px; border: 0; background: transparent; color: var(--muted); display: grid; place-items: center; cursor: pointer; }
 .osl-chat-friend-settings:hover,
@@ -5459,6 +5472,7 @@ code {
 .osl-chat-thread-header > div { min-width: 0; }
 .osl-chat-thread-header span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 11px; letter-spacing: .025em; }
 .osl-chat-thread-header h2 { margin: 0 0 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 600; }
+.osl-chat-thread-header .osl-build-proof-mark > span { display: inline; color: inherit; font-size: 9px; letter-spacing: 0; }
 .osl-chat-message-list { min-height: 0; padding: 22px 24px; overflow-y: auto; display: flex; flex-direction: column; gap: 16px; }
 .osl-chat-thread-empty { margin: auto; color: var(--muted); }
 .osl-chat-handshake-warning { margin: 0; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--warn-soft, rgba(255, 176, 32, .12)); color: var(--text); font-size: 12px; line-height: 1.45; }
