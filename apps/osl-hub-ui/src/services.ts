@@ -7,7 +7,7 @@ export type EmailProvider = "gmail" | "outlook" | "proton" | "tuta" | "yahoo" | 
 export type ServiceCategory = "consumer" | "enterprise";
 export type LaunchState = "available" | "comingSoon";
 export type OfferedEmailProvider = "gmail" | "outlook" | "proton" | "yahoo" | "aol" | "gmx" | "maildotcom" | "icloud" | "tuta";
-export type HomeAppId = Exclude<ServiceId, "email"> | OfferedEmailProvider;
+export type HomeAppId = Exclude<ServiceId, "email"> | "messenger" | OfferedEmailProvider;
 export type HomeAppVisibility = "launch" | "later";
 export type HomeAppSection = "social" | "email" | "later";
 export type NativeAppId = "discord" | "telegram" | "signal" | "whatsapp" | "outlook";
@@ -416,6 +416,9 @@ const homeAppDefinitions: readonly HomeAppDefinition[] = [
   homeApp("telegram", "Telegram", "telegram", null, "launch", "comingSoon"),
   homeApp("signal", "Signal", "signal", null, "launch", "comingSoon"),
   homeApp("whatsapp", "WhatsApp", "whatsapp", null, "launch", "comingSoon"),
+  // Messenger remains visible in the catalogue, but has no service adapter:
+  // its row is an honest, disabled capability notice rather than a send path.
+  homeApp("messenger", "Messenger", null, null, "launch", "comingSoon"),
   homeApp("gmail", "Gmail", "email", "gmail", "launch", "comingSoon"),
   homeApp("outlook", "Outlook", "email", "outlook", "launch", "comingSoon"),
   homeApp("proton", "Proton Mail", "email", "proton", "launch", "comingSoon"),

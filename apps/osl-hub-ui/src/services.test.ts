@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { configuredTopStripApps, embeddedAccountsForHomeApp, escapeHtml, homeAppsFromServices, loadLinkedServices, loadNativeApps, nativeAppGeneratedLabel, notificationIntegrationEligibility, parseEmbeddedServiceHost, parseFirefoxStatus, parseLinkedAccount, parseLinkedServices, parseMullvadStatus, parseNativeAppAction, parseNativeApps, serviceAccountsForProvider } from "./services";
 
 const originalAppRoster = [
-  "discord", "telegram", "signal", "whatsapp",
+  "discord", "telegram", "signal", "whatsapp", "messenger",
   "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud", "tuta",
 ] as const;
 const unsupportedOriginalApps = originalAppRoster.filter((id) => id !== "discord");
@@ -151,7 +151,7 @@ describe("linked-service contract", () => {
       expect(apps.find((app) => app.id === unsupported)).toMatchObject({ launchState: "comingSoon", setupEligible: false });
     }
     expect(launch.filter((app) => app.section === "social").map((app) => app.id)).toEqual([
-      "discord", "telegram", "signal", "whatsapp",
+      "discord", "telegram", "signal", "whatsapp", "messenger",
     ]);
     expect(launch.filter((app) => app.section === "email").map((app) => app.id)).toEqual([
       "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud", "tuta",
@@ -246,6 +246,7 @@ describe("linked-service contract", () => {
       expect.objectContaining({ id: "telegram", setupEligible: false }),
       expect.objectContaining({ id: "signal", setupEligible: false }),
       expect.objectContaining({ id: "whatsapp", setupEligible: false }),
+      expect.objectContaining({ id: "messenger", setupEligible: false }),
       expect.objectContaining({ id: "gmail", setupEligible: false }),
       expect.objectContaining({ id: "outlook", setupEligible: false }),
       expect.objectContaining({ id: "proton", setupEligible: false }),
@@ -482,5 +483,19 @@ describe("native app catalog agrees with the Rust support decision", () => {
       supportStatus: "comingSoon",
       statusPage: { ...promoted.statusPage, generatedLabel: "Coming later" },
     }])).toHaveLength(1);
+  });
+});
+
+describe("Messenger catalogue honesty", () => {
+  it("keeps Messenger visible but not sendable", () => {
+    const catalog = homeAppsFromServices([]);
+    const messenger = catalog.find((app) => app.id === "messenger");
+    expect(messenger).toMatchObject({
+      displayName: "Messenger",
+      visibility: "launch",
+      launchState: "comingSoon",
+      serviceId: null,
+      setupEligible: false,
+    });
   });
 });
