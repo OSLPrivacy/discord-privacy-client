@@ -62,6 +62,7 @@ pub mod log_id;
 pub mod main_password;
 pub mod membership;
 pub mod message_expiry_dial;
+pub mod metered_bytes;
 pub mod migration;
 pub mod named_places;
 pub mod offline_send_queue;
