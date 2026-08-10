@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="color-scheme" content="dark">
+    <title>Messages / X — protected composer</title>
+    <style>
+      :root {
+        --ground: #080c0d;
+        --panel: #0d1517;
+        --line: #385054;
+        --ink: #edf6f7;
+        --muted: #91a8ac;
+        --cyan: #2ac0f0;
+        --safe: #3dd68c;
+        --timer: #f0b429;
+        --warning: #f0a93a;
+        --pro: #a79bff;
+        --danger: #e05656;
+      }
+
+      * { box-sizing: border-box; }
+
+      body {
+        margin: 0;
+        min-width: 1280px;
+        min-height: 800px;
+        overflow: hidden;
+        background: var(--ground);
+        color: var(--ink);
+        font-family: Arial, sans-serif;
+      }
+
+      .browser {
+        width: 1280px;
+        height: 800px;
+        display: grid;
+        grid-template-rows: 48px 1fr;
+        background: var(--ground);
+      }
+
+      .browser-bar {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 0 22px;
+        border-bottom: 1px solid var(--line);
+        font: 12px Consolas, "Liberation Mono", monospace;
+        letter-spacing: .08em;
+        text-transform: uppercase;
+      }
+
+      .browser-dot { width: 8px; height: 8px; border: 1px solid var(--muted); border-radius: 50%; }
+      .browser-title { color: var(--muted); }
+      .browser-origin { margin-left: auto; color: var(--cyan); }
+
+      .x-surface {
+        display: grid;
+        grid-template-columns: 234px minmax(0, 1fr) 296px;
+        min-height: 0;
+      }
+
+      .nav, .detail { padding: 28px 22px; }
+      .nav { border-right: 1px solid var(--line); }
+      .detail { border-left: 1px solid var(--line); }
+
+      .x-mark {
+        margin: 0 0 34px;
+        color: var(--ink);
+        font: 700 28px Arial, sans-serif;
+      }
+
+      .nav-item {
+        display: flex;
+        align-items: center;
+        gap: 11px;
+        height: 42px;
+        color: var(--muted);
+        font-size: 14px;
+      }
+      .nav-item.active { color: var(--ink); }
+      .nav-pip { width: 7px; height: 7px; border: 1px solid var(--muted); border-radius: 50%; }
+      .nav-item.active .nav-pip { border-color: var(--cyan); background: var(--cyan); }
+
+      .conversation {
+        display: grid;
+        grid-template-rows: 68px 1fr auto;
+        min-width: 0;
+      }
+      .conversation-head {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 0 28px;
+        border-bottom: 1px solid var(--line);
+      }
+      .avatar { width: 30px; height: 30px; border: 1px solid var(--safe); border-radius: 50%; }
+      .conversation-head h1 { margin: 0; font-size: 15px; }
+      .conversation-head p { margin: 3px 0 0; color: var(--muted); font: 11px Consolas, monospace; text-transform: uppercase; }
+      .verified { margin-left: auto; color: var(--safe); font: 12px Consolas, monospace; text-transform: uppercase; }
+
+      .message-space { padding: 42px 34px; }
+      .message-row { width: 58%; margin-bottom: 18px; }
+      .message-meta { margin-bottom: 6px; color: var(--muted); font: 10px Consolas, monospace; letter-spacing: .06em; text-transform: uppercase; }
+      .message-line { height: 9px; margin-top: 7px; border: 1px solid #24383b; border-radius: 0; }
+      .message-line.short { width: 66%; }
+
+      .protected-composer {
+        margin: 0 28px 28px;
+        border: 1px solid var(--cyan);
+        border-radius: 2px;
+        background: var(--ground);
+      }
+      .composer-head {
+        display: flex;
+        align-items: center;
+        min-height: 36px;
+        padding: 0 13px;
+        border-bottom: 1px solid var(--line);
+      }
+      .status {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--cyan);
+        font: 12px Consolas, "Liberation Mono", monospace;
+        letter-spacing: .06em;
+        text-transform: uppercase;
+      }
+      .lock-icon, .eye-icon, .tick-icon, .tray-icon { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: square; stroke-linejoin: miter; }
+      .private-label { margin-left: auto; color: var(--muted); font: 11px Consolas, monospace; text-transform: uppercase; }
+      .private-box {
+        min-height: 76px;
+        padding: 15px 13px;
+        color: var(--ink);
+        border-bottom: 1px solid var(--line);
+        font: 15px Arial, sans-serif;
+      }
+      .private-box span { color: var(--muted); }
+      .composer-foot {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        min-height: 46px;
+        padding: 0 10px 0 13px;
+      }
+      .control {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 7px;
+        min-height: 28px;
+        padding: 0 9px;
+        color: var(--muted);
+        border: 1px solid var(--line);
+        border-radius: 2px;
+        background: transparent;
+        font: 11px Consolas, "Liberation Mono", monospace;
+        letter-spacing: .04em;
+        text-transform: uppercase;
+      }
+      .control.eye { color: var(--cyan); }
+      .control.tray { color: var(--safe); }
+      .control.send { margin-left: auto; color: var(--cyan); border-color: var(--cyan); }
+      .count { color: var(--timer); font: 12px Consolas, monospace; text-transform: uppercase; }
+      .tick { color: var(--safe); }
+
+      .detail h2 { margin: 0 0 7px; font: 13px Consolas, monospace; letter-spacing: .08em; text-transform: uppercase; }
+      .detail p { margin: 0 0 24px; color: var(--muted); font-size: 13px; line-height: 1.55; }
+      .fact { display: grid; grid-template-columns: 12px 1fr; gap: 9px; margin: 15px 0; }
+      .fact b { color: var(--safe); font: 12px Consolas, monospace; text-transform: uppercase; }
+      .fact span { color: var(--muted); font: 12px Consolas, monospace; text-transform: uppercase; }
+      .rule { margin: 22px 0; border-top: 1px solid var(--line); }
+      .warning { color: var(--warning); font: 11px Consolas, monospace; letter-spacing: .04em; text-transform: uppercase; }
+    </style>
+  </head>
+  <body>
+    <main class="browser" aria-label="Fixed X browser protected composer capture">
+      <header class="browser-bar"><span class="browser-dot"></span><span class="browser-title">X / Messages</span><span class="browser-origin">https://x.com/messages</span></header>
+      <section class="x-surface" aria-label="X direct-message screen">
+        <nav class="nav" aria-label="X navigation"><p class="x-mark">𝕏</p><div class="nav-item"><span class="nav-pip"></span>Home</div><div class="nav-item"><span class="nav-pip"></span>Explore</div><div class="nav-item active"><span class="nav-pip"></span>Messages</div></nav>
+        <section class="conversation" aria-label="Verified direct conversation">
+          <header class="conversation-head"><span class="avatar" aria-hidden="true"></span><div><h1>Riley Chen</h1><p>Direct message</p></div><span class="verified">verified context</span></header>
+          <div class="message-space" aria-hidden="true"><div class="message-row"><div class="message-meta">Riley · 10:42</div><div class="message-line"></div><div class="message-line short"></div></div><div class="message-row"><div class="message-meta">You · 10:44</div><div class="message-line short"></div></div></div>
+          <section class="protected-composer" aria-label="OSL protected composer" data-protected-composer="true">
+            <header class="composer-head"><span class="status" data-control="lock"><svg class="lock-icon" viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="7" width="10" height="7"></rect><path d="M5 7V4.5a3 3 0 0 1 6 0V7"></path></svg>Lock · protected</span><span class="private-label">Private box</span></header>
+            <div class="private-box" data-control="private-box">I can send this without exposing the draft to X.<span>▌</span></div>
+            <footer class="composer-foot">
+              <span class="count" data-control="count">49 B</span>
+              <button class="control eye" type="button" data-control="eye-toggle" aria-label="Toggle private draft visibility"><svg class="eye-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M1 8s2.4-4 7-4 7 4 7 4-2.4 4-7 4-7-4-7-4Z"></path><circle cx="8" cy="8" r="1.8"></circle></svg>Eye</button>
+              <button class="control tray" type="button" data-control="tray" aria-label="Attachment tray"><svg class="tray-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 5h12v8H2zM5 2h6v3H5z"></path></svg>Tray · 1</button>
+              <span class="tick" data-control="tick" aria-label="Verified"><svg class="tick-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="m3 8 3 3 7-7"></path></svg></span>
+              <button class="control send" id="send-trigger" type="button" data-control="send-trigger">Send · Ctrl↵</button>
+            </footer>
+          </section>
+        </section>
+        <aside class="detail" aria-label="OSL protection facts"><h2>OSL / X</h2><p>Private text is held in OSL until an explicit protected send trigger.</p><div class="fact"><span>✓</span><b>Lock held</b></div><div class="fact"><span>✓</span><b>Context fresh</b></div><div class="fact"><span>✓</span><b>Tray attached</b></div><div class="rule"></div><div class="warning">No implicit send</div></aside>
+      </section>
+    </main>
+  </body>
+</html>
