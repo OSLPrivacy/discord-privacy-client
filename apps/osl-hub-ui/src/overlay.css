@@ -9,10 +9,10 @@
   --osl-overlay-brand: #5865f2;
   --osl-composer-min-height: 76px;
   --osl-composer-line-height: 20px;
-  /* The failed-send banner's band. Deliberately small and fixed: the protected
-     window is sized natively to Discord's measured composer rectangle (live:
-     736x58 logical px) and cannot be grown from here, so the band and the draft
-     have to share those 58 rows. 22px leaves the composer 36px, which still
+  /* The failed-send banner's band. Deliberately small and fixed: the composer
+     track remains Discord's measured rectangle (live: 736x58 logical px), even
+     though native now reserves a separate 44px carrier strip above it. The
+     banner and draft still share those 58 composer rows. 22px leaves 36px, which still
      clears one full --osl-composer-line-height line of the operator's own text
      plus its padding. */
   --osl-send-failure-band: 22px;
@@ -101,11 +101,11 @@ body { padding: 0; }
    pixels against WebView2's own opaque backing. That is repaired natively, by
    `enforce_transparent_protected_composer` in native_discord_overlay.rs.
 
-   The same defect, on a window sized to exactly the native composer rectangle,
+   The same defect, on a composer track sized to exactly the native rectangle,
    is not a band: `.composer-box` is the only thing painting and its 8px
    `border-radius` leaves four small alpha-0 arcs at its corners. Reports of
    "little white lines" at the composer corners are that band, cropped to a
-   736x58 window. Measured live, the four arcs are the whole artefact: 20 pixels
+   736x58 track. Measured live, the four arcs are the whole artefact: 20 pixels
    that are light on every channel inside 6x6 boxes at the four corners, out of
    68 that match neither the composer's interior nor Discord's background --
    against the ~72 pixels an 8px radius actually leaves uncovered at four
@@ -395,8 +395,8 @@ body { padding: 0; }
 /* A failed send has to be SEEN, not just announced.
 
    #overlay-send-warning is announced (role="alert") and survives the churn on
-   #overlay-status, but it sits in `.composer-toolbar` -- and this window is
-   736x58 logical pixels, sized natively to Discord's measured composer rect.
+   #overlay-status, but it sits in `.composer-toolbar` -- and this composer track
+   is 736x58 logical pixels, sized from Discord's measured composer rect.
    At that height the toolbar is flex-shrunk to nothing, and under
    `data-native-composer-capture` the rule further down sets it to
    `display: none` outright. So a send that never reached Discord looked exactly like one that
@@ -531,7 +531,7 @@ body { padding: 0; }
    the separately measured edit rectangle and paints an opaque sampled color
    so Discord's native placeholder can never show through. */
 :root[data-native-composer-capture="true"] .composer-box {
-  /* The window is already sized to the verified native composer rectangle, so
+  /* The track is already sized to the verified native composer rectangle, so
      the recipe's nominal composer width must not shrink or re-centre it. */
   max-width: none;
   margin-inline: 0;

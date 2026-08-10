@@ -441,6 +441,10 @@ struct OverlayRect {
     height: u32,
 }
 
+/// The visible carrier strip is part of the protected surface, immediately
+/// above Discord's measured composer. This value is shared with strip.css.
+const CARRIER_STRIP_HEIGHT: i32 = 44;
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 struct AdaptiveGeometryKey {
     discord_rect: [i32; 4],
@@ -501,28 +505,37 @@ fn adaptive_geometry_key(
 
 /// The protected surface OSL puts over Discord.
 ///
-/// Its floor is exactly Discord's measured composer rectangle and nothing else,
-/// because the composer is the only place OSL *must* own: the operator's
-/// plaintext may never enter Discord's real message box. There is deliberately
-/// no fallback that spans the message band. The previous header-to-composer
-/// surface is what made the lock black out the conversation, fight Discord for
-/// geometry, and swallow the scrollback -- eye off is now literally unmodified
-/// Discord because OSL has no window there at all.
+/// Its floor is Discord's measured composer plus the fixed 44px carrier strip
+/// immediately above it. The composer remains the only place OSL accepts
+/// plaintext; the extra band is visible OSL chrome and never a fallback that
+/// spans the message list.
 ///
 /// `painted_top` is the top of the highest Discord row OSL is currently painting
 /// decrypted text over. It extends this surface upward by exactly that much and
-/// by nothing more. `None` -- which is every production session today, and every
-/// session with the eye off -- leaves the surface the size of the composer.
+/// by nothing more. `None` leaves the surface at strip + composer height.
 fn protected_overlay_rect(
     discord: [i32; 4],
     composer: Option<AccessibilityBounds>,
     painted_top: Option<i32>,
 ) -> Option<OverlayRect> {
-    let rect = verified_composer_overlay_rect(discord, composer?)?;
+    let composer_rect = verified_composer_overlay_rect(discord, composer?)?;
+    let strip_top = composer_rect.y.checked_sub(CARRIER_STRIP_HEIGHT)?;
+    if strip_top < discord[1] {
+        return None;
+    }
+    let height = i32::try_from(composer_rect.height)
+        .ok()?
+        .checked_add(CARRIER_STRIP_HEIGHT)?;
+    let rect = OverlayRect {
+        x: composer_rect.x,
+        y: strip_top,
+        width: composer_rect.width,
+        height: height.try_into().ok()?,
+    };
     let Some(top) = painted_top else {
         return Some(rect);
     };
-    let top = top.max(discord[1]);
+    let top = top.min(strip_top).max(discord[1]);
     if top >= rect.y {
         return Some(rect);
     }
@@ -6570,19 +6583,33 @@ mod tests {
     }
 
     #[test]
-    fn the_protected_surface_is_exactly_the_measured_composer() {
+    fn task_5038_the_protected_surface_reserves_the_visible_carrier_strip() {
         let target = [100, 80, 1_380, 800];
         let composer = composer_bounds(target);
         let rect = protected_overlay_rect(target, Some(composer), None)
             .expect("verified composer geometry");
         assert_eq!(rect.x, composer.left);
-        assert_eq!(rect.y, composer.top);
+        assert_eq!(rect.y, composer.top - CARRIER_STRIP_HEIGHT);
         assert_eq!(rect.width, (composer.right - composer.left) as u32);
-        assert_eq!(rect.height, (composer.bottom - composer.top) as u32);
+        assert_eq!(
+            rect.height,
+            (composer.bottom - composer.top + CARRIER_STRIP_HEIGHT) as u32
+        );
+        assert_eq!(rect.y + CARRIER_STRIP_HEIGHT, composer.top);
+        assert_eq!(rect.y + rect.height as i32, composer.bottom);
         assert!(rect.x >= target[0]);
         assert!(rect.y >= target[1]);
         assert!(rect.x + rect.width as i32 <= target[2]);
         assert!(rect.y + rect.height as i32 <= target[3]);
+        println!(
+            "TASK5038_NATIVE strip_height={} composer_height={} overlay_height={} strip_top={} composer_top={} composer_bottom={}",
+            CARRIER_STRIP_HEIGHT,
+            composer.bottom - composer.top,
+            rect.height,
+            rect.y,
+            composer.top,
+            composer.bottom
+        );
     }
 
     #[test]
@@ -6590,10 +6617,8 @@ mod tests {
         let target = [0, 0, 1_920, 1_080];
         let composer = composer_bounds(target);
         let rect = protected_overlay_rect(target, Some(composer), None).expect("verified composer");
-        // The message list starts above the composer, and OSL owns none of it:
-        // no header inset, no sidebar inset, no band. Eye off is raw Discord
-        // because there is no OSL window over the conversation at all.
-        assert_eq!(rect.y, composer.top);
+        // The only band above the composer is the fixed, visible carrier strip.
+        assert_eq!(rect.y, composer.top - CARRIER_STRIP_HEIGHT);
         assert!(rect.y > target[1] + 900);
         assert_eq!(painted_rows_top(&[]), None);
         assert_eq!(painted_rows_bounds(&[]), None);
@@ -6823,9 +6848,9 @@ mod tests {
         let rect = protected_overlay_rect(target, Some(composer), None).expect("verified composer");
         assert_eq!(rect.x, composer.left);
         assert_eq!(rect.width, (composer.right - composer.left) as u32);
-        assert_eq!(rect.y, composer.top);
+        assert_eq!(rect.y, composer.top - CARRIER_STRIP_HEIGHT);
         assert_eq!(rect.y + rect.height as i32, composer.bottom);
-        assert_eq!(rect.height, 56);
+        assert_eq!(rect.height, 56 + CARRIER_STRIP_HEIGHT as u32);
     }
 
     #[test]
@@ -7028,11 +7053,12 @@ mod tests {
             None,
             "the eye off must leave the shield with nothing to cover"
         );
-        // Lock on, eye off: the composer exactly, and no shield.
+        // Lock on, eye off: the composer plus its visible carrier strip, and no
+        // shield.
         let engaged_eye_off =
             protected_presence_surface_rect(ComposerAndRows, target, Some(composer), &[])
                 .expect("an engaged composer is present with the eye off");
-        assert_eq!(engaged_eye_off.y, composer.top);
+        assert_eq!(engaged_eye_off.y, composer.top - CARRIER_STRIP_HEIGHT);
         assert_eq!(
             engaged_eye_off.y + engaged_eye_off.height as i32,
             composer.bottom
