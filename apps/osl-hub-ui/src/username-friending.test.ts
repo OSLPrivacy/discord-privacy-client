@@ -17,8 +17,9 @@ describe("username friending adapter", () => {
   beforeEach(() => invoke.mockReset());
 
   it("never silently normalizes usernames", () => {
-    expect(isNormalizedOslUsername("alice_01")).toBe(true);
-    for (const value of ["Alice", "ab", "_alice", "alice_", "alice.name", "alice-name"])
+    for (const value of ["a", "Alice", "alice_01", "_alice", "alice_"])
+      expect(isNormalizedOslUsername(value)).toBe(true);
+    for (const value of ["a".repeat(17), "alice.name", "alice-name", "alice name"])
       expect(isNormalizedOslUsername(value)).toBe(false);
   });
 
@@ -26,8 +27,8 @@ describe("username friending adapter", () => {
     invoke.mockResolvedValue({ username: "alice_01", oslUserId: "user-1" });
     expect(await claimOslUsername("alice_01")).toEqual({ username: "alice_01", oslUserId: "user-1" });
     expect(invoke).toHaveBeenCalledWith("claim_hub_username", { username: "alice_01" });
-    expect(parseHubUsernameClaim({ username: "Alice", oslUserId: "user-1" })).toBeNull();
-    expect(await claimOslUsername("Alice")).toBeNull();
+    expect(parseHubUsernameClaim({ username: "Alice", oslUserId: "user-1" })).toEqual({ username: "Alice", oslUserId: "user-1" });
+    expect(await claimOslUsername("bad-name")).toBeNull();
   });
 
   it("preserves safety-number verification after username resolution", async () => {

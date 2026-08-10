@@ -6239,9 +6239,13 @@ fn valid_osl_username(value: &str) -> bool {
     keystore::client::is_normalized_username(value)
 }
 
+fn username_rules_error() -> String {
+    format!("OSL {}", keystore::client::USERNAME_RULES_MESSAGE)
+}
+
 fn lookup_username(username: &str) -> Result<Option<String>, String> {
     if !valid_osl_username(username) {
-        return Err("OSL username is invalid".to_owned());
+        return Err(username_rules_error());
     }
     let directory = keystore::osl_config_dir()
         .map_err(|error| format!("OSL username directory configuration is unavailable: {error}"))?;
@@ -6267,7 +6271,7 @@ fn claim_username(
     username: &str,
 ) -> Result<HubUsernameClaim, String> {
     if !valid_osl_username(username) {
-        return Err("OSL username is invalid".to_owned());
+        return Err(username_rules_error());
     }
     let friend_code = security::export_friend_code(core)?.friend_code;
     let claimed = username_directory_client()?
@@ -6310,7 +6314,7 @@ async fn get_hub_username_status(
     let _session = session.transition.lock().await;
     let owner = active_unlocked_osl_user_id(&core)?;
     if !valid_osl_username(&username) {
-        return Err("OSL username is invalid".to_owned());
+        return Err(username_rules_error());
     }
     Ok(HubUsernameStatus {
         username: username.clone(),
@@ -6328,7 +6332,7 @@ async fn add_hub_friend_by_username(
 ) -> Result<AddFriendResult, String> {
     let _session = session.transition.lock().await;
     if !valid_osl_username(&username) {
-        return Err("OSL username is invalid".to_owned());
+        return Err(username_rules_error());
     }
     if alias.as_deref().is_some_and(|value| {
         value.len() > 80 || value.chars().any(|character| character.is_control())

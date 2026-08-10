@@ -140,30 +140,25 @@ pub const ROT_DOMAIN: &str = "OSL-ROTATE-v1";
 /// string with no trailing newline.
 /// Mirrors `USERNAME_CLAIM_DOMAIN` in keyserver-cf/src/lib/username.ts.
 pub const USERNAME_CLAIM_DOMAIN: &str = "OSL-USERNAME-CLAIM-v1";
-/// Mirrors `USERNAME_MIN` / `USERNAME_MAX` in the same module.
-pub const USERNAME_MIN: usize = 3;
-pub const USERNAME_MAX: usize = 30;
+/// Mirrors `USERNAME_MIN` / `USERNAME_MAX` in the Worker.
+pub const USERNAME_MIN: usize = 1;
+pub const USERNAME_MAX: usize = 16;
+pub const USERNAME_RULES_MESSAGE: &str =
+    "username must use only letters, digits, and underscores and be 1 to 16 characters";
 
-/// True only for an ALREADY-normalized username.
+/// True only for a username that already follows the public-name grammar.
 ///
-/// The server refuses anything else with "username must already be normalized",
-/// so this must never normalize silently: a caller that quietly lowercased or
-/// trimmed would claim a name the user did not type. Mirrors
-/// `USERNAME_RE = /^[a-z0-9](?:[a-z0-9_]{1,28}[a-z0-9])?$/` exactly: lowercase
-/// alphanumeric, underscores only in the interior, 3..=30 characters.
+/// This never normalizes silently: a caller that quietly lowercased or trimmed
+/// would claim a name the user did not type. Mirrors
+/// `USERNAME_RE = /^[A-Za-z0-9_]{1,16}$/` exactly.
 pub fn is_normalized_username(value: &str) -> bool {
     let bytes = value.as_bytes();
     if bytes.len() < USERNAME_MIN || bytes.len() > USERNAME_MAX {
         return false;
     }
-    let alnum = |b: u8| b.is_ascii_digit() || b.is_ascii_lowercase();
-    let Some((&first, rest)) = bytes.split_first() else {
-        return false;
-    };
-    let Some((&last, middle)) = rest.split_last() else {
-        return false;
-    };
-    alnum(first) && alnum(last) && middle.iter().all(|&b| alnum(b) || b == b'_')
+    bytes
+        .iter()
+        .all(|b| b.is_ascii_alphanumeric() || *b == b'_')
 }
 
 /// Byte-exact claim message, mirroring `usernameClaimMessage` in

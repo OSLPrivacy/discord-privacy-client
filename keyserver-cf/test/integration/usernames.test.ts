@@ -854,16 +854,20 @@ describe("username directory", () => {
     });
   });
 
-  it("claims and resolves only an exact normalized username", async () => {
+  it("accepts one-character public names and refuses names outside the public-name rules", async () => {
     const uid = userId();
     const pair = await registerTestUser(SELF, uid);
     const invite = await friendCode(uid, pair);
-    expect((await claim("alice_01", uid, pair, invite)).status).toBe(200);
-    expect((await claim("alice_01", uid, pair, invite)).status).toBe(200);
-    const found = await lookup("alice_01", "203.0.113.10");
+    expect((await claim("a", uid, pair, invite)).status).toBe(200);
+    expect((await claim("a", uid, pair, invite)).status).toBe(200);
+    const found = await lookup("a", "203.0.113.10");
     expect(found.status).toBe(200);
-    expect(await found.json()).toMatchObject({ found: true, username: "alice_01", friend_code: invite });
-    expect((await lookup("Alice_01", "203.0.113.11")).status).toBe(400);
+    expect(await found.json()).toMatchObject({ found: true, username: "a", friend_code: invite });
+    for (const username of ["a".repeat(17), "bad name", "bad-name"]) {
+      const rejected = await lookup(username, "203.0.113.11");
+      expect(rejected.status).toBe(400);
+      expect(await rejected.text()).toContain("username must use only letters, digits, and underscores and be 1 to 16 characters");
+    }
   });
 
   it("rejects unsigned, wrong-key, and mismatched-invite claims", async () => {

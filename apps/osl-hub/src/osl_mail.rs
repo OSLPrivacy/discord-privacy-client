@@ -133,7 +133,10 @@ pub fn provision(
     username: String,
 ) -> Result<OslMailStatus, String> {
     if !keystore::client::is_normalized_username(&username) {
-        return Err("OSL Mail username must already be normalized".to_owned());
+        return Err(format!(
+            "OSL Mail {}",
+            keystore::client::USERNAME_RULES_MESSAGE
+        ));
     }
     let identity = active_identity(core)?;
     let base_url = mail_base_url()?;

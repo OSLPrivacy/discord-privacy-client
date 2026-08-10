@@ -2,7 +2,7 @@ import type { Env } from "../env.js";
 import { callerIp, checkRateLimit } from "../lib/rate-limit.js";
 import { badRequest, conflict, forbidden, json, notFound, serviceUnavailable, tooMany, unauthorized } from "../lib/http.js";
 import { isHighEntropyRequestId, isNonEmptyBase64, isProtocolId } from "../lib/validation.js";
-import { validNormalizedUsername } from "../lib/username.js";
+import { USERNAME_RULES_MESSAGE, validNormalizedUsername } from "../lib/username.js";
 import { MAIL_MAX_CIPHERTEXT_BYTES, OSL_MAIL_TTL_MS } from "../mail/mailbox.js";
 import { authorizeMailRequest, base64Decode, base64Encode, requestDigest } from "../mail/protocol.js";
 
@@ -42,7 +42,7 @@ export async function handleMailProvision(request: Request, env: Env): Promise<R
   if (!body) return badRequest("malformed JSON body");
   const auth = await authorizeMailRequest(env, "PROVISION", body);
   if (!auth) return unauthorized("registered signed identity required");
-  if (!validNormalizedUsername(body.username)) return badRequest("username must already be normalized");
+  if (!validNormalizedUsername(body.username)) return badRequest(USERNAME_RULES_MESSAGE);
   if (typeof body.rotate !== "boolean") return badRequest("rotate must be boolean");
   const username = body.username;
   const address = `${username}@${DOMAIN}`;

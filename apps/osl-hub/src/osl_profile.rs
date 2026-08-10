@@ -17,8 +17,10 @@ const PROFILE_VERSION: u32 = 1;
 const PROFILE_PICTURE_VERSION: u32 = 1;
 const MAX_DISPLAY_NAME_CHARS: usize = 64;
 const MAX_DISPLAY_NAME_BYTES: usize = 192;
-const MIN_USERNAME_CHARS: usize = 3;
-const MAX_USERNAME_CHARS: usize = 30;
+const MIN_USERNAME_CHARS: usize = 1;
+const MAX_USERNAME_CHARS: usize = 16;
+const USERNAME_RULES_MESSAGE: &str =
+    "OSL usernames must use only letters, digits, and underscores and be 1 to 16 characters";
 const MAX_STATUS_CHARS: usize = 160;
 const MAX_STATUS_BYTES: usize = 512;
 const MAX_HTTPS_AVATAR_BYTES: usize = 2_048;
@@ -276,31 +278,16 @@ fn validate_profile(input: HubProfileInput) -> Result<HubProfileDto, String> {
 }
 
 pub fn normalize_username_candidate(input: &str) -> Result<String, String> {
-    let trimmed = input.trim();
-    let candidate = trimmed.strip_prefix('@').unwrap_or(trimmed);
-    if candidate.len() < MIN_USERNAME_CHARS || candidate.len() > MAX_USERNAME_CHARS {
-        return Err(format!(
-            "OSL username candidates must be {MIN_USERNAME_CHARS} to {MAX_USERNAME_CHARS} characters"
-        ));
-    }
-    if !candidate.is_ascii() {
-        return Err("OSL usernames use only lowercase ASCII letters, numbers, and '_'".to_owned());
-    }
-    let normalized = candidate.to_ascii_lowercase();
-    let bytes = normalized.as_bytes();
-    if !bytes.first().is_some_and(u8::is_ascii_alphanumeric)
-        || !bytes.last().is_some_and(u8::is_ascii_alphanumeric)
+    if input.len() < MIN_USERNAME_CHARS
+        || input.len() > MAX_USERNAME_CHARS
+        || !input
+            .as_bytes()
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
     {
-        return Err(
-            "OSL username candidates must start and end with a letter or number".to_owned(),
-        );
+        return Err(USERNAME_RULES_MESSAGE.to_owned());
     }
-    for byte in bytes {
-        if !byte.is_ascii_alphanumeric() && *byte != b'_' {
-            return Err("OSL usernames use only lowercase letters, numbers, and '_'".to_owned());
-        }
-    }
-    Ok(normalized)
+    Ok(input.to_owned())
 }
 
 fn bounded_trimmed_text(
@@ -622,10 +609,17 @@ mod tests {
     #[test]
     fn normalization_and_strict_field_validation_fail_closed() {
         assert_eq!(
-            normalize_username_candidate(" @Mixed_Name_7 ").unwrap(),
-            "mixed_name_7"
+            normalize_username_candidate("Mixed_Name_7").unwrap(),
+            "Mixed_Name_7"
         );
-        for invalid in ["ab", "_starts", "ends_", "two.dots", "space name", "námé"] {
+        for invalid in [
+            "",
+            &"a".repeat(17),
+            "two.dots",
+            "space name",
+            "two-name",
+            "námé",
+        ] {
             assert!(normalize_username_candidate(invalid).is_err(), "{invalid}");
         }
         let mut input = valid_input();
