@@ -7,7 +7,7 @@ use std::{
 };
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use task_3096_build_proof::check_build_proof_file;
+use task_3096_build_proof::check_build_proof_file_wording;
 
 const PROOF_FLAG: &str = "--proof-file";
 const KEY_FLAG: &str = "--trusted-public-key-file";
@@ -43,7 +43,10 @@ fn run(args: impl IntoIterator<Item = String>) -> Result<String, String> {
         .get(KEY_FLAG)
         .and_then(|path| read_base64_key(path).ok());
 
-    Ok(check_build_proof_file(proof_path, trusted_public_key, fingerprint, checked_at).to_string())
+    Ok(
+        check_build_proof_file_wording(proof_path, trusted_public_key, fingerprint, checked_at)
+            .to_string(),
+    )
 }
 
 fn parse_flags(args: impl IntoIterator<Item = String>) -> Result<BTreeMap<String, String>, String> {
