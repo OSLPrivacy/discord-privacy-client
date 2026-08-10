@@ -135,6 +135,34 @@ describe("Tor onboarding choice", () => {
     expect(tor.choice === "tor" && tor.localNetworkEnabled).toBe(false);
   });
 
+  it("proves neither control can leave both enabled, including a legacy stored-both state", () => {
+    const starts = [
+      initialTorOnboardingState(),
+      chooseTorRoute(initialTorOnboardingState(), "direct"),
+      chooseLocalNetworkUsage(initialTorOnboardingState(), true),
+      { ...initialTorOnboardingState(), choice: "tor" as const, localNetworkEnabled: true },
+    ];
+    let checked = 0;
+    for (const start of starts) {
+      const torOn = chooseTorRoute(start, "tor");
+      expect(torOn.choice === "tor" && torOn.localNetworkEnabled).toBe(false);
+      checked++;
+
+      const localOn = chooseLocalNetworkUsage(start, true);
+      expect(localOn.choice === "tor" && localOn.localNetworkEnabled).toBe(false);
+      checked++;
+    }
+    expect(checked).toBe(8);
+
+    const legacy = starts[3]!;
+    const repairedByTor = chooseTorRoute(legacy, "tor");
+    expect(repairedByTor.localNetworkEnabled).toBe(false);
+    expect(onboardingTorMarkup(repairedByTor)).toContain("Local network was turned off because Tor hides where you are, while local network access needs to see your local network.");
+    const repairedByLocal = chooseLocalNetworkUsage(legacy, true);
+    expect(repairedByLocal.choice).toBe("direct");
+    expect(onboardingTorMarkup(repairedByLocal)).toContain("Tor was turned off because Tor hides where you are, while local network access needs to see your local network.");
+  });
+
   it("renders first-run progress copied from a sidecar bootstrap event", () => {
     const status = applyTorSidecarEvent(initialTorBootStatus(), { event: "bootstrap", percent: 40 });
     const state = applyTorBootstrapStatus(initialTorOnboardingState(), status);
