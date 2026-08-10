@@ -166,6 +166,9 @@ import { checkHubForUpdates, installHubUpdate, openHubReleasesPage, openHubSourc
 import { createDiscordQaGeometryKeeper } from "./discord-qa-geometry";
 import { composerLockAvailability } from "./composer-protection-trace";
 import { browserLogo, serviceLogo, providerLogo } from "./logos";
+import { appearanceColourRowsMarkup, bindAppearanceColourRows, loadAppearanceColours } from "./appearance-colours";
+import { appearancePreviewMarkup, updateAppearancePreview, type AppearancePreviewService } from "./appearance-preview";
+import { attachSettingsProfileBlock, restoreSettingsProfile, settingsProfileBlockMarkup } from "./settings-profile-block";
 import { activateLocalLoopbackContext, activateManualPeerContext, activateNativeManualPeerContext, activateOslChatContext, addOslChatReaction, addOslFriend, addOslFriendByUsername, answerHubChatApprovalSuggestion, backBurnReview, burnActiveHubContext, burnHubServiceAccount, captureProtectionEnforced, closeOslChatContext, copyHubFriendInvite, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubRevocationStatus, getHubServiceBurnReadiness, getOslUsernameStatus, isHubPlaintext, isNormalizedOslUsername, listHubIdentities, listHubPeople, listOslChatHistory, loadActiveContextSecurity, loadAppNotifications, loadBuildIntegrityStatus, loadFriendProfile, loadInstalledBuildChatWarningStatus, openOslChatText, openPeerProseText, peerIsVerified, prepareLocalProtectedText, prepareOslChatText, preparePeerProseText, recoverHubIdentitySlot, removeOslChatReaction, saveActiveContextSecurity, saveBurnReviewState, revokeActiveHubFriendScope, setActiveHubFriendPermission, setActiveHubFriendReach, setHubChatApprovalSuggestionChoice, setHubFriendNickname, setLocalProtectedSheetOpen, setNativeDiscordProtectedOverlayOpen, setNativeDiscordProtectedOverlayOpenForQa, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, viewHubRecoveryPhrase, type AppNotification, type BuildIntegrityStatus, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type InstalledBuildChatWarning, type LocalPrivacyScanResult, type ManualPeerContext, type PersistedLocalPrivacyScanResult } from "./adapters";
 import { blankLocalProtectedModel, isLocalTtlSeconds, loadOrCreateLocalConversationId, localProtectedSheetMarkup, validLocalChatLabel, type LocalProtectedPane, type LocalProtectedSheetModel } from "./local-protected-sheet";
 import { claimOslUsername, createHubPrivateContactLink, createOslFriendRequestByOslName, type HubPrivateContactLink } from "./adapters";
@@ -247,7 +250,7 @@ import { coverWritingControlsMarkup } from "./cover-writing-controls";
 import { applyOslChatDraftToElement, firstPartyOslSurfaceContract, OSL_CHAT_KEY_CHANGED_REFUSAL_REASON, OSL_CHAT_MAX_DRAFT_BYTES, oslChatDraftBytes, oslChatHandshakeConfirmed, oslChatsViewMarkup, senderReceiptStateFor, submitsOslChatDraft, type OslChatMessage } from "./osl-chats-view";
 import { createOslChatDeliveryRuntime, mergeOslChatTimeline, oslChatHistoryMessages, oslChatOpenRefusalMessage, pruneExpiredOslChatMessages, receivedOslChatBatchMessage, type OslChatDeliveryHost } from "./osl-chat-runtime";
 import { attachChatProfileAppearanceModal } from "./chat-profile-appearance-modal";
-import { OslProfilePaneState, seededProfilePaneRecords } from "./osl-profile-pane";
+import { OslProfilePaneState, seededProfilePaneRecords, type ScopedProfileRecord } from "./osl-profile-pane";
 import { mountChatBackgroundPane } from "./chat-background-pane";
 import { renderChatMessagesPane } from "./chat-messages-pane";
 import { bindSafetyNumberPanel, safetyNumberPanelMarkup } from "./safety-number-panel";
@@ -606,6 +609,19 @@ let removeEverythingScreenOpen = false;
 let windowSoundsSettings: WindowSoundsSettings = loadWindowSoundsSettings();
 let discoveryVisibility: DiscoveryVisibilityState = defaultDiscoveryVisibilityState();
 let discoveryVisibilityStatus: string | null = null;
+// Appearance keeps a small, local draft: the preview deliberately reads this
+// object rather than waiting for a server-side profile save.
+const appearanceProfileState = new OslProfilePaneState([{
+  scope: { kind: "global" },
+  useSeparateProfileHere: false,
+  displayName: "Your name",
+  aboutLine: "",
+  status: "Your vibe goes here.",
+  cardBackground: "#0d1114",
+  avatar: null,
+  colour: "#2ac0f0",
+}]);
+restoreSettingsProfile(appearanceProfileState);
 let activeService: LinkedService | null = null;
 let activeHomeAppId: HomeAppId | null = null;
 let appLaunchPendingId: HomeAppId | null = null;
@@ -7738,7 +7754,14 @@ function activationSettingsContent(): string {
 
 function appearanceSettingsContent(): string {
   const theme = `<div class="theme-grid">${(["system", "dark", "light"] as ThemeChoice[]).map((choice) => `<button class="theme-card ${themeChoice === choice ? "selected" : ""}" data-theme-choice="${choice}"><span class="theme-swatch ${choice}"></span><strong>${choice[0].toUpperCase()}${choice.slice(1)}</strong><small>${choice === "system" ? "Follow this device" : `${choice} interface`}</small></button>`).join("")}</div>`;
-  return `${lookScreenMarkup(lookState)}${appearanceSettingsMarkup(appearancePreferences)}<section class="appearance-theme"><h3>Theme</h3>${theme}</section>`;
+  const profile = appearanceProfileState.record("global");
+  if (!profile) throw new Error("Appearance profile draft is missing");
+  const colours = loadAppearanceColours(localStorage);
+  const connectedServices: AppearancePreviewService[] = services
+    .filter((service) => service.accounts.some((account) => account.state === "demoLinked"))
+    .map((service) => ({ id: service.id, label: service.displayName, icon: serviceLogo(service.id) }));
+  const profilePreview = `<section class="appearance-layout"><div class="appearance-controls">${appearanceColourRowsMarkup(colours)}<div data-settings-profile-block>${settingsProfileBlockMarkup(profile)}</div></div>${appearancePreviewMarkup(profile, colours, connectedServices)}</section>`;
+  return `${lookScreenMarkup(lookState)}${appearanceSettingsMarkup(appearancePreferences)}<section class="appearance-theme"><h3>Theme</h3>${theme}</section>${profilePreview}`;
 }
 
 function previewLook(next: LookState): void {
@@ -9042,6 +9065,21 @@ function bindWorkspace(): void {
   document.querySelector<HTMLFormElement>("[data-start-something-direct]")?.addEventListener("submit", (event) => { event.preventDefault(); void submitStartSomething(event.currentTarget as HTMLFormElement, "direct"); });
   document.querySelector<HTMLFormElement>("[data-start-something-group]")?.addEventListener("submit", (event) => { event.preventDefault(); void submitStartSomething(event.currentTarget as HTMLFormElement, "group"); });
   document.querySelector<HTMLFormElement>("[data-start-something-enclave]")?.addEventListener("submit", (event) => { event.preventDefault(); void submitStartSomething(event.currentTarget as HTMLFormElement, "enclave"); });
+  const appearanceRoot = document.querySelector<HTMLElement>(".appearance-layout");
+  const appearanceProfileMount = document.querySelector<HTMLElement>("[data-settings-profile-block]");
+  const previewServices = (): AppearancePreviewService[] => services
+    .filter((service) => service.accounts.some((account) => account.state === "demoLinked"))
+    .map((service) => ({ id: service.id, label: service.displayName, icon: serviceLogo(service.id) }));
+  const refreshAppearancePreview = (): void => {
+    updateAppearancePreview(
+      document.querySelector<HTMLElement>("[data-appearance-preview]"),
+      appearanceProfileState.record("global") as ScopedProfileRecord,
+      loadAppearanceColours(localStorage),
+      previewServices(),
+    );
+  };
+  if (appearanceRoot) bindAppearanceColourRows(appearanceRoot, localStorage, () => refreshAppearancePreview());
+  if (appearanceProfileMount) attachSettingsProfileBlock(appearanceProfileMount, appearanceProfileState, { onProfileChange: refreshAppearancePreview });
   document.querySelectorAll<HTMLButtonElement>("[data-osl-chat-open]").forEach((button) => button.addEventListener("click", () => {
     void openOslChat(button.dataset.oslChatOpen ?? "");
   }));
