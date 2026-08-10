@@ -74,6 +74,8 @@ const RATCHET_PUBLIC_BYTES: usize = 32;
 const SAFETY_NUMBER_BUNDLE_REFUSAL: &str = "OSL friend key bundle is invalid";
 const SAFETY_NUMBER_MISMATCH_REFUSAL: &str = "OSL safety number does not match";
 const PENDING_KEY_CHANGE_REFUSAL: &str = "OSL friend key change state is incomplete";
+/// The fixed refusal returned when a People relationship has been blocked.
+pub const FRIEND_BLOCKED_ERROR: &str = "friend blocked";
 
 #[derive(Debug, Default)]
 pub struct HubSecurityState {
@@ -144,6 +146,7 @@ pub struct PersonDto {
     pub whitelisted_scopes: Vec<PersonWhitelistScopeDto>,
     pub whitelisted_scopes_truncated: bool,
     pub pending_key_change: bool,
+    pub relationship: FriendRelationship,
     /// True when the user deliberately extended this person's trust to the
     /// other scopes they share. Never set by an ordinary scope approval.
     pub reach_broadened: bool,
@@ -152,6 +155,21 @@ pub struct PersonDto {
     /// Scope storage keys explicitly taken back from this person; they stay
     /// denied while reach is broadened.
     pub reach_narrowed_scopes: Vec<String>,
+}
+
+/// The local relationship state for a person in People.  A blocked record is
+/// retained for display, but is never a messaging authority.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FriendRelationship {
+    Accepted,
+    Blocked,
+}
+
+impl Default for FriendRelationship {
+    fn default() -> Self {
+        Self::Accepted
+    }
 }
 
 /// A local-only description of one approved encryption scope. It deliberately
@@ -322,6 +340,15 @@ pub struct FriendAccountReachAccount {
     pub service_id: String,
     pub account_id: String,
     pub account_label: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FriendAccountReachChoiceRecord {
+    pub person_id: String,
+    pub service_id: String,
+    pub account_id: String,
+    pub broadened: bool,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
@@ -714,6 +741,8 @@ struct SignedFriendCode {
 struct PersonMetadata {
     osl_user_id: String,
     ed25519_public: String,
+    #[serde(default)]
+    relationship: FriendRelationship,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     alias: Option<String>,
     #[serde(default)]
@@ -1144,6 +1173,7 @@ pub fn add_friend_code(
         PersonMetadata {
             osl_user_id: parsed.payload.osl_user_id.clone(),
             ed25519_public: parsed.payload.ed25519_public.clone(),
+            relationship: FriendRelationship::Accepted,
             alias,
             safety_number_verified: false,
             auto_whitelist: ipc::auto_whitelist_rules::AutoWhitelistChoice::Never,
@@ -1472,6 +1502,29 @@ pub fn set_friend_alias(
     person_dto(core, &person_id, &updated, &load_security_preferences()?)
 }
 
+/// Change only the local relationship state.  Blocking preserves the roster
+/// record for review while `manual_peer_binding` makes every messaging route
+/// refuse the person by the fixed error name.
+pub fn set_friend_relationship(
+    core: &HubCoreState,
+    security: &HubSecurityState,
+    person_id: String,
+    relationship: FriendRelationship,
+) -> Result<PersonDto, String> {
+    require_unlocked()?;
+    validate_person_id(&person_id)?;
+    let _transition = security.transition.lock()
+        .map_err(|_| "OSL People state is unavailable".to_owned())?;
+    let dir = config_dir()?;
+    let mut people = load_people_file(&dir)?;
+    let metadata = people.people.get_mut(&person_id)
+        .ok_or_else(|| "OSL friend is unknown".to_owned())?;
+    metadata.relationship = relationship;
+    let updated = metadata.clone();
+    write_encrypted_json(&dir.join(PEOPLE_FILE), &people)?;
+    person_dto(core, &person_id, &updated, &load_security_preferences()?)
+}
+
 pub fn set_group_member_permission(
     security: &HubSecurityState,
     group_id: String,
@@ -1747,6 +1800,96 @@ pub fn set_hub_friend_account_reach_nowhere(
             .collect(),
         changed_count,
     })
+}
+
+/// Allow an accepted friend to reach every supplied local account.  The choice
+/// is explicit per account; absent records remain a refusal at send time.
+pub fn set_hub_friend_account_reach_everywhere(
+    security: &HubSecurityState,
+    person_id: String,
+    accounts: Vec<FriendAccountReachAccount>,
+) -> Result<FriendAccountReachBulkResult, String> {
+    require_unlocked()?;
+    validate_person_id(&person_id)?;
+    if accounts.is_empty() {
+        return Err("OSL friend account reach requires at least one owned account".to_owned());
+    }
+    let account_keys = validate_friend_account_reach_accounts(&accounts)?;
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL friend account reach is unavailable".to_owned())?;
+    let dir = config_dir()?;
+    ensure_friend_accepted(&dir, &person_id)?;
+    let path = dir.join(SECURITY_PREFS_FILE);
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
+    let choices = prefs
+        .friend_account_reach_choices
+        .entry(person_id.clone())
+        .or_default();
+    let mut changed_count = 0;
+    for key in account_keys {
+        if choices.insert(key, true) != Some(true) {
+            changed_count += 1;
+        }
+    }
+    prefs.version = 2;
+    write_encrypted_json(&path, &prefs)?;
+    Ok(FriendAccountReachBulkResult {
+        action: "everywhere".to_owned(),
+        person_id: person_id.clone(),
+        accounts: accounts
+            .into_iter()
+            .map(|account| FriendAccountReachRecord {
+                person_id: person_id.clone(),
+                service_id: account.service_id,
+                account_id: account.account_id,
+                account_label: account.account_label,
+                allowed: true,
+            })
+            .collect(),
+        changed_count,
+    })
+}
+
+pub fn set_friend_account_reach_choice(
+    security: &HubSecurityState,
+    person_id: String,
+    service_id: String,
+    account_id: String,
+    broadened: bool,
+) -> Result<FriendAccountReachChoiceRecord, String> {
+    let account = FriendAccountReachAccount {
+        service_id: service_id.clone(),
+        account_id: account_id.clone(),
+        account_label: "Account".to_owned(),
+    };
+    if broadened {
+        set_hub_friend_account_reach_everywhere(security, person_id.clone(), vec![account])?;
+    } else {
+        set_hub_friend_account_reach_nowhere(security, person_id.clone(), vec![account])?;
+    }
+    Ok(FriendAccountReachChoiceRecord { person_id, service_id, account_id, broadened })
+}
+
+pub fn list_friend_account_reach_choices(
+    _security: &HubSecurityState,
+    person_id: String,
+) -> Result<Vec<FriendAccountReachChoiceRecord>, String> {
+    require_unlocked()?;
+    validate_person_id(&person_id)?;
+    let dir = config_dir()?;
+    ensure_friend_accepted(&dir, &person_id)?;
+    let prefs = load_encrypted_json::<SecurityPreferences>(&dir.join(SECURITY_PREFS_FILE))?;
+    Ok(prefs.friend_account_reach_choices.get(&person_id).into_iter().flat_map(|choices| {
+        choices.iter().filter_map(|(key, allowed)| {
+            let (service_id, account_id) = key.split_once(':')?;
+            Some(FriendAccountReachChoiceRecord {
+                person_id: person_id.clone(), service_id: service_id.to_owned(),
+                account_id: account_id.to_owned(), broadened: *allowed,
+            })
+        })
+    }).collect())
 }
 
 pub fn read_friend_page_share_data(
@@ -2796,6 +2939,20 @@ fn validate_manual_peer_identity(
     Ok(())
 }
 
+fn ensure_friend_accepted(dir: &Path, person_id: &str) -> Result<(), String> {
+    let people = load_people_file(dir)?;
+    let metadata = people.people.get(person_id)
+        .ok_or_else(|| "OSL friend is unknown".to_owned())?;
+    ensure_friend_relationship_accepted(metadata)
+}
+
+fn ensure_friend_relationship_accepted(metadata: &PersonMetadata) -> Result<(), String> {
+    match metadata.relationship {
+        FriendRelationship::Accepted => Ok(()),
+        FriendRelationship::Blocked => Err(FRIEND_BLOCKED_ERROR.to_owned()),
+    }
+}
+
 /// Resolve one existing, verified friend for manual peer messaging. This is
 /// deliberately re-run by every prepare/open operation rather than treating
 /// activation as a durable authorization decision.
@@ -2811,6 +2968,7 @@ pub fn manual_peer_binding(
         .people
         .get(&person_id)
         .ok_or_else(|| "OSL friend is unknown".to_owned())?;
+    ensure_friend_relationship_accepted(metadata)?;
     let peer = core
         .osl
         .peer_map
@@ -2939,12 +3097,32 @@ fn manual_peer_scope_approved_for_binding(
     let dir = config_dir()?;
     let prefs = load_encrypted_json::<SecurityPreferences>(&dir.join(SECURITY_PREFS_FILE))?;
     let storage_key = scope.storage_key();
-    Ok(manual_scope_preference_approved(&prefs, &storage_key))
+    Ok(manual_scope_preference_approved(&prefs, &storage_key)
+        && friend_account_reach_choice_allows_action(
+            &prefs,
+            &binding.person_id,
+            service_id,
+            account_id,
+        ))
 }
 
 fn manual_scope_preference_approved(prefs: &SecurityPreferences, storage_key: &str) -> bool {
     prefs.manual_approved_scopes.contains(storage_key)
         && !prefs.burned_manual_scopes.contains(storage_key)
+}
+
+fn friend_account_reach_choice_allows_action(
+    prefs: &SecurityPreferences,
+    person_id: &str,
+    service_id: &str,
+    account_id: &str,
+) -> bool {
+    prefs
+        .friend_account_reach_choices
+        .get(person_id)
+        .and_then(|accounts| accounts.get(&format!("{service_id}:{account_id}")))
+        .copied()
+        .unwrap_or(false)
 }
 
 /// Withdraw every manual grant attributed to one person. Burn records are
@@ -5422,6 +5600,7 @@ fn person_dto(
         person_id: person_id.to_owned(),
         osl_user_id: metadata.osl_user_id.clone(),
         alias: metadata.alias.clone(),
+        relationship: metadata.relationship,
         // Ordinarily this is the complete bundle OSL holds and encrypts to. A
         // signed pending transport-key update is shown only while encryption
         // is blocked; successful comparison adopts that exact bundle
@@ -10587,6 +10766,47 @@ key"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[test]
+    fn task_5088_blocked_friend_and_unticked_account_refuse_send_authorization() {
+        let harness = FileBackedSecurityHarness::new("task-5088-reach-and-block");
+        let core = HubCoreState::default();
+        let security = HubSecurityState::default();
+        install_self_identity(&core);
+        let (person_id, metadata, peer) = test_friend(88);
+        write_people(harness.path(), &person_id, metadata);
+        install_peer_map(&core, harness.path(), &person_id, peer);
+
+        let service_id = "discord";
+        let account_id = "account-5088";
+        let scope_id = manual_peer_scope_id(service_id, account_id, &person_id).unwrap();
+        let scope = dm_scope_input(scope_id);
+        let binding = manual_peer_binding(&core, person_id.clone()).unwrap();
+        let grant = ScopedTrustGrant::for_manual_peer(
+            &binding, service_id, account_id, scope.clone(), ScopedTrustConsent::ExplicitUserAction,
+        ).unwrap();
+        apply_scoped_trust_grant(&security, &binding, &grant).unwrap();
+        let account = FriendAccountReachAccount {
+            service_id: service_id.to_owned(), account_id: account_id.to_owned(),
+            account_label: "TASK5088 Discord".to_owned(),
+        };
+        set_hub_friend_account_reach_everywhere(&security, person_id.clone(), vec![account.clone()]).unwrap();
+        assert!(manual_peer_scope_approved(&core, service_id, account_id, person_id.clone(), scope.clone()).unwrap());
+
+        set_hub_friend_account_reach_nowhere(&security, person_id.clone(), vec![account]).unwrap();
+        let unticked = require_manual_peer_scope_approved(
+            &core, service_id, account_id, person_id.clone(), scope.clone(),
+        ).unwrap_err();
+        assert_eq!(unticked, "Approve encryption for this friend before continuing");
+
+        set_friend_relationship(&core, &security, person_id.clone(), FriendRelationship::Blocked).unwrap();
+        let blocked_binding = manual_peer_binding(&core, person_id.clone()).unwrap_err();
+        let blocked_send = require_manual_peer_scope_approved(
+            &core, service_id, account_id, person_id.clone(), scope,
+        ).unwrap_err();
+        assert_eq!(blocked_binding, FRIEND_BLOCKED_ERROR);
+        assert_eq!(blocked_send, FRIEND_BLOCKED_ERROR);
+        println!("TASK5088 allowed_before=true unticked_refusal={unticked} blocked_binding={blocked_binding} blocked_send={blocked_send}");
     }
 }
 
