@@ -1,12 +1,11 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 const BURN_REVIEW_STATE_VERSION: u8 = 1;
 const MAX_BURN_REVIEW_STATE_BYTES: u64 = 16 * 1024;
+const MAX_REVIEW_FIELD_BYTES: usize = 256;
 const BURN_SCREEN_SCOPES: [&str; 3] = ["chat", "app", "account"];
 
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
@@ -51,7 +50,7 @@ pub struct BurnReviewFinalChoiceResult {
     pub remote_removal_count: usize,
 }
 
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct BurnReviewDocument {
     version: u8,
