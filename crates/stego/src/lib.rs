@@ -30,8 +30,10 @@ mod mode1_wordlists;
 pub mod word_bank_grown;
 
 pub use image_hidden::{
-    decode_png_hidden_pointer, decode_png_hidden_pointer_bytes, encode_png_hidden_pointer_bytes,
-    encode_png_hidden_pointer_copy, ImageHiddenPointer, IMAGE_HIDDEN_CHECK_MARK_BYTES,
+    check_decoded_rgb_hidden_image_quality, decode_png_hidden_pointer,
+    decode_png_hidden_pointer_bytes, encode_png_hidden_pointer_bytes,
+    encode_png_hidden_pointer_copy, ImageHiddenPointer, ImageHiddenQualityDecision,
+    ImageHiddenQualityResult, IMAGE_HIDDEN_CHECK_MARK_BYTES, IMAGE_HIDDEN_LOW_QUALITY_REFUSAL,
     IMAGE_HIDDEN_POINTER_BYTES,
 };
 pub use layer_controls::{
@@ -106,6 +108,18 @@ pub enum Error {
     ImageHiddenTooSmall {
         required_bits: usize,
         capacity_bits: usize,
+    },
+
+    #[error("image-hidden quality dimensions are too large ({width}x{height})")]
+    ImageHiddenQualityDimensions { width: u32, height: u32 },
+
+    #[error(
+        "image-hidden quality pixels for {file_name} have the wrong length (expected {expected} RGB bytes, got {got})"
+    )]
+    ImageHiddenQualityPixelLength {
+        file_name: String,
+        expected: usize,
+        got: usize,
     },
 }
 

@@ -30,6 +30,58 @@ const RESAVE_LOW: u8 = 15;
 const RESAVE_HIGH: u8 = 240;
 const RESAVE_THRESHOLD: u64 = 128;
 
+/// A pixel must differ from a horizontal or vertical neighbour by at least
+/// this much luminance before it contributes robust image-hidden capacity.
+/// Low-bit changes in flatter areas are easier to see and less likely to
+/// survive a provider transform.
+const QUALITY_MIN_LOCAL_LUMINANCE_DELTA: u64 = 12;
+
+/// Liam's selected low-quality-image behavior from task 3134. There is no
+/// warning/override path: callers must stop before posting this image.
+pub const IMAGE_HIDDEN_LOW_QUALITY_REFUSAL: &str = "Choose a larger or more detailed image.";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageHiddenQualityDecision {
+    Accepted,
+    Refused,
+}
+
+/// Capacity decision for one decoded source image.
+///
+/// `file_name` remains the caller-visible source name even when the decoder has
+/// normalized JPEG, PNG, or another supported format to RGB samples.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageHiddenQualityResult {
+    pub file_name: String,
+    pub marked_bytes: usize,
+    pub measured_capacity_bytes: usize,
+    pub decision: ImageHiddenQualityDecision,
+}
+
+impl ImageHiddenQualityResult {
+    pub const fn is_accepted(&self) -> bool {
+        matches!(self.decision, ImageHiddenQualityDecision::Accepted)
+    }
+
+    /// Complete person-facing result. Both the accepted and refused forms name
+    /// the file and the capacity actually measured from its decoded pixels.
+    pub fn message(&self) -> String {
+        match self.decision {
+            ImageHiddenQualityDecision::Accepted => format!(
+                "{}: accepted {} marked bytes; measured capacity {} bytes.",
+                self.file_name, self.marked_bytes, self.measured_capacity_bytes
+            ),
+            ImageHiddenQualityDecision::Refused => format!(
+                "{}: refused {} marked bytes; measured capacity {} bytes. {}",
+                self.file_name,
+                self.marked_bytes,
+                self.measured_capacity_bytes,
+                IMAGE_HIDDEN_LOW_QUALITY_REFUSAL
+            ),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ImageHiddenPointer {
     pub pointer: [u8; IMAGE_HIDDEN_POINTER_BYTES],
@@ -92,6 +144,98 @@ pub fn decode_png_hidden_pointer(path: impl AsRef<Path>) -> Result<Option<ImageH
 pub fn decode_png_hidden_pointer_bytes(source_png: &[u8]) -> Result<Option<ImageHiddenPointer>> {
     let decoded = decode_png_reader(Cursor::new(source_png))?;
     extract_frame(&decoded)
+}
+
+/// Measure whether decoded RGB pixels have enough detailed area to carry the
+/// requested number of marked bytes without relying on flat or tiny regions.
+///
+/// The caller supplies RGB samples after decoding, so the original can be a
+/// JPEG, PNG, or another locally supported image type. One qualifying pixel is
+/// counted as one conservative mark bit even though it has three colour
+/// components. This reserves redundancy for provider resize/re-save behavior
+/// and means geometric size alone cannot make a plain image look safe.
+pub fn check_decoded_rgb_hidden_image_quality(
+    file_name: impl Into<String>,
+    width: u32,
+    height: u32,
+    rgb_pixels: &[u8],
+    marked_bytes: usize,
+) -> Result<ImageHiddenQualityResult> {
+    let file_name = file_name.into();
+    let pixel_count = usize::try_from(width)
+        .ok()
+        .and_then(|width| {
+            usize::try_from(height)
+                .ok()
+                .and_then(|height| width.checked_mul(height))
+        })
+        .ok_or(Error::ImageHiddenQualityDimensions { width, height })?;
+    let expected_rgb_bytes = pixel_count
+        .checked_mul(3)
+        .ok_or(Error::ImageHiddenQualityDimensions { width, height })?;
+    if rgb_pixels.len() != expected_rgb_bytes {
+        return Err(Error::ImageHiddenQualityPixelLength {
+            file_name,
+            expected: expected_rgb_bytes,
+            got: rgb_pixels.len(),
+        });
+    }
+
+    let measured_capacity_bytes = detailed_pixel_count(width, height, rgb_pixels) / 8;
+    let decision = if measured_capacity_bytes >= marked_bytes {
+        ImageHiddenQualityDecision::Accepted
+    } else {
+        ImageHiddenQualityDecision::Refused
+    };
+    Ok(ImageHiddenQualityResult {
+        file_name,
+        marked_bytes,
+        measured_capacity_bytes,
+        decision,
+    })
+}
+
+fn detailed_pixel_count(width: u32, height: u32, rgb_pixels: &[u8]) -> usize {
+    let width = width as usize;
+    let height = height as usize;
+    let mut detailed = 0usize;
+
+    for y in 0..height {
+        for x in 0..width {
+            let offset = (y * width + x) * 3;
+            let current = luminance(
+                rgb_pixels[offset],
+                rgb_pixels[offset + 1],
+                rgb_pixels[offset + 2],
+            );
+            let horizontal_delta = (x > 0).then(|| {
+                let neighbour = offset - 3;
+                current.abs_diff(luminance(
+                    rgb_pixels[neighbour],
+                    rgb_pixels[neighbour + 1],
+                    rgb_pixels[neighbour + 2],
+                ))
+            });
+            let vertical_delta = (y > 0).then(|| {
+                let neighbour = offset - width * 3;
+                current.abs_diff(luminance(
+                    rgb_pixels[neighbour],
+                    rgb_pixels[neighbour + 1],
+                    rgb_pixels[neighbour + 2],
+                ))
+            });
+            let local_delta = horizontal_delta
+                .into_iter()
+                .chain(vertical_delta)
+                .max()
+                .unwrap_or(0);
+            if local_delta >= QUALITY_MIN_LOCAL_LUMINANCE_DELTA {
+                detailed += 1;
+            }
+        }
+    }
+
+    detailed
 }
 
 fn decode_png_reader<R: std::io::Read>(reader: R) -> Result<DecodedPng> {
