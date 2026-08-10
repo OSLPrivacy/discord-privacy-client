@@ -335,6 +335,18 @@ export function submitsOslChatDraft(event: {
   return !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey;
 }
 
+function deliveryLabel(state: OslChatDeliveryState): string {
+  switch (state) {
+    case "queued": return "Not sent";
+    case "sent": return "Sent";
+    case "delivered": return "Delivered";
+    case "received": return "Received";
+    case "opened": return "Opened";
+    case "expired": return "Expired";
+    case "failed": return "Failed";
+  }
+}
+
 function friendPreview(friend: OslChatFriend): string {
   if (!friend.previewVisible) {
     return '<span class="osl-chat-friend-preview is-hidden">Preview hidden</span>';
