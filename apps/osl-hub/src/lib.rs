@@ -273,6 +273,7 @@ pub mod signal_direct_message_check;
 pub mod signal_surface_finder;
 #[cfg(not(task3982_focused))]
 pub mod tor_pref;
+pub mod telegram_send_choices;
 pub mod whatsapp_place_reader;
 pub mod scrub_hosted {
     pub mod aol_mail_deleter;
