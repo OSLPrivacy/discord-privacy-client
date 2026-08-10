@@ -12480,7 +12480,7 @@ img.osl-chat-avatar { display: block; object-fit: cover; }
 
 
 
-.whitelist-roster-list { display: grid; gap: 12px; }
+.whitelist-roster-list { display: grid; gap: 0; border-top: 1px solid var(--line-soft); }
 
 
 
@@ -12535,7 +12535,15 @@ img.osl-chat-avatar { display: block; object-fit: cover; }
 .whitelist-dropdown-row small { color: var(--muted); }
 
 
-.whitelist-roster-row { display: grid; gap: 8px; }
+.whitelist-roster-row.person-row {
+  min-height: 0;
+  padding: 15px 0;
+  border: 0;
+  border-bottom: 1px solid var(--line-soft);
+  display: grid;
+  gap: 12px;
+  background: transparent;
+}
 
 
 
@@ -12544,28 +12552,55 @@ img.osl-chat-avatar { display: block; object-fit: cover; }
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 16px;
+}
+
+.whitelist-roster-row > header strong { font-size: 14.5px; font-weight: 600; line-height: 1.25; }
+.whitelist-roster-row > header small {
+  margin-top: 3px;
+  display: block;
+  color: var(--muted);
+  font-family: var(--font-prose);
+  font-size: 12.5px;
+  line-height: 1.35;
+}
+.whitelist-roster-row > header .button.compact {
+  min-width: 0;
+  min-height: 38px;
+  padding: 0 16px;
+  border-width: 1.5px;
+  border-radius: 0;
+  flex: 0 0 auto;
+  font-size: 12.5px;
 }
 
 
 
 
-.whitelist-roster-row > header small { display: block; color: var(--muted); }
-
-
-
-
-.whitelist-roster-scopes { display: grid; gap: 6px; }
+.whitelist-roster-scopes { display: grid; gap: 0; }
 
 
 
 
 .whitelist-roster-scope {
+  min-height: 49px;
+  padding: 13px 0;
+  border-top: 1px solid var(--line-soft);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 16px;
 }
+
+.whitelist-roster-scope .friend-scope {
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  font-family: var(--font-prose);
+  font-size: 12.5px;
+  line-height: 1.35;
+}
+.whitelist-roster-scope .discord-qa-whitelist { width: auto; flex: 0 0 auto; }
 
 
 
@@ -12585,7 +12620,12 @@ img.osl-chat-avatar { display: block; object-fit: cover; }
 
 
 .whitelist-roster-truncated,
-.whitelist-roster-note { color: var(--muted); }
+.whitelist-roster-note {
+  color: var(--muted);
+  font-family: var(--font-prose);
+  font-size: 12.5px;
+  line-height: 1.35;
+}
 
 
 
