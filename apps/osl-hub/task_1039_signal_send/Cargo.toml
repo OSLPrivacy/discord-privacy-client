@@ -1,0 +1,17 @@
+[package]
+name = "task-1039-signal-send"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "../src/lib.rs"
+test = false
+
+[[test]]
+name = "task_1039_signal_send"
+path = "tests/task_1039_signal_send.rs"
+
+[[test]]
+name = "task_1039a_signal_arrival"
+path = "tests/task_1039a_signal_arrival.rs"
