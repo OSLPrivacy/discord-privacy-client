@@ -61,7 +61,13 @@ fn attack_34_changed_or_missing_tick_reply_never_paints_the_build_mark() {
     );
     let changed_mark_count = friend_row_build_mark_count(changed_answer);
     assert_eq!(changed_refusal, "bad-signature");
-    assert_eq!(changed_answer, BuildProofCheck::CannotTell);
+    assert_eq!(
+        changed_answer,
+        BuildProofCheck::CannotTell,
+        "TASK3218_CHANGED_REPLY is the result that should have been refused: bad-signature reply answered={} friend_row_build_mark_count={}",
+        changed_answer,
+        changed_mark_count,
+    );
     assert_eq!(changed_mark_count, 0);
 
     // Second run: the reply is removed entirely. The gate's total checker
