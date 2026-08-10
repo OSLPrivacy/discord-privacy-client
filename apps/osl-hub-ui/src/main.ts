@@ -69,6 +69,7 @@ import { peopleDestinationHeaderMarkup } from "./people-destination-header";
 import { lastBackendFailure, recordBackendFailure } from "./backend-failure";
 import { unlockAttemptWarning } from "./unlock-attempts";
 import { chatPreviewHidingVisible } from "./entitlement-gates";
+import { oslChatFriendSettingsMarkup } from "./chat-settings-dialog";
 import { entitlementCopy } from "./entitlement-copy";
 import { entitlementView } from "./entitlement-view";
 import { chooseDetectedAccountOpening, detectedOpeningChoiceKey } from "./detected-account-opening";
@@ -175,7 +176,6 @@ import { activateLocalLoopbackContext, activateManualPeerContext, activateNative
 import { blankLocalProtectedModel, isLocalTtlSeconds, loadOrCreateLocalConversationId, localProtectedSheetMarkup, validLocalChatLabel, type LocalProtectedPane, type LocalProtectedSheetModel } from "./local-protected-sheet";
 import { claimOslUsername, createHubPrivateContactLink, createOslFriendRequestByOslName, type HubPrivateContactLink } from "./adapters";
 import { blankPeerProtectedModel, boundedPeerProtectedDraft, peerProtectedDraftByteFeedback, peerProtectedSheetMarkup, type PeerProtectedPane, type PeerProtectedSheetModel } from "./peer-protected-sheet";
-import { peerIntegrityMarkup } from "./peer-integrity";
 import { futureAccountSwitchMarkup } from "./future-account-switch";
 import { loadFutureAccountSwitchStates, saveFutureAccountSwitch } from "./future-account-switch-connect";
 import oslLogoUrl from "../../osl-hub/icons/icon-cyan.png";
@@ -6053,7 +6053,7 @@ function oslChatContent(): string {
     };
   });
   const settingsPerson = oslChatSettingsPersonId ? hubPeople.find((person) => person.personId === oslChatSettingsPersonId) ?? null : null;
-  const settings = settingsPerson ? oslChatFriendSettingsMarkup(settingsPerson) : "";
+  const settings = settingsPerson ? renderOslChatFriendSettings(settingsPerson) : "";
   const attachmentLimit = attachmentTierLimit(licenseState.access);
   const attachments = activeOslChatContext?.scopeApproved
     ? `<section class="osl-chat-attachments" aria-label="Encrypted attachments"><header><strong>Attachments</strong><button class="button compact" id="osl-chat-attach" type="button" ${oslChatBusy ? "disabled" : ""}>Choose file</button></header><small>${attachmentLimit.tierLabel} · ${attachmentLimit.perFileLimitLabel} per file</small>${[...attachmentProgressByContext.values()].map((event) => attachmentProgressMarkup(event, torOnboarding.choice)).join("")}${oslChatAttachments.length ? oslChatAttachments.map((item) => `<button class="setting-line" data-osl-chat-attachment="${escapeHtml(item.attachmentId)}" type="button" ${oslChatBusy ? "disabled" : ""}><span><strong>${escapeHtml(item.originalFilename)}</strong><small>${item.viewOnce ? "View once · " : ""}${item.plaintextSize.toLocaleString("en-US")} bytes</small></span>${statusTag("Open")}</button>`).join("") : `<p>No pending attachments.</p>`}<small>Opening a received view-once item is free. Images open in OSL's capture-resistant viewer. Other supported files open temporarily in their Windows viewer, which may allow capture.</small></section>`
@@ -6086,6 +6086,16 @@ function oslChatContent(): string {
     verificationWarningSurface: oslChatVerificationWarningSurface,
     buildWarning: installedBuildChatWarning,
   })}${offlineStatus}${receipt}${droppedFiles}${attachments}${settings}${startSheet}${chatSurfaceOverlays()}</main>`;
+}
+
+function renderOslChatFriendSettings(person: HubPerson): string {
+  return oslChatFriendSettingsMarkup(person, {
+    isActive: activeOslChatPersonId === person.personId,
+    approved: activeOslChatPersonId === person.personId && activeOslChatContext?.scopeApproved === true,
+    verified: peerIsVerified(person),
+    notificationSettings: readOslChatNotificationSettings(localStorage, person.personId),
+    busy: oslChatBusy,
+  });
 }
 
 /** Hosts the already-built settings surfaces; their markup stays owned by each surface module. */
@@ -6212,22 +6222,6 @@ function bindAttachmentDeletionEvents(): void {
 export function oslChatSenderReceiptMarkup(messages: readonly OslChatMessage[]): string {
   const receipt = senderReceiptStatus(senderReceiptStateFor(messages));
   return `<p class="setting-line osl-chat-receipt-status" data-osl-chat-receipt-confirmed="${receipt.confirmed}"><span><strong>Delivery receipt</strong><small>${receipt.label}</small></span></p>`;
-}
-
-function oslChatFriendSettingsMarkup(person: HubPerson): string {
-  const isActive = activeOslChatPersonId === person.personId;
-  const approved = isActive && activeOslChatContext?.scopeApproved === true;
-  const verified = peerIsVerified(person);
-  const notificationSettings = readOslChatNotificationSettings(localStorage, person.personId);
-  const permissionDetail = !verified
-    ? "Not verified. Verify the new safety number before changing this whitelist."
-    : approved
-      ? "This friend may exchange encrypted OSL messages with you."
-      : "Open this friend to configure its exact chat permission.";
-  const permissionControl = isActive
-    ? `<button class="button compact ${approved ? "danger" : "primary"}" id="osl-chat-permission-toggle" type="button" ${oslChatBusy || !verified ? 'disabled aria-disabled="true"' : ""}>${approved ? "Revoke" : "Enable"}</button>`
-    : `<button class="button compact" data-osl-chat-open="${escapeHtml(person.personId)}" type="button" ${verified ? "" : 'disabled aria-disabled="true"'}>Open chat</button>`;
-  return `<dialog class="friends-dialog osl-chat-settings-dialog" id="osl-chat-settings-dialog" aria-labelledby="osl-chat-settings-title"><div class="friends-dialog-card"><header><div><span>Encrypted chat</span><h2 id="osl-chat-settings-title">${escapeHtml(person.alias ?? "Verified friend")}</h2></div><button class="icon-button" id="osl-chat-settings-close" type="button" aria-label="Close chat settings">×</button></header><div class="settings-list">${peerIntegrityMarkup("unknown")}<button class="setting-line interactive" data-open-safety-number="${escapeHtml(person.personId)}" type="button"><span><strong>Safety number</strong><small>Compare this number through a channel you already trust.</small></span></button>${oslChatNotificationSettingsMarkup(notificationSettings)}<div class="setting-line osl-chat-permission-row${verified ? "" : " is-not-verified"}" data-osl-chat-whitelist-state="${verified ? "available" : "not-verified"}" ${verified ? "" : 'aria-disabled="true"'}><span><strong>Chat permission</strong><small>${permissionDetail}</small></span>${permissionControl}</div></div></div></dialog>`;
 }
 
 function oslServersContent(): string {
@@ -13100,7 +13094,7 @@ export const __oslHubUiTest = {
     const person = hubPeople.find((candidate) => candidate.personId === personId);
     if (!person) throw new Error(`Unknown test chat person: ${personId}`);
     oslChatSettingsPersonId = personId;
-    return oslChatFriendSettingsMarkup(person);
+    return renderOslChatFriendSettings(person);
   },
   toggleOslChatPermissionForTest(): Promise<void> {
     return toggleOslChatPermission();
@@ -13379,7 +13373,7 @@ export const __oslHubUiTest = {
       scopeApproved: true,
     };
     oslChatSettingsPersonId = friend.personId;
-    return oslChatFriendSettingsMarkup(friend);
+    return renderOslChatFriendSettings(friend);
   },
   /** D80: the rendered onboarding screen, markup only, for the unlock-screen
    * advertisement audit in `unlock-screen-single-credential.test.ts`. */
