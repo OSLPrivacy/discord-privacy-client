@@ -134,6 +134,18 @@ function ttlLabel(seconds: LocalTtlSeconds): string {
   return "7 days";
 }
 
+/** Render the canonical picker inside this detached sheet window. */
+function canonicalTtlPicker(id: string, value: LocalTtlSeconds): string {
+  const selectedLabel = ttlLabel(value);
+  const options = LOCAL_TTL_OPTIONS.map((seconds) => {
+    const selected = seconds === value;
+    const label = ttlLabel(seconds);
+    return `<button class="canonical-select-option" type="button" role="option" aria-selected="${selected}" data-value="${seconds}" data-label="${label}" onclick="const p=this.closest('.canonical-select');const s=p.querySelector('select');s.value=this.dataset.value;s.dispatchEvent(new Event('change',{bubbles:true}));p.querySelector('.canonical-select-trigger-label').textContent=this.dataset.label;p.querySelectorAll('.canonical-select-option').forEach((o)=>{const chosen=o===this;o.setAttribute('aria-selected',String(chosen));o.querySelector('input').checked=chosen;});p.closest('details').open=false;"><input tabindex="-1" aria-hidden="true" type="checkbox" ${selected ? "checked" : ""}/><span>${label}</span></button>`;
+  }).join("");
+  const nativeOptions = LOCAL_TTL_OPTIONS.map((seconds) => `<option value="${seconds}" ${value === seconds ? "selected" : ""}>${ttlLabel(seconds)}</option>`).join("");
+  return `<details class="canonical-select"><summary class="canonical-select-trigger" role="button" aria-haspopup="listbox"><span class="canonical-select-trigger-label">${selectedLabel}</span><span aria-hidden="true">⌄</span></summary><select class="canonical-select-native" id="${id}" tabindex="-1" aria-hidden="true">${nativeOptions}</select><div class="canonical-select-list" role="listbox" aria-label="Relay copy expires after">${options}</div></details>`;
+}
+
 function closeButton(): string {
   return `<button class="local-protected-close" id="local-protected-close" type="button" aria-label="Close protection">×</button>`;
 }
@@ -165,13 +177,12 @@ function approvalMarkup(model: PeerProtectedSheetModel): string {
 }
 
 function readyMarkup(model: PeerProtectedSheetModel): string {
-  const ttlOptions = LOCAL_TTL_OPTIONS.map((seconds) => `<option value="${seconds}" ${model.ttlSeconds === seconds ? "selected" : ""}>${ttlLabel(seconds)}</option>`).join("");
   const boundedDraft = boundedPeerProtectedDraft(model.draft);
   const write = `<form id="peer-protect-form" class="local-protected-form">
       <label for="peer-protected-draft">Message</label>
       <textarea id="peer-protected-draft" rows="5" autocomplete="off" spellcheck="true" data-osl-protected-box-rule="${PROTECTED_TEXT_BOX_RULE}" aria-describedby="peer-protected-draft-bytes" placeholder="Write privately">${escapeHtml(boundedDraft)}</textarea>
       <small id="peer-protected-draft-bytes" class="peer-draft-bytes" aria-live="polite">${peerProtectedDraftByteFeedback(boundedDraft)}</small>
-      <div class="local-protected-options"><label class="peer-ttl"><span>Relay copy expires after</span><select id="peer-protected-ttl">${ttlOptions}</select><small>Copies already opened remain.</small></label>${viewOnceControlMarkup({
+      <div class="local-protected-options"><label class="peer-ttl"><span>Relay copy expires after</span>${canonicalTtlPicker("peer-protected-ttl", model.ttlSeconds)}<small>Copies already opened remain.</small></label>${viewOnceControlMarkup({
         id: "peer-protected-view-once",
         layout: "compact",
         className: "local-view-once",

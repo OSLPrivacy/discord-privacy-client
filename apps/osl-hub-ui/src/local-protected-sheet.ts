@@ -104,6 +104,18 @@ function ttlLabel(seconds: LocalTtlSeconds): string {
   return "7 days";
 }
 
+/** Render the canonical picker inside this detached sheet window. */
+function canonicalTtlPicker(id: string, value: LocalTtlSeconds): string {
+  const selectedLabel = ttlLabel(value);
+  const options = LOCAL_TTL_OPTIONS.map((seconds) => {
+    const selected = seconds === value;
+    const label = ttlLabel(seconds);
+    return `<button class="canonical-select-option" type="button" role="option" aria-selected="${selected}" data-value="${seconds}" data-label="${label}" onclick="const p=this.closest('.canonical-select');const s=p.querySelector('select');s.value=this.dataset.value;s.dispatchEvent(new Event('change',{bubbles:true}));p.querySelector('.canonical-select-trigger-label').textContent=this.dataset.label;p.querySelectorAll('.canonical-select-option').forEach((o)=>{const chosen=o===this;o.setAttribute('aria-selected',String(chosen));o.querySelector('input').checked=chosen;});p.closest('details').open=false;"><input tabindex="-1" aria-hidden="true" type="checkbox" ${selected ? "checked" : ""}/><span>${label}</span></button>`;
+  }).join("");
+  const nativeOptions = LOCAL_TTL_OPTIONS.map((seconds) => `<option value="${seconds}" ${value === seconds ? "selected" : ""}>${ttlLabel(seconds)}</option>`).join("");
+  return `<details class="canonical-select"><summary class="canonical-select-trigger" role="button" aria-haspopup="listbox"><span class="canonical-select-trigger-label">${selectedLabel}</span><span aria-hidden="true">⌄</span></summary><select class="canonical-select-native" id="${id}" tabindex="-1" aria-hidden="true">${nativeOptions}</select><div class="canonical-select-list" role="listbox" aria-label="Opening authorization expires after">${options}</div></details>`;
+}
+
 export function localProtectedSheetMarkup(model: LocalProtectedSheetModel, sendMode: SendMode = "manual"): string {
   if (!model.open) return "";
   const maxCopyPayloadBytes = 1_000;
@@ -133,7 +145,6 @@ export function localProtectedSheetMarkup(model: LocalProtectedSheetModel, sendM
     </aside>`;
   }
 
-  const ttlOptions = LOCAL_TTL_OPTIONS.map((seconds) => `<option value="${seconds}" ${model.ttlSeconds === seconds ? "selected" : ""}>${ttlLabel(seconds)}</option>`).join("");
   const boundedDraft = boundedCopyPayload(model.draft);
   const draftLimitNotice = !boundedDraft.clipped
     ? `${boundedDraft.bytes.toLocaleString("en-US")} / ${maxCopyPayloadBytes.toLocaleString("en-US")} bytes`
@@ -155,7 +166,7 @@ export function localProtectedSheetMarkup(model: LocalProtectedSheetModel, sendM
       <label for="local-protected-draft">Message</label>
       <textarea id="local-protected-draft" maxlength="1000" data-max-bytes="${maxCopyPayloadBytes}" data-osl-protected-box-rule="${PROTECTED_TEXT_BOX_RULE}" rows="5" autocomplete="off" spellcheck="true" aria-describedby="local-protected-draft-bytes" placeholder="Write privately">${escapeHtml(boundedDraft.value)}</textarea>
       <small id="local-protected-draft-bytes" class="local-draft-bytes" aria-live="polite">${draftLimitNotice}</small>
-      <div class="local-protected-options"><label><span>Opening authorization expires after</span><select id="local-protected-ttl">${ttlOptions}</select></label>${viewOnceControlMarkup({
+      <div class="local-protected-options"><label><span>Opening authorization expires after</span>${canonicalTtlPicker("local-protected-ttl", model.ttlSeconds as LocalTtlSeconds)}</label>${viewOnceControlMarkup({
         id: "local-protected-view-once",
         layout: "compact",
         className: "local-view-once",

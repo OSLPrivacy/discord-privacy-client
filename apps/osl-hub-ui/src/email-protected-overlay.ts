@@ -169,6 +169,18 @@ function escapeHtml(value: string): string {
     .replace(/"/g, "&quot;");
 }
 
+function canonicalPicker(
+  id: string,
+  label: string,
+  value: string,
+  options: readonly { readonly value: string; readonly label: string }[],
+): string {
+  const selected = options.find((option) => option.value === value)?.label ?? "";
+  const native = options.map((option) => `<option value="${option.value}"${option.value === value ? " selected" : ""}>${escapeHtml(option.label)}</option>`).join("");
+  const list = options.map((option) => `<button class="canonical-select-option" type="button" role="option" aria-selected="${option.value === value}" data-value="${option.value}" data-label="${escapeHtml(option.label)}" onclick="const p=this.closest('.canonical-select');const s=p.querySelector('select');s.value=this.dataset.value;s.dispatchEvent(new Event('change',{bubbles:true}));p.querySelector('.canonical-select-trigger-label').textContent=this.dataset.label;p.querySelectorAll('.canonical-select-option').forEach((o)=>{const chosen=o===this;o.setAttribute('aria-selected',String(chosen));o.querySelector('input').checked=chosen;});p.closest('details').open=false;"><input tabindex="-1" aria-hidden="true" type="checkbox" ${option.value === value ? "checked" : ""}/><span>${escapeHtml(option.label)}</span></button>`).join("");
+  return `<details class="canonical-select"><summary class="canonical-select-trigger" role="button" aria-haspopup="listbox"><span class="canonical-select-trigger-label">${escapeHtml(selected)}</span><span aria-hidden="true">⌄</span></summary><select class="canonical-select-native" id="${id}" tabindex="-1" aria-hidden="true">${native}</select><div class="canonical-select-list" role="listbox" aria-label="${escapeHtml(label)}">${list}</div></details>`;
+}
+
 function attachmentRow(attachment: EmailOverlayAttachment): string {
   return `<li class="email-overlay-file" data-file-name="${escapeHtml(attachment.name)}">
         <span class="email-overlay-file-name">${escapeHtml(attachment.name)}</span>
@@ -203,14 +215,10 @@ export function emailDraftOverlayMarkup(state: EmailDraftOverlayState): string {
   <textarea class="email-overlay-body" id="email-draft-body" aria-label="Message text" placeholder="Write your protected message">${escapeHtml(state.body)}</textarea>
   <div class="email-overlay-controls">
     <label class="email-overlay-timer">Delete after
-      <select class="email-overlay-ttl" id="email-draft-ttl" aria-label="Delete after">
-        ${EMAIL_OVERLAY_TTL_OPTIONS.map((ttl) => `<option value="${ttl}"${ttl === state.ttlSeconds ? " selected" : ""}>${formatEmailOverlayTtl(ttl)}</option>`).join("\n        ")}
-      </select>
+      ${canonicalPicker("email-draft-ttl", "Delete after", String(state.ttlSeconds), EMAIL_OVERLAY_TTL_OPTIONS.map((ttl) => ({ value: String(ttl), label: formatEmailOverlayTtl(ttl) })))}
     </label>
     <label class="email-overlay-send-mode">Send on Enter
-      <select class="email-overlay-send-mode-select" id="email-draft-send-mode" aria-label="Send on Enter">
-        ${EMAIL_SEND_MODES.map((candidate) => `<option value="${candidate.id}"${candidate.id === state.sendMode ? " selected" : ""}>${candidate.name}</option>`).join("\n        ")}
-      </select>
+      ${canonicalPicker("email-draft-send-mode", "Send on Enter", state.sendMode, EMAIL_SEND_MODES.map((candidate) => ({ value: candidate.id, label: candidate.name })))}
     </label>
   </div>
   <ul class="email-overlay-files" aria-label="Attached files">

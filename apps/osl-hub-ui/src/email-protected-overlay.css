@@ -203,3 +203,12 @@
   font-weight: 600;
   color: var(--eo-accent);
 }
+
+.email-overlay-stage .canonical-select { position: relative; }
+.email-overlay-stage .canonical-select-trigger { min-height: 36px; padding: 0 10px; border: 1px solid #2a343a; background: #101619; color: #f4f7f8; cursor: pointer; display: flex; align-items: center; justify-content: space-between; gap: 10px; list-style: none; }
+.email-overlay-stage .canonical-select-trigger::-webkit-details-marker { display: none; }
+.email-overlay-stage .canonical-select-native { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.email-overlay-stage .canonical-select-list { position: absolute; z-index: 2; top: calc(100% + 4px); left: 0; right: 0; border: 1px solid #2a343a; background: #0d1114; box-shadow: 0 8px 20px rgba(0,0,0,.35); }
+.email-overlay-stage .canonical-select-option { width: 100%; min-height: 34px; border: 0; border-bottom: 1px solid #2a343a; background: transparent; color: #f4f7f8; cursor: pointer; display: flex; align-items: center; gap: 8px; text-align: left; }
+.email-overlay-stage .canonical-select-option[aria-selected="true"], .email-overlay-stage .canonical-select-option:hover { background: rgba(42, 192, 240, .13); }
+.email-overlay-stage .canonical-select-option input { width: 14px; min-height: 14px; margin: 0; padding: 0; pointer-events: none; accent-color: #2ac0f0; }
