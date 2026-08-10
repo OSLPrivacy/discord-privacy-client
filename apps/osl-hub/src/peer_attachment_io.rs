@@ -469,6 +469,8 @@ pub enum TransportOutcome {
     ServerFault,
     MalformedResponse,
     LocalIo,
+    /// The local owner stopped the upload before another part was sent.
+    Cancelled,
     Refused,
     /// Tor is selected and its tunnel is unavailable. Nothing was sent, and
     /// nothing fell back to a direct route.
@@ -495,6 +497,7 @@ pub fn classify_cipher_store_error(
         Raw::Io(_) => TransportOutcome::LocalIo,
         Raw::RouteUnavailable(_) => TransportOutcome::RouteUnavailable,
         Raw::ConfigOverrideRefused { .. } => TransportOutcome::Refused,
+        Raw::UploadCancelled => TransportOutcome::Cancelled,
         // B0-01 phase 2's storage grants. All three are the store refusing the
         // credential we presented, which is exactly `CapabilityRejected` -- the
         // same outcome as a 401/403 above, and deliberately NOT `Refused`: the
@@ -557,6 +560,7 @@ pub fn describe_transport_outcome(outcome: TransportOutcome, phase: TransportPha
             "the encrypted attachment storage returned an unexpected response"
         }
         TransportOutcome::LocalIo => "OSL could not read the sealed copy on this device",
+        TransportOutcome::Cancelled => "the upload was cancelled on this device",
         TransportOutcome::Refused => "the encrypted attachment storage refused the request",
         TransportOutcome::RouteUnavailable => {
             "Tor is selected and its tunnel is unavailable, so OSL refused rather than \
@@ -1700,6 +1704,7 @@ mod tests {
             TransportOutcome::ServerFault,
             TransportOutcome::MalformedResponse,
             TransportOutcome::LocalIo,
+            TransportOutcome::Cancelled,
             TransportOutcome::Refused,
         ];
         for phase in [

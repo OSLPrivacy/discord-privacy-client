@@ -1030,14 +1030,11 @@ pub mod device_pairing;
 #[path = "../../../src-tauri/src/bootstrap.rs"]
 pub mod original_bootstrap;
 pub mod osl_chat_danger_row;
-pub mod pro_marked_deletion;
-pub mod pro_marked_deletion_outcomes;
 pub mod proton_fake_page;
 pub mod quiet_hours;
 pub mod quiet_hours_notices;
 pub mod shared_delete_action;
 pub mod shared_marked_deletion_record;
-pub mod shared_marked_message_deleter;
 pub mod shared_web_reader_shape;
 pub mod sync_policy;
 pub mod timed_delete_sweep_job;

@@ -2496,7 +2496,7 @@ fn service_registry(accounts: &[AccountRecord], owner_osl_user_id: &str) -> Vec<
                 sidebar_order: descriptor.sidebar_order,
                 category: descriptor.category,
                 launch_state: descriptor.launch_state,
-                generated_label: generated_tile_label(capability_facts).to_owned(),
+                generated_label: generated_tile_label(capability_facts, None).to_owned(),
                 supports_native_preview: descriptor.launch_state == ServiceLaunchState::Available,
                 supports_protected_preview: descriptor.launch_state
                     == ServiceLaunchState::Available,
