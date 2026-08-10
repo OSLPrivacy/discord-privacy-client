@@ -134,6 +134,7 @@ pub mod hosted_port;
 pub mod hosted_provider_recipe;
 pub mod hosted_session_port;
 #[cfg(feature = "core")]
+pub mod instagram_direct_message;
 pub mod instagram_eye_state;
 pub mod instagram_send;
 pub mod instagram_story;
@@ -195,8 +196,6 @@ pub mod native_window_host;
 pub mod osl_chat_attachment_download_permission;
 #[cfg(feature = "core")]
 pub mod osl_chat_drag_drop;
-#[cfg(feature = "core")]
-pub mod osl_chat_attachment_download_permission;
 #[cfg(feature = "core")]
 pub mod osl_chat_pro_attachment_send;
 #[cfg(feature = "core")]
