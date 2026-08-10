@@ -20,6 +20,12 @@ describe("theme mods", () => {
     expect(parseThemeMod(valid.replace('"radius":5', '"radius":5,"script":"x"'))).toBeNull();
   });
 
+  it.each(["red", "2ac0f0", "#12", "#12345", "🦄"])("keeps every hex box unchanged for junk %s", (junk) => {
+    const candidate = JSON.parse(valid) as { colors: Record<string, string> };
+    for (const key of Object.keys(candidate.colors)) candidate.colors[key] = junk;
+    expect(parseThemeMod(JSON.stringify(candidate)), `hex box swallowed ${junk}`).toBeNull();
+  });
+
   it("applies and fully removes the whitelisted variables", () => {
     const values = new Map<string, string>();
     const root = {
