@@ -182,7 +182,10 @@ pub struct GroupMemberPermissionRecord {
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct LookChoiceRecord { pub name: String, pub value: String }
+pub struct LookChoiceRecord {
+    pub name: String,
+    pub value: String,
+}
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -355,55 +358,6 @@ pub struct OneUseInviteLink {
     pub use_limit: u8,
     pub expires_at: i64,
     pub consumed_at: Option<i64>,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LookChoiceRecord {
-    pub name: String,
-    pub value: String,
-}
-
-#[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum ChatApprovalSuggestionChoice {
-    Off,
-    #[default]
-    On,
-}
-
-impl ChatApprovalSuggestionChoice {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Off => "off",
-            Self::On => "on",
-        }
-    }
-}
-
-impl std::str::FromStr for ChatApprovalSuggestionChoice {
-    type Err = String;
-
-    fn from_str(raw: &str) -> Result<Self, Self::Err> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "off" | "disabled" | "false" => Ok(Self::Off),
-            "on" | "enabled" | "true" => Ok(Self::On),
-            _ => Err("OSL chat approval suggestion choice must be off or on".to_owned()),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ChatApprovalSuggestionChoiceDto {
-    pub choice: String,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AppNotificationChoiceRecord {
-    pub app_id: String,
-    pub enabled: bool,
 }
 
 /// Receipt for a reset constrained to one Settings screen.
@@ -1464,52 +1418,6 @@ pub fn remove_group_member_permission(
     Ok(removed)
 }
 
-pub fn chat_approval_suggestion_choice() -> Result<ChatApprovalSuggestionChoiceDto, String> {
-    let prefs = load_security_preferences()?;
-    Ok(ChatApprovalSuggestionChoiceDto {
-        choice: prefs.chat_approval_suggestion.as_str().to_owned(),
-    })
-}
-
-pub fn save_chat_approval_suggestion_choice(
-    security: &HubSecurityState,
-    choice: String,
-) -> Result<ChatApprovalSuggestionChoiceDto, String> {
-    require_unlocked()?;
-    let choice = choice.parse::<ChatApprovalSuggestionChoice>()?;
-    let _transition = security
-        .transition
-        .lock()
-        .map_err(|_| "OSL chat approval suggestion state is unavailable".to_owned())?;
-    let path = config_dir()?.join(SECURITY_PREFS_FILE);
-    let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
-    prefs.version = 2;
-    prefs.chat_approval_suggestion = choice;
-    write_encrypted_json(&path, &prefs)?;
-    Ok(ChatApprovalSuggestionChoiceDto {
-        choice: choice.as_str().to_owned(),
-    })
-}
-
-pub fn set_app_notification_choice(
-    security: &HubSecurityState,
-    app_id: String,
-    enabled: bool,
-) -> Result<AppNotificationChoiceRecord, String> {
-    require_unlocked()?;
-    validate_app_notification_id(&app_id)?;
-    let _transition = security
-        .transition
-        .lock()
-        .map_err(|_| "OSL app notification state is unavailable".to_owned())?;
-    let path = config_dir()?.join(SECURITY_PREFS_FILE);
-    let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
-    prefs.version = 2;
-    prefs.app_notification_choices.insert(app_id.clone(), enabled);
-    write_encrypted_json(&path, &prefs)?;
-    Ok(AppNotificationChoiceRecord { app_id, enabled })
-}
-
 pub fn list_app_notification_choices(
     _security: &HubSecurityState,
 ) -> Result<Vec<AppNotificationChoiceRecord>, String> {
@@ -1520,19 +1428,6 @@ pub fn list_app_notification_choices(
         .into_iter()
         .map(|(app_id, enabled)| AppNotificationChoiceRecord { app_id, enabled })
         .collect())
-}
-
-pub fn app_notification_enabled_before_notice(
-    _security: &HubSecurityState,
-    app_id: String,
-) -> Result<bool, String> {
-    require_unlocked()?;
-    validate_app_notification_id(&app_id)?;
-    Ok(load_security_preferences()?
-        .app_notification_choices
-        .get(&app_id)
-        .copied()
-        .unwrap_or(false))
 }
 
 /// Restore every user-owned preference to its documented fail-safe default.
@@ -1593,17 +1488,15 @@ pub fn reset_every_setting(
     let next_auto_rules = ipc::auto_whitelist_rules::AutoWhitelistRules::default();
 
     write_encrypted_json(&security_path, &next_security)?;
-    if let Err(error) = ipc::app_preferences::write_app_preferences(
-        &app_preferences_path,
-        &next_app_preferences,
-    ) {
+    if let Err(error) =
+        ipc::app_preferences::write_app_preferences(&app_preferences_path, &next_app_preferences)
+    {
         let _ = write_encrypted_json(&security_path, &previous_security);
         return Err(error);
     }
-    if let Err(error) = ipc::auto_whitelist_rules::write_auto_whitelist_rules(
-        &auto_rules_path,
-        &next_auto_rules,
-    ) {
+    if let Err(error) =
+        ipc::auto_whitelist_rules::write_auto_whitelist_rules(&auto_rules_path, &next_auto_rules)
+    {
         let _ = ipc::app_preferences::write_app_preferences(
             &app_preferences_path,
             &previous_app_preferences,
@@ -1635,36 +1528,6 @@ pub fn reset_every_setting(
         friend_choice_groups_defaulted: 6,
         behaviour_choices_defaulted: ipc::app_preferences::BehaviourChoiceName::ALL.len(),
     })
-}
-
-/// Persist one of the eight bounded visual choices. The value remains opaque to
-/// storage; the window binding applies it to the matching style property.
-pub fn set_look_choice(security: &HubSecurityState, name: String, value: String) -> Result<LookChoiceRecord, String> {
-    require_unlocked()?;
-    validate_look_choice_name(&name)?;
-    validate_look_choice_value(&value)?;
-    let _transition = security.transition.lock().map_err(|_| "OSL look choice state is unavailable".to_owned())?;
-    let path = config_dir()?.join(SECURITY_PREFS_FILE);
-    let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
-    prefs.version = 2;
-    prefs.look_choices.insert(name.clone(), value.clone());
-    write_encrypted_json(&path, &prefs)?;
-    Ok(LookChoiceRecord { name, value })
-}
-
-pub fn look_choice_value(_security: &HubSecurityState, name: String) -> Result<Option<String>, String> {
-    require_unlocked()?;
-    validate_look_choice_name(&name)?;
-    Ok(load_security_preferences()?.look_choices.get(&name).cloned())
-}
-
-pub fn list_look_choices(_security: &HubSecurityState) -> Result<Vec<LookChoiceRecord>, String> {
-    require_unlocked()?;
-    Ok(load_security_preferences()?
-        .look_choices
-        .into_iter()
-        .map(|(name, value)| LookChoiceRecord { name, value })
-        .collect())
 }
 
 pub fn list_group_member_permissions(
@@ -2059,7 +1922,9 @@ pub fn set_app_notification_choice(
     let path = config_dir()?.join(SECURITY_PREFS_FILE);
     let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
     prefs.version = 2;
-    prefs.app_notification_choices.insert(app_id.clone(), enabled);
+    prefs
+        .app_notification_choices
+        .insert(app_id.clone(), enabled);
     write_encrypted_json(&path, &prefs)?;
     Ok(AppNotificationChoiceRecord { app_id, enabled })
 }
@@ -2076,18 +1941,6 @@ pub fn app_notification_enabled_before_notice(
         .get(&app_id)
         .copied()
         .unwrap_or(false))
-}
-
-fn validate_app_notification_id(value: &str) -> Result<(), String> {
-    if value.is_empty()
-        || value.len() > 64
-        || !value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-    {
-        return Err("OSL app notification identifier is invalid".to_owned());
-    }
-    Ok(())
 }
 
 /// Restore only the preferences owned by one named Settings screen.
@@ -2157,7 +2010,10 @@ pub fn reset_setting_group(
                 _ => unreachable!("validated Settings group"),
             }
 
-            ipc::app_preferences::write_app_preferences(&app_preferences_path, &next_app_preferences)?;
+            ipc::app_preferences::write_app_preferences(
+                &app_preferences_path,
+                &next_app_preferences,
+            )?;
 
             if group == "Whitelisting" {
                 let auto_rules_path = dir.join("auto_whitelist_rules.json");
@@ -5440,13 +5296,6 @@ fn validate_person_id(value: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_look_choice_name(value: &str) -> Result<(), String> {
-    if !matches!(value, "theme" | "named-look" | "accent" | "corners" | "glow" | "text" | "spacing" | "see-through") {
-        return Err("OSL look choice name is invalid".to_owned());
-    }
-    Ok(())
-}
-
 fn validate_app_notification_id(value: &str) -> Result<(), String> {
     if value.is_empty()
         || value.len() > 128
@@ -5455,13 +5304,6 @@ fn validate_app_notification_id(value: &str) -> Result<(), String> {
             .any(|byte| !byte.is_ascii_alphanumeric() && !matches!(byte, b'-' | b'_' | b'.'))
     {
         return Err("OSL app notification identifier is invalid".to_owned());
-    }
-    Ok(())
-}
-
-fn validate_look_choice_value(value: &str) -> Result<(), String> {
-    if value.is_empty() || value.len() > 128 || value.chars().any(char::is_control) {
-        return Err("OSL look choice value is invalid".to_owned());
     }
     Ok(())
 }
@@ -6071,18 +5913,27 @@ mod tests {
         let _harness = FileBackedSecurityHarness::new("look-window-0769");
         let security = HubSecurityState::default();
         let saved = [
-            ("theme", "theme-0769-midnight"), ("named-look", "named-look-0769-quiet"),
-            ("accent", "accent-0769-teal"), ("corners", "corners-0769-soft"),
-            ("glow", "glow-0769-low"), ("text", "text-0769-readable"),
-            ("spacing", "spacing-0769-open"), ("see-through", "see-through-0769-off"),
+            ("theme", "theme-0769-midnight"),
+            ("named-look", "named-look-0769-quiet"),
+            ("accent", "accent-0769-teal"),
+            ("corners", "corners-0769-soft"),
+            ("glow", "glow-0769-low"),
+            ("text", "text-0769-readable"),
+            ("spacing", "spacing-0769-open"),
+            ("see-through", "see-through-0769-off"),
         ];
-        for (name, value) in saved { set_look_choice(&security, name.to_owned(), value.to_owned()).unwrap(); }
+        for (name, value) in saved {
+            set_look_choice(&security, name.to_owned(), value.to_owned()).unwrap();
+        }
         let mut window = crate::look_window::LinuxTestWindow::default();
-        let changed = crate::look_window::apply_saved_look_choices(&HubSecurityState::default(), &mut window).unwrap();
+        let changed =
+            crate::look_window::apply_saved_look_choices(&HubSecurityState::default(), &mut window)
+                .unwrap();
         println!("TASK0769 linux_test_window_direct_saved_settings style_values_changed={} style_values={}", changed, window.style_values.len());
         assert_eq!(changed, 8);
         assert_eq!(window.style_values.len(), 8);
-        for ((_, property), (_, value)) in crate::look_window::LOOK_STYLE_BINDINGS.iter().zip(saved) {
+        for ((_, property), (_, value)) in crate::look_window::LOOK_STYLE_BINDINGS.iter().zip(saved)
+        {
             assert_eq!(window.style_values.get(*property), Some(&value.to_owned()));
         }
     }
@@ -6100,11 +5951,9 @@ mod tests {
         use ipc::commands::{
             cmd_osl_get_auto_whitelist_rule, cmd_osl_get_new_friend_defaults,
             cmd_osl_read_behaviour_choice, cmd_osl_read_message_default_burn_scope,
-            cmd_osl_read_message_default_cover_writing,
-            cmd_osl_read_message_default_timer_seconds,
+            cmd_osl_read_message_default_cover_writing, cmd_osl_read_message_default_timer_seconds,
             cmd_osl_read_message_default_view_once_length_seconds,
-            cmd_osl_read_next_generation_message_policy,
-            cmd_osl_read_privacy_protection_choices,
+            cmd_osl_read_next_generation_message_policy, cmd_osl_read_privacy_protection_choices,
             cmd_osl_read_verification_warning_choice,
         };
 
@@ -6116,10 +5965,9 @@ mod tests {
 
         let mut seeded_app = ipc::app_preferences::AppPreferences::default();
         seeded_app.version = ipc::app_preferences::APP_PREFERENCES_VERSION;
-        seeded_app.auto_whitelist_rules.insert(
-            "chat".to_owned(),
-            AutoWhitelistChoice::Always,
-        );
+        seeded_app
+            .auto_whitelist_rules
+            .insert("chat".to_owned(), AutoWhitelistChoice::Always);
         seeded_app.new_friend_defaults = NewFriendDefaults {
             account_reach: NewFriendAccountReach::AllSharedChats,
             auto_whitelist: AutoWhitelistChoice::Always,
@@ -6127,8 +5975,7 @@ mod tests {
         };
         seeded_app.new_friend_account_reach = NewFriendAccountReach::AllSharedChats;
         seeded_app.new_friend_auto_whitelist = AutoWhitelistChoice::Always;
-        seeded_app.new_friend_verification_warnings =
-            NewFriendVerificationWarnings::Disabled;
+        seeded_app.new_friend_verification_warnings = NewFriendVerificationWarnings::Disabled;
         seeded_app.privacy_level = PrivacyLevel::Maximum;
         seeded_app.privacy_level_rule_sets.insert(
             "maximum".to_owned(),
@@ -6176,11 +6023,7 @@ mod tests {
                 .look_choices
                 .insert(name.to_owned(), format!("changed-{name}"));
         }
-        write_encrypted_json(
-            &harness.path().join(SECURITY_PREFS_FILE),
-            &seeded_security,
-        )
-        .unwrap();
+        write_encrypted_json(&harness.path().join(SECURITY_PREFS_FILE), &seeded_security).unwrap();
 
         let png = format!(
             "data:image/png;base64,{}",
@@ -6192,10 +6035,9 @@ mod tests {
         assert_eq!(reset.action, "reset");
 
         let restarted = HubCoreState::default();
-        *restarted.osl.app_preferences.lock().unwrap() =
-            ipc::app_preferences::load_app_preferences(
-                &harness.path().join("app_preferences.json"),
-            );
+        *restarted.osl.app_preferences.lock().unwrap() = ipc::app_preferences::load_app_preferences(
+            &harness.path().join("app_preferences.json"),
+        );
 
         let mut direct_reads = Vec::new();
         let auto_rule = cmd_osl_get_auto_whitelist_rule(&restarted.osl, "chat".to_owned()).unwrap();
@@ -6236,25 +6078,23 @@ mod tests {
         let suggestion = chat_approval_suggestion_choice().unwrap();
         assert_eq!(suggestion.choice, "on");
         direct_reads.push(format!("chat_suggestion={}", suggestion.choice));
-        let app_notice = app_notification_enabled_before_notice(
-            &security,
-            "discord".to_owned(),
-        )
-        .unwrap();
+        let app_notice =
+            app_notification_enabled_before_notice(&security, "discord".to_owned()).unwrap();
         assert!(!app_notice);
         assert!(list_app_notification_choices(&security).unwrap().is_empty());
         direct_reads.push(format!("app_notification={app_notice}"));
 
-        let next_generation =
-            cmd_osl_read_next_generation_message_policy(&restarted.osl).unwrap();
+        let next_generation = cmd_osl_read_next_generation_message_policy(&restarted.osl).unwrap();
         assert_eq!(next_generation.choice, "off");
         assert!(!core.osl.rn_wire_in_enabled());
-        assert!(!restarted
-            .osl
-            .app_preferences
-            .lock()
-            .unwrap()
-            .rn_wire_policy_requested);
+        assert!(
+            !restarted
+                .osl
+                .app_preferences
+                .lock()
+                .unwrap()
+                .rn_wire_policy_requested
+        );
         direct_reads.push(format!("next_generation={}", next_generation.choice));
 
         let warning = cmd_osl_read_verification_warning_choice(&restarted.osl).unwrap();
@@ -6967,10 +6807,15 @@ mod tests {
         assert_eq!(changed, 8);
         assert_eq!(window.computed_style_values.len(), 8);
 
-        for ((name, property), (_, saved_value)) in crate::look_window::LOOK_STYLE_BINDINGS.iter().zip(saved) {
+        for ((name, property), (_, saved_value)) in
+            crate::look_window::LOOK_STYLE_BINDINGS.iter().zip(saved)
+        {
             let computed_value = window.computed_style_values.get(*property).unwrap();
             println!("TASK0770 saved.{name}={saved_value} computed.{property}={computed_value}");
-            assert_eq!(computed_value, saved_value, "saved {name} must directly set {property}");
+            assert_eq!(
+                computed_value, saved_value,
+                "saved {name} must directly set {property}"
+            );
         }
         crate::look_window::saved_values_match_computed(&saved, &window.computed_style_values)
             .expect("all eight saved values must match their computed window styles");
