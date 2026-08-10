@@ -2052,6 +2052,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3a6bfce3d99adfa72d24750a61f782f3036a81e7f86d8841ee1326deaebd171"
 
 [[package]]
+name = "task-4609-topup-driver"
+version = "0.0.1"
+dependencies = [
+ "ipc",
+]
+
+[[package]]
+name = "task-4611-crypto-topup-driver"
+version = "0.0.1"
+dependencies = [
+ "ipc",
+]
+
+[[package]]
+name = "task-4613-metering-privacy-driver"
+version = "0.0.1"
+dependencies = [
+ "ipc",
+ "serde_json",
+]
+
+[[package]]
 name = "tempfile"
 version = "3.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
