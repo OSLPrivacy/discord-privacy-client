@@ -1,4 +1,9 @@
-use serde::Serialize;
+use base64::{engine::general_purpose::STANDARD, Engine as _};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
+use serde::{Deserialize, Serialize};
+
+const SIGNING_DOMAIN: &[u8] = b"osl/build-proof/v1\0";
+const SIGNED_PROOF_SCHEMA_VERSION: u8 = 1;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BuildProofInput {
@@ -9,14 +14,26 @@ pub struct BuildProofInput {
     pub stops_counting_at_unix_seconds: u64,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BuildProof {
     pub build_fingerprint: String,
     pub device_id: String,
     pub person_id: String,
     pub made_at_unix_seconds: u64,
     pub stops_counting_at_unix_seconds: u64,
+}
+
+/// One five-value build proof authenticated by OSL's offline Ed25519 key.
+///
+/// The public key is deliberately absent. Verifiers must be given an OSL trust
+/// root independently instead of trusting a key supplied by the proof itself.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SignedBuildProof {
+    pub schema_version: u8,
+    pub proof: BuildProof,
+    pub signature_base64: String,
 }
 
 pub fn make_build_proof(input: BuildProofInput) -> Result<BuildProof, String> {
@@ -35,6 +52,81 @@ pub fn make_build_proof(input: BuildProofInput) -> Result<BuildProof, String> {
         made_at_unix_seconds: input.made_at_unix_seconds,
         stops_counting_at_unix_seconds: input.stops_counting_at_unix_seconds,
     })
+}
+
+pub fn sign_build_proof(
+    proof: BuildProof,
+    signing_seed: [u8; 32],
+) -> Result<SignedBuildProof, String> {
+    validate_proof(&proof)?;
+    let signing_key = SigningKey::from_bytes(&signing_seed);
+    let signature = signing_key.sign(&canonical_signing_bytes(&proof));
+    Ok(SignedBuildProof {
+        schema_version: SIGNED_PROOF_SCHEMA_VERSION,
+        proof,
+        signature_base64: STANDARD.encode(signature.to_bytes()),
+    })
+}
+
+pub fn verify_signed_build_proof(
+    signed: &SignedBuildProof,
+    trusted_public_key: [u8; 32],
+) -> Result<(), String> {
+    if signed.schema_version != SIGNED_PROOF_SCHEMA_VERSION {
+        return Err(format!(
+            "unsupported signed proof schema version: {}",
+            signed.schema_version
+        ));
+    }
+
+    validate_proof(&signed.proof)?;
+
+    let signature_bytes = STANDARD
+        .decode(&signed.signature_base64)
+        .map_err(|_| "bad-signature".to_owned())?;
+    let signature_bytes: [u8; 64] = signature_bytes
+        .try_into()
+        .map_err(|_| "bad-signature".to_owned())?;
+    let signature = Signature::from_bytes(&signature_bytes);
+    let verifying_key = VerifyingKey::from_bytes(&trusted_public_key)
+        .map_err(|error| format!("trusted public key is invalid: {error}"))?;
+
+    verifying_key
+        .verify_strict(&canonical_signing_bytes(&signed.proof), &signature)
+        .map_err(|_| "bad-signature".to_owned())
+}
+
+fn validate_proof(proof: &BuildProof) -> Result<(), String> {
+    validate_fingerprint(&proof.build_fingerprint)?;
+    validate_identifier("device ID", &proof.device_id)?;
+    validate_identifier("person ID", &proof.person_id)?;
+    if proof.stops_counting_at_unix_seconds <= proof.made_at_unix_seconds {
+        return Err("stops-counting-at time must be later than made-at time".to_owned());
+    }
+    Ok(())
+}
+
+fn canonical_signing_bytes(proof: &BuildProof) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(
+        SIGNING_DOMAIN.len()
+            + proof.build_fingerprint.len()
+            + proof.device_id.len()
+            + proof.person_id.len()
+            + 40,
+    );
+    bytes.extend_from_slice(SIGNING_DOMAIN);
+    append_length_prefixed(&mut bytes, proof.build_fingerprint.as_bytes());
+    append_length_prefixed(&mut bytes, proof.device_id.as_bytes());
+    append_length_prefixed(&mut bytes, proof.person_id.as_bytes());
+    bytes.extend_from_slice(&proof.made_at_unix_seconds.to_be_bytes());
+    bytes.extend_from_slice(&proof.stops_counting_at_unix_seconds.to_be_bytes());
+    bytes
+}
+
+fn append_length_prefixed(output: &mut Vec<u8>, value: &[u8]) {
+    let length = u64::try_from(value.len()).expect("proof field length fits in u64");
+    output.extend_from_slice(&length.to_be_bytes());
+    output.extend_from_slice(value);
 }
 
 fn validate_fingerprint(value: &str) -> Result<(), String> {
