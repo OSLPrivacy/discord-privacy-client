@@ -22,6 +22,35 @@ function rawSnapshot(state: OslProfilePaneState): Map<string, string> {
 }
 
 describe("TASK 5063 Profile & Appearance standalone window", () => {
+  it("proves OSL Chats inherits the global name until an explicit override, then snaps back", () => {
+    const records = seededProfilePaneRecords().map((record) => record.scope.kind === "osl_chats"
+      ? { ...record, displayName: "STALE SCOPE NAME", useSeparateProfileHere: false }
+      : { ...record, displayName: record.scope.kind === "global" ? "GLOBAL BEFORE" : record.displayName });
+    const state = new OslProfilePaneState(records);
+    state.selectScope("osl-chats");
+
+    const readScopeName = () => {
+      const markup = chatProfileAppearanceModalMarkup(state);
+      const input = markup.match(/value="([^"]*)"[^>]*data-chat-profile-field="displayName"/u);
+      if (!input?.[1]) throw new Error("OSL Chats display name field was not rendered");
+      return input[1];
+    };
+
+    expect(readScopeName()).toBe("GLOBAL BEFORE");
+    setChatProfileField(state, "global", "displayName", "GLOBAL AFTER");
+    expect(readScopeName()).toBe("GLOBAL AFTER");
+
+    state.setSeparate("osl-chats", true);
+    setChatProfileField(state, "osl-chats", "displayName", "SCOPE ONLY");
+    expect(readScopeName()).toBe("SCOPE ONLY");
+
+    state.setSeparate("osl-chats", false);
+    const finalName = readScopeName();
+    console.info(`TASK5063 inheritance unchecked_global=GLOBAL AFTER checked_scope=SCOPE ONLY reunchecked=${finalName} stale_own=STALE SCOPE NAME`);
+    expect(finalName).toBe("GLOBAL AFTER");
+    expect(finalName).not.toBe("STALE SCOPE NAME");
+  });
+
   it("renders a 660px two-pane window with the complete navigation and editor", () => {
     const state = new OslProfilePaneState(seededProfilePaneRecords());
     state.selectScope("osl-chats");
