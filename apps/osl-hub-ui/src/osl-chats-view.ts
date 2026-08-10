@@ -366,7 +366,7 @@ function friendRow(friend: OslChatFriend, activePersonId: string | null, busy: b
     : friendPreview(friend);
   return `<div class="osl-chat-friend${active ? " is-active" : ""}" data-person-id="${escapeHtml(friend.personId)}">
     <button class="osl-chat-friend-open" type="button" data-osl-chat-open="${escapeHtml(friend.personId)}" ${active ? 'aria-current="true"' : ""} ${busy ? 'disabled aria-disabled="true"' : ""}>
-      ${avatar(friend.nickname, "", friend.online !== false)}<span class="osl-chat-friend-copy"><strong class="${keyChanged ? "is-key-changed" : ""}">${escapeHtml(friend.nickname)}${keyChanged ? '<span class="osl-chat-key-triangle" aria-label="Key changed">△</span>' : oslVerificationTickMarkup(friend.verificationTwoWay)}</strong>${preview}</span><span class="osl-chat-friend-end"><time>${escapeHtml(friend.timeLabel ?? "")}</time>${friend.unreadCount > 0 ? `<b class="osl-chat-unread" aria-label="${friend.unreadCount} unread">${Math.min(friend.unreadCount, 99)}</b>` : ""}</span>
+      ${avatar(friend.nickname, "", friend.online !== false)}<span class="osl-chat-friend-copy"><strong class="${keyChanged ? "is-key-changed" : ""}">${escapeHtml(friend.nickname)}${keyChanged ? '<span class="osl-chat-key-triangle" aria-label="Key changed">△</span>' : oslVerificationTickMarkup(friend.verificationTwoWay)}</strong>${preview}</span><span class="osl-chat-friend-end"><time class="osl-chat-status-style">${escapeHtml(friend.timeLabel ?? "")}</time>${friend.unreadCount > 0 ? `<b class="osl-chat-unread osl-chat-status-style" aria-label="${friend.unreadCount} unread">${Math.min(friend.unreadCount, 99)}</b>` : ""}</span>
     </button>
   </div>`;
 }
@@ -417,7 +417,7 @@ function messageRow(message: OslChatMessage, friend: OslChatFriend, profileDispl
   return `<article class="osl-chat-message is-${message.direction}${continuation ? " is-continuation" : ""}" data-message-id="${escapeHtml(message.messageId)}" data-message-author="${escapeHtml(author)}">
     <p class="osl-chat-message-text">${escapeHtml(message.body)}</p>
     ${reactionButtons ? `<div class="osl-chat-reactions">${reactionButtons}</div>` : ""}
-    <footer><time class="osl-chat-message-timestamp">${escapeHtml(message.timestampLabel)}</time><span class="osl-chat-message-state is-${message.state}">${label}</span>${unreadable ? `<span class="osl-chat-message-unreadable">${escapeHtml(unreadable)}</span>` : ""}</footer>
+    <footer><time class="osl-chat-message-timestamp osl-chat-status-style">${escapeHtml(message.timestampLabel)}</time><span class="osl-chat-message-state osl-chat-status-style is-${message.state}">${label}</span>${unreadable ? `<span class="osl-chat-message-unreadable osl-chat-status-style">${escapeHtml(unreadable)}</span>` : ""}</footer>
   </article>`;
 }
 
@@ -538,7 +538,7 @@ function activeThread(model: OslChatsViewModel, friend: OslChatFriend): string {
     ? `<aside class="osl-chat-blocked-panel" role="alert"><strong>Message not sent</strong><p>${escapeHtml(model.sendBlockedReason)}</p><button type="button" data-osl-chat-blocked-close>Back to chat</button></aside>`
     : "";
   return `<section class="osl-chat-thread" aria-label="OSL direct chat with ${escapeHtml(friend.nickname)}">
-    <header class="osl-chat-thread-header">${avatar(friend.nickname, "is-thread", friend.online !== false)}<button class="osl-chat-thread-identity" type="button" data-osl-chat-settings="${escapeHtml(friend.personId)}"><h2>${escapeHtml(friend.nickname)}${oslVerificationTickMarkup(friend.verificationTwoWay)}</h2><span class="is-${friend.pendingKeyChange ? "key-changed" : friend.verified ? "verified" : "unverified"}">${verification}</span></button><button class="osl-chat-thread-settings" type="button" data-osl-chat-settings="${escapeHtml(friend.personId)}" aria-label="Chat settings">${moreIcon}</button></header>
+    <header class="osl-chat-thread-header">${avatar(friend.nickname, "is-thread", friend.online !== false)}<button class="osl-chat-thread-identity" type="button" data-osl-chat-settings="${escapeHtml(friend.personId)}"><h2>${escapeHtml(friend.nickname)}${oslVerificationTickMarkup(friend.verificationTwoWay)}</h2><span class="osl-chat-status-style is-${friend.pendingKeyChange ? "key-changed" : friend.verified ? "verified" : "unverified"}">${verification}</span></button><button class="osl-chat-thread-settings" type="button" data-osl-chat-settings="${escapeHtml(friend.personId)}" aria-label="Chat settings">${moreIcon}</button></header>
     ${keyBanner}${unconfirmed}${blocked}
     <div class="osl-chat-message-list" role="log" aria-live="polite" aria-relevant="additions text">${messages}</div>
     ${buildIntegrityWarningRow(model.buildIntegrity)}
