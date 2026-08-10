@@ -35,31 +35,10 @@
           <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M3 11 12 3l9 8v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1Z"/></svg>
           <span>Home</span>
         </button>
-        <button class="nav-item" data-page-target="inbox">
-          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 5h16v12H8l-4 4Zm0 0 8 7 8-7"/></svg>
-          <span>Inbox</span>
-        </button>
-        <button class="nav-item" data-page-target="people">
-          <svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="9" cy="8" r="4"/><path d="M2 21c0-4 3-7 7-7s7 3 7 7M17 4a4 4 0 0 1 0 8m1 3c2.3.8 4 3 4 6"/></svg>
-          <span>People</span>
-        </button>
         <button class="nav-item" data-page-target="composer">
           <svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="m7 15 3-3 3 2 4-5M7 8h4"/></svg>
           <span>Secure Composer</span>
           <span class="nav-dot" aria-label="Ready"></span>
-        </button>
-        <button class="nav-item" data-page-target="privacy">
-          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 2 4 5v6c0 5 3 9 8 11 5-2 8-6 8-11V5Z"/><path d="m9 12 2 2 4-5"/></svg>
-          <span>Privacy</span>
-        </button>
-        <button class="nav-item" data-page-target="connections">
-          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M8 12h8M5 8a4 4 0 0 0 0 8h3M19 8a4 4 0 0 1 0 8h-3"/></svg>
-          <span>Connections</span>
-          <span class="nav-count">9</span>
-        </button>
-        <button class="nav-item" data-page-target="activity">
-          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 4v16h16M7 15l3-4 3 2 5-7"/></svg>
-          <span>Activity</span>
         </button>
       </nav>
 
@@ -107,7 +86,7 @@
           <article class="panel attention-panel">
             <div class="panel-heading"><div><p class="eyebrow">Recommended next</p><h3>Review three sensitive-history findings</h3></div><span class="count-badge">3</span></div>
             <p>A local preview may contain an old address. Nothing has been removed.</p>
-            <button class="secondary-button" data-go="privacy" data-trigger-scan="true">Review findings</button>
+            <button class="secondary-button" data-go="settings">Review findings in Settings</button>
           </article>
           <article class="panel">
             <div class="panel-heading"><div><p class="eyebrow">This week</p><h3>Protection activity</h3></div></div>
@@ -116,7 +95,7 @@
           </article>
         </div>
 
-        <div class="section-heading"><div><p class="eyebrow">Connections</p><h2>Protection at a glance</h2></div><button class="text-button" data-go="connections">Manage all</button></div>
+        <div class="section-heading"><div><p class="eyebrow">Connections</p><h2>Protection at a glance</h2></div><button class="text-button" data-go="settings">Manage in Settings</button></div>
         <div class="service-strip" id="home-services"></div>
 
         <article class="data-promise">
@@ -132,27 +111,6 @@
           <a data-doc-home-link="stopping" href="../../design/scrub-hosted-session-deletion.md#assisted-state-machine">Stopping</a>
           <a data-doc-home-link="login-recovery" href="../../design/unlock-and-duress.md#cryptographic-role">Login recovery</a>
         </nav>
-      </section>
-
-      <section class="page" data-page="inbox" aria-labelledby="inbox-heading">
-        <div class="section-heading"><div><p class="eyebrow">Unified view · optional</p><h2 id="inbox-heading">Inbox</h2></div><button class="primary-button">New OSL chat</button></div>
-        <div class="split-view">
-          <div class="conversation-list" id="conversation-list"></div>
-          <article class="conversation-preview">
-            <div class="conversation-header"><span class="avatar">R</span><div><h3>Rose</h3><p>OSL Chat · End-to-end encrypted</p></div><span class="state-label compact"><span class="status-dot good"></span> Verified</span></div>
-            <div class="message-stack"><p class="bubble incoming">did the prototype work?</p><p class="bubble outgoing">testing it now</p><p class="conversation-boundary">Simulated conversation · no messages were loaded</p></div>
-            <button class="secondary-button" data-go="composer">Open Secure Composer</button>
-          </article>
-        </div>
-      </section>
-
-      <section class="page" data-page="people" aria-labelledby="people-heading">
-        <div class="section-heading"><div><p class="eyebrow">Identity and trust</p><h2 id="people-heading">People</h2></div><button class="primary-button">Add person</button></div>
-        <div class="people-grid">
-          <article class="person-card"><span class="avatar large">R</span><div><h3>Rose</h3><p>Verified OSL identity</p><div class="tag-row"><span class="tag">Discord · @rose.test</span><span class="tag">Instagram · @rose.private</span></div></div><button class="secondary-button">Manage</button></article>
-          <article class="person-card"><span class="avatar large">O</span><div><h3>OSL test</h3><p>Two identities need review</p><div class="tag-row"><span class="tag">Discord · @osl.test</span><span class="tag warning">X · unverified</span></div></div><button class="secondary-button">Verify</button></article>
-        </div>
-        <article class="panel"><h3>Trust is specific</h3><p>A trusted person may receive OSL E2EE without bypassing file warnings, cleanup scope or account separation. OSL never merges identities from similar names or avatars.</p></article>
       </section>
 
       <section class="page" data-page="composer" aria-labelledby="composer-heading">
@@ -201,47 +159,6 @@
         </div>
       </section>
 
-      <section class="page" data-page="privacy" aria-labelledby="privacy-heading">
-        <div class="section-heading"><div><p class="eyebrow">Simple by default</p><h2 id="privacy-heading">Privacy</h2></div><span class="state-label"><span class="status-dot good"></span> Balanced</span></div>
-        <div class="preset-row" role="radiogroup" aria-label="Protection preset">
-          <label class="preset-card"><input type="radio" name="preset" value="basic"/><span><strong>Basic</strong><small>Health, links and local warnings</small></span></label>
-          <label class="preset-card selected"><input type="radio" name="preset" value="balanced" checked/><span><strong>Balanced</strong><small>Recommended protection without automatic deletion</small></span></label>
-          <label class="preset-card"><input type="radio" name="preset" value="maximum"/><span><strong>Maximum</strong><small>Strict public-post checks and verified-contact rules</small></span></label>
-        </div>
-
-        <div class="privacy-grid">
-          <article class="panel scan-panel">
-            <div class="panel-heading"><div><p class="eyebrow">Local scan</p><h3>Sensitive-history scan</h3></div><span class="free-label">Included in Free</span></div>
-            <p>Look for user-selected sensitive details in the selected test account. Findings stay on this device.</p>
-            <div class="scan-scope"><span>Scope</span><strong id="scan-scope">Discord · Personal · @rose.test</strong></div>
-            <button class="primary-button" id="scan-button">Run simulated scan</button>
-            <div id="scan-results" class="scan-results" hidden></div>
-          </article>
-          <article class="panel">
-            <div class="panel-heading"><div><p class="eyebrow">After I send</p><h3>Retention</h3></div><span class="pro-label">Pro cleanup</span></div>
-            <div class="setting-row"><div><strong>Automatic deletion</strong><p>Off by default on every connected account</p></div><label class="switch"><input type="checkbox" aria-label="Automatic deletion" disabled/><span></span></label></div>
-            <div class="setting-row"><div><strong>OSL text expiry</strong><p>Simulated in this prototype</p></div><button class="text-button">Review</button></div>
-            <div class="setting-row"><div><strong>Always-On Retention Agent</strong><p>Customer-controlled PC, NAS or cloud VM</p></div><button class="text-button pro-action">Preview Pro</button></div>
-          </article>
-        </div>
-      </section>
-
-      <section class="page" data-page="connections" aria-labelledby="connections-heading">
-        <div class="section-heading"><div><p class="eyebrow">Unlimited accounts in Free</p><h2 id="connections-heading">Connections</h2></div><button class="primary-button">Add test account</button></div>
-        <p class="page-intro">Every account has isolated drafts, findings, policies and health. Expand a service to switch accounts.</p>
-        <div class="connections-grid" id="connections-grid"></div>
-      </section>
-
-      <section class="page" data-page="activity" aria-labelledby="activity-heading">
-        <div class="section-heading"><div><p class="eyebrow">Proof, not promises</p><h2 id="activity-heading">Activity</h2></div><button class="secondary-button">Export local copy</button></div>
-        <div class="activity-list">
-          <article class="activity-item"><span class="activity-icon good"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m6 12 4 4 8-9"/></svg></span><div><strong>Link tracking parameters removed</strong><p>Discord · Personal · Today 8:42 PM</p></div><span class="state-label compact"><span class="status-dot good"></span> Local</span></article>
-          <article class="activity-item"><span class="activity-icon warn"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 8v5m0 3h.01M4 20h16L12 4Z"/></svg></span><div><strong>Instagram layout recipe changed</strong><p>Work · Composer moved to sidecar and recovered · Today 7:16 PM</p></div><span class="state-label compact"><span class="status-dot good"></span> Recovered</span></article>
-          <article class="activity-item"><span class="activity-icon neutral"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M5 12h14M12 5v14"/></svg></span><div><strong>Cleanup request not started</strong><p>Facebook Messenger · Personal · User action required</p></div><span class="state-label compact"><span class="status-dot warn"></span> Held</span></article>
-        </div>
-        <article class="receipt-note"><strong>Removal guarantees stay separate</strong><p>Platform removal, OSL cryptographic expiry and local cache removal are shown as different results. Recipient captures are never reported as deleted.</p></article>
-      </section>
-
       <section class="page" data-page="settings" aria-labelledby="settings-heading">
         <div class="section-heading"><div><p class="eyebrow">Local preferences</p><h2 id="settings-heading">Settings</h2></div></div>
         <div class="settings-list">
@@ -249,6 +166,16 @@
           <article class="setting-row card-row"><div><strong>Diagnostics</strong><p>Content, tokens and recipient identities excluded</p></div><button class="secondary-button">Review data</button></article>
           <article class="setting-row card-row"><div><strong>Advanced</strong><p>Connector recipes, capabilities and local storage</p></div><button class="secondary-button">Open</button></article>
         </div>
+        <section class="panel" aria-labelledby="retired-sidebar-record-heading">
+          <p class="eyebrow">Retired sidebar record</p>
+          <h3 id="retired-sidebar-record-heading">Statements kept in Settings</h3>
+          <p>The five retired views were consolidated here. This read-only prototype record preserves their scope and simulated outcomes without retaining separate routes.</p>
+          <details open><summary><strong>Inbox — Private communication</strong></summary><p>Inbox · New OSL chat · Rose · OSL Chat · End-to-end encrypted · Verified.</p><p>did the prototype work? · testing it now · Simulated conversation · no messages were loaded.</p><p>Open Secure Composer. Simulated rows: Rose / did the prototype work? / Simulated; OSL test / identity review waiting / Simulated; Privacy lab / local-only draft / Simulated.</p></details>
+          <details><summary><strong>People — Identity and trust</strong></summary><p>People · Add person · Rose · Verified OSL identity · Discord · @rose.test · Instagram · @rose.private · Manage.</p><p>OSL test · Two identities need review · Discord · @osl.test · X · unverified · Verify.</p><p><strong>Trust is specific</strong>: A trusted person may receive OSL E2EE without bypassing file warnings, cleanup scope or account separation. OSL never merges identities from similar names or avatars.</p></details>
+          <details><summary><strong>Privacy — Simple by default</strong></summary><p>Privacy · Balanced · Protection preset. Basic: Health, links and local warnings. Balanced: Recommended protection without automatic deletion. Maximum: Strict public-post checks and verified-contact rules.</p><p>Local scan · Sensitive-history scan · Included in Free. Look for user-selected sensitive details in the selected test account. Findings stay on this device. Scope · Discord · Personal · @rose.test · Run simulated scan.</p><p>After I send · Retention · Pro cleanup. Automatic deletion: Off by default on every connected account. OSL text expiry: Simulated in this prototype · Review. Always-On Retention Agent: Customer-controlled PC, NAS or cloud VM · Preview Pro.</p><p>3 items may reveal your home address or private routines. Review calmly. Nothing was deleted or changed. Possible address: A simulated old message may reveal a home address. Travel detail: A simulated conversation may disclose when a home is empty. Account recovery clue: A simulated message may contain a memorable recovery answer.</p><p>Open message · Show deletion steps · Pro · Ignore. Simulated message location opened. No account was accessed. Guided deletion steps previewed. You remain in control of every platform action. Finding ignored locally. No platform data changed. Local simulated scan complete: 3 review items, 0 removals.</p></details>
+          <details><summary><strong>Connections — Unlimited accounts in Free</strong></summary><p>Connections · Add test account. Every account has isolated drafts, findings, policies and health. Expand a service to switch accounts.</p><div id="retired-connections-record"></div></details>
+          <details><summary><strong>Activity — Proof, not promises</strong></summary><p>Activity · Export local copy. Link tracking parameters removed · Discord · Personal · Today 8:42 PM · Local.</p><p>Instagram layout recipe changed · Work · Composer moved to sidecar and recovered · Today 7:16 PM · Recovered. Cleanup request not started · Facebook Messenger · Personal · User action required · Held.</p><p><strong>Removal guarantees stay separate</strong>: Platform removal, OSL cryptographic expiry and local cache removal are shown as different results. Recipient captures are never reported as deleted.</p></details>
+        </section>
       </section>
     </main>
   </div>
