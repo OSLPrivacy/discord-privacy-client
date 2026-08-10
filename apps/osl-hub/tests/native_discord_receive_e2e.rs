@@ -4328,6 +4328,74 @@ fn task_0274_blocked_friend_stops_every_message_path() {
         good_fingerprints.join("|"),
         after_block_fingerprints.join("|")
     );
+
+    alice.activate();
+    set_friend_relationship(
+        &alice.core,
+        &alice.security,
+        alice_bob_friend.clone(),
+        FriendRelationship::Accepted,
+    )
+    .expect("unblocking friend persists");
+    set_hub_friend_account_reach_everywhere(
+        &alice.security,
+        alice_bob_friend.clone(),
+        vec![FriendAccountReachAccount {
+            service_id: "discord".to_owned(),
+            account_id: alice.account_id.clone(),
+            account_label: "TASK0274 Alice Discord".to_owned(),
+        }],
+    )
+    .expect("unblocked friend can restore account reach");
+
+    let mut unblocked_successes = Vec::new();
+    let prepared_again = prepare_native_discord_overlay_text(
+        &alice.core,
+        &alice.security,
+        &alice.broker,
+        &ai_carrier_fixture(),
+        "TASK0274 unblocked prepare fixture".to_owned(),
+        false,
+        None,
+    )
+    .expect("unblocked friend can prepare again");
+    unblocked_successes.push(format!("prepare={}", prepared_again.prepared.message_id));
+    let read_again = drain_native_discord_overlay_text(&alice.core, &alice.security, &alice.broker)
+        .expect("unblocked friend can read again");
+    assert_eq!(read_again.messages.len(), 1);
+    unblocked_successes.push(format!("read={}", read_again.messages[0].message_id));
+    let mut unblocked_place_trace = Vec::new();
+    let placed_again = with_allowed_place_before_protected_message_path(
+        &mut unblocked_place_trace,
+        || {
+            let binding = manual_peer_binding(&alice.core, alice_bob_friend.clone())?;
+            let scope = alice
+                .scope
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone()
+                .expect("Alice context scope is active after unblock");
+            osl_privacy_hub::security::require_manual_peer_scope_approved(
+                &alice.core,
+                "discord",
+                &alice.account_id,
+                binding.person_id,
+                scope,
+            )
+        },
+        |binding| Ok(format!("place-{}", binding.peer_osl_user_id)),
+    )
+    .expect("unblocked friend reaches placement again");
+    unblocked_successes.push(format!("place={placed_again}"));
+    let reach_again = list_friend_account_reach_choices(&alice.security, alice_bob_friend)
+        .expect("unblocked friend can read account reach again");
+    assert_eq!(reach_again.len(), 1);
+    unblocked_successes.push(format!("account_reach={}", reach_again[0].account_id));
+    println!(
+        "TASK0274_UNBLOCKED_SUCCESSES count={} successes={}",
+        unblocked_successes.len(),
+        unblocked_successes.join("|")
+    );
 }
 
 #[test]
