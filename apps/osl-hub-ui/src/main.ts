@@ -7,6 +7,7 @@ import "@fontsource-variable/source-sans-3/wght.css";
 import "./styles.css";
 import "./local-protected-sheet.css";
 import "./friend-invite.css";
+import "./friends-settings-surface.css";
 import "./recovery-screen.css";
 import "./onboarding-mullvad.css";
 import { invoke } from "@tauri-apps/api/core";
@@ -183,6 +184,21 @@ import {
 } from "./osl-mail-adapter";
 import { oslMailViewMarkup, type OslMailComposeDraft, type OslMailPane } from "./osl-mail-view";
 import { oslServersViewMarkup } from "./osl-servers-view";
+import {
+  addSettingsFriend,
+  defaultFriendsSettingsState,
+  friendsSettingsSurfaceMarkup,
+  removeSettingsFriend,
+  resolveSettingsFriendRequest,
+  setAccountVisible,
+  setOslAddRule,
+  setOslChatsAddRule,
+  visibleAccountsFromServices,
+  type FriendsSettingsState,
+  type OslAddRule,
+  type OslChatsAddRule,
+  type SettingsFriend,
+} from "./friends-settings-surface";
 export {
   autoscrubUnattendedContractGate,
   autoscrubUnattendedProductionRun,
@@ -335,7 +351,7 @@ const NATIVE_DISCORD_COMPOSER_UNREACHABLE_EVENT = "osl://native-discord-composer
 const NATIVE_DISCORD_COMPOSER_UNREACHABLE_REASONS = ["zorder-band", "keyboard-focus", "session-ended"] as const;
 type NativeDiscordComposerUnreachableReason = (typeof NATIVE_DISCORD_COMPOSER_UNREACHABLE_REASONS)[number];
 type OnboardingRoute = "pro" | "welcome" | "create" | "import" | "unlock" | "keylost" | "account-recovery" | "recovery" | "recovery-check" | "mullvad" | "sending" | "defaults" | "tor" | "forward-secrecy" | "cover" | "visibility" | "passwords" | "burnpass" | "privacy" | "tutorial" | "detected" | "install" | "apps" | "browser" | "decoy";
-type SettingsSection = "account" | "apps" | "scrub" | "cleanup" | "notifications" | "appearance" | "about";
+type SettingsSection = "account" | "apps" | "friends" | "scrub" | "cleanup" | "notifications" | "appearance" | "about";
 type SavedAccountMode = "ask" | "use" | "clean";
 type BurnScope = "chat" | "app" | "account";
 type BurnResult = {
@@ -463,6 +479,7 @@ const recoveryKitUnsavedFlag = createRecoveryKitUnsavedFlag({
   write: (unsaved) => setHubRecoveryKitUnsaved(unsaved),
 });
 let settingsSection: SettingsSection = "account";
+let friendsSettingsState: FriendsSettingsState = defaultFriendsSettingsState();
 let activeService: LinkedService | null = null;
 let activeHomeAppId: HomeAppId | null = null;
 let appLaunchPendingId: HomeAppId | null = null;
@@ -5393,7 +5410,7 @@ function peopleDialogMarkup(): string {
 }
 
 function friendsDialogMarkup(): string {
-  if (route !== "home" || !friendsDialogOpen) return "";
+  if ((route !== "home" && !(route === "settings" && settingsSection === "friends")) || !friendsDialogOpen) return "";
   const pageCount = Math.max(1, Math.ceil(hubPeople.length / friendsDialogPageSize));
   friendsDialogPage = Math.min(friendsDialogPage, pageCount - 1);
   const pageStart = friendsDialogPage * friendsDialogPageSize;
@@ -5652,7 +5669,7 @@ function serviceGuideContent(service: LinkedService, step: ServiceGuideStep): st
 }
 
 function settingsContent(): string {
-  const items: Array<[SettingsSection, string]> = [["account", "Account"], ["apps", "Apps"], ["scrub", "Scrub"], ["cleanup", "Cleanup"], ["notifications", "Notifications"], ["appearance", "Appearance"], ["about", "About"]];
+  const items: Array<[SettingsSection, string]> = [["account", "Account"], ["apps", "Apps"], ["friends", "Friends"], ["scrub", "Scrub"], ["cleanup", "Cleanup"], ["notifications", "Notifications"], ["appearance", "Appearance"], ["about", "About"]];
   // These buttons pick a section WITHIN Settings, so they are not `page`.
   // Settings itself is the page, and the primary sidebar already marks it
   // `aria-current="page"`; marking a section button the same way put two
@@ -5665,11 +5682,31 @@ function settingsContent(): string {
 function settingsSectionContent(): string {
   if (settingsSection === "account") return `${identitySettingsContent()}${settingsDivider()}${passwordSecuritySettingsContent()}${accountAdvancedSettingsContent()}${renderRecoveryStatesSettings()}`;
   if (settingsSection === "apps") return `${serviceAccountsSettingsContent()}${optionalComponentsSettingsContent()}${sendingSettingsContent()}`;
+  if (settingsSection === "friends") return friendsSettingsContent();
   if (settingsSection === "scrub") return privacySettingsContent();
   if (settingsSection === "cleanup") return massCleanupSettingsContent();
   if (settingsSection === "notifications") return notificationSettingsContent();
   if (settingsSection === "appearance") return appearanceSettingsContent();
   return updateSettingsContent();
+}
+
+function settingsFriendFromHubPerson(person: HubPerson): SettingsFriend {
+  return {
+    id: person.personId,
+    displayName: person.alias ?? "Unnamed friend",
+    address: compactFriendId(person.oslUserId),
+  };
+}
+
+function friendsSettingsRenderState(): FriendsSettingsState {
+  return { ...friendsSettingsState, oslFriends: hubPeople.map(settingsFriendFromHubPerson) };
+}
+
+function friendsSettingsContent(): string {
+  return friendsSettingsSurfaceMarkup(friendsSettingsRenderState(), {
+    escapeHtml,
+    accounts: visibleAccountsFromServices(services),
+  });
 }
 
 function optionalComponentsSettingsContent(): string {
@@ -7941,6 +7978,12 @@ function bindWorkspace(): void {
   );
   document.querySelectorAll<HTMLButtonElement>("[data-allow-person]").forEach((button) => button.addEventListener("click", () => void allowPersonHere(button.dataset.allowPerson ?? "")));
   document.querySelectorAll<HTMLElement>("[data-open-friends]").forEach((button) => button.addEventListener("click", () => {
+    if (route === "settings" && settingsSection === "friends") {
+      friendsDialogOpen = true;
+      friendsDialogPage = 0;
+      render();
+      return;
+    }
     route = "people";
     friendsDialogOpen = false;
     friendsDialogPage = 0;
@@ -7959,6 +8002,53 @@ function bindWorkspace(): void {
     render();
   }));
   document.querySelector<HTMLFormElement>("#add-friend-form")?.addEventListener("submit", (event) => void submitFriendCode(event));
+  document.querySelectorAll<HTMLButtonElement>("[data-add-to-osl-chats]").forEach((button) => button.addEventListener("click", () => {
+    const person = hubPeople.find((candidate) => candidate.personId === button.dataset.addToOslChats);
+    if (!person) return;
+    friendsSettingsState = addSettingsFriend(friendsSettingsRenderState(), "oslChats", settingsFriendFromHubPerson(person));
+    render();
+    showToast("Added to OSL Chats. Your OSL friends list did not change.");
+  }));
+  document.querySelectorAll<HTMLButtonElement>("[data-remove-settings-friend]").forEach((button) => button.addEventListener("click", () => {
+    const list = button.dataset.friendList;
+    const personId = button.dataset.removeSettingsFriend ?? "";
+    if (list === "osl") {
+      requestFriendRemoval(personId);
+      return;
+    }
+    if (list !== "oslChats") return;
+    friendsSettingsState = removeSettingsFriend(friendsSettingsState, "oslChats", personId);
+    render();
+    showToast("Removed from OSL Chats. Your OSL friends list did not change.");
+  }));
+  document.querySelectorAll<HTMLInputElement>("[data-osl-add-rule]").forEach((input) => input.addEventListener("change", () => {
+    if (!input.checked) return;
+    friendsSettingsState = setOslAddRule(friendsSettingsState, input.value as OslAddRule);
+    render();
+  }));
+  document.querySelectorAll<HTMLInputElement>("[data-osl-chats-add-rule]").forEach((input) => input.addEventListener("change", () => {
+    if (!input.checked) return;
+    friendsSettingsState = setOslChatsAddRule(friendsSettingsState, input.value as OslChatsAddRule);
+    render();
+  }));
+  document.querySelectorAll<HTMLInputElement>("[data-friend-request-setting]").forEach((input) => input.addEventListener("change", () => {
+    const setting = input.dataset.friendRequestSetting;
+    if (setting !== "allowTransferRequests" && setting !== "allowMessageRequests" && setting !== "requireRequestNote" && setting !== "autoMirrorNewFriends") return;
+    friendsSettingsState = { ...friendsSettingsState, [setting]: input.checked };
+    render();
+  }));
+  document.querySelectorAll<HTMLButtonElement>("[data-resolve-friend-request]").forEach((button) => button.addEventListener("click", () => {
+    friendsSettingsState = resolveSettingsFriendRequest(
+      friendsSettingsState,
+      button.dataset.requestId ?? "",
+      button.dataset.resolveFriendRequest === "accept",
+    );
+    render();
+  }));
+  document.querySelectorAll<HTMLInputElement>("[data-friend-account-visible]").forEach((input) => input.addEventListener("change", () => {
+    friendsSettingsState = setAccountVisible(friendsSettingsState, input.dataset.friendAccountVisible ?? "", input.checked);
+    render();
+  }));
   document.querySelectorAll<HTMLFormElement>("[data-nickname-person]").forEach((form) => form.addEventListener("submit", (event) => void saveFriendNickname(event)));
   document.querySelector<HTMLButtonElement>("#copy-friend-code")?.addEventListener("click", () => void copyFriendInvite());
   document.querySelector<HTMLInputElement>("#notifications-opt-in")?.addEventListener("change", (event) => void changeNotifications(event.currentTarget as HTMLInputElement));
@@ -8816,6 +8906,7 @@ async function submitFriendCode(event: SubmitEvent): Promise<void> {
   }
   if (button) button.disabled = true;
   if (status) status.textContent = username ? "Resolving username…" : "Saving request locally…";
+  const peopleBeforeAdd = new Set(hubPeople.map((person) => person.personId));
   const resolved = username ? await addOslFriendByUsername(username, nicknameInput?.value ?? "") : null;
   const outcome = username
     ? (resolved ? { added: true, reason: null } : { added: false, reason: "username lookup was refused" })
@@ -8828,6 +8919,11 @@ async function submitFriendCode(event: SubmitEvent): Promise<void> {
   if (input) input.value = "";
   if (nicknameInput) nicknameInput.value = "";
   hubPeople = await listHubPeople() ?? hubPeople;
+  if (friendsSettingsState.autoMirrorNewFriends) {
+    for (const person of hubPeople.filter((candidate) => !peopleBeforeAdd.has(candidate.personId))) {
+      friendsSettingsState = addSettingsFriend(friendsSettingsRenderState(), "osl", settingsFriendFromHubPerson(person));
+    }
+  }
   render();
   showToast("Friend added. Encrypted chats are still off.");
 }
@@ -10308,6 +10404,7 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   onboardingComplete = patch.onboardingComplete ?? false;
   setup = { ...defaultSetup, ...patch.setup };
   settingsSection = "account";
+  friendsSettingsState = defaultFriendsSettingsState();
   activeService = null;
   activeHomeAppId = null;
   activeOslChatPersonId = null;
