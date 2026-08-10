@@ -352,8 +352,6 @@ pub mod update_state_backup;
 pub mod updates;
 pub mod visual_binding;
 pub mod web_surface_adapter;
-/// Hermetic records for the direct X active-window discovery command.
-pub mod x_window_composer;
 #[cfg(not(task3982_focused))]
 pub mod website_driver;
 pub mod whatsapp_accessibility;
