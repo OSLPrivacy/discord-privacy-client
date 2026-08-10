@@ -149,35 +149,30 @@
   100%     { transform: translateY(0);    opacity: 1; }
 }
 
-/* --- controls ------------------------------------------------------------- */
-.bs-segmented {
-  display: flex;
-  border: 1.5px solid var(--osl-setup-line);
-  border-radius: 2px;
-  overflow: hidden;
+/* The metadata decision uses the canonical 18px square checkbox mark. The
+   listener rerenders after every change, keeping this radio-like choice to
+   exactly one selected value while retaining the existing input contract. */
+.bs-choice-control {
+  display: grid;
+  gap: 6px;
+  align-items: center;
 }
 
-.bs-segment {
-  padding: 6px 12px;
-  border-left: 1px solid var(--bs-card-line);
-  background: transparent;
+.bs-choice-row {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
+  min-height: 18px;
   cursor: pointer;
   font-family: "Source Sans 3 Variable", "Source Sans 3", var(--font-ui);
   font-size: 12.5px;
   font-weight: 600;
   color: var(--osl-setup-quiet);
-  transition: color .2s, background-color .2s;
 }
 
-.bs-segment:first-child { border-left: 0; }
-
-/* Each state carries its own colour: green is "OSL handles it", amber is "OSL
-   asks you", grey is "OSL leaves it alone". Colour is never the only signal --
-   the word is right there. */
-.bs-segment-always.selected { color: var(--bs-good); background: rgba(61, 214, 140, .12); }
-.bs-segment-ask.selected { color: var(--bs-warn); background: rgba(229, 159, 59, .12); }
-.bs-segment-never.selected { color: var(--osl-setup-muted); background: rgba(151, 163, 169, .12); }
-.bs-segment:has(input:focus-visible) { outline: 2px solid var(--osl-setup-accent); outline-offset: -2px; }
+.bs-choice-row:has(input:checked) { color: var(--osl-setup-text); }
+.bs-choice-row:has(input:focus-visible) { outline: 2px solid var(--osl-setup-accent); outline-offset: 2px; }
 
 .bs-quiet {
   width: 640px;
@@ -236,7 +231,6 @@
   .bs-dot { animation: none; }
   .bs-travel { transform: translateX(51px); opacity: 1; }
   .bs-badge { opacity: 0; }
-  .bs-segment { transition: none; }
 }
 
 @media (max-width: 44rem) {
