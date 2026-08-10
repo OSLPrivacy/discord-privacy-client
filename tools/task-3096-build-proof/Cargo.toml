@@ -27,5 +27,10 @@ path = "src/bin/osl-check-build-proof-signature.rs"
 name = "osl-check-build-proof"
 path = "src/bin/osl-check-build-proof.rs"
 
+[[bin]]
+name = "task-3219-old-weak-build"
+path = "src/bin/task-3219-old-weak-build.rs"
+test = false
+
 [workspace]
 resolver = "2"
