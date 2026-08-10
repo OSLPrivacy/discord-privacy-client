@@ -9,6 +9,8 @@ export interface SignalStoryComposerSurface {
   readonly service: string;
   readonly placeKind: string;
   readonly storiesEnabled: boolean;
+  /** Fail-closed result returned by the backend for the exact selected audience. */
+  readonly selectedAudienceAllowed: boolean;
 }
 
 const STORY_CONTROL_NAMES = [
@@ -37,7 +39,8 @@ function escapeHtml(value: string): string {
 export function isEnabledSignalStoryComposer(surface: SignalStoryComposerSurface): boolean {
   return surface.service === "signal"
     && surface.placeKind === "story"
-    && surface.storiesEnabled;
+    && surface.storiesEnabled
+    && surface.selectedAudienceAllowed;
 }
 
 /**

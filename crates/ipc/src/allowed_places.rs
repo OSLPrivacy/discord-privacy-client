@@ -461,6 +461,7 @@ pub const APP_TELEGRAM: &str = "telegram";
 pub const APP_MESSENGER: &str = "messenger";
 pub const KIND_DIRECT_MESSAGE: &str = "direct_message";
 pub const KIND_GROUP_CHAT: &str = "group_chat";
+pub const KIND_STORY: &str = "story";
 pub const KIND_CHANNEL: &str = "channel";
 pub const KIND_COMMUNITY: &str = "community";
 pub const KIND_PUBLIC_POST: &str = "public_post";
@@ -1070,7 +1071,7 @@ fn validate_stable_id_shape(stable_id: &str) -> Result<()> {
             if matches!(
                     (app, kind),
                     ("discord", _)
-                        | ("signal", KIND_DIRECT_MESSAGE | KIND_GROUP_CHAT)
+                        | ("signal", KIND_DIRECT_MESSAGE | KIND_GROUP_CHAT | KIND_STORY)
                 )
                 && !account.trim().is_empty()
                 && !kind.trim().is_empty()

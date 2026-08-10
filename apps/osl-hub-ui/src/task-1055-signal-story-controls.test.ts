@@ -9,6 +9,7 @@ const enabledSignalStory: SignalStoryComposerSurface = {
   service: "signal",
   placeKind: "story",
   storiesEnabled: true,
+  selectedAudienceAllowed: true,
 };
 
 describe("TASK 1055 Signal story controls", () => {
@@ -35,6 +36,7 @@ describe("TASK 1055 Signal story controls", () => {
 
   it("does not add story controls to disabled Stories or other Signal places", () => {
     expect(signalStoryComposerMarkup({ ...enabledSignalStory, storiesEnabled: false })).toBe("");
+    expect(signalStoryComposerMarkup({ ...enabledSignalStory, selectedAudienceAllowed: false })).toBe("");
     expect(signalStoryComposerMarkup({ ...enabledSignalStory, placeKind: "direct_message" })).toBe("");
     expect(signalStoryComposerMarkup({ ...enabledSignalStory, service: "instagram" })).toBe("");
   });
