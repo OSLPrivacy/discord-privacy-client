@@ -209,7 +209,7 @@ describe("clean onboarding sign in", () => {
     expect(controls).toContain('aria-label="Close"');
     expect(controls.match(/<button id="window-/g) ?? []).toHaveLength(3);
     const renderWorkspace = functionSource("renderWorkspace", "appLauncherStrip");
-    expect(renderWorkspace).toContain('<div class="desktop-top-row" data-tauri-drag-region="deep">${trustedHeader()}${desktopWindowControlsMarkup()}</div>');
+    expect(renderWorkspace).toContain('<div class="desktop-top-row shared-launcher-header-row" data-shared-launcher-header data-tauri-drag-region="deep">${trustedHeader()}${desktopWindowControlsMarkup()}</div>');
     expect(renderWorkspace).toContain('root.innerHTML = `<div class="app-frame"><div id="workspace-render-surface"></div></div>`;');
     expect(styles).toMatch(/\.app-frame\s*\{[^}]*grid-template-rows:\s*minmax\(0, 1fr\);/s);
     expect(styles).toMatch(/\.app-frame\.with-titlebar\s*\{[^}]*grid-template-rows:\s*44px minmax\(0, 1fr\);/s);
@@ -228,7 +228,7 @@ describe("clean onboarding sign in", () => {
     expect(styles).toMatch(
       /\.desktop-top-row\s*>\s*\.window-controls\s*\{[^}]*min-height:\s*var\(--chrome-row-height\);/s,
     );
-    expect(styles).toMatch(/:root\s*\{[^}]*--chrome-row-height:\s*54px;/s);
+    expect(styles).toMatch(/:root\s*\{[^}]*--chrome-row-height:\s*58px;/s);
     expect(styles).toMatch(/\.discord-qa-shell\s*\{\s*--chrome-row-height:\s*48px;/s);
   });
 

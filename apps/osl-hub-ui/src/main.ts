@@ -4974,17 +4974,9 @@ function renderWorkspace(): void {
 }
 
 function workspaceShellMarkup(): string {
-  // HOME IS A LAUNCHER, not a dashboard (PRODUCT.txt §2; DECISIONS.txt "UI
-  // WORKSTREAMS" item 1, 6 August): no sidebar at all on this route, one 58px
-  // shared header with integrated window controls, launcher tiles in the body
-  // and the Friends panel down the right. Every other route keeps the hub
-  // shell unchanged — the ruling removes the rail from Home, not the screens
-  // it pointed at.
-  if (route === "home" || route === "osl-chat") {
-    const header = route === "osl-chat" ? homeHeader() : homeLauncherHeader();
-    return `<div class="hub-layout home-launcher-shell ${route === "osl-chat" ? "osl-chats-shell" : ""}"><section class="hub-workspace"><div class="desktop-top-row home-launcher-top" data-tauri-drag-region="deep">${header}${desktopWindowControlsMarkup()}</div>${workspaceContent()}</section></div>${workspaceProtectedSheetMarkup()}`;
-  }
-  return `<div class="hub-layout with-primary-sidebar">${primarySidebarMarkup()}<section class="hub-workspace"><div class="desktop-top-row" data-tauri-drag-region="deep">${trustedHeader()}${desktopWindowControlsMarkup()}</div>${workspaceContent()}</section></div>${workspaceProtectedSheetMarkup()}`;
+  // Every post-onboarding route owns the full window width and uses the same
+  // 58px launcher header; no route renders a persistent destination rail.
+  return `<div class="hub-layout"><section class="hub-workspace"><div class="desktop-top-row shared-launcher-header-row" data-shared-launcher-header data-tauri-drag-region="deep">${trustedHeader()}${desktopWindowControlsMarkup()}</div>${workspaceContent()}</section></div>${workspaceProtectedSheetMarkup()}`;
 }
 
 export interface DestinationRouteTarget {

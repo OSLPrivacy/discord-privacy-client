@@ -34,7 +34,7 @@ use std::time::Duration;
 /// header; the controls are now docked into the header row itself, so the
 /// reserve is just that one row.
 #[cfg(all(target_os = "windows", not(feature = "discord-qa-shell")))]
-const TRUSTED_VERTICAL_RESERVE: i32 = 54;
+const TRUSTED_VERTICAL_RESERVE: i32 = 58;
 /// The Discord QA shell compacts `.workspace-header` to 48px
 /// (`.discord-qa-shell` in styles.css), so the reserve tracks it.
 #[cfg(all(target_os = "windows", feature = "discord-qa-shell"))]

@@ -870,9 +870,9 @@ code {
   grid-template-rows: 44px minmax(0, 1fr);
 }
 
-
-
-
+:root {
+  --chrome-row-height: 58px;
+}
 
 .discord-qa-shell {
   --chrome-row-height: 48px;
@@ -17309,3 +17309,17 @@ img.osl-chat-avatar { display: block; object-fit: cover; }
 }
 
 .attachment-progress__tor strong { color: var(--warn); }
+
+/* One launcher header on every workspace route. Kept below the historical
+   route-specific declarations so every destination reserves the same strip. */
+.desktop-top-row.shared-launcher-header-row {
+  height: var(--chrome-row-height);
+  min-height: var(--chrome-row-height);
+}
+
+.desktop-top-row.shared-launcher-header-row > .trusted-stack,
+.desktop-top-row.shared-launcher-header-row > .trusted-stack > header,
+.desktop-top-row.shared-launcher-header-row > .window-controls {
+  height: var(--chrome-row-height);
+  min-height: var(--chrome-row-height);
+}

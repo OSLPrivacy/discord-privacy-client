@@ -1,0 +1,554 @@
+{
+  "window": {
+    "width": 1280,
+    "height": 800
+  },
+  "captures": [
+    {
+      "route": "home",
+      "file": "/home/liamw/osl-exec-e/apps/osl-hub-ui/screenshots/evidence/task-5047-routes/task-5047-route-home.png",
+      "sha256": "245fee982c40262cd3d763b30ce6ed0f7bc027f1ce814e7b38884af0fdf464dc",
+      "bytes": 44210,
+      "layout": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 800,
+        "right": 1280,
+        "bottom": 800
+      },
+      "workspace": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 800,
+        "right": 1280,
+        "bottom": 800
+      },
+      "header": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 58,
+        "right": 1280,
+        "bottom": 58
+      },
+      "content": {
+        "x": 0,
+        "y": 58,
+        "width": 1280,
+        "height": 742,
+        "right": 1280,
+        "bottom": 800
+      },
+      "sharedHeaders": 1,
+      "sidebars": 0,
+      "railItems": 0,
+      "primaryDestinationNavs": 0
+    },
+    {
+      "route": "inbox",
+      "file": "/home/liamw/osl-exec-e/apps/osl-hub-ui/screenshots/evidence/task-5047-routes/task-5047-route-inbox.png",
+      "sha256": "046c8f0fa9883fd7d191ec1060777bba6778afa5585d006ff5d6cd6715082151",
+      "bytes": 70413,
+      "layout": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 800,
+        "right": 1280,
+        "bottom": 800
+      },
+      "workspace": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 800,
+        "right": 1280,
+        "bottom": 800
+      },
+      "header": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 58,
+        "right": 1280,
+        "bottom": 58
+      },
+      "content": {
+        "x": 0,
+        "y": 58,
+        "width": 1280,
+        "height": 742,
+        "right": 1280,
+        "bottom": 800
+      },
+      "sharedHeaders": 1,
+      "sidebars": 0,
+      "railItems": 0,
+      "primaryDestinationNavs": 0
+    },
+    {
+      "route": "people",
+      "file": "/home/liamw/osl-exec-e/apps/osl-hub-ui/screenshots/evidence/task-5047-routes/task-5047-route-people.png",
+      "sha256": "b392441dd36ee3a299161174815170e901081301f85156562a37e6ff5b94a472",
+      "bytes": 67741,
+      "layout": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 800,
+        "right": 1280,
+        "bottom": 800
+      },
+      "workspace": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 800,
+        "right": 1280,
+        "bottom": 800
+      },
+      "header": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 58,
+        "right": 1280,
+        "bottom": 58
+      },
+      "content": {
+        "x": 0,
+        "y": 58,
+        "width": 1280,
+        "height": 742,
+        "right": 1280,
+        "bottom": 800
+      },
+      "sharedHeaders": 1,
+      "sidebars": 0,
+      "railItems": 0,
+      "primaryDestinationNavs": 0
+    },
+    {
+      "route": "privacy",
+      "file": "/home/liamw/osl-exec-e/apps/osl-hub-ui/screenshots/evidence/task-5047-routes/task-5047-route-privacy.png",
+      "sha256": "44e670303b7fb77c3a2d526418889217318faf8ac515ddad48e918e78bfe58d0",
+      "bytes": 73216,
+      "layout": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 800,
+        "right": 1280,
+        "bottom": 800
+      },
+      "workspace": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 800,
+        "right": 1280,
+        "bottom": 800
+      },
+      "header": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 58,
+        "right": 1280,
+        "bottom": 58
+      },
+      "content": {
+        "x": 0,
+        "y": 58,
+        "width": 1280,
+        "height": 742,
+        "right": 1280,
+        "bottom": 800
+      },
+      "sharedHeaders": 1,
+      "sidebars": 0,
+      "railItems": 0,
+      "primaryDestinationNavs": 0
+    },
+    {
+      "route": "activity",
+      "file": "/home/liamw/osl-exec-e/apps/osl-hub-ui/screenshots/evidence/task-5047-routes/task-5047-route-activity.png",
+      "sha256": "96e3e77e0cc05a066c9ee642b8207e2f2ea290769a8f1a9d0c814771442f6a99",
+      "bytes": 39553,
+      "layout": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 800,
+        "right": 1280,
+        "bottom": 800
+      },
+      "workspace": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 800,
+        "right": 1280,
+        "bottom": 800
+      },
+      "header": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 58,
+        "right": 1280,
+        "bottom": 58
+      },
+      "content": {
+        "x": 0,
+        "y": 58,
+        "width": 1280,
+        "height": 742,
+        "right": 1280,
+        "bottom": 800
+      },
+      "sharedHeaders": 1,
+      "sidebars": 0,
+      "railItems": 0,
+      "primaryDestinationNavs": 0
+    },
+    {
+      "route": "connections",
+      "file": "/home/liamw/osl-exec-e/apps/osl-hub-ui/screenshots/evidence/task-5047-routes/task-5047-route-connections.png",
+      "sha256": "04d98460230b011bbd47af45ea9bc365ae4642713e06e62a7e8696a0c4080156",
+      "bytes": 112658,
+      "layout": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 800,
+        "right": 1280,
+        "bottom": 800
+      },
+      "workspace": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 800,
+        "right": 1280,
+        "bottom": 800
+      },
+      "header": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 58,
+        "right": 1280,
+        "bottom": 58
+      },
+      "content": {
+        "x": 0,
+        "y": 58,
+        "width": 1280,
+        "height": 742,
+        "right": 1280,
+        "bottom": 800
+      },
+      "sharedHeaders": 1,
+      "sidebars": 0,
+      "railItems": 0,
+      "primaryDestinationNavs": 0
+    },
+    {
+      "route": "service",
+      "file": "/home/liamw/osl-exec-e/apps/osl-hub-ui/screenshots/evidence/task-5047-routes/task-5047-route-service.png",
+      "sha256": "da0940ebad029f6006afffcf5db38f3d688daa2eeb6e35018c637195f72f5448",
+      "bytes": 31857,
+      "layout": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 800,
+        "right": 1280,
+        "bottom": 800
+      },
+      "workspace": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 800,
+        "right": 1280,
+        "bottom": 800
+      },
+      "header": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 58,
+        "right": 1280,
+        "bottom": 58
+      },
+      "content": {
+        "x": 0,
+        "y": 58,
+        "width": 1280,
+        "height": 742,
+        "right": 1280,
+        "bottom": 800
+      },
+      "sharedHeaders": 1,
+      "sidebars": 0,
+      "railItems": 0,
+      "primaryDestinationNavs": 0
+    },
+    {
+      "route": "settings",
+      "file": "/home/liamw/osl-exec-e/apps/osl-hub-ui/screenshots/evidence/task-5047-routes/task-5047-route-settings.png",
+      "sha256": "e5da3d0c8aa152633b259de409d3cca75bd93ecb60253189cadbbd7ea726be2c",
+      "bytes": 68509,
+      "layout": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 800,
+        "right": 1280,
+        "bottom": 800
+      },
+      "workspace": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 800,
+        "right": 1280,
+        "bottom": 800
+      },
+      "header": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 58,
+        "right": 1280,
+        "bottom": 58
+      },
+      "content": {
+        "x": 0,
+        "y": 58,
+        "width": 1280,
+        "height": 742,
+        "right": 1280,
+        "bottom": 800
+      },
+      "sharedHeaders": 1,
+      "sidebars": 0,
+      "railItems": 0,
+      "primaryDestinationNavs": 0
+    },
+    {
+      "route": "mullvad",
+      "file": "/home/liamw/osl-exec-e/apps/osl-hub-ui/screenshots/evidence/task-5047-routes/task-5047-route-mullvad.png",
+      "sha256": "8f7851aa2bce7ab9daa62e55e6eb6a71de1e81644a8c4d4d93692614849aea70",
+      "bytes": 10488,
+      "layout": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 800,
+        "right": 1280,
+        "bottom": 800
+      },
+      "workspace": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 800,
+        "right": 1280,
+        "bottom": 800
+      },
+      "header": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 58,
+        "right": 1280,
+        "bottom": 58
+      },
+      "content": {
+        "x": 0,
+        "y": 58,
+        "width": 1280,
+        "height": 742,
+        "right": 1280,
+        "bottom": 800
+      },
+      "sharedHeaders": 1,
+      "sidebars": 0,
+      "railItems": 0,
+      "primaryDestinationNavs": 0
+    },
+    {
+      "route": "osl-chat",
+      "file": "/home/liamw/osl-exec-e/apps/osl-hub-ui/screenshots/evidence/task-5047-routes/task-5047-route-osl-chat.png",
+      "sha256": "4536cab2976bef95254b245757c41ee2d45bb76351e995b69f644d651758dea7",
+      "bytes": 16314,
+      "layout": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 800,
+        "right": 1280,
+        "bottom": 800
+      },
+      "workspace": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 800,
+        "right": 1280,
+        "bottom": 800
+      },
+      "header": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 58,
+        "right": 1280,
+        "bottom": 58
+      },
+      "content": {
+        "x": 0,
+        "y": 58,
+        "width": 1280,
+        "height": 742,
+        "right": 1280,
+        "bottom": 800
+      },
+      "sharedHeaders": 1,
+      "sidebars": 0,
+      "railItems": 0,
+      "primaryDestinationNavs": 0
+    },
+    {
+      "route": "osl-mail",
+      "file": "/home/liamw/osl-exec-e/apps/osl-hub-ui/screenshots/evidence/task-5047-routes/task-5047-route-osl-mail.png",
+      "sha256": "53ddcb86c0b68a349bd578ec3c3d539db033d88ef4b8dadd95013364dcddea88",
+      "bytes": 23161,
+      "layout": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 800,
+        "right": 1280,
+        "bottom": 800
+      },
+      "workspace": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 800,
+        "right": 1280,
+        "bottom": 800
+      },
+      "header": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 58,
+        "right": 1280,
+        "bottom": 58
+      },
+      "content": {
+        "x": 0,
+        "y": 58,
+        "width": 1280,
+        "height": 742,
+        "right": 1280,
+        "bottom": 800
+      },
+      "sharedHeaders": 1,
+      "sidebars": 0,
+      "railItems": 0,
+      "primaryDestinationNavs": 0
+    },
+    {
+      "route": "osl-servers",
+      "file": "/home/liamw/osl-exec-e/apps/osl-hub-ui/screenshots/evidence/task-5047-routes/task-5047-route-osl-servers.png",
+      "sha256": "35bb89284d9818936d85d710e6c45dd3219b4e31889d7df7694ad46254928ea2",
+      "bytes": 32855,
+      "layout": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 800,
+        "right": 1280,
+        "bottom": 800
+      },
+      "workspace": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 800,
+        "right": 1280,
+        "bottom": 800
+      },
+      "header": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 58,
+        "right": 1280,
+        "bottom": 58
+      },
+      "content": {
+        "x": 0,
+        "y": 58,
+        "width": 1280,
+        "height": 742,
+        "right": 1280,
+        "bottom": 800
+      },
+      "sharedHeaders": 1,
+      "sidebars": 0,
+      "railItems": 0,
+      "primaryDestinationNavs": 0
+    },
+    {
+      "route": "signal-qa",
+      "file": "/home/liamw/osl-exec-e/apps/osl-hub-ui/screenshots/evidence/task-5047-routes/task-5047-route-signal-qa.png",
+      "sha256": "353d32a8aa21527fbc2f3e25570c2d504d70372e0e08cd7058c24724b597b0ff",
+      "bytes": 51416,
+      "layout": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 800,
+        "right": 1280,
+        "bottom": 800
+      },
+      "workspace": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 800,
+        "right": 1280,
+        "bottom": 800
+      },
+      "header": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 58,
+        "right": 1280,
+        "bottom": 58
+      },
+      "content": {
+        "x": 0,
+        "y": 58,
+        "width": 1280,
+        "height": 742,
+        "right": 1280,
+        "bottom": 800
+      },
+      "sharedHeaders": 1,
+      "sidebars": 0,
+      "railItems": 0,
+      "primaryDestinationNavs": 0
+    }
+  ]
+}

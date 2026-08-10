@@ -27,7 +27,7 @@ const PROFILE_NAMESPACE: &str = "service-profiles-v2";
 // The desktop shell no longer reserves a separate titlebar row above the
 // trusted chrome: the drag region and window controls (minimize/maximize/
 // close) are docked directly into the existing TRUSTED_BAR_HEIGHT row
-// (osl-hub-ui/src/main.ts's ".desktop-top-row", inside the 54px workspace
+// (osl-hub-ui/src/main.ts's ".desktop-top-row", inside the 58px workspace
 // header) instead of a standalone 44px strip that read as an empty pale bar.
 // The constant stays (rather than being threaded out of host_rect()) so the
 // geometry contract documents that zero pixels are reserved for it, and so a
@@ -36,7 +36,7 @@ const PROFILE_NAMESPACE: &str = "service-profiles-v2";
 #[cfg(any(feature = "desktop", test))]
 const DESKTOP_TITLE_HEIGHT: u32 = 0;
 #[cfg(any(feature = "desktop", test))]
-const TRUSTED_BAR_HEIGHT: u32 = 54;
+const TRUSTED_BAR_HEIGHT: u32 = 58;
 #[cfg(any(feature = "desktop", test))]
 const LOCAL_PROTECTED_SHEET_WIDTH: u32 = 420;
 #[cfg(any(feature = "desktop", test))]
@@ -1889,7 +1889,7 @@ mod tests {
     fn native_layout_uses_the_area_below_and_right_of_trusted_chrome() {
         // The hub route's .app-frame is a single-row grid now (no more
         // separate 44px titlebar strip above the trusted chrome): the window
-        // controls dock into the existing 54px row instead. DESKTOP_TITLE_HEIGHT
+        // controls dock into the existing 58px row instead. DESKTOP_TITLE_HEIGHT
         // is 0 to match, so this reserves exactly TRUSTED_BAR_HEIGHT pixels,
         // not their sum. (Bare-shell screens with no other header to dock
         // into — onboarding, boot recovery, initial loading — still opt back
@@ -1900,9 +1900,9 @@ mod tests {
         assert!(bundled_styles.contains("grid-template-rows: minmax(0, 1fr);"));
         assert!(bundled_styles.contains(".app-frame.with-titlebar"));
         assert!(bundled_styles.contains(".desktop-top-row"));
-        assert!(bundled_styles.contains("height: 54px;"));
+        assert!(bundled_styles.contains("--chrome-row-height: 58px;"));
         assert_eq!(DESKTOP_TITLE_HEIGHT, 0);
-        assert_eq!(TRUSTED_BAR_HEIGHT, 54);
+        assert_eq!(TRUSTED_BAR_HEIGHT, 58);
         let rect = host_rect(1180, 780);
         let top_reserved = DESKTOP_TITLE_HEIGHT + TRUSTED_BAR_HEIGHT;
         assert_eq!(top_reserved, TRUSTED_BAR_HEIGHT);
