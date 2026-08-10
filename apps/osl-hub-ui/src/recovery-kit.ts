@@ -294,6 +294,7 @@ export function recoveryKitReducer(
           secrets: null,
           shownWithoutProtection: false,
           savedAcknowledged: false,
+          noRecoverySecretAcknowledged: false,
           kitUnsaved: false,
         },
         outcome: "leave-recovery",
