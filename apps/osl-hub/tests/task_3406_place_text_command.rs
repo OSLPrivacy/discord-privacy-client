@@ -40,14 +40,25 @@ fn task_3406_command_measures_clipboard_exposure_and_second_process_visibility()
 
 #[test]
 fn task_3769_refuses_private_canary_clipboard_payload() {
-    assert!(
-        TASK_3406.contains("let staged_at = stage_clipboard_text(&text)"),
-        "10 private canary characters reached the clipboard: \"QQQQQQQQQQ\""
+    use osl_privacy_hub::shared_place_text::ClipboardCoverText;
+
+    let private_canary = "QQQQQQQQQQ";
+    let error = ClipboardCoverText::new(private_canary, private_canary)
+        .expect_err("private unprotected text must be refused before clipboard staging");
+    assert_eq!(
+        error,
+        "10 private canary characters reached the clipboard payload: \"QQQQQQQQQQ\""
     );
-    assert!(
-        !TASK_3406.contains("let staged_at = stage_clipboard_text(&private_canary)"),
-        "10 private canary characters reached the clipboard: \"QQQQQQQQQQ\""
-    );
+
+    let cover = ClipboardCoverText::new("MAPLE-3406", private_canary)
+        .expect("cover text shares no private canary characters");
+    assert_eq!(cover.as_str(), "MAPLE-3406");
+
+    assert!(TASK_3406.contains("let staged_at = stage_clipboard_text(&text)"));
+    assert_eq!(TASK_3406.matches("stage_clipboard_text(&").count(), 1);
+    assert!(!TASK_3406.contains("stage_clipboard_text(&args.text)"));
+    assert!(!TASK_3406.contains("stage_clipboard_text(&private_canary)"));
+    assert!(TASK_3406.contains("fn stage_clipboard_text(value: &super::ClipboardCoverText<'_>)"));
 }
 
 #[test]
@@ -105,7 +116,7 @@ fn task_3419_command_refuses_higher_permission_app_before_clipboard_stage() {
         .find("refuse_if_app_has_more_permission_than_osl(&args.app, discord.hwnd)?;")
         .expect("permission gate is called");
     let clipboard_stage = TASK_3406
-        .find("stage_clipboard_text(&args.text)")
+        .find("stage_clipboard_text(&text)")
         .expect("clipboard staging is called");
     assert!(
         permission_gate < clipboard_stage,

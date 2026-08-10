@@ -144,6 +144,47 @@ pub struct SharedPlaceTextReceipt {
     pub editor_accepts_message: bool,
 }
 
+/// A clipboard payload proven not to contain any character from the private
+/// canary. Its private field prevents the clipboard writer from accepting an
+/// unchecked command-line string.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ClipboardCoverText<'a>(&'a str);
+
+impl<'a> ClipboardCoverText<'a> {
+    pub fn new(cover_text: &'a str, private_canary: &str) -> Result<Self, String> {
+        if cover_text.is_empty()
+            || cover_text
+                .chars()
+                .any(|character| matches!(character, '\r' | '\n'))
+        {
+            return Err("clipboard cover text must be one non-empty line".to_owned());
+        }
+        if private_canary.is_empty() {
+            return Err("private clipboard canary must not be empty".to_owned());
+        }
+        let private_chars_found =
+            private_canary_chars_reaching_clipboard(private_canary, &[cover_text]);
+        if !private_chars_found.is_empty() {
+            return Err(format!(
+                "{} private canary characters reached the clipboard payload: {private_chars_found:?}",
+                private_chars_found.chars().count()
+            ));
+        }
+        Ok(Self(cover_text))
+    }
+
+    pub fn as_str(self) -> &'a str {
+        self.0
+    }
+}
+
+fn private_canary_chars_reaching_clipboard(canary: &str, observations: &[&str]) -> String {
+    canary
+        .chars()
+        .filter(|private| observations.iter().any(|seen| seen.contains(*private)))
+        .collect()
+}
+
 /// Put one marked string through the shared editor-visible action, read it back
 /// byte-for-byte, and require the provider's own readiness state to agree.
 pub fn place_text_through_shared_job(
@@ -437,8 +478,14 @@ mod windows_place_text {
             snapshot,
             restored: false,
         };
-        stage_clipboard_text(&args.text)
+        // Validate separation before opening or changing the clipboard. `text`
+        // is the finished public cover; the private canary is only a refusal
+        // oracle and is never accepted by the clipboard writer.
+        let text = super::ClipboardCoverText::new(&args.text, &args.private_canary)
+            .map_err(CommandError::exit1)?;
+        let staged_at = stage_clipboard_text(&text)
             .map_err(|error| CommandError::exit1(format!("clipboard stage failed: {error}")))?;
+        let _ = staged_at;
         let shared_receipt = {
             let mut actions = WindowsSharedPlaceTextActions {
                 composer: &composer,
@@ -578,6 +625,7 @@ mod windows_place_text {
         initial_front: String,
         app: String,
         text: String,
+        private_canary: String,
         wait_for_person: bool,
         wait_timeout_seconds: u64,
         allow_already_front: bool,
@@ -590,6 +638,7 @@ mod windows_place_text {
             let mut initial_front = DEFAULT_INITIAL_FRONT.to_owned();
             let mut app = DEFAULT_APP.to_owned();
             let mut text = DEFAULT_TEXT.to_owned();
+            let mut private_canary = DEFAULT_PRIVATE_CANARY.to_owned();
             let mut wait_for_person = false;
             let mut wait_timeout_seconds = DEFAULT_WAIT_TIMEOUT_SECONDS;
             let mut allow_already_front = false;
@@ -614,6 +663,11 @@ mod windows_place_text {
                         text = args
                             .next()
                             .ok_or_else(|| CommandError::usage("--text needs a value"))?;
+                    }
+                    "--private-canary" => {
+                        private_canary = args
+                            .next()
+                            .ok_or_else(|| CommandError::usage("--private-canary needs a value"))?;
                     }
                     "--wait-for-person" => {
                         wait_for_person = true;
@@ -657,7 +711,7 @@ mod windows_place_text {
                     }
                     "--help" | "-h" => {
                         return Err(CommandError::usage(
-                            "usage: task_3406_place_text [--initial-front Photos] [--app Discord] [--text MAPLE-3406] [--wait-for-person] [--wait-timeout-seconds 120] [--allow-already-front] [--wait-before-read-ms 0]",
+                            "usage: task_3406_place_text [--initial-front Photos] [--app Discord] [--text MAPLE-3406] [--private-canary QQQQQQQQQQ] [--wait-for-person] [--wait-timeout-seconds 120] [--allow-already-front] [--wait-before-read-ms 0] [--clipboard-observer] [--observer-needle TEXT] [--observer-timeout-ms 3000]",
                         ));
                     }
                     other => {
@@ -673,10 +727,14 @@ mod windows_place_text {
                     "--wait-timeout-seconds must be a positive integer",
                 ));
             }
+            // Refuse before any UI or clipboard action. The typed clipboard
+            // boundary repeats this check immediately before staging.
+            super::ClipboardCoverText::new(&text, &private_canary).map_err(CommandError::usage)?;
             Ok(Self {
                 initial_front,
                 app,
                 text,
+                private_canary,
                 wait_for_person,
                 wait_timeout_seconds,
                 allow_already_front,
@@ -1256,8 +1314,9 @@ mod windows_place_text {
         })
     }
 
-    fn stage_clipboard_text(value: &str) -> Result<(), String> {
+    fn stage_clipboard_text(value: &super::ClipboardCoverText<'_>) -> Result<Instant, String> {
         let utf16 = value
+            .as_str()
             .encode_utf16()
             .chain(std::iter::once(0))
             .collect::<Vec<_>>();
@@ -1269,7 +1328,8 @@ mod windows_place_text {
                 return Err("clipboard clear failed".to_owned());
             }
             set_clipboard_bytes(CF_UNICODETEXT as u32, bytes)
-        })
+        })?;
+        Ok(Instant::now())
     }
 
     fn restore_clipboard(snapshot: &ClipboardSnapshot) -> Result<(), String> {
