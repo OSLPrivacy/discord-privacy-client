@@ -1,3 +1,5 @@
+import "./osl-enclaves-members.css";
+
 /**
  * The local roster is deliberately projected to names alone before it reaches
  * the view.  A Enclave member list is a membership surface, not an activity
