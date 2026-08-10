@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use ipc::cipher_store_client::CipherStoreClient;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
-use transport::tor::{ArtiProxyConfig, TorTransport};
+use transport::tor::{TorSidecarConfig, TorTransport};
 
 const PREFERENCE_FILE_VERSION: u8 = 1;
 const MAX_PREFERENCE_BYTES: u64 = 1024;
@@ -131,22 +131,25 @@ struct PersistedPreference {
 /// The native authority for the route selected during onboarding.
 ///
 /// A missing or malformed preference is deliberately kept as `None`: network
-/// operations then refuse before a store request is constructed. T1-71 owns
-/// tunnel lifecycle; until it reports a ready tunnel, a Tor choice also
-/// refuses rather than falling back to direct traffic.
+/// operations then refuse before a store request is constructed. The hub owns
+/// the sidecar lifecycle; until the sidecar reports its listening address, a
+/// Tor choice also refuses rather than falling back to direct traffic.
 pub struct TorPreferenceState {
     path: PathBuf,
     preference: Mutex<Option<TorPreference>>,
-    tor_config: Option<ArtiProxyConfig>,
+    tor_config: Option<TorSidecarConfig>,
     tor_client: Mutex<Option<TorClientFactory>>,
 }
 
 impl TorPreferenceState {
     pub fn load(path: PathBuf) -> Self {
-        Self::load_with_arti_proxy_config(path, None)
+        Self::load_with_tor_sidecar_config(path, None)
     }
 
-    pub fn load_with_arti_proxy_config(path: PathBuf, tor_config: Option<ArtiProxyConfig>) -> Self {
+    pub fn load_with_tor_sidecar_config(
+        path: PathBuf,
+        tor_config: Option<TorSidecarConfig>,
+    ) -> Self {
         let preference = read_preference(&path).unwrap_or(None);
         let tor_client = if preference == Some(TorPreference::Tor) {
             tor_config
@@ -195,6 +198,15 @@ impl TorPreferenceState {
             .lock()
             .map(|preference| *preference)
             .map_err(|_| "OSL network preference is unavailable".to_owned())
+    }
+
+    /// Exact SOCKS address reported by the hub-owned sidecar, when running.
+    /// This is diagnostic metadata; route construction uses the same factory.
+    pub fn owned_socks_addr(&self) -> Result<Option<std::net::SocketAddr>, String> {
+        self.tor_client
+            .lock()
+            .map(|factory| factory.as_ref().and_then(|factory| factory.socks_addr))
+            .map_err(|_| "OSL Tor transport state is unavailable".to_owned())
     }
 
     pub fn set_preference(&self, preference: TorPreference) -> Result<TorPreference, String> {
@@ -308,21 +320,23 @@ impl TorPreferenceState {
     }
 }
 
-pub fn arti_proxy_config_from_env() -> Option<ArtiProxyConfig> {
+pub fn tor_sidecar_config_from_env(config_dir: &Path) -> Option<TorSidecarConfig> {
     let program =
         std::env::var_os("OSL_ARTI_PROXY_PATH").or_else(|| std::env::var_os("OSL_ARTI_PROXY"))?;
-    let mut config = ArtiProxyConfig::new(program);
-    if let Ok(args) = std::env::var("OSL_ARTI_PROXY_ARGS") {
-        config.args = args
-            .split_whitespace()
-            .filter(|part| !part.is_empty())
-            .map(str::to_owned)
-            .collect();
-    }
+    let mut config = TorSidecarConfig::new(program);
+    let tor_data = config_dir.join("tor-sidecar");
+    config.args = vec![
+        "--dial-mode".to_owned(),
+        "tor".to_owned(),
+        "--state-dir".to_owned(),
+        tor_data.join("state").to_string_lossy().into_owned(),
+        "--cache-dir".to_owned(),
+        tor_data.join("cache").to_string_lossy().into_owned(),
+    ];
     Some(config)
 }
 
-fn start_tor_client(config: ArtiProxyConfig) -> Result<TorClientFactory, String> {
+fn start_tor_client(config: TorSidecarConfig) -> Result<TorClientFactory, String> {
     let transport =
         Arc::new(TorTransport::start(config).map_err(|_| "OSL Tor transport is unavailable")?);
     let socks_addr = transport.socks_addr();

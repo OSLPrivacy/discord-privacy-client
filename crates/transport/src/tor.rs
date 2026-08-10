@@ -4,54 +4,44 @@
 //! `socks5h` endpoint. That makes the SOCKS proxy resolve names and applies to
 //! both HTTP and HTTPS; callers cannot obtain a route-specific direct client
 //! from this module.
-//!
-//! The SOCKS address is never configured or assumed: the supervised sidecar
-//! binds an OS-chosen loopback port and reports it as a JSON `listening`
-//! event on stdout, and that reported address is the only one this module
-//! will route through. OSL owns its Tor egress; it does not borrow another
-//! application's well-known SOCKS port.
 
 use reqwest::blocking::Client;
 use reqwest::Proxy;
-use std::io;
-use std::io::{BufRead, BufReader};
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpStream};
+use serde::Deserialize;
+use std::io::{self, BufRead, BufReader};
+use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::process::{Child, ChildStdout, Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::{mpsc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use thiserror::Error;
 
-/// The loopback SOCKS listener exposed by Arti's proxy mode.
-// Built from parts rather than `SocketAddr::from(([127,0,0,1], 9150))`: the
-// `From` impl is not a const trait, so that form does not compile in a const
-// and took the whole `transport` crate -- and therefore every Rust test in the
-// workspace -- down with it.
-pub const DEFAULT_SOCKS_ADDR: SocketAddr =
-    SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 9150));
-
-/// Configuration for the OSL-owned Tor sidecar executable packaged with OSL.
+/// Configuration for the signed OSL Tor sidecar packaged with the hub.
 #[derive(Debug, Clone)]
-pub struct ArtiProxyConfig {
+pub struct TorSidecarConfig {
     pub program: PathBuf,
     pub args: Vec<String>,
+    pub status_timeout: Duration,
     pub bootstrap_timeout: Duration,
     pub readiness_poll_interval: Duration,
 }
 
-impl ArtiProxyConfig {
+impl TorSidecarConfig {
     pub fn new(program: impl Into<PathBuf>) -> Self {
         Self {
             program: program.into(),
             args: Vec::new(),
+            status_timeout: Duration::from_secs(45),
             bootstrap_timeout: Duration::from_secs(45),
             readiness_poll_interval: Duration::from_millis(200),
         }
     }
 }
 
-/// A running Tor sidecar and the only client OSL store traffic may use while
+pub type ArtiProxyConfig = TorSidecarConfig;
+
+/// A running Arti proxy and the only client OSL store traffic may use while
 /// Tor is selected.
 pub struct TorTransport {
     socks_addr: SocketAddr,
@@ -59,57 +49,61 @@ pub struct TorTransport {
 }
 
 impl TorTransport {
-    /// Start the sidecar, adopt the SOCKS address it reports on its stdout
-    /// status channel, and wait until that listener accepts connections.
+    /// Start the OSL sidecar and wait for its JSON `listening` status line.
     ///
-    /// Returning an error leaves no usable HTTP client, so callers cannot
-    /// silently fall back to a direct connection when Tor is selected.
-    pub fn start(config: ArtiProxyConfig) -> Result<Self, TorError> {
+    /// The reported address is the only address retained by the transport.
+    /// Returning an error leaves no usable HTTP client, so a selected Tor
+    /// route cannot silently fall back to a direct connection.
+    pub fn start(config: TorSidecarConfig) -> Result<Self, TorError> {
         let mut child = Command::new(&config.program)
             .args(&config.args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .spawn()
             .map_err(|source| TorError::Spawn {
-                program: config.program,
+                program: config.program.clone(),
                 source,
             })?;
-        let Some(stdout) = child.stdout.take() else {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(TorError::StatusChannelUnavailable);
-        };
 
-        let reported = watch_for_listening_report(stdout);
-        let socks_addr = match reported.recv_timeout(config.bootstrap_timeout) {
-            Ok(socks_addr) => socks_addr,
-            Err(_) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(TorError::NoListeningReport(config.bootstrap_timeout));
+        let stdout = match child.stdout.take() {
+            Some(stdout) => stdout,
+            None => {
+                stop_child(&mut child);
+                return Err(TorError::MissingStatusStream);
             }
         };
-        if !socks_addr.ip().is_loopback() {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(TorError::NonLoopbackProxy(socks_addr));
-        }
+        let (status_tx, status_rx) = mpsc::sync_channel(1);
+        thread::spawn(move || drain_status_stream(stdout, status_tx));
+
+        let status_timeout = config.status_timeout.min(config.bootstrap_timeout);
+        let socks_addr = match status_rx.recv_timeout(status_timeout) {
+            Ok(Ok(addr)) => addr,
+            Ok(Err(error)) => {
+                stop_child(&mut child);
+                return Err(error);
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                stop_child(&mut child);
+                return Err(TorError::NoListeningReport(status_timeout));
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                let status = child.try_wait().map_err(TorError::ChildStatus)?;
+                stop_child(&mut child);
+                return match status {
+                    Some(status) => Err(TorError::Exited(status)),
+                    None => Err(TorError::StatusStreamClosed),
+                };
+            }
+        };
 
         let transport = Self {
             socks_addr,
             child: Mutex::new(Some(child)),
         };
-        if let Err(error) =
-            transport.wait_for_bootstrap(config.bootstrap_timeout, config.readiness_poll_interval)
-        {
-            transport.stop();
-            return Err(error);
-        }
         Ok(transport)
     }
 
-    /// The loopback SOCKS address the sidecar reported for this transport.
-    /// There is no other source for it: the sidecar owns the port.
+    /// The exact loopback address reported by this transport's child.
     pub fn socks_addr(&self) -> SocketAddr {
         self.socks_addr
     }
@@ -143,59 +137,70 @@ impl TorTransport {
             None => Ok(()),
         }
     }
-
-    fn wait_for_bootstrap(
-        &self,
-        timeout: Duration,
-        poll_interval: Duration,
-    ) -> Result<(), TorError> {
-        let deadline = Instant::now() + timeout;
-        loop {
-            self.ensure_running()?;
-            if TcpStream::connect_timeout(&self.socks_addr, poll_interval).is_ok() {
-                return Ok(());
-            }
-            if Instant::now() >= deadline {
-                return Err(TorError::BootstrapTimeout(timeout));
-            }
-            thread::sleep(poll_interval);
-        }
-    }
 }
 
-/// Follow the sidecar's stdout status feed on a background thread and hand
-/// back the address from its first `listening` event.
-///
-/// After that single report the thread keeps draining lines for the life of
-/// the process: the sidecar emits an event per connection, and an unread pipe
-/// would eventually fill and stall it mid-`write`.
-fn watch_for_listening_report(stdout: ChildStdout) -> mpsc::Receiver<SocketAddr> {
-    let (report, reported) = mpsc::channel();
-    thread::spawn(move || {
-        let mut report = Some(report);
-        for line in BufReader::new(stdout).lines() {
-            let Ok(line) = line else { break };
-            if let Some(sender) = report.take() {
-                match listening_addr(&line) {
-                    Some(socks_addr) => {
-                        let _ = sender.send(socks_addr);
-                    }
-                    None => report = Some(sender),
+#[derive(Deserialize)]
+struct SidecarStatusLine {
+    event: String,
+    addr: Option<String>,
+    ip: Option<String>,
+    port: Option<u16>,
+}
+
+fn drain_status_stream(
+    stdout: std::process::ChildStdout,
+    status_tx: mpsc::SyncSender<Result<SocketAddr, TorError>>,
+) {
+    let mut reported = false;
+    for line in BufReader::new(stdout).lines() {
+        let line = match line {
+            Ok(line) => line,
+            Err(error) => {
+                if !reported {
+                    let _ = status_tx.send(Err(TorError::ReadStatus(error)));
                 }
+                return;
             }
+        };
+        let status: SidecarStatusLine = match serde_json::from_str(&line) {
+            Ok(status) => status,
+            Err(error) => {
+                if !reported {
+                    let _ = status_tx.send(Err(TorError::InvalidStatus(error)));
+                }
+                return;
+            }
+        };
+        if reported || status.event != "listening" {
+            continue;
         }
-    });
-    reported
+        let result = reported_socks_addr(status);
+        reported = true;
+        let _ = status_tx.send(result);
+    }
 }
 
-/// The address carried by a `listening` status event; `None` for every other
-/// event and for any line that is not a single JSON object.
-fn listening_addr(line: &str) -> Option<SocketAddr> {
-    let event: serde_json::Value = serde_json::from_str(line).ok()?;
-    if event.get("event")?.as_str()? != "listening" {
-        return None;
+fn reported_socks_addr(status: SidecarStatusLine) -> Result<SocketAddr, TorError> {
+    let text = status.addr.ok_or(TorError::IncompleteListeningStatus)?;
+    let addr: SocketAddr = text
+        .parse()
+        .map_err(|_| TorError::InvalidListeningAddress(text.clone()))?;
+    if !addr.ip().is_loopback() {
+        return Err(TorError::NonLoopbackProxy(addr));
     }
-    event.get("addr")?.as_str()?.parse().ok()
+    let expected_ip = addr.ip().to_string();
+    if addr.port() == 0
+        || status.ip.as_deref() != Some(expected_ip.as_str())
+        || status.port != Some(addr.port())
+    {
+        return Err(TorError::InconsistentListeningStatus(addr));
+    }
+    Ok(addr)
+}
+
+fn stop_child(child: &mut Child) {
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 /// Build a Tor-routed client for a SOCKS listener whose lifecycle is already
@@ -231,28 +236,40 @@ impl Drop for TorTransport {
 
 #[derive(Debug, Error)]
 pub enum TorError {
-    #[error("Tor sidecar SOCKS listener must be on loopback, got {0}")]
+    #[error("OSL Tor sidecar must listen on loopback, got {0}")]
     NonLoopbackProxy(SocketAddr),
-    #[error("failed to start the OSL Tor sidecar at {program}")]
+    #[error("failed to start signed OSL Tor sidecar at {program}")]
     Spawn {
         program: PathBuf,
         #[source]
         source: io::Error,
     },
-    #[error("Tor sidecar stdout status channel was unavailable")]
-    StatusChannelUnavailable,
+    #[error("OSL Tor sidecar did not report its SOCKS address within {0:?}")]
+    StatusTimeout(Duration),
     #[error("Tor sidecar reported no listening address within {0:?}")]
     NoListeningReport(Duration),
-    #[error("Arti proxy did not bootstrap within {0:?}")]
-    BootstrapTimeout(Duration),
-    #[error("Arti proxy exited before or during use: {0}")]
+    #[error("OSL Tor sidecar exited before or during use: {0}")]
     Exited(std::process::ExitStatus),
-    #[error("Arti proxy has been stopped")]
+    #[error("OSL Tor sidecar has been stopped")]
     Stopped,
-    #[error("failed to inspect Arti proxy status")]
+    #[error("failed to inspect OSL Tor sidecar status")]
     ChildStatus(#[source] io::Error),
-    #[error("Arti proxy process state was poisoned")]
+    #[error("OSL Tor sidecar process state was poisoned")]
     Poisoned,
+    #[error("OSL Tor sidecar stdout was not captured")]
+    MissingStatusStream,
+    #[error("OSL Tor sidecar status stream closed before reporting a listener")]
+    StatusStreamClosed,
+    #[error("failed to read OSL Tor sidecar status")]
+    ReadStatus(#[source] io::Error),
+    #[error("OSL Tor sidecar emitted invalid JSON status")]
+    InvalidStatus(#[source] serde_json::Error),
+    #[error("OSL Tor sidecar listening status omitted its address")]
+    IncompleteListeningStatus,
+    #[error("OSL Tor sidecar reported an invalid listening address: {0}")]
+    InvalidListeningAddress(String),
+    #[error("OSL Tor sidecar listening fields disagree for {0}")]
+    InconsistentListeningStatus(SocketAddr),
     #[error("invalid SOCKS proxy configuration")]
     Proxy(#[source] reqwest::Error),
     #[error("failed to build Tor-only HTTP client")]
@@ -263,7 +280,7 @@ pub enum TorError {
 mod tests {
     use super::*;
     use std::io::{Read, Write};
-    use std::net::{Shutdown, TcpListener};
+    use std::net::{Shutdown, TcpListener, TcpStream};
     use std::sync::mpsc;
 
     /// A stand-in sidecar: prints the given status lines and stays alive.

@@ -5,12 +5,10 @@ IPC remain in `crates/ipc`.
 
 ## Tor integration
 
-T1-70 chose a supervised Arti SOCKS5 proxy subprocess. OSL-owned HTTP(S)
-traffic will use `socks5h://127.0.0.1:9150` through Reqwest `Proxy::all`, so
-the proxy resolves destination names and HTTPS is covered too. When Tor is
-selected, an unavailable proxy must fail closed; traffic must not fall back to
-the clearnet.
-
-Embedding `arti-client` is intentionally out of scope: it requires Rust 1.91
-and edition 2024, while this workspace is pinned to Rust 1.88 and edition
-2021. `arti-hyper` is not an acceptable integration boundary.
+The hub supervises the bundled `osl-tor-sidecar`. The sidecar binds an
+OS-chosen loopback port and reports that exact address in its newline-delimited
+JSON status stream. This crate reads and validates the `listening` event, then
+routes OSL-owned HTTP(S) traffic through that owned address with Reqwest
+`Proxy::all`; destination names are resolved through SOCKS and HTTPS is covered
+too. No well-known browser proxy port participates in this route. When Tor is
+selected, an unavailable or malformed sidecar must fail closed.

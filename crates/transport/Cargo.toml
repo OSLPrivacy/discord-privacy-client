@@ -12,10 +12,9 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "socks"] }
 
-# Tor support belongs in this crate. It supervises an Arti SOCKS5 subprocess
-# rather than embedding `arti-client`, because embedding requires Rust 1.91
-# and edition 2024 while the workspace is pinned to Rust 1.88 and edition
-# 2021. See README.md for the T1-70 integration boundary.
+# Tor support belongs in this crate. It supervises OSL's bundled Tor sidecar,
+# reads the sidecar-owned ephemeral SOCKS address from its JSON status stream,
+# and gives callers only a client pinned to that address.
 
 [features]
 default = []
