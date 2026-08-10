@@ -1,0 +1,77 @@
+{
+  "schema": "osl-carrier-reference-v1",
+  "scenario": "synthetic-composer-reference",
+  "state": "focused-empty",
+  "synthetic_test_account": true,
+  "carrier": "Discord",
+  "channel": "stable",
+  "identity": {
+    "kind": "signed_executable",
+    "executable_name": "Discord.exe",
+    "executable_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "signer": "Discord Inc.",
+    "signature_status": "valid",
+    "version": "1.0.9251"
+  },
+  "version": "1.0.9251",
+  "hwnd_generation": {
+    "hwnd": 20738,
+    "generation": 17
+  },
+  "windows_build": "10.0.26100.4770",
+  "physical_geometry": {
+    "window": {
+      "left": 100,
+      "top": 100,
+      "right": 900,
+      "bottom": 1122
+    },
+    "roi": {
+      "left": 120,
+      "top": 220,
+      "right": 300,
+      "bottom": 260
+    },
+    "capture_with_seam_ring": {
+      "left": 116,
+      "top": 216,
+      "right": 304,
+      "bottom": 264
+    }
+  },
+  "dpi": 96,
+  "monitor": {
+    "monitor_id": "DISPLAY1",
+    "colour_mode": "SDR 8-bit RGB",
+    "colour_profile_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  },
+  "appearance": {
+    "theme": "dark",
+    "density": "cozy",
+    "zoom_percent": 100,
+    "locale": "en-US",
+    "row_state": "composer-focused-empty",
+    "pointer_state": "outside-capture",
+    "caret_state": "hidden",
+    "hover_state": "none"
+  },
+  "row_state": "composer-focused-empty",
+  "pointer_state": "outside-capture",
+  "caret_state": "hidden",
+  "hover_state": "none",
+  "uia_bounds": {
+    "left": 120,
+    "top": 220,
+    "right": 300,
+    "bottom": 260
+  },
+  "uia_runtime_id_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "observations_agreeing": 2,
+  "frames_agreeing": 2,
+  "seam_ring_physical_px": 4,
+  "png_mode": "RGB",
+  "png_width": 188,
+  "png_height": 48,
+  "captured_at_utc": "2026-08-10T12:34:56Z",
+  "png_sha256": "7927a988e2808e8af4628f448327f903242fbd5d6f6101dc96321ab4fbcf54c2"
+}
