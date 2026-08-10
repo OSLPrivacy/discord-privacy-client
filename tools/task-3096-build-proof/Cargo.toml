@@ -23,5 +23,9 @@ path = "src/bin/osl-sign-build-proof.rs"
 name = "osl-check-build-proof-signature"
 path = "src/bin/osl-check-build-proof-signature.rs"
 
+[[bin]]
+name = "osl-check-build-proof"
+path = "src/bin/osl-check-build-proof.rs"
+
 [workspace]
 resolver = "2"

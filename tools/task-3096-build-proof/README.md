@@ -60,3 +60,25 @@ cargo run --manifest-path tools/task-3096-build-proof/Cargo.toml \
 
 A valid proof prints `signature valid`. A proof signed by any other key is
 refused with `bad-signature` and exit status 1.
+
+## Classify the current build
+
+`osl-check-build-proof` reads the signed proof, checks it against the
+independently trusted public key and its counting window, and compares its
+fingerprint with the observed build fingerprint:
+
+```sh
+cargo run --manifest-path tools/task-3096-build-proof/Cargo.toml \
+  --bin osl-check-build-proof -- \
+  --proof-file build-proof.json \
+  --trusted-public-key-file <osl-public-key-file> \
+  --build-fingerprint <64-lowercase-hex>
+```
+
+It prints exactly one of `unmodified`, `modified`, or `cannot tell`. The proof
+and public-key flags are optional so that missing evidence is itself handled by
+the checker and returns `cannot tell`. Unreadable or malformed proofs, invalid
+signatures, invalid observed fingerprints, and proofs checked outside their
+time window also return `cannot tell`; none of those establish modification.
+`--at-unix-seconds` is available for deterministic checking and otherwise the
+current system time is used.

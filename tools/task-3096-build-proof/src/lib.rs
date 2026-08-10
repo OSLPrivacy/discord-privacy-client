@@ -1,5 +1,7 @@
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
+use std::{fmt, fs, path::Path};
+
 use serde::{Deserialize, Serialize};
 
 const SIGNING_DOMAIN: &[u8] = b"osl/build-proof/v1\0";
@@ -34,6 +36,29 @@ pub struct SignedBuildProof {
     pub schema_version: u8,
     pub proof: BuildProof,
     pub signature_base64: String,
+}
+
+/// The complete answer produced by checking a signed build proof.
+///
+/// `CannotTell` is deliberately distinct from `Modified`: absence, damaged
+/// evidence, an untrusted signature, or a proof outside its time window does
+/// not establish that the build changed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BuildProofCheck {
+    Unmodified,
+    Modified,
+    CannotTell,
+}
+
+impl fmt::Display for BuildProofCheck {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Unmodified => "unmodified",
+            Self::Modified => "modified",
+            Self::CannotTell => "cannot tell",
+        })
+    }
 }
 
 pub fn make_build_proof(input: BuildProofInput) -> Result<BuildProof, String> {
@@ -94,6 +119,57 @@ pub fn verify_signed_build_proof(
     verifying_key
         .verify_strict(&canonical_signing_bytes(&signed.proof), &signature)
         .map_err(|_| "bad-signature".to_owned())
+}
+
+/// Check authenticated proof material against the build fingerprint observed
+/// now. This function is total: uncertainty is an answer, not an error.
+pub fn check_build_proof(
+    signed: Option<&SignedBuildProof>,
+    trusted_public_key: Option<[u8; 32]>,
+    observed_build_fingerprint: &str,
+    checked_at_unix_seconds: u64,
+) -> BuildProofCheck {
+    let (Some(signed), Some(trusted_public_key)) = (signed, trusted_public_key) else {
+        return BuildProofCheck::CannotTell;
+    };
+    if validate_fingerprint(observed_build_fingerprint).is_err()
+        || verify_signed_build_proof(signed, trusted_public_key).is_err()
+        || checked_at_unix_seconds < signed.proof.made_at_unix_seconds
+        || checked_at_unix_seconds >= signed.proof.stops_counting_at_unix_seconds
+    {
+        return BuildProofCheck::CannotTell;
+    }
+
+    if signed.proof.build_fingerprint == observed_build_fingerprint {
+        BuildProofCheck::Unmodified
+    } else {
+        BuildProofCheck::Modified
+    }
+}
+
+/// Read one signed proof file and classify it. A missing path and every read or
+/// parse failure are evidence absence, so they return `CannotTell`.
+pub fn check_build_proof_file(
+    proof_path: Option<&Path>,
+    trusted_public_key: Option<[u8; 32]>,
+    observed_build_fingerprint: &str,
+    checked_at_unix_seconds: u64,
+) -> BuildProofCheck {
+    let Some(proof_path) = proof_path else {
+        return BuildProofCheck::CannotTell;
+    };
+    let Ok(bytes) = fs::read(proof_path) else {
+        return BuildProofCheck::CannotTell;
+    };
+    let Ok(signed) = serde_json::from_slice::<SignedBuildProof>(&bytes) else {
+        return BuildProofCheck::CannotTell;
+    };
+    check_build_proof(
+        Some(&signed),
+        trusted_public_key,
+        observed_build_fingerprint,
+        checked_at_unix_seconds,
+    )
 }
 
 fn validate_proof(proof: &BuildProof) -> Result<(), String> {
