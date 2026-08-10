@@ -151,6 +151,20 @@
   justify-content: flex-end;
 }
 
+/* Enclaves machine facts: scoped so member prose keeps the proportional UI font. */
+.osl-enclaves-surface :is(.osl-enclaves-presence, .osl-enclaves-sealed-to, .osl-enclaves-role-chip, .osl-enclaves-member-group__header),
+.osl-enclaves-members > h2 {
+  font-family: Consolas, "Cascadia Mono", "DejaVu Sans Mono", monospace;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.osl-enclaves-presence--online, .osl-enclaves-role-chip--owner { color: var(--success); }
+.osl-enclaves-presence--reverify, .osl-enclaves-role-chip--mod { color: var(--warn); }
+.osl-enclaves-presence--away, .osl-enclaves-presence--offline, .osl-enclaves-role-chip--system,
+.osl-enclaves-sealed-to, .osl-enclaves-member-group__header { color: var(--muted); }
+
 .attachment-progress {
   display: grid;
   gap: 6px;

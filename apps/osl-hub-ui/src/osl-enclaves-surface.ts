@@ -588,3 +588,61 @@ if (typeof document !== "undefined" && typeof document.addEventListener === "fun
   document.addEventListener("input", onSurfaceInput);
   document.addEventListener("keydown", onSurfaceKeydown as EventListener);
 }
+
+export type EnclavePresence = "ONLINE" | "REVERIFY" | "AWAY" | "OFFLINE";
+export type EnclaveRole = "OWNER" | "MOD" | "SYSTEM";
+
+export interface EnclaveMemberFact {
+  readonly name: string;
+  readonly presence: EnclavePresence;
+  readonly role?: EnclaveRole;
+}
+
+export interface EnclaveMemberGroup {
+  readonly label: string;
+  readonly members: readonly EnclaveMemberFact[];
+}
+
+export interface OslEnclavesSurfaceModel {
+  readonly sealedTo: number;
+  readonly groups: readonly EnclaveMemberGroup[];
+}
+
+/** Presentation-only Enclaves roster surface. Prose is intentionally outside fact selectors. */
+export function renderOslEnclavesSurface(document: Document, model: OslEnclavesSurfaceModel): HTMLElement {
+  const root = document.createElement("section");
+  root.className = "osl-enclaves-surface";
+  const seal = document.createElement("span");
+  seal.className = "osl-enclaves-sealed-to";
+  seal.textContent = `SEALED-TO-${model.sealedTo}`;
+  root.append(seal);
+
+  for (const group of model.groups) {
+    const section = document.createElement("section");
+    section.className = "osl-enclaves-member-group";
+    const heading = document.createElement("h2");
+    heading.className = "osl-enclaves-member-group__header";
+    heading.textContent = group.label;
+    section.append(heading);
+    for (const member of group.members) {
+      const row = document.createElement("div");
+      row.className = "osl-enclaves-member-row";
+      const name = document.createElement("span");
+      name.className = "osl-enclaves-member-name";
+      name.textContent = member.name;
+      const presence = document.createElement("span");
+      presence.className = `osl-enclaves-presence osl-enclaves-presence--${member.presence.toLowerCase()}`;
+      presence.textContent = member.presence;
+      row.append(name, presence);
+      if (member.role) {
+        const role = document.createElement("span");
+        role.className = `osl-enclaves-role-chip osl-enclaves-role-chip--${member.role.toLowerCase()}`;
+        role.textContent = member.role;
+        row.append(role);
+      }
+      section.append(row);
+    }
+    root.append(section);
+  }
+  return root;
+}
