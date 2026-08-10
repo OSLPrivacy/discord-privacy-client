@@ -1,0 +1,14 @@
+[package]
+name = "task-5148-signal-composer-fidelity"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "task-5148-signal-composer-fidelity"
+path = "src/main.rs"
+
