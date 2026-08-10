@@ -64,12 +64,12 @@ export function homeLauncherBody(state: HomeLauncherState, renderers: HomeLaunch
     if (module) return `<article class="app-tile home-module ${module.available ? "" : "module-unavailable"} ${hidden ? "tile-hidden" : ""}" data-tile-id="${module.id}" draggable="${state.homeEditMode}" data-module-kind="${module.id}"><button class="in-dom-tooltip-anchor" type="button" data-home-module="${module.id}" ${module.available ? "" : "disabled"} aria-label="${escapeHtml(module.available ? module.name : `${module.name}, coming later`)}"><span class="app-logo-plate osl-module-logo" aria-hidden="true">${renderers.homeModuleIcon(module.id)}</span><span class="app-tile-copy"><strong>${module.name}</strong></span>${inDomTooltipMarkup(module.available ? module.name : `${module.name} · Coming later`)}</button>${controls}</article>`;
     const app = byId.get(id as HomeAppId);
     if (!app) return "";
-    const appState = app.linked ? "OSL profile ready" : app.launchState === "available" ? "Set up" : "Coming later";
+    const appState = app.linked ? "OSL profile ready" : app.launchState === "available" ? "Set up" : app.id === "messenger" ? "Cannot send yet" : "Coming later";
     const pending = state.appLaunchPendingId === app.id;
     const available = app.launchState === "available";
     const disabled = !available || Boolean(state.appLaunchPendingId);
     const claim = state.nativeApps.find((candidate) => candidate.id === app.id as NativeAppId);
-    const caption = claim ? renderers.nativeClaimLabel(claim.supportStatus) : "Coming soon";
+    const caption = claim ? renderers.nativeClaimLabel(claim.supportStatus) : app.id === "messenger" ? "Cannot send yet" : "Coming soon";
     const claimTitle = claim ? ` title="${escapeHtml(claim.claimNote)}"` : "";
     return `<article class="app-tile ${available ? "" : "app-unavailable"} ${hidden ? "tile-hidden" : ""} ${pending ? "pending" : ""}" data-tile-id="${app.id}" draggable="${state.homeEditMode}" data-service-kind="${app.serviceId ?? "none"}" data-launch-state="${app.launchState}" data-claim-status="${claim ? claim.supportStatus : "comingSoon"}" aria-disabled="${available ? "false" : "true"}"><button id="home-app-${app.id}" type="button" ${available ? `data-home-app="${app.id}"` : ""} aria-label="${escapeHtml(`${app.displayName}, ${pending ? "Opening" : appState}`)}"${claimTitle} ${disabled ? "disabled" : ""}><span class="app-logo-plate">${renderers.homeAppLogo(app)}</span><span class="app-tile-copy"><strong>${escapeHtml(app.displayName)}</strong>${pending ? "<small>Opening…</small>" : available ? "" : `<small>${escapeHtml(caption)}</small>`}</span></button>${controls}</article>`;
   };
