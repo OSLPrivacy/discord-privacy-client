@@ -6,12 +6,22 @@ license = "Apache-2.0"
 publish = false
 
 [dependencies]
+base64 = "=0.22.1"
+ed25519-dalek = "=2.2.0"
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.149"
 
 [[bin]]
 name = "osl-build-proof"
 path = "src/main.rs"
+
+[[bin]]
+name = "osl-sign-build-proof"
+path = "src/bin/osl-sign-build-proof.rs"
+
+[[bin]]
+name = "osl-check-build-proof-signature"
+path = "src/bin/osl-check-build-proof-signature.rs"
 
 [workspace]
 resolver = "2"

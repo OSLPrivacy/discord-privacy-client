@@ -11,10 +11,8 @@ One proof binds exactly one value in each of these five roles:
    the proof no longer counts.
 
 The command emits one JSON object with exactly those five fields on standard
-output. This is the unsigned payload: task 3097 applies the OSL offline
-signature chosen by task 3095, and task 3098 verifies it. Keeping signing out
-of this command prevents the build machine from pretending to be the offline
-OSL signing key.
+output. This is the unsigned payload. Keeping signing out of this command
+prevents the build machine from pretending to be the offline OSL signing key.
 
 ```sh
 cargo run --manifest-path tools/task-3096-build-proof/Cargo.toml --bin osl-build-proof -- \
@@ -28,3 +26,37 @@ cargo run --manifest-path tools/task-3096-build-proof/Cargo.toml --bin osl-build
 All five flags are mandatory. Empty identifiers, malformed fingerprints,
 invalid integer instants, and a stop time that is not later than the made time
 are refused without printing a proof.
+
+## Sign and verify
+
+`osl-sign-build-proof` turns the same five values into a signed proof. It uses
+Ed25519 with a domain-separated, length-prefixed canonical encoding; the
+signature is not over incidental JSON whitespace. The signing-key file must
+contain the base64 encoding of exactly one 32-byte Ed25519 secret seed.
+
+```sh
+cargo run --manifest-path tools/task-3096-build-proof/Cargo.toml \
+  --bin osl-sign-build-proof -- \
+  --signing-key-file <offline-key-file> \
+  --build-fingerprint <64-lowercase-hex> \
+  --device-id <device-id> \
+  --person-id <person-id> \
+  --made-at-unix-seconds <integer> \
+  --stops-counting-at-unix-seconds <integer> > build-proof.json
+```
+
+The signing key belongs on the offline hardware selected by task 3095, never
+on a build machine or in CI. The signed proof does not carry a public key:
+accepting a key supplied by the proof would let anyone mint a trusted proof.
+Instead, the check command requires an independently trusted public-key file,
+also base64-encoded and exactly 32 bytes.
+
+```sh
+cargo run --manifest-path tools/task-3096-build-proof/Cargo.toml \
+  --bin osl-check-build-proof-signature -- \
+  --proof-file build-proof.json \
+  --trusted-public-key-file <osl-public-key-file>
+```
+
+A valid proof prints `signature valid`. A proof signed by any other key is
+refused with `bad-signature` and exit status 1.
