@@ -1,0 +1,25 @@
+.chat-background-pane { max-width: 680px; padding: 24px; color: var(--text, #f4f7f8); background: var(--panel, #11181b); font-family: var(--font-ui, Inter, system-ui, sans-serif); }
+.chat-background-pane h2 { margin: 0; font-family: var(--font-display, inherit); font-size: 24px; letter-spacing: -.02em; }
+.chat-background-pane header p { margin: 5px 0 18px; color: var(--muted, #9ba8ad); }
+.chat-background-tiles { display: grid; grid-template-columns: repeat(3, minmax(92px, 1fr)); gap: 10px; }
+.chat-background-tile, .chat-background-upload { min-height: 94px; display: flex; flex-direction: column; justify-content: space-between; gap: 7px; padding: 8px; border: 1px solid var(--line, #2d393d); background: var(--panel-2, #172124); color: inherit; cursor: pointer; }
+.chat-background-tile.selected, .chat-background-upload.selected { border: 2px solid var(--brand, #2ac0f0); padding: 7px; }
+.chat-background-swatch { display: block; min-height: 57px; background: #151b1d; }
+.chat-background-none .chat-background-swatch { background: #101416; }
+.chat-background-ink .chat-background-swatch { background: #050607; }
+.chat-background-slate .chat-background-swatch { background: #34424b; }
+.chat-background-deep-teal .chat-background-swatch { background: #073b40; }
+.chat-background-dusk .chat-background-swatch { background: linear-gradient(135deg, #2c254a, #a04c63); }
+.chat-background-moss .chat-background-swatch { background: #35533d; }
+.chat-background-ember .chat-background-swatch { background: linear-gradient(135deg, #3c1615, #cc6236); }
+.chat-background-grid .chat-background-swatch { background-color: #16262b; background-image: linear-gradient(#5f8587 1px, transparent 1px), linear-gradient(90deg, #5f8587 1px, transparent 1px); background-size: 12px 12px; }
+.chat-background-upload { border-style: dashed; align-items: center; justify-content: center; text-align: center; background-color: var(--panel-2, #172124); background-size: cover; background-position: center; }
+.chat-background-upload-icon { display: grid; place-items: center; width: 26px; height: 26px; border: 1px solid currentColor; border-radius: 50%; font-size: 22px; line-height: 1; }
+.chat-background-options { margin-top: 18px; border-top: 1px solid var(--line, #2d393d); }
+.chat-background-option { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--line-soft, #243034); cursor: pointer; }
+.chat-background-option strong, .chat-background-option small { display: block; }.chat-background-option small { margin-top: 2px; color: var(--muted, #9ba8ad); }
+/* The shared markup is used, with the chat-pane's canonical 34 by 18 track. */
+.chat-background-pane .osl-toggle-track { width: 34px; height: 18px; border-radius: 9px; }.chat-background-pane .osl-toggle-knob { top: 2px; left: 2px; width: 14px; height: 14px; }.chat-background-pane .osl-toggle input:checked + .osl-toggle-track .osl-toggle-knob { left: 18px; }
+.chat-background-scope { display: flex; gap: 10px; margin: 18px 0 0; padding: 10px 0 0; border: 0; }.chat-background-scope legend { padding: 0; margin-bottom: 8px; font-weight: 650; }.chat-background-scope-choice { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--line, #2d393d); cursor: pointer; }.chat-background-scope-choice.selected { border-color: var(--brand, #2ac0f0); background: var(--brand-wash, #12333e); }.chat-background-scope-choice .osl-radio-ring { stroke: var(--muted, #9ba8ad); }.chat-background-scope-choice.selected .osl-radio-ring { stroke: var(--brand, #2ac0f0); }.chat-background-scope-choice.selected .osl-radio-dot { fill: var(--brand, #2ac0f0); }
+.chat-background-saved { margin: 14px 0 0; color: var(--muted, #9ba8ad); font-size: 13px; }
+@media (max-width: 460px) { .chat-background-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }.chat-background-scope { flex-wrap: wrap; } }

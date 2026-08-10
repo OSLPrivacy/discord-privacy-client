@@ -244,8 +244,13 @@ import { accentChoices, appearanceSettingsMarkup, avatarChoices, backgroundChoic
 import { applyLookState, defaultLookState, loadLookState, lookScreenMarkup, lookStorageKey, saveLookState, type LookMode, type LookState } from "./look-screen";
 import { inDomTooltipMarkup } from "./in-dom-tooltip";
 import { coverWritingControlsMarkup } from "./cover-writing-controls";
-import { applyOslChatDraftToElement, firstPartyOslSurfaceContract, OSL_CHAT_MAX_DRAFT_BYTES, oslChatDraftBytes, oslChatHandshakeConfirmed, oslChatsViewMarkup, senderReceiptStateFor, submitsOslChatDraft, type OslChatMessage } from "./osl-chats-view";
+import { applyOslChatDraftToElement, firstPartyOslSurfaceContract, OSL_CHAT_KEY_CHANGED_REFUSAL_REASON, OSL_CHAT_MAX_DRAFT_BYTES, oslChatDraftBytes, oslChatHandshakeConfirmed, oslChatsViewMarkup, senderReceiptStateFor, submitsOslChatDraft, type OslChatMessage } from "./osl-chats-view";
 import { createOslChatDeliveryRuntime, mergeOslChatTimeline, oslChatHistoryMessages, oslChatOpenRefusalMessage, pruneExpiredOslChatMessages, receivedOslChatBatchMessage, type OslChatDeliveryHost } from "./osl-chat-runtime";
+import { attachChatProfileAppearanceModal } from "./chat-profile-appearance-modal";
+import { OslProfilePaneState, seededProfilePaneRecords } from "./osl-profile-pane";
+import { mountChatBackgroundPane } from "./chat-background-pane";
+import { renderChatMessagesPane } from "./chat-messages-pane";
+import { bindSafetyNumberPanel, safetyNumberPanelMarkup } from "./safety-number-panel";
 import { peopleReverificationNoticeMarkup } from "./people-reverification-notice";
 import { discordQaWhitelistButtonMarkup } from "./discord-qa-whitelist-button";
 import { connectDiscordQaWhitelistButton, discordQaOpenPlace } from "./discord-qa-whitelist-place";
@@ -843,6 +848,10 @@ let oslChatSettingsPersonId: string | null = null;
 let oslChatFilter: "direct" | "groups" | "enclaves" = "direct";
 let oslChatSearch = "";
 let oslChatSendBlockedReason: string | null = null;
+let chatProfileAppearanceOpen = false;
+let chatAppearancePane: "profile" | "background" | "messages" = "profile";
+const chatProfileAppearanceState = new OslProfilePaneState(seededProfilePaneRecords());
+let safetyNumberPanelPersonId: string | null = null;
 let oslChatAttachments: NativeOverlayPendingAttachment[] = [];
 const oslChatDropTray: OslChatAttachmentTrayState = createOslChatAttachmentTray();
 const oslMailDropTray = createAttachmentTrayActions();
@@ -4871,6 +4880,7 @@ function renderWorkspace(): void {
   lastWorkspaceViewKey = nextViewKey;
   surface.innerHTML = markup;
   bindWorkspace();
+  mountChatSurfaceOverlays();
   if (focusSnapshot) restoreWorkspaceFocus(focusSnapshot);
   if (friendsDialogOpen) requestAnimationFrame(() => {
     const dialog = document.querySelector<HTMLDialogElement>("#friends-dialog");
@@ -6026,7 +6036,60 @@ function oslChatContent(): string {
     buildIntegrity: buildIntegrityStatus,
     verificationWarningSurface: oslChatVerificationWarningSurface,
     buildWarning: installedBuildChatWarning,
-  })}${offlineStatus}${receipt}${droppedFiles}${attachments}${settings}${startSheet}</main>`;
+  })}${offlineStatus}${receipt}${droppedFiles}${attachments}${settings}${startSheet}${chatSurfaceOverlays()}</main>`;
+}
+
+/** Hosts the already-built settings surfaces; their markup stays owned by each surface module. */
+function chatSurfaceOverlays(): string {
+  const profile = chatProfileAppearanceOpen ? '<div id="chat-profile-appearance-host"></div>' : "";
+  const person = safetyNumberPanelPersonId ? hubPeople.find((candidate) => candidate.personId === safetyNumberPanelPersonId) ?? null : null;
+  const safety = person
+    ? `<dialog class="owned-confirmation-dialog" id="safety-number-dialog"><section class="owned-confirmation-card"><header><h2>Safety number</h2><button class="icon-button" data-close-safety-number type="button" aria-label="Close safety number">×</button></header><div id="safety-number-panel-host"></div></section></dialog>`
+    : "";
+  return `${profile}${safety}`;
+}
+
+function openSafetyNumberPanel(personId: string): void {
+  const person = hubPeople.find((candidate) => candidate.personId === personId);
+  if (!person) return;
+  safetyNumberPanelPersonId = personId;
+  render();
+}
+
+function mountChatSurfaceOverlays(): void {
+  const profileHost = document.querySelector<HTMLElement>("#chat-profile-appearance-host");
+  if (profileHost) {
+    attachChatProfileAppearanceModal(profileHost, chatProfileAppearanceState, {
+      onClose: () => { chatProfileAppearanceOpen = false; render(); },
+    });
+    profileHost.addEventListener("click", (event) => {
+      const item = (event.target as Element | null)?.closest<HTMLElement>("[data-chat-appearance-item]")?.dataset.chatAppearanceItem;
+      const editor = profileHost.querySelector<HTMLElement>(".chat-profile-editor");
+      if (!item || !editor) return;
+      if (item === "Chat background") {
+        chatAppearancePane = "background";
+        mountChatBackgroundPane(editor, activeOslChatPersonId ?? "osl-chats");
+      } else if (item === "Messages") {
+        chatAppearancePane = "messages";
+        renderChatMessagesPane(editor);
+      }
+    });
+    if (chatAppearancePane === "background") {
+      const editor = profileHost.querySelector<HTMLElement>(".chat-profile-editor");
+      if (editor) mountChatBackgroundPane(editor, activeOslChatPersonId ?? "osl-chats");
+    } else if (chatAppearancePane === "messages") {
+      const editor = profileHost.querySelector<HTMLElement>(".chat-profile-editor");
+      if (editor) renderChatMessagesPane(editor);
+    }
+  }
+  const safetyHost = document.querySelector<HTMLElement>("#safety-number-panel-host");
+  const safetyDialog = document.querySelector<HTMLDialogElement>("#safety-number-dialog");
+  const person = safetyNumberPanelPersonId ? hubPeople.find((candidate) => candidate.personId === safetyNumberPanelPersonId) ?? null : null;
+  if (safetyHost && safetyDialog && person) {
+    safetyHost.innerHTML = safetyNumberPanelMarkup({ id: person.personId, name: person.alias ?? "Verified friend", safetyNumber: person.safetyNumber, verified: person.safetyNumberVerified });
+    if (!safetyDialog.open) safetyDialog.showModal();
+    bindSafetyNumberPanel(safetyHost, { id: person.personId, name: person.alias ?? "Verified friend", safetyNumber: person.safetyNumber, verified: person.safetyNumberVerified });
+  }
 }
 
 /** Browser offline is a reliable negative signal; any other state stays unknown. */
@@ -6115,7 +6178,7 @@ function oslChatFriendSettingsMarkup(person: HubPerson): string {
   const permissionControl = isActive
     ? `<button class="button compact ${approved ? "danger" : "primary"}" id="osl-chat-permission-toggle" type="button" ${oslChatBusy || !verified ? 'disabled aria-disabled="true"' : ""}>${approved ? "Revoke" : "Enable"}</button>`
     : `<button class="button compact" data-osl-chat-open="${escapeHtml(person.personId)}" type="button" ${verified ? "" : 'disabled aria-disabled="true"'}>Open chat</button>`;
-  return `<dialog class="friends-dialog osl-chat-settings-dialog" id="osl-chat-settings-dialog" aria-labelledby="osl-chat-settings-title"><div class="friends-dialog-card"><header><div><span>Encrypted chat</span><h2 id="osl-chat-settings-title">${escapeHtml(person.alias ?? "Verified friend")}</h2></div><button class="icon-button" id="osl-chat-settings-close" type="button" aria-label="Close chat settings">×</button></header><div class="settings-list">${peerIntegrityMarkup("unknown")}${oslChatNotificationSettingsMarkup(notificationSettings)}<div class="setting-line osl-chat-permission-row${verified ? "" : " is-not-verified"}" data-osl-chat-whitelist-state="${verified ? "available" : "not-verified"}" ${verified ? "" : 'aria-disabled="true"'}><span><strong>Chat permission</strong><small>${permissionDetail}</small></span>${permissionControl}</div></div></div></dialog>`;
+  return `<dialog class="friends-dialog osl-chat-settings-dialog" id="osl-chat-settings-dialog" aria-labelledby="osl-chat-settings-title"><div class="friends-dialog-card"><header><div><span>Encrypted chat</span><h2 id="osl-chat-settings-title">${escapeHtml(person.alias ?? "Verified friend")}</h2></div><button class="icon-button" id="osl-chat-settings-close" type="button" aria-label="Close chat settings">×</button></header><div class="settings-list">${peerIntegrityMarkup("unknown")}<button class="setting-line interactive" data-open-safety-number="${escapeHtml(person.personId)}" type="button"><span><strong>Safety number</strong><small>Compare this number through a channel you already trust.</small></span></button>${oslChatNotificationSettingsMarkup(notificationSettings)}<div class="setting-line osl-chat-permission-row${verified ? "" : " is-not-verified"}" data-osl-chat-whitelist-state="${verified ? "available" : "not-verified"}" ${verified ? "" : 'aria-disabled="true"'}><span><strong>Chat permission</strong><small>${permissionDetail}</small></span>${permissionControl}</div></div></div></dialog>`;
 }
 
 function oslServersContent(): string {
@@ -9001,12 +9064,23 @@ function bindWorkspace(): void {
     oslChatSendBlockedReason = null;
     render();
   });
-  document.querySelector<HTMLButtonElement>("[data-osl-chat-new]")?.addEventListener("click", () => showToast("Start a conversation from a verified friend profile"));
-  document.querySelector<HTMLButtonElement>("[data-osl-chat-profile]")?.addEventListener("click", () => showToast("Profile & Appearance is not available in this build"));
+  document.querySelector<HTMLButtonElement>("[data-osl-chat-profile]")?.addEventListener("click", () => {
+    chatAppearancePane = "profile";
+    chatProfileAppearanceOpen = true;
+    render();
+  });
   document.querySelector<HTMLButtonElement>(".osl-chat-emoji")?.addEventListener("click", () => {
     setOslChatDraft(`${oslChatDraft}🙂`);
     document.querySelector<HTMLTextAreaElement>("#osl-chat-draft")?.focus();
   });
+  document.querySelectorAll<HTMLButtonElement>("[data-open-chat-profile-appearance]").forEach((button) => button.addEventListener("click", () => {
+    chatAppearancePane = "profile";
+    chatProfileAppearanceOpen = true;
+    render();
+  }));
+  document.querySelectorAll<HTMLButtonElement>("[data-start-something]").forEach((button) => button.addEventListener("click", () => inboxPrimaryAction()));
+  document.querySelectorAll<HTMLButtonElement>("[data-open-safety-number]").forEach((button) => button.addEventListener("click", () => openSafetyNumberPanel(button.dataset.openSafetyNumber ?? "")));
+  document.querySelectorAll<HTMLButtonElement>("[data-close-safety-number]").forEach((button) => button.addEventListener("click", () => { safetyNumberPanelPersonId = null; render(); }));
   document.querySelectorAll<HTMLButtonElement>("[data-friend-settings]").forEach((button) => button.addEventListener("click", () => {
     route = "home";
     friendsDialogOpen = true;
@@ -13047,6 +13121,7 @@ export const __oslHubUiTest = {
   },
   bindWorkspace(): void {
     bindWorkspace();
+    mountChatSurfaceOverlays();
   },
   /** Render the real service header without needing a companion window. */
   /**
