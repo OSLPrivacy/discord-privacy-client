@@ -90,12 +90,7 @@
 
   const pageTitles = {
     home: ["OSL Privacy", "Good evening, Liam"],
-    inbox: ["Private communication", "Inbox"],
-    people: ["Identity and trust", "People"],
     composer: ["Protection workspace", "Secure Composer"],
-    privacy: ["Local privacy tools", "Privacy"],
-    connections: ["Accounts and services", "Connections"],
-    activity: ["Local evidence", "Activity"],
     settings: ["OSL Privacy", "Settings"],
   };
 
@@ -173,64 +168,21 @@
       .join("");
   }
 
-  function renderConversations() {
-    const rows = [
-      ["R", "Rose", "did the prototype work?"],
-      ["O", "OSL test", "identity review waiting"],
-      ["P", "Privacy lab", "local-only draft"],
-    ];
-    byId("conversation-list").innerHTML = rows
+  function renderRetiredConnectionsRecord() {
+    byId("retired-connections-record").innerHTML = services
       .map(
-        ([initial, name, preview]) => `
-          <button class="conversation-row" type="button">
-            <span class="avatar" aria-hidden="true">${initial}</span>
-            <span><strong>${name}</strong><small>${preview}</small></span>
-            <small>Simulated</small>
-          </button>`,
-      )
-      .join("");
-  }
-
-  function renderConnections() {
-    byId("connections-grid").innerHTML = services
-      .map(
-        (service, index) => `
-          <article class="connection-card${index === 0 ? " expanded" : ""}" data-service-card="${service.id}">
-            <button class="connection-head" type="button" aria-expanded="${index === 0}" aria-controls="accounts-${service.id}">
-              <span class="service-avatar" aria-hidden="true">${escapeHtml(service.initial)}</span>
-              <span><strong>${escapeHtml(service.name)}</strong><small>${service.accounts.length} test accounts · Native + OSL modes</small></span>
-              <span class="chevron" aria-hidden="true">⌄</span>
-            </button>
-            <div class="account-rows" id="accounts-${service.id}">
+        (service) => `
+          <article class="setting-row card-row">
+            <div><strong>${escapeHtml(service.name)}</strong><p>${service.accounts.length} test accounts · Native + OSL modes</p>
               ${service.accounts
                 .map(
-                  (account) => `
-                    <div class="account-row" data-testid="account-row-${service.id}-${account.id}">
-                      <div><strong>${escapeHtml(account.label)}</strong><small>${escapeHtml(account.handle)} · ${account.protection === "verified" ? "Verified OSL recipient" : "Native fallback"}</small></div>
-                      <button class="secondary-button account-switch" type="button" data-service="${service.id}" data-account="${account.id}" aria-label="Switch to ${escapeHtml(service.name)} ${escapeHtml(account.label)}">Switch</button>
-                    </div>`,
+                  (account) => `<p>${escapeHtml(account.label)} · ${escapeHtml(account.handle)} · ${account.protection === "verified" ? "Verified OSL recipient" : "Native fallback"} · Switch to ${escapeHtml(service.name)} ${escapeHtml(account.label)}</p>`,
                 )
                 .join("")}
             </div>
           </article>`,
       )
       .join("");
-
-    document.querySelectorAll(".connection-head").forEach((button) => {
-      button.addEventListener("click", () => {
-        const card = button.closest(".connection-card");
-        const expanded = card.classList.toggle("expanded");
-        button.setAttribute("aria-expanded", String(expanded));
-      });
-    });
-    document.querySelectorAll(".account-switch").forEach((button) => {
-      button.addEventListener("click", () => {
-        switchIdentity(button.dataset.service, button.dataset.account);
-        navigate("composer");
-        byId("secure-text").focus();
-        showToast(`Switched to ${identityText()}. Only this account's draft is shown.`);
-      });
-    });
   }
 
   function populateServiceSelect() {
@@ -292,7 +244,6 @@
     byId("mock-avatar").textContent = service.initial;
     byId("mock-service-name").textContent = service.name;
     byId("mock-account-name").textContent = `${account.label} · ${account.handle}`;
-    byId("scan-scope").textContent = identityText();
   }
 
   function setTier(tier) {
@@ -528,49 +479,6 @@
     showToast("Composer paused safely. Draft preserved; OSL does not interact with challenges.");
   }
 
-  function runScan() {
-    const findings = [
-      ["Possible address", "A simulated old message may reveal a home address."],
-      ["Travel detail", "A simulated conversation may disclose when a home is empty."],
-      ["Account recovery clue", "A simulated message may contain a memorable recovery answer."],
-    ];
-    const results = byId("scan-results");
-    results.hidden = false;
-    results.innerHTML = `
-      <div><strong>3 items may reveal your home address or private routines</strong><p class="field-note">Review calmly. Nothing was deleted or changed.</p></div>
-      ${findings
-        .map(
-          ([title, copy], index) => `
-            <article class="finding" data-finding="${index}">
-              <strong>${escapeHtml(title)}</strong>
-              <p>${escapeHtml(copy)}</p>
-              <div class="finding-actions">
-                <button class="secondary-button finding-open" type="button">Open message</button>
-                <button class="secondary-button finding-steps" type="button">Show deletion steps <span class="pro-label">Pro</span></button>
-                <button class="text-button finding-ignore" type="button">Ignore</button>
-              </div>
-            </article>`,
-        )
-        .join("")}`;
-
-    results.querySelectorAll(".finding-open").forEach((button) => {
-      button.addEventListener("click", () => showToast("Simulated message location opened. No account was accessed."));
-    });
-    results.querySelectorAll(".finding-steps").forEach((button) => {
-      button.addEventListener("click", () => {
-        if (state.tier === "free") showProDialog();
-        else showToast("Guided deletion steps previewed. You remain in control of every platform action.");
-      });
-    });
-    results.querySelectorAll(".finding-ignore").forEach((button) => {
-      button.addEventListener("click", () => {
-        button.closest(".finding").remove();
-        showToast("Finding ignored locally. No platform data changed.");
-      });
-    });
-    showToast("Local simulated scan complete: 3 review items, 0 removals.");
-  }
-
   function bindEvents() {
     document.querySelectorAll("[data-page-target]").forEach((button) => {
       button.addEventListener("click", () => navigate(button.dataset.pageTarget, true));
@@ -578,7 +486,6 @@
     document.querySelectorAll("[data-go]").forEach((button) => {
       button.addEventListener("click", () => {
         navigate(button.dataset.go, true);
-        if (button.dataset.triggerScan === "true") runScan();
       });
     });
     document.querySelectorAll(".tier-button").forEach((button) => {
@@ -644,17 +551,6 @@
     byId("layout-change").addEventListener("click", simulateLayoutChange);
     byId("low-confidence").addEventListener("click", simulateLowConfidence);
     byId("platform-challenge").addEventListener("click", simulatePlatformChallenge);
-    byId("scan-button").addEventListener("click", runScan);
-
-    document.querySelectorAll('input[name="preset"]').forEach((radio) => {
-      radio.addEventListener("change", () => {
-        document.querySelectorAll(".preset-card").forEach((card) => {
-          card.classList.toggle("selected", card.contains(radio));
-        });
-        showToast(`${radio.value[0].toUpperCase()}${radio.value.slice(1)} preset selected locally.`);
-      });
-    });
-
     document.querySelectorAll(".pro-action").forEach((button) => {
       button.addEventListener("click", showProDialog);
     });
@@ -668,8 +564,7 @@
 
   function init() {
     renderHomeServices();
-    renderConversations();
-    renderConnections();
+    renderRetiredConnectionsRecord();
     populateServiceSelect();
     populateAccountSelect();
     updateIdentityUi();
