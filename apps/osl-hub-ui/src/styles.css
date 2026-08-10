@@ -17061,6 +17061,12 @@ code {
 .osl-chat-composer { padding: 12px 28px 18px; border-top: 0; background: var(--bg); }
 .osl-chat-composer-bar { min-height: 50px; border: 0; border-radius: 8px; background: var(--panel-2); grid-template-columns: 40px minmax(0, 1fr) 40px 40px 40px; }
 .osl-chat-composer-bar:focus-within { border-color: transparent; box-shadow: inset 0 0 0 1px var(--line); }
+.osl-chat-composer.is-key-blocked .osl-chat-composer-bar { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warn) 72%, var(--line)); }
+.osl-chat-composer.is-key-blocked textarea,
+.osl-chat-composer.is-key-blocked .osl-chat-view-once,
+.osl-chat-composer.is-key-blocked .osl-chat-attach,
+.osl-chat-composer.is-key-blocked .osl-chat-emoji,
+.osl-chat-composer.is-key-blocked .osl-chat-send { opacity: .58; cursor: not-allowed; }
 .osl-chat-attach,
 .osl-chat-emoji { width: 40px; min-width: 40px; min-height: 50px; border: 0; border-radius: 0; }
 .osl-chat-attach:disabled { color: var(--subtle); cursor: not-allowed; }

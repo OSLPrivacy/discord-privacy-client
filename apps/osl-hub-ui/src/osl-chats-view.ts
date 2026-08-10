@@ -508,9 +508,10 @@ function activeThread(model: OslChatsViewModel, friend: OslChatFriend): string {
   const withinLimit = bytes <= OSL_CHAT_MAX_DRAFT_BYTES;
   const hasDraft = model.draft.trim().length > 0;
   const mutualReady = oslChatMutualReadiness(friend);
-  const peerState = mutualReady ? "mutual" : "one-way";
-  const canSend = hasDraft && withinLimit && !model.busy;
-  const readiness = friend.pendingKeyChange
+  const keyChanged = friend.pendingKeyChange === true;
+  const peerState = mutualReady && !keyChanged ? "mutual" : "one-way";
+  const canSend = hasDraft && withinLimit && !model.busy && !keyChanged;
+  const readiness = keyChanged
     ? "Verify this key change before sending."
     : !friend.verified
     ? "Verify this friend before sending."
@@ -528,11 +529,11 @@ function activeThread(model: OslChatsViewModel, friend: OslChatFriend): string {
   const unconfirmed = handshakeWarning
     ? `<p class="osl-chat-handshake-warning is-${warningSurface}" role="status" data-verification-warning-surface="${warningSurface}">${escapeHtml(handshakeWarning)}</p>`
     : "";
-  const verification = friend.pendingKeyChange
+  const verification = keyChanged
     ? "Key changed — check before sending"
     : friend.verified ? "Verified · online" : "Not verified yet";
-  const keyBanner = friend.pendingKeyChange
-    ? `<aside class="osl-chat-key-banner" role="status"><span><strong>${escapeHtml(friend.nickname)}’s key changed.</strong><small>Verify before you send anything.</small></span><button type="button" data-osl-chat-settings="${escapeHtml(friend.personId)}">Verify</button></aside>`
+  const keyBanner = keyChanged
+    ? `<aside class="osl-chat-key-banner" role="alert" data-osl-key-changed-banner="true"><span><strong>${escapeHtml(friend.nickname)}’s key changed.</strong><small>Verify before you send anything.</small></span><button type="button" data-osl-chat-settings="${escapeHtml(friend.personId)}">Verify</button></aside>`
     : "";
   const blocked = model.sendBlockedReason
     ? `<aside class="osl-chat-blocked-panel" role="alert"><strong>Message not sent</strong><p>${escapeHtml(model.sendBlockedReason)}</p><button type="button" data-osl-chat-blocked-close>Back to chat</button></aside>`
@@ -544,22 +545,23 @@ function activeThread(model: OslChatsViewModel, friend: OslChatFriend): string {
     ${buildIntegrityWarningRow(model.buildIntegrity)}
     ${buildWarningRow(model.buildWarning)}
     ${deletionUnconfirmedRow(model.deletionUnconfirmed ?? 0)}
-    <form class="osl-chat-composer" data-osl-chat-compose="${escapeHtml(friend.personId)}">
+    <form class="osl-chat-composer${keyChanged ? " is-key-blocked" : ""}" data-osl-chat-compose="${escapeHtml(friend.personId)}"${keyChanged ? ' aria-disabled="true"' : ""}>
       <label for="osl-chat-draft">Message</label>
-      <div class="osl-chat-composer-bar"><button class="osl-chat-attach" id="osl-chat-attach" type="button" aria-label="Attach a file" ${model.attachmentAvailable && !model.busy ? "" : 'disabled title="Attachments are available in this approved chat with OSL Pro"'}>${attachIcon}</button><textarea id="osl-chat-draft" rows="1" placeholder="Message ${escapeHtml(friend.nickname)}" autocomplete="off" spellcheck="true" aria-describedby="osl-chat-draft-count osl-chat-readiness">${escapeHtml(model.draft)}</textarea>${viewOnceControlMarkup({
+      <div class="osl-chat-composer-bar"><button class="osl-chat-attach" id="osl-chat-attach" type="button" aria-label="Attach a file" ${model.attachmentAvailable && !model.busy && !keyChanged ? "" : 'disabled title="Attachments are available in this approved chat with OSL Pro"'}>${attachIcon}</button><textarea id="osl-chat-draft" rows="1" placeholder="${keyChanged ? "Verify the key change before you send anything" : `Message ${escapeHtml(friend.nickname)}`}" autocomplete="off" spellcheck="true" aria-describedby="osl-chat-draft-count osl-chat-readiness" ${keyChanged ? "disabled" : ""}>${escapeHtml(model.draft)}</textarea>${viewOnceControlMarkup({
         id: "osl-chat-view-once",
         layout: "composer",
         className: "osl-chat-view-once",
         title: "View once",
         checked: model.viewOnce === true,
         creationAllowed: model.viewOnceCreationAllowed === true,
+        unavailable: keyChanged,
         // Deliberately not disabled while busy: this is a preference for the
         // *next* send, not an action, and the in-flight send already captured
         // its value. An off state here would need a reason nobody needs to
         // read, and the Send button is the real in-flight guard.
         iconMarkup: onceIcon,
         detail: "Kept out of OSL history. OSL asks for the sent copy to be deleted once it is opened, and says here when it cannot confirm that.",
-      })}<button class="osl-chat-emoji" type="button" aria-label="Choose emoji">${emojiIcon}</button><button class="osl-chat-send" type="submit" aria-label="${model.busy ? "Sending" : "Send"}" data-osl-chat-peer-state="${peerState}" data-osl-chat-send-context="${mutualReady && !model.busy ? "1" : "0"}" ${canSend ? "" : "disabled"}>${sendIcon}<span>${model.busy ? "Sending…" : "Send"}</span></button></div>
+      })}<button class="osl-chat-emoji" type="button" aria-label="Choose emoji" ${keyChanged ? "disabled" : ""}>${emojiIcon}</button><button class="osl-chat-send" type="submit" aria-label="${model.busy ? "Sending" : "Send"}" data-osl-chat-peer-state="${peerState}" data-osl-chat-send-context="${mutualReady && !keyChanged && !model.busy ? "1" : "0"}" ${canSend ? "" : "disabled"}>${sendIcon}<span>${model.busy ? "Sending…" : "Send"}</span></button></div>
       <div class="osl-chat-composer-meta"><span id="osl-chat-readiness" class="osl-chat-readiness">${readiness}</span><output id="osl-chat-draft-count" class="osl-chat-byte-count${withinLimit ? "" : " is-over"}">${withinLimit ? "" : `${bytes.toLocaleString("en-US")} / ${OSL_CHAT_MAX_DRAFT_BYTES.toLocaleString("en-US")}`}</output></div>
     </form>
   </section>`;
