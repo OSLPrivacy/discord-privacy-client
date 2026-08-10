@@ -16,3 +16,14 @@ success and refusal paths on any build host. A Windows collector can implement
 or tightly bounded visible-screen capture, while signature, foreground,
 occlusion, generation, and geometry checks remain mandatory inputs to the
 shared state machine.
+
+Release baselines use a second, deliberately separate state machine. Captures
+first enter a content-addressed `candidates/` set. Only an Ed25519 signature by
+a distinct reviewer authorized in the configured release-review trust root can
+copy that exact set into `baselines/objects/` and atomically advance its named
+carrier/channel/state pointer. Version is signed into each manifest so a new
+carrier version remains in the same parent-linked history. The signed release
+record binds the parent hash, old/new content identity, capture author,
+reviewer, and trust-root key id. Runtime adaptation, capture authors, and
+passing diffs have no baseline write path; a stale parent also makes replayed
+acceptance fail closed.

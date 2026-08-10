@@ -4,6 +4,8 @@
 //! capture only the exact UIA surface plus its four-physical-pixel seam ring.
 //! The state machine does not expose an API for desktop or arbitrary rectangles.
 
+pub mod baseline;
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt;
