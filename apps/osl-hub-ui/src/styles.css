@@ -17323,3 +17323,39 @@ img.osl-chat-avatar { display: block; object-fit: cover; }
   height: var(--chrome-row-height);
   min-height: var(--chrome-row-height);
 }
+
+/* Full-width Home composition when the Friends panel is collapsed. */
+.home-status-readout { display: none; }
+.home-launcher-actions { margin-right: 32px; }
+.home-launcher-tools { gap: 39px; }
+.home-launcher-column { max-width: 1032px; padding: 58px 0 72px; }
+.home-launcher .home-osl-section .app-grid { gap: 17px; }
+.home-launcher .home-app-section:not(.home-osl-section) { margin-top: 54px; }
+.home-launcher .home-app-section:not(.home-osl-section):last-child { margin-top: 92px; }
+.home-launcher .home-app-section:not(.home-osl-section) .app-grid {
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  gap: 20px;
+  padding: 0 9px 0 14px;
+}
+.home-launcher .home-app-section:not(.home-osl-section) .app-tile,
+.home-launcher .home-app-section:not(.home-osl-section) .app-tile.app-unavailable { opacity: 1; }
+.home-launcher .home-app-section:not(.home-osl-section) .app-tile-copy small { display: none; }
+.home-launcher .home-app-section:not(.home-osl-section) .app-tile > button:first-child {
+  padding: 4px 0 6px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+}
+.home-launcher .home-app-section:not(.home-osl-section) .app-logo-plate,
+.home-launcher .home-app-section:not(.home-osl-section) .app-tile[data-service-kind] .app-logo-plate {
+  width: 68px;
+  height: 68px;
+  border: 1px solid #0b4450;
+  border-radius: 16px !important;
+  background: #06202a;
+  color: var(--service);
+}
+.home-launcher .home-app-section:not(.home-osl-section) .app-logo-plate .company-logo { width: 40px; height: 40px; }
+.home-launcher .module-unavailable > button:first-child:disabled { opacity: 1; }
+.home-launcher .home-module .app-tile-copy strong { font-size: 20px; }
