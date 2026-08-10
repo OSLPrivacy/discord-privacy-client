@@ -7,7 +7,7 @@
 //! from being smuggled into the record.
 
 use serde::{de::Error as _, Deserialize, Deserializer, Serialize, Serializer};
-use std::fmt;
+use std::{collections::HashSet, fmt};
 
 const SECONDS_PER_DAY: i64 = 86_400;
 
@@ -552,6 +552,169 @@ impl MeteredAllowanceUsage {
         self.rolling_24_hours
     }
 }
+
+/// The allowance figures used by the local anonymous-voucher meter.
+///
+/// These are decimal GB so their rendered values agree with the purchase and
+/// settings surfaces (for example, 20.00 GB is 20,000,000,000 bytes).  A
+/// voucher is redeemed only by the client that holds it; neither this type nor
+/// [`MonthlyAllowanceMeter`] contains an account identifier or any store-side
+/// record.
+pub const FREE_MONTHLY_ALLOWANCE_BYTES: u64 = 20_000_000_000;
+pub const TINY_TEST_TOP_UP_ALLOWANCE_BYTES: u64 = 1_000_000_000;
+
+/// A denomination of anonymous allowance credit.
+///
+/// The test pack is deliberately a stable identifier: payment work can mint
+/// one opaque voucher for it without teaching the byte meter who bought it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TopUpPack {
+    TinyTest,
+}
+
+impl TopUpPack {
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::TinyTest => "TINY-TEST",
+        }
+    }
+
+    pub const fn allowance_bytes(self) -> u64 {
+        match self {
+            Self::TinyTest => TINY_TEST_TOP_UP_ALLOWANCE_BYTES,
+        }
+    }
+}
+
+/// A local snapshot of this account's current calendar-window allowance.
+/// `spent_bytes` is always metered transfer data; it never includes a top-up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MonthlyAllowanceSnapshot {
+    cap_bytes: u64,
+    spent_bytes: u64,
+}
+
+impl MonthlyAllowanceSnapshot {
+    pub const fn cap_bytes(self) -> u64 {
+        self.cap_bytes
+    }
+
+    pub const fn spent_bytes(self) -> u64 {
+        self.spent_bytes
+    }
+
+    pub const fn remaining_bytes(self) -> u64 {
+        self.cap_bytes.saturating_sub(self.spent_bytes)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RedeemedTopUp {
+    voucher_id: String,
+    window: CalendarMonthWindow,
+    allowance_bytes: u64,
+}
+
+/// Local allowance arithmetic for one person.  The caller owns one instance
+/// per account/device context; that separation is intentional, and does not
+/// create an account ledger at the cipher store.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MonthlyAllowanceAccount {
+    meter: MonthlyAllowanceMeter,
+    redeemed_voucher_ids: HashSet<String>,
+    redeemed_top_ups: Vec<RedeemedTopUp>,
+}
+
+impl MonthlyAllowanceAccount {
+    pub fn new(account_reset_unix_seconds: i64) -> Self {
+        Self {
+            meter: MonthlyAllowanceMeter::new(account_reset_unix_seconds),
+            redeemed_voucher_ids: HashSet::new(),
+            redeemed_top_ups: Vec::new(),
+        }
+    }
+
+    pub fn meter_mut(&mut self) -> &mut MonthlyAllowanceMeter {
+        &mut self.meter
+    }
+
+    /// Redeem an opaque, one-use voucher into the allowance window containing
+    /// `unix_seconds`.  Credit raises only that window's cap; the byte meter is
+    /// not written here, so a credit cannot look like transfer spending.
+    pub fn redeem_top_up_at(
+        &mut self,
+        unix_seconds: i64,
+        pack: TopUpPack,
+        voucher_id: impl Into<String>,
+    ) -> Result<MonthlyAllowanceSnapshot, TopUpRedemptionError> {
+        let voucher_id = voucher_id.into();
+        if self.redeemed_voucher_ids.contains(&voucher_id) {
+            return Err(TopUpRedemptionError::AlreadyRedeemed);
+        }
+        let window = self
+            .meter
+            .account_reset_clock
+            .month_window_at(unix_seconds)
+            .map_err(TopUpRedemptionError::Meter)?;
+        self.redeemed_voucher_ids.insert(voucher_id.clone());
+        self.redeemed_top_ups.push(RedeemedTopUp {
+            voucher_id,
+            window,
+            allowance_bytes: pack.allowance_bytes(),
+        });
+        self.snapshot_at(unix_seconds)
+    }
+
+    pub fn snapshot_at(
+        &self,
+        unix_seconds: i64,
+    ) -> Result<MonthlyAllowanceSnapshot, TopUpRedemptionError> {
+        let usage = self
+            .meter
+            .usage_at(unix_seconds)
+            .map_err(TopUpRedemptionError::Meter)?;
+        let window = usage.current_month().window();
+        let credit_bytes = self
+            .redeemed_top_ups
+            .iter()
+            .filter(|credit| credit.window == window)
+            .try_fold(0_u64, |total, credit| {
+                total
+                    .checked_add(credit.allowance_bytes)
+                    .ok_or(TopUpRedemptionError::CounterOverflow)
+            })?;
+        let cap_bytes = FREE_MONTHLY_ALLOWANCE_BYTES
+            .checked_add(credit_bytes)
+            .ok_or(TopUpRedemptionError::CounterOverflow)?;
+        Ok(MonthlyAllowanceSnapshot {
+            cap_bytes,
+            spent_bytes: usage.current_month().total_bytes(),
+        })
+    }
+
+    pub fn redeemed_top_up_count(&self) -> usize {
+        self.redeemed_top_ups.len()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TopUpRedemptionError {
+    AlreadyRedeemed,
+    Meter(MeteredByteWindowError),
+    CounterOverflow,
+}
+
+impl fmt::Display for TopUpRedemptionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::AlreadyRedeemed => formatter.write_str("already redeemed"),
+            Self::Meter(error) => error.fmt(formatter),
+            Self::CounterOverflow => formatter.write_str("top-up allowance counter overflow"),
+        }
+    }
+}
+
+impl std::error::Error for TopUpRedemptionError {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct AccountResetClock {
