@@ -12012,26 +12012,31 @@ code {
 
 
 .app-tile.pending .app-logo-plate { border: 0; background: transparent; }
-
-
-
-
-.home-dashboard.editing .app-tile { cursor: grab; outline: 1px dashed color-mix(in srgb, var(--brand) 30%, var(--line)); outline-offset: -3px; }
-
-
-
-
+.home-module.module-unavailable { opacity: .33; }
+.home-dashboard.editing .app-tile { cursor: grab; outline: 0; }
+.home-dashboard.editing .app-tile.app-unavailable { opacity: 1; }
+.home-dashboard.editing .home-module.module-unavailable { opacity: 1; }
+.home-dashboard.editing .app-tile.tile-hidden { opacity: 1; }
+.home-dashboard.editing .app-tile > button:first-child:disabled { opacity: 1; }
+.home-dashboard.editing .app-tile.tile-hidden > button:first-child { opacity: .42; }
+.home-dashboard.editing .app-tile-copy small { visibility: hidden; }
 .home-dashboard.editing .app-tile.dragging { opacity: .35; }
-
-
-
-
-.tile-edit-controls .tile-remove { width: 26px; height: 26px; border: 0; background: var(--danger); color: white; font-size: 18px; line-height: 1; }
+.tile-edit-controls { inset: 2px 16px auto auto; display: block; }
+.home-osl-section .tile-edit-controls { inset: 6px 6px auto auto; }
+.tile-edit-controls .tile-remove {
+  width: 18px;
+  height: 18px;
+  min-width: 18px;
+  min-height: 0;
+  border: 0;
+  background: #e5383b;
+  color: #080c0d;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+}
+.app-tile.tile-hidden .tile-edit-controls .tile-remove { background: #3dd68c; }
 .tile-edit-controls .tile-restore { background: #16803a; }
-
-
-
-
 .tile-keyboard-controls { position: absolute; top: 112px; right: 0; display: flex; gap: 2px; opacity: 0; }
 
 
@@ -12399,9 +12404,7 @@ code {
   display: grid;
   place-items: center;
 }
-
-
-
+.home-dashboard.editing .home-section-action { color: var(--brand); }
 
 /* A second, older `.home-dashboard` tile-layout system used to live here — a
    lane-merge union (commit a9028edc5) that re-declared the grids (3×104px OSL

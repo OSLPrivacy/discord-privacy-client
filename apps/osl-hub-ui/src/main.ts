@@ -5636,7 +5636,17 @@ function workspaceContent(): string {
   const selectedHomeApps = hasExplicitOnboardingAppSelection || rememberedHomeApps.size
     ? launchableHomeApps.filter((app) => app.launchState === "available" && rememberedHomeApps.has(app.id))
     : launchableHomeApps.filter((app) => app.launchState === "available");
-  const homeApps = [...selectedHomeApps, ...roadmapHomeApps.filter((app) => !selectedHomeApps.some((selected) => selected.id === app.id))];
+  const designSocialOrder = new Map([
+    ["Discord", 0],
+    ["Telegram", 1],
+    ["Signal", 2],
+    ["WhatsApp", 3],
+    ["Messenger", 4],
+    ["X", 5],
+  ]);
+  const homeApps = [...selectedHomeApps, ...roadmapHomeApps.filter((app) => !selectedHomeApps.some((selected) => selected.id === app.id))]
+    .sort((left, right) => (designSocialOrder.get(left.displayName) ?? Number.MAX_SAFE_INTEGER)
+      - (designSocialOrder.get(right.displayName) ?? Number.MAX_SAFE_INTEGER));
   const modules = ([
     { id: "osl-chats", name: "OSL Chats", available: true, capabilityFacts: { placing: true, reading: true, opening: true, realTwoPersonProtectedMessaging: true } },
     { id: "osl-mail", name: "OSL Mail", available: false, capabilityFacts: { placing: false, reading: false, opening: false, realTwoPersonProtectedMessaging: false } },
