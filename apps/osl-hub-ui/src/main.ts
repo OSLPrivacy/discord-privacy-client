@@ -3384,6 +3384,11 @@ function bindOnboarding(): void {
       render();
     }
   }));
+  document.querySelector<HTMLInputElement>("[data-tor-bridge]")?.addEventListener("change", (event) => {
+    const checked = (event.currentTarget as HTMLInputElement).checked;
+    torOnboarding = chooseTorRoute(torOnboarding, checked ? "bridge" : "tor");
+    render();
+  });
   document.querySelector<HTMLButtonElement>("[data-tor-choice-continue]")?.addEventListener("click", () => {
     if (torOnboarding.choice === null) return;
     void invoke("set_tor_preference", { preference: torOnboarding.choice }).then(() => {

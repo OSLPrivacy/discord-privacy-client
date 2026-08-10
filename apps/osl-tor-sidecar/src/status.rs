@@ -15,12 +15,19 @@ pub enum StatusEvent {
         pid: u32,
         dial_mode: &'static str,
         requested_listen: String,
+        bridge_in_use: bool,
     },
     /// The SOCKS listener is bound; `addr` is what the OS assigned, and
     /// `port` repeats the port for consumers that do not parse `addr`.
     Listening { addr: String, ip: String, port: u16 },
     /// Progress of the embedded Arti client, tor dial mode only.
-    Bootstrap { state: &'static str },
+    Bootstrap {
+        state: &'static str,
+        percent: u8,
+        bridge_in_use: bool,
+    },
+    /// The Tor client, rather than only its loopback listener, is ready.
+    Ready { bridge_in_use: bool },
     /// A client connected to the SOCKS listener.
     Accepted { conn: u64, peer: String },
     /// A SOCKS handshake completed and asked us to reach `target`.

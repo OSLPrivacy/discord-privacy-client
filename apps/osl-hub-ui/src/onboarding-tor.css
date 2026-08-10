@@ -161,6 +161,24 @@
   text-align: center;
 }
 
+.tor-bridge-control {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 28px;
+  color: var(--tor-second);
+  font-family: "Source Sans 3 Variable", "Source Sans 3", var(--font-ui);
+  font-size: 14px;
+}
+
+.tor-bridge-control input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--tor-accent);
+}
+
 /* Continue and Back stack. The global Back is prepended into this row by
    dockOnboardingBackControl, so it arrives FIRST in the DOM and `order` puts
    it back underneath. */

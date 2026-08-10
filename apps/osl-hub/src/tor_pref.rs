@@ -21,6 +21,7 @@ const MAX_PREFERENCE_BYTES: u64 = 1024;
 pub enum TorPreference {
     Direct,
     Tor,
+    Bridge,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -189,10 +190,10 @@ impl TorPreferenceState {
             Err(refusal) => (None, refusal),
         };
         let preference = read_preference(&path).unwrap_or(None);
-        let tor_client = if preference == Some(TorPreference::Tor) {
-            tor_config
-                .clone()
-                .and_then(|config| start_tor_client(config).ok())
+        let tor_client = if matches!(preference, Some(TorPreference::Tor | TorPreference::Bridge)) {
+            tor_config.clone().and_then(|config| {
+                start_tor_client(config_for_preference(config, preference.unwrap())).ok()
+            })
         } else {
             None
         };
@@ -251,7 +252,7 @@ impl TorPreferenceState {
         // never return an error while the previous clearnet route stays live.
         match preference {
             TorPreference::Direct => keystore::egress::permit_clearnet(),
-            TorPreference::Tor => keystore::egress::seal(),
+            TorPreference::Tor | TorPreference::Bridge => keystore::egress::seal(),
         }
         let update = self.update_tor_client_for_preference(preference);
         self.publish_process_route();
@@ -275,7 +276,7 @@ impl TorPreferenceState {
     /// adopts this tunnel or refuses. See `keystore::egress`.
     pub fn publish_process_route(&self) {
         match self.preference().ok().flatten() {
-            Some(TorPreference::Tor) => match self.ready_tor_client() {
+            Some(TorPreference::Tor | TorPreference::Bridge) => match self.ready_tor_client() {
                 Ok(Some(route)) => Self::publish_ready_route(route),
                 // Selected but unhealthy, or the transport state itself is
                 // unreadable. Both are refusals, never a direct fallback.
@@ -288,7 +289,7 @@ impl TorPreferenceState {
     /// Authorize before the caller can construct or send a store request.
     pub fn authorize_store(&self) -> Result<AuthorizedStoreRoute, String> {
         let preference = self.preference()?;
-        let tor_route = if preference == Some(TorPreference::Tor) {
+        let tor_route = if matches!(preference, Some(TorPreference::Tor | TorPreference::Bridge)) {
             self.ready_tor_client()?
         } else {
             None
@@ -296,8 +297,10 @@ impl TorPreferenceState {
         // Re-publish on every authorization: a tunnel that died since the last
         // send must seal the rest of the process too, not only this command.
         match (preference, tor_route.clone()) {
-            (Some(TorPreference::Tor), Some(route)) => Self::publish_ready_route(route),
-            (Some(TorPreference::Tor), None) => keystore::egress::seal(),
+            (Some(TorPreference::Tor | TorPreference::Bridge), Some(route)) => {
+                Self::publish_ready_route(route)
+            }
+            (Some(TorPreference::Tor | TorPreference::Bridge), None) => keystore::egress::seal(),
             _ => keystore::egress::permit_clearnet(),
         }
         let authorization = authorize_network(
@@ -334,7 +337,7 @@ impl TorPreferenceState {
             TorPreference::Direct => {
                 *tor_client = None;
             }
-            TorPreference::Tor if tor_client.is_none() => {
+            TorPreference::Tor | TorPreference::Bridge if tor_client.is_none() => {
                 // No sidecar at all is a named refusal at selection time:
                 // the user must not be allowed to "choose" a route whose
                 // launcher is known to be missing from the installation.
@@ -343,12 +346,11 @@ impl TorPreferenceState {
                         return Err(refusal.clone());
                     }
                 }
-                *tor_client = self
-                    .tor_config
-                    .clone()
-                    .and_then(|config| start_tor_client(config).ok());
+                *tor_client = self.tor_config.clone().and_then(|config| {
+                    start_tor_client(config_for_preference(config, preference)).ok()
+                });
             }
-            TorPreference::Tor => {}
+            TorPreference::Tor | TorPreference::Bridge => {}
         }
         Ok(())
     }
@@ -378,6 +380,12 @@ pub const TOR_SIDECAR_FILE_NAME: &str = if cfg!(windows) {
 } else {
     "osl-tor-sidecar"
 };
+pub const BRIDGE_TRANSPORT_FILE_NAME: &str = if cfg!(windows) {
+    "osl-bridge-transport.exe"
+} else {
+    "osl-bridge-transport"
+};
+pub const BRIDGE_CONFIG_FILE_NAME: &str = "tor-bridges.txt";
 
 /// Where the packaged sidecar lives: the directory of the running
 /// executable. This is Tauri's external-binary contract on every bundle
@@ -498,6 +506,29 @@ fn start_tor_client(config: TorSidecarConfig) -> Result<TorClientFactory, String
     }))
 }
 
+fn config_for_preference(
+    mut config: TorSidecarConfig,
+    preference: TorPreference,
+) -> TorSidecarConfig {
+    if preference != TorPreference::Bridge {
+        return config;
+    }
+    let package_dir = config.program.parent().unwrap_or_else(|| Path::new("."));
+    let bridge_config = std::env::var_os("OSL_TOR_BRIDGE_CONFIG")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| package_dir.join(BRIDGE_CONFIG_FILE_NAME));
+    let transport = std::env::var_os("OSL_TOR_BRIDGE_TRANSPORT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| package_dir.join(BRIDGE_TRANSPORT_FILE_NAME));
+    config.args.extend([
+        "--bridge-config".to_owned(),
+        bridge_config.display().to_string(),
+        "--transport-program".to_owned(),
+        transport.display().to_string(),
+    ]);
+    config
+}
+
 fn read_preference(path: &Path) -> Option<Option<TorPreference>> {
     let bytes = crate::atomic_file::read_recoverable_bounded(
         path,
@@ -529,7 +560,8 @@ pub fn authorize_network(
         None => NetworkAuthorization::Refused(Refusal::ChoiceRequired),
         Some(TorPreference::Direct) => NetworkAuthorization::Direct,
         Some(TorPreference::Tor) if tunnel == TunnelState::Ready => NetworkAuthorization::Tor,
-        Some(TorPreference::Tor) => {
+        Some(TorPreference::Bridge) if tunnel == TunnelState::Ready => NetworkAuthorization::Tor,
+        Some(TorPreference::Tor | TorPreference::Bridge) => {
             NetworkAuthorization::Refused(Refusal::TorUnavailable(operation))
         }
     }
@@ -543,6 +575,31 @@ mod tests {
     use std::sync::mpsc;
     use std::thread;
     use std::time::Duration;
+
+    #[test]
+    fn bridge_preference_adds_shipped_config_and_transport_to_sidecar_launch() {
+        let directory = tempfile::tempdir().expect("package fixture");
+        let sidecar = directory.path().join(TOR_SIDECAR_FILE_NAME);
+        std::fs::write(&sidecar, b"sidecar").unwrap();
+        std::fs::write(
+            directory.path().join(BRIDGE_CONFIG_FILE_NAME),
+            b"Bridge fixture",
+        )
+        .unwrap();
+        std::fs::write(
+            directory.path().join(BRIDGE_TRANSPORT_FILE_NAME),
+            b"transport",
+        )
+        .unwrap();
+        let base = packaged_tor_sidecar_config(sidecar, directory.path()).unwrap();
+        let bridge = config_for_preference(base, TorPreference::Bridge);
+        let joined = bridge.args.join(" ");
+        assert!(joined.contains("--bridge-config"));
+        assert!(joined.contains(BRIDGE_CONFIG_FILE_NAME));
+        assert!(joined.contains("--transport-program"));
+        assert!(joined.contains(BRIDGE_TRANSPORT_FILE_NAME));
+        println!("TASK4914_BRIDGE_LAUNCH_ARGS={joined}");
+    }
 
     #[test]
     fn no_choice_refuses_every_network_operation() {

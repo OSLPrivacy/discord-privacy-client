@@ -3,7 +3,7 @@ import { choiceRadio, continueButton } from "./onboarding-controls";
 import { firstRunTorScreenMarkup, type TorBootStatus } from "./tor-boot-orchestrator";
 
 /** The network route must be chosen explicitly during onboarding. */
-export type TorChoice = "tor" | "direct" | null;
+export type TorChoice = "tor" | "bridge" | "direct" | null;
 
 export interface TorOnboardingState {
   choice: TorChoice;
@@ -20,13 +20,13 @@ export const initialTorOnboardingState = (): TorOnboardingState => ({ choice: "t
 // Direct cancels any Tor attempt. Re-selecting Tor preserves the status stream
 // projection so a radio re-render cannot rewind visible progress.
 export function chooseTorRoute(state: TorOnboardingState, choice: Exclude<TorChoice, null>): TorOnboardingState {
-  return { choice, bootstrapStatus: choice === "tor" ? state.bootstrapStatus : null };
+  return { choice, bootstrapStatus: choice === "direct" ? null : state.bootstrapStatus };
 }
 
 /** Feed one status projection from startTorBootOrchestrator into the actual
  * first-run Tor route. There is no independent spinner or percentage clock. */
 export function applyTorBootstrapStatus(state: TorOnboardingState, bootstrapStatus: TorBootStatus): TorOnboardingState {
-  return { choice: "tor", bootstrapStatus };
+  return { choice: state.choice === "bridge" ? "bridge" : "tor", bootstrapStatus };
 }
 
 /** Guards the Continue handler. A null choice can still arrive from a restored session. */
@@ -81,16 +81,20 @@ function directDiagram(): string {
  * contrast between the two animations is the only claim the screen makes.
  */
 export function onboardingTorMarkup(state: TorOnboardingState): string {
-  if (state.choice === "tor" && state.bootstrapStatus !== null) {
+  if (state.choice !== "direct" && state.choice !== null && state.bootstrapStatus !== null) {
     return firstRunTorScreenMarkup(state.bootstrapStatus);
   }
   const card = (choice: Exclude<TorChoice, null>, title: string, diagram: string, caption: string): string => {
-    const selected = state.choice === choice;
+    const selected = state.choice === choice || (choice === "tor" && state.choice === "bridge");
+    const bridgeControl = choice === "tor"
+      ? `<span class="tor-bridge-control"><input type="checkbox" data-tor-bridge${state.choice === "bridge" ? " checked" : ""}/><span>Using a bridge</span></span>`
+      : "";
     return `<label class="tor-choice-card${selected ? " selected" : ""}">
       <input class="sr-only" type="radio" name="tor-route" value="${choice}" aria-label="${choice === "tor" ? "Tor" : "direct"}"${selected ? " checked" : ""}/>
       <span class="tor-card-head">${choiceRadio()}<strong>${title}</strong></span>
       ${diagram}
       <span class="tor-card-caption">${caption}</span>
+      ${bridgeControl}
     </label>`;
   };
 

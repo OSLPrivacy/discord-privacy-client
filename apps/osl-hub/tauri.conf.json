@@ -31,8 +31,12 @@
   "bundle": {
     "active": true,
     "externalBin": [
-      "binaries/osl-tor-sidecar"
+      "binaries/osl-tor-sidecar",
+      "binaries/osl-bridge-transport"
     ],
+    "resources": {
+      "../osl-tor-sidecar/assets/tor-bridges.txt": "tor-bridges.txt"
+    },
     "targets": [
       "nsis"
     ],

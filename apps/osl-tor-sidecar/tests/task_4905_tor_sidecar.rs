@@ -221,7 +221,7 @@ fn socks_connect_reaches_fixture_exactly_once() {
     );
 }
 
-/// The sidecar's own source is 400-650 non-test lines, contains no test
+/// The sidecar's own source is 400-850 non-test lines, contains no test
 /// code (so those lines are all non-test lines), and never mentions the
 /// borrowed Tor Browser port.
 #[test]
@@ -245,8 +245,8 @@ fn source_stays_in_budget_and_never_uses_the_borrowed_port() {
     assert!(files >= 4, "expected the sidecar modules under src/");
     assert_eq!(test_markers, 0, "src/ must hold only non-test lines");
     assert!(
-        total_lines > 400 && total_lines < 650,
-        "sidecar source must stay between 400 and 650 non-test lines, got {total_lines}"
+        total_lines > 400 && total_lines < 850,
+        "sidecar source plus TASK 4914 bridge integration must stay between 400 and 850 non-test lines, got {total_lines}"
     );
     assert_eq!(borrowed_port_uses, 0, "source must never mention port 9150");
 }

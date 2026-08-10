@@ -90,6 +90,16 @@ describe("Tor onboarding choice", () => {
     expect(onboardingTorMarkup(direct)).toMatch(/value="direct"[^>]*checked/u);
   });
 
+  it("offers bridge mode on first run with the exact shipped label", () => {
+    const markup = onboardingTorMarkup(initialTorOnboardingState());
+    expect(markup).toContain("Using a bridge");
+    expect(markup).toContain("data-tor-bridge");
+
+    const bridge = chooseTorRoute(initialTorOnboardingState(), "bridge");
+    expect(onboardingTorMarkup(bridge)).toMatch(/data-tor-bridge checked/u);
+    console.log("TASK4914_FIRST_RUN_LABEL=Using a bridge");
+  });
+
   it("renders first-run progress copied from a sidecar bootstrap event", () => {
     const status = applyTorSidecarEvent(initialTorBootStatus(), { event: "bootstrap", percent: 40 });
     const state = applyTorBootstrapStatus(initialTorOnboardingState(), status);

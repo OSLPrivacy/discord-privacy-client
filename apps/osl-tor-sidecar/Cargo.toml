@@ -16,11 +16,15 @@ description = "OSL-owned Tor sidecar: loopback SOCKS listener with JSON status o
 name = "osl-tor-sidecar"
 path = "src/main.rs"
 
+[[bin]]
+name = "osl-bridge-transport"
+path = "src/bin/osl-bridge-transport.rs"
+
 [dependencies]
 # `static-sqlite` builds Arti's directory cache against its bundled SQLite.
 # That keeps both the Linux package build and the WSL -> Windows cross-build
 # independent of a system libsqlite3 development package.
-arti-client = { version = "0.45", default-features = false, features = ["tokio", "rustls", "static-sqlite"] }
+arti-client = { version = "0.45", default-features = false, features = ["tokio", "rustls", "static-sqlite", "pt-client"] }
 tor-socksproto = "0.45"
 # Only for naming the runtime type in TorClient<PreferredRuntime>; the
 # tokio/rustls features are enabled through arti-client's own deps.
@@ -31,3 +35,5 @@ serde_json = "1"
 
 [dev-dependencies]
 serde_json = "1"
+flate2 = "1"
+tempfile = "3"

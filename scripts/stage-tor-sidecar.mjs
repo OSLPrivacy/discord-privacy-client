@@ -5,7 +5,7 @@ import { spawn } from "node:child_process";
 import { copyFile, mkdir, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
-const SIDE_CAR = "osl-tor-sidecar";
+const BINARIES = ["osl-tor-sidecar", "osl-bridge-transport"];
 
 function parseArgs(argv) {
   const options = { release: false };
@@ -34,16 +34,23 @@ export async function stageTorSidecar(options, root = process.cwd()) {
     ? resolve(process.env.CARGO_TARGET_DIR)
     : join(root, "apps", "osl-tor-sidecar", "target");
   const suffix = options.target.includes("windows") ? ".exe" : "";
-  const source = join(targetDir, options.target, profile, `${SIDE_CAR}${suffix}`);
-  const staged = join(root, "apps", "osl-hub", "binaries", `${SIDE_CAR}-${options.target}${suffix}`);
-  await run("cargo", ["build", "--locked", "--manifest-path", "apps/osl-tor-sidecar/Cargo.toml", "--bin", SIDE_CAR, "--target", options.target, ...(options.release ? ["--release"] : [])], { cwd: root });
+  await run("cargo", ["build", "--locked", "--manifest-path", "apps/osl-tor-sidecar/Cargo.toml", "--bins", "--target", options.target, ...(options.release ? ["--release"] : [])], { cwd: root });
   await mkdir(join(root, "apps", "osl-hub", "binaries"), { recursive: true });
-  await copyFile(source, staged);
-  const bytes = (await stat(staged)).size;
-  if (bytes === 0) throw new Error(`staged sidecar is empty: ${staged}`);
-  console.log(`tor_sidecar_staged=${staged}`);
+  const staged = [];
+  let bytes = 0;
+  for (const binary of BINARIES) {
+    const source = join(targetDir, options.target, profile, `${binary}${suffix}`);
+    const destination = join(root, "apps", "osl-hub", "binaries", `${binary}-${options.target}${suffix}`);
+    await copyFile(source, destination);
+    const binaryBytes = (await stat(destination)).size;
+    if (binaryBytes === 0) throw new Error(`staged sidecar binary is empty: ${destination}`);
+    staged.push(destination);
+    bytes += binaryBytes;
+    console.log(`tor_package_binary=${binary}:${binaryBytes}`);
+  }
+  console.log(`tor_sidecar_staged=${staged[0]}`);
   console.log(`tor_sidecar_bytes=${bytes}`);
-  return { staged, bytes };
+  return { staged: staged[0], bytes, binaries: staged };
 }
 
 export async function main(argv = process.argv.slice(2)) {

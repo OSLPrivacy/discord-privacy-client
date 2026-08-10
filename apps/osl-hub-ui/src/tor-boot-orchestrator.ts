@@ -14,8 +14,8 @@
 
 /** One parsed line of the sidecar's newline-delimited JSON status stream. */
 export type TorSidecarEvent =
-  | { readonly event: "bootstrap"; readonly percent: number }
-  | { readonly event: "ready" }
+  | { readonly event: "bootstrap"; readonly percent: number; readonly bridgeInUse?: boolean }
+  | { readonly event: "ready"; readonly bridgeInUse?: boolean }
   | { readonly event: "error"; readonly message: string };
 
 export interface TorBootStatus {
@@ -24,6 +24,7 @@ export interface TorBootStatus {
   readonly slow: boolean;
   readonly percent: number;
   readonly errorMessage: string | null;
+  readonly bridgeInUse?: boolean;
 }
 
 /** A long bootstrap is still a live bootstrap. It changes the explanation on
@@ -31,7 +32,7 @@ export interface TorBootStatus {
 export const TOR_SLOW_AFTER_MS = 45_000;
 
 export function initialTorBootStatus(): TorBootStatus {
-  return { ready: false, failed: false, slow: false, percent: 0, errorMessage: null };
+  return { ready: false, failed: false, slow: false, percent: 0, errorMessage: null, bridgeInUse: false };
 }
 
 /**
@@ -76,10 +77,15 @@ export function parseTorSidecarLine(line: string): TorSidecarEvent | null {
   if (typeof parsed !== "object" || parsed === null) return null;
   const record = parsed as Record<string, unknown>;
   if (record.event === "bootstrap" && typeof record.percent === "number" && Number.isFinite(record.percent)) {
-    return { event: "bootstrap", percent: record.percent };
+    return record.bridge_in_use === true
+      ? { event: "bootstrap", percent: record.percent, bridgeInUse: true }
+      : { event: "bootstrap", percent: record.percent };
   }
-  if (record.event === "ready") return { event: "ready" };
-  if (record.event === "error" && typeof record.message === "string") return { event: "error", message: record.message };
+  if (record.event === "ready") return record.bridge_in_use === true ? { event: "ready", bridgeInUse: true } : { event: "ready" };
+  if (record.event === "error") {
+    const message = typeof record.message === "string" ? record.message : record.detail;
+    if (typeof message === "string") return { event: "error", message };
+  }
   return null;
 }
 
@@ -89,9 +95,9 @@ export function applyTorSidecarEvent(status: TorBootStatus, event: TorSidecarEve
   if (status.ready || status.failed) return status;
   if (event.event === "bootstrap") {
     const clamped = Math.min(100, Math.max(0, Math.trunc(event.percent)));
-    return { ...status, percent: clamped };
+    return { ...status, percent: clamped, bridgeInUse: event.bridgeInUse ?? status.bridgeInUse };
   }
-  if (event.event === "ready") return { ready: true, failed: false, slow: false, percent: 100, errorMessage: null };
+  if (event.event === "ready") return { ready: true, failed: false, slow: false, percent: 100, errorMessage: null, bridgeInUse: event.bridgeInUse ?? status.bridgeInUse };
   return { ...status, failed: true, errorMessage: event.message };
 }
 

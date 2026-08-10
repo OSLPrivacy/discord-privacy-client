@@ -62,6 +62,7 @@ async fn run(config: Config, sink: Arc<StatusSink>) -> i32 {
         pid: std::process::id(),
         dial_mode: config.dial_mode.as_str(),
         requested_listen: config.listen.to_string(),
+        bridge_in_use: config.bridge_config.is_some() || config.bridge_fixture.is_some(),
     });
 
     let listener = match TcpListener::bind(config.listen).await {
@@ -89,6 +90,11 @@ async fn run(config: Config, sink: Arc<StatusSink>) -> i32 {
         ip: local.ip().to_string(),
         port: local.port(),
     });
+    if config.dial_mode == crate::args::DialMode::Direct {
+        sink.emit(&StatusEvent::Ready {
+            bridge_in_use: false,
+        });
+    }
 
     let dialer = Arc::new(Dialer::new(&config));
     let conn_ids = AtomicU64::new(0);
