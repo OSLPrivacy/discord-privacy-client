@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TASK 5049 Friends Settings</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module">
+      import "../src/styles.css";
+      import "../src/friends-settings-surface.css";
+      import {
+        addSettingsFriend,
+        defaultFriendsSettingsState,
+        friendsSettingsSurfaceMarkup,
+        visibleAccountsFromServices,
+      } from "../src/friends-settings-surface.ts";
+
+      const escapeHtml = (value) => value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
+      let state = addSettingsFriend(defaultFriendsSettingsState(), "osl", { id: "alice", displayName: "Alice", address: "OSL…ALICE" });
+      state = addSettingsFriend(state, "oslChats", { id: "bob", displayName: "Bob", address: "@bob" });
+      state = { ...state, visibleAccountKeys: ["discord:main", "signal:phone"] };
+      const accounts = visibleAccountsFromServices([
+        { id: "discord", displayName: "Discord", accounts: [
+          { id: "main", label: "Main", displayHandle: "kestrel#0042", provider: null },
+          { id: "alt", label: "Alt", displayHandle: "kestrel_alt", provider: null },
+        ] },
+        { id: "signal", displayName: "Signal", accounts: [
+          { id: "phone", label: "Phone", displayHandle: "+1 ••• ••• 4417", provider: null },
+        ] },
+      ]);
+      document.querySelector("#app").innerHTML = `<main class="content-viewport settings-page"><nav class="settings-sidebar" aria-label="Settings"><h1>Settings</h1><button>Account</button><button>Apps</button><button class="active" aria-current="true">Friends</button><button>Scrub</button><button>Cleanup</button><button>Notifications</button><button>Appearance</button><button>About</button></nav><section class="settings-detail">${friendsSettingsSurfaceMarkup(state, { escapeHtml, accounts })}</section></main>`;
+      document.documentElement.dataset.fixtureReady = "task-5049";
+    </script>
+  </body>
+</html>

@@ -15,6 +15,7 @@
 export type SettingsHomeChoiceId =
   | "account"
   | "apps"
+  | "friends"
   | "privacy"
   | "whitelisting"
   | "scrub"
@@ -41,6 +42,11 @@ export const settingsHomeChoices: readonly SettingsHomeChoice[] = [
     id: "apps",
     label: "Apps and sending",
     explanation: "Which apps and accounts OSL may open, and how it sends your messages.",
+  },
+  {
+    id: "friends",
+    label: "Friends",
+    explanation: "Who you trust, who may contact you, and which accounts friends can see.",
   },
   {
     id: "privacy",
