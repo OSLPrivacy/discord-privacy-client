@@ -1,0 +1,1084 @@
+{
+  "schema": "osl-task-3734-account-notice-screen-tree-v1",
+  "url": "http://127.0.0.1:5173/screenshots/task-3734-account-notice-fixture.html?event=refund",
+  "screen": {
+    "title": "Account",
+    "event": "refund",
+    "noticeTitle": "Refund notice",
+    "notice": "OSL does not offer refunds. Your purchase and stored data are unchanged.",
+    "controls": [
+      "Contact support",
+      "Close"
+    ]
+  },
+  "axNodes": [
+    {
+      "role": "RootWebArea",
+      "name": "OSL Privacy - TASK 3734",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "generic",
+      "name": "",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "region",
+      "name": "Account",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "sectionheader",
+      "name": "",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "status",
+      "name": "Refund notice",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "list",
+      "name": "",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "region",
+      "name": "Save the account, or reset what is safe",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "navigation",
+      "name": "Account links",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "heading",
+      "name": "Account",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "paragraph",
+      "name": "",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "heading",
+      "name": "Refund notice",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "paragraph",
+      "name": "",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "generic",
+      "name": "Refund notice actions",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "listitem",
+      "name": "",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "listitem",
+      "name": "",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "listitem",
+      "name": "",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "listitem",
+      "name": "",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "listitem",
+      "name": "",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "listitem",
+      "name": "",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "listitem",
+      "name": "",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "button",
+      "name": "Save account",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "paragraph",
+      "name": "",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "button",
+      "name": "Reset safe settings",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "paragraph",
+      "name": "",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "status",
+      "name": "",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "StaticText",
+      "name": "Profile",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "StaticText",
+      "name": "Sign out",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "StaticText",
+      "name": "Delete account",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "StaticText",
+      "name": "Account",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "StaticText",
+      "name": "7 controls. The five that stand for a secret show that it is set and nothing else, and Reset is offered only where putting the control back costs nothing.",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "StaticText",
+      "name": "Refund notice",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "StaticText",
+      "name": "OSL does not offer refunds. Your purchase and stored data are unchanged.",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "button",
+      "name": "Contact support",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "button",
+      "name": "Close",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "StaticText",
+      "name": "Identity",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "StaticText",
+      "name": "Signed in as nora.vale.0324.",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "textbox",
+      "name": "Identity, the name this account shows to you",
+      "value": "Nora Vale",
+      "description": ""
+    },
+    {
+      "role": "button",
+      "name": "Reset Identity to your handle",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "StaticText",
+      "name": "Puts the shown name back to your handle. The handle itself does not change.",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "StaticText",
+      "name": "Password",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "StaticText",
+      "name": "Set, and last changed 12 January 2026. It is never shown, here or anywhere.",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "generic",
+      "name": "Password is set and is not shown",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "button",
+      "name": "Change password",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "StaticText",
+      "name": "No reset",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "StaticText",
+      "name": "There is no reset. OSL cannot read the password you have, so it cannot put it back, and clearing it would leave this workspace open to whoever opens the lid.",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "StaticText",
+      "name": "Recovery",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "StaticText",
+      "name": "12 words, written down 4 March 2026. Shown only on the recovery screen, after your password.",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "generic",
+      "name": "Recovery is set and is not shown",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "button",
+      "name": "Show recovery kit",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "StaticText",
+      "name": "No reset",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "StaticText",
+      "name": "There is no reset. A new kit makes the words you already wrote down useless, and the old ones cannot be brought back.",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "StaticText",
+      "name": "Lock",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "StaticText",
+      "name": "Locks this workspace when you step away from it.",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "combobox",
+      "name": "Lock this workspace after",
+      "value": "After 30 minutes",
+      "description": ""
+    },
+    {
+      "role": "button",
+      "name": "Reset Lock to after 5 minutes",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "StaticText",
+      "name": "Puts the lock delay back to five minutes. Nothing else changes.",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "StaticText",
+      "name": "Stealth",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "StaticText",
+      "name": "Set. Entered at sign in, it opens an empty workspace.",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "generic",
+      "name": "Stealth is set and is not shown",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "button",
+      "name": "Change stealth password",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "button",
+      "name": "Reset Stealth to off",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "StaticText",
+      "name": "Clears the stealth password. The stealth workspace holds no messages, so nothing is lost.",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "StaticText",
+      "name": "Burn password",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "StaticText",
+      "name": "Set. Entered at sign in, it permanently erases OSL data from this device. No recovery.",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "generic",
+      "name": "Burn password is set and is not shown",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "button",
+      "name": "Change burn password",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "button",
+      "name": "Reset Burn password to off",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "StaticText",
+      "name": "Clears the burn password, so it can never be typed in by accident. It erases nothing.",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "StaticText",
+      "name": "Pro code",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "StaticText",
+      "name": "Pro, this device, entered 18 February 2026. The code is never shown again.",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "generic",
+      "name": "Pro code is set and is not shown",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "button",
+      "name": "Replace Pro code",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "StaticText",
+      "name": "No reset",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "StaticText",
+      "name": "There is no reset. Removing the code puts this device back to free, and OSL cannot show you the code again to put it back.",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "StaticText",
+      "name": "Save account",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "StaticText",
+      "name": "Keeps the identity and lock changes, and any control you reset.",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "StaticText",
+      "name": "Reset safe settings",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "StaticText",
+      "name": "Puts back only what can be put back: identity, lock, stealth, burn password.",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "StaticText",
+      "name": "All 7 account controls saved.",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "Profile",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "Sign out",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "Delete account",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "Account",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "7 controls. The five that stand for a secret show that it is set and nothing else, and Reset is offered ",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "only where putting the control back costs nothing.",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "Refund notice",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "OSL does not offer refunds. Your purchase and stored data are unchanged.",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "StaticText",
+      "name": "Contact support",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "StaticText",
+      "name": "Close",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "Identity",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "Signed in as nora.vale.0324.",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "generic",
+      "name": "",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "StaticText",
+      "name": "Reset",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "Puts the shown name back to your ",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "handle. The handle itself does not ",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "change.",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "Password",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "Set, and last changed 12 January 2026. It is never ",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "shown, here or anywhere.",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "StaticText",
+      "name": "••••••••••••",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "StaticText",
+      "name": "Change password",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "No reset",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "There is no reset. OSL cannot read the ",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "password you have, so it cannot put it ",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "back, and clearing it would leave this ",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "workspace open to whoever opens the ",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "lid.",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "Recovery",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "12 words, written down 4 March 2026. Shown only on ",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "the recovery screen, after your password.",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "StaticText",
+      "name": "••••••••••••",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "StaticText",
+      "name": "Show recovery kit",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "No reset",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "There is no reset. A new kit makes the ",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "words you already wrote down useless, ",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "and the old ones cannot be brought ",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "back.",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "Lock",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "Locks this workspace when you step away from it.",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "MenuListPopup",
+      "name": "",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "StaticText",
+      "name": "Reset",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "Puts the lock delay back to five minutes. ",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "Nothing else changes.",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "Stealth",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "Set. Entered at sign in, it opens an empty workspace.",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "StaticText",
+      "name": "••••••••••••",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "StaticText",
+      "name": "Change stealth password",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "StaticText",
+      "name": "Reset",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "Clears the stealth password. The stealth ",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "workspace holds no messages, so ",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "nothing is lost.",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "Burn password",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "Set. Entered at sign in, it permanently erases OSL ",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "data from this device. No recovery.",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "StaticText",
+      "name": "••••••••••••",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "StaticText",
+      "name": "Change burn password",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "StaticText",
+      "name": "Reset",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "Clears the burn password, so it can never ",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "be typed in by accident. It erases ",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "nothing.",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "Pro code",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "Pro, this device, entered 18 February 2026. The code ",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "is never shown again.",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "StaticText",
+      "name": "••••••••••••",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "StaticText",
+      "name": "Replace Pro code",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "No reset",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "There is no reset. Removing the code ",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "puts this device back to free, and OSL ",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "cannot show you the code again to put it ",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "back.",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "Save account",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "Keeps the identity and lock changes, and any control you reset.",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "Reset safe settings",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "Puts back only what can be put back: identity, lock, stealth, burn password.",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "All 7 account controls saved.",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "Contact support",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "Close",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "StaticText",
+      "name": "Nora Vale",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "Reset",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "••••••••••••",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "Change password",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "••••••••••••",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "Show recovery kit",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "option",
+      "name": "After 1 minute",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "option",
+      "name": "After 5 minutes",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "option",
+      "name": "After 15 minutes",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "option",
+      "name": "After 30 minutes",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "option",
+      "name": "After 1 hour",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "Reset",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "••••••••••••",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "Change stealth password",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "Reset",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "••••••••••••",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "Change burn password",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "Reset",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "••••••••••••",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "Replace Pro code",
+      "value": "",
+      "description": ""
+    },
+    {
+      "role": "InlineTextBox",
+      "name": "Nora Vale",
+      "value": "",
+      "description": ""
+    }
+  ]
+}
