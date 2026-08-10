@@ -130,6 +130,9 @@ pub mod native_discord_adapter;
 #[cfg(feature = "core")]
 pub mod native_outlook_adapter;
 pub mod native_signal_adapter;
+/// Bounded lifecycle commands for protected Signal rows.  These commands are
+/// intentionally separate from the placement-only native Signal adapter.
+pub mod signal_lifecycle_commands;
 pub mod signal_surface_finder;
 pub mod native_telegram_adapter;
 pub mod native_whatsapp_adapter;
