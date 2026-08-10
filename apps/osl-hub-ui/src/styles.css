@@ -1,3 +1,5 @@
+@import "./fonts.css";
+
 :root {
   --font-ui: "Inter Variable", Inter, "Segoe UI Variable Text", "Segoe UI", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
   --font-display: "Inter Variable", Inter, "Segoe UI Variable Display", "Segoe UI", ui-sans-serif, system-ui, sans-serif;

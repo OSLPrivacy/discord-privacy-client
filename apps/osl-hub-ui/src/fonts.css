@@ -1,0 +1,16 @@
+/* Local brand-body faces: no provider request is needed at runtime. */
+@font-face {
+  font-family: "Source Sans 3 Variable";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("./fonts/source-sans-3-400.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Source Sans 3 Variable";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("./fonts/source-sans-3-600.woff2") format("woff2");
+}
