@@ -23,10 +23,6 @@ impl AttachmentAccountTier {
         }
     }
 
-    pub const fn max_bytes_per_file(self) -> u64 {
-        self.max_attachment_bytes()
-    }
-
     pub const fn label(self) -> &'static str {
         match self {
             Self::Free => "Free",

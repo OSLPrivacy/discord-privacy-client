@@ -66,6 +66,16 @@ pub fn record_recovery_word_confirmation(
     current: String,
     entries: Vec<ipc::main_password::RecoveryWordEntry>,
 ) -> Result<RecoverySetupState, String> {
+    let entries = entries
+        .into_iter()
+        .map(|entry| {
+            Ok(ipc::commands::RecoveryWordRetypeEntryDto {
+                position: u8::try_from(entry.position)
+                    .map_err(|_| "OSL recovery-word position is invalid".to_owned())?,
+                word: entry.word,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
     let check = ipc::commands::cmd_osl_check_recovery_words(current, entries)?;
     if !check.ok {
         return Err("OSL recovery-word confirmation did not match".to_owned());

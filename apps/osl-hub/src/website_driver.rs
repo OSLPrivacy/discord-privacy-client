@@ -1741,6 +1741,71 @@ fn email_send_expression(recipient: &str, body: Option<&str>, should_send: bool)
     )
 }
 
+const PLACE_TEXT_EXPRESSION: &str = r#"
+(() => {
+  const text = __OSL_TEXT__;
+  const compact = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+  const visible = (element) => {
+    if (!element || element.hidden || element.getAttribute('aria-hidden') === 'true') return false;
+    const style = window.getComputedStyle(element);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse' || style.opacity === '0') return false;
+    return element.getClientRects().length > 0;
+  };
+  const labelledBy = (element) => compact(
+    (element.getAttribute('aria-labelledby') || '')
+      .split(/\s+/)
+      .map((id) => document.getElementById(id))
+      .filter(Boolean)
+      .map((label) => label.innerText || label.textContent || '')
+      .join(' ')
+  );
+  const controlName = (element) => {
+    const candidates = [
+      element.getAttribute('aria-label'),
+      labelledBy(element),
+      element.getAttribute('title'),
+      element.getAttribute('placeholder'),
+      element.getAttribute('name'),
+      element.id
+    ];
+    for (const candidate of candidates) {
+      const name = compact(candidate);
+      if (name) return name;
+    }
+    return '';
+  };
+  const editable = (element) => {
+    if (element.disabled || element.readOnly || element.getAttribute('aria-disabled') === 'true') return false;
+    if (element.isContentEditable) return true;
+    const tag = element.tagName.toLowerCase();
+    if (tag === 'textarea') return true;
+    if (tag !== 'input') return element.getAttribute('role') === 'textbox' || element.getAttribute('role') === 'searchbox';
+    const type = (element.getAttribute('type') || 'text').toLowerCase();
+    return !['button', 'checkbox', 'color', 'file', 'hidden', 'image', 'radio', 'range', 'reset', 'submit'].includes(type);
+  };
+  const read = (element) => element.isContentEditable ? (element.innerText || element.textContent || '') : String(element.value || '');
+  const write = (element) => {
+    element.focus();
+    if (element.isContentEditable) {
+      element.textContent = text;
+    } else {
+      element.value = text;
+    }
+    element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+    element.dispatchEvent(new Event('change', { bubbles: true }));
+    return read(element);
+  };
+  const matches = [];
+  for (const element of document.querySelectorAll('input, textarea, [contenteditable=""], [contenteditable="true"], [role="textbox"], [role="searchbox"]')) {
+    if (!visible(element) || !editable(element)) continue;
+    matches.push(element);
+  }
+  if (matches.length !== 1) return { placed: false, readback: '', editable_name: '' };
+  const readback = write(matches[0]);
+  return { placed: readback === text, readback, editable_name: controlName(matches[0]) };
+})()
+"#;
+
 const CLICK_NAMED_CONTROL_EXPRESSION: &str = r#"
 (() => {
   const wanted = __OSL_CONTROL_NAME__;

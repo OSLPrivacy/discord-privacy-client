@@ -36,6 +36,7 @@ use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
 pub enum NativeAppId {
     Discord,
     Telegram,
+    Instagram,
     Signal,
     Whatsapp,
     Outlook,
@@ -593,6 +594,18 @@ const NATIVE_APPS: &[NativeAppManifest] = &[
         store_package_family_name: None,
     },
     NativeAppManifest {
+        id: NativeAppId::Instagram,
+        display_name: "Instagram",
+        adapter_service: AdapterService::Instagram,
+        adapter_surface: AdapterSurface::FixedOfficialWebOrigin,
+        adapter_support: SupportLevel::ComingSoon,
+        package_id: "",
+        package_source: "unavailable",
+        candidates: INSTAGRAM_CANDIDATES,
+        publisher: None,
+        store_package_family_name: None,
+    },
+    NativeAppManifest {
         id: NativeAppId::Whatsapp,
         display_name: "WhatsApp",
         adapter_service: AdapterService::Whatsapp,
@@ -814,9 +827,10 @@ fn manifest(id: NativeAppId) -> &'static NativeAppManifest {
         NativeAppId::Discord => &NATIVE_APPS[0],
         NativeAppId::Telegram => &NATIVE_APPS[1],
         NativeAppId::Signal => &NATIVE_APPS[2],
-        NativeAppId::Whatsapp => &NATIVE_APPS[3],
-        NativeAppId::Outlook => &NATIVE_APPS[4],
-        NativeAppId::X => &NATIVE_APPS[5],
+        NativeAppId::Instagram => &NATIVE_APPS[3],
+        NativeAppId::Whatsapp => &NATIVE_APPS[4],
+        NativeAppId::Outlook => &NATIVE_APPS[5],
+        NativeAppId::X => &NATIVE_APPS[6],
     }
 }
 
@@ -850,6 +864,7 @@ pub(crate) const fn claim_surface(id: NativeAppId) -> crate::claim_state::Surfac
     match id {
         NativeAppId::Discord => Surface::Discord,
         NativeAppId::Telegram => Surface::Telegram,
+        NativeAppId::Instagram => Surface::Instagram,
         NativeAppId::Signal => Surface::Signal,
         NativeAppId::Whatsapp => Surface::Whatsapp,
         NativeAppId::Outlook => Surface::OutlookDesktop,
@@ -879,6 +894,7 @@ fn native_app_protected_mode(id: NativeAppId) -> NativeAppProtectedMode {
     match id {
         NativeAppId::Discord => NativeAppProtectedMode::AssistOnly,
         NativeAppId::Telegram
+        | NativeAppId::Instagram
         | NativeAppId::Signal
         | NativeAppId::Whatsapp
         | NativeAppId::Outlook
@@ -968,7 +984,10 @@ fn list_native_apps_with_claims_and_installer_probe(
     {
         for status in &mut statuses {
             if status.availability == NativeAppAvailability::Unavailable
-                && !matches!(status.id, NativeAppId::Outlook | NativeAppId::X)
+                && !matches!(
+                    status.id,
+                    NativeAppId::Outlook | NativeAppId::Instagram | NativeAppId::X
+                )
             {
                 status.availability = NativeAppAvailability::Installable;
             }
@@ -1333,7 +1352,10 @@ pub fn install_native_app(id: NativeAppId) -> Result<NativeInstallResult, String
     #[cfg(target_os = "windows")]
     {
         let app = manifest(id);
-        if matches!(id, NativeAppId::Outlook | NativeAppId::X) {
+        if matches!(
+            id,
+            NativeAppId::Outlook | NativeAppId::Instagram | NativeAppId::X
+        ) {
             return Err("This app is not installable by OSL Privacy".to_owned());
         }
         let winget = installer_executable()

@@ -679,9 +679,6 @@ pub mod native_surface_capture;
 #[cfg(not(task3982_focused))]
 pub mod hub_command_surface;
 pub mod imap_verify;
-#[cfg(feature = "core")]
-#[cfg(not(task3982_focused))]
-pub mod runtime_switches;
 #[cfg(not(task3982_focused))]
 pub mod scrub_imap;
 #[cfg(feature = "core")]

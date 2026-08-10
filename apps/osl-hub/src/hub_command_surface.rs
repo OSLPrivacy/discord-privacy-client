@@ -473,9 +473,12 @@ pub fn service_kind_id(kind: ServiceKind) -> &'static str {
     match kind {
         ServiceKind::Discord => "discord",
         ServiceKind::Telegram => "telegram",
+        ServiceKind::Instagram => "instagram",
         ServiceKind::WhatsApp => "whatsapp",
+        ServiceKind::Messenger => "messenger",
         ServiceKind::Email => "email",
         ServiceKind::Signal => "signal",
+        ServiceKind::X => "x",
     }
 }
 

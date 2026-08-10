@@ -665,7 +665,6 @@ pub enum ServiceKind {
     Email,
     Signal,
     X,
-    Messenger,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Eq, Hash, PartialEq, Serialize)]

@@ -56,9 +56,6 @@ pub fn list_bad_message_rules() -> Vec<BadMessageRuleChoice> {
 // The scanner can suggest matches, but the stored decision remains a possible
 // match so downstream deletion/review flows cannot treat a rule hit as proof.
 
-use serde::Deserialize;
-use std::path::{Path, PathBuf};
-
 const STORE_DIR: &str = "bad-message-rules-v1";
 const MAX_RUN_ID_BYTES: usize = 64;
 const MAX_RULE_ID_BYTES: usize = 64;

@@ -801,6 +801,12 @@ pub const fn landing_profile(provider: NativeAppId) -> ProfileLookup {
             missing: "Outlook exists as a native desktop variant and a web surface; whether \
                       one composer shape serves both is a measurement nobody has taken.",
         },
+        NativeAppId::X => ProfileLookup::Unmeasured {
+            provider,
+            missing: "X is catalogue-only at its fixed web origin until its own browser \
+                      reader and watched send-permission proofs pass; no native landing \
+                      profile is available.",
+        },
     }
 }
 

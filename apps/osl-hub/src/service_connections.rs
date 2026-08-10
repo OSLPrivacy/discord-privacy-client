@@ -993,7 +993,7 @@ impl EmailServiceConnection {
 
     pub fn request_compose_controls(
         &self,
-        driver: &impl WebsiteDriver,
+        driver: &mut impl WebsiteDriver,
         page: &WebsitePage,
     ) -> Result<EmailComposeControls, ServiceConnectionError> {
         if self.service_id != "email" {
@@ -1119,7 +1119,7 @@ mod tests {
         let connection = EmailServiceConnection::new("email", "sample-email-account");
 
         let controls = connection
-            .request_compose_controls(&driver, &page)
+            .request_compose_controls(&mut driver, &page)
             .expect("sample email service connection receives fixture controls");
         let requested_names = driver.requested_names();
 

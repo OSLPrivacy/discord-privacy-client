@@ -2604,7 +2604,7 @@ pub fn apply_scoped_trust_grant(
         .manual_approved_scope_people
         .insert(grant.storage_key().to_owned(), grant.person_id().to_owned());
     let defaults = ipc::app_preferences::load_app_preferences(&dir.join("app_preferences.json"));
-    if defaults.new_friend_account_reach
+    if defaults.new_friend_defaults.account_reach
         == ipc::app_preferences::NewFriendAccountReach::AllSharedChats
     {
         prefs
@@ -2630,9 +2630,9 @@ fn apply_new_friend_defaults_to_people(
     let Some(metadata) = people.people.get_mut(person_id) else {
         return Err("OSL friend is unknown".to_owned());
     };
-    metadata.auto_whitelist = defaults.new_friend_auto_whitelist;
+    metadata.auto_whitelist = defaults.new_friend_defaults.auto_whitelist;
     metadata.auto_whitelist_future_accounts = matches!(
-        defaults.new_friend_auto_whitelist,
+        defaults.new_friend_defaults.auto_whitelist,
         ipc::auto_whitelist_rules::AutoWhitelistChoice::Always
     );
     write_encrypted_json(&path, &people)

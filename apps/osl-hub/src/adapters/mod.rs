@@ -402,7 +402,7 @@ pub(crate) fn same_scope_and_message_box(
     same_scope(
         &binding.scope_binding_hash,
         authorization.scope_binding_hash(),
-    ) && authorization.message_box_matches(binding.app)
+    ) && authorization.message_box_matches(binding.app.clone())
 }
 
 /// Whether binding evidence is strong enough to authorize an L3 send.

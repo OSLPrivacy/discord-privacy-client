@@ -272,12 +272,12 @@ impl ParsedArgs {
     }
 
     fn record(&self) -> Result<AllowedPlaceRecord, String> {
-        Ok(AllowedPlaceRecord {
-            app: self.required("app")?,
-            account: self.required("account")?,
-            kind: self.required("kind")?,
-            stable_id: self.required("stable-id")?,
-        })
+        Ok(AllowedPlaceRecord::from_parts(
+            self.required("app")?,
+            self.required("account")?,
+            self.required("kind")?,
+            self.required("stable-id")?,
+        ))
     }
 
     fn query(&self) -> Result<AllowedPlaceQuery, String> {
