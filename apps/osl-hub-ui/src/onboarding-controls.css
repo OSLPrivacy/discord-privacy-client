@@ -48,26 +48,26 @@
 .osl-toggle-track {
   position: relative;
   display: block;
-  width: 38px;
-  height: 21px;
-  border-radius: 11px;
+  width: 34px;
+  height: 18px;
+  border-radius: 0;
   background: var(--osl-setup-line);
   transition: background-color .2s;
 }
 
 .osl-toggle-knob {
   position: absolute;
-  top: 2.5px;
-  left: 3px;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 0;
   background: var(--osl-setup-text);
   transition: left .2s;
 }
 
 .osl-toggle input:checked + .osl-toggle-track { background: var(--osl-setup-accent); }
-.osl-toggle input:checked + .osl-toggle-track .osl-toggle-knob { left: 19px; }
+.osl-toggle input:checked + .osl-toggle-track .osl-toggle-knob { left: 18px; }
 .osl-toggle input:focus-visible + .osl-toggle-track { outline: 2px solid var(--osl-setup-accent); outline-offset: 2px; }
 
 @media (prefers-reduced-motion: reduce) {

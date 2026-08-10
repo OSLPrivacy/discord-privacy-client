@@ -11079,12 +11079,12 @@ code {
    which is exactly how it rendered under the rule above. The knob is a disc and
    the track is the slot it slides in; neither is a rounded rectangle, so this is
    the same carve-out the discs above get, for the same reason. */
-.osl-toggle-track { border-radius: 11px !important; }
+.osl-toggle-track { border-radius: 0 !important; }
 
 
 
 
-.osl-toggle-knob { border-radius: 50% !important; }
+.osl-toggle-knob { border-radius: 0 !important; }
 
 
 

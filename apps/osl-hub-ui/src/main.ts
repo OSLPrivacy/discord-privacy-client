@@ -34,7 +34,7 @@ import { chooseTorRoute, initialTorOnboardingState, onboardingTorMarkup, type To
 import { chooseCoverInsertion, initialCoverInsertionChoice, onboardingCoverMarkup, type CoverInsertionChoice } from "./onboarding-cover";
 import { chooseSilentVisibleMode, onboardingSilentVisibleMarkup, type SilentVisibleMode } from "./onboarding-silent-visible";
 import { onboardingCaptureVisibilityMarkup } from "./onboarding-capture-visibility";
-import { continueButton } from "./onboarding-controls";
+import { continueButton, onOffToggle } from "./onboarding-controls";
 import { identityChoiceMarkup, privateContactLinkMarkup, type IdentityDiscoveryChoice } from "./onboarding-identity";
 import { CLEAN_FILES_CHOICES, initialBeforeSendChecks, onboardingBeforeSendMarkup, type BeforeSendChecks, type CleanFilesChoice } from "./onboarding-before-send";
 import { firstTimedDeleteWarningMarkup, initialDeleteChoices, onboardingDeleteMarkup, timedDeleteContinueAllowed, type DeleteChoices } from "./onboarding-delete";
@@ -1300,10 +1300,10 @@ export function readRnWirePolicyRequested(storage: Pick<Storage, "getItem"> = lo
 }
 
 export function rnWirePolicySettingsMarkup(state: RnWirePolicyState): string {
-  const checked = state.effectiveEnabled ? "checked" : "";
   const disabled = state.buildEnabled ? "" : "disabled";
   const summary = state.effectiveEnabled ? "On" : state.refusal === "build-disabled" ? "Unavailable in this build" : "Off";
-  return `<details class="settings-disclosure" data-rn-wire-policy><summary><span><strong>Advanced message format</strong><small>${summary}</small></span></summary><label class="setting-line interactive"><span><strong>Use next-generation protected messages</strong><small>OSL keeps using the current message format unless this build and this setting both allow the newer one.</small></span><input id="rn-wire-policy-toggle" type="checkbox" ${checked} ${disabled}/></label></details>`;
+  const toggle = onOffToggle("rn-wire-policy-toggle", state.effectiveEnabled, "Use next-generation protected messages").replace("<input ", `<input ${disabled ? "disabled " : ""}`);
+  return `<details class="settings-disclosure" data-rn-wire-policy><summary><span><strong>Advanced message format</strong><small>${summary}</small></span></summary><label class="setting-line interactive"><span><strong>Use next-generation protected messages</strong><small>OSL keeps using the current message format unless this build and this setting both allow the newer one.</small></span><span class="rn-wire-policy-toggle${disabled ? " is-disabled" : ""}">${toggle}</span></label></details>`;
 }
 
 function validOpaqueSelection(accountId: string, selectedMessageIds: readonly string[]): boolean {
