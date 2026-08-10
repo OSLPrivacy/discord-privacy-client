@@ -62,7 +62,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Barrier, Mutex, OnceLock};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use store::MessageStore;
 
 /// OSL chat and the native Discord overlay do not consume carrier flagtext on
@@ -1546,6 +1546,12 @@ fn first_party_osl_chat_reopen_backfills_waiting_rows_in_order_without_push() {
     let alice = Peer::new(&storage, "alice-chat-backfill", &relay_url, "a1a17777");
     let bob = Peer::new(&storage, "bob-chat-backfill", &relay_url, "b2b27777");
     alice.open_osl_chat_context_to(&bob.friend_code);
+    // Sending a private OSL Chat requires the persisted sender acknowledgement
+    // just as the production composer does.  The receiver needs no agreement
+    // to open the resulting private rows.
+    alice.activate();
+    save_messaging_risk_agreement(&alice.identity_id, "discord", &alice.account_id)
+        .expect("save OSL Chat sender risk agreement");
     let bob_person_id = bob.open_osl_chat_context_to(&alice.friend_code);
     let _bob_history_dir = bob.open_history_store("backfill");
     let store_client = ipc::cipher_store_client::CipherStoreClient::new(relay_url.clone())
@@ -1555,7 +1561,12 @@ fn first_party_osl_chat_reopen_backfills_waiting_rows_in_order_without_push() {
     const ONE: &str = "OSL Chat reopen backfill fixture one";
     const TWO: &str = "OSL Chat reopen backfill fixture two";
     const THREE: &str = "OSL Chat reopen backfill fixture three";
+    // Gate 4063 measured the pre-existing catch-up cadence at four seconds.
+    // This end-to-end receive check uses the same upper bound, but measures the
+    // actual send-to-shown path rather than relying on scheduler-only timing.
+    const PRE_WORK_SEND_TO_SHOWN_MAX_MS: u128 = 4_000;
     let mut prepared_ids = Vec::new();
+    let send_started = Instant::now();
     for fixture in [ONE, TWO, THREE] {
         alice.activate();
         let prepared = prepare_osl_chat_text_with_route_clients(
@@ -1605,6 +1616,18 @@ fn first_party_osl_chat_reopen_backfills_waiting_rows_in_order_without_push() {
             .eq([ONE, TWO, THREE]),
         "the reopen sweep decrypts byte-identical plaintexts"
     );
+    let send_to_shown_ms = send_started.elapsed().as_millis();
+    assert!(
+        send_to_shown_ms <= PRE_WORK_SEND_TO_SHOWN_MAX_MS,
+        "three-message OSL Chat receive must be no slower than the pre-work four-second cadence"
+    );
+    println!("TASK4125_PRIVATE_MESSAGES_SENT=3");
+    println!("TASK4125_EXACT_MATCH_1={ONE}");
+    println!("TASK4125_EXACT_MATCH_2={TWO}");
+    println!("TASK4125_EXACT_MATCH_3={THREE}");
+    println!("TASK4125_EXACT_MATCH_COUNT=3");
+    println!("TASK4125_PRE_WORK_SEND_TO_SHOWN_MAX_MS={PRE_WORK_SEND_TO_SHOWN_MAX_MS}");
+    println!("TASK4125_SEND_TO_SHOWN_MS={send_to_shown_ms}");
     assert_eq!(
         opened.deferred_rows, 0,
         "the happy-path reopen has no deferred receive debt"
