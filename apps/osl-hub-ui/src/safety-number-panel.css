@@ -1,0 +1,22 @@
+/* TASK 5068 — compact verification card, aligned with the dark OSL verify surface. */
+.safety-number-panel { display: grid; gap: 22px; max-width: 700px; padding: 28px; border: 1px solid var(--line, #303846); border-radius: 18px; background: var(--panel, #151a22); color: var(--text, #f3f6fb); font-family: var(--font-ui, Inter, sans-serif); box-shadow: 0 18px 48px rgb(0 0 0 / 18%); }
+.safety-number-panel-header { display: grid; gap: 6px; }
+.safety-number-panel-header p, .safety-number-person { margin: 0; }
+.safety-number-eyebrow { color: var(--brand, #8fa8ff); font-size: 12px; font-weight: 700; letter-spacing: .09em; text-transform: uppercase; }
+.safety-number-panel h1 { margin: 0; font-family: var(--font-display, Onest, sans-serif); font-size: 26px; letter-spacing: -.035em; }
+.safety-number-panel-header p:last-child { max-width: 57ch; color: var(--muted, #aab3c2); font-size: 14px; line-height: 1.5; }
+.safety-number-content { display: grid; grid-template-columns: minmax(0, 1fr) 178px; gap: 26px; align-items: center; padding: 20px; border: 1px solid var(--line-soft, #252d39); border-radius: 14px; background: var(--panel-2, #10151d); }
+.safety-number-reading { display: grid; gap: 13px; }
+.safety-number-person { color: var(--muted, #aab3c2); font-size: 13px; font-weight: 600; }
+.safety-number-groups { display: grid; grid-template-columns: repeat(3, max-content); gap: 10px 13px; font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace); font-size: 17px; font-weight: 650; letter-spacing: .08em; }
+.safety-number-group { padding: 5px 7px; border-radius: 6px; background: rgb(143 168 255 / 9%); }
+.safety-number-code { width: 178px; height: 178px; padding: 9px; overflow: visible; border-radius: 12px; background: #fff; fill: #10151d; }
+.safety-number-code-background { fill: #fff; }
+.safety-number-actions { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.safety-number-status { color: var(--muted, #aab3c2); font-size: 13px; font-weight: 650; }
+.safety-number-panel[data-verified="true"] .safety-number-status { color: #72d39d; }
+.safety-number-confirm { min-height: 40px; padding: 0 16px; border: 0; border-radius: 9px; background: var(--brand, #8fa8ff); color: #0d1220; font: inherit; font-size: 13px; font-weight: 750; cursor: pointer; }
+.safety-number-confirm:hover:not(:disabled) { filter: brightness(1.08); }
+.safety-number-confirm:focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
+.safety-number-confirm:disabled { cursor: default; opacity: .55; }
+@media (max-width: 560px) { .safety-number-panel { padding: 20px; } .safety-number-content { grid-template-columns: 1fr; } .safety-number-code { width: 156px; height: 156px; } .safety-number-groups { grid-template-columns: repeat(2, max-content); } }
