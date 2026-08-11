@@ -78,6 +78,7 @@ message-lifecycle = { path = "../message-lifecycle" }
 # Sender-key rotation policy is stateful per scope and is consulted by the
 # shipping v=5 group-send path before it encrypts content.
 runtime = { path = "../runtime" }
+osl-english-catalogue = { path = "../english-catalogue" }
 
 [dev-dependencies]
 tempfile = "=3.13"

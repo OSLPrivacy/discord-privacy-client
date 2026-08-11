@@ -28,6 +28,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 url = "2.5"
 uuid = { version = "1.23", features = ["v4"] }
+osl-english-catalogue = { path = "../../crates/english-catalogue" }
 
 [dev-dependencies]
 tempfile = "3.24"

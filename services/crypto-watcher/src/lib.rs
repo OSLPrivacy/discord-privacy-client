@@ -29,6 +29,8 @@ use std::{
 use thiserror::Error;
 use url::Url;
 
+pub mod english_catalogue_entry;
+
 type HmacSha256 = Hmac<Sha256>;
 const MAX_INVOICE_RETENTION_SECONDS: i64 = 7 * 24 * 60 * 60;
 

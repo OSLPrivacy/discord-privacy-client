@@ -1,0 +1,21 @@
+[package]
+name = "task-5205-catalogue"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+osl-english-catalogue = { path = "../../crates/english-catalogue" }
+serde_json = "=1.0.149"
+
+[[bin]]
+name = "task-5205"
+path = "src/bin/task_5205.rs"
+
+[[bin]]
+name = "task-5205b"
+path = "src/bin/task_5205b.rs"
+
+[workspace]
+resolver = "2"

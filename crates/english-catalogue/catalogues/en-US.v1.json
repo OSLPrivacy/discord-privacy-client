@@ -1,0 +1,43 @@
+{
+  "schema": "osl.english-catalogue.v1",
+  "version": "2026.08.1",
+  "locale": "en-US",
+  "entries": [
+    {
+      "key": "welcome.title",
+      "value": "Welcome to OSL"
+    },
+    {
+      "key": "welcome.body",
+      "value": "Private chat starts here."
+    },
+    {
+      "key": "welcome.primary_button",
+      "value": "Create account"
+    },
+    {
+      "key": "common.action.cancel",
+      "value": "Cancel"
+    },
+    {
+      "key": "common.action.close",
+      "value": "Close"
+    },
+    {
+      "key": "common.action.continue",
+      "value": "Continue"
+    },
+    {
+      "key": "windows.catalogue.loaded",
+      "value": "Loaded English catalogue {version} for {caller}."
+    },
+    {
+      "key": "service.catalogue.loaded",
+      "value": "Loaded English catalogue {version} for {caller}."
+    },
+    {
+      "key": "service.status.ready",
+      "value": "OSL services are ready."
+    }
+  ]
+}

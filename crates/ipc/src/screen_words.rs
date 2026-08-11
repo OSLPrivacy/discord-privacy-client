@@ -1,8 +1,6 @@
+use osl_english_catalogue::EnglishCatalogue;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-
-const EN_WORDS: &str = include_str!("screen_words/en.json");
-const ES_WORDS: &str = include_str!("screen_words/es.json");
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ScreenWords {
@@ -19,34 +17,37 @@ pub fn normalize_language(language: &str) -> Result<&'static str, String> {
         .as_str()
     {
         "en" | "en-us" | "english" => Ok("en"),
-        "es" | "es-es" | "es-mx" | "spanish" | "espanol" => Ok("es"),
         _ => Err(format!(
-            "OSL: no screen words file for language {language:?}"
+            "OSL: English is the only registered interface catalogue; language {language:?} refused"
         )),
-    }
-}
-
-fn words_file(language: &str) -> Result<&'static str, String> {
-    match normalize_language(language)? {
-        "en" => Ok(EN_WORDS),
-        "es" => Ok(ES_WORDS),
-        other => Err(format!("OSL: no screen words file for language {other:?}")),
     }
 }
 
 pub fn load_screen_words(language: &str, screen: &str) -> Result<ScreenWords, String> {
     let language = normalize_language(language)?;
-    let raw = words_file(language)?;
-    let screens: BTreeMap<String, BTreeMap<String, String>> = serde_json::from_str(raw)
-        .map_err(|e| format!("OSL: parse screen words file for {language}: {e}"))?;
+    let catalogue = EnglishCatalogue::packaged("ipc.screen_words").map_err(|e| e.to_string())?;
     let screen = screen.trim();
     if screen.is_empty() {
         return Err("OSL: screen is empty".to_string());
     }
-    let words = screens
-        .get(screen)
-        .cloned()
-        .ok_or_else(|| format!("OSL: no words for screen {screen:?} in language {language}"))?;
+    if screen != "welcome" {
+        return Err(format!(
+            "OSL: no words for screen {screen:?} in language {language}"
+        ));
+    }
+    let words = [
+        ("title", "welcome.title"),
+        ("body", "welcome.body"),
+        ("primary_button", "welcome.primary_button"),
+    ]
+    .into_iter()
+    .map(|(field, key)| {
+        catalogue
+            .resolve(key, std::iter::empty::<(&str, &str)>())
+            .map(|resolved| (field.to_owned(), resolved.value))
+            .map_err(|error| error.to_string())
+    })
+    .collect::<Result<BTreeMap<_, _>, _>>()?;
     Ok(ScreenWords {
         language: language.to_string(),
         screen: screen.to_string(),

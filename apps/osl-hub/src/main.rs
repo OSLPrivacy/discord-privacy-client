@@ -9722,6 +9722,16 @@ fn build_integrity_status(state: tauri::State<'_, BuildIntegrity>) -> BuildInteg
     *state.inner()
 }
 
+#[tauri::command]
+fn resolve_english_catalogue_string(
+    catalogue: tauri::State<'_, osl_english_catalogue::EnglishCatalogue>,
+    key: String,
+    variables: std::collections::BTreeMap<String, String>,
+) -> Result<osl_english_catalogue::ResolvedString, String> {
+    catalogue
+        .resolve(&key, variables)
+        .map_err(|error| error.to_string())
+}
 macro_rules! hub_tauri_generate_handler {
     ($($(#[$meta:meta])* $command:ident),* $(,)?) => {
         tauri::generate_handler![$($(#[$meta])* $command,)*]
@@ -9765,7 +9775,14 @@ macro_rules! hub_tauri_command_names {
 
 #[cfg(feature = "signal-qa-shell")]
 fn main() {
-    let builder = tauri::Builder::default().setup(|app| {
+    let english_catalogue =
+        osl_privacy_hub::english_catalogue_entry::load_packaged_windows_catalogue()
+            .unwrap_or_else(|error| {
+                eprintln!("5205 Windows startup refusal: {error}");
+                std::process::exit(78);
+            });
+    let builder = tauri::Builder::default().setup(move |app| {
+        app.manage(english_catalogue);
         let profiles =
             osl_privacy_hub::adapter_profile_boot::load_verified_adapter_profiles_at_boot()
                 .map_err(|_| {
@@ -9788,6 +9805,7 @@ fn main() {
         focus_native_app_window,
         detach_native_app_window,
         get_signal_protected_send_readiness,
+        resolve_english_catalogue_string,
     ]);
     let app = builder
         .build(tauri::generate_context!("tauri.signal-qa.conf.json"))
@@ -9797,6 +9815,12 @@ fn main() {
 
 #[cfg(not(feature = "signal-qa-shell"))]
 fn main() {
+    let english_catalogue =
+        osl_privacy_hub::english_catalogue_entry::load_packaged_windows_catalogue()
+            .unwrap_or_else(|error| {
+                eprintln!("5205 Windows startup refusal: {error}");
+                std::process::exit(78);
+            });
     if let Some(exit_code) =
         osl_privacy_hub::allowed_place_commands::run_allowed_place_cli_from_env()
     {
@@ -9985,6 +10009,7 @@ fn main() {
     startup_breadcrumb("setup_before"); // STARTUP-TRACE
     let builder = builder.setup(|app| {
         startup_breadcrumb("setup_enter"); // STARTUP-TRACE
+        app.manage(english_catalogue);
         let profiles =
             osl_privacy_hub::adapter_profile_boot::load_verified_adapter_profiles_at_boot()
                 .map_err(|_| {

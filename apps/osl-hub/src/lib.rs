@@ -87,6 +87,7 @@ pub mod discord_carrier_geometry;
 #[cfg(feature = "desktop")]
 pub mod entitlement_refresh;
 pub mod execution_consent;
+pub mod english_catalogue_entry;
 pub mod external_overlay;
 pub(crate) mod firefox_migration_coordinator;
 pub mod front_window_grab;
