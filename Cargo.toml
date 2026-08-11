@@ -12,6 +12,7 @@ members = [
     "crates/selectors",
     "crates/ipc",
     "crates/message-lifecycle",
+    "crates/mail-prefilter-boundary",
     "crates/runtime",
     "crates/release-trust",
     "crates/sensitive-classify",
