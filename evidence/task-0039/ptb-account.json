@@ -1,0 +1,10 @@
+﻿{
+    "schema":  "osl.task0039.bounded-account-capture.v1",
+    "release_channel":  "PTB",
+    "process_name":  "DiscordPTB",
+    "account_id":  "osltest2",
+    "display_name":  "OSL TEST 2",
+    "root_origin":  "https://ptb.discord.com",
+    "bound":  "release-channel account panel only; no message content",
+    "png":  "ptb-account.png"
+}

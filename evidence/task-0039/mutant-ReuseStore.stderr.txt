@@ -1,0 +1,1 @@
+TASK0039_TOPOLOGY_FAIL Discord store reuse detected: expected 3 distinct stores, observed 2
