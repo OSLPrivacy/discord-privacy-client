@@ -27,6 +27,7 @@ mod mode0;
 mod mode1;
 mod mode1_templates;
 mod mode1_wordlists;
+pub mod paired_pointer;
 pub mod word_bank_grown;
 
 pub use image_hidden::{
@@ -60,6 +61,10 @@ pub use mode1::{
 };
 pub use mode1_templates::{
     SlotKind, BITS_PER_SENTENCE, SLOT_BITS, TEMPLATES_LEN, TEMPLATE_BITS, TOTAL_SLOTS,
+};
+pub use paired_pointer::{
+    CarrierCapture, PairPointerError, PairPointerProtocol, ProtectedRecord, RecordAddress,
+    POINTER_BYTES, SHIPPING_CARRIED_BITS,
 };
 
 use thiserror::Error;
