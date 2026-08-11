@@ -12,3 +12,7 @@ serde_json = { workspace = true }
 [[bin]]
 name = "audit-4350"
 path = "src/bin/audit_4350.rs"
+
+[[bin]]
+name = "audit-4351"
+path = "src/bin/audit_4351.rs"

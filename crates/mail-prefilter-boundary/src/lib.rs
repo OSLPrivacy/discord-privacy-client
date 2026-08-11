@@ -10,6 +10,12 @@ use std::fmt;
 pub const EVIDENCE_SCHEMA: &str = "osl-task-4350-live-evidence-v1";
 pub const PROCESS_ENTRY_BOUNDARY: &str =
     "mail-prefilter-boundary/raw-provider-response-before-serde-parsing";
+pub const FOLDER_EVIDENCE_SCHEMA: &str = "osl-task-4351-live-folder-evidence-v1";
+pub const FOLDER_ACCESS_BOUNDARY: &str =
+    "mail-prefilter-boundary/shipping-folder-guard-before-provider-access";
+/// The smallest folder set needed by the shipping receive path. The reader receives cover
+/// messages from Inbox only; sending mail does not require opening Sent.
+pub const SHIPPING_FOLDER_ALLOWLIST: [&str; 1] = ["Inbox"];
 pub const ALLOWED_MESSAGE_COUNT: usize = 5;
 pub const DISALLOWED_MESSAGE_COUNT: usize = 15;
 
@@ -301,13 +307,37 @@ where
     T: ProviderMailbox,
     O: ProcessEntryObserver,
 {
+    read_allowed_conversations_in_folder(
+        provider_id,
+        SHIPPING_FOLDER_ALLOWLIST[0],
+        grant,
+        transport,
+        observer,
+    )
+}
+
+/// Shipping reader entry point for a named provider folder. Authorization happens before the
+/// first provider call, and forbidden errors retain the exact name the caller requested.
+pub fn read_allowed_conversations_in_folder<T, O>(
+    provider_id: &str,
+    requested_folder: &str,
+    grant: AllowedSenderGrant,
+    transport: &mut T,
+    observer: &mut O,
+) -> Result<Vec<BodyResponse>, BoundaryFailure>
+where
+    T: ProviderMailbox,
+    O: ProcessEntryObserver,
+{
     if grant.provider_id != provider_id {
         return Err(failure(
             provider_id,
             "allowed-sender grant belongs to another provider",
         ));
     }
-    let request = grant.request;
+    let provider_folder = shipping_folder_guard(provider_id, requested_folder)?;
+    let mut request = grant.request;
+    request.folder = provider_folder;
     let raw_ids = transport
         .candidate_ids(&request)
         .map_err(|error| failure(provider_id, format!("candidate query failed: {error}")))?;
@@ -417,6 +447,19 @@ where
         bodies.push(body);
     }
     Ok(bodies)
+}
+
+fn shipping_folder_guard(
+    provider_id: &str,
+    requested_folder: &str,
+) -> Result<String, BoundaryFailure> {
+    match requested_folder {
+        "Inbox" => Ok("INBOX".to_owned()),
+        forbidden => Err(folder_failure(
+            provider_id,
+            format!("requested folder {forbidden:?} refused; shipping allowlist is [Inbox]"),
+        )),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -568,6 +611,14 @@ fn failure(provider_id: impl Into<String>, reason: impl Into<String>) -> Boundar
     BoundaryFailure {
         provider_id: provider_id.into(),
         boundary: PROCESS_ENTRY_BOUNDARY,
+        reason: reason.into(),
+    }
+}
+
+fn folder_failure(provider_id: impl Into<String>, reason: impl Into<String>) -> BoundaryFailure {
+    BoundaryFailure {
+        provider_id: provider_id.into(),
+        boundary: FOLDER_ACCESS_BOUNDARY,
         reason: reason.into(),
     }
 }
@@ -940,6 +991,267 @@ fn audit_surface_inventory(
         }
     }
     Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FolderRole {
+    Inbox,
+    Sent,
+    Drafts,
+    Archive,
+    UserPrivate,
+    Other,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderFolderEvidence {
+    pub name: String,
+    pub role: FolderRole,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FolderProviderRequestLog {
+    pub observer: String,
+    pub externally_observed: bool,
+    /// Provider folder names in the exact order the provider observed them being opened.
+    pub opened_folders: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ShippingFolderRefusal {
+    pub folder: String,
+    pub error: String,
+    pub provider_access_count: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FolderAuditEvidence {
+    pub schema: String,
+    pub origin: EvidenceOrigin,
+    pub provider_id: String,
+    pub real_provider_account: bool,
+    pub run_nonce: String,
+    pub shipping_allowlist: Vec<String>,
+    pub provider_folders: Vec<ProviderFolderEvidence>,
+    pub provider_request_log: FolderProviderRequestLog,
+    pub shipping_refusals: Vec<ShippingFolderRefusal>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FolderAuditSummary {
+    pub provider_id: String,
+    pub allowlist_count: usize,
+    pub catalog_folders: usize,
+    pub opened_allowed_requests: usize,
+    pub other_folders_opened: usize,
+    pub forbidden_refusals: usize,
+}
+
+/// Audits externally observed provider-folder access. Test fixtures can exercise this parser and
+/// oracle, but only evidence explicitly marked as a real external provider run is admissible.
+pub fn audit_folder_evidence(
+    evidence: &FolderAuditEvidence,
+) -> Result<FolderAuditSummary, BoundaryFailure> {
+    if evidence.schema != FOLDER_EVIDENCE_SCHEMA {
+        return Err(folder_failure(
+            "inventory",
+            "wrong or missing 4351 live-evidence schema",
+        ));
+    }
+    if evidence.origin != EvidenceOrigin::RealProviderExternal {
+        return Err(folder_failure(
+            &evidence.provider_id,
+            "fixtures, proxies, and simulated folder evidence are dev-only and forbidden",
+        ));
+    }
+    if evidence.provider_id != "gmail" {
+        return Err(folder_failure(
+            &evidence.provider_id,
+            "folder evidence must name the Ready shipping provider gmail",
+        ));
+    }
+    if !evidence.real_provider_account || evidence.run_nonce.trim().is_empty() {
+        return Err(folder_failure(
+            &evidence.provider_id,
+            "folder evidence is not a fresh real-provider account run",
+        ));
+    }
+
+    let allowlist: BTreeSet<_> = evidence
+        .shipping_allowlist
+        .iter()
+        .map(String::as_str)
+        .collect();
+    if evidence.shipping_allowlist.is_empty()
+        || evidence.shipping_allowlist.len() > 2
+        || allowlist.len() != evidence.shipping_allowlist.len()
+    {
+        return Err(folder_failure(
+            &evidence.provider_id,
+            format!(
+                "shipping folder allowlist must name 1 or 2 unique folders, found {}",
+                evidence.shipping_allowlist.len()
+            ),
+        ));
+    }
+    let expected_allowlist = SHIPPING_FOLDER_ALLOWLIST
+        .iter()
+        .map(|folder| (*folder).to_owned())
+        .collect::<Vec<_>>();
+    if evidence.shipping_allowlist != expected_allowlist {
+        return Err(folder_failure(
+            &evidence.provider_id,
+            format!(
+                "evidence allowlist differs from shipping allowlist {:?}",
+                SHIPPING_FOLDER_ALLOWLIST
+            ),
+        ));
+    }
+
+    if evidence.provider_folders.len() != 6 {
+        return Err(folder_failure(
+            &evidence.provider_id,
+            format!(
+                "real provider folder inventory must contain exactly 6 folders, found {}",
+                evidence.provider_folders.len()
+            ),
+        ));
+    }
+    let folders: BTreeMap<_, _> = evidence
+        .provider_folders
+        .iter()
+        .map(|folder| (folder.name.as_str(), folder))
+        .collect();
+    if folders.len() != evidence.provider_folders.len()
+        || folders.keys().any(|name| name.trim().is_empty())
+    {
+        return Err(folder_failure(
+            &evidence.provider_id,
+            "provider folder names must be unique and nonempty",
+        ));
+    }
+    for (role, required_name) in [
+        (FolderRole::Inbox, "Inbox"),
+        (FolderRole::Sent, "Sent"),
+        (FolderRole::Drafts, "Drafts"),
+        (FolderRole::Archive, "Archive"),
+    ] {
+        let matching = evidence
+            .provider_folders
+            .iter()
+            .filter(|folder| folder.role == role)
+            .collect::<Vec<_>>();
+        if matching.len() != 1 || matching[0].name != required_name {
+            return Err(folder_failure(
+                &evidence.provider_id,
+                format!("real provider folder inventory must contain {required_name} by name"),
+            ));
+        }
+    }
+    for role in [FolderRole::UserPrivate, FolderRole::Other] {
+        if evidence
+            .provider_folders
+            .iter()
+            .filter(|folder| folder.role == role)
+            .count()
+            != 1
+        {
+            return Err(folder_failure(
+                &evidence.provider_id,
+                format!("real provider folder inventory must contain one {role:?} folder"),
+            ));
+        }
+    }
+    for allowed in &allowlist {
+        let folder = folders.get(allowed).ok_or_else(|| {
+            folder_failure(
+                &evidence.provider_id,
+                format!("shipping allowlist folder {allowed} is absent from provider inventory"),
+            )
+        })?;
+        if matches!(
+            folder.role,
+            FolderRole::Drafts | FolderRole::Archive | FolderRole::UserPrivate
+        ) {
+            return Err(folder_failure(
+                &evidence.provider_id,
+                format!("shipping allowlist illegally contains protected folder {allowed}"),
+            ));
+        }
+    }
+
+    let log = &evidence.provider_request_log;
+    if !log.externally_observed || log.observer.trim().is_empty() {
+        return Err(folder_failure(
+            &evidence.provider_id,
+            "provider folder request log is not externally observed",
+        ));
+    }
+    for opened in &log.opened_folders {
+        if !folders.contains_key(opened.as_str()) {
+            return Err(folder_failure(
+                &evidence.provider_id,
+                format!("provider request log opened unknown folder {opened}"),
+            ));
+        }
+        if !allowlist.contains(opened.as_str()) {
+            return Err(folder_failure(
+                &evidence.provider_id,
+                format!("forbidden provider folder touched: {opened}"),
+            ));
+        }
+    }
+
+    let forbidden = evidence
+        .provider_folders
+        .iter()
+        .filter(|folder| !allowlist.contains(folder.name.as_str()))
+        .map(|folder| folder.name.as_str())
+        .collect::<BTreeSet<_>>();
+    let refusals: BTreeMap<_, _> = evidence
+        .shipping_refusals
+        .iter()
+        .map(|refusal| (refusal.folder.as_str(), refusal))
+        .collect();
+    if refusals.len() != evidence.shipping_refusals.len()
+        || refusals.keys().copied().collect::<BTreeSet<_>>() != forbidden
+    {
+        let missing = forbidden
+            .iter()
+            .find(|folder| !refusals.contains_key(**folder))
+            .copied()
+            .unwrap_or("unknown");
+        return Err(folder_failure(
+            &evidence.provider_id,
+            format!("shipping refusal inventory is incomplete; missing {missing}"),
+        ));
+    }
+    for folder in &forbidden {
+        let refusal = refusals[folder];
+        if refusal.provider_access_count != 0
+            || !refusal.error.contains(folder)
+            || !refusal.error.contains("refused")
+        {
+            return Err(folder_failure(
+                &evidence.provider_id,
+                format!("shipping reader did not refuse {folder} by name before provider access"),
+            ));
+        }
+    }
+
+    Ok(FolderAuditSummary {
+        provider_id: evidence.provider_id.clone(),
+        allowlist_count: evidence.shipping_allowlist.len(),
+        catalog_folders: evidence.provider_folders.len(),
+        opened_allowed_requests: log.opened_folders.len(),
+        other_folders_opened: 0,
+        forbidden_refusals: forbidden.len(),
+    })
 }
 
 #[cfg(test)]

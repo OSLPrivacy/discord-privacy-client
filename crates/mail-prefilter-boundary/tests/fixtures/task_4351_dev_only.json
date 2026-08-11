@@ -1,0 +1,22 @@
+{
+  "schema": "osl-task-4351-live-folder-evidence-v1",
+  "origin": "fixture",
+  "provider_id": "gmail",
+  "real_provider_account": false,
+  "run_nonce": "dev-only",
+  "shipping_allowlist": ["Inbox"],
+  "provider_folders": [
+    { "name": "Inbox", "role": "inbox" },
+    { "name": "Sent", "role": "sent" },
+    { "name": "Drafts", "role": "drafts" },
+    { "name": "Archive", "role": "archive" },
+    { "name": "Family Private", "role": "user_private" },
+    { "name": "Receipts", "role": "other" }
+  ],
+  "provider_request_log": {
+    "observer": "dev fixture",
+    "externally_observed": false,
+    "opened_folders": []
+  },
+  "shipping_refusals": []
+}
