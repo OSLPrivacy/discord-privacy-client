@@ -155,7 +155,7 @@ function readyMarkup(model: PeerProtectedSheetModel): string {
       <label for="peer-protected-draft">Message</label>
       <textarea id="peer-protected-draft" rows="5" autocomplete="off" spellcheck="true" data-osl-protected-box-rule="${PROTECTED_TEXT_BOX_RULE}" aria-describedby="peer-protected-draft-bytes" placeholder="Write privately">${escapeHtml(boundedDraft)}</textarea>
       <small id="peer-protected-draft-bytes" class="peer-draft-bytes" aria-live="polite">${peerProtectedDraftByteFeedback(boundedDraft)}</small>
-      <div class="local-protected-options"><label class="peer-ttl"><span>Relay copy expires after</span><select id="peer-protected-ttl">${ttlOptions}</select><small>Copies already opened remain.</small></label><label class="local-view-once"><span>View once</span><input id="peer-protected-view-once" type="checkbox" ${model.viewOnce ? "checked" : ""}/><small>Display is bounded on cooperating OSL clients; cameras are outside OSL's control.</small></label></div>
+      <div class="local-protected-options"><label class="peer-ttl"><span>Relay copy expires after</span><select id="peer-protected-ttl">${ttlOptions}</select><small>Copies already opened remain.</small></label><label class="local-view-once"><span>View once</span><input id="peer-protected-view-once" type="checkbox" ${model.viewOnce ? "checked" : ""}/><small>View Once applies to protected text only; files and images are not view-once.</small></label></div>
       <button class="local-primary" type="submit" ${model.busy ? "disabled" : ""}>${model.busy ? "Encrypting…" : "Encrypt & copy"}</button>
       <small class="local-send-truth">OSL copies protected text. It never presses Send.</small>
     </form>

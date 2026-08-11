@@ -162,9 +162,8 @@ import { bindWindowLifecycleRealignment } from "./window-lifecycle-bindings";
 import { FrameRenderScheduler } from "./render-scheduler";
 import { defaultScrubSignalGroups, enabledScrubFindings, parseScrubSignalGroups, scrubSignalDefinitions, scrubSignalGroupFor, type ScrubSignalGroup } from "./scrub";
 import { loadMassCleanupCapabilities, type MassCleanupCapabilityManifest } from "./mass-cleanup";
-import { projectAutoScrubFleetStatus, type AutoScrubFleetStatus } from "./autoscrub-contract";
+import type { AutoScrubFleetStatus } from "./autoscrub-contract";
 import { freshStartCleanupPresentation, freshStartLimitationsMarkup } from "./fresh-start";
-import { loadAutoScrubRunFleetStatus, requestAutoScrubGlobalStop } from "./autoscrub-unattended-run";
 import { oslMailStage, type OslMailStage } from "./desktop-service-policy";
 import { webSurfaceLabel, type WebSurfaceCapability } from "./web-surface-label";
 import { homeProtectionState } from "./home-protection-state";
@@ -199,12 +198,6 @@ import {
   type OslChatsAddRule,
   type SettingsFriend,
 } from "./friends-settings-surface";
-export {
-  autoscrubUnattendedContractGate,
-  autoscrubUnattendedProductionRun,
-  type AutoscrubUnattendedGateResult,
-  type AutoscrubUnattendedRunResult,
-} from "./autoscrub-unattended-run";
 import { initializeThemePreference, themeStorageKey, type ThemeChoice } from "./theme-preference";
 import { inDomTooltipMarkup } from "./in-dom-tooltip";
 import { applyOslChatDraftToElement, firstPartyOslSurfaceContract, OSL_CHAT_MAX_DRAFT_BYTES, oslChatDraftBytes, oslChatHandshakeConfirmed, oslChatsViewMarkup, senderReceiptStateFor, type OslChatMessage } from "./osl-chats-view";
@@ -421,9 +414,6 @@ let core: CoreIntegration = structuredClone(unavailableCoreIntegration);
 let licenseState: HubLicenseState = structuredClone(unconfiguredLicenseState);
 let massCleanupCapabilities: MassCleanupCapabilityManifest | null = null;
 let massCleanupLoading = false;
-let autoScrubFleetStatus: AutoScrubFleetStatus | null = null;
-let autoScrubStatusLoading = false;
-let autoScrubStopPending = false;
 let passwordRoleStatus: HubPasswordRoleStatus | null = null;
 // "Forgot password?" (the `data-onboarding="account-recovery"` link on the
 // unlock card) rendered `recoveryScreenMarkup(initialAccountRecoveryFlow)` --
@@ -4232,31 +4222,7 @@ function autoScrubRunServiceName(serviceId: ServiceId): string {
 }
 
 function fleetIndicatorMarkup(): string {
-  // The pill is a live monitor for cleanup runs, so it is chrome only while
-  // there is something to monitor. `autoScrubFleetStatus === null` means the
-  // cleanup subsystem reported nothing at all -- the state a fresh install on a
-  // build without AutoScrub sits in permanently -- and
-  // projectAutoScrubFleetStatus() renders that as "Unavailable in this
-  // build / No cleanup running". Shipping that as a permanent titlebar fixture
-  // made a feature's absence the loudest element on first launch, above the
-  // window controls, before the owner had done anything. It is not a status the
-  // owner can act on and it never changes, so there is nothing to monitor and
-  // the pill is omitted. Whether Scrub is available in this build is still
-  // stated where it belongs: Settings -> Scrub, and the Scrub tile on Home.
-  // The moment a real fleet status exists -- any run, any phase, including a
-  // refusal -- the pill returns, so no live state is ever hidden by this.
-  if (autoScrubFleetStatus === null) return "";
-  const status = projectAutoScrubFleetStatus(autoScrubFleetStatus);
-  const openRunNames = autoScrubFleetStatus?.runs.map((run) => autoScrubRunServiceName(run.serviceId)) ?? [];
-  const openRunCount = autoScrubFleetStatus?.openRunCount ?? 0;
-  const runNames = openRunNames.length ? openRunNames.join(", ") : "No cleanup running";
-  const ariaLabel = `Cleanup monitor: ${status.label}; ${runNames}`;
-  // Styling lives in styles.css (`.fleet-indicator`), NOT in an inline `style`
-  // attribute. The shipped CSP is `style-src 'self'` with no `'unsafe-inline'`,
-  // which blocks inline style attributes as well as <style> blocks, so the
-  // previous inline-styled version rendered as two unstyled text runs jammed
-  // against the window controls: no pill, no border, no vertical stacking.
-  return `<aside class="fleet-indicator fleet-indicator-${status.tone} in-dom-tooltip-anchor" data-fleet-indicator data-open-run-count="${openRunCount}" data-open-run-names="${escapeHtml(runNames)}" role="status" aria-label="${escapeHtml(ariaLabel)}"><span class="fleet-indicator-dot" aria-hidden="true"></span><span class="fleet-indicator-text"><strong>${escapeHtml(status.label)}</strong><small>${escapeHtml(runNames)}</small></span>${inDomTooltipMarkup(ariaLabel)}</aside>`;
+  return "";
 }
 
 /**
@@ -5048,7 +5014,6 @@ export function activityPrimaryAction(): void {
 }
 
 function oslChatContent(): string {
-  const pro = licenseState.access === "pro" || licenseState.access === "offlineGrace";
   const friends = hubPeople.map((person) => {
     const messages = oslChatMessages.get(person.personId) ?? [];
     const last = messages.at(-1);
@@ -5068,8 +5033,8 @@ function oslChatContent(): string {
     : "";
   const settingsPerson = oslChatSettingsPersonId ? hubPeople.find((person) => person.personId === oslChatSettingsPersonId) ?? null : null;
   const settings = settingsPerson ? oslChatFriendSettingsMarkup(settingsPerson) : "";
-  const attachments = activeOslChatContext?.scopeApproved && pro
-    ? `<section class="osl-chat-attachments" aria-label="Encrypted attachments"><header><strong>Attachments</strong><button class="button compact" id="osl-chat-attach" type="button" ${oslChatBusy ? "disabled" : ""}>Choose file</button></header>${attachmentProgressMarkupForActiveChat()}${oslChatAttachments.length ? oslChatAttachments.map((item) => `<button class="setting-line" data-osl-chat-attachment="${escapeHtml(item.attachmentId)}" type="button"><span><strong>${escapeHtml(item.originalFilename)}</strong><small>${item.viewOnce ? "View once · " : ""}${item.plaintextSize.toLocaleString("en-US")} bytes</small></span>${statusTag("Open")}</button>`).join("") : `<p>No pending attachments.</p>`}<small>Images open in OSL's capture-resistant viewer. Other supported files open temporarily in their Windows viewer, which may allow capture.</small></section>`
+  const attachments = activeOslChatContext?.scopeApproved
+    ? `<section class="osl-chat-attachments" aria-label="Encrypted attachments"><header><strong>Attachments</strong><button class="button compact" id="osl-chat-attach" type="button" ${oslChatBusy ? "disabled" : ""}>Choose file</button></header>${attachmentProgressMarkupForActiveChat()}${oslChatAttachments.length ? oslChatAttachments.map((item) => `<button class="setting-line" data-osl-chat-attachment="${escapeHtml(item.attachmentId)}" type="button"><span><strong>${escapeHtml(item.originalFilename)}</strong><small>${item.plaintextSize.toLocaleString("en-US")} bytes</small></span>${statusTag("Open")}</button>`).join("") : `<p>No pending attachments.</p>`}<small>View Once applies to protected text only; files and images are not view-once. Images open in OSL's capture-resistant viewer. Other supported files open temporarily in their Windows viewer, which may allow capture.</small></section>`
     : "";
   const droppedFiles = oslChatDropTray.getCards().length
     ? attachmentTrayScreenMarkup(oslChatDropTray.getCards())
@@ -5817,35 +5782,6 @@ async function refreshMassCleanupCapabilities(): Promise<void> {
   }
 }
 
-async function refreshAutoScrubFleetStatus(): Promise<void> {
-  if (autoScrubStatusLoading) return;
-  autoScrubStatusLoading = true;
-  render();
-  try {
-    autoScrubFleetStatus = await withNativeDeadline(loadAutoScrubRunFleetStatus(), "Load AutoScrub", 2_000);
-  } catch {
-    autoScrubFleetStatus = null;
-  } finally {
-    autoScrubStatusLoading = false;
-    if (route !== "onboarding") render();
-  }
-}
-
-async function stopAutoScrubFleet(): Promise<void> {
-  if (autoScrubStopPending) return;
-  autoScrubStopPending = true;
-  render();
-  try {
-    autoScrubFleetStatus = await withNativeDeadline(requestAutoScrubGlobalStop(), "Stop AutoScrub", 2_000);
-    showToast("AutoScrub stop requested");
-  } catch {
-    showToast("AutoScrub did not change");
-  } finally {
-    autoScrubStopPending = false;
-    render();
-  }
-}
-
 function settingsDivider(): string {
   return `<hr class="settings-divider"/>`;
 }
@@ -6135,11 +6071,7 @@ function autoScrubAssistantMarkup(proActive: boolean): string {
   // imply an unattended runner is present when it is not.
   const tier = autoScrubTierStatus(proActive ? "pro" : "free", false);
   const autoScrubPlan = tier.tier === "pro" ? "PRO MODULE NOT INSTALLED" : "FREE · REVIEWED ONE-TIME FLOW";
-  const status = projectAutoScrubFleetStatus(autoScrubFleetStatus);
-  const actions = status.stopAvailable
-    ? `<button class="button compact" id="autoscrub-stop" type="button" ${autoScrubStopPending ? "disabled" : ""}>${autoScrubStopPending ? "Stopping…" : "Stop"}</button>`
-    : `<button class="button compact" id="autoscrub-refresh" type="button" ${autoScrubStatusLoading ? "disabled" : ""}>${autoScrubStatusLoading ? "Checking…" : status.label}</button>`;
-  return `<details class="settings-disclosure autoscrub-disclosure"><summary><span><strong>AutoScrub assistant</strong><small>${autoScrubPlan}</small></span></summary><section class="autoscrub-card autoscrub-status-${status.tone}" aria-disabled="${status.stopAvailable ? "false" : "true"}"><header><div><span class="privacy-local-mark">LOCAL REVIEW</span><h3>${escapeHtml(status.label)}</h3></div>${actions}</header><p>${escapeHtml(tier.detail)} ${escapeHtml(status.detail)}</p><details><summary>Automation risks</summary><p>Future paced actions must stop on limits, challenges, changed content, or failed checks. Automation may break an app’s rules or restrict an account. Treat removal as unconfirmed until the app shows it is gone.</p></details></section></details>`;
+  return `<details class="settings-disclosure autoscrub-disclosure"><summary><span><strong>AutoScrub assistant</strong><small>${autoScrubPlan}</small></span></summary><section class="autoscrub-card autoscrub-status-neutral" aria-disabled="true"><p data-autoscrub-find-only-disclosure>AutoScrub finds possible matches for review; it does not delete them automatically.</p><header><div><span class="privacy-local-mark">LOCAL REVIEW</span><h3>Find only</h3></div></header><p>${escapeHtml(tier.detail)}</p><details><summary>Automation risks</summary><p>Future paced scans must stop on limits, challenges, changed content, or failed checks. Automation may break an app’s rules or restrict an account.</p></details></section></details>`;
 }
 
 function clearPrivacyScanState(): void {
@@ -6323,8 +6255,6 @@ function bindScrubControls(): void {
     scrubReviewOpen = false;
     render();
   });
-  document.querySelector<HTMLButtonElement>("#autoscrub-refresh")?.addEventListener("click", () => void refreshAutoScrubFleetStatus());
-  document.querySelector<HTMLButtonElement>("#autoscrub-stop")?.addEventListener("click", () => void stopAutoScrubFleet());
 }
 
 function notificationSettingsContent(): string {
@@ -7728,7 +7658,6 @@ function bindWorkspace(): void {
     if (settingsSection === "account" && next !== "account") newIdentityRecoveryPhrase = null;
     settingsSection = next;
     render();
-    if (next === "scrub") void refreshAutoScrubFleetStatus();
     if (next === "cleanup") void refreshMassCleanupCapabilities();
   }));
   document.querySelectorAll<HTMLButtonElement>("[data-settings-send-mode]").forEach((button) => button.addEventListener("click", () => {
@@ -8809,7 +8738,7 @@ async function sendOslChatAttachment(): Promise<void> {
   if (!activeOslChatContext?.scopeApproved || oslChatBusy) return;
   oslChatBusy = true;
   render();
-  const result = await selectOslChatAttachment(oslChatViewOnce);
+  const result = await selectOslChatAttachment(false);
   oslChatAttachments = await listOslChatAttachments() ?? oslChatAttachments;
   oslChatBusy = false;
   if (result === null) showToast("Encrypted attachment was not sent");
@@ -9567,7 +9496,6 @@ function startReadyWorkspaceLoads(): void {
   void openMullvadOnStartup();
   void loadHubPasswordRoleStatus().then((status) => { passwordRoleStatus = status; if (route === "settings" && settingsSection === "account") renderWhenIdle(); }).catch(() => undefined);
   void refreshUpdateStatus(true);
-  void refreshAutoScrubFleetStatus();
   void getOslUsernameStatus("osl").catch(() => null);
   void loadFriendProfile().then((profile) => { friendCode = profile?.friendCode ?? null; friendDisplayId = profile?.oslUserId ?? null; if (route === "home") renderWhenIdle(); });
   void listHubPeople().then((people) => { hubPeople = people ?? []; if (route === "home") renderWhenIdle(); });
@@ -10453,9 +10381,6 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   notificationPreviewContent = patch.notificationPreviewContent ?? true;
   appNotifications = patch.appNotifications ?? [];
   licenseState = { ...unconfiguredLicenseState, access: patch.licenseAccess ?? "free" };
-  autoScrubFleetStatus = patch.autoScrubFleetStatus ?? null;
-  autoScrubStatusLoading = false;
-  autoScrubStopPending = false;
   mullvadStatus = {
     availability: patch.mullvadAvailability ?? "unavailable",
     integrationState: patch.mullvadAvailability === "installed" ? "availableToOpen" : patch.mullvadAvailability === "installable" ? "installable" : "unavailable",

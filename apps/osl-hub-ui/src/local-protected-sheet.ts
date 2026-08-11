@@ -140,7 +140,7 @@ export function localProtectedSheetMarkup(model: LocalProtectedSheetModel, sendM
       <label for="local-protected-draft">Message</label>
       <textarea id="local-protected-draft" maxlength="1000" data-max-bytes="${maxCopyPayloadBytes}" data-osl-protected-box-rule="${PROTECTED_TEXT_BOX_RULE}" rows="5" autocomplete="off" spellcheck="true" aria-describedby="local-protected-draft-bytes" placeholder="Write privately">${escapeHtml(boundedDraft.value)}</textarea>
       <small id="local-protected-draft-bytes" class="local-draft-bytes" aria-live="polite">${draftLimitNotice}</small>
-      <div class="local-protected-options"><label><span>Opening authorization expires after</span><select id="local-protected-ttl">${ttlOptions}</select></label><label class="local-view-once"><span>View once</span><input id="local-protected-view-once" type="checkbox" ${model.viewOnce ? "checked" : ""}/><small>Display is bounded on cooperating OSL clients; cameras are outside OSL's control.</small></label></div>
+      <div class="local-protected-options"><label><span>Opening authorization expires after</span><select id="local-protected-ttl">${ttlOptions}</select></label><label class="local-view-once"><span>View once</span><input id="local-protected-view-once" type="checkbox" ${model.viewOnce ? "checked" : ""}/><small>View Once applies to protected text only; files and images are not view-once.</small></label></div>
       <small class="local-authorization-truth">After expiry, OSL refuses to open this text on this device.</small>
       <button class="local-primary" type="submit" ${model.busy ? "disabled" : ""}>${model.busy ? "Encrypting…" : primaryLabel}</button>
       <small class="local-send-truth">${escapeHtml(sendTruth)}</small>

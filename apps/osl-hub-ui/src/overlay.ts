@@ -1859,7 +1859,7 @@ chooseAttachment.addEventListener("click", () => void (async () => {
   attachmentBusy = true;
   refreshControls();
   status.textContent = "Choose a file up to 500 MB…";
-  const result = await selectNativeDiscordOverlayAttachment(viewOnce.checked);
+  const result = await selectNativeDiscordOverlayAttachment(false);
   attachmentBusy = false;
   refreshControls();
   if (result === "cancelled") {
