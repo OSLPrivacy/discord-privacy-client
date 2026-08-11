@@ -1,8 +1,9 @@
 //! Image carrier for the fixed OSL pointer payload.
 //!
-//! Normal photo-sized images use a redundant luminance stripe that survives
-//! provider resize and PNG re-save. Tiny images fall back to the original
-//! lossless low-bit carrier so existing small fixtures continue to work.
+//! Normal photo-sized images use a low-amplitude, two-dimensional blue-channel
+//! lattice that survives provider resize and PNG re-save without drawing a
+//! visible stripe. Tiny images fall back to the original lossless low-bit
+//! carrier so existing small fixtures continue to work.
 //! Lossless image carrier for the fixed OSL pointer payload.
 //!
 //! The carrier writes a small OSL marker plus the full protected pointer
@@ -24,11 +25,10 @@ pub const IMAGE_HIDDEN_CHECK_MARK_BYTES: usize = DETECT_TAG_BYTES;
 const MAGIC: &[u8; 8] = b"OSLIH1\0\0";
 const FRAME_BYTES: usize = MAGIC.len() + IMAGE_HIDDEN_POINTER_BYTES + IMAGE_HIDDEN_CHECK_MARK_BYTES;
 const FRAME_BITS: usize = FRAME_BYTES * 8;
-const RESAVE_MIN_WIDTH: u32 = FRAME_BITS as u32;
-const RESAVE_STRIPE_DIVISOR: u32 = 8;
-const RESAVE_LOW: u8 = 15;
-const RESAVE_HIGH: u8 = 240;
-const RESAVE_THRESHOLD: u64 = 128;
+const RESAVE_GRID_SIDE: u32 = 16;
+const RESAVE_QUANTUM: i32 = 8;
+const RESAVE_ZERO_RESIDUE: i32 = 2;
+const RESAVE_ONE_RESIDUE: i32 = 6;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ImageHiddenPointer {
@@ -195,61 +195,50 @@ fn extract_frame(decoded: &DecodedPng) -> Result<Option<ImageHiddenPointer>> {
 }
 
 fn can_embed_resave_survival(decoded: &DecodedPng) -> bool {
-    decoded.width >= RESAVE_MIN_WIDTH && decoded.height >= RESAVE_STRIPE_DIVISOR
+    decoded.width >= RESAVE_GRID_SIDE * 4 && decoded.height >= RESAVE_GRID_SIDE * 4
 }
 
 fn embed_resave_survival_frame(decoded: &mut DecodedPng, payload: ImageHiddenPointer) {
     let frame = frame_bytes(payload);
     let samples = decoded.color_type.samples();
-    let stripe_height = resave_stripe_height(decoded.height);
 
     for bit_index in 0..FRAME_BITS {
         let byte = frame[bit_index / 8];
         let bit = (byte >> (7 - (bit_index % 8))) & 1;
-        let value = if bit == 1 { RESAVE_HIGH } else { RESAVE_LOW };
-        let x_start = resave_column_start(decoded.width, bit_index);
-        let x_end = resave_column_start(decoded.width, bit_index + 1).max(x_start + 1);
+        let (x_start, x_end, y_start, y_end) = resave_cell_bounds(decoded, bit_index);
+        let mean = cell_blue_mean(decoded, x_start, x_end, y_start, y_end) as i32;
+        let residue = if bit == 1 {
+            RESAVE_ONE_RESIDUE
+        } else {
+            RESAVE_ZERO_RESIDUE
+        };
+        let delta = nearest_lattice_value(mean, residue) - mean;
 
-        for y in 0..stripe_height {
-            for x in x_start..x_end.min(decoded.width) {
+        for y in y_start..y_end {
+            for x in x_start..x_end {
                 let offset = ((y * decoded.width + x) as usize) * samples;
-                decoded.pixels[offset] = value;
-                decoded.pixels[offset + 1] = value;
-                decoded.pixels[offset + 2] = value;
+                decoded.pixels[offset + 2] =
+                    (i32::from(decoded.pixels[offset + 2]) + delta).clamp(0, 255) as u8;
             }
         }
     }
 }
 
 fn extract_resave_survival_frame(decoded: &DecodedPng) -> Result<Option<ImageHiddenPointer>> {
-    if decoded.width < RESAVE_MIN_WIDTH || decoded.height == 0 {
+    if !can_embed_resave_survival(decoded) {
         return Ok(None);
     }
 
-    let samples = decoded.color_type.samples();
-    let stripe_height = resave_stripe_height(decoded.height);
     let mut frame = [0u8; FRAME_BYTES];
 
     for bit_index in 0..FRAME_BITS {
-        let x_start = resave_column_start(decoded.width, bit_index);
-        let x_end = resave_column_start(decoded.width, bit_index + 1).max(x_start + 1);
-        let mut total = 0u64;
-        let mut count = 0u64;
-
-        for y in 0..stripe_height {
-            for x in x_start..x_end.min(decoded.width) {
-                let offset = ((y * decoded.width + x) as usize) * samples;
-                total += luminance(
-                    decoded.pixels[offset],
-                    decoded.pixels[offset + 1],
-                    decoded.pixels[offset + 2],
-                );
-                count += 1;
-            }
-        }
-
+        let (x_start, x_end, y_start, y_end) = resave_cell_bounds(decoded, bit_index);
+        let mean = cell_blue_mean(decoded, x_start, x_end, y_start, y_end) as i32;
+        let residue = mean.rem_euclid(RESAVE_QUANTUM);
+        let zero_distance = circular_residue_distance(residue, RESAVE_ZERO_RESIDUE);
+        let one_distance = circular_residue_distance(residue, RESAVE_ONE_RESIDUE);
         frame[bit_index / 8] <<= 1;
-        if count > 0 && total / count >= RESAVE_THRESHOLD {
+        if one_distance < zero_distance {
             frame[bit_index / 8] |= 1;
         }
     }
@@ -268,16 +257,43 @@ fn extract_resave_survival_frame(decoded: &DecodedPng) -> Result<Option<ImageHid
     Ok(Some(ImageHiddenPointer::new(pointer, check_mark)))
 }
 
-fn resave_stripe_height(height: u32) -> u32 {
-    (height / RESAVE_STRIPE_DIVISOR).max(1)
+fn resave_cell_bounds(decoded: &DecodedPng, bit_index: usize) -> (u32, u32, u32, u32) {
+    let column = bit_index as u32 % RESAVE_GRID_SIDE;
+    let row = bit_index as u32 / RESAVE_GRID_SIDE;
+    let x_start = decoded.width * column / RESAVE_GRID_SIDE;
+    let x_end = decoded.width * (column + 1) / RESAVE_GRID_SIDE;
+    let y_start = decoded.height * row / RESAVE_GRID_SIDE;
+    let y_end = decoded.height * (row + 1) / RESAVE_GRID_SIDE;
+    (x_start, x_end, y_start, y_end)
 }
 
-fn resave_column_start(width: u32, bit_index: usize) -> u32 {
-    ((u64::from(width) * bit_index as u64) / FRAME_BITS as u64) as u32
+fn cell_blue_mean(decoded: &DecodedPng, x_start: u32, x_end: u32, y_start: u32, y_end: u32) -> u64 {
+    let samples = decoded.color_type.samples();
+    let mut total = 0u64;
+    let mut count = 0u64;
+    for y in y_start..y_end {
+        for x in x_start..x_end {
+            let offset = ((y * decoded.width + x) as usize) * samples;
+            total += u64::from(decoded.pixels[offset + 2]);
+            count += 1;
+        }
+    }
+    (total + count / 2) / count
 }
 
-fn luminance(r: u8, g: u8, b: u8) -> u64 {
-    (u64::from(r) * 299 + u64::from(g) * 587 + u64::from(b) * 114) / 1000
+fn nearest_lattice_value(value: i32, residue: i32) -> i32 {
+    let lower = (value - residue).div_euclid(RESAVE_QUANTUM) * RESAVE_QUANTUM + residue;
+    let upper = lower + RESAVE_QUANTUM;
+    if value - lower <= upper - value {
+        lower
+    } else {
+        upper
+    }
+}
+
+fn circular_residue_distance(left: i32, right: i32) -> i32 {
+    let direct = (left - right).abs();
+    direct.min(RESAVE_QUANTUM - direct)
 }
 
 fn frame_bytes(payload: ImageHiddenPointer) -> [u8; FRAME_BYTES] {
