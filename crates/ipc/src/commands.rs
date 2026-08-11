@@ -19158,12 +19158,14 @@ fn auto_rule_lookup_for_record(
     }
 }
 
-pub fn cmd_osl_new_place(
+/// Applies the saved policy to a place which was actually discovered by a
+/// provider.  The provider connector calls this production policy boundary;
+/// `cmd_osl_new_place` is only the legacy IPC wrapper around it.
+pub fn apply_discovered_place(
     state: &AppState,
     record: crate::allowed_places::AllowedPlaceRecord,
     app_data_dir: Option<PathBuf>,
 ) -> Result<NewPlaceDecisionDto, String> {
-    record_activity_on_command_entry();
     record.validate().map_err(|error| format!("OSL: {error}"))?;
     let (app_kind, rule) = {
         let prefs = state
@@ -19228,6 +19230,15 @@ pub fn cmd_osl_new_place(
             ))
         }
     }
+}
+
+pub fn cmd_osl_new_place(
+    state: &AppState,
+    record: crate::allowed_places::AllowedPlaceRecord,
+    app_data_dir: Option<PathBuf>,
+) -> Result<NewPlaceDecisionDto, String> {
+    record_activity_on_command_entry();
+    apply_discovered_place(state, record, app_data_dir)
 }
 
 pub fn cmd_osl_direct_new_place(

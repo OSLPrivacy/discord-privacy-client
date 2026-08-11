@@ -70,6 +70,10 @@ pub mod peer_capabilities;
 pub mod peer_map;
 pub mod private_contact_link;
 pub mod prose_token;
+/// The live desktop-provider discovery boundary.  This is deliberately not a
+/// command-only helper: providers report discoveries here after a signed-in
+/// Windows session has observed them.
+pub mod provider_discovery;
 pub mod receipt_wire;
 mod recoverable_file;
 pub mod recovery;
