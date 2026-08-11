@@ -19,6 +19,7 @@
 
 pub mod account_ownership_error;
 pub mod account_ownership_proof;
+pub mod account_recovery;
 pub mod blocking_http;
 pub mod burn;
 pub mod burn_alert;
@@ -61,6 +62,10 @@ pub use account_ownership_proof::{
     ACCOUNT_OWNERSHIP_PROOF_DOMAIN, ACCOUNT_OWNERSHIP_PROOF_TYPE_ED25519_CHALLENGE_V1,
     PUBLIC_NAME_PROOF_DOMAIN,
 };
+pub use account_recovery::{
+    LocalOslInstance, RecoveryDeclaration, RecoveryError, RecoveryKit, RecoveryServiceState,
+    SignedRoster, RECOVERY_PRIVATE_KEY_BYTES,
+};
 pub use burn::{canonical_burn_bytes, sign_burn, BurnScope, BURN_DOMAIN};
 pub use burn_alert::{sign_burn_alert, verify_burn_alert, BurnAlertPayload, BURN_ALERT_DOMAIN};
 pub use client::{
@@ -79,7 +84,9 @@ pub use duress::{
 };
 pub use identity::{
     generate_identity, generate_native_identity, identity_from_entropy,
-    native_identity_from_entropy, native_user_id, Identity, IDENTITY_BLOB_VERSION,
+    native_identity_from_entropy, native_user_id, AccountDevice, AccountRootKey, DeviceListError,
+    DevicePrivateKeys, DevicePublicKeys, Identity, SignedDeviceList, StoredDeviceList,
+    COPIED_IDENTITY_FILE_REFUSAL, DEVICE_PRIVATE_KEY_FILE_BYTES, IDENTITY_BLOB_VERSION,
 };
 pub use keystore_anchor::KeystoreBackedAnchor;
 pub use license_cache::{

@@ -8,6 +8,7 @@
 
 use crypto::{ed25519, ml_kem_768, x25519};
 use sha2::{Digest, Sha256};
+use std::{fmt, fs, path::Path};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 const NATIVE_ID_DOMAIN: &[u8] = b"OSL-NATIVE-IDENTITY-v1";
@@ -222,6 +223,305 @@ pub fn native_identity_from_entropy(entropy: [u8; 16]) -> Identity {
     let mut identity = identity_from_entropy(entropy, "osl-pending".to_owned());
     identity.user_id = native_user_id(&identity);
     identity
+}
+
+/// Refused account model: copying one identity file onto every machine.
+///
+/// A copied identity file would put the same long-term private keys on
+/// every device. That makes removing a device impossible: after the
+/// copy leaves the first machine, no signed note can prove which copy
+/// was removed. It also blocks newer per-device message protection,
+/// because all machines would present the same private key material.
+pub const COPIED_IDENTITY_FILE_REFUSAL: &str = "Copying one identity file onto every machine was considered and refused: the copied identity file makes removing a device impossible and blocks newer per-device message protection.";
+
+const ACCOUNT_ROOT_DEVICE_NOTE_DOMAIN: &[u8] = b"OSL-account-root-device-note-v1";
+const ACCOUNT_ROOT_DEVICE_LIST_DOMAIN: &[u8] = b"OSL-account-root-device-list-v1";
+const DEVICE_ID_BYTES: usize = 16;
+pub const DEVICE_PRIVATE_KEY_FILE_BYTES: usize = x25519::SECRET_KEY_SIZE + ed25519::SECRET_KEY_SIZE;
+
+/// One account root key. The root is the account authority: it signs
+/// short device membership notes and the current whole device list.
+#[derive(Clone)]
+pub struct AccountRootKey {
+    signing_secret: ed25519::SecretKey,
+    signing_public: ed25519::PublicKey,
+}
+
+impl AccountRootKey {
+    pub fn generate() -> Self {
+        let (signing_secret, signing_public) = ed25519::generate_keypair();
+        Self {
+            signing_secret,
+            signing_public,
+        }
+    }
+
+    pub fn public_key(&self) -> ed25519::PublicKey {
+        self.signing_public
+    }
+
+    /// Sign a canonical account-authority payload owned by another keystore
+    /// module. Keeping this crate-private prevents callers from turning the
+    /// account root into a general-purpose signing oracle.
+    pub(crate) fn sign_account_authority_payload(
+        &self,
+        payload: &[u8],
+    ) -> [u8; ed25519::SIGNATURE_SIZE] {
+        *ed25519::sign(&self.signing_secret, payload).as_bytes()
+    }
+
+    pub fn account_id(&self) -> String {
+        hex_lower(&Sha256::digest(self.signing_public.as_bytes())[..DEVICE_ID_BYTES])
+    }
+
+    pub fn sign_device(&self, device: DevicePublicKeys) -> AccountDevice {
+        let note = canonical_device_note(self.signing_public, &device);
+        let signature = ed25519::sign(&self.signing_secret, &note);
+        AccountDevice {
+            device,
+            root_note_signature: *signature.as_bytes(),
+        }
+    }
+
+    pub fn sign_device_list(&self, version: u64, devices: Vec<AccountDevice>) -> SignedDeviceList {
+        let signature = ed25519::sign(
+            &self.signing_secret,
+            &canonical_device_list(self.signing_public, version, &devices),
+        );
+        SignedDeviceList {
+            root_public: *self.signing_public.as_bytes(),
+            version,
+            devices,
+            signature: *signature.as_bytes(),
+        }
+    }
+}
+
+/// Private keys generated on a single device. This type intentionally
+/// has no constructor from another device record.
+#[derive(Clone)]
+pub struct DevicePrivateKeys {
+    device: DevicePublicKeys,
+    x25519_secret: x25519::SecretKey,
+    ed25519_secret: ed25519::SecretKey,
+}
+
+impl DevicePrivateKeys {
+    pub fn generate_on_device(device_name: impl Into<String>) -> Self {
+        let (x25519_secret, x25519_public) = x25519::generate_keypair();
+        let (ed25519_secret, ed25519_public) = ed25519::generate_keypair();
+        let device_name = device_name.into();
+        let device_id = device_id(&device_name, x25519_public, ed25519_public);
+        Self {
+            device: DevicePublicKeys {
+                device_id,
+                device_name,
+                x25519_public: *x25519_public.as_bytes(),
+                ed25519_public: *ed25519_public.as_bytes(),
+            },
+            x25519_secret,
+            ed25519_secret,
+        }
+    }
+
+    pub fn public_keys(&self) -> DevicePublicKeys {
+        self.device.clone()
+    }
+
+    pub fn private_key_file_bytes(&self) -> [u8; DEVICE_PRIVATE_KEY_FILE_BYTES] {
+        let mut out = [0u8; DEVICE_PRIVATE_KEY_FILE_BYTES];
+        out[..x25519::SECRET_KEY_SIZE].copy_from_slice(self.x25519_secret.as_bytes());
+        out[x25519::SECRET_KEY_SIZE..].copy_from_slice(self.ed25519_secret.as_bytes());
+        out
+    }
+
+    pub fn private_key_chunks(&self) -> [[u8; 32]; 2] {
+        [
+            *self.x25519_secret.as_bytes(),
+            *self.ed25519_secret.as_bytes(),
+        ]
+    }
+
+    pub fn write_private_key_file(&self, path: &Path) -> crate::Result<()> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(path, self.private_key_file_bytes())?;
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DevicePublicKeys {
+    pub device_id: String,
+    pub device_name: String,
+    pub x25519_public: [u8; x25519::PUBLIC_KEY_SIZE],
+    pub ed25519_public: [u8; ed25519::PUBLIC_KEY_SIZE],
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AccountDevice {
+    pub device: DevicePublicKeys,
+    pub root_note_signature: [u8; ed25519::SIGNATURE_SIZE],
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SignedDeviceList {
+    pub root_public: [u8; ed25519::PUBLIC_KEY_SIZE],
+    pub version: u64,
+    pub devices: Vec<AccountDevice>,
+    pub signature: [u8; ed25519::SIGNATURE_SIZE],
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoredDeviceList {
+    root_public: [u8; ed25519::PUBLIC_KEY_SIZE],
+    version: u64,
+    devices: Vec<AccountDevice>,
+}
+
+impl StoredDeviceList {
+    pub fn accept_next(
+        previous: Option<&StoredDeviceList>,
+        list: SignedDeviceList,
+    ) -> Result<Self, DeviceListError> {
+        if let Some(previous) = previous {
+            if list.version <= previous.version {
+                return Err(DeviceListError::VersionMustGoUp);
+            }
+            if list.root_public != previous.root_public {
+                return Err(DeviceListError::RootKeyChanged);
+            }
+        }
+        verify_signed_device_list(&list)?;
+        Ok(Self {
+            root_public: list.root_public,
+            version: list.version,
+            devices: list.devices,
+        })
+    }
+
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+
+    pub fn device_count(&self) -> usize {
+        self.devices.len()
+    }
+
+    pub fn device_names(&self) -> Vec<&str> {
+        self.devices
+            .iter()
+            .map(|device| device.device.device_name.as_str())
+            .collect()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeviceListError {
+    VersionMustGoUp,
+    RootKeyChanged,
+    BadDeviceNoteSignature,
+    BadListSignature,
+}
+
+impl fmt::Display for DeviceListError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::VersionMustGoUp => f.write_str("device list version must go up"),
+            Self::RootKeyChanged => f.write_str("device list root key changed"),
+            Self::BadDeviceNoteSignature => f.write_str("device note signature invalid"),
+            Self::BadListSignature => f.write_str("device list signature invalid"),
+        }
+    }
+}
+
+impl std::error::Error for DeviceListError {}
+
+pub fn verify_signed_device_list(list: &SignedDeviceList) -> Result<(), DeviceListError> {
+    let root_public = ed25519::PublicKey::from_bytes(list.root_public);
+    for device in &list.devices {
+        let signature = ed25519::Signature::from_bytes(device.root_note_signature);
+        if !ed25519::verify(
+            &root_public,
+            &canonical_device_note(root_public, &device.device),
+            &signature,
+        )
+        .map_err(|_| DeviceListError::BadDeviceNoteSignature)?
+        {
+            return Err(DeviceListError::BadDeviceNoteSignature);
+        }
+    }
+    let signature = ed25519::Signature::from_bytes(list.signature);
+    if !ed25519::verify(
+        &root_public,
+        &canonical_device_list(root_public, list.version, &list.devices),
+        &signature,
+    )
+    .map_err(|_| DeviceListError::BadListSignature)?
+    {
+        return Err(DeviceListError::BadListSignature);
+    }
+    Ok(())
+}
+
+fn device_id(
+    device_name: &str,
+    x25519_public: x25519::PublicKey,
+    ed25519_public: ed25519::PublicKey,
+) -> String {
+    let mut hash = Sha256::new();
+    hash.update(b"OSL-account-device-id-v1");
+    hash.update(device_name.as_bytes());
+    hash.update(x25519_public.as_bytes());
+    hash.update(ed25519_public.as_bytes());
+    let digest = hash.finalize();
+    hex_lower(&digest[..DEVICE_ID_BYTES])
+}
+
+fn canonical_device_note(root_public: ed25519::PublicKey, device: &DevicePublicKeys) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(ACCOUNT_ROOT_DEVICE_NOTE_DOMAIN);
+    out.extend_from_slice(root_public.as_bytes());
+    push_len_bytes(&mut out, device.device_id.as_bytes());
+    push_len_bytes(&mut out, device.device_name.as_bytes());
+    out.extend_from_slice(&device.x25519_public);
+    out.extend_from_slice(&device.ed25519_public);
+    out
+}
+
+fn canonical_device_list(
+    root_public: ed25519::PublicKey,
+    version: u64,
+    devices: &[AccountDevice],
+) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(ACCOUNT_ROOT_DEVICE_LIST_DOMAIN);
+    out.extend_from_slice(root_public.as_bytes());
+    out.extend_from_slice(&version.to_be_bytes());
+    out.extend_from_slice(&(devices.len() as u32).to_be_bytes());
+    for device in devices {
+        push_len_bytes(&mut out, device.device.device_id.as_bytes());
+        push_len_bytes(&mut out, device.device.device_name.as_bytes());
+        out.extend_from_slice(&device.device.x25519_public);
+        out.extend_from_slice(&device.device.ed25519_public);
+        out.extend_from_slice(&device.root_note_signature);
+    }
+    out
+}
+
+fn push_len_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
+    out.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+    out.extend_from_slice(bytes);
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        let _ = write!(encoded, "{byte:02x}");
+    }
+    encoded
 }
 
 /// Seed a CryptoRng deterministically from the identity entropy + a
