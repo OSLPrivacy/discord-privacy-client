@@ -1,0 +1,110 @@
+[
+  {
+    "cmdline": [
+      "/tmp/osl-task-4701-cache/livekit-server",
+      "--config",
+      "/home/liamw/osl-exec-i/tools/task-4701-forwarding-audio/config/livekit.yaml"
+    ],
+    "executable": "/tmp/osl-task-4701-cache/livekit-server",
+    "executable_sha256": "51a1bbe04439b33d6d7a6d6d83fdefad9b938162c341f0f07f75af03e456b49a",
+    "expected_executable": "/tmp/osl-task-4701-cache/livekit-server",
+    "pid": 1732766,
+    "role": "livekit-server",
+    "start_ticks": "14628687"
+  },
+  {
+    "cmdline": [
+      "/usr/bin/python3",
+      "/home/liamw/osl-exec-i/tools/task-4701-forwarding-audio/tls-front-door.py",
+      "--config",
+      "/home/liamw/osl-exec-i/tools/task-4701-forwarding-audio/config/front-door.json"
+    ],
+    "executable": "/usr/bin/python3.12",
+    "executable_sha256": "1643dacd9feaedc58f3cc581e4d22577dfe25c09b10282936186ccf0f2e61118",
+    "expected_executable": null,
+    "pid": 1732767,
+    "role": "tls-front-door",
+    "start_ticks": "14628687"
+  },
+  {
+    "cmdline": [
+      "/tmp/osl-task-4701-cache/osl-task-4701-speaker",
+      "--host",
+      "wss://localhost:17443",
+      "--api-key",
+      "OSLTask4701Key",
+      "--api-secret",
+      "<redacted-api-secret>",
+      "--room",
+      "osl-task-4701-one-machine",
+      "--identity",
+      "speaker-A",
+      "--frames",
+      "3000",
+      "--interval-ms",
+      "200",
+      "--start-unix-ns",
+      "1786480504360272118"
+    ],
+    "executable": "/tmp/osl-task-4701-cache/osl-task-4701-speaker",
+    "executable_sha256": "a028cbfdff72d0b6abaf839c897506f4e391a5c8a294736d45eb12a4711e30fa",
+    "expected_executable": "/tmp/osl-task-4701-cache/osl-task-4701-speaker",
+    "pid": 1732792,
+    "role": "speaker-A",
+    "start_ticks": "14628703"
+  },
+  {
+    "cmdline": [
+      "/tmp/osl-task-4701-cache/osl-task-4701-speaker",
+      "--host",
+      "wss://localhost:17443",
+      "--api-key",
+      "OSLTask4701Key",
+      "--api-secret",
+      "<redacted-api-secret>",
+      "--room",
+      "osl-task-4701-one-machine",
+      "--identity",
+      "speaker-B",
+      "--frames",
+      "3000",
+      "--interval-ms",
+      "200",
+      "--start-unix-ns",
+      "1786480504360272118"
+    ],
+    "executable": "/tmp/osl-task-4701-cache/osl-task-4701-speaker",
+    "executable_sha256": "a028cbfdff72d0b6abaf839c897506f4e391a5c8a294736d45eb12a4711e30fa",
+    "expected_executable": "/tmp/osl-task-4701-cache/osl-task-4701-speaker",
+    "pid": 1732797,
+    "role": "speaker-B",
+    "start_ticks": "14628703"
+  },
+  {
+    "cmdline": [
+      "/tmp/osl-task-4701-cache/osl-task-4701-speaker",
+      "--host",
+      "wss://localhost:17443",
+      "--api-key",
+      "OSLTask4701Key",
+      "--api-secret",
+      "<redacted-api-secret>",
+      "--room",
+      "osl-task-4701-one-machine",
+      "--identity",
+      "speaker-C",
+      "--frames",
+      "3000",
+      "--interval-ms",
+      "200",
+      "--start-unix-ns",
+      "1786480504360272118"
+    ],
+    "executable": "/tmp/osl-task-4701-cache/osl-task-4701-speaker",
+    "executable_sha256": "a028cbfdff72d0b6abaf839c897506f4e391a5c8a294736d45eb12a4711e30fa",
+    "expected_executable": "/tmp/osl-task-4701-cache/osl-task-4701-speaker",
+    "pid": 1732798,
+    "role": "speaker-C",
+    "start_ticks": "14628704"
+  }
+]

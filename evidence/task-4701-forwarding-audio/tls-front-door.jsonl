@@ -1,0 +1,5 @@
+{"event": "listening", "listen": "127.0.0.1:17443", "minimum_tls": "TLSv1.3", "pid": 1732767, "upstream": "127.0.0.1:17880"}
+{"event": "clear_refused", "peer": "127.0.0.1:49300", "verdict": "transport encryption required"}
+{"cipher": "TLS_AES_256_GCM_SHA384", "event": "tls_handshake", "peer": "127.0.0.1:49314", "protocol": "TLSv1.3", "transport_encryption_required": true}
+{"cipher": "TLS_AES_256_GCM_SHA384", "event": "tls_handshake", "peer": "127.0.0.1:49328", "protocol": "TLSv1.3", "transport_encryption_required": true}
+{"cipher": "TLS_AES_256_GCM_SHA384", "event": "tls_handshake", "peer": "127.0.0.1:49334", "protocol": "TLSv1.3", "transport_encryption_required": true}

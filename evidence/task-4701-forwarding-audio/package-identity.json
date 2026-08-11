@@ -1,0 +1,11 @@
+{
+  "front_door_config_sha256": "42706887050e85922e6cf7d5ce7278ba5d3cd0b61d7a8a0d5a0980a4676bc46f",
+  "livekit_config_sha256": "89a3b3c4a9dd17812ce990935b26a422ad061086bb4d1b9f6f0c51ed039db719",
+  "release_server_binary_sha256": "51a1bbe04439b33d6d7a6d6d83fdefad9b938162c341f0f07f75af03e456b49a",
+  "release_server_tar_sha256": "c020fac437b7cc9b776eef1ad5ea8af77be9acfa07602eca20a3a44930dfbc70",
+  "release_server_version": "livekit-server version 1.13.5",
+  "source_revision": "3b9f118327b257301083a7c4aa46076c8012918a",
+  "speaker_binary_sha256": [
+    "a028cbfdff72d0b6abaf839c897506f4e391a5c8a294736d45eb12a4711e30fa"
+  ]
+}

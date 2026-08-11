@@ -1,0 +1,11 @@
+TASK4701 MUTANT name=starve-speaker-A exit=1 named=capability=speaker-A-frame-count
+TASK4701 MUTANT name=starve-speaker-B exit=1 named=capability=speaker-B-frame-count
+TASK4701 MUTANT name=starve-speaker-C exit=1 named=capability=speaker-C-frame-count
+TASK4701 MUTANT name=substitute-binary exit=1 named=capability=release-binary-identity
+TASK4701 MUTANT name=substitute-configuration exit=1 named=capability=release-configuration-identity
+TASK4701 MUTANT name=omit-artifact exit=1 named=capability=artifact-completeness
+TASK4701 MUTANT name=enable-decode-reencode exit=1 named=capability=zero-decode-reencode
+TASK4701 MUTANT name=enable-recording exit=1 named=capability=no-recording-output
+TASK4701 MUTANT name=allow-clear-client exit=1 named=capability=mandatory-transport-encryption
+TASK4701 MUTANT name=reencode-payload exit=1 named=capability=payload-pass-through
+TASK4701 MUTANTS restored=green total=10
