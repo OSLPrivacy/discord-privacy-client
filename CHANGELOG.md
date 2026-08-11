@@ -6,6 +6,8 @@ and this project follows semver.
 
 ## [Unreleased]
 
+- Message appearance controls are preview features and may not affect every live thread in this release.
+
 ## [0.1.0] - 2026-07-31 — v1 alpha foundation
 
 ### Added
