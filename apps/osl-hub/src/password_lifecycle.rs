@@ -12,6 +12,7 @@ use ipc::AppState;
 use keystore::{Identity, Sealer};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use zeroize::Zeroize;
 
 use crate::core_bridge::HubCoreState;
 
@@ -157,6 +158,14 @@ pub struct HubMainPasswordSetupResult {
     pub readiness: HubPasswordReadiness,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HubMainPasswordNoRecoverySetupResult {
+    pub encrypted_state_reload_complete: bool,
+    pub encrypted_state_reload_issue_count: usize,
+    pub readiness: HubPasswordReadiness,
+}
+
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecoveryWordRetypeAnswer {
@@ -274,6 +283,63 @@ pub fn create_native_identity_with_owner_authorization_signoff(
     owner_authorization_signoff: HubIdentityCreationOwnerSignoff,
 ) -> Result<HubIdentitySetupResult, String> {
     create_native_identity_after_owner_authorization_signoff(state, owner_authorization_signoff)
+}
+
+pub fn create_native_identity_without_recovery_with_owner_authorization_signoff(
+    state: &HubCoreState,
+    owner_authorization_signoff: HubIdentityCreationOwnerSignoff,
+) -> Result<HubIdentitySetupResult, String> {
+    let _lifecycle = state
+        .lifecycle_lock
+        .lock()
+        .map_err(|_| "OSL account lifecycle is unavailable".to_owned())?;
+    let current = readiness(state);
+    let dir = isolated_account_dir()?;
+    let sealer = persistent_sealer()?;
+    create_native_identity_without_recovery_using(
+        state,
+        &current,
+        &dir,
+        sealer.as_ref(),
+        owner_authorization_signoff,
+    )
+}
+
+/// Generate the service-neutral identity used by the explicit unrecoverable
+/// setup branch. The random seed is wiped before this value can reach storage,
+/// so the resulting identity has no device-transfer recovery material.
+pub fn generate_native_identity_without_recovery() -> Identity {
+    let mut identity = keystore::generate_identity("osl-pending".to_owned());
+    if let Some(mut entropy) = identity.recovery_entropy.take() {
+        entropy.zeroize();
+    }
+    identity.user_id = native_user_id(&identity);
+    identity
+}
+
+fn create_native_identity_without_recovery_using(
+    state: &HubCoreState,
+    current: &HubPasswordReadiness,
+    dir: &Path,
+    sealer: &dyn Sealer,
+    owner_authorization_signoff: HubIdentityCreationOwnerSignoff,
+) -> Result<HubIdentitySetupResult, String> {
+    require_identity_creation_owner_authorization_signoff(owner_authorization_signoff)?;
+    if !current.can_create_identity {
+        return Err(
+            "OSL identity creation is not available in the current access state".to_owned(),
+        );
+    }
+    ensure_empty_identity_slot(&state.osl, dir)?;
+    let identity = generate_native_identity_without_recovery();
+    install_identity(
+        &state.osl,
+        identity,
+        dir,
+        sealer,
+        None,
+        !current.main_password_set,
+    )
 }
 
 pub fn create_native_identity(
@@ -417,6 +483,40 @@ pub fn setup_main_password(
         password_recovery_phrase: outcome.password_recovery_phrase,
         encrypted_state_reload_complete: outcome.reload_issue_count == 0,
         encrypted_state_reload_issue_count: outcome.reload_issue_count,
+        readiness: readiness(state),
+    })
+}
+
+pub fn setup_main_password_without_recovery(
+    state: &HubCoreState,
+    password: String,
+) -> Result<HubMainPasswordNoRecoverySetupResult, String> {
+    ipc::main_password::validate_new_password(&password).map_err(|_| {
+        "OSL main password must contain 6 to 128 printable keyboard characters".to_owned()
+    })?;
+    let _lifecycle = state
+        .lifecycle_lock
+        .lock()
+        .map_err(|_| "OSL account lifecycle is unavailable".to_owned())?;
+    let current = readiness(state);
+    if !current.identity_loaded {
+        return Err("Create or import a local OSL identity before setting its password".to_owned());
+    }
+    if current.main_password_set {
+        return Err("OSL main password is already configured".to_owned());
+    }
+    let account_dir = isolated_account_dir()?;
+    ipc::main_password::set_main_password_without_recovery(&account_dir, &password)?;
+    let report = ipc::state_reload::reload_encrypted_state_after_unlock(&state.osl, &account_dir)
+        .map_err(|_| {
+        "OSL password was set, but encrypted state reload could not start".to_owned()
+    })?;
+    ipc::session_lock::arm_idle_lock();
+    crate::account_recovery::record_explicit_no_recovery_secret_choice()?;
+    crate::original_bootstrap::run_autostart_local(&state.osl);
+    Ok(HubMainPasswordNoRecoverySetupResult {
+        encrypted_state_reload_complete: report.errors.is_empty(),
+        encrypted_state_reload_issue_count: report.errors.len(),
         readiness: readiness(state),
     })
 }
@@ -951,6 +1051,40 @@ mod tests {
         assert!(dir.join("identity.json").exists());
         assert!(state.osl.identity.lock().unwrap().is_some());
 
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn explicit_no_recovery_identity_persists_no_recovery_entropy() {
+        let dir = temp_dir("identity-no-recovery");
+        let state = HubCoreState::default();
+        let current = readiness_from(false, false, true, 0, 0);
+        let sealer = keystore::MemorySealer::new();
+
+        let result = create_native_identity_without_recovery_using(
+            &state,
+            &current,
+            &dir,
+            &sealer,
+            HubIdentityCreationOwnerSignoff::owner_authorized_for_new_identity(),
+        )
+        .unwrap();
+        assert!(result.identity_recovery_phrase.is_none());
+        let loaded = keystore::load_identity(&dir.join("identity.json"), &sealer).unwrap();
+        assert!(loaded.recovery_entropy.is_none());
+        assert!(state
+            .osl
+            .identity
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .recovery_entropy
+            .is_none());
+
+        println!(
+            "TASK0334A_NO_SECRET_IDENTITY recovery_phrase_generated=0 recovery_entropy_stored=0"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 

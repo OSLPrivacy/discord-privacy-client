@@ -404,6 +404,11 @@ description = "Create one service-neutral OSL identity in persistent device stor
 commands.allow = ["create_hub_osl_identity"]
 
 [[permission]]
+identifier = "allow-create-hub-osl-identity-without-recovery"
+description = "Create one service-neutral OSL identity without device-transfer recovery material after the owner explicitly chooses the unrecoverable setup branch."
+commands.allow = ["create_hub_osl_identity_without_recovery"]
+
+[[permission]]
 identifier = "allow-import-hub-osl-identity-phrase"
 description = "Import one OSL-native identity phrase into an empty isolated OSL Privacy account from the trusted bundled OSL Privacy UI."
 commands.allow = ["import_hub_osl_identity_phrase"]
@@ -412,6 +417,11 @@ commands.allow = ["import_hub_osl_identity_phrase"]
 identifier = "allow-setup-hub-main-password"
 description = "Set a strong local main passphrase once for an already-loaded isolated OSL Privacy identity and reload encrypted state."
 commands.allow = ["setup_hub_main_password"]
+
+[[permission]]
+identifier = "allow-setup-hub-main-password-without-recovery"
+description = "Set the main password without generating or storing recovery words after the owner explicitly chooses the unrecoverable setup branch."
+commands.allow = ["setup_hub_main_password_without_recovery"]
 
 [[permission]]
 identifier = "allow-view-hub-recovery-phrase"

@@ -79,7 +79,8 @@ use osl_privacy_hub::native_window_host::{
 use osl_privacy_hub::osl_mail::{self, OslMailState, OslMailStatus};
 use osl_privacy_hub::osl_profile::{self, HubProfileDto, HubProfileInput};
 use osl_privacy_hub::password_lifecycle::{
-    self, HubIdentityCreationOwnerSignoff, HubIdentitySetupResult, HubMainPasswordSetupResult,
+    self, HubIdentityCreationOwnerSignoff, HubIdentitySetupResult,
+    HubMainPasswordNoRecoverySetupResult, HubMainPasswordSetupResult,
 };
 use osl_privacy_hub::peer_attachment_io;
 use osl_privacy_hub::preferences::PreviewState;
@@ -648,7 +649,7 @@ fn save_onboarding_preferences(
     state: State<'_, PreviewState>,
     preferences: OnboardingPreferences,
 ) -> Result<OnboardingPreferences, String> {
-    state.save(preferences)
+    account_recovery::save_supported_setup_completion(&state, preferences)
 }
 
 /// Persist the explicit connection route selected during onboarding.
@@ -1568,6 +1569,22 @@ async fn create_hub_osl_identity(
 }
 
 #[tauri::command]
+async fn create_hub_osl_identity_without_recovery(
+    app: tauri::AppHandle,
+    owner_authorization_signoff: HubIdentityCreationOwnerSignoff,
+) -> Result<HubIdentitySetupResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<HubCoreState>();
+        password_lifecycle::create_native_identity_without_recovery_with_owner_authorization_signoff(
+            &state,
+            owner_authorization_signoff,
+        )
+    })
+    .await
+    .map_err(|_| "OSL no-recovery identity setup worker failed".to_string())?
+}
+
+#[tauri::command]
 async fn import_hub_osl_identity_phrase(
     app: tauri::AppHandle,
     recovery_phrase: String,
@@ -1591,6 +1608,19 @@ async fn setup_hub_main_password(
     })
     .await
     .map_err(|_| "OSL password setup worker failed".to_string())?
+}
+
+#[tauri::command]
+async fn setup_hub_main_password_without_recovery(
+    app: tauri::AppHandle,
+    password: String,
+) -> Result<HubMainPasswordNoRecoverySetupResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<HubCoreState>();
+        password_lifecycle::setup_main_password_without_recovery(&state, password)
+    })
+    .await
+    .map_err(|_| "OSL no-recovery password setup worker failed".to_string())?
 }
 
 /// T15-A3/A4: read the password-recovery phrase back after onboarding.
@@ -1618,7 +1648,7 @@ async fn check_hub_recovery_word_retype(
     request: password_lifecycle::RecoveryWordRetypeRequest,
 ) -> Result<password_lifecycle::RecoveryWordRetypeResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        password_lifecycle::check_recovery_word_retype(request)
+        account_recovery::record_setup_recovery_word_confirmation(request)
     })
     .await
     .map_err(|_| "OSL recovery word check worker failed".to_owned())?

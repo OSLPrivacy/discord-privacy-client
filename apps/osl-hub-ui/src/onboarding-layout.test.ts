@@ -686,14 +686,15 @@ describe("fresh-account continuation", () => {
   it("returns from each service to the remaining app queue before completion", () => {
     const continuation = functionSource("continueOnboardingFromService", "currentHomeTileIds");
     const workspace = functionSource("bindWorkspace", "ttlSeconds");
-    const finishStart = workspace.indexOf('querySelector("#service-guide-finish")');
+    const skipStart = workspace.indexOf('querySelector("#service-guide-skip")');
     const exitStart = workspace.indexOf('querySelector("#service-guide-exit")');
     const nativeBackStart = workspace.indexOf('querySelector("#native-app-back")');
-    expect(finishStart).toBeGreaterThanOrEqual(0);
-    expect(exitStart).toBeGreaterThan(finishStart);
+    expect(skipStart).toBeGreaterThanOrEqual(0);
+    expect(exitStart).toBeGreaterThan(skipStart);
     expect(nativeBackStart).toBeGreaterThan(exitStart);
     expect(continuation).toContain("advanceOnboardingConnection(completedAppId)");
-    expect(workspace.slice(finishStart, exitStart)).toContain("advanceOnboardingConnection(activeHomeAppId)");
+    expect(workspace.slice(skipStart, exitStart)).toContain("advanceOnboardingConnection(activeHomeAppId)");
+    expect(workspace).not.toContain('querySelector("#service-guide-finish")');
     expect(workspace.slice(exitStart, nativeBackStart)).toContain("clearServiceOnboardingResume()");
     expect(functionSource("completeSixStepOnboarding", "completeOnboarding")).toContain("clearServiceOnboardingResume()");
   });
@@ -740,7 +741,7 @@ describe("fresh-account continuation", () => {
     const password = functionSource("bindPasswordForm", "bindImportForm");
     const imported = functionSource("bindImportForm", "continueOnboardingFromService");
     const burn = functionSource("executeBurn", "ttlSeconds");
-    expect(password).toMatch(/recoveryBundle = \{[\s\S]*?recoverySavedAcknowledged = false;[\s\S]*?onboardingRoute = "recovery"/);
+    expect(password).toMatch(/recoveryBundle = noRecoverySecret \? null : \{[\s\S]*?recoverySavedAcknowledged = false;[\s\S]*?onboardingRoute = "recovery"/);
     expect(imported).toMatch(/recoveryBundle = \{[\s\S]*?recoverySavedAcknowledged = false;[\s\S]*?onboardingRoute = "recovery"/);
     expect(burn).toMatch(/localStorage\.clear\(\);[\s\S]*?recoveryBundle = null;[\s\S]*?recoverySavedAcknowledged = false;/);
   });

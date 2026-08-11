@@ -532,8 +532,10 @@ macro_rules! hub_tauri_commands {
             clear_hub_activation_code,
             unlock_hub_password_gate,
             create_hub_osl_identity,
+            create_hub_osl_identity_without_recovery,
             import_hub_osl_identity_phrase,
             setup_hub_main_password,
+            setup_hub_main_password_without_recovery,
             view_hub_recovery_phrase,
             check_hub_recovery_word_retype,
             get_hub_recovery_kit_unsaved,
@@ -1689,6 +1691,20 @@ mod tauri_registration_surface_tests {
             &permissions,
             &capability,
             &["check_hub_recovery_word_retype"],
+        );
+    }
+
+    #[test]
+    fn explicit_no_recovery_setup_commands_are_registered_and_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &[
+                "create_hub_osl_identity_without_recovery",
+                "setup_hub_main_password_without_recovery",
+            ],
         );
     }
 

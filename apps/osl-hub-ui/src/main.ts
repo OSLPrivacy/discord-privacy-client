@@ -110,6 +110,7 @@ import {
   checkHubRecoveryWordRetype,
   clearHubActivationCode,
   createHubOslIdentity,
+  createHubOslIdentityWithoutRecovery,
   identityProtectionStatus,
   importHubOslIdentityPhrase,
   isActivationCode,
@@ -124,6 +125,7 @@ import {
   removeHubAlternatePassword,
   setHubAlternatePassword,
   setupHubMainPassword,
+  setupHubMainPasswordWithoutRecovery,
   unavailableCoreIntegration,
   unconfiguredLicenseState,
   unlockHubPasswordGate,
@@ -2803,13 +2805,14 @@ function recoveryKitStateNow(): RecoveryKitState {
 }
 
 function applyRecoveryKitAction(action: RecoveryKitAction): "none" | "rejected" | "leave-recovery" {
-  const { state, outcome } = recoveryKitReducer(recoveryKitStateNow(), action);
+  const previous = recoveryKitStateNow();
+  const { state, outcome } = recoveryKitReducer(previous, action);
   if (outcome === "rejected") return outcome;
   recoveryBundle = state.secrets;
   recoveryShownWithoutProtection = state.shownWithoutProtection;
   recoverySavedAcknowledged = state.savedAcknowledged;
   recoveryNoSecretAcknowledged = state.noRecoverySecretAcknowledged;
-  void persistRecoveryKitUnsaved(state.kitUnsaved);
+  if (state.kitUnsaved !== previous.kitUnsaved) void persistRecoveryKitUnsaved(state.kitUnsaved);
   return outcome;
 }
 
@@ -2964,7 +2967,7 @@ function identityPasswordForm(title: string, action: string, mode: "setup" | "un
   // the accessibility tree is a published surface this project already drives
   // the app through. See `unlock-screen-single-credential.test.ts`.
   if (!setup) return `<section class="unlock-card" aria-labelledby="route-heading"><div class="unlock-logo-stage" aria-hidden="true"><img class="osl-logo logo-treatment" src="${oslVectorLogoUrl}" alt=""/></div><h1 id="route-heading" tabindex="-1">Sign in</h1><form class="password-form unlock-form" id="identity-password-form" data-password-mode="unlock" novalidate><label class="sr-only" for="identity-password">Password</label><div class="password-input-row"><input id="identity-password" type="password" minlength="6" maxlength="128" autocomplete="current-password" placeholder="Password" required aria-describedby="password-error" autofocus/><button class="password-eye" type="button" data-password-toggle="identity-password" aria-controls="identity-password" aria-label="Show password">${passwordEyeIcon()}</button></div><p class="unlock-error" id="password-error" role="alert"></p><button class="button primary" id="identity-password-submit" type="submit" disabled>Unlock</button></form><button class="signin-link" type="button" data-onboarding="account-recovery">Forgot password?</button><button class="text-back" data-onboarding="welcome">← Back</button></section>`;
-  return `<h1 id="route-heading" class="password-screen-title" tabindex="-1">${title}</h1><form class="setup-surface password-form password-screen" id="identity-password-form" data-password-mode="setup" novalidate><label for="identity-password">Password</label><div class="password-input-row"><input id="identity-password" type="password" minlength="6" maxlength="128" autocomplete="new-password" required aria-describedby="password-help password-error"/><button class="password-eye" type="button" data-password-toggle="identity-password" aria-controls="identity-password" aria-label="Show password">${passwordEyeIcon()}</button></div><small id="password-help">6 minimum. 12+ suggested.</small><label for="identity-password-confirm">Confirm</label><div class="password-input-row"><input id="identity-password-confirm" type="password" minlength="6" maxlength="128" autocomplete="new-password" required/><button class="password-eye" type="button" data-password-toggle="identity-password-confirm" aria-controls="identity-password-confirm" aria-label="Show password">${passwordEyeIcon()}</button></div><p class="unlock-error" id="password-error" role="alert"></p><button class="signin-unlock" id="identity-password-submit" type="submit" disabled><span class="signin-unlock-label">${action}</span>${signinArrowIcon()}</button></form><button class="text-back password-screen-back" data-onboarding="welcome">← Back</button>`;
+  return `<h1 id="route-heading" class="password-screen-title" tabindex="-1">${title}</h1><form class="setup-surface password-form password-screen" id="identity-password-form" data-password-mode="setup" novalidate><label for="identity-password">Password</label><div class="password-input-row"><input id="identity-password" type="password" minlength="6" maxlength="128" autocomplete="new-password" required aria-describedby="password-help password-error"/><button class="password-eye" type="button" data-password-toggle="identity-password" aria-controls="identity-password" aria-label="Show password">${passwordEyeIcon()}</button></div><small id="password-help">6 minimum. 12+ suggested.</small><label for="identity-password-confirm">Confirm</label><div class="password-input-row"><input id="identity-password-confirm" type="password" minlength="6" maxlength="128" autocomplete="new-password" required/><button class="password-eye" type="button" data-password-toggle="identity-password-confirm" aria-controls="identity-password-confirm" aria-label="Show password">${passwordEyeIcon()}</button></div><label class="recovery-saved-row"><input id="identity-no-recovery-secret" type="checkbox"/><span>Continue without recovery words. If I forget this password, this account cannot be recovered.</span></label><p class="unlock-error" id="password-error" role="alert"></p><button class="signin-unlock" id="identity-password-submit" type="submit" disabled><span class="signin-unlock-label">${action}</span>${signinArrowIcon()}</button></form><button class="text-back password-screen-back" data-onboarding="welcome">← Back</button>`;
 }
 
 export function sendingSetupContent(): string {
@@ -3762,19 +3765,31 @@ function bindPasswordForm(): void {
     if (!setupMode) password.value = "";
     try {
       if (setupMode) {
-        const identity = core.readiness.identityLoaded ? null : await createHubOslIdentity(true);
+        const noRecoverySecret = document.querySelector<HTMLInputElement>("#identity-no-recovery-secret")?.checked === true;
+        const identity = core.readiness.identityLoaded
+          ? null
+          : noRecoverySecret
+            ? await createHubOslIdentityWithoutRecovery()
+            : await createHubOslIdentity(true);
         if (identity) identityStorageMethod = identity.storageMethod;
-        const passwordResult = await setupHubMainPassword(secret);
+        const passwordResult = noRecoverySecret
+          ? await setupHubMainPasswordWithoutRecovery(secret)
+          : await setupHubMainPassword(secret);
         core = await loadCoreIntegration();
         // The locked bootstrap intentionally cannot read the encrypted
         // service registry. Refresh it immediately after the first password
         // installs the storage key, before the setup app chooser is shown.
         services = await loadLinkedServices().catch(() => services);
         passwordRoleStatus = await loadHubPasswordRoleStatus().catch(() => null);
-        recoveryBundle = {
+        const passwordRecoveryPhrase = "passwordRecoveryPhrase" in passwordResult
+          && typeof passwordResult.passwordRecoveryPhrase === "string"
+          ? passwordResult.passwordRecoveryPhrase
+          : null;
+        if (!noRecoverySecret && passwordRecoveryPhrase === null) throw new Error("OSL did not return recovery words");
+        recoveryBundle = noRecoverySecret ? null : {
           userId: identity?.userId ?? core.readiness.activeOslUserId ?? "Local OSL identity",
           identityPhrase: identity?.identityRecoveryPhrase ?? null,
-          passwordPhrase: passwordResult.passwordRecoveryPhrase,
+          passwordPhrase: passwordRecoveryPhrase ?? "",
         };
         recoverySavedAcknowledged = false;
         recoveryNoSecretAcknowledged = false;
@@ -3793,7 +3808,9 @@ function bindPasswordForm(): void {
         // to create the account. Go to the recovery screen — which is where
         // the one-shot phrases are — and say plainly that this screen will not
         // be offered again.
-        const recoveryKitReminderPersisted = await persistRecoveryKitUnsaved(true);
+        const recoveryKitReminderPersisted = noRecoverySecret
+          ? true
+          : await persistRecoveryKitUnsaved(true);
         onboardingRoute = "recovery";
         await proveRecoveryCaptureProtection();
         if (!recoveryKitReminderPersisted) showToast("Save your recovery kit now. OSL could not store the reminder that brings you back to this screen.");
@@ -7624,9 +7641,13 @@ function bindWorkspace(): void {
     if (activeEmbeddedHost || activeNativeHostId || activeDefaultBrowserCompanion) await closeActiveServiceSurface();
     if (route === "settings" && settingsSection === "scrub") clearPrivacyScanState();
     if (route === "settings" && settingsSection === "account") newIdentityRecoveryPhrase = null;
-    if (onboardingServiceSetup && requestedRoute === "home") {
-      clearServiceGuide();
-      advanceOnboardingConnection(activeHomeAppId);
+    if (onboardingServiceSetup) {
+      if (requestedRoute === "home") {
+        clearServiceGuide();
+        advanceOnboardingConnection(activeHomeAppId);
+      }
+      // Setup-owned service surfaces cannot deep-route into Settings or Home.
+      // Only the terminal Home intent above advances through the shared commit.
       return;
     }
     route = requestedRoute;
@@ -7845,15 +7866,6 @@ function bindWorkspace(): void {
     clearServiceGuide();
     render();
   });
-  document.querySelector("#service-guide-finish")?.addEventListener("click", () => {
-    if (onboardingServiceSetup) {
-      clearServiceGuide();
-      advanceOnboardingConnection(activeHomeAppId);
-      return;
-    }
-    clearServiceGuide();
-    render();
-  });
   document.querySelector("#service-guide-exit")?.addEventListener("click", async () => {
     if (onboardingServiceSetup) {
       clearServiceOnboardingResume();
@@ -7873,7 +7885,15 @@ function bindWorkspace(): void {
     serviceAccountPickerOpen = false;
     render();
   });
-  document.querySelector("#native-app-back")?.addEventListener("click", async () => { await closeActiveServiceSurface(); serviceAccountPickerOpen = false; route = "home"; activeService = null; activeHomeAppId = null; render(); });
+  document.querySelector("#native-app-back")?.addEventListener("click", async () => {
+    await closeActiveServiceSurface();
+    serviceAccountPickerOpen = false;
+    route = onboardingServiceSetup ? "onboarding" : "home";
+    if (onboardingServiceSetup) onboardingRoute = "apps";
+    activeService = null;
+    activeHomeAppId = null;
+    render();
+  });
   document.querySelectorAll("[data-edit-home]").forEach((button) => button.addEventListener("click", () => { homeEditMode = !homeEditMode; render(); }));
   document.querySelector("#home-add-apps")?.addEventListener("click", () => {
     route = "settings";
@@ -10042,7 +10062,9 @@ async function bootstrap(): Promise<void> {
       bootSupportDeadlineMs,
     ).catch(() => null);
     const preferences = await preferencesRequest ?? {
-      onboardingComplete: core.readiness.bootstrapStatus === "ready",
+      // Native readiness proves keys can be loaded, not that the owner chose a
+      // supported recovery branch. Missing preferences always resume setup.
+      onboardingComplete: false,
       setup: parseSetupState(null),
       showPlaintextPreview: true,
       windowCaptureEnabled: true,
@@ -10295,6 +10317,10 @@ type OslHubUiTestStatePatch = {
   /** Seed the one-shot recovery material so focused UI tests can drive the
    * real warning controls without creating an account first. */
   recoveryBundle?: RecoveryKitSecrets | null;
+  /** Setup-route state for real-listener completion crawls. */
+  onboardingServiceSetup?: boolean;
+  activeHomeAppId?: HomeAppId | null;
+  onboardingConnectAppId?: HomeAppId | null;
 };
 
 function testHubPerson(person: Partial<HubPerson> & { personId: string }): HubPerson {
@@ -10339,11 +10365,14 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   settingsSection = "account";
   friendsSettingsState = defaultFriendsSettingsState();
   activeService = null;
-  activeHomeAppId = null;
+  activeHomeAppId = patch.activeHomeAppId ?? null;
   activeOslChatPersonId = null;
   activeOslChatContext = null;
   oslChatBusy = false;
   serviceAccountPickerOpen = false;
+  onboardingServiceSetup = patch.onboardingServiceSetup ?? false;
+  onboardingConnectAppId = patch.onboardingConnectAppId ?? null;
+  handledOnboardingConnectApps.clear();
   friendsDialogOpen = false;
   ownedConfirmation = null;
   ownedConfirmationBusy = false;

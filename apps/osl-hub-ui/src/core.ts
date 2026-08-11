@@ -76,6 +76,12 @@ export interface HubMainPasswordSetupResult {
   readiness: HubPasswordReadiness;
 }
 
+export interface HubMainPasswordNoRecoverySetupResult {
+  encryptedStateReloadComplete: boolean;
+  encryptedStateReloadIssueCount: number;
+  readiness: HubPasswordReadiness;
+}
+
 export interface HubPasswordRoleStatus {
   mainPasswordSet: boolean;
   stealthPasswordSet: boolean;
@@ -259,6 +265,15 @@ export async function createHubOslIdentity(ownerAuthorization: true | HubIdentit
   return parseIdentitySetupResult(await invoke<unknown>("create_hub_osl_identity", { ownerAuthorizationSignoff }));
 }
 
+export async function createHubOslIdentityWithoutRecovery(): Promise<HubIdentitySetupResult> {
+  if (!isTauriRuntime()) throw new Error("identity creation unavailable");
+  const ownerAuthorizationSignoff = ownerAuthorizationSignoffFrom(true);
+  return parseIdentitySetupResult(await invoke<unknown>(
+    "create_hub_osl_identity_without_recovery",
+    { ownerAuthorizationSignoff },
+  ));
+}
+
 export async function importHubOslIdentityPhrase(recoveryPhrase: string): Promise<HubIdentitySetupResult> {
   if (!isTauriRuntime() || !isRecoveryPhrase(recoveryPhrase)) throw new Error("identity import unavailable");
   return parseIdentitySetupResult(await invoke<unknown>("import_hub_osl_identity_phrase", { recoveryPhrase: recoveryPhrase.trim() }));
@@ -267,6 +282,13 @@ export async function importHubOslIdentityPhrase(recoveryPhrase: string): Promis
 export async function setupHubMainPassword(password: string): Promise<HubMainPasswordSetupResult> {
   if (!isTauriRuntime() || !isValidNewMainPassword(password)) throw new Error("setup unavailable");
   return parseMainPasswordSetupResult(await invoke<unknown>("setup_hub_main_password", { password }));
+}
+
+export async function setupHubMainPasswordWithoutRecovery(password: string): Promise<HubMainPasswordNoRecoverySetupResult> {
+  if (!isTauriRuntime() || !isValidNewMainPassword(password)) throw new Error("setup unavailable");
+  return parseMainPasswordNoRecoverySetupResult(
+    await invoke<unknown>("setup_hub_main_password_without_recovery", { password }),
+  );
 }
 
 export async function checkHubRecoveryWordRetype(
@@ -420,6 +442,19 @@ export function parseMainPasswordSetupResult(raw: unknown): HubMainPasswordSetup
     || Array.isArray(raw.readiness)
   ) throw new Error("invalid password setup response");
   return raw as unknown as HubMainPasswordSetupResult;
+}
+
+export function parseMainPasswordNoRecoverySetupResult(raw: unknown): HubMainPasswordNoRecoverySetupResult {
+  if (!isExactRecord(raw, ["encryptedStateReloadComplete", "encryptedStateReloadIssueCount", "readiness"])) throw new Error("invalid password setup response");
+  if (
+    typeof raw.encryptedStateReloadComplete !== "boolean"
+    || !Number.isSafeInteger(raw.encryptedStateReloadIssueCount)
+    || (raw.encryptedStateReloadIssueCount as number) < 0
+    || typeof raw.readiness !== "object"
+    || raw.readiness === null
+    || Array.isArray(raw.readiness)
+  ) throw new Error("invalid password setup response");
+  return raw as unknown as HubMainPasswordNoRecoverySetupResult;
 }
 
 export function parseCoreReadiness(raw: unknown): CoreReadiness {
