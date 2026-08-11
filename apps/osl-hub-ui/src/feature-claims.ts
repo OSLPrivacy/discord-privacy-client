@@ -21,6 +21,8 @@ export interface BurnGuaranteeCopyContract {
   limit: string;
 }
 
+export const RETENTION_UNATTENDED_PROMISE = "When retention expires, OSL schedules deletion automatically and retries failed cleanup without waiting for a person. OSL does not promise a staffed response time.";
+
 /** User-visible Burn wording approved by the public-claim allowlist. */
 export const BurnGuaranteeCopy: BurnGuaranteeCopyContract = Object.freeze({
   summary: "Burn cleans up. It does not un-send.",
@@ -74,5 +76,5 @@ export function burnFeatureClaimsMarkup(): string {
   const items = BurnGuaranteeCopy.items.map((item) => (
     `<li data-burn-guarantee="${item.id}" data-burn-reach="${item.state}"><strong>${item.title}</strong><span>${stateLabel(item.state)}</span><p>${item.body}</p></li>`
   )).join("");
-  return `<p><strong>${BurnGuaranteeCopy.summary}</strong> ${BurnGuaranteeCopy.intro}</p><ul>${items}</ul><p>${BurnGuaranteeCopy.limit}</p>`;
+  return `<p><strong>${BurnGuaranteeCopy.summary}</strong> ${BurnGuaranteeCopy.intro}</p><ul>${items}</ul><p>${BurnGuaranteeCopy.limit}</p><p data-retention-recovery="unattended">${RETENTION_UNATTENDED_PROMISE}</p>`;
 }

@@ -59,6 +59,7 @@ import {
   sweepExpiredLinkGrantConsumptions,
   sweepExpiredLinks,
 } from "./lib/sweep.js";
+import { drainTerminalRetentionReports } from "./lib/retention-cleanup-recovery.js";
 
 // Wrangler resolves Durable Object classes from the Worker module's exports.
 // Keeping this re-export beside the default Worker entry makes the binding in
@@ -107,6 +108,11 @@ export default {
       console.log(CYCLE_MARKER);
     } catch {
       console.error("[attachment-sweep] failed");
+    }
+    try {
+      await drainTerminalRetentionReports(env);
+    } catch {
+      console.error("[retention-terminal-report] failed");
     }
     try {
       await sweepExpiredLinks(env);

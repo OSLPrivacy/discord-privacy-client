@@ -353,6 +353,10 @@ pub const PRODUCTION_KEYS: &[ProductionKey] = &[
         placeholders: &[],
     },
     ProductionKey {
+        key: "service.storage.retention_unattended",
+        placeholders: &[],
+    },
+    ProductionKey {
         key: "service.storage.upload.unreachable",
         placeholders: &[],
     },

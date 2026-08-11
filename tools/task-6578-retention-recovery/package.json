@@ -1,0 +1,10 @@
+{
+  "name": "osl-task-6578-retention-recovery",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "6578": "node ./src/cli.mjs 6578",
+    "6579": "node ./src/cli.mjs 6579",
+    "test": "node --test ./test/*.test.mjs"
+  }
+}

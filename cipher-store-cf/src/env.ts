@@ -31,4 +31,10 @@ export interface Env {
    * self-deleting file host. See `lib/link-grant.ts`.
    */
   LINK_GRANT_PUBKEY_B64?: string;
+  /** Existing owner-report Bot API credential, stored only as a Worker secret. */
+  TELEGRAM_BOT_TOKEN?: string;
+  /** Existing comma-separated Telegram owner/operator destination allowlist. */
+  TELEGRAM_OPERATOR_CHAT_IDS?: string;
+  /** Legacy single owner destination retained during deployment migration. */
+  TELEGRAM_ADMIN_CHAT_ID?: string;
 }

@@ -88,6 +88,10 @@
       "value": "Encrypted storage could not complete that request."
     },
     {
+      "key": "service.storage.retention_unattended",
+      "value": "When retention expires, OSL schedules deletion automatically and retries failed cleanup without waiting for a person. OSL does not promise a staffed response time."
+    },
+    {
       "key": "service.payment_voucher.active",
       "value": "Your activation code is active."
     },
