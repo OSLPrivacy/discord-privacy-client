@@ -14754,12 +14754,14 @@ pub fn cmd_osl_export_history_for_copy(
         }
         messages.push(StoredMessageDto::from(message));
     }
-    let package = HistoryCopyPackage {
-        version: 1,
-        account,
-        messages,
-    };
-    seal_history_copy_package(&package, entropy)
+    seal_history_copy_package(
+        &HistoryCopyPackage {
+            version: 1,
+            account,
+            messages,
+        },
+        entropy,
+    )
 }
 
 fn seal_history_copy_package(
@@ -14792,7 +14794,6 @@ fn open_history_copy_package(blob_b64: &str, phrase: &str) -> Result<HistoryCopy
     }
     let mut entropy = [0u8; 16];
     entropy.copy_from_slice(&ev);
-
     let raw = STANDARD
         .decode(blob_b64.trim())
         .map_err(|e| format!("OSL: history copy: base64 decode: {e}"))?;

@@ -243,8 +243,9 @@ pub struct AppState {
     /// `crates/store` for the on-disk crypto + schema posture.
     pub message_store: Mutex<Option<MessageStore>>,
 
-    /// Session-visible data allowance bytes charged this month for explicit
-    /// history copies onto this device.
+    /// Bytes written under this device's at-rest key by explicit history-copy
+    /// actions in the current month.  Normal live delivery is not a history
+    /// copy and is therefore not charged to this counter.
     pub history_copy_data_allowance_this_month_bytes: AtomicU64,
 
     /// Sealed OSL-RN session and pin store for the active account. The sealer
