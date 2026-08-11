@@ -310,6 +310,11 @@ const LANDING_SCRIPT = `
       headers: { "content-type": "application/json", "x-osl-gesture": "1" },
       body: JSON.stringify({ t: token })
     }).then(function (res) {
+      if (res.status === 429) {
+        var limited = new Error("rate-limited");
+        limited.rateLimited = true;
+        throw limited;
+      }
       if (!res.ok) throw new Error("gone");
       released = true;
       return res.arrayBuffer();
@@ -343,7 +348,16 @@ const LANDING_SCRIPT = `
       present();
       say("Open now. The link stops working when you close this page, or in 60 seconds.", false);
       return null;
-    })["catch"](function () {
+    })["catch"](function (error) {
+      if (error && error.rateLimited && !released && !burned) {
+        // No ciphertext was released and the store kept the link. Restore the
+        // trusted-gesture control so this legitimate request remains available
+        // for a later service window instead of becoming a false terminal view.
+        revealed = false;
+        revealBtn.disabled = false;
+        say("The storage service is busy. This link is still pending; try again later.", true);
+        return;
+      }
       blank();
       say("This link is not available. It may already have been opened, or it may have expired.", true);
     });

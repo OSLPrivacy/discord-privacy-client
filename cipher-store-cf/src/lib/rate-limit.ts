@@ -9,27 +9,23 @@
 /// conditional D1 statement, which SQLite serialises, so the budget is a real
 /// ceiling rather than an approximation.
 ///
-/// **Anonymous blob fetches use D1.** Once fetch is authorized solely by an
-/// unlinkable capability, failed lookups are the one practical enumeration
-/// surface. The generic blob fetch bucket is therefore an atomic, fail-closed
-/// ceiling. Attachment and view-once reads remain on KV: they are separately
-/// capability- or grant-gated cost controls, not the anonymous blob namespace.
+/// **Every ciphertext release uses one D1 allowance.** Blob, attachment and
+/// view-once retrieval used to have three independent 120/hour buckets. Two of
+/// those were KV read/modify/write counters, so concurrency could exceed even
+/// their separate ceilings. TASK 6330 moves all three callers behind one
+/// atomic, fail-closed address-wide gate at this deployed Worker boundary.
 ///
-/// Either way the stored key is the same opaque value: a truncated HMAC of
-/// (bucket, client address) under a server-only key, so neither store can be
-/// dumped to enumerate likely addresses, and rows/entries are removed once
-/// their window closes.
-///
-/// KV-backed read buckets are approximate, not ceilings. The generic `fetch`
-/// bucket is deliberately excluded: it counts in D1 and is an enforced limit.
+/// The stored address key is an opaque truncated HMAC under a server-only key,
+/// so D1 cannot be dumped to enumerate likely addresses. Events are removed
+/// once their rolling window closes.
 ///
 /// Budgets (per IP, per rolling window):
 ///   uploads:  600 / hour
-///   anonymous blob fetches: 120 / hour
+///   all ciphertext fetches, together: 120 / rolling hour / address
 ///   deletes:  600 / hour
-///   attachment upload requests/fetches/deletes: 140 / 120 / 60 per hour
+///   attachment upload requests/deletes: 260 / 60 per hour
 ///   multipart session creation: 24 / hour
-///   view-once link create / fetch: 120 / 120 per hour
+///   view-once link create: 120 / hour
 ///
 /// Returns true when the action is allowed and the counter has
 /// been incremented; false when the cap has been hit (caller
@@ -47,7 +43,10 @@
 
 import type { Env } from "../env.js";
 
-const HOUR_SECONDS = 60 * 60;
+export const FETCH_BUDGET = 120;
+export const FETCH_LIMITING_WINDOW_SECONDS = 60 * 60;
+const FETCH_LIMITING_WINDOW_MS = FETCH_LIMITING_WINDOW_SECONDS * 1000;
+const HOUR_SECONDS = FETCH_LIMITING_WINDOW_SECONDS;
 
 // Rolling-window length. The counter key embeds the window start, so
 // the count resets every WINDOW_SECONDS instead of accumulating
@@ -65,21 +64,15 @@ export type Bucket =
   | "link-create"
   | "link-fetch";
 
-/// Buckets that require an exact, fail-closed ceiling. Most gate a write; the
-/// anonymous blob-fetch bucket is included to bound capability guessing.
-const MUTATION_BUCKETS: ReadonlySet<Bucket> = new Set<Bucket>([
-  "upload",
+const FETCH_BUCKETS: ReadonlySet<Bucket> = new Set<Bucket>([
   "fetch",
-  "delete",
-  "attachment-upload",
-  "attachment-session",
-  "attachment-delete",
-  "link-create",
+  "attachment-fetch",
+  "link-fetch",
 ]);
 
 const BUDGETS: Record<Bucket, number> = {
   upload: 600,
-  fetch: 120,
+  fetch: FETCH_BUDGET,
   delete: 600,
   // A 1 GiB upload uses up to 128 bounded multipart requests plus completion.
   // This still permits two full-size attempts/hour; session creation has its
@@ -93,7 +86,7 @@ const BUDGETS: Record<Bucket, number> = {
   // ordinary use, and holding the 64-slot reservation pool full now costs an
   // attacker at least eleven distinct addresses.
   "attachment-session": 24,
-  "attachment-fetch": 120,
+  "attachment-fetch": FETCH_BUDGET,
   "attachment-delete": 60,
   // View-once links. Creation is already grant-gated; this is the second
   // line. Retrieval uses the same 120/hr rate as anonymous blob fetch:
@@ -101,8 +94,13 @@ const BUDGETS: Record<Bucket, number> = {
   // a legitimate IP never approaches 120/hr, while a scraper hammering
   // /v/<id>/fetch is stopped early.
   "link-create": 120,
-  "link-fetch": 120,
+  "link-fetch": FETCH_BUDGET,
 };
+
+export interface FetchBoundaryContext {
+  /** Cloudflare Ray id when available; otherwise a server-generated id. */
+  requestId?: string;
+}
 
 async function bucketKey(
   secret: string,
@@ -136,8 +134,17 @@ async function bucketKey(
 export async function rateLimit(
   env: Env,
   ip: string,
-  bucket: Bucket
+  bucket: Bucket,
+  context: FetchBoundaryContext = {},
 ): Promise<{ allowed: boolean; remaining: number }> {
+  if (FETCH_BUCKETS.has(bucket)) {
+    try {
+      return await admitAddressWideFetch(env, ip, bucket, context.requestId);
+    } catch {
+      console.error("[rate-limit] address-wide fetch limiter unavailable");
+      return { allowed: false, remaining: 0 };
+    }
+  }
   // BUGFIX (server grey-out): the previous key had no window segment
   // and every write refreshed the TTL to a full hour, so the counter
   // never reset while the user kept chatting — after `budget`
@@ -149,16 +156,83 @@ export async function rateLimit(
   const budget = BUDGETS[bucket];
   try {
     const key = await bucketKey(env.RATE_LIMIT_HASH_KEY, ip, bucket, windowStart);
-    return MUTATION_BUCKETS.has(bucket)
-      ? await admitAtomically(env, key, windowStart, budget)
-      : await admitEventually(env, key, budget);
+    return await admitAtomically(env, key, windowStart, budget);
   } catch {
-    // KV-backed reads remain available during a limiter outage. Writes and
-    // anonymous blob fetches fail closed so an outage cannot become an
-    // unbounded storage, deletion-abuse, or capability-enumeration window.
+    // Every bucket is fail closed so an outage cannot become an unbounded
+    // storage, deletion-abuse, or capability-enumeration window.
     console.error("[rate-limit] limiter unavailable");
-    return { allowed: !MUTATION_BUCKETS.has(bucket), remaining: 0 };
+    return { allowed: false, remaining: 0 };
   }
+}
+
+function fetchCaller(bucket: Bucket): "blob-fetch" | "attachment-fetch" | "link-fetch" {
+  switch (bucket) {
+    case "fetch": return "blob-fetch";
+    case "attachment-fetch": return "attachment-fetch";
+    case "link-fetch": return "link-fetch";
+    default: throw new Error("non-fetch bucket reached fetch allowance");
+  }
+}
+
+async function addressKey(secret: string, ip: string): Promise<string> {
+  // No bucket segment: all sibling callers from this address deliberately
+  // collide in one allowance.
+  return bucketKey(secret, ip, "fetch", 0);
+}
+
+async function admitAddressWideFetch(
+  env: Env,
+  ip: string,
+  bucket: Bucket,
+  suppliedRequestId?: string,
+): Promise<{ allowed: boolean; remaining: number }> {
+  const opaqueAddress = await addressKey(env.RATE_LIMIT_HASH_KEY, ip);
+  const candidateRequestId = suppliedRequestId?.trim() ?? "";
+  const requestId = /^[A-Za-z0-9-]{1,128}$/.test(candidateRequestId)
+    ? candidateRequestId
+    : crypto.randomUUID();
+  const eventId = crypto.randomUUID();
+
+  // One statement owns both the count and insert. D1 serialises statements, so
+  // concurrent callers cannot all observe slot 120 and create a 121st event.
+  // The timestamp comes from SQLite at the deployed-store boundary, not from a
+  // client or OSL clock.
+  // `>` gives the provider's rolling definition: an event exactly one window
+  // old has left the window; every younger event still counts, including
+  // traffic on opposite sides of a calendar-hour boundary.
+  const admitted = await env.DB.prepare(
+    `WITH clock(now_ms) AS (
+       VALUES(CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER))
+     )
+     INSERT INTO fetch_budget_events
+       (event_id, address_key, request_id, caller, observed_at_ms)
+     SELECT ?, ?, ?, ?, clock.now_ms FROM clock
+     WHERE (
+       SELECT COUNT(*) FROM fetch_budget_events
+       WHERE address_key = ?
+         AND observed_at_ms > clock.now_ms - ?
+     ) < ?
+     RETURNING observed_at_ms`,
+  ).bind(
+    eventId,
+    opaqueAddress,
+    requestId,
+    fetchCaller(bucket),
+    opaqueAddress,
+    FETCH_LIMITING_WINDOW_MS,
+    FETCH_BUDGET,
+  ).first<{ observed_at_ms: number }>();
+  if (!admitted) return { allowed: false, remaining: 0 };
+
+  const row = await env.DB.prepare(
+    `SELECT COUNT(*) AS used FROM fetch_budget_events
+     WHERE address_key = ? AND observed_at_ms > ?`,
+  ).bind(
+    opaqueAddress,
+    admitted.observed_at_ms - FETCH_LIMITING_WINDOW_MS,
+  ).first<{ used: number }>();
+  const used = Number(row?.used ?? FETCH_BUDGET);
+  return { allowed: true, remaining: Math.max(0, FETCH_BUDGET - used) };
 }
 
 /// One conditional statement, so the check and the increment cannot be
@@ -182,33 +256,18 @@ async function admitAtomically(
   return { allowed: true, remaining: Math.max(0, budget - admitted.used) };
 }
 
-/// KV path, retained for attachment and link read buckets only. Still
-/// eventually consistent: those capability- or grant-gated reads prefer
-/// availability over a strict cost-control ceiling.
-async function admitEventually(
-  env: Env,
-  key: string,
-  budget: number,
-): Promise<{ allowed: boolean; remaining: number }> {
-  const cur = await env.RATE_LIMIT.get(key);
-  const used = cur ? parseInt(cur, 10) || 0 : 0;
-  if (used >= budget) return { allowed: false, remaining: 0 };
-  // TTL is 2x the window so the current window's key always outlives the
-  // window itself.
-  await env.RATE_LIMIT.put(key, String(used + 1), {
-    expirationTtl: WINDOW_SECONDS * 2,
-  });
-  return { allowed: true, remaining: budget - used - 1 };
-}
-
 /// Delete counters for windows that have closed. Called from the existing
-/// five-minute cron; keeps limiter state strictly shorter-lived than the KV
-/// entries it replaces.
+/// five-minute cron.
 export async function sweepRateCounters(env: Env): Promise<number> {
   const now = Math.floor(Date.now() / 1000);
   const windowStart = now - (now % WINDOW_SECONDS);
   const swept = await env.DB.prepare(
     "DELETE FROM rate_counters WHERE window_start < ?",
   ).bind(windowStart).run();
-  return swept.meta?.changes ?? 0;
+  const fetchSwept = await env.DB.prepare(
+    `DELETE FROM fetch_budget_events
+     WHERE observed_at_ms <=
+       CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) - ?`,
+  ).bind(FETCH_LIMITING_WINDOW_MS).run();
+  return (swept.meta?.changes ?? 0) + (fetchSwept.meta?.changes ?? 0);
 }

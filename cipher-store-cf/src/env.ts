@@ -2,9 +2,11 @@
 ///
 /// Kept minimal on purpose -- no Stripe, no admin token, no
 /// keyserver-style secrets. The store accepts uploads from anyone
-/// (rate-limited by client address: atomically in D1 for writes, best-effort in
-/// KV for reads); its data-minimisation posture rests on E2E ciphertext, short
-/// TTLs, and no per-blob app logs.
+/// (rate-limited by client address: atomically in D1 for writes and every
+/// ciphertext read); its data-minimisation posture rests on E2E ciphertext, short
+/// TTLs, and no per-blob app logs. The fetch allowance keeps only opaque
+/// address keys plus request ids/caller classes for one limiting window so its
+/// exact ceiling can be reconciled with independent edge and R2 observations.
 
 export interface Env {
   /**
@@ -17,7 +19,7 @@ export interface Env {
   ATTACHMENTS: R2Bucket;
   /** Opaque, end-to-end encrypted message payloads, addressed by capability digest. */
   PAYLOADS: R2Bucket;
-  /** Read-bucket rate limiting only. Mutation buckets count in `DB`. */
+  /** Legacy rollback binding; production admission no longer depends on KV. */
   RATE_LIMIT: KVNamespace;
   /** Server-only key used to make short-lived rate-limit identifiers opaque. */
   RATE_LIMIT_HASH_KEY: string;

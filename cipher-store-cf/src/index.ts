@@ -129,6 +129,7 @@ export default {
 async function dispatch(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   const path = url.pathname;
+  const boundaryRequestId = request.headers.get("cf-ray")?.trim() || crypto.randomUUID();
 
   if (path === "/v1/healthz" && request.method === "GET") {
     return handleHealthz(env);
@@ -147,14 +148,14 @@ async function dispatch(request: Request, env: Env): Promise<Response> {
 
   const linkFetchMatch = /^\/v\/([^/]{1,128})\/fetch$/.exec(path);
   if (linkFetchMatch && request.method === "POST") {
-    const rl = await rateLimit(env, clientIp(request), "link-fetch");
+    const rl = await rateLimit(env, clientIp(request), "link-fetch", { requestId: boundaryRequestId });
     if (!rl.allowed) return error(429, "rate_limited", "fetch rate limit hit");
     return handleLinkFetch(request, env, linkFetchMatch[1]!);
   }
 
   const linkBurnMatch = /^\/v\/([^/]{1,128})\/burn$/.exec(path);
   if (linkBurnMatch && request.method === "POST") {
-    const rl = await rateLimit(env, clientIp(request), "link-fetch");
+    const rl = await rateLimit(env, clientIp(request), "link-fetch", { requestId: boundaryRequestId });
     if (!rl.allowed) return error(429, "rate_limited", "fetch rate limit hit");
     return handleLinkBurn(request, env, linkBurnMatch[1]!);
   }
@@ -234,7 +235,7 @@ async function dispatch(request: Request, env: Env): Promise<Response> {
   if (attachmentMatch) {
     const id = attachmentMatch[1]!;
     if (request.method === "GET") {
-      const rl = await rateLimit(env, clientIp(request), "attachment-fetch");
+      const rl = await rateLimit(env, clientIp(request), "attachment-fetch", { requestId: boundaryRequestId });
       if (!rl.allowed) return error(429, "rate_limited", "fetch rate limit hit");
       return handleAttachmentFetch(request, env, id);
     }
@@ -258,7 +259,7 @@ async function dispatch(request: Request, env: Env): Promise<Response> {
   if (blobMatch) {
     const idHex = blobMatch[1]!;
     if (request.method === "GET") {
-      const rl = await rateLimit(env, clientIp(request), "fetch");
+      const rl = await rateLimit(env, clientIp(request), "fetch", { requestId: boundaryRequestId });
       if (!rl.allowed) {
         return error(429, "rate_limited", "fetch rate limit hit");
       }
