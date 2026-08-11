@@ -26,11 +26,11 @@ const workspaceRoutes = [
   "home", "inbox", "people", "privacy", "activity", "connections", "service", "settings",
   "mullvad", "osl-chat", "osl-mail", "osl-servers", "signal-qa",
 ] as const satisfies readonly Exclude<Route, "onboarding">[];
-const settingsSections = ["account", "security", "apps", "scrub", "cleanup", "notifications", "appearance", "about"] as const;
+const settingsSections = ["account", "apps", "friends", "scrub", "cleanup", "notifications", "appearance", "about"] as const;
 const onboardingRoutes = [
   "pro", "welcome", "create", "import", "unlock", "keylost", "account-recovery", "recovery",
   "recovery-check", "mullvad", "sending", "defaults", "tor", "cover", "passwords", "burnpass",
-  "privacy", "tutorial", "detected", "install", "apps", "browser", "decoy",
+  "privacy", "forward-secrecy", "visibility", "tutorial", "detected", "install", "apps", "browser", "decoy",
 ] as const;
 
 type Gap = { id?: unknown; feature?: unknown; status?: unknown; productPromise?: unknown; reason?: unknown; uiDisposition?: unknown };
