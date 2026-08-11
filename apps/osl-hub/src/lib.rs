@@ -151,6 +151,8 @@ pub mod osl_profile;
 pub mod owner_presence;
 #[cfg(feature = "core")]
 pub mod peer_attachment_io;
+#[cfg(feature = "core")]
+pub mod personal_archive;
 pub mod preferences;
 pub mod privacy_scan;
 #[cfg(feature = "core")]
