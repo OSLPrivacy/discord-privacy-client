@@ -53,6 +53,7 @@ pub mod decoy_mp4;
 pub mod destruct_ack;
 pub mod email_send_modes;
 pub mod email_whitelist_kinds;
+pub mod enclave_removal;
 pub mod fresh_start;
 pub mod friend_request;
 pub mod friend_service_name;

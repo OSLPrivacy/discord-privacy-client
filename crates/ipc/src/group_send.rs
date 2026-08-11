@@ -21,6 +21,11 @@ use base64::Engine;
 /// SKDM_REQUEST recovery path; in exchange, active conversations
 /// shed ~95% of the noise messages.
 const SKDM_PERIODIC_EMIT_INTERVAL_SECS: u64 = 5 * 60;
+const SKDM_NON_SELF_PEERS_PER_WIRE: usize = u8::MAX as usize - 1;
+
+fn skdm_peer_chunks<T>(peers: &[T]) -> std::slice::Chunks<'_, T> {
+    peers.chunks(SKDM_NON_SELF_PEERS_PER_WIRE)
+}
 
 /// Detect a recipient-set change so the per-scope runtime controller can
 /// force rotation *before* the next message is encrypted.
@@ -226,10 +231,10 @@ pub(crate) fn encrypt_v5_send(
     // decrypt on the recipient, no receiver chain installed, every
     // v=5 GC message returned "not a recipient", and recovery looped.
     //
-    // New design: ONE v=3 wire carrying MSG_TYPE_SENDER_KEY_DISTRIBUTION
-    // bundled to all non-self peers via the existing PQ-hybrid
+    // New design: bounded v=3 wires carrying MSG_TYPE_SENDER_KEY_DISTRIBUTION
+    // cover the complete non-self roster via the existing PQ-hybrid
     // multi-recipient wrap. No per-peer ratchet state involved.
-    // boot.js posts it as one message; each recipient's v=3 decrypt
+    // boot.js posts each wire; every recipient's v=3 decrypt
     // resolves their slot, the v=2/v=3 dispatcher routes
     // MSG_TYPE_SENDER_KEY_DISTRIBUTION to `apply_skdm_recv` which
     // installs the receiver chain exactly as before.
@@ -262,6 +267,7 @@ pub(crate) fn encrypt_v5_send(
         .unwrap_or(0);
     let periodic_due = now.saturating_sub(last_emit_at) >= SKDM_PERIODIC_EMIT_INTERVAL_SECS;
     let should_emit_bundle = needs_install || needs_rotate || periodic_due;
+    let mut skdm_dispatch_error = None;
     if !non_self_peers.is_empty() && should_emit_bundle {
         // Include self as a recipient so the sender's own DOM
         // (which sees the SKDM bundle round-tripped through Discord
@@ -276,56 +282,69 @@ pub(crate) fn encrypt_v5_send(
                 .ok_or_else(|| "OSL: identity not loaded".to_string())?
                 .mlkem_encapsulation_key()
         };
-        let mut recipients_v3: Vec<crate::wire_v2::RecipientV3> =
-            Vec::with_capacity(non_self_peers.len() + 1);
-        recipients_v3.push(crate::wire_v2::RecipientV3 {
-            x25519_pub: *self_pk,
-            mlkem_pub: self_mlkem,
-        });
-        for (_, r) in non_self_peers.iter() {
-            recipients_v3.push(r.clone());
-        }
-        match send_skdm_via_v3_bundle(
-            sender_sk,
-            self_pk,
-            &recipients_v3,
-            &scope_key,
-            chain_id,
-            &rotation_root,
-            physical_device_id.as_bytes(),
-        ) {
-            Ok(skdm_wire) => {
-                skdm_wires.push(skdm_wire);
-                // Phase 6.2: stamp the periodic emit clock so the
-                // next send within SKDM_PERIODIC_EMIT_INTERVAL_SECS
-                // skips bundle emission unless install/rotate
-                // independently triggers it.
-                if let Some(chain) = sks.sender_chain_mut() {
-                    chain.mark_skdm_emitted_at(now);
+        // v3 carries its recipient count in one byte. That is a bound on one
+        // wire object, not on group membership: reserve one slot for self and
+        // emit as many independently authenticated bundles as the roster needs.
+        for (chunk_index, peer_chunk) in skdm_peer_chunks(non_self_peers).enumerate() {
+            let mut recipients_v3: Vec<crate::wire_v2::RecipientV3> =
+                Vec::with_capacity(peer_chunk.len() + 1);
+            recipients_v3.push(crate::wire_v2::RecipientV3 {
+                x25519_pub: *self_pk,
+                mlkem_pub: self_mlkem.clone(),
+            });
+            recipients_v3.extend(peer_chunk.iter().map(|pair| pair.1.clone()));
+
+            match send_skdm_via_v3_bundle(
+                sender_sk,
+                self_pk,
+                &recipients_v3,
+                &scope_key,
+                chain_id,
+                &rotation_root,
+                physical_device_id.as_bytes(),
+            ) {
+                Ok(skdm_wire) => {
+                    skdm_wires.push(skdm_wire);
+                    for pair in peer_chunk {
+                        skdm_peer_status.push(SkdmPeerStatus {
+                            peer_discord_id: pair.0.clone(),
+                            ok: true,
+                            error: None,
+                        });
+                    }
                 }
-                for pair in non_self_peers.iter() {
-                    skdm_peer_status.push(SkdmPeerStatus {
-                        peer_discord_id: pair.0.clone(),
-                        ok: true,
-                        error: None,
-                    });
+                Err(error) => {
+                    let error = format!(
+                        "OSL: v=5 SKDM fan-out chunk {} failed before content publication: {error}",
+                        chunk_index + 1
+                    );
+                    for pair in peer_chunk {
+                        skdm_peer_status.push(SkdmPeerStatus {
+                            peer_discord_id: pair.0.clone(),
+                            ok: false,
+                            error: Some(error.clone()),
+                        });
+                    }
+                    skdm_dispatch_error = Some(error);
+                    break;
                 }
             }
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    recipients = non_self_peers.len(),
-                    "[OSL] v=5 SKDM bundle dispatch failed (best-effort; \
-                     recipients will request via SKDM_REQUEST if they get \
-                     a v=5 message before they install)"
-                );
-                for pair in non_self_peers.iter() {
-                    skdm_peer_status.push(SkdmPeerStatus {
-                        peer_discord_id: pair.0.clone(),
-                        ok: false,
-                        error: Some(e.clone()),
-                    });
-                }
+        }
+        if skdm_dispatch_error.is_none() {
+            // Stamp the clock only after every shard exists. A partial fan-out
+            // must remain due on retry rather than masquerade as complete.
+            if let Some(chain) = sks.sender_chain_mut() {
+                chain.mark_skdm_emitted_at(now);
+            }
+        } else {
+            for pair in non_self_peers.iter().skip(skdm_peer_status.len()) {
+                let error = "OSL: v=5 SKDM fan-out not attempted after an earlier chunk failed"
+                    .to_owned();
+                skdm_peer_status.push(SkdmPeerStatus {
+                    peer_discord_id: pair.0.clone(),
+                    ok: false,
+                    error: Some(error),
+                });
             }
         }
     }
@@ -340,6 +359,10 @@ pub(crate) fn encrypt_v5_send(
     }
     persist_sender_key_state_now(state);
 
+    if let Some(error) = skdm_dispatch_error {
+        return Err(error);
+    }
+
     Ok(EncryptWire {
         content: wire,
         control_messages: skdm_wires,
@@ -349,9 +372,9 @@ pub(crate) fn encrypt_v5_send(
     })
 }
 
-/// Probe-3 Option-2 step 1: ship a SenderKeyDistribution payload to
-/// ALL non-self peers in ONE v=3-bundled PQ-hybrid multi-recipient
-/// wire (formerly: N separate v=4 ratcheted wires via the now-removed
+/// Probe-3 Option-2 step 1: ship one bounded, v3-bundled PQ-hybrid
+/// SenderKeyDistribution shard. The caller emits enough shards to cover every
+/// non-self peer (formerly: N separate v=4 ratcheted wires via the now-removed
 /// `send_skdm_via_v4`).
 ///
 /// The body is the same `SenderKeyDistribution{scope_storage_key,
@@ -842,9 +865,24 @@ fn verify_v5_sender_discord_binding(
 
 #[cfg(test)]
 mod tests {
-    use super::encrypt_v5_send;
+    use super::{encrypt_v5_send, skdm_peer_chunks, SKDM_NON_SELF_PEERS_PER_WIRE};
     use crate::state::AppState;
     use std::time::Duration;
+
+    #[test]
+    fn skdm_fanout_shards_a_roster_far_beyond_the_wire_slot_count() {
+        let peers: Vec<_> = (0..2_048usize).collect();
+        let chunks: Vec<_> = skdm_peer_chunks(&peers).collect();
+
+        assert!(chunks.len() > 1);
+        assert!(
+            chunks
+                .iter()
+                .all(|chunk| !chunk.is_empty() && chunk.len() <= SKDM_NON_SELF_PEERS_PER_WIRE)
+        );
+        assert_eq!(chunks.iter().map(|chunk| chunk.len()).sum::<usize>(), peers.len());
+        assert_eq!(chunks.concat(), peers);
+    }
 
     #[test]
     fn shipping_v5_send_registers_and_advances_rotation_controller() {

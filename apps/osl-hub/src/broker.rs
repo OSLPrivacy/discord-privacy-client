@@ -131,7 +131,6 @@ pub(crate) fn prose_send_key(core: &HubCoreState) -> Result<[u8; 32], String> {
     ipc::prose_token::derive_send_key(identity.x25519_secret.as_bytes())
         .map_err(|_| "OSL protected conversation key is unavailable".to_owned())
 }
-const MAX_PARTICIPANTS: usize = 512;
 const MAX_TEXT_BYTES: usize = 1_000;
 pub const PRIVATE_MESSAGE_BYTES_PER_COVER: usize = 40 * 1024;
 const MAX_NATIVE_OVERLAY_CHUNK_BYTES: usize = PRIVATE_MESSAGE_BYTES_PER_COVER;
@@ -9616,10 +9615,8 @@ fn validate_context(context: &HubConversationContext) -> Result<(), String> {
     if let Some(space_id) = &context.space_id {
         validate_context_id(space_id, "space id")?;
     }
-    if context.participant_osl_ids.is_empty()
-        || context.participant_osl_ids.len() > MAX_PARTICIPANTS
-    {
-        return Err("OSL broker participant set is empty or too large".to_owned());
+    if context.participant_osl_ids.is_empty() {
+        return Err("OSL broker participant set is empty".to_owned());
     }
     let mut unique = HashSet::with_capacity(context.participant_osl_ids.len());
     for participant in &context.participant_osl_ids {
@@ -16212,6 +16209,24 @@ mod tests {
         invalid.participant_osl_ids.pop();
         invalid.service_id = "instagram.evil".to_owned();
         assert!(validate_context(&invalid).is_err());
+    }
+
+    #[test]
+    fn enclave_context_admits_more_than_the_retired_participant_ceiling() {
+        let participant_osl_ids = (0..2_048)
+            .map(|index| format!("member-6576-{index}"))
+            .collect();
+        let context = HubConversationContext {
+            service_id: "osl-chat".to_owned(),
+            account_id: "account-6576".to_owned(),
+            conversation_kind: HubConversationKind::Space,
+            conversation_id: "enclave-6576".to_owned(),
+            space_id: Some("enclave-6576".to_owned()),
+            participant_osl_ids,
+            self_osl_id: "member-6576-0".to_owned(),
+        };
+
+        validate_context(&context).expect("the complete Enclave roster is admitted");
     }
 
     #[test]

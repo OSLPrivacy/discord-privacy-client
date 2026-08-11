@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  ENCLAVE_REMOVAL_DELAY_WARNING,
   projectKnownSpaceMembers,
   renderSpaceMemberList,
   type KnownSpaceMember,
@@ -64,5 +65,38 @@ describe("Enclave member list", () => {
     ])).toThrow(/Duplicate Enclave member/u);
     expect(() => projectKnownSpaceMembers([{ memberId: "member-alice", displayName: "  " }]))
       .toThrow(/Invalid Enclave member/u);
+  });
+
+  it("warns before confirmation at measured N and renders observed fan-out progress", () => {
+    const rendered = renderSpaceMemberList(testDocument(), members, {
+      targetMemberId: "member-bob",
+      enclaveMemberCount: 50,
+      measuredWarningThreshold: 50,
+      progress: { jobId: "job-1", completed: 17, remaining: 32, status: "running" },
+    }) as unknown as TestElement;
+    const panel = rendered.children[2];
+
+    expect(panel.children.map((child) => child.textContent)).toEqual([
+      ENCLAVE_REMOVAL_DELAY_WARNING,
+      "",
+      "17 complete, 32 remaining",
+      "Confirm removal",
+    ]);
+    expect(panel.children[0].className).toBe("osl-enclave-removal-delay");
+    expect(panel.children[1].tagName).toBe("progress");
+    expect(panel.children[1].attributes.get("value")).toBe("17");
+    expect(panel.children[1].attributes.get("max")).toBe("49");
+    expect(panel.children[3].attributes.get("data-confirm-enclave-removal")).toBe("member-bob");
+  });
+
+  it("does not show the delay warning below measured N", () => {
+    const rendered = renderSpaceMemberList(testDocument(), members, {
+      targetMemberId: "member-bob",
+      enclaveMemberCount: 49,
+      measuredWarningThreshold: 50,
+      progress: null,
+    }) as unknown as TestElement;
+    expect(JSON.stringify(rendered)).not.toContain(ENCLAVE_REMOVAL_DELAY_WARNING);
+    expect(rendered.children[2].children[0].textContent).toBe("Confirm removal");
   });
 });
