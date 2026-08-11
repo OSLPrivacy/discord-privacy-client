@@ -92,11 +92,13 @@ pub mod revocation;
 // 9-C1: `pending_invitations` module removed alongside the
 // invitation handshake. Pre-C1 `pending_invitations.json` files are
 // unconditionally deleted at bootstrap.
+pub mod production_kind_admission;
 pub mod scope;
 pub mod scope_blobs_file;
 pub mod scope_ttl_file;
 pub mod screen_words;
 pub mod server_membership;
+pub mod shipping_email;
 pub mod space_roster;
 pub mod metered_bytes;
 // Unit a45: encrypted UI-side storage contract (checklist A6). Defines the

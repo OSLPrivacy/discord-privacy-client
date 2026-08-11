@@ -1034,6 +1034,7 @@ fn validate_stable_id_shape(stable_id: &str) -> Result<()> {
             if matches!(
                     (app, kind),
                     ("discord", _)
+                        | ("email", "sender_address" | "sender_domain")
                         | ("signal", KIND_DIRECT_MESSAGE | KIND_GROUP_CHAT)
                 )
                 && !account.trim().is_empty()
