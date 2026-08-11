@@ -32,6 +32,7 @@ pub mod identity_bundle;
 pub mod keystore_anchor;
 pub mod license_cache;
 pub mod license_expiry;
+pub mod lost_device_recovery;
 pub mod password;
 pub mod pending_rotation;
 pub mod prekeys;
@@ -94,6 +95,17 @@ pub use license_cache::{
     LicenseState, LicenseStateDto,
 };
 pub use license_expiry::is_license_expired;
+pub use lost_device_recovery::{
+    canonical_lost_device_recovery_declaration_bytes, replacement_key,
+    verify_lost_device_recovery_declaration, LostDeviceRecoveryDeclaration,
+    LostDeviceRecoveryError, LostDeviceRecoveryKit, LostDeviceRecoveryService,
+    PackagedReplacementProfile, PreparedLostDeviceRecovery, ProductionRecoveryClient,
+    RecoveryAuthorization, RecoveryMessage, LOST_DEVICE_RECOVERY_DECLARATION_DOMAIN,
+    LOST_DEVICE_RECOVERY_DECLARATION_SCHEMA, LOST_DEVICE_RECOVERY_KEY_BYTES,
+    LOST_DEVICE_RECOVERY_KIT_BYTES, LOST_DEVICE_RECOVERY_KIT_DOMAIN,
+    LOST_DEVICE_RECOVERY_KIT_SCHEMA, LOST_DEVICE_RECOVERY_SIGNATURE_BYTES,
+    LOST_DEVICE_RECOVERY_STATE_DOMAIN, ORDINARY_PAIRING_EXISTING_DEVICE_REQUIRED,
+};
 pub use password::{
     load_password_record, save_password_record, validate_password, validate_setup_pair,
     verify_against_record, Argon2Params, InactivityTimer, PasswordError, PasswordHash,
