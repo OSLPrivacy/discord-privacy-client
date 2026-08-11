@@ -1,0 +1,22 @@
+[package]
+name = "task-5213-service-results"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+osl-english-catalogue = { path = "../../crates/english-catalogue" }
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.149"
+
+[[bin]]
+name = "task-5213"
+path = "src/bin/task_5213.rs"
+
+[[bin]]
+name = "task-5213b"
+path = "src/bin/task_5213b.rs"
+
+[workspace]
+resolver = "2"

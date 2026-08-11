@@ -118,6 +118,7 @@ import {
 import type { PrepaidRedemptionReadiness } from "./lib/prepaid-redemption-readiness.js";
 import { sweepExpiredControlInboxRows } from "./lib/control-inbox-sweep.js";
 import { sweepExpiredSpaceEvents } from "./lib/space-event-sweep.js";
+import { adaptPersonFacingResponse } from "./lib/person-facing-result.js";
 
 const MAX_MUTATION_BODY_BYTES = 1024 * 1024;
 const PUBLIC_GET_INGRESS_MAX_PER_MINUTE = 1200;
@@ -128,10 +129,10 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     void ctx;
     try {
-      return await dispatch(request, env, ctx);
+      return await adaptPersonFacingResponse(request, await dispatch(request, env, ctx));
     } catch {
       console.error("[fetch] unhandled failure");
-      return serverError("internal error");
+      return await adaptPersonFacingResponse(request, serverError("internal error"));
     }
   },
 

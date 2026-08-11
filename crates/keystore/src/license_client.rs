@@ -21,7 +21,9 @@ struct LicenseRedeemRequest<'a> {
 pub struct LicenseRedeemResponse {
     pub status: String,
     #[serde(default)]
-    pub error: Option<String>,
+    pub reason_code: Option<String>,
+    #[serde(default)]
+    pub parameters: std::collections::BTreeMap<String, String>,
     #[serde(default)]
     pub redeemed_at: Option<i64>,
     #[serde(default)]

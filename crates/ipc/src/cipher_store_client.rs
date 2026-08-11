@@ -527,6 +527,8 @@ struct AttachmentCompleteResponse {
 }
 
 /// Receipt for one finished piece of a Pro chunked attachment upload.
+    reason_code: String,
+    parameters: std::collections::BTreeMap<String, String>,
 /// `upload_id` is the server-assigned multipart session/object identifier.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProChunkedUploadPiece {
@@ -534,6 +536,8 @@ pub struct ProChunkedUploadPiece {
     pub piece_number: u32,
     pub size_bytes: u64,
 }
+    reason_code: String,
+    parameters: std::collections::BTreeMap<String, String>,
 
 /// Receipt for the completed file produced by a Pro chunked attachment upload.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -542,6 +546,8 @@ pub struct ProChunkedUploadFile {
     pub total_size_bytes: u64,
     pub piece_count: u32,
     pub expires_at: i64,
+    reason_code: String,
+    parameters: std::collections::BTreeMap<String, String>,
 }
 
 /// Ordered receipts from a Pro chunked attachment upload.
@@ -1066,6 +1072,7 @@ impl CipherStoreClient {
                     .send()?;
                 let receipt: AttachmentPartResponse = parse_bounded_json(response)?;
                 if receipt.part_number != part_number || receipt.size_bytes != part_length {
+        validate_storage_success(&session.reason_code, &session.parameters)?;
                     return Err(CipherStoreError::ParseError(
                         "multipart part receipt mismatch".to_owned(),
                     ));
@@ -1109,6 +1116,7 @@ impl CipherStoreClient {
                     piece_count,
                     expires_at: complete.expires_at,
                 },
+                validate_storage_success(&receipt.reason_code, &receipt.parameters)?;
             })
         })();
         if result.is_err() {
@@ -1137,6 +1145,7 @@ impl CipherStoreClient {
         if status == StatusCode::NOT_FOUND {
             return Err(CipherStoreError::NotFound);
         }
+            validate_storage_success(&complete.reason_code, &complete.parameters)?;
         if status == StatusCode::TOO_MANY_REQUESTS {
             return Err(CipherStoreError::RateLimited);
         }
@@ -1245,6 +1254,18 @@ fn multipart_plan(
             max: usize::try_from(part_bytes.saturating_mul(u64::from(max_parts)))
                 .unwrap_or(usize::MAX),
         });
+fn validate_storage_success(
+    reason_code: &str,
+    parameters: &std::collections::BTreeMap<String, String>,
+) -> Result<(), CipherStoreError> {
+    if reason_code != "storage_succeeded" || !parameters.is_empty() {
+        return Err(CipherStoreError::ParseError(format!(
+            "unexpected storage result code {reason_code:?}"
+        )));
+    }
+    Ok(())
+}
+
     }
     let mut plan = Vec::with_capacity(count as usize);
     let mut offset = 0u64;

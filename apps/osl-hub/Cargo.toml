@@ -48,6 +48,7 @@ runtime = { path = "../../crates/runtime", optional = true }
 # the same row contract in every build that can compile it.
 stego = { path = "../../crates/stego" }
 sensitive-classify = { path = "../../crates/sensitive-classify" }
+osl-english-catalogue = { path = "../../crates/english-catalogue" }
 sha2 = "=0.10.9"
 tracing = { version = "=0.1.44", optional = true }
 # D-142: this binary shipped with `tracing` events and no subscriber, so every

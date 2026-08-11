@@ -4552,7 +4552,7 @@ fn prepare_peer_inbox_text_with_route_clients(
                     )
                     .is_ok()
                 {
-                    return Err(OSL_RELAY_NOTICE_QUEUED.to_owned());
+                    return Err(osl_relay_notice_queued());
                 }
                 // Which keyserver failure it was. Fixed class labels only
                 // (http_401 / http_403 / transport / ...), never a URL, token,
@@ -4567,6 +4567,13 @@ fn prepare_peer_inbox_text_with_route_clients(
                 // message -- this says only "slow down", never which endpoint,
                 // identity, or payload was involved.
                 return Err(match &_error {
+                    keystore::Error::HttpStatus { body, .. }
+                        if crate::service_result_words::render_service_response_body(body)
+                            .is_some() =>
+                    {
+                        crate::service_result_words::render_service_response_body(body)
+                            .expect("guarded service result")
+                    }
                     // 429 covers two unrelated conditions and the body is the
                     // only thing that tells them apart. `recipient_inbox_full`
                     // is the one a normal operator hits: the key server holds
@@ -4579,21 +4586,23 @@ fn prepare_peer_inbox_text_with_route_clients(
                     keystore::Error::HttpStatus { status: 429, body }
                         if body.contains("recipient_inbox_full") =>
                     {
-                        "This chat has too many messages waiting that have never been picked up. \
-                         If they are not using OSL they cannot receive any of them, and nothing \
-                         you send here will arrive."
-                            .to_owned()
+                        crate::service_result_words::render_service_reason(
+                            "relay_recipient_inbox_full",
+                            [("scope", "recipient")],
+                        )
                     }
                     // Until the key server distinguishes the two, a bare 429
                     // could be either, so this must not assert the one that
                     // tells the operator to wait -- waiting does nothing for a
                     // full inbox, and that is the case they actually hit.
                     keystore::Error::HttpStatus { status: 429, .. } => {
-                        "The key server would not accept this message. It is either arriving too \
-                         fast or this chat has too many messages waiting that were never picked up."
-                            .to_owned()
+                        crate::service_result_words::render_service_reason_without_parameters(
+                            "relay_rate_limited",
+                        )
                     }
-                    _ => "OSL could not deliver the protected message".to_owned(),
+                    _ => crate::service_result_words::render_service_reason_without_parameters(
+                        "relay_failed",
+                    ),
                 });
             }
         }
@@ -4744,9 +4753,9 @@ pub fn reveal_native_discord_overlay_view_once(
 /// Copy for the one case where a send is neither delivered nor lost: the
 /// wrapped key landed, the relay notice did not, and the notice is now durably
 /// queued. It must not say "sent" and it must not say "not sent".
-pub const OSL_RELAY_NOTICE_QUEUED: &str =
-    "OSL could not reach the key server. This encrypted message is saved and will finish \
-     sending by itself when you are back online.";
+pub fn osl_relay_notice_queued() -> String {
+    crate::service_result_words::render_service_reason_without_parameters("relay_queued_offline")
+}
 
 /// Finish delivering relay notices whose wrapped key is already on the key
 /// server but whose notice never landed, and report how many completed.

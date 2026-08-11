@@ -9595,6 +9595,23 @@ fn set_ai_carrier_preview_enabled(
 
 #[tauri::command]
 fn build_integrity_status(state: tauri::State<'_, BuildIntegrity>) -> BuildIntegrity {
+#[tauri::command]
+fn resolve_english_catalogue_string(
+    catalogue: tauri::State<'_, osl_english_catalogue::EnglishCatalogue>,
+    key: String,
+    variables: std::collections::BTreeMap<String, String>,
+) -> Result<osl_english_catalogue::ResolvedString, String> {
+    catalogue.resolve(&key, variables).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn resolve_person_service_result(
+    catalogue: tauri::State<'_, osl_english_catalogue::EnglishCatalogue>,
+    result: osl_english_catalogue::ServiceResultEnvelope,
+) -> Result<osl_english_catalogue::ResolvedString, String> {
+    catalogue.resolve_service_result(&result).map_err(|error| error.to_string())
+}
+
     *state.inner()
 }
 
@@ -9641,7 +9658,10 @@ macro_rules! hub_tauri_command_names {
 
 #[cfg(feature = "signal-qa-shell")]
 fn main() {
-    let builder = tauri::Builder::default().setup(|app| {
+    let english_catalogue = osl_privacy_hub::english_catalogue_entry::load_packaged_windows_catalogue()
+        .unwrap_or_else(|error| { eprintln!("5205 Windows startup refusal: {error}"); std::process::exit(78); });
+    let builder = tauri::Builder::default().setup(move |app| {
+        app.manage(english_catalogue);
         let profiles =
             osl_privacy_hub::adapter_profile_boot::load_verified_adapter_profiles_at_boot()
                 .map_err(|_| {
@@ -9661,6 +9681,8 @@ fn main() {
         list_native_apps,
         host_native_app_window,
         resize_native_app_window,
+        resolve_english_catalogue_string,
+        resolve_person_service_result,
         focus_native_app_window,
         detach_native_app_window,
         get_signal_protected_send_readiness,
@@ -9670,6 +9692,8 @@ fn main() {
         .expect("error while running OSL Signal QA");
     app.run(|_app_handle, _event| {});
 }
+    let english_catalogue = osl_privacy_hub::english_catalogue_entry::load_packaged_windows_catalogue()
+        .unwrap_or_else(|error| { eprintln!("5205 Windows startup refusal: {error}"); std::process::exit(78); });
 
 #[cfg(not(feature = "signal-qa-shell"))]
 fn main() {
@@ -9858,6 +9882,7 @@ fn main() {
             });
         }
     });
+        app.manage(english_catalogue);
     startup_breadcrumb("setup_before"); // STARTUP-TRACE
     let builder = builder.setup(|app| {
         startup_breadcrumb("setup_enter"); // STARTUP-TRACE

@@ -808,11 +808,12 @@ pub struct LicenseValidateResponse {
     /// alongside the keyserver's state machine; the consuming
     /// layer (F2.2's `LicenseState`) does the mapping.
     pub status: String,
-    /// Optional human-facing refusal reason supplied by the keyserver for a
-    /// recognized but unusable code. For example, refunded prepaid codes keep
-    /// `status = "REVOKED"` while carrying a specific explanation.
+    /// Stable person-result code. The service never supplies English prose;
+    /// the packaged Windows client resolves this through the English catalogue.
     #[serde(default)]
-    pub error: Option<String>,
+    pub reason_code: Option<String>,
+    #[serde(default)]
+    pub parameters: std::collections::BTreeMap<String, String>,
     /// Unix seconds. `None` when the subscription is `PENDING` /
     /// `UNKNOWN`, or (legacy, pre-F2.0) when the keyserver hadn't
     /// stamped a period yet under the old Stripe API shape.
@@ -2294,6 +2295,9 @@ struct ControlInboxPostBody<'a> {
 pub struct ControlInboxPostResponse {
     pub id: String,
     pub expires_at: i64,
+    pub reason_code: String,
+    #[serde(default)]
+    pub parameters: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Deserialize, Debug, Clone)]

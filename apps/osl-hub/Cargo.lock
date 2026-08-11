@@ -3309,6 +3309,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "osl-english-catalogue"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "osl-hub"
 version = "0.1.0"
 dependencies = [
@@ -3326,6 +3334,7 @@ dependencies = [
  "message-lifecycle",
  "minisign-verify",
  "osl-cover-draft",
+ "osl-english-catalogue",
  "osl-ratchet-next",
  "pdf-extract",
  "quick-xml",

@@ -87,6 +87,7 @@ pub mod discord_carrier_geometry;
 #[cfg(feature = "desktop")]
 pub mod entitlement_refresh;
 pub mod execution_consent;
+pub mod english_catalogue_entry;
 pub mod external_overlay;
 pub(crate) mod firefox_migration_coordinator;
 pub mod front_window_grab;
@@ -215,6 +216,7 @@ pub mod service_connections;
 pub mod server_records;
 #[cfg(feature = "core")]
 pub mod service_host;
+pub mod service_result_words;
 #[cfg(feature = "core")]
 pub mod services;
 #[cfg(feature = "core")]

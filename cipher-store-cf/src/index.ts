@@ -52,6 +52,7 @@ import { clientIp, error, notFound, serverError } from "./lib/http.js";
 import { rateLimit, sweepRateCounters } from "./lib/rate-limit.js";
 import { CYCLE_MARKER } from "./lib/d2-proof-contract.js";
 import { verifyStorageGrant } from "./lib/storage-grant.js";
+import { adaptPersonFacingResponse } from "./lib/person-facing-result.js";
 import {
   sweepExpired,
   sweepExpiredAttachments,
@@ -75,10 +76,10 @@ export default {
   ): Promise<Response> {
     void ctx;
     try {
-      return await dispatch(request, env);
+      return await adaptPersonFacingResponse(request, await dispatch(request, env));
     } catch {
       console.error("[fetch] unhandled failure");
-      return serverError();
+      return await adaptPersonFacingResponse(request, serverError());
     }
   },
 

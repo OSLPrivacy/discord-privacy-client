@@ -1348,6 +1348,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "osl-english-catalogue"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "osl-ratchet-next"
 version = "0.0.1"
 dependencies = [

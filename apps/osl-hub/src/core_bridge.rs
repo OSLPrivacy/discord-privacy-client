@@ -137,26 +137,48 @@ pub fn validate_activation_code(
     state: &HubCoreState,
     activation_code: String,
 ) -> Result<HubLicenseState, String> {
+    // The service owns the stable result code. Status remains protocol state
+    // for entitlement transitions, but it must not be used to invent a second
+    // person-facing vocabulary in the client.
+    let service_words = response.reason_code.as_deref().map(|reason_code| {
+        crate::service_result_words::render_service_reason(
+            reason_code,
+            response.parameters.clone(),
+        )
+    });
+
     let activation_code = normalize_activation_code(&activation_code)?;
     let response = ipc::commands::cmd_osl_validate_license(&state.osl, activation_code)
         .map_err(|error| friendly_activation_error(&error))?;
 
     if !response.checksum_ok || response.status == "UNKNOWN" {
-        return Err("That activation code was not recognized".to_owned());
+        return Err(service_words.unwrap_or_else(|| {
+            crate::service_result_words::render_service_reason_without_parameters(
+                "payment_voucher_unknown",
+            )
+        }));
     }
     match response.status.as_str() {
         "ACTIVE" | "CANCELLED" | "GRACE" => {
             let saved = license_state(state)?;
             if saved.access == "free" {
-                Err("Activation was confirmed but could not be saved on this device".to_owned())
+                Err(crate::service_result_words::render_service_reason_without_parameters(
+                    "payment_voucher_failed",
+                ))
             } else {
                 Ok(saved)
             }
         }
-        "REVOKED" => Err("This activation code has been revoked".to_owned()),
-        "EXPIRED" => Err("This activation code has expired".to_owned()),
-        "PENDING" => Err("This activation code is not active yet".to_owned()),
-        _ => Err("That activation code was not recognized".to_owned()),
+        "REVOKED" | "EXPIRED" | "PENDING" => Err(service_words.unwrap_or_else(|| {
+            crate::service_result_words::render_service_reason_without_parameters(
+                "payment_voucher_unknown",
+            )
+        })),
+        _ => Err(service_words.unwrap_or_else(|| {
+            crate::service_result_words::render_service_reason_without_parameters(
+                "payment_voucher_unknown",
+            )
+        })),
     }
 }
 
@@ -195,9 +217,13 @@ fn friendly_activation_error(error: &str) -> String {
     if error.starts_with(ipc::commands::OSL_VALIDATE_ERR_PREFIX)
         && error.contains("\"kind\":\"unreachable\"")
     {
-        "OSL could not reach the activation server".to_owned()
+        crate::service_result_words::render_service_reason_without_parameters(
+            "payment_voucher_failed",
+        )
     } else {
-        "That activation code was not recognized".to_owned()
+        crate::service_result_words::render_service_reason_without_parameters(
+            "payment_voucher_unknown",
+        )
     }
 }
 

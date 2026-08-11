@@ -19,6 +19,16 @@ description = "Read the already-computed startup build-integrity verdict; it cop
 commands.allow = ["build_integrity_status"]
 
 [[permission]]
+identifier = "allow-resolve-english-catalogue-string"
+description = "Resolve one registered English catalogue key for the trusted packaged main window; unknown keys and mismatched parameters fail closed."
+commands.allow = ["resolve_english_catalogue_string"]
+
+[[permission]]
+identifier = "allow-resolve-person-service-result"
+description = "Resolve one stable service reason code and structured parameters through its sole packaged English catalogue key."
+commands.allow = ["resolve_person_service_result"]
+
+[[permission]]
 identifier = "allow-compose-scrub-erasure-request"
 description = "Compose a local GDPR/CCPA erasure request for the user to review and send themselves; it performs no network operation."
 commands.allow = ["compose_scrub_erasure_request"]

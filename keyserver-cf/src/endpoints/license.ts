@@ -17,7 +17,6 @@
 
 import type { Env } from "../env.js";
 import { hashLicense, normalizeLicense, validateChecksum } from "../lib/license.js";
-import { revokedLicenseMessage } from "../lib/license-refusal.js";
 import { getSubscription } from "../lib/subscriptions.js";
 import { badRequest, json, serviceUnavailable, tooMany } from "../lib/http.js";
 import { callerIp, checkRateLimit } from "../lib/rate-limit.js";
@@ -29,11 +28,6 @@ interface ValidationLicenseRow {
   terminal_event_type: string | null;
   redeemed_at: number | null;
   expires_at: number | null;
-}
-
-function revokedMessage(reason: string | null): string | undefined {
-  if (reason === "manual") return "this code was refunded";
-  return undefined;
 }
 
 export async function handleLicenseValidate(
@@ -81,7 +75,6 @@ export async function handleLicenseValidate(
 
   const hash = await hashLicense(normalized);
   const license = await env.DB.prepare(
-    `SELECT subscription_id, revoked_at, revoked_reason, redeemed_at, expires_at
     `SELECT licenses.subscription_id,
             licenses.revoked_at,
             licenses.revoked_reason,
@@ -97,25 +90,33 @@ export async function handleLicenseValidate(
       WHERE licenses.license_hash = ?`,
   ).bind(hash).first<ValidationLicenseRow>();
   if (!license) {
-    return json({ status: "UNKNOWN", checksum_ok: true });
+    return json({
+      status: "UNKNOWN",
+      checksum_ok: true,
+      reason_code: "payment_voucher_unknown",
+      parameters: {},
+    });
   }
   if (license.revoked_at !== null) {
-    const error = revokedMessage(license.revoked_reason);
-    const message = revokedLicenseMessage(license);
     return json({
       status: "REVOKED",
       redeemed_at: license.redeemed_at,
       expires_at: license.expires_at,
       checksum_ok: true,
-      ...(error ? { error } : {}),
-      ...(message ? { message } : {}),
+      reason_code: "payment_voucher_revoked",
+      parameters: {},
     });
   }
   const sub = await getSubscription(env.DB, license.subscription_id);
   if (!sub) {
     // Orphan license — should not happen given the FK. Treat as
     // REVOKED so the client locks paid features.
-    return json({ status: "REVOKED", checksum_ok: true });
+    return json({
+      status: "REVOKED",
+      checksum_ok: true,
+      reason_code: "payment_voucher_revoked",
+      parameters: {},
+    });
   }
   if (sub.status === "REVOKED" || sub.status === "EXPIRED") {
     return json({
@@ -123,6 +124,10 @@ export async function handleLicenseValidate(
       redeemed_at: license.redeemed_at,
       expires_at: license.expires_at,
       checksum_ok: true,
+      reason_code: sub.status === "EXPIRED"
+        ? "payment_voucher_expired"
+        : "payment_voucher_revoked",
+      parameters: {},
     });
   }
   if (license.redeemed_at === null) {
@@ -131,6 +136,8 @@ export async function handleLicenseValidate(
       redeemed_at: null,
       expires_at: license.expires_at,
       checksum_ok: true,
+      reason_code: "payment_voucher_unredeemed",
+      parameters: {},
     });
   }
   if (license.expires_at === null) {
@@ -141,6 +148,8 @@ export async function handleLicenseValidate(
       redeemed_at: license.redeemed_at,
       expires_at: null,
       checksum_ok: true,
+      reason_code: "payment_voucher_unknown",
+      parameters: {},
     });
   }
   if (license.expires_at <= Math.floor(Date.now() / 1000)) {
@@ -149,6 +158,8 @@ export async function handleLicenseValidate(
       redeemed_at: license.redeemed_at,
       expires_at: license.expires_at,
       checksum_ok: true,
+      reason_code: "payment_voucher_expired",
+      parameters: {},
     });
   }
   return json({
@@ -157,5 +168,7 @@ export async function handleLicenseValidate(
     redeemed_at: license.redeemed_at,
     expires_at: license.expires_at,
     checksum_ok: true,
+    reason_code: "payment_voucher_active",
+    parameters: {},
   });
 }
