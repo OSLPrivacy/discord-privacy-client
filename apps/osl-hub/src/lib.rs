@@ -178,6 +178,8 @@ pub mod shared_mail_body_reader;
 #[cfg(feature = "core")]
 pub mod shipping_gmail_mailbox_receive;
 pub mod tor_pref;
+#[cfg(feature = "core")]
+pub mod shipping_outlook_web_mailbox_receive;
 pub mod scrub_hosted {
     pub mod checkpoint;
     pub mod fixture;
