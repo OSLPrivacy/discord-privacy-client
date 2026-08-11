@@ -120,6 +120,7 @@ pub mod transport;
 // padding boundary.  Expose it from the shipping IPC crate so the upload path
 // can consume the one canonical implementation as the object envelope lands.
 pub mod transport_padding;
+pub mod usage_counters;
 pub mod whitelist;
 pub mod whitelist_rules_store;
 pub mod whitelist_state;
