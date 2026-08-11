@@ -24,5 +24,9 @@ path = "src/bin/carrier_reference_fixture.rs"
 name = "carrier-baseline-review-fixture"
 path = "src/bin/carrier_baseline_review_fixture.rs"
 
+[[bin]]
+name = "messenger-composer-reference-check"
+path = "src/bin/messenger_composer_reference_check.rs"
+
 [workspace]
 resolver = "2"

@@ -5,6 +5,7 @@
 //! The state machine does not expose an API for desktop or arbitrary rectangles.
 
 pub mod baseline;
+pub mod messenger;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
