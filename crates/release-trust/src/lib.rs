@@ -5,7 +5,7 @@
 //! packages; this crate accepts public metadata and artifacts only.
 
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -14,6 +14,7 @@ use std::path::{Component, Path, PathBuf};
 
 pub const REQUIRED_ARTIFACT_ROLES: [&str; 3] = ["update", "build-proof", "carrier-table"];
 pub const REQUIRED_TOP_LEVEL_ROLES: [&str; 4] = ["root", "targets", "snapshot", "timestamp"];
+pub const OFFLINE_RECOVERY_INSTALLER_PATH: &str = "offline/OSL-Recovery-Installer.exe";
 
 #[derive(Debug, thiserror::Error)]
 pub enum TrustError {
@@ -65,23 +66,40 @@ pub enum TrustError {
         expected: u64,
         actual: u64,
     },
+    #[error("rollback refused for {role}: pinned version {pinned}, presented version {presented}")]
+    Rollback {
+        role: String,
+        pinned: u64,
+        presented: u64,
+    },
+    #[error("equivocation refused for {role} version {version}: signed bodies differ")]
+    Equivocation { role: String, version: u64 },
+    #[error("skipped intermediate root refused: expected version {expected}, presented version {presented}")]
+    SkippedRoot { expected: u64, presented: u64 },
+    #[error(
+        "root threshold version {root_version} is compromised; in-band updates are stopped; use separately authenticated offline recovery installer {offline_recovery}"
+    )]
+    OfflineRecoveryRequired {
+        root_version: u64,
+        offline_recovery: &'static str,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, TrustError>;
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Envelope {
     pub signatures: Vec<MetadataSignature>,
     pub signed: Value,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct MetadataSignature {
     pub keyid: String,
     pub sig: String,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RootMetadata {
     #[serde(rename = "_type")]
     pub kind: String,
@@ -92,19 +110,19 @@ pub struct RootMetadata {
     pub roles: BTreeMap<String, Role>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct PublicKey {
     pub keytype: String,
     pub scheme: String,
     pub keyval: KeyValue,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct KeyValue {
     pub public: String,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Role {
     pub keyids: Vec<String>,
     pub threshold: u32,
@@ -175,8 +193,20 @@ struct DelegatedRole {
 pub struct VerifiedArtifact {
     pub role: String,
     pub path: String,
+    pub signer_keyid: String,
     pub length: u64,
     pub sha256: String,
+    /// Owned bytes from the exact file whose trusted length and digest were
+    /// checked. Consumers must use these bytes rather than reopening the path.
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PinnedMetadata {
+    pub version: u64,
+    /// SHA-256 of the canonical signed body. Signature-set changes therefore
+    /// do not create false equivocation reports.
+    pub signed_sha256: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -185,6 +215,7 @@ pub struct VerificationReport {
     pub root_threshold: u32,
     pub verified_roles: Vec<String>,
     pub artifacts: Vec<VerifiedArtifact>,
+    pub metadata: BTreeMap<String, PinnedMetadata>,
 }
 
 fn read(path: &Path) -> Result<Vec<u8>> {
@@ -290,6 +321,18 @@ fn envelope_for_serialization(envelope: &Envelope) -> SerializableEnvelope<'_> {
 
 fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
+}
+
+fn signed_body_pin(envelope: &Envelope, role: &str) -> Result<PinnedMetadata> {
+    let version = envelope
+        .signed
+        .get("version")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| TrustError::Invalid(format!("{role} has no integer version")))?;
+    Ok(PinnedMetadata {
+        version,
+        signed_sha256: sha256_hex(&canonical_json(&envelope.signed)),
+    })
 }
 
 fn decode_array<const N: usize>(encoded: &str, label: &str) -> Result<[u8; N]> {
@@ -429,7 +472,7 @@ fn required_role<'a>(root: &'a RootMetadata, name: &str) -> Result<&'a Role> {
         .ok_or_else(|| TrustError::Invalid(format!("root metadata is missing role {name}")))
 }
 
-fn validate_root(root: &RootMetadata, envelope: &Envelope, now: u64) -> Result<()> {
+fn validate_root_structure(root: &RootMetadata, now: u64) -> Result<()> {
     check_common(&root.kind, &root.spec_version, root.expires, "root", now)?;
     if root.version == 0 {
         return Err(TrustError::Invalid(
@@ -483,7 +526,12 @@ fn validate_root(root: &RootMetadata, envelope: &Envelope, now: u64) -> Result<(
     for (keyid, key) in &root.keys {
         validate_key(keyid, key)?;
     }
-    verify_signatures("root", root_role, &root.keys, envelope)
+    Ok(())
+}
+
+fn validate_root(root: &RootMetadata, envelope: &Envelope, now: u64) -> Result<()> {
+    validate_root_structure(root, now)?;
+    verify_signatures("root", required_role(root, "root")?, &root.keys, envelope)
 }
 
 fn check_meta(name: &str, expected: &MetaFile, envelope: &Envelope) -> Result<()> {
@@ -565,6 +613,8 @@ pub fn verify_repository(trust_dir: impl AsRef<Path>, now: u64) -> Result<Verifi
     let (root_envelope, _) = parse_envelope(&metadata_dir.join("root.json"))?;
     let root: RootMetadata = typed(&root_envelope, "root")?;
     validate_root(&root, &root_envelope, now)?;
+    let mut verified_metadata = BTreeMap::new();
+    verified_metadata.insert("root".to_owned(), signed_body_pin(&root_envelope, "root")?);
 
     let (timestamp_envelope, _) = parse_envelope(&metadata_dir.join("timestamp.json"))?;
     verify_signatures(
@@ -574,6 +624,10 @@ pub fn verify_repository(trust_dir: impl AsRef<Path>, now: u64) -> Result<Verifi
         &timestamp_envelope,
     )?;
     let timestamp: TimestampMetadata = typed(&timestamp_envelope, "timestamp")?;
+    verified_metadata.insert(
+        "timestamp".to_owned(),
+        signed_body_pin(&timestamp_envelope, "timestamp")?,
+    );
     check_common(
         &timestamp.kind,
         &timestamp.spec_version,
@@ -598,6 +652,10 @@ pub fn verify_repository(trust_dir: impl AsRef<Path>, now: u64) -> Result<Verifi
         &snapshot_envelope,
     )?;
     let snapshot: SnapshotMetadata = typed(&snapshot_envelope, "snapshot")?;
+    verified_metadata.insert(
+        "snapshot".to_owned(),
+        signed_body_pin(&snapshot_envelope, "snapshot")?,
+    );
     check_common(
         &snapshot.kind,
         &snapshot.spec_version,
@@ -623,6 +681,10 @@ pub fn verify_repository(trust_dir: impl AsRef<Path>, now: u64) -> Result<Verifi
         &targets_envelope,
     )?;
     let targets: TargetsMetadata = typed(&targets_envelope, "targets")?;
+    verified_metadata.insert(
+        "targets".to_owned(),
+        signed_body_pin(&targets_envelope, "targets")?,
+    );
     check_common(
         &targets.kind,
         &targets.spec_version,
@@ -703,6 +765,10 @@ pub fn verify_repository(trust_dir: impl AsRef<Path>, now: u64) -> Result<Verifi
             &delegated_envelope,
         )?;
         let delegated_targets: TargetsMetadata = typed(&delegated_envelope, expected_role_name)?;
+        verified_metadata.insert(
+            expected_role_name.to_owned(),
+            signed_body_pin(&delegated_envelope, expected_role_name)?,
+        );
         check_common(
             &delegated_targets.kind,
             &delegated_targets.spec_version,
@@ -735,8 +801,10 @@ pub fn verify_repository(trust_dir: impl AsRef<Path>, now: u64) -> Result<Verifi
         artifacts.push(VerifiedArtifact {
             role: expected_role_name.to_owned(),
             path: artifact_path.clone(),
+            signer_keyid: keyid.clone(),
             length: artifact_bytes.len() as u64,
             sha256: sha256_hex(&artifact_bytes),
+            bytes: artifact_bytes,
         });
     }
 
@@ -765,5 +833,458 @@ pub fn verify_repository(trust_dir: impl AsRef<Path>, now: u64) -> Result<Verifi
             "carrier-table".to_owned(),
         ],
         artifacts,
+        metadata: verified_metadata,
     })
+}
+
+/// The three release consumers which must share the same root-chain gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ReleaseConsumer {
+    WindowsUpdate,
+    UnmodifiedBuildProof,
+    CarrierTable,
+}
+
+impl ReleaseConsumer {
+    pub const ALL: [Self; 3] = [
+        Self::WindowsUpdate,
+        Self::UnmodifiedBuildProof,
+        Self::CarrierTable,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::WindowsUpdate => "windows-update",
+            Self::UnmodifiedBuildProof => "unmodified-build-proof",
+            Self::CarrierTable => "carrier-table",
+        }
+    }
+
+    fn role(self) -> &'static str {
+        match self {
+            Self::WindowsUpdate => "update",
+            Self::UnmodifiedBuildProof => "build-proof",
+            Self::CarrierTable => "carrier-table",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrustedTarget {
+    pub consumer: ReleaseConsumer,
+    pub role: String,
+    pub path: String,
+    pub bytes: Vec<u8>,
+    pub sha256: String,
+    pub root_version: u64,
+    pub target_signer: String,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct PersistedClientState {
+    root_envelope: Envelope,
+    pins: BTreeMap<String, PinnedMetadata>,
+    root_threshold_compromised: bool,
+}
+
+/// A persisted TUF client rooted in a separately shipped root.
+///
+/// Repository `root.json` is never a trust anchor. Exact numbered roots are
+/// accepted one at a time, under both the old and new root thresholds. Only
+/// owned bytes from the verified repository pass through the consumer APIs.
+#[derive(Clone)]
+pub struct SequentialTrustClient {
+    root_envelope: Envelope,
+    root: RootMetadata,
+    pins: BTreeMap<String, PinnedMetadata>,
+    root_threshold_compromised: bool,
+}
+
+impl SequentialTrustClient {
+    pub fn bootstrap(trusted_root: impl AsRef<Path>, now: u64) -> Result<Self> {
+        let (root_envelope, _) = parse_envelope(trusted_root.as_ref())?;
+        let root: RootMetadata = typed(&root_envelope, "root")?;
+        validate_root(&root, &root_envelope, now)?;
+        let mut pins = BTreeMap::new();
+        pins.insert("root".to_owned(), signed_body_pin(&root_envelope, "root")?);
+        Ok(Self {
+            root_envelope,
+            root,
+            pins,
+            root_threshold_compromised: false,
+        })
+    }
+
+    pub fn load(state_path: impl AsRef<Path>, now: u64) -> Result<Self> {
+        let path = state_path.as_ref();
+        let bytes = read(path)?;
+        let state: PersistedClientState =
+            serde_json::from_slice(&bytes).map_err(|source| TrustError::Json {
+                path: path.to_path_buf(),
+                source,
+            })?;
+        let root: RootMetadata = typed(&state.root_envelope, "root")?;
+        validate_root(&root, &state.root_envelope, now)?;
+        let expected_pin = signed_body_pin(&state.root_envelope, "root")?;
+        if state.pins.get("root") != Some(&expected_pin) {
+            return Err(TrustError::Invalid(
+                "persisted root body does not match its root pin".to_owned(),
+            ));
+        }
+        Ok(Self {
+            root_envelope: state.root_envelope,
+            root,
+            pins: state.pins,
+            root_threshold_compromised: state.root_threshold_compromised,
+        })
+    }
+
+    pub fn save(&self, state_path: impl AsRef<Path>) -> Result<()> {
+        let path = state_path.as_ref();
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|source| TrustError::Io {
+                path: parent.to_path_buf(),
+                source,
+            })?;
+        }
+        let state = PersistedClientState {
+            root_envelope: self.root_envelope.clone(),
+            pins: self.pins.clone(),
+            root_threshold_compromised: self.root_threshold_compromised,
+        };
+        let bytes = serde_json::to_vec(&state).map_err(|error| {
+            TrustError::Invalid(format!("could not serialize trust state: {error}"))
+        })?;
+        let temporary = path.with_extension(format!("tmp-{}", std::process::id()));
+        fs::write(&temporary, bytes).map_err(|source| TrustError::Io {
+            path: temporary.clone(),
+            source,
+        })?;
+        fs::rename(&temporary, path).map_err(|source| TrustError::Io {
+            path: path.to_path_buf(),
+            source,
+        })
+    }
+
+    /// Records a separately authenticated incident decision. This bit is local
+    /// trusted state and cannot be set or cleared by in-band release metadata.
+    pub fn mark_root_threshold_compromised(&mut self) {
+        self.root_threshold_compromised = true;
+    }
+
+    pub fn root_version(&self) -> u64 {
+        self.root.version
+    }
+
+    pub fn pinned_version(&self, role: &str) -> Option<u64> {
+        self.pins.get(role).map(|pin| pin.version)
+    }
+
+    pub fn load_windows_update(
+        &mut self,
+        trust_dir: impl AsRef<Path>,
+        now: u64,
+    ) -> Result<TrustedTarget> {
+        self.refresh(trust_dir, now, ReleaseConsumer::WindowsUpdate)
+    }
+
+    pub fn load_unmodified_build_proof(
+        &mut self,
+        trust_dir: impl AsRef<Path>,
+        now: u64,
+    ) -> Result<TrustedTarget> {
+        self.refresh(trust_dir, now, ReleaseConsumer::UnmodifiedBuildProof)
+    }
+
+    pub fn load_carrier_table(
+        &mut self,
+        trust_dir: impl AsRef<Path>,
+        now: u64,
+    ) -> Result<TrustedTarget> {
+        self.refresh(trust_dir, now, ReleaseConsumer::CarrierTable)
+    }
+
+    pub fn refresh(
+        &mut self,
+        trust_dir: impl AsRef<Path>,
+        now: u64,
+        consumer: ReleaseConsumer,
+    ) -> Result<TrustedTarget> {
+        if self.root_threshold_compromised {
+            return Err(TrustError::OfflineRecoveryRequired {
+                root_version: self.root.version,
+                offline_recovery: OFFLINE_RECOVERY_INSTALLER_PATH,
+            });
+        }
+
+        let trust_dir = trust_dir.as_ref();
+        // A root which passed both thresholds remains pinned even if fresher
+        // online metadata is broken or frozen. Otherwise an attacker could
+        // repeatedly force the client back onto an already-rotated root.
+        self.advance_numbered_roots(trust_dir, now)?;
+        self.require_matching_repository_root(trust_dir)?;
+
+        // This returns the owned bytes which were hashed in the verifier. No
+        // consumer sees or reopens target content before this call succeeds.
+        let report = verify_repository(trust_dir, now)?;
+        let mut staged = self.clone();
+        for (role, pin) in &report.metadata {
+            staged.observe_pin(role, pin.clone())?;
+        }
+        let artifact = report
+            .artifacts
+            .into_iter()
+            .find(|artifact| artifact.role == consumer.role())
+            .ok_or_else(|| {
+                TrustError::Invalid(format!(
+                    "verified repository did not produce consuming path {}",
+                    consumer.name()
+                ))
+            })?;
+        let target = TrustedTarget {
+            consumer,
+            role: artifact.role,
+            path: artifact.path,
+            bytes: artifact.bytes,
+            sha256: artifact.sha256,
+            root_version: staged.root.version,
+            target_signer: artifact.signer_keyid,
+        };
+        *self = staged;
+        Ok(target)
+    }
+
+    fn observe_pin(&mut self, role: &str, presented: PinnedMetadata) -> Result<()> {
+        if let Some(pinned) = self.pins.get(role) {
+            if presented.version < pinned.version {
+                return Err(TrustError::Rollback {
+                    role: role.to_owned(),
+                    pinned: pinned.version,
+                    presented: presented.version,
+                });
+            }
+            if presented.version == pinned.version
+                && presented.signed_sha256 != pinned.signed_sha256
+            {
+                return Err(TrustError::Equivocation {
+                    role: role.to_owned(),
+                    version: presented.version,
+                });
+            }
+        }
+        if self
+            .pins
+            .get(role)
+            .is_none_or(|pinned| presented.version > pinned.version)
+        {
+            self.pins.insert(role.to_owned(), presented);
+        }
+        Ok(())
+    }
+
+    fn require_matching_repository_root(&self, trust_dir: &Path) -> Result<()> {
+        let path = trust_dir.join("metadata/root.json");
+        let (envelope, _) = parse_envelope(&path)?;
+        let presented: RootMetadata = typed(&envelope, "root")?;
+        if presented.version < self.root.version {
+            return Err(TrustError::Rollback {
+                role: "root".to_owned(),
+                pinned: self.root.version,
+                presented: presented.version,
+            });
+        }
+        if presented.version > self.root.version {
+            return Err(TrustError::SkippedRoot {
+                expected: self.root.version + 1,
+                presented: presented.version,
+            });
+        }
+        let expected = signed_body_pin(&self.root_envelope, "root")?;
+        let actual = signed_body_pin(&envelope, "root")?;
+        if expected.signed_sha256 != actual.signed_sha256 {
+            return Err(TrustError::Equivocation {
+                role: "root".to_owned(),
+                version: self.root.version,
+            });
+        }
+        Ok(())
+    }
+
+    fn advance_numbered_roots(&mut self, trust_dir: &Path, now: u64) -> Result<()> {
+        let roots_dir = trust_dir.join("metadata/roots");
+        loop {
+            let expected = self.root.version + 1;
+            let path = roots_dir.join(format!("{expected}.root.json"));
+            if !path.exists() {
+                if let Some(presented) = first_numbered_root_above(&roots_dir, expected)? {
+                    return Err(TrustError::SkippedRoot {
+                        expected,
+                        presented,
+                    });
+                }
+                break;
+            }
+            let (envelope, _) = parse_envelope(&path)?;
+            self.accept_next_root(envelope, now)?;
+        }
+        Ok(())
+    }
+
+    fn accept_next_root(&mut self, envelope: Envelope, now: u64) -> Result<()> {
+        let next: RootMetadata = typed(&envelope, "root")?;
+        let expected = self.root.version + 1;
+        if next.version < expected {
+            return Err(TrustError::Rollback {
+                role: "root".to_owned(),
+                pinned: self.root.version,
+                presented: next.version,
+            });
+        }
+        if next.version != expected {
+            return Err(TrustError::SkippedRoot {
+                expected,
+                presented: next.version,
+            });
+        }
+        validate_root_structure(&next, now)?;
+        verify_root_transition(&self.root, &next, &envelope)?;
+        let pin = signed_body_pin(&envelope, "root")?;
+
+        // Persist only the new root's signatures. Old cross-signatures are
+        // necessary for the transition, but are not authority after it.
+        let new_ids = required_role(&next, "root")?
+            .keyids
+            .iter()
+            .collect::<BTreeSet<_>>();
+        let self_envelope = Envelope {
+            signatures: envelope
+                .signatures
+                .into_iter()
+                .filter(|signature| new_ids.contains(&signature.keyid))
+                .collect(),
+            signed: envelope.signed,
+        };
+        validate_root(&next, &self_envelope, now)?;
+        self.root = next;
+        self.root_envelope = self_envelope;
+        self.pins.insert("root".to_owned(), pin);
+        Ok(())
+    }
+}
+
+fn first_numbered_root_above(roots_dir: &Path, expected: u64) -> Result<Option<u64>> {
+    let entries = match fs::read_dir(roots_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(source) => {
+            return Err(TrustError::Io {
+                path: roots_dir.to_path_buf(),
+                source,
+            })
+        }
+    };
+    let mut versions = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|source| TrustError::Io {
+            path: roots_dir.to_path_buf(),
+            source,
+        })?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let Some(version) = name
+            .strip_suffix(".root.json")
+            .and_then(|version| version.parse::<u64>().ok())
+        else {
+            continue;
+        };
+        if version > expected {
+            versions.push(version);
+        }
+    }
+    Ok(versions.into_iter().min())
+}
+
+fn verify_root_transition(
+    old: &RootMetadata,
+    new: &RootMetadata,
+    envelope: &Envelope,
+) -> Result<()> {
+    let old_role = required_role(old, "root")?;
+    let new_role = required_role(new, "root")?;
+    let permitted = old_role
+        .keyids
+        .iter()
+        .chain(new_role.keyids.iter())
+        .collect::<BTreeSet<_>>();
+    for signature in &envelope.signatures {
+        if !permitted.contains(&signature.keyid) {
+            return Err(TrustError::WrongRole {
+                role: "root-transition".to_owned(),
+                keyid: signature.keyid.clone(),
+            });
+        }
+    }
+    verify_transition_threshold("root-old-threshold", old_role, &old.keys, envelope)?;
+    verify_transition_threshold("root-new-threshold", new_role, &new.keys, envelope)
+}
+
+fn verify_transition_threshold(
+    role_name: &str,
+    role: &Role,
+    keys: &BTreeMap<String, PublicKey>,
+    envelope: &Envelope,
+) -> Result<()> {
+    if role.threshold == 0 || role.threshold as usize > role.keyids.len() {
+        return Err(TrustError::Invalid(format!(
+            "role {role_name} has impossible threshold {} for {} keys",
+            role.threshold,
+            role.keyids.len()
+        )));
+    }
+    let authorized = role.keyids.iter().collect::<BTreeSet<_>>();
+    let payload = canonical_json(&envelope.signed);
+    let mut valid = BTreeSet::new();
+    for signature in envelope
+        .signatures
+        .iter()
+        .filter(|signature| authorized.contains(&signature.keyid))
+    {
+        let key = keys.get(&signature.keyid).ok_or_else(|| {
+            TrustError::Invalid(format!(
+                "role {role_name} references missing key {}",
+                signature.keyid
+            ))
+        })?;
+        validate_key(&signature.keyid, key)?;
+        let public = VerifyingKey::from_bytes(&decode_array::<32>(
+            &key.keyval.public,
+            &format!("public key {}", signature.keyid),
+        )?)
+        .map_err(|_| {
+            TrustError::Invalid(format!(
+                "public key {} is not valid Ed25519",
+                signature.keyid
+            ))
+        })?;
+        let sig = Signature::from_bytes(&decode_array::<64>(
+            &signature.sig,
+            &format!("signature for {role_name}"),
+        )?);
+        if public.verify(&payload, &sig).is_err() {
+            return Err(TrustError::BadSignature {
+                role: role_name.to_owned(),
+                keyid: signature.keyid.clone(),
+            });
+        }
+        valid.insert(signature.keyid.as_str());
+    }
+    if valid.len() < role.threshold as usize {
+        return Err(TrustError::Threshold {
+            role: role_name.to_owned(),
+            valid: valid.len(),
+            threshold: role.threshold,
+        });
+    }
+    Ok(())
 }
