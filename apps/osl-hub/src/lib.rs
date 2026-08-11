@@ -174,6 +174,7 @@ pub mod scrub_erasure_queue;
 pub mod scrub_erasure_tracker;
 pub mod scrub_evidence_manifest;
 pub mod shared_conversation_scroll;
+pub mod shared_mail_body_reader;
 pub mod tor_pref;
 pub mod scrub_hosted {
     pub mod checkpoint;
