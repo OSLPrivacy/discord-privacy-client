@@ -28,5 +28,13 @@ path = "src/bin/carrier_baseline_review_fixture.rs"
 name = "messenger-composer-reference-check"
 path = "src/bin/messenger_composer_reference_check.rs"
 
+[[bin]]
+name = "carrier-fidelity"
+path = "src/bin/carrier_fidelity.rs"
+
+[[bin]]
+name = "carrier-fidelity-fixture"
+path = "src/bin/carrier_fidelity_fixture.rs"
+
 [workspace]
 resolver = "2"

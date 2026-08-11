@@ -1,0 +1,313 @@
+{
+  "comparisons": [
+    {
+      "candidate_png": "stable-composer-exact-probe-candidate.png",
+      "channel": "stable",
+      "known_good_capture_count": 5,
+      "known_good_distinct_max": 16,
+      "known_good_distinct_min": 3,
+      "owned_rois": [
+        {
+          "candidate_baseline_y": 250,
+          "candidate_boundary": {
+            "bottom": 268,
+            "left": 120,
+            "right": 184,
+            "top": 220
+          },
+          "flat_fill_rects": [
+            {
+              "bottom": 12,
+              "left": 8,
+              "right": 24,
+              "top": 8
+            }
+          ],
+          "name": "composer",
+          "reference_baseline_y": 250,
+          "reference_boundary": {
+            "bottom": 268,
+            "left": 120,
+            "right": 184,
+            "top": 220
+          },
+          "roi": {
+            "bottom": 52,
+            "left": 4,
+            "right": 68,
+            "top": 4
+          },
+          "uia_text_ranges": []
+        }
+      ],
+      "physical_height": 56,
+      "physical_width": 72,
+      "reference_png": "stable-composer-exact-probe-reference.png",
+      "state": "composer-exact-probe",
+      "text_relation": "exact_benign_probe"
+    },
+    {
+      "candidate_png": "stable-eye-protected-text-candidate.png",
+      "channel": "stable",
+      "known_good_capture_count": 5,
+      "known_good_distinct_max": 16,
+      "known_good_distinct_min": 3,
+      "owned_rois": [
+        {
+          "candidate_baseline_y": 250,
+          "candidate_boundary": {
+            "bottom": 268,
+            "left": 120,
+            "right": 184,
+            "top": 220
+          },
+          "flat_fill_rects": [
+            {
+              "bottom": 12,
+              "left": 8,
+              "right": 24,
+              "top": 8
+            }
+          ],
+          "name": "decrypted-message-content",
+          "reference_baseline_y": 250,
+          "reference_boundary": {
+            "bottom": 268,
+            "left": 120,
+            "right": 184,
+            "top": 220
+          },
+          "roi": {
+            "bottom": 52,
+            "left": 4,
+            "right": 68,
+            "top": 4
+          },
+          "uia_text_ranges": [
+            {
+              "bottom": 38,
+              "left": 28,
+              "right": 60,
+              "top": 22
+            }
+          ]
+        }
+      ],
+      "physical_height": 56,
+      "physical_width": 72,
+      "reference_png": "stable-eye-protected-text-reference.png",
+      "state": "eye-protected-text",
+      "text_relation": "protected_text_differs"
+    },
+    {
+      "candidate_png": "ptb-composer-exact-probe-candidate.png",
+      "channel": "ptb",
+      "known_good_capture_count": 5,
+      "known_good_distinct_max": 16,
+      "known_good_distinct_min": 3,
+      "owned_rois": [
+        {
+          "candidate_baseline_y": 250,
+          "candidate_boundary": {
+            "bottom": 268,
+            "left": 120,
+            "right": 184,
+            "top": 220
+          },
+          "flat_fill_rects": [
+            {
+              "bottom": 12,
+              "left": 8,
+              "right": 24,
+              "top": 8
+            }
+          ],
+          "name": "composer",
+          "reference_baseline_y": 250,
+          "reference_boundary": {
+            "bottom": 268,
+            "left": 120,
+            "right": 184,
+            "top": 220
+          },
+          "roi": {
+            "bottom": 52,
+            "left": 4,
+            "right": 68,
+            "top": 4
+          },
+          "uia_text_ranges": []
+        }
+      ],
+      "physical_height": 56,
+      "physical_width": 72,
+      "reference_png": "ptb-composer-exact-probe-reference.png",
+      "state": "composer-exact-probe",
+      "text_relation": "exact_benign_probe"
+    },
+    {
+      "candidate_png": "ptb-eye-protected-text-candidate.png",
+      "channel": "ptb",
+      "known_good_capture_count": 5,
+      "known_good_distinct_max": 16,
+      "known_good_distinct_min": 3,
+      "owned_rois": [
+        {
+          "candidate_baseline_y": 250,
+          "candidate_boundary": {
+            "bottom": 268,
+            "left": 120,
+            "right": 184,
+            "top": 220
+          },
+          "flat_fill_rects": [
+            {
+              "bottom": 12,
+              "left": 8,
+              "right": 24,
+              "top": 8
+            }
+          ],
+          "name": "decrypted-message-content",
+          "reference_baseline_y": 250,
+          "reference_boundary": {
+            "bottom": 268,
+            "left": 120,
+            "right": 184,
+            "top": 220
+          },
+          "roi": {
+            "bottom": 52,
+            "left": 4,
+            "right": 68,
+            "top": 4
+          },
+          "uia_text_ranges": [
+            {
+              "bottom": 38,
+              "left": 28,
+              "right": 60,
+              "top": 22
+            }
+          ]
+        }
+      ],
+      "physical_height": 56,
+      "physical_width": 72,
+      "reference_png": "ptb-eye-protected-text-reference.png",
+      "state": "eye-protected-text",
+      "text_relation": "protected_text_differs"
+    },
+    {
+      "candidate_png": "canary-composer-exact-probe-candidate.png",
+      "channel": "canary",
+      "known_good_capture_count": 5,
+      "known_good_distinct_max": 16,
+      "known_good_distinct_min": 3,
+      "owned_rois": [
+        {
+          "candidate_baseline_y": 250,
+          "candidate_boundary": {
+            "bottom": 268,
+            "left": 120,
+            "right": 184,
+            "top": 220
+          },
+          "flat_fill_rects": [
+            {
+              "bottom": 12,
+              "left": 8,
+              "right": 24,
+              "top": 8
+            }
+          ],
+          "name": "composer",
+          "reference_baseline_y": 250,
+          "reference_boundary": {
+            "bottom": 268,
+            "left": 120,
+            "right": 184,
+            "top": 220
+          },
+          "roi": {
+            "bottom": 52,
+            "left": 4,
+            "right": 68,
+            "top": 4
+          },
+          "uia_text_ranges": []
+        }
+      ],
+      "physical_height": 56,
+      "physical_width": 72,
+      "reference_png": "canary-composer-exact-probe-reference.png",
+      "state": "composer-exact-probe",
+      "text_relation": "exact_benign_probe"
+    },
+    {
+      "candidate_png": "canary-eye-protected-text-candidate.png",
+      "channel": "canary",
+      "known_good_capture_count": 5,
+      "known_good_distinct_max": 16,
+      "known_good_distinct_min": 3,
+      "owned_rois": [
+        {
+          "candidate_baseline_y": 250,
+          "candidate_boundary": {
+            "bottom": 268,
+            "left": 120,
+            "right": 184,
+            "top": 220
+          },
+          "flat_fill_rects": [
+            {
+              "bottom": 12,
+              "left": 8,
+              "right": 24,
+              "top": 8
+            }
+          ],
+          "name": "decrypted-message-content",
+          "reference_baseline_y": 250,
+          "reference_boundary": {
+            "bottom": 268,
+            "left": 120,
+            "right": 184,
+            "top": 220
+          },
+          "roi": {
+            "bottom": 52,
+            "left": 4,
+            "right": 68,
+            "top": 4
+          },
+          "uia_text_ranges": [
+            {
+              "bottom": 38,
+              "left": 28,
+              "right": 60,
+              "top": 22
+            }
+          ]
+        }
+      ],
+      "physical_height": 56,
+      "physical_width": 72,
+      "reference_png": "canary-eye-protected-text-reference.png",
+      "state": "eye-protected-text",
+      "text_relation": "protected_text_differs"
+    }
+  ],
+  "glyph_expansion_physical_px": 2,
+  "required_channels": [
+    "stable",
+    "ptb",
+    "canary"
+  ],
+  "required_states": [
+    "composer-exact-probe",
+    "eye-protected-text"
+  ],
+  "schema": "osl-carrier-fidelity-v1",
+  "seam_ring_physical_px": 4
+}

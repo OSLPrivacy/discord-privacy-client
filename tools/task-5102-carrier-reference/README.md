@@ -27,3 +27,7 @@ record binds the parent hash, old/new content identity, capture author,
 reviewer, and trust-root key id. Runtime adaptation, capture authors, and
 passing diffs have no baseline write path; a stale parent also makes replayed
 acceptance fail closed.
+
+`carrier-fidelity` consumes an `osl-carrier-fidelity-v1` manifest and compares
+each declared state/channel and owned ROI at equal physical dimensions. It has
+no resize path, no arbitrary mask input, and no cross-case aggregate score.

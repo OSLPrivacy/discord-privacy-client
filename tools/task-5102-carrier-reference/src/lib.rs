@@ -19,6 +19,8 @@ use std::sync::{
 };
 use zeroize::Zeroize;
 
+pub mod fidelity;
+
 pub const SEAM_RING_PX: i32 = 4;
 const MAX_CAPTURE_PIXELS: u64 = 8_388_608;
 
