@@ -2030,6 +2030,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "stronger-authority"
+version = "0.0.1"
+dependencies = [
+ "aes-gcm",
+ "hkdf",
+ "hmac",
+ "rand 0.8.6",
+ "sha2",
+ "thiserror 1.0.69",
+ "zeroize",
+]
+
+[[package]]
 name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
