@@ -138,6 +138,56 @@ describe("R2 attachment transport", () => {
     expect(new Uint8Array(await fetched.arrayBuffer())).toEqual(bytes);
   });
 
+  it("uses exactly one R2 GET and no HEAD for present and missing attachment fetches", async () => {
+    const real = workerEnv();
+    let getCalls = 0;
+    let headCalls = 0;
+    const env = workerEnv({
+      ATTACHMENTS: {
+        put: real.ATTACHMENTS.put.bind(real.ATTACHMENTS),
+        get: async (key: string, options?: R2GetOptions) => {
+          getCalls++;
+          return real.ATTACHMENTS.get(key, options);
+        },
+        head: async (key: string) => {
+          headCalls++;
+          return real.ATTACHMENTS.head(key);
+        },
+        delete: real.ATTACHMENTS.delete.bind(real.ATTACHMENTS),
+        createMultipartUpload: real.ATTACHMENTS.createMultipartUpload.bind(real.ATTACHMENTS),
+        resumeMultipartUpload: real.ATTACHMENTS.resumeMultipartUpload.bind(real.ATTACHMENTS),
+      } as unknown as R2Bucket,
+    });
+    const bytes = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
+    const uploaded = await handleAttachmentUpload(uploadRequest(bytes, bytes.byteLength), env);
+    const { id } = await uploaded.json() as { id: string };
+    const row = await attachmentRow(id);
+
+    getCalls = 0;
+    headCalls = 0;
+    const present = await handleAttachmentFetch(new Request(`https://cipher.test/v1/attachment/${id}`, {
+      headers: { "x-osl-fetch-token": token },
+    }), env, id);
+    expect(present.status).toBe(200);
+    expect(new Uint8Array(await present.arrayBuffer())).toEqual(bytes);
+    expect(getCalls).toBe(1);
+    expect(headCalls).toBe(0);
+
+    await real.ATTACHMENTS.delete(row.object_key);
+    getCalls = 0;
+    headCalls = 0;
+    const missing = await handleAttachmentFetch(new Request(`https://cipher.test/v1/attachment/${id}`, {
+      headers: { "x-osl-fetch-token": token },
+    }), env, id);
+    expect(missing.status).toBe(404);
+    await expect(missing.json()).resolves.toEqual({
+      error: "not_found",
+      message: "no such route or blob",
+    });
+    expect(getCalls).toBe(1);
+    expect(headCalls).toBe(0);
+  });
+
   it("hands R2 a known-length body, never a transformed stream", async () => {
     // Regression guard for a defect that shipped green: the upload path used to
     // pipe the request body through a counting TransformStream and hand the

@@ -888,23 +888,11 @@ export async function handleAttachmentFetch(request: Request, env: Env, id: stri
   if (row instanceof Response) return row;
   if (row.state !== "ready") return notFound();
   if (!await reserveAttachmentFetch(env, id, row, Math.floor(Date.now() / 1000))) return notFound();
-  const head = await env.ATTACHMENTS.head(row.object_key);
-  if (!head || !r2MetadataMatches(head, row.object_key, row.size_bytes)) {
-    return notFound();
-  }
-  const object = await env.ATTACHMENTS.get(row.object_key, {
-    onlyIf: { etagMatches: head.etag },
-  });
+  const object = await env.ATTACHMENTS.get(row.object_key);
   if (
     !object
     || !objectHasBody(object)
-    || !r2MetadataMatches(
-      object,
-      row.object_key,
-      row.size_bytes,
-      head.etag,
-      head.version,
-    )
+    || !r2MetadataMatches(object, row.object_key, row.size_bytes)
   ) {
     return notFound();
   }
