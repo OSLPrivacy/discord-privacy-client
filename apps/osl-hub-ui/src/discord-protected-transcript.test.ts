@@ -82,6 +82,8 @@ describe("Discord protected transcript", () => {
   it("renders plaintext only through textContent and never innerHTML", () => {
     const source = readFileSync(new URL("./discord-protected-transcript.ts", import.meta.url), "utf8");
     expect(source).toContain("result.textContent = value");
+    expect(source).toContain('viewport.id = "osl-protected-receive-surface"');
+    expect(source).toContain("viewport.tabIndex = 0");
     expect(source).not.toMatch(/\.innerHTML\s*=/u);
     expect(source).not.toMatch(/discordapp|discord\.com|webpack|localStorage|indexedDB/iu);
   });
