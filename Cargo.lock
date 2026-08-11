@@ -1045,6 +1045,7 @@ dependencies = [
  "hmac",
  "keystore",
  "message-lifecycle",
+ "osl-english-catalogue",
  "osl-ratchet-next",
  "png",
  "rand 0.8.6",
@@ -1345,6 +1346,14 @@ dependencies = [
  "sha2",
  "thiserror 1.0.69",
  "zeroize",
+]
+
+[[package]]
+name = "osl-english-catalogue"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

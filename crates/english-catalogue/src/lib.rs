@@ -60,6 +60,510 @@ pub const PRODUCTION_KEYS: &[ProductionKey] = &[
         key: "service.status.ready",
         placeholders: &[],
     },
+    ProductionKey {
+        key: "dialog.account_delete.confirm",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "dialog.account_delete.cancel",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "notification.friend_key_change.windows_toast.title",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "notification.friend_key_change.windows_toast.body",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "notification.friend_key_change.windows_toast.action",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "notification.friend_key_change.in_app_banner.title",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "notification.friend_key_change.in_app_banner.body",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "notification.friend_key_change.in_app_banner.action",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "notification.friend_key_change.notice_history.title",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "notification.friend_key_change.notice_history.body",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "notification.friend_key_change.notice_history.action",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "notification.encrypted_chat_message.windows_toast.title",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "notification.encrypted_chat_message.windows_toast.body",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "notification.encrypted_chat_message.windows_toast.action",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "notification.encrypted_chat_message.in_app_banner.title",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "notification.encrypted_chat_message.in_app_banner.body",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "notification.encrypted_chat_message.in_app_banner.action",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "notification.encrypted_chat_message.notice_history.title",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "notification.encrypted_chat_message.notice_history.body",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "notification.encrypted_chat_message.notice_history.action",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "local.adapter.accessibility_unavailable",
+        placeholders: &["adapter"],
+    },
+    ProductionKey {
+        key: "local.adapter.authorization_rejected",
+        placeholders: &["adapter"],
+    },
+    ProductionKey {
+        key: "local.adapter.canary_mismatch",
+        placeholders: &["adapter"],
+    },
+    ProductionKey {
+        key: "local.adapter.capability_not_granted",
+        placeholders: &["adapter"],
+    },
+    ProductionKey {
+        key: "local.adapter.composer_ambiguous",
+        placeholders: &["adapter"],
+    },
+    ProductionKey {
+        key: "local.adapter.composer_not_found",
+        placeholders: &["adapter"],
+    },
+    ProductionKey {
+        key: "local.adapter.destination_changed",
+        placeholders: &["adapter"],
+    },
+    ProductionKey {
+        key: "local.adapter.destination_unattested",
+        placeholders: &["adapter"],
+    },
+    ProductionKey {
+        key: "local.adapter.generation_stale",
+        placeholders: &["adapter"],
+    },
+    ProductionKey {
+        key: "local.adapter.not_focused",
+        placeholders: &["adapter"],
+    },
+    ProductionKey {
+        key: "local.adapter.occluded",
+        placeholders: &["adapter"],
+    },
+    ProductionKey {
+        key: "local.adapter.password_field",
+        placeholders: &["adapter"],
+    },
+    ProductionKey {
+        key: "local.adapter.platform_unsupported",
+        placeholders: &["adapter"],
+    },
+    ProductionKey {
+        key: "local.adapter.profile_expired",
+        placeholders: &["adapter"],
+    },
+    ProductionKey {
+        key: "local.adapter.profile_not_usable",
+        placeholders: &["adapter"],
+    },
+    ProductionKey {
+        key: "local.adapter.read_incomplete",
+        placeholders: &["adapter"],
+    },
+    ProductionKey {
+        key: "local.adapter.timeout",
+        placeholders: &["adapter"],
+    },
+    ProductionKey {
+        key: "local.adapter.transcript_not_found",
+        placeholders: &["adapter"],
+    },
+    ProductionKey {
+        key: "local.adapter.whatsapp.app_root_ambiguous",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "local.adapter.whatsapp.app_root_missing",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "local.adapter.whatsapp.body_candidate_blocked",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "local.adapter.whatsapp.body_candidate_missing",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "local.adapter.whatsapp.carrier_row_ambiguous",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "local.adapter.whatsapp.carrier_row_missing",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "local.adapter.whatsapp.composer_ambiguous",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "local.adapter.whatsapp.composer_missing",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "local.adapter.whatsapp.content_root_ambiguous",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "local.adapter.whatsapp.content_root_missing",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "local.adapter.whatsapp.invalid_carrier",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "local.adapter.whatsapp.transcript_ambiguous",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "local.adapter.whatsapp.transcript_missing",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "local.adapter.window_gone",
+        placeholders: &["adapter"],
+    },
+    ProductionKey {
+        key: "local.command.argument_missing",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "local.command.argument_unexpected",
+        placeholders: &["argument"],
+    },
+    ProductionKey {
+        key: "local.command.integer_invalid",
+        placeholders: &["argument"],
+    },
+    ProductionKey {
+        key: "local.command.required_missing",
+        placeholders: &["argument"],
+    },
+    ProductionKey {
+        key: "local.command.state_unavailable",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "local.command.storage_unavailable",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "local.command.store_missing",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "local.command.usage",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "local.command.value_missing",
+        placeholders: &["argument"],
+    },
+    ProductionKey {
+        key: "local.security.friend_bundle_invalid",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "local.security.friend_identity_invalid",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "local.security.key_change_incomplete",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "local.security.message_open_refused",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "local.security.safety_number_mismatch",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "local.validation.switch_missing",
+        placeholders: &["names"],
+    },
+    ProductionKey {
+        key: "local.validation.switch_mixed",
+        placeholders: &["missing", "unknown"],
+    },
+    ProductionKey {
+        key: "local.validation.switch_unknown",
+        placeholders: &["names"],
+    },
+    ProductionKey {
+        key: "accessibility.verified_scope.limit",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.payment_voucher.active",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.relay.succeeded",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.relay.queued_offline",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.relay.recipient_inbox_full",
+        placeholders: &["scope"],
+    },
+    ProductionKey {
+        key: "service.relay.rate_limited",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.relay.failed",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.key_server.succeeded",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.key_server.rate_limited",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.key_server.failed",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.storage.succeeded",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.storage.capacity",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.storage.rate_limited",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.storage.failed",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.storage.upload.unreachable",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.storage.upload.timed_out",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.storage.upload.rate_limited",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.storage.upload.capability_rejected",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.storage.upload.gone",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.storage.upload.too_large",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.storage.upload.unsupported_lifetime",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.storage.upload.server_fault",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.storage.upload.malformed_response",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.storage.upload.local_io",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.storage.upload.refused",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.storage.upload.route_unavailable",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.storage.fetch.unreachable",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.storage.fetch.timed_out",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.storage.fetch.rate_limited",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.storage.fetch.capability_rejected",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.storage.fetch.gone",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.storage.fetch.too_large",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.storage.fetch.unsupported_lifetime",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.storage.fetch.server_fault",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.storage.fetch.malformed_response",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.storage.fetch.local_io",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.storage.fetch.refused",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.storage.fetch.route_unavailable",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.storage.delete.unreachable",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.storage.delete.timed_out",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.storage.delete.rate_limited",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.storage.delete.capability_rejected",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.storage.delete.gone",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.storage.delete.too_large",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.storage.delete.unsupported_lifetime",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.storage.delete.server_fault",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.storage.delete.malformed_response",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.storage.delete.local_io",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.storage.delete.refused",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.storage.delete.route_unavailable",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.payment_voucher.revoked",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.payment_voucher.expired",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.payment_voucher.unknown",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.payment_voucher.unredeemed",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.payment_voucher.already_redeemed",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.payment_voucher.rate_limited",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "service.payment_voucher.failed",
+        placeholders: &[],
+    },
 ];
 
 /// Q7 registers English only. This is intentionally a fixed one-element list,

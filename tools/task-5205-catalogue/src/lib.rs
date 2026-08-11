@@ -6,6 +6,8 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+pub mod semantic;
+
 // Compile the exact production entry-point files, rather than checker-only
 // copies, without pulling either shipping binary's unrelated dependency graph
 // into this focused release check.
@@ -29,6 +31,132 @@ pub const INDEPENDENT_PRODUCTION_KEYS: &[&str] = &[
     "windows.catalogue.loaded",
     "service.catalogue.loaded",
     "service.status.ready",
+    "dialog.account_delete.confirm",
+    "dialog.account_delete.cancel",
+    "notification.friend_key_change.windows_toast.title",
+    "notification.friend_key_change.windows_toast.body",
+    "notification.friend_key_change.windows_toast.action",
+    "notification.friend_key_change.in_app_banner.title",
+    "notification.friend_key_change.in_app_banner.body",
+    "notification.friend_key_change.in_app_banner.action",
+    "notification.friend_key_change.notice_history.title",
+    "notification.friend_key_change.notice_history.body",
+    "notification.friend_key_change.notice_history.action",
+    "notification.encrypted_chat_message.windows_toast.title",
+    "notification.encrypted_chat_message.windows_toast.body",
+    "notification.encrypted_chat_message.windows_toast.action",
+    "notification.encrypted_chat_message.in_app_banner.title",
+    "notification.encrypted_chat_message.in_app_banner.body",
+    "notification.encrypted_chat_message.in_app_banner.action",
+    "notification.encrypted_chat_message.notice_history.title",
+    "notification.encrypted_chat_message.notice_history.body",
+    "notification.encrypted_chat_message.notice_history.action",
+    "local.adapter.accessibility_unavailable",
+    "local.adapter.authorization_rejected",
+    "local.adapter.canary_mismatch",
+    "local.adapter.capability_not_granted",
+    "local.adapter.composer_ambiguous",
+    "local.adapter.composer_not_found",
+    "local.adapter.destination_changed",
+    "local.adapter.destination_unattested",
+    "local.adapter.generation_stale",
+    "local.adapter.not_focused",
+    "local.adapter.occluded",
+    "local.adapter.password_field",
+    "local.adapter.platform_unsupported",
+    "local.adapter.profile_expired",
+    "local.adapter.profile_not_usable",
+    "local.adapter.read_incomplete",
+    "local.adapter.timeout",
+    "local.adapter.transcript_not_found",
+    "local.adapter.whatsapp.app_root_ambiguous",
+    "local.adapter.whatsapp.app_root_missing",
+    "local.adapter.whatsapp.body_candidate_blocked",
+    "local.adapter.whatsapp.body_candidate_missing",
+    "local.adapter.whatsapp.carrier_row_ambiguous",
+    "local.adapter.whatsapp.carrier_row_missing",
+    "local.adapter.whatsapp.composer_ambiguous",
+    "local.adapter.whatsapp.composer_missing",
+    "local.adapter.whatsapp.content_root_ambiguous",
+    "local.adapter.whatsapp.content_root_missing",
+    "local.adapter.whatsapp.invalid_carrier",
+    "local.adapter.whatsapp.transcript_ambiguous",
+    "local.adapter.whatsapp.transcript_missing",
+    "local.adapter.window_gone",
+    "local.command.argument_missing",
+    "local.command.argument_unexpected",
+    "local.command.integer_invalid",
+    "local.command.required_missing",
+    "local.command.state_unavailable",
+    "local.command.storage_unavailable",
+    "local.command.store_missing",
+    "local.command.usage",
+    "local.command.value_missing",
+    "local.security.friend_bundle_invalid",
+    "local.security.friend_identity_invalid",
+    "local.security.key_change_incomplete",
+    "local.security.message_open_refused",
+    "local.security.safety_number_mismatch",
+    "local.validation.switch_missing",
+    "local.validation.switch_mixed",
+    "local.validation.switch_unknown",
+    "accessibility.verified_scope.limit",
+    "service.payment_voucher.active",
+    "service.relay.succeeded",
+    "service.relay.queued_offline",
+    "service.relay.recipient_inbox_full",
+    "service.relay.rate_limited",
+    "service.relay.failed",
+    "service.key_server.succeeded",
+    "service.key_server.rate_limited",
+    "service.key_server.failed",
+    "service.storage.succeeded",
+    "service.storage.capacity",
+    "service.storage.rate_limited",
+    "service.storage.failed",
+    "service.storage.upload.unreachable",
+    "service.storage.upload.timed_out",
+    "service.storage.upload.rate_limited",
+    "service.storage.upload.capability_rejected",
+    "service.storage.upload.gone",
+    "service.storage.upload.too_large",
+    "service.storage.upload.unsupported_lifetime",
+    "service.storage.upload.server_fault",
+    "service.storage.upload.malformed_response",
+    "service.storage.upload.local_io",
+    "service.storage.upload.refused",
+    "service.storage.upload.route_unavailable",
+    "service.storage.fetch.unreachable",
+    "service.storage.fetch.timed_out",
+    "service.storage.fetch.rate_limited",
+    "service.storage.fetch.capability_rejected",
+    "service.storage.fetch.gone",
+    "service.storage.fetch.too_large",
+    "service.storage.fetch.unsupported_lifetime",
+    "service.storage.fetch.server_fault",
+    "service.storage.fetch.malformed_response",
+    "service.storage.fetch.local_io",
+    "service.storage.fetch.refused",
+    "service.storage.fetch.route_unavailable",
+    "service.storage.delete.unreachable",
+    "service.storage.delete.timed_out",
+    "service.storage.delete.rate_limited",
+    "service.storage.delete.capability_rejected",
+    "service.storage.delete.gone",
+    "service.storage.delete.too_large",
+    "service.storage.delete.unsupported_lifetime",
+    "service.storage.delete.server_fault",
+    "service.storage.delete.malformed_response",
+    "service.storage.delete.local_io",
+    "service.storage.delete.refused",
+    "service.storage.delete.route_unavailable",
+    "service.payment_voucher.revoked",
+    "service.payment_voucher.expired",
+    "service.payment_voucher.unknown",
+    "service.payment_voucher.unredeemed",
+    "service.payment_voucher.already_redeemed",
+    "service.payment_voucher.rate_limited",
+    "service.payment_voucher.failed",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -214,13 +342,26 @@ fn interpolation_variables<'a>(
     catalogue: &'a EnglishCatalogue,
     key: &str,
 ) -> Vec<(&'static str, &'a str)> {
-    if matches!(key, "windows.catalogue.loaded" | "service.catalogue.loaded") {
-        vec![
+    match key {
+        "windows.catalogue.loaded" | "service.catalogue.loaded" => vec![
             ("caller", catalogue.caller()),
             ("version", catalogue.version()),
-        ]
-    } else {
-        Vec::new()
+        ],
+        key if key.starts_with("local.adapter.") && !key.starts_with("local.adapter.whatsapp.") => {
+            vec![("adapter", "ADAPTER-ORACLE")]
+        }
+        "local.command.argument_unexpected"
+        | "local.command.integer_invalid"
+        | "local.command.required_missing"
+        | "local.command.value_missing" => vec![("argument", "--ORACLE")],
+        "local.validation.switch_missing" | "local.validation.switch_unknown" => {
+            vec![("names", "NAMES-ORACLE")]
+        }
+        "local.validation.switch_mixed" => {
+            vec![("missing", "MISSING-ORACLE"), ("unknown", "UNKNOWN-ORACLE")]
+        }
+        "service.relay.recipient_inbox_full" => vec![("scope", "SCOPE-ORACLE")],
+        _ => Vec::new(),
     }
 }
 
