@@ -10,7 +10,9 @@
 //! verbatim through reconnect retries: it is a non-expiring bearer capability,
 //! not a signed command that may be re-stamped.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
@@ -155,14 +157,42 @@ pub struct EagerFetchDriver<T, S> {
     transport: T,
     store: S,
     burns: EncryptedBurnQueue,
+    reservations: FetchReservations,
 }
 
 impl<T: CipherStoreTransport, S: LocalMessageStore> EagerFetchDriver<T, S> {
     pub fn new(transport: T, store: S, burns: EncryptedBurnQueue) -> Self {
+        // A normal app launch gets a durable replay gate next to its existing
+        // encrypted outbox.  Falling back to an unavailable gate is deliberate:
+        // a damaged claim file must refuse a fetch, never forget completed work.
+        let reservations =
+            FetchReservations::open_encrypted(burns.claims_path(), burns.encryption_key())
+                .unwrap_or_else(FetchReservations::unavailable);
+        Self::with_reservations(transport, store, burns, reservations)
+    }
+
+    pub fn try_new(transport: T, store: S, burns: EncryptedBurnQueue) -> Result<Self, String> {
+        let reservations =
+            FetchReservations::open_encrypted(burns.claims_path(), burns.encryption_key())?;
+        Ok(Self::with_reservations(
+            transport,
+            store,
+            burns,
+            reservations,
+        ))
+    }
+
+    pub fn with_reservations(
+        transport: T,
+        store: S,
+        burns: EncryptedBurnQueue,
+        reservations: FetchReservations,
+    ) -> Self {
         Self {
             transport,
             store,
             burns,
+            reservations,
         }
     }
 
@@ -170,11 +200,26 @@ impl<T: CipherStoreTransport, S: LocalMessageStore> EagerFetchDriver<T, S> {
     /// Retries retain the cipher-store reservation created before the first
     /// byte. A failed fetch/decrypt/write leaves no ACK decision to this task.
     pub fn on_pointer_arrival(&mut self, pointer: &PointerArrival) -> Result<(), String> {
+        self.fetch_and_persist_once(pointer).map(|_| ())
+    }
+
+    /// The thirty-second look uses the exact same durable claim as the eager
+    /// pointer route.  A loser gets no ciphertext and cannot spend capacity.
+    pub fn on_poll_arrival(&mut self, pointer: &PointerArrival) -> Result<bool, String> {
+        self.fetch_and_persist_once(pointer)
+    }
+
+    fn fetch_and_persist_once(&mut self, pointer: &PointerArrival) -> Result<bool, String> {
+        let Some(permit) = self.reservations.reserve(&pointer.blob_id)? else {
+            return Ok(false);
+        };
         let ciphertext = crate::eager_fetch_retry::retry_reserved_fetch(|| {
             self.transport.fetch(&pointer.blob_id, &pointer.fetch_cap)
         })?;
         self.store
-            .decrypt_and_persist(&pointer.blob_id, &ciphertext)
+            .decrypt_and_persist(&pointer.blob_id, &ciphertext)?;
+        permit.commit()?;
+        Ok(true)
     }
 
     /// Local destruction is first.  Capacity is checked before destruction so
@@ -203,6 +248,243 @@ impl<T: CipherStoreTransport, S: LocalMessageStore> EagerFetchDriver<T, S> {
 
     pub fn into_parts(self) -> (T, S, EncryptedBurnQueue) {
         (self.transport, self.store, self.burns)
+    }
+}
+
+/// Durable per-blob ownership for the eager pointer route and the legacy poll.
+///
+/// Version 1 used two sets (`in_flight` and `completed`). Version 2 writes one
+/// explicit state per identity.  The migration is total: completed claims stay
+/// completed and abandoned in-flight claims become retryable after a restart.
+#[derive(Clone, Debug)]
+pub struct FetchReservations {
+    inner: Arc<Mutex<FetchReservationsInner>>,
+}
+
+#[derive(Debug)]
+struct FetchReservationsInner {
+    document: FetchReservationDocument,
+    persistence: Option<ClaimPersistence>,
+    unavailable: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct ClaimPersistence {
+    path: PathBuf,
+    key: [u8; 32],
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum FetchClaimState {
+    #[default]
+    InFlight,
+    Retryable,
+    Completed,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FetchReservationDocument {
+    version: u8,
+    claims: BTreeMap<String, FetchClaimState>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FetchReservationDocumentV1 {
+    version: u8,
+    in_flight: Vec<String>,
+    completed: Vec<String>,
+}
+
+const FETCH_RESERVATION_VERSION: u8 = 2;
+const MAX_CLAIM_FILE_BYTES: u64 = 2 * 1024 * 1024;
+
+impl Default for FetchReservations {
+    fn default() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(FetchReservationsInner {
+                document: FetchReservationDocument {
+                    version: FETCH_RESERVATION_VERSION,
+                    claims: BTreeMap::new(),
+                },
+                persistence: None,
+                unavailable: None,
+            })),
+        }
+    }
+}
+
+impl FetchReservations {
+    pub fn open_encrypted(path: PathBuf, key: [u8; 32]) -> Result<Self, String> {
+        let document = Self::load(&path, &key)?;
+        Ok(Self {
+            inner: Arc::new(Mutex::new(FetchReservationsInner {
+                document,
+                persistence: Some(ClaimPersistence { path, key }),
+                unavailable: None,
+            })),
+        })
+    }
+
+    fn unavailable(error: String) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(FetchReservationsInner {
+                document: FetchReservationDocument::default(),
+                persistence: None,
+                unavailable: Some(error),
+            })),
+        }
+    }
+
+    fn load(path: &Path, key: &[u8; 32]) -> Result<FetchReservationDocument, String> {
+        let Some(sealed) = crate::atomic_file::read_recoverable_bounded(
+            path,
+            MAX_CLAIM_FILE_BYTES,
+            "OSL Chat fetch claims",
+        )?
+        else {
+            return Ok(FetchReservationDocument {
+                version: FETCH_RESERVATION_VERSION,
+                claims: BTreeMap::new(),
+            });
+        };
+        let bytes = ipc::main_password::decrypt_at_rest(&sealed, key)
+            .map_err(|_| "OSL Chat fetch claims could not be decrypted".to_owned())?;
+        if let Ok(document) = serde_json::from_slice::<FetchReservationDocument>(&bytes) {
+            if document.version == FETCH_RESERVATION_VERSION
+                && document.claims.keys().all(|identity| !identity.is_empty())
+            {
+                let mut document = document;
+                // A process cannot still own a claim it wrote before this
+                // launch. Keep its identity, but make it eligible for exactly
+                // one reconciliation fetch rather than abandoning it forever.
+                for state in document.claims.values_mut() {
+                    if *state == FetchClaimState::InFlight {
+                        *state = FetchClaimState::Retryable;
+                    }
+                }
+                return Ok(document);
+            }
+        }
+        let legacy: FetchReservationDocumentV1 = serde_json::from_slice(&bytes)
+            .map_err(|_| "OSL Chat fetch claims have an unsupported shape".to_owned())?;
+        if legacy.version != 1
+            || legacy
+                .in_flight
+                .iter()
+                .chain(&legacy.completed)
+                .any(|id| id.is_empty())
+        {
+            return Err("OSL Chat fetch claims have an unsupported version".to_owned());
+        }
+        let mut claims = BTreeMap::new();
+        // A durable completed receipt always wins.  An interrupted fetch has no
+        // receipt, so it is deliberately retried once after startup.
+        for identity in legacy.in_flight {
+            claims.insert(identity, FetchClaimState::Retryable);
+        }
+        for identity in legacy.completed {
+            claims.insert(identity, FetchClaimState::Completed);
+        }
+        Ok(FetchReservationDocument {
+            version: FETCH_RESERVATION_VERSION,
+            claims,
+        })
+    }
+
+    fn save(inner: &FetchReservationsInner) -> Result<(), String> {
+        let Some(persistence) = &inner.persistence else {
+            return Ok(());
+        };
+        let bytes = serde_json::to_vec(&inner.document)
+            .map_err(|_| "OSL Chat fetch claims could not be encoded".to_owned())?;
+        let sealed = ipc::main_password::encrypt_at_rest(&bytes, &persistence.key)
+            .map_err(|_| "OSL Chat fetch claims could not be encrypted".to_owned())?;
+        crate::atomic_file::write_recoverable(&persistence.path, &sealed, "OSL Chat fetch claims")
+    }
+
+    fn reserve(&self, blob_id: &str) -> Result<Option<FetchPermit>, String> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| "OSL Chat fetch reservations are unavailable".to_owned())?;
+        if let Some(error) = &inner.unavailable {
+            return Err(error.clone());
+        }
+        match inner.document.claims.get(blob_id) {
+            Some(FetchClaimState::Completed) | Some(FetchClaimState::InFlight) => return Ok(None),
+            None => {}
+        }
+        inner
+            .document
+            .claims
+            .insert(blob_id.to_owned(), FetchClaimState::InFlight);
+        Self::save(&inner)?;
+        Ok(Some(FetchPermit {
+            reservations: self.clone(),
+            blob_id: blob_id.to_owned(),
+            committed: false,
+        }))
+    }
+
+    pub fn completed_count(&self) -> Result<usize, String> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| "OSL Chat fetch reservations are unavailable".to_owned())?;
+        Ok(inner
+            .document
+            .claims
+            .values()
+            .filter(|state| **state == FetchClaimState::Completed)
+            .count())
+    }
+}
+
+struct FetchPermit {
+    reservations: FetchReservations,
+    blob_id: String,
+    committed: bool,
+}
+
+impl FetchPermit {
+    fn commit(mut self) -> Result<(), String> {
+        let mut inner = self
+            .reservations
+            .inner
+            .lock()
+            .map_err(|_| "OSL Chat fetch reservations are unavailable".to_owned())?;
+        inner
+            .document
+            .claims
+            .insert(self.blob_id.clone(), FetchClaimState::Completed);
+        FetchReservations::save(&inner)?;
+        self.committed = true;
+        Ok(())
+    }
+}
+
+impl Drop for FetchPermit {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        if let Ok(mut inner) = self.reservations.inner.lock() {
+            // Retain the identity after a failed fetch. A later pointer or a
+            // restart can reconcile it, but while the permit lived no second
+            // worker saw ciphertext for this identity.
+            if inner.persistence.is_some() {
+                inner
+                    .document
+                    .claims
+                    .insert(self.blob_id.clone(), FetchClaimState::Retryable);
+            } else {
+                inner.document.claims.remove(&self.blob_id);
+            }
+            let _ = FetchReservations::save(&inner);
+        }
     }
 }
 
@@ -239,6 +521,16 @@ impl EncryptedBurnQueue {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    fn claims_path(&self) -> PathBuf {
+        let mut path = self.path.as_os_str().to_os_string();
+        path.push(".fetch-claims");
+        PathBuf::from(path)
+    }
+
+    fn encryption_key(&self) -> [u8; 32] {
+        self.key
     }
 
     fn load(&self) -> Result<BurnQueueDocument, String> {
