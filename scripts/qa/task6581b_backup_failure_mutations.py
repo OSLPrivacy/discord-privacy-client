@@ -58,7 +58,7 @@ def mutate(root: Path, name: str) -> str:
         oracle = load_oracle(root)
         oracle["axes"] = [row for row in oracle["axes"] if row["id"] != axis]
         save_oracle(root, oracle)
-        return f"axis={axis}"
+        return gate.axis_absence_diagnostic(axis)
 
     if name.startswith("remove-surface-"):
         surface = name.removeprefix("remove-surface-")
@@ -68,38 +68,70 @@ def mutate(root: Path, name: str) -> str:
 
     if name == "omit-loss-hosted-d1":
         replace(root, "docs/backup-and-disaster-recovery.md", "identities, prekeys, wrapped keys", "hosted records")
-        return "data_class=hosted-d1"
+        return (
+            "data_class=hosted-d1 edge=provider-D1-live->provider-D1-Time-Travel "
+            "affected_data=hosted-d1 expected=possible-loss-disclosed actual=loss-omitted"
+        )
     if name == "omit-loss-hosted-r2":
         replace(root, "cipher-store-cf/DEPLOY.md", "R2 message and attachment ciphertext", "Object payload bytes")
-        return "data_class=hosted-r2"
+        return (
+            "data_class=hosted-r2 edge=provider-R2-serving-copy->no-recovery-R2-copy "
+            "affected_data=hosted-r2 expected=possible-loss-disclosed actual=loss-omitted"
+        )
     if name == "claim-off-site":
         with (root / "docs/backup-and-disaster-recovery.md").open("a", encoding="utf-8") as handle:
             handle.write("\nOff-site backup protection is active.\n")
-        return "false words=off-site backup protection is active"
+        return (
+            "false words=off-site backup protection is active edge=same-provider-live->same-provider-recovery "
+            "affected_data=hosted-d1,hosted-r2,hosted-secrets "
+            "expected=shared-domain-no-off-site-isolation actual=off-site-protection-claimed"
+        )
     if name == "claim-independent":
         with (root / "docs/backup-and-disaster-recovery.md").open("a", encoding="utf-8") as handle:
             handle.write("\nIndependent backup protection is active.\n")
-        return "false words=independent backup protection is active"
+        return (
+            "false words=independent backup protection is active edge=shared-seven-axis-live->shared-seven-axis-recovery "
+            "affected_data=hosted-d1,hosted-r2,hosted-secrets "
+            "expected=shared-domain-no-independent-copy actual=independent-protection-claimed"
+        )
     if name == "claim-disaster-isolated":
         with (root / "docs/backup-and-disaster-recovery.md").open("a", encoding="utf-8") as handle:
             handle.write("\nDisaster-isolated protection is active.\n")
-        return "false words=disaster-isolated protection is active"
+        return (
+            "false words=disaster-isolated protection is active edge=shared-seven-axis-live->shared-seven-axis-recovery "
+            "affected_data=hosted-d1,hosted-r2,hosted-secrets "
+            "expected=isolated-axes=0 actual=disaster-isolation-claimed"
+        )
     if name == "promise-recovery":
         with (root / "docs/backup-and-disaster-recovery.md").open("a", encoding="utf-8") as handle:
             handle.write("\nRecovery is guaranteed after shared-domain failure.\n")
-        return "false words=recovery is guaranteed after shared-domain failure"
+        return (
+            "false words=recovery is guaranteed after shared-domain failure "
+            "edge=shared-domain-failure->same-domain-recovery-loss "
+            "affected_data=hosted-d1,hosted-r2,hosted-secrets "
+            "expected=recovery-not-guaranteed-after-co-failure actual=co-failure-recovery-guaranteed"
+        )
     if name == "forged-smaller-inventory":
         oracle = load_oracle(root)
         oracle["axes"] = [row for row in oracle["axes"] if row["id"] != "credential"]
+        oracle["candidateDisclosureDerivation"] = "regenerated-from-false-inventory"
         for _, relative in gate.SURFACES.values():
             path = root / relative
             text = path.read_text(encoding="utf-8")
             path.write_text(text.replace("credential", "session").replace("Credential", "Session"), encoding="utf-8")
         save_oracle(root, oracle)
-        return "axis=credential"
+        return (
+            "attack=self-derived-copy edge=false-inventory->regenerated-disclosure "
+            "affected_data=hosted-d1,hosted-r2,hosted-secrets "
+            "expected=copy-checked-against-fixed-measurement actual=copy-derived-from-false-inventory"
+        )
     if name == "remove-task-6582":
         replace(root, "README.md", "Task 6582", "Future work")
-        return "missing deferred task=6582"
+        return (
+            "missing deferred task=6582 edge=owner-ruling-T7->task-6582 "
+            "affected_data=all-backup-loss-boundaries expected=deferred-work-disclosed "
+            "actual=deferred-work-reference-missing"
+        )
     if name == "defer-deletion":
         replace(
             root,
@@ -108,7 +140,11 @@ def mutate(root: Path, name: str) -> str:
             "failure and kept for retry, and is never reported as destroyed",
             "backup deletion and erasure are deferred to task 6582",
         )
-        return "wrongly deferred obligation=remote-delete-failure-retry"
+        return (
+            "wrongly deferred obligation=remote-delete-failure-retry "
+            "edge=remote-backup-object->deletion-retry affected_data=remote-backup-object "
+            "expected=deletion-erasure-active actual=deletion-erasure-deferred"
+        )
     raise RuntimeError(f"unknown mutant={name}")
 
 

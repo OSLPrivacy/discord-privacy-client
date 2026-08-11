@@ -40,6 +40,16 @@ AXIS_DATA = {
     "key-authority": {"hosted-d1", "hosted-r2", "hosted-secrets"},
 }
 
+AXIS_EDGES = {
+    "provider": "Cloudflare-live->Cloudflare-Time-Travel",
+    "region": "WNAM-live->no-separate-recovery-region",
+    "account": "production-account->same-account-recovery",
+    "control-plane": "Cloudflare-control-plane->same-control-plane-recovery",
+    "administrator": "super-administrator->same-administrator-recovery",
+    "credential": "destructive-OAuth-credential->no-separate-recovery-credential",
+    "key-authority": "Cloudflare-managed-keys->no-separate-recovery-key-authority",
+}
+
 SURFACES = {
     "app-account-backup": ("local-account", "src-tauri/assets/settings_window.html"),
     "app-uninstall-backup": ("local-uninstall", "apps/osl-hub/nsis/osl-uninstall-hooks.nsh"),
@@ -77,10 +87,30 @@ MUTANTS = (
 )
 
 FORBIDDEN = {
-    "off-site backup protection is active": "off-site backup protection is active",
-    "independent backup protection is active": "independent backup protection is active",
-    "disaster-isolated protection is active": "disaster-isolated protection is active",
-    "recovery is guaranteed after shared-domain failure": "recovery is guaranteed after shared-domain failure",
+    "off-site backup protection is active": (
+        "same-provider-live->same-provider-recovery",
+        "hosted-d1,hosted-r2,hosted-secrets",
+        "shared-domain-no-off-site-isolation",
+        "off-site-protection-claimed",
+    ),
+    "independent backup protection is active": (
+        "shared-seven-axis-live->shared-seven-axis-recovery",
+        "hosted-d1,hosted-r2,hosted-secrets",
+        "shared-domain-no-independent-copy",
+        "independent-protection-claimed",
+    ),
+    "disaster-isolated protection is active": (
+        "shared-seven-axis-live->shared-seven-axis-recovery",
+        "hosted-d1,hosted-r2,hosted-secrets",
+        "isolated-axes=0",
+        "disaster-isolation-claimed",
+    ),
+    "recovery is guaranteed after shared-domain failure": (
+        "shared-domain-failure->same-domain-recovery-loss",
+        "hosted-d1,hosted-r2,hosted-secrets",
+        "recovery-not-guaranteed-after-co-failure",
+        "co-failure-recovery-guaranteed",
+    ),
 }
 
 CONFIG_FACTS = {
@@ -103,6 +133,14 @@ class GateError(RuntimeError):
 def normalized(value: str) -> str:
     value = value.replace("**", "").replace("`", "").replace('"', "").replace("+", "").replace("-", " ")
     return re.sub(r"\s+", " ", value).strip().lower()
+
+
+def axis_absence_diagnostic(axis: str) -> str:
+    return (
+        f"absent axis starvation axis={axis} edge={AXIS_EDGES[axis]} "
+        f"affected_data={','.join(sorted(AXIS_DATA[axis]))} "
+        "expected=shared-axis-disclosed actual=axis-hidden"
+    )
 
 
 def require_file(root: Path, relative: str, label: str) -> str:
@@ -165,7 +203,7 @@ def validate_axes(oracle: dict) -> None:
     mapped = {row.get("id"): row for row in rows if isinstance(row, dict)}
     for axis in AXES:
         if axis not in mapped:
-            raise GateError(f"absent axis starvation axis={axis} affected_data={','.join(sorted(AXIS_DATA[axis]))}")
+            raise GateError(axis_absence_diagnostic(axis))
         row = mapped[axis]
         if row.get("isolation") != 0:
             raise GateError(f"false isolation axis={axis} expected=0 actual={row.get('isolation')}")
@@ -203,7 +241,11 @@ def validate_surfaces(root: Path, oracle: dict) -> dict[str, str]:
         if "failure" not in text or "lose" not in text:
             raise GateError(f"surface={surface} omitted incident-to-loss meaning affected_data={kind}")
         if "task 6582" not in text or OWNER_REASON not in text:
-            raise GateError(f"surface={surface} missing deferred task=6582 reason={OWNER_REASON}")
+            raise GateError(
+                f"surface={surface} missing deferred task=6582 edge=owner-ruling-T7->task-6582 "
+                "affected_data=all-backup-loss-boundaries expected=deferred-work-disclosed "
+                "actual=deferred-work-reference-missing"
+            )
 
         if kind == "local-account":
             for needle in ("keys", "contacts", "settings", "message history"):
@@ -217,12 +259,24 @@ def validate_surfaces(root: Path, oracle: dict) -> dict[str, str]:
             for alternatives in HOSTED_DATA[surface]:
                 if not all(needle in text for needle in alternatives):
                     data_class = "hosted-r2" if "r2" in alternatives else "hosted-secrets" if "service secrets" in alternatives else "hosted-d1"
-                    raise GateError(f"surface={surface} omitted loss data_class={data_class} missing={','.join(alternatives)}")
+                    edge = (
+                        "provider-R2-serving-copy->no-recovery-R2-copy"
+                        if data_class == "hosted-r2"
+                        else "provider-D1-live->provider-D1-Time-Travel"
+                    )
+                    raise GateError(
+                        f"surface={surface} omitted loss data_class={data_class} edge={edge} "
+                        f"affected_data={data_class} expected=possible-loss-disclosed "
+                        f"actual=loss-omitted missing={','.join(alternatives)}"
+                    )
 
     combined = " ".join(texts.values())
-    for phrase, diagnostic in FORBIDDEN.items():
+    for phrase, (edge, affected_data, expected, actual) in FORBIDDEN.items():
         if normalized(phrase) in combined:
-            raise GateError(f"false words={diagnostic}")
+            raise GateError(
+                f"false words={phrase} edge={edge} affected_data={affected_data} "
+                f"expected={expected} actual={actual}"
+            )
     return texts
 
 
@@ -244,7 +298,11 @@ def validate_deletion(root: Path, oracle: dict) -> None:
     for row in rows:
         text = normalized(require_file(root, row["path"], f"obligation:{row['id']}"))
         if normalized(row["required"]) not in text:
-            raise GateError(f"wrongly deferred obligation={row['id']} path={row['path']}")
+            raise GateError(
+                f"wrongly deferred obligation={row['id']} "
+                "edge=remote-backup-object->deletion-retry affected_data=remote-backup-object "
+                f"expected=deletion-erasure-active actual=deletion-erasure-deferred path={row['path']}"
+            )
 
 
 def validate(root: Path, oracle_path: Path) -> None:
@@ -255,6 +313,12 @@ def validate(root: Path, oracle_path: Path) -> None:
     if oracle.get("schema") != "osl.task-6580.backup-failure-domain-oracle.v1":
         raise GateError("failure-domain oracle schema mismatch")
     validate_measurement(root, oracle)
+    if oracle.get("candidateDisclosureDerivation") == "regenerated-from-false-inventory":
+        raise GateError(
+            "attack=self-derived-copy edge=false-inventory->regenerated-disclosure "
+            "affected_data=hosted-d1,hosted-r2,hosted-secrets "
+            "expected=copy-checked-against-fixed-measurement actual=copy-derived-from-false-inventory"
+        )
     validate_axes(oracle)
     validate_surfaces(root, oracle)
     deferred = oracle.get("ownerDeferredWork", {})
@@ -281,7 +345,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"TASK6581 FAIL {error}", file=sys.stderr)
         return 1
     print(
-        "TASK6581 PASS provider=Cloudflare accounts=1 locations=1 d1=2 "
+        "TASK6581 PASS provider_iam_reconciliation=matched provider=Cloudflare accounts=1 locations=1 d1=2 "
         "time_travel_recovery=2 r2_payload_buckets=3 recovery_r2_buckets=0 "
         "administrators=1 recovery_administrators=0 destructive_credentials_observed=1 "
         "recovery_credentials=0 customer_kms=0 axes=7 shared_axes=7 isolated_axes=0 "

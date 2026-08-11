@@ -35,6 +35,25 @@ class Task6581MutationTests(unittest.TestCase):
             self.assertEqual(len(lines), len(gate.MUTANTS))
             for name in gate.MUTANTS:
                 self.assertTrue(any(f"name={name} " in line for line in lines), name)
+            semantic_mutants = {
+                *(f"hide-axis-{axis}" for axis in gate.AXES),
+                "omit-loss-hosted-d1",
+                "omit-loss-hosted-r2",
+                "claim-off-site",
+                "claim-independent",
+                "claim-disaster-isolated",
+                "promise-recovery",
+                "forged-smaller-inventory",
+                "remove-task-6582",
+                "defer-deletion",
+            }
+            for name in semantic_mutants:
+                line = next(line for line in lines if f"name={name} " in line)
+                for field in ("edge=", "affected_data=", "expected=", "actual="):
+                    self.assertIn(field, line, f"{name} did not name {field}")
+            self.assertTrue(
+                any("name=forged-smaller-inventory " in line and "attack=self-derived-copy" in line for line in lines)
+            )
             self.assertIn(
                 f"TASK6581B PASS mutants={len(gate.MUTANTS)} red_exit=1 restoration=green "
                 f"inventories_discarded={len(gate.MUTANTS)} candidates_discarded={len(gate.MUTANTS)} temp_remaining=0",
