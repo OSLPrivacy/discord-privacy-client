@@ -1,0 +1,70 @@
+{
+  "format": "osl.task6092.deployed-ciphertext-proof.v1",
+  "service": {
+    "deployed": true,
+    "worker_name": "task-6092-opx5zbf38462-mutant",
+    "deployment_id": "568cdc0d-461f-4487-a342-e427d38c29eb",
+    "frozen_before_raw_read": true,
+    "frozen_at_ms": 1786456281251,
+    "first_decryption_at_ms": 1786456281252
+  },
+  "clients": [
+    {
+      "client_id": "5d2a78a3cf09ce4301c4a8770c5171ab",
+      "public_key_sha256": "5d2a78a3cf09ce4301c4a8770c5171ab14872668e4762b3c79e3ac76dd0b03b5",
+      "key_bytes": 32,
+      "installed": true
+    },
+    {
+      "client_id": "03add77af9bbee46a5ae5bea8192a9be",
+      "public_key_sha256": "03add77af9bbee46a5ae5bea8192a9bec9473c9a1dedb415a3dce51e525d55c3",
+      "key_bytes": 32,
+      "installed": true
+    }
+  ],
+  "surfaces": [
+    {
+      "name": "primary_database",
+      "result": "raw",
+      "artifact": "message-rows.json"
+    },
+    {
+      "name": "object_blobs",
+      "result": "raw",
+      "artifact": "object-inventory.json"
+    },
+    {
+      "name": "queues",
+      "result": "absent_verified",
+      "artifact": "queues.txt"
+    },
+    {
+      "name": "caches",
+      "result": "absent_verified",
+      "artifact": "caches.txt"
+    },
+    {
+      "name": "replicas",
+      "result": "absent_verified",
+      "artifact": "replicas.txt"
+    },
+    {
+      "name": "backups",
+      "result": "raw",
+      "artifact": "message-rows.json"
+    },
+    {
+      "name": "logs",
+      "result": "absent_verified",
+      "artifact": "logs.txt"
+    },
+    {
+      "name": "telemetry",
+      "result": "absent_verified",
+      "artifact": "telemetry.txt"
+    }
+  ],
+  "raw": {
+    "leak_rows": "leak-rows.json"
+  }
+}

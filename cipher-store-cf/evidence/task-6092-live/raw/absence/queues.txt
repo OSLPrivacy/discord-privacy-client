@@ -1,0 +1,5 @@
+candidate queue bindings=0; source queue calls=0
+account listing (not used by candidate):
+
+ ⛅️ wrangler 4.114.0 (update available 4.120.1)
+───────────────────────────────────────────────
