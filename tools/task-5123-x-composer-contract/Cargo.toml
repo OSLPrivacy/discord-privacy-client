@@ -1,0 +1,20 @@
+[package]
+name = "task-5123-x-composer-contract"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "task-5123-x-composer-contract"
+path = "src/main.rs"
