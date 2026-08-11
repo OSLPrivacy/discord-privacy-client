@@ -13,6 +13,7 @@ members = [
     "crates/ipc",
     "crates/message-lifecycle",
     "crates/runtime",
+    "crates/shipping-transition-guard",
     "crates/sensitive-classify",
     "crates/store",
     # OSL-RN is integrated through `crates/ipc/src/wire_rn.rs`, including
