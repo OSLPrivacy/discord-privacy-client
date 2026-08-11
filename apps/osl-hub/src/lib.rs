@@ -171,6 +171,8 @@ pub mod scrub_erasure_queue;
 pub mod scrub_erasure_tracker;
 pub mod scrub_evidence_manifest;
 pub mod shared_conversation_scroll;
+#[cfg(feature = "core")]
+pub mod shipping_mailbox_pointer_reader;
 pub mod tor_pref;
 pub mod scrub_hosted {
     pub mod checkpoint;
