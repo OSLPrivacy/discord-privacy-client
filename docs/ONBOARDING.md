@@ -15,6 +15,16 @@ After an account is created or restored, OSL shows the recovery kit before the
 optional setup choices. If the recovery kit has not been confirmed as saved,
 OSL returns to it after a restart instead of silently skipping it.
 
+That kit is not an OSL-operated independent backup. Its provider, region,
+account, control plane, administrator, credential and key authority are those
+of the storage location the person chooses; OSL observes 0 independent
+isolation and guarantees 0 recovery. A shared failure on any of those axes, or
+loss/corruption of the file or phrase, can lose identity keys, contacts,
+settings and message history from both the device and kit. Hosted disaster
+isolation remains held as task 6582 under owner ruling T7 because genuine
+disaster isolation is wanted but not funded or operated for this release. See
+[the measured boundary](backup-and-disaster-recovery.md).
+
 ## Setup path
 
 The normal path after the recovery kit is:

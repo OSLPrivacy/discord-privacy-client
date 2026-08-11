@@ -294,7 +294,21 @@ binding, no DO class, no `[[migrations]]` tag in `wrangler.toml`.
   disk unless you pipe it. **Do not** pipe to a file in production.
 - The TTL-sweep cron runs every 5 minutes. If a subpoena lands,
   data older than 5 minutes past its expiry is already gone.
-- D1 backups: Cloudflare Time Travel can restore D1 up to 30 days
-  back. This DOES restore deleted blobs. If subpoena-resistance is
-  the goal, disable Time Travel for this database — the trade-off
-  is no D1-side disaster recovery.
+- D1 recovery: the 2026-08-11 provider API inventory observed a Time Travel
+  bookmark, but account-plan retention was not measured. This is not off-site,
+  independent, or disaster-isolated protection. Live D1 and recovery share
+  provider Cloudflare, WNAM location with no separately observed recovery
+  region, account `3490960a72d5f0c1ecf90490ccfbf7f1`, the same control plane,
+  one administrator, shared credentials and Cloudflare-managed key authority;
+  isolation is 0 on all seven axes and guaranteed recovery claims are 0. A
+  shared provider/location, account, control-plane, administrator, credential
+  or key-authority failure can lose relay/attachment metadata and deletion or
+  expiry state. R2 message and attachment ciphertext has no second copy and can
+  be unrecoverable even if D1 returns. Recovery after co-failure is not
+  guaranteed.
+- Held task 6582 is the missing independent provider/region/account/key work.
+  Owner ruling T7 deferred it because genuine disaster isolation is wanted but
+  not funded or operated for this release. This does not defer serving-copy or
+  backup deletion, nor object-specific cryptographic erasure. Time Travel can
+  restore deleted D1 rows, and the R2 deletion proof remains scoped to the
+  serving bucket.
