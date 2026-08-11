@@ -6,6 +6,7 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::account_identity_authority::AccountServiceIdentityAuthority;
 use crate::core_bridge::HubCoreState;
@@ -452,6 +453,45 @@ pub struct MailboxReaderSnapshot {
     pub messages: Vec<MailboxMessageCandidate>,
     #[serde(default)]
     pub signed_in_address: Option<String>,
+}
+
+/// Counts completed receiving reads without being part of the provider mailbox
+/// snapshot. Keeping the meter separate makes the read boundary observational:
+/// reading cannot delete, mark, move, or otherwise alter provider state.
+#[derive(Debug, Default)]
+pub struct SharedMailboxReceiveMeter {
+    completed_reads: AtomicU64,
+}
+
+impl SharedMailboxReceiveMeter {
+    pub fn completed_reads(&self) -> u64 {
+        self.completed_reads.load(Ordering::Relaxed)
+    }
+
+    fn record_completed_read(&self) {
+        self.completed_reads.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// An arrived message made available to the receiving side of a shared mail
+/// conversation. This is deliberately a copy of provider-observed fields, not
+/// a mutable provider message handle.
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SharedMailboxReceivedMessage {
+    pub message_id: String,
+    pub sender: String,
+    pub time: i64,
+    pub text: String,
+    pub thread_name: String,
+}
+
+/// The result of one receiving read. The sole state change associated with
+/// this operation is recorded by the separate [`SharedMailboxReceiveMeter`].
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SharedMailboxReceivingRead {
+    pub inbox: Vec<SharedMailboxReceivedMessage>,
 }
 
 impl MailboxReaderSnapshot {
@@ -1171,6 +1211,113 @@ pub fn open_shared_mailbox_message(
         ownership,
         body: message.body.clone(),
     })
+}
+
+/// Read the received side of one shared-mail conversation.
+///
+/// The mailbox is accepted only by shared reference and this function never
+/// calls a provider mutation operation. It selects Inbox rows sent by the
+/// named other participant, copies their sender/time/body into the returned
+/// projection, and records one completed shared-mailbox read only after the
+/// whole projection has been validated and built.
+pub fn receive_shared_mailbox_messages(
+    owner_osl_user_id: &str,
+    service_id: &str,
+    account_id: &str,
+    own_address: &str,
+    other_address: &str,
+    service_filled_mailbox: &MailboxReaderSnapshot,
+    meter: &SharedMailboxReceiveMeter,
+) -> Result<SharedMailboxReceivingRead, String> {
+    validate_mailbox_reader_binding(owner_osl_user_id, service_id, account_id)?;
+    validate_mailbox_text(own_address, "mailbox own address", 254)?;
+    validate_mailbox_text(other_address, "mailbox other address", 254)?;
+    if own_address.eq_ignore_ascii_case(other_address) {
+        return Err("mailbox conversation needs two different addresses".to_owned());
+    }
+    validate_mailbox_folders(&service_filled_mailbox.folders)?;
+    ensure_mailbox_folder_exists(&service_filled_mailbox.folders, "Inbox")?;
+
+    let mut inbox = service_filled_mailbox
+        .messages
+        .iter()
+        .filter(|message| {
+            message.folder_id == "Inbox" && message.sender.eq_ignore_ascii_case(other_address)
+        })
+        .map(|message| {
+            validate_mailbox_message(message)?;
+            Ok(SharedMailboxReceivedMessage {
+                message_id: message.message_id.clone(),
+                sender: message.sender.clone(),
+                time: message.time,
+                text: message.body.clone(),
+                thread_name: shared_mailbox_thread_name(
+                    own_address,
+                    other_address,
+                    &message.subject,
+                )?,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    inbox.sort_by(|left, right| {
+        left.time
+            .cmp(&right.time)
+            .then_with(|| left.message_id.cmp(&right.message_id))
+    });
+
+    meter.record_completed_read();
+    Ok(SharedMailboxReceivingRead { inbox })
+}
+
+/// Produce the conversation name from the two participants and the logical
+/// subject. Address order is canonical, and mail reply prefixes are discarded,
+/// so either participant computes the same name for `subject` and `Re:
+/// subject`. A changed reply subject without a stable provider thread id cannot
+/// be safely joined; this boundary intentionally does not guess one.
+pub fn shared_mailbox_thread_name(
+    first_address: &str,
+    second_address: &str,
+    subject: &str,
+) -> Result<String, String> {
+    validate_mailbox_text(first_address, "mailbox first address", 254)?;
+    validate_mailbox_text(second_address, "mailbox second address", 254)?;
+    let normalized_subject = normalize_shared_mailbox_thread_subject(subject)?;
+
+    let mut addresses = [
+        first_address.to_ascii_lowercase(),
+        second_address.to_ascii_lowercase(),
+    ];
+    addresses.sort();
+    let mut hasher = Sha256::new();
+    hasher.update(b"osl.shared-mailbox.thread-name.v1\\0");
+    for value in [
+        addresses[0].as_str(),
+        addresses[1].as_str(),
+        normalized_subject.as_str(),
+    ] {
+        hasher.update((value.len() as u64).to_be_bytes());
+        hasher.update(value.as_bytes());
+    }
+    Ok(format!("shared-mail-{:x}", hasher.finalize()))
+}
+
+fn normalize_shared_mailbox_thread_subject(subject: &str) -> Result<String, String> {
+    validate_mailbox_text(subject, "mailbox message subject", 512)?;
+    let mut normalized = subject.trim();
+    while normalized
+        .get(..3)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("re:"))
+    {
+        normalized = normalized
+            .get(3..)
+            .expect("the checked ASCII reply prefix ends on a character boundary")
+            .trim_start();
+    }
+    if normalized.is_empty() {
+        Err("mailbox message subject is invalid".to_owned())
+    } else {
+        Ok(normalized.to_ascii_lowercase())
+    }
 }
 
 fn service_capability_facts_for_kind(service_id: ServiceKind) -> Option<ServiceCapabilityFacts> {
