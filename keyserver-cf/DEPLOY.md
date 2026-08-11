@@ -1,5 +1,27 @@
 # Keyserver Worker deploy runbook
 
+## Current backup and disaster-recovery boundary
+
+The 2026-08-11 configuration, provider API, IAM, credential and key inventory
+found Cloudflare D1 Time Travel as the only recovery copy. Live D1 and recovery
+share provider Cloudflare, WNAM location with no separately observed recovery
+region, account `3490960a72d5f0c1ecf90490ccfbf7f1`, the same control plane, one
+administrator, shared credentials and Cloudflare-managed key authority.
+Isolation is 0 for provider, region, account, control plane, administrator,
+credential and key authority; guaranteed recovery claims are 0.
+
+A Cloudflare/WNAM loss, account closure or takeover, control-plane failure,
+administrator error or lockout, credential compromise or key-authority failure
+can lose both current and Time Travel identity, prekey, wrapped-key, mailbox,
+licence, payment and commerce records and can lose same-account service secrets.
+R2 retained-archive ciphertext and Durable Object mailbox/archive state have no
+observed independent recovery copy and can be unrecoverable even if D1 returns.
+Recovery after a shared-domain failure is not guaranteed.
+
+Task 6582 is held under owner ruling T7 because genuine disaster isolation is
+wanted but not funded or operated for this release. The hold does not defer
+serving-copy or backup deletion or per-object cryptographic erasure.
+
 Walks the keyserver-cf deploy end-to-end: provision resources, set
 secrets, deploy, register the Stripe webhook, smoke-test every
 endpoint, and run one controlled end-to-end live Stripe checkout.

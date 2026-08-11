@@ -20,6 +20,12 @@
       <p>Using OSL with another service may break that service's rules and could put your account at risk, including suspension or a ban. Experimental assisted placement, sending, cleanup, or deletion requires a separate risk agreement for the specific service and account before OSL uses it.</p>
     </section>
 
+    <section aria-labelledby="recovery-risk-terms">
+      <h2 id="recovery-risk-terms">Backup and recovery limits</h2>
+      <p>OSL's hosted recovery is Cloudflare D1 Time Travel only. Live D1 and recovery share provider Cloudflare, WNAM location with no separately observed recovery region, one account, the same control plane, one administrator, shared credentials, and Cloudflare-managed key authority. Isolation is 0 on all seven axes and guaranteed recovery claims are 0. A provider or WNAM-correlated loss, account closure or takeover, control-plane failure, administrator error or lockout, credential compromise, or key-authority failure can lose both D1 states: relay and attachment metadata, deletion and expiry state, identities, prekeys, wrapped keys, mailbox state, licences, payments, commerce records, and service secrets. R2 message, attachment, and archive ciphertext has no second copy and can be unrecoverable even if D1 returns.</p>
+      <p>Task 6582 is held under owner ruling T7 because genuine disaster isolation is wanted but not funded or operated for this release. Recovery after a shared-domain failure is not guaranteed. This does not defer serving-copy deletion, backup deletion, or object-specific cryptographic erasure.</p>
+    </section>
+
     <section aria-labelledby="pro-terms">
       <h2 id="pro-terms">One-month no-renewal Pro</h2>
       <p>Pro is a prepaid one-month activation code. Nothing renews automatically, there is nothing to cancel, and OSL does not store payment details. When Pro access ends, Free OSL keeps working.</p>
