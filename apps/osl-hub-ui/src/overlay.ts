@@ -9,6 +9,7 @@ import { boundedProtectedDraft, MAX_PROTECTED_DRAFT_BYTES, NATIVE_OVERLAY_TTL_OP
 import { OverlaySendGesture, type OverlaySendGestureResult, type OverlaySendMode } from "./overlay-send-gesture";
 import { CoarseTypingRate } from "./coarse-typing-rate";
 import { TwoStepBurnConfirmation } from "./two-step-burn";
+import { DELETION_REFERENCE_DISCLOSURE } from "./feature-claims";
 import { shouldPollDiscordOverlay } from "./discord-qa-receive-policy";
 import { recordDiscordQaSendStage } from "./discord-qa-send-stage";
 import {
@@ -1882,7 +1883,7 @@ burnChat.addEventListener("click", (event) => {
   if (step === "ignored") return;
   if (step === "armed") {
     burnChat.textContent = "Confirm burn";
-    status.textContent = "This removes this OSL chat locally and tries to delete its remote OSL blobs. Discord history and recipient copies stay untouched. Click again to confirm.";
+    status.textContent = `This removes this OSL chat locally and tries to delete its remote OSL blobs. Discord history and recipient copies stay untouched. ${DELETION_REFERENCE_DISCLOSURE} Click again to confirm.`;
     if (burnTimer !== undefined) window.clearTimeout(burnTimer);
     burnTimer = window.setTimeout(() => {
       burnTimer = undefined;
@@ -1910,7 +1911,7 @@ burnChat.addEventListener("click", (event) => {
       ? `${result.remoteBlobsDeleted} remote OSL blobs deleted.`
       : `${result.remoteBlobsDeleted} remote OSL blobs deleted; ${result.remoteBlobDeletionsFailed} could not be deleted and remain tracked for retry.`;
     clearMessageBubbles();
-    status.textContent = `OSL chat burned. ${result.localProtectedRowsDestroyed} local protected rows removed. ${remote} Discord history and recipient copies were not deleted.`;
+    status.textContent = `OSL chat burned. ${result.localProtectedRowsDestroyed} local protected rows removed. ${remote} Discord history and recipient copies were not deleted. ${DELETION_REFERENCE_DISCLOSURE}`;
   })();
 });
 

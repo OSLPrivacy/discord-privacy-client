@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { BurnGuaranteeCopy, burnFeatureClaimsMarkup } from "./feature-claims";
+import { BurnGuaranteeCopy, burnFeatureClaimsMarkup, DELETION_REFERENCE_DISCLOSURE } from "./feature-claims";
 import { freshStartCleanupPresentation } from "./fresh-start";
 import { friendVerificationCopy } from "./ui-behavior";
 
@@ -69,6 +69,12 @@ describe("truthful Burn UI", () => {
     expect(rendered).not.toMatch(/cryptographic burn|disappears forever|permanently undecryptable|gone for good/i);
     expect(rendered).not.toMatch(/keyservers?|ratchets?|receipts?|browser profiles?|provider adapters?/i);
     expect(rendered).not.toMatch(/\b\d+%\b/);
+  });
+
+  it("renders the exact deletion-reference enumeration disclosure before Burn actions", () => {
+    const rendered = burnFeatureClaimsMarkup();
+    expect(rendered).toContain(`<p class="deletion-reference-disclosure" role="note">${DELETION_REFERENCE_DISCLOSURE}</p>`);
+    expect(DELETION_REFERENCE_DISCLOSURE).toBe("Deletion errors may reveal whether a deletion grant or message reference exists; do not share deletion references.");
   });
 
   it("states deletion limits before typed local confirmation", () => {

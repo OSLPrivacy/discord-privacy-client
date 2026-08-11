@@ -1,4 +1,5 @@
 import type { OslMailBurnReceipt, OslMailDeleteReceipt, OslMailRetrievedThread, OslMailSendReceipt, OslMailStatus, OslMailThreadSummary } from "./osl-mail-adapter";
+import { DELETION_REFERENCE_DISCLOSURE } from "./feature-claims";
 
 export type OslMailPane = "inbox" | "compose" | "settings";
 export interface OslMailViewModel {
@@ -68,7 +69,7 @@ export const OSL_MAIL_DELETION_UNVERIFIED_NOTE = "OSL has not re-read the mailbo
 // Completing the left rail needs one rule in styles.css (owned by another lane):
 // `.osl-mail-confirmation.warning { border-left-color: var(--warn); }`.
 function requestReceipt(label: string, detail: string, hash: string): string {
-  return `<div class="osl-mail-confirmation warning" role="status"><strong>${escape(label)}</strong><small>${escape(detail)} ${escape(OSL_MAIL_DELETION_UNVERIFIED_NOTE)}</small><code>OSL reference ${escape(hash.slice(0, 12))}…</code></div>`;
+  return `<div class="osl-mail-confirmation warning" role="status"><strong>${escape(label)}</strong><small>${escape(detail)} ${escape(OSL_MAIL_DELETION_UNVERIFIED_NOTE)}</small><p class="deletion-reference-disclosure" role="note">${escape(DELETION_REFERENCE_DISCLOSURE)}</p><code>OSL reference ${escape(hash.slice(0, 12))}…</code></div>`;
 }
 
 function deletionRequested(receipt: OslMailDeleteReceipt): string {
