@@ -89,6 +89,39 @@ def fail(message: str) -> None:
     raise VerificationError(message)
 
 
+def network_escape_detail(event: dict[str, Any], *, caller_class: str | None = None) -> str:
+    """Render enough independent-observer detail to identify one escaped write.
+
+    TASK 4919b relies on this being a diagnostic, not merely a boolean: a red
+    result must identify the emitting process, shipping class, lifecycle
+    state, destination, and the independently counted kind of byte.  Older
+    receipts do not carry all of these fields, so missing values remain
+    explicit rather than being guessed.
+    """
+
+    byte_count = event.get("bytes") if isinstance(event.get("bytes"), int) else 0
+    protocol = event.get("protocol")
+    resolved_class = caller_class or event.get("class") or "unclassified"
+    direct_default = (
+        byte_count
+        if event.get("outsideLoopback") is True
+        and protocol != "dns"
+        and resolved_class != "osl_lan"
+        else 0
+    )
+    dns_default = byte_count if protocol == "dns" else 0
+    lan_default = byte_count if resolved_class == "osl_lan" else 0
+    return (
+        f"process={event.get('process', 'unknown')} "
+        f"class={resolved_class} "
+        f"lifecycle_state={event.get('state', 'unknown')} "
+        f"destination={event.get('destination', 'unknown')} "
+        f"direct_bytes={event.get('directBytes', direct_default)} "
+        f"dns_bytes={event.get('dnsBytes', dns_default)} "
+        f"lan_bytes={event.get('lanBytes', lan_default)}"
+    )
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -377,6 +410,13 @@ def verify_bundle(bundle: Path, *, require_production: bool = True) -> dict[str,
     if discovered_ids != caller_ids or len(discovered) != len(caller_ids):
         missing = sorted(caller_ids - discovered_ids)
         extra = sorted(str(item) for item in discovered_ids - caller_ids)
+        if extra:
+            escaped = next(event for event in discovered if event.get("callerId") in extra)
+            fail(
+                "unclassified dynamically loaded socket caller: "
+                f"caller_id={escaped.get('callerId')} "
+                + network_escape_detail(escaped, caller_class="unclassified")
+            )
         fail(f"kernel caller reconciliation failed; missing={missing}, unclassified={extra}")
     loaded = [event for event in events if event.get("type") == "image_load"]
     loaded_ids = {event.get("callerId") for event in loaded}
@@ -560,16 +600,26 @@ def verify_bundle(bundle: Path, *, require_production: bool = True) -> dict[str,
         if not isinstance(byte_count, int) or byte_count < 0:
             fail("kernel event has invalid byte count")
         if event.get("classification") in {None, "unclassified"}:
-            fail(f"unclassified socket: {event.get('flowId')}")
+            fail(
+                f"unclassified socket: flow_id={event.get('flowId')} "
+                + network_escape_detail(event, caller_class="unclassified")
+            )
         if event.get("protocol") == "dns" and outside_loopback and byte_count > 0:
-            fail(f"direct DNS byte escaped Tor: {event.get('flowId')}")
+            fail(
+                f"direct DNS byte escaped Tor: flow_id={event.get('flowId')} "
+                + network_escape_detail(event)
+            )
         if outside_loopback:
             if owner != "sidecar" or event.get("classification") not in {
                 "tor_authority",
                 "tor_relay",
                 "tor_bridge",
             }:
-                fail(f"direct endpoint/LAN/unclassified byte escaped Tor: {event.get('flowId')}")
+                fail(
+                    "direct endpoint/LAN/unclassified byte escaped Tor: "
+                    f"flow_id={event.get('flowId')} "
+                    + network_escape_detail(event)
+                )
         if owner == "app" and event.get("classification") == "owned_sidecar" and not event.get("authenticated"):
             fail(f"app used unauthenticated sidecar flow: {event.get('flowId')}")
 
