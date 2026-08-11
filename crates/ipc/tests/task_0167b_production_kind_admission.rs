@@ -126,6 +126,51 @@ fn run_email_controls(
         .collect()
 }
 
+fn first_forbidden_action(observer: &ProductionAdmissionObserver) -> Option<&'static str> {
+    if observer.normalized_kinds > 0 {
+        Some("normalization")
+    } else if observer.rule_lookups > 0 {
+        Some("lookup")
+    } else if observer.allowed_rows > 0 || observer.pending_rows > 0 {
+        Some("row")
+    } else if observer.prompts > 0 {
+        Some("prompt")
+    } else if observer.notices > 0 {
+        Some("notice")
+    } else if observer.provider_actions > 0 {
+        Some("provider_action")
+    } else if observer.output_surface_rows > 0 {
+        Some("output_surface")
+    } else {
+        None
+    }
+}
+
+fn report_forbidden_action(
+    carrier: &str,
+    raw_kind: &str,
+    outcome: &str,
+    observer: &ProductionAdmissionObserver,
+) {
+    let first = first_forbidden_action(observer).expect("a forbidden downstream action occurred");
+    println!(
+        "TASK0167B_FORBIDDEN carrier={} raw_kind={} first_forbidden={} outcome={} downstream_total={} normalized={} rule_lookups={} allowed_rows={} pending_rows={} prompts={} notices={} provider_actions={} output_rows={}",
+        carrier,
+        raw_kind,
+        first,
+        outcome,
+        observer.downstream_total(),
+        observer.normalized_kinds,
+        observer.rule_lookups,
+        observer.allowed_rows,
+        observer.pending_rows,
+        observer.prompts,
+        observer.notices,
+        observer.provider_actions,
+        observer.output_surface_rows,
+    );
+}
+
 fn spawn_hostile(carrier: &str, revision: &str, label: &str, json: &[u8]) {
     let output = Command::new(std::env::current_exe().expect("current test executable"))
         .arg("--ignored")
@@ -392,6 +437,10 @@ fn task_0167b_hostile_probe() {
             assert_eq!(refusal.carrier, carrier);
             assert_eq!(observer.deserializer_entries, 1);
             assert_eq!(observer.refusals, 1);
+            if observer.downstream_total() != 0 {
+                report_forbidden_action(&carrier, &label, "refused_after_side_effect", &observer);
+                std::process::exit(0);
+            }
             assert_eq!(observer.downstream_total(), 0);
             assert!(!allowed_places_db_path(data.path()).exists());
             eprintln!(
@@ -407,13 +456,7 @@ fn task_0167b_hostile_probe() {
             std::process::exit(1);
         }
         Ok(receipt) => {
-            println!(
-                "TASK0167B_UNEXPECTED_ACCEPT carrier={} raw_kind={} outcome={} downstream_total={}",
-                carrier,
-                label,
-                receipt.outcome,
-                observer.downstream_total()
-            );
+            report_forbidden_action(&carrier, &label, &receipt.outcome, &observer);
             std::process::exit(0);
         }
     }
