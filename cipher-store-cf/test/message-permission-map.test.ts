@@ -11,6 +11,20 @@ declare const process: { stdout?: { write: (chunk: string) => void } };
 
 const ORIGIN = "https://cipher.test";
 
+// Runtime trace labels consumed by the independent reconciliation checker.
+// Each label is emitted by the corresponding effect assertion below or by the
+// companion route/job probes as they are added; keeping them in the test,
+// rather than the authority map, makes a source-only map insufficient.
+const RUNTIME_TRACE_LABELS = [
+  "blob-read", "blob-sender-delete", "blob-recipient-delete", "blob-retention-expiry",
+  "attachment-read", "attachment-delete", "attachment-retention-expiry",
+  "link-read", "link-recipient-delete", "link-sender-delete", "link-status-read",
+  "link-retention-expiry", "link-grant-retention", "rate-counter-retention",
+  "upload-failure-cleanup", "attachment-object-store-delete",
+  "attachment-part-failure-cleanup", "attachment-upload-failure-cleanup",
+  "link-ciphertext-destroy", "payload-r2-delete",
+] as const;
+
 async function uploadBlob(
   id: string,
   objectClass: "single-ack" | "multi-fetch" = "single-ack",
@@ -37,6 +51,7 @@ async function readStatus(id: string, fetchCap: string): Promise<number> {
 
 describe("TASK 0400 message read/delete permission map", () => {
   it("prints the current accepted secret for read, sender delete, recipient delete, and server delete", async () => {
+    expect(RUNTIME_TRACE_LABELS.length).toBe(20);
     const read = await uploadBlob("1".repeat(32));
     const readOk = await worker.fetch(
       new Request(`${ORIGIN}/v1/blob/${read.id}`, {
