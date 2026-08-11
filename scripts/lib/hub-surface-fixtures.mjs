@@ -7,9 +7,9 @@ export const REPO_ROOT = path.dirname(path.dirname(LIB_DIR));
 export const UI_ROOT = path.join(REPO_ROOT, 'apps', 'osl-hub-ui');
 
 export const HUB_SCREEN_ROUTES = ['home', 'inbox', 'people', 'privacy', 'activity', 'connections', 'mullvad', 'osl-chat', 'osl-mail', 'osl-servers', 'signal-qa'];
-export const HUB_ONBOARDING_STEPS = ['pro', 'welcome', 'create', 'import', 'unlock', 'account-recovery', 'recovery', 'mullvad', 'sending', 'defaults', 'cover', 'passwords', 'burnpass', 'privacy', 'tutorial', 'detected', 'install', 'apps', 'browser', 'decoy'];
-export const HUB_SETTINGS_SECTIONS = ['account', 'apps', 'scrub', 'cleanup', 'notifications', 'appearance', 'about'];
-export const HUB_DIALOG_SURFACES = ['friends', 'people-in-chat', 'whitelist-roster', 'native-protect-friend', 'scrub-review', 'burn', 'owned-confirmation', 'update', 'osl-chat-settings'];
+export const HUB_ONBOARDING_STEPS = ['pro', 'welcome', 'create', 'import', 'unlock', 'keylost', 'account-recovery', 'recovery', 'identity-choice', 'private-link', 'mullvad', 'sending', 'defaults', 'tor', 'forward-secrecy', 'cover', 'passwords', 'burnpass', 'privacy', 'tutorial', 'detected', 'install', 'apps', 'browser', 'decoy'];
+export const HUB_SETTINGS_SECTIONS = ['account', 'export', 'apps', 'scrub', 'cleanup', 'notifications', 'appearance', 'about'];
+export const HUB_DIALOG_SURFACES = ['friends', 'people-in-chat', 'whitelist-roster', 'native-protect-friend', 'scrub-review', 'burn', 'owned-confirmation', 'update', 'osl-chat-settings', 'osl-profile-pane'];
 
 async function withHubUiTestModule(vitestName, callback) {
   const requireFromUi = createRequire(path.join(UI_ROOT, 'package.json'));
@@ -48,7 +48,7 @@ async function withHubUiTestModule(vitestName, callback) {
 
 function buildHubScreenshotSurfaces(ui) {
   const surfaces = [];
-  const add = (name, markup) => surfaces.push({ kind: 'screen', name, markup });
+  const add = (name, markup) => surfaces.push({ kind: 'screen', name, markup: ui.catalogueSurfaceForTest(name, markup) });
 
   for (const route of HUB_SCREEN_ROUTES) {
     ui.reset({ coreReady: true, servicesChecked: true });
@@ -78,7 +78,8 @@ export async function hubTabTravelSurfaceMarkup(vitestName = 'hub-tab-travel-gat
     const dialogs = [];
     for (const name of HUB_DIALOG_SURFACES) {
       ui.reset({ coreReady: true, servicesChecked: true });
-      dialogs.push({ kind: 'dialog', name: `dialog:${name}`, markup: ui.renderDialogSurfaceForTest(name) });
+      const surface = `dialog:${name}`;
+      dialogs.push({ kind: 'dialog', name: surface, markup: ui.catalogueSurfaceForTest(surface, ui.renderDialogSurfaceForTest(name)) });
     }
     return [...screens, ...dialogs];
   });

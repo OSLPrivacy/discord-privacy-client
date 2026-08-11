@@ -192,7 +192,7 @@ import { initializeThemePreference, themeStorageKey, type ThemeChoice } from "./
 import { accentChoices, avatarChoices, backgroundChoices, loadAppearancePreferences, resetAppearancePreferences, saveAppearancePreferences, windowPositionChoices, type AppearancePreferences } from "./appearance-preferences";
 import { appearanceSettingsContent } from "./appearance-settings-section";
 import { appearanceLivePreviewMarkup } from "./appearance-live-preview";
-import { OslProfilePaneState, seededProfilePaneRecords } from "./osl-profile-pane";
+import { OslProfilePaneState, oslProfilePaneMarkup, seededProfilePaneRecords } from "./osl-profile-pane";
 import { attachSettingsProfileBlock } from "./settings-profile-block";
 import { homeLauncherBody } from "./home-launcher-body";
 import { privacyDestinationContent as renderPrivacyDestinationContent } from "./privacy-settings-section";
@@ -231,6 +231,7 @@ import { createOslChatSecureLocalStore } from "./osl-chat-secure-store";
 import { PublicNamePageController } from "./public-name-page";
 import { createHubPrivateContactLink, revokeHubPrivateContactLink } from "./adapters";
 import { identityChoiceMarkup, PrivateContactLinkPageController, type IdentityDiscoveryChoice } from "./onboarding-identity";
+import { catalogueScreenMarkup } from "./catalogue/screen-catalogue";
 
 export type Route = "onboarding" | "home" | "inbox" | "people" | "privacy" | "activity" | "connections" | "service" | "settings" | "mullvad" | "osl-chat" | "osl-mail" | "osl-servers" | "signal-qa";
 
@@ -1949,7 +1950,7 @@ function renderOnboarding(): void {
   onboardingRoute = onboardingRouteForBuild(onboardingRoute);
   persistCurrentOnboardingRoute();
   const setupNavigation = onboardingSetupNavigationMarkup();
-  const markup = onboardingShellMarkup(setupNavigation);
+  const markup = catalogueScreenMarkup(`onboarding:${onboardingRoute}`, onboardingShellMarkup(setupNavigation));
   lastWorkspaceMarkup = null;
   lastWorkspaceViewKey = "";
   const active = document.activeElement;
@@ -4134,12 +4135,14 @@ function workspaceProtectedSheetMarkup(): string {
     people: hubPeople,
     scopeLimit: whitelistRosterScopeLimit,
   }, { friendScopeLabel, narrowedScopeLabel, whitelistReachLine });
-  return `${protectedSheet}${nativeDiscordProtectPickerMarkup()}${whitelist}${peopleDialogMarkup()}${friendsDialogMarkup()}${scrubReviewDialogMarkup()}${burnDialogMarkup()}${ownedConfirmationMarkup()}${updateDialogMarkup()}`;
+  const dialog = (name: string, value: string): string => value ? catalogueScreenMarkup(`dialog:${name}`, value) : "";
+  return `${protectedSheet}${dialog("native-protect-friend", nativeDiscordProtectPickerMarkup())}${dialog("whitelist-roster", whitelist)}${dialog("people-in-chat", peopleDialogMarkup())}${dialog("friends", friendsDialogMarkup())}${dialog("scrub-review", scrubReviewDialogMarkup())}${dialog("burn", burnDialogMarkup())}${dialog("owned-confirmation", ownedConfirmationMarkup())}${dialog("update", updateDialogMarkup())}`;
 }
 
 function renderWorkspace(): void {
   lastOnboardingMarkup = null;
-  const markup = workspaceShellMarkup();
+  const surfaceName = route === "settings" ? `settings:${settingsSection}` : route === "service" ? "service:discord" : `route:${route}`;
+  const markup = catalogueScreenMarkup(surfaceName, workspaceShellMarkup());
   let surface = root.querySelector<HTMLElement>("#workspace-render-surface");
   if (!surface) {
     // No separate 44px desktop titlebar row here: the drag region and window
@@ -10360,6 +10363,9 @@ export const __oslHubUiTest = {
   reset(patch: OslHubUiTestStatePatch = {}): void {
     applyOslHubUiTestState(patch);
   },
+  catalogueSurfaceForTest(surface: string, markup: string): string {
+    return catalogueScreenMarkup(surface, markup);
+  },
   renderPrimarySidebar(): string {
     return primarySidebarMarkup();
   },
@@ -10483,6 +10489,92 @@ export const __oslHubUiTest = {
   },
   renderProtectedSheets(): string {
     return workspaceProtectedSheetMarkup();
+  },
+  /** Shipping dialog registrations exposed to route/runtime inventory gates. */
+  renderDialogSurfaceForTest(
+    name: "friends" | "people-in-chat" | "whitelist-roster" | "native-protect-friend" | "scrub-review" | "burn" | "owned-confirmation" | "update" | "osl-chat-settings" | "osl-profile-pane",
+  ): string {
+    friendsDialogOpen = false;
+    whitelistRosterOpen = false;
+    nativeProtectPickerOpen = false;
+    scrubReviewOpen = false;
+    burnDialogOpen = false;
+    ownedConfirmation = null;
+    updateStatus = { state: "unavailable" };
+    oslChatSettingsPersonId = null;
+    activeNativeHostId = null;
+    activeNativeHostMode = null;
+    activeService = null;
+    activeHomeAppId = null;
+
+    if (name === "friends") {
+      route = "home";
+      friendsDialogOpen = true;
+      return friendsDialogMarkup();
+    }
+    if (name === "people-in-chat") {
+      this.renderServiceHeader("discord");
+      return peopleDialogMarkup();
+    }
+    if (name === "whitelist-roster") {
+      whitelistRosterOpen = true;
+      return whitelistRosterMarkup({
+        open: true,
+        activePersonId: null,
+        activeScopeApproved: false,
+        busy: false,
+        people: hubPeople,
+        scopeLimit: whitelistRosterScopeLimit,
+      }, { friendScopeLabel, narrowedScopeLabel, whitelistReachLine });
+    }
+    if (name === "native-protect-friend") {
+      activeNativeHostId = "discord";
+      activeNativeHostMode = "dedicated";
+      nativeProtectPickerOpen = true;
+      return nativeDiscordProtectPickerMarkup();
+    }
+    if (name === "scrub-review") {
+      scrubReviewOpen = true;
+      return scrubReviewDialogMarkup();
+    }
+    if (name === "burn") {
+      burnDialogOpen = true;
+      burnScope = "account";
+      return burnDialogMarkup();
+    }
+    if (name === "owned-confirmation") {
+      ownedConfirmation = { kind: "clearActivation" };
+      return ownedConfirmationMarkup();
+    }
+    if (name === "update") {
+      updateStatus = { state: "available", current: "0.1.0", next: "0.1.1", notes: "Focused keyboard travel fixture." };
+      return updateDialogMarkup();
+    }
+    if (name === "osl-profile-pane") {
+      return oslProfilePaneMarkup(appearanceProfileDraft);
+    }
+
+    const friend = testHubPerson({ personId: "friend-1", alias: "Verified friend", safetyNumberVerified: true });
+    hubPeople = [friend];
+    route = "osl-chat";
+    activeOslChatPersonId = friend.personId;
+    activeOslChatContext = {
+      contextToken: "test-context",
+      serviceId: "osl-chat",
+      accountId: "local",
+      personId: friend.personId,
+      peerOslUserId: friend.oslUserId,
+      scopeApproved: true,
+    };
+    oslChatSettingsPersonId = friend.personId;
+    return oslChatFriendSettingsMarkup(friend, {
+      activePersonId: friend.personId,
+      activeScopeApproved: true,
+      muted: false,
+      previewsVisible: true,
+      typingPreferences: { hideOwnTyping: false, showIncomingTyping: true },
+      busy: false,
+    });
   },
   /** D80: the rendered onboarding screen, markup only, for the unlock-screen
    * advertisement audit in `unlock-screen-single-credential.test.ts`. */

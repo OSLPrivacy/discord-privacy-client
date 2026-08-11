@@ -496,7 +496,10 @@ fn collision_keys(rendered: &[String], index: usize) -> Vec<&'static str> {
 
 fn check_oracle_inventory(catalogue: &EnglishCatalogue) -> Result<(), String> {
     let oracle: BTreeSet<_> = INDEPENDENT_PRODUCTION_KEYS.iter().copied().collect();
-    let loaded: BTreeSet<_> = catalogue.keys().collect();
+    // TASK 5209 owns the independently fixed semantics for screen.*. This
+    // framework continues to bind the non-screen tasks without deriving their
+    // oracle from the later screen catalogue.
+    let loaded: BTreeSet<_> = catalogue.keys().filter(|key| !key.starts_with("screen.")).collect();
     if oracle != loaded {
         let key = loaded
             .difference(&oracle)

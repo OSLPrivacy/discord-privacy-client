@@ -8,7 +8,7 @@ fn exact_shipping_entries_meet_task_5205() {
     assert_eq!(report.changed_values, 5);
     assert_eq!(report.changed_production_results, 5);
     assert_eq!(report.second_locale_registrations, 0);
-    assert_eq!(report.production_keys, 135);
+    assert_eq!(report.production_keys, 1761);
     assert_eq!(semantic.contracts, 126);
     assert_eq!(semantic.resolved_contracts, 252);
     assert_eq!(

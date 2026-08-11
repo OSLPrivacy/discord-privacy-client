@@ -117,6 +117,7 @@
     "allow-focus-native-app-window",
     "allow-detach-native-app-window",
     "allow-get-signal-protected-send-readiness",
+    "allow-resolve-english-catalogue-string",
     "allow-activate-native-manual-peer-context",
     "allow-activate-osl-chat-context",
     "allow-close-osl-chat-context",

@@ -21,6 +21,17 @@ pub struct ProductionKey {
     pub placeholders: &'static [&'static str],
 }
 
+mod screen_keys;
+pub use screen_keys::SCREEN_PRODUCTION_KEYS;
+
+pub fn all_production_keys() -> impl Iterator<Item = &'static ProductionKey> {
+    PRODUCTION_KEYS.iter().chain(SCREEN_PRODUCTION_KEYS.iter())
+}
+
+pub fn production_key_count() -> usize {
+    PRODUCTION_KEYS.len() + SCREEN_PRODUCTION_KEYS.len()
+}
+
 /// The production inventory is independent of the JSON entries. A catalogue
 /// cannot make its own missing entry disappear by editing the data file.
 pub const PRODUCTION_KEYS: &[ProductionKey] = &[
@@ -711,10 +722,8 @@ impl EnglishCatalogue {
             });
         }
 
-        let specs: BTreeMap<&str, &ProductionKey> = PRODUCTION_KEYS
-            .iter()
-            .map(|spec| (spec.key, spec))
-            .collect();
+        let specs: BTreeMap<&str, &ProductionKey> =
+            all_production_keys().map(|spec| (spec.key, spec)).collect();
         let mut entries = BTreeMap::new();
         for entry in raw.entries {
             if !valid_key(&entry.key) {
@@ -766,18 +775,18 @@ impl EnglishCatalogue {
             }
             entries.insert(entry.key, entry.value);
         }
-        for spec in PRODUCTION_KEYS {
+        for spec in all_production_keys() {
             if !entries.contains_key(spec.key) {
                 return Err(CatalogueError::strict(caller, spec.key, "missing key"));
             }
         }
-        if entries.len() != PRODUCTION_KEYS.len() {
+        if entries.len() != production_key_count() {
             return Err(CatalogueError::strict(
                 caller,
                 "<catalogue>",
                 format!(
                     "expected {} production keys, found {}",
-                    PRODUCTION_KEYS.len(),
+                    production_key_count(),
                     entries.len()
                 ),
             ));
@@ -920,7 +929,7 @@ mod tests {
         let catalogue = EnglishCatalogue::packaged("catalogue.unit-test").unwrap();
         assert_eq!(catalogue.version(), CATALOGUE_VERSION);
         assert_eq!(catalogue.locale(), ENGLISH_LOCALE);
-        assert_eq!(catalogue.keys().count(), PRODUCTION_KEYS.len());
+        assert_eq!(catalogue.keys().count(), production_key_count());
         assert_eq!(registered_locales(), ["en-US"]);
     }
 

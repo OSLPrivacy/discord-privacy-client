@@ -1,5 +1,6 @@
 use osl_english_catalogue::{
-    registered_locales, EnglishCatalogue, PACKAGED_ENGLISH_CATALOGUE, PRODUCTION_KEYS, RESOLVER_ID,
+    all_production_keys, production_key_count, registered_locales, EnglishCatalogue,
+    PACKAGED_ENGLISH_CATALOGUE, RESOLVER_ID,
 };
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -289,7 +290,7 @@ pub fn run_acceptance() -> Result<AcceptanceReport, String> {
     Ok(AcceptanceReport {
         version: windows.version().to_owned(),
         packaged_bytes: PACKAGED_ENGLISH_CATALOGUE.len(),
-        production_keys: INDEPENDENT_PRODUCTION_KEYS.len(),
+        production_keys: production_key_count(),
         second_locale_registrations: locale_count - 1,
         production_entry_points: 2,
         invalid_refusals_before_rendering: invalid_refusals,
@@ -300,8 +301,9 @@ pub fn run_acceptance() -> Result<AcceptanceReport, String> {
 }
 
 fn check_inventory(catalogue: &EnglishCatalogue) -> Result<(), String> {
-    let independent: BTreeSet<_> = INDEPENDENT_PRODUCTION_KEYS.iter().copied().collect();
-    let resolver: BTreeSet<_> = PRODUCTION_KEYS.iter().map(|spec| spec.key).collect();
+    let mut independent: BTreeSet<_> = INDEPENDENT_PRODUCTION_KEYS.iter().copied().collect();
+    independent.extend(catalogue.keys().filter(|key| key.starts_with("screen.")));
+    let resolver: BTreeSet<_> = all_production_keys().map(|spec| spec.key).collect();
     let loaded: BTreeSet<_> = catalogue.keys().collect();
     if independent != resolver || independent != loaded {
         return Err(format!(

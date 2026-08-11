@@ -1267,3 +1267,7 @@ identifier = "allow-check-hub-recovery-word-retype"
 description = "Allow only the trusted main OSL window to ask for selected recovery word positions and check the words typed for those exact positions without echoing the expected words."
 commands.allow = ["check_hub_recovery_word_retype"]
 
+[[permission]]
+identifier = "allow-resolve-english-catalogue-string"
+description = "Resolve one registered stable key through the startup-validated English catalogue without a literal fallback."
+commands.allow = ["resolve_english_catalogue_string"]
