@@ -73,6 +73,7 @@ rand = "0.8"
 # or app-password credentials; no plaintext fallback is available.
 imap = { version = "=2.4.1", default-features = false }
 rustls = { version = "=0.23.42", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "=1.0.9"
 
 [dev-dependencies]
 tempfile = "=3.13"

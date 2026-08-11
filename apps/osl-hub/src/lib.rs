@@ -394,3 +394,5 @@ pub(crate) fn global_keystore_test_lock() -> std::sync::MutexGuard<'static, ()> 
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
+#[cfg(feature = "core")]
+pub mod shipping_icloud_mailbox_receive;

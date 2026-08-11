@@ -3354,6 +3354,7 @@ dependencies = [
  "transport",
  "url",
  "uuid",
+ "webpki-roots",
  "windows 0.56.0",
  "windows-sys 0.59.0",
  "zeroize",
