@@ -163,6 +163,7 @@
     "allow-add-hub-friend",
     "allow-create-hub-private-contact-link",
     "allow-get-hub-private-contact-link-status",
+    "allow-revoke-hub-private-contact-link",
     "allow-add-hub-private-contact-link",
     "allow-get-hub-username-status",
     "allow-check-hub-public-name",

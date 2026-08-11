@@ -21,6 +21,8 @@
 export const RECOVERY_KIT_UNSAVED_STORAGE_KEY = "osl-recovery-kit-unsaved-v1";
 
 export const RESUMABLE_ONBOARDING_ROUTES = [
+  "identity-choice",
+  "private-link",
   "pro",
   "privacy",
   "defaults",

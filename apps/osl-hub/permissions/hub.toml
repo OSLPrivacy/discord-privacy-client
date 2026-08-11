@@ -820,12 +820,17 @@ commands.allow = ["create_hub_private_contact_link"]
 
 [[permission]]
 identifier = "allow-get-hub-private-contact-link-status"
-description = "Read the encrypted local use count for one private contact link without touching the username directory."
+description = "Read deployed-service expiry and terminal status for one issuer-controlled private contact link without touching the username directory."
 commands.allow = ["get_hub_private_contact_link_status"]
 
 [[permission]]
+identifier = "allow-revoke-hub-private-contact-link"
+description = "Immediately and authoritatively revoke one still-live private contact link using its issuer-only revocation capability."
+commands.allow = ["revoke_hub_private_contact_link"]
+
+[[permission]]
 identifier = "allow-add-hub-private-contact-link"
-description = "Consume one encrypted local private contact link and import its signed friend code through the normal People path."
+description = "Atomically consume one deployed-service private contact link and import its signed friend code through the normal People path."
 commands.allow = ["add_hub_private_contact_link"]
 
 [[permission]]

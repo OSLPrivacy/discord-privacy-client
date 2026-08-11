@@ -6133,6 +6133,111 @@ async fn add_hub_friend(
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct HubPrivateContactLink {
+    link_value: String,
+    revocation_secret: String,
+    issued_at_unix_seconds: u64,
+    expires_at_unix_seconds: u64,
+    uses_allowed: u32,
+    uses_recorded: u32,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HubPrivateContactLinkStatus {
+    issued_at_unix_seconds: u64,
+    expires_at_unix_seconds: u64,
+    terminal_state: String,
+    terminal_at_unix_seconds: Option<u64>,
+}
+
+fn private_contact_link_client() -> Result<keystore::KeyServerClient, String> {
+    let directory = keystore::osl_config_dir().map_err(|error| {
+        format!("OSL private contact link service configuration is unavailable: {error}")
+    })?;
+    keystore::KeyServerClient::new(ipc::commands::resolve_keyserver_base_url(&directory))
+        .map_err(|error| format!("OSL private contact link service is unavailable: {error}"))
+}
+
+/// Issue one link at the deployed keyserver. The webview receives the exact
+/// service timestamps and the per-link revocation capability, never a local
+/// clock projection or a stable public-name identifier.
+#[tauri::command]
+async fn create_hub_private_contact_link(
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<HubPrivateContactLink, String> {
+    let _session = session.transition.lock().await;
+    active_unlocked_osl_user_id(&core)?;
+    let friend_code = security::export_friend_code(&core)?.friend_code;
+    let issued = tauri::async_runtime::spawn_blocking(move || {
+        private_contact_link_client()?.issue_private_contact_link(&friend_code)
+            .map_err(|error| format!("OSL private contact link issue failed: {error}"))
+    }).await.map_err(|_| "OSL private contact link issue was interrupted".to_owned())??;
+    Ok(HubPrivateContactLink {
+        link_value: issued.link_value,
+        revocation_secret: issued.revocation_secret,
+        issued_at_unix_seconds: issued.issued_at_unix_seconds,
+        expires_at_unix_seconds: issued.expires_at_unix_seconds,
+        uses_allowed: issued.uses_allowed,
+        uses_recorded: issued.uses_recorded,
+    })
+}
+
+#[tauri::command]
+async fn get_hub_private_contact_link_status(
+    session: State<'_, HubAccountSessionState>,
+    link_value: String,
+    revocation_secret: String,
+) -> Result<HubPrivateContactLinkStatus, String> {
+    let _session = session.transition.lock().await;
+    let status = tauri::async_runtime::spawn_blocking(move || {
+        private_contact_link_client()?
+            .private_contact_link_status(&link_value, &revocation_secret)
+            .map_err(|error| format!("OSL private contact link status failed: {error}"))
+    }).await.map_err(|_| "OSL private contact link status was interrupted".to_owned())??;
+    Ok(HubPrivateContactLinkStatus {
+        issued_at_unix_seconds: status.issued_at_unix_seconds,
+        expires_at_unix_seconds: status.expires_at_unix_seconds,
+        terminal_state: status.terminal_state,
+        terminal_at_unix_seconds: status.terminal_at_unix_seconds,
+    })
+}
+
+#[tauri::command]
+async fn revoke_hub_private_contact_link(
+    session: State<'_, HubAccountSessionState>,
+    link_value: String,
+    revocation_secret: String,
+) -> Result<(), String> {
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        private_contact_link_client()?
+            .revoke_private_contact_link(&link_value, &revocation_secret)
+            .map_err(|error| format!("OSL private contact link revocation failed: {error}"))
+    }).await.map_err(|_| "OSL private contact link revocation was interrupted".to_owned())?
+}
+
+#[tauri::command]
+async fn add_hub_private_contact_link(
+    core: State<'_, HubCoreState>,
+    security_state: State<'_, security::HubSecurityState>,
+    session: State<'_, HubAccountSessionState>,
+    link_value: String,
+    alias: Option<String>,
+) -> Result<security::AddFriendResult, String> {
+    let _session = session.transition.lock().await;
+    active_unlocked_osl_user_id(&core)?;
+    let (friend_code, _) = tauri::async_runtime::spawn_blocking(move || {
+        private_contact_link_client()?
+            .redeem_private_contact_link(&link_value)
+            .map_err(|_| "OSL private contact link is unavailable".to_owned())
+    }).await.map_err(|_| "OSL private contact link redemption was interrupted".to_owned())??;
+    security::add_friend_code(&core, &security_state, friend_code, alias)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct HubUsernameClaim {
     username: String,
     osl_user_id: String,

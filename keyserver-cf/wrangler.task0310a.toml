@@ -1,0 +1,17 @@
+name = "oslprivacy-keyserver-task0310a"
+main = "src/task-0310a-worker.ts"
+compatibility_date = "2026-07-15"
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "osl-keyserver-prod"
+database_id = "1de837cd-3bf6-4d33-be82-12d358523600"
+migrations_dir = "migrations"
+
+[[ratelimits]]
+name = "RATE_LIMIT_120"
+namespace_id = "2031000120"
+[ratelimits.simple]
+limit = 120
+period = 60

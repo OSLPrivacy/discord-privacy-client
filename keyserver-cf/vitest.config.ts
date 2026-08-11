@@ -72,6 +72,9 @@ export default defineConfig({
               OSL_SERVER_REVISION: "MAPLE-0439-revision",
               OSL_SERVER_BUILD_TIME: "2026-08-06T07:43:09Z",
               OSL_SERVER_CONFIGURATION_NAME: "production-test",
+              // TASK 0310a uses a short service clock in the isolated Worker
+              // so expiry is observed rather than simulated by a client clock.
+              PRIVATE_CONTACT_LINK_TTL_SECONDS: "3",
               SUPPORT_EMAIL: "support@oslprivacy.test",
               CRYPTO_WATCHER_URL: "https://watcher.test",
               CRYPTO_WATCHER_REQUEST_SECRET: "test-watcher-request-secret",

@@ -187,6 +187,36 @@ pub struct UsernameClaimResponse {
     pub user_id: String,
 }
 
+/// Service-issued private contact capability. Both timestamps are chosen by
+/// the keyserver and the revocation secret is returned only to the issuer.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PrivateContactLinkIssueResponse {
+    pub link_value: String,
+    pub revocation_secret: String,
+    pub issued_at_unix_seconds: u64,
+    pub expires_at_unix_seconds: u64,
+    pub uses_allowed: u32,
+    pub uses_recorded: u32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PrivateContactLinkRedeemResponse {
+    pub accepted: bool,
+    pub contact_bundle: String,
+    pub issued_at_unix_seconds: u64,
+    pub expires_at_unix_seconds: u64,
+    pub uses_allowed: u32,
+    pub uses_recorded: u32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PrivateContactLinkStatusResponse {
+    pub issued_at_unix_seconds: u64,
+    pub expires_at_unix_seconds: u64,
+    pub terminal_state: String,
+    pub terminal_at_unix_seconds: Option<u64>,
+}
+
 #[derive(Serialize)]
 struct UsernameClaimRequest<'a> {
     username: &'a str,
@@ -1110,6 +1140,98 @@ impl KeyServerClient {
         Ok((result.username.as_deref() == Some(username))
             .then_some(result.friend_code)
             .flatten())
+    }
+
+    /// Ask the deployed keyserver to issue a finite one-use contact bearer.
+    /// No timestamp is accepted from the caller; the service response is the
+    /// only issue/expiry authority shown by the client.
+    pub fn issue_private_contact_link(
+        &self,
+        friend_code: &str,
+    ) -> Result<PrivateContactLinkIssueResponse> {
+        let contact_bundle = STANDARD.encode(friend_code.as_bytes());
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "contact_bundle": contact_bundle,
+        }))?;
+        let response = self.send_request(
+            "POST",
+            "/v1/private-contact-links/issue",
+            Some(("application/json", &bytes)),
+        )?;
+        check_2xx(&response)?;
+        let issued: PrivateContactLinkIssueResponse = serde_json::from_slice(&response.body)?;
+        if issued.uses_allowed != 1
+            || issued.uses_recorded != 0
+            || issued.expires_at_unix_seconds <= issued.issued_at_unix_seconds
+            || issued.expires_at_unix_seconds - issued.issued_at_unix_seconds > 86_400
+        {
+            return Err(Error::Transport(
+                "private contact link service returned an invalid lifetime".into(),
+            ));
+        }
+        Ok(issued)
+    }
+
+    /// Redeem at the deployed service. A terminal/expired response is an
+    /// error and therefore never crosses this API carrying contact bytes.
+    pub fn redeem_private_contact_link(
+        &self,
+        link_value: &str,
+    ) -> Result<(String, PrivateContactLinkRedeemResponse)> {
+        let bytes = serde_json::to_vec(&serde_json::json!({ "link_value": link_value }))?;
+        let response = self.send_request(
+            "POST",
+            "/v1/private-contact-links/redeem",
+            Some(("application/json", &bytes)),
+        )?;
+        check_2xx(&response)?;
+        let redeemed: PrivateContactLinkRedeemResponse = serde_json::from_slice(&response.body)?;
+        if !redeemed.accepted || redeemed.uses_allowed != 1 || redeemed.uses_recorded != 1 {
+            return Err(Error::Transport(
+                "private contact link service returned an invalid redemption".into(),
+            ));
+        }
+        let decoded = STANDARD
+            .decode(&redeemed.contact_bundle)
+            .map_err(|_| Error::Transport("private contact link bundle is invalid".into()))?;
+        let friend_code = String::from_utf8(decoded)
+            .map_err(|_| Error::Transport("private contact link bundle is invalid".into()))?;
+        Ok((friend_code, redeemed))
+    }
+
+    pub fn revoke_private_contact_link(
+        &self,
+        link_value: &str,
+        revocation_secret: &str,
+    ) -> Result<()> {
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "link_value": link_value,
+            "revocation_secret": revocation_secret,
+        }))?;
+        let response = self.send_request(
+            "POST",
+            "/v1/private-contact-links/revoke",
+            Some(("application/json", &bytes)),
+        )?;
+        check_2xx(&response)
+    }
+
+    pub fn private_contact_link_status(
+        &self,
+        link_value: &str,
+        revocation_secret: &str,
+    ) -> Result<PrivateContactLinkStatusResponse> {
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "link_value": link_value,
+            "revocation_secret": revocation_secret,
+        }))?;
+        let response = self.send_request(
+            "POST",
+            "/v1/private-contact-links/status",
+            Some(("application/json", &bytes)),
+        )?;
+        check_2xx(&response)?;
+        serde_json::from_slice(&response.body).map_err(Into::into)
     }
 
     /// Build the registration request body for `identity`, signed

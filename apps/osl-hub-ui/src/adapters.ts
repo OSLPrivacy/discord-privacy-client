@@ -135,6 +135,14 @@ export function peerIsVerified(person: Pick<HubPerson, "safetyNumberVerified" | 
 export interface HubUsernameClaim { username: string; oslUserId: string; }
 export interface HubUsernameStatus { username: string; ownedByActiveIdentity: boolean; }
 export interface HubPublicNameCheck { username: string; available: boolean; proofReady: boolean; }
+export interface HubPrivateContactLink {
+  linkValue: string;
+  revocationSecret: string;
+  issuedAtUnixSeconds: number;
+  expiresAtUnixSeconds: number;
+  usesAllowed: 1;
+  usesRecorded: 0;
+}
 export interface HubAddFriendResult {
   disposition: "added" | "already_present" | "key_change_requires_verification";
   personId: string;
@@ -941,6 +949,57 @@ export function parseHubUsernameClaim(raw: unknown): HubUsernameClaim | null {
   if (!isRecord(raw) || !exact(raw, ["username", "oslUserId"])) return null;
   if (!isNormalizedOslUsername(raw.username) || !safePlaintext(raw.oslUserId, 180)) return null;
   return raw as unknown as HubUsernameClaim;
+}
+
+export function parseHubPrivateContactLink(raw: unknown): HubPrivateContactLink | null {
+  if (!isRecord(raw) || !exact(raw, [
+    "linkValue",
+    "revocationSecret",
+    "issuedAtUnixSeconds",
+    "expiresAtUnixSeconds",
+    "usesAllowed",
+    "usesRecorded",
+  ])) return null;
+  if (typeof raw.linkValue !== "string"
+    || !/^OSLCL2\.[A-Za-z0-9_-]{43}$/u.test(raw.linkValue)
+    || typeof raw.revocationSecret !== "string"
+    || !/^[A-Za-z0-9_-]{43}$/u.test(raw.revocationSecret)
+    || !Number.isSafeInteger(raw.issuedAtUnixSeconds)
+    || !Number.isSafeInteger(raw.expiresAtUnixSeconds)
+    || Number(raw.issuedAtUnixSeconds) < 0
+    || Number(raw.expiresAtUnixSeconds) <= Number(raw.issuedAtUnixSeconds)
+    || Number(raw.expiresAtUnixSeconds) - Number(raw.issuedAtUnixSeconds) > 86_400
+    || raw.usesAllowed !== 1
+    || raw.usesRecorded !== 0) return null;
+  return raw as unknown as HubPrivateContactLink;
+}
+
+export async function createHubPrivateContactLink(): Promise<HubPrivateContactLink | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    return checkedBackendResponse(
+      "create_hub_private_contact_link",
+      parseHubPrivateContactLink(await invoke<unknown>("create_hub_private_contact_link")),
+      "the private contact link did not match the finite service-issued shape",
+    );
+  } catch (error) {
+    recordBackendFailure("create_hub_private_contact_link", error);
+    return null;
+  }
+}
+
+export async function revokeHubPrivateContactLink(link: HubPrivateContactLink): Promise<boolean> {
+  if (!isTauriRuntime()) return false;
+  try {
+    await invoke("revoke_hub_private_contact_link", {
+      linkValue: link.linkValue,
+      revocationSecret: link.revocationSecret,
+    });
+    return true;
+  } catch (error) {
+    recordBackendFailure("revoke_hub_private_contact_link", error);
+    return false;
+  }
 }
 
 export function parseHubAddFriendResult(raw: unknown): HubAddFriendResult | null {

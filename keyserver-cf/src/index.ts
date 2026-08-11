@@ -57,6 +57,12 @@ import { handleDevices } from "./endpoints/devices.js";
 import { handleLicenseRedeem } from "./endpoints/license-redeem.js";
 import { handleLicenseValidate } from "./endpoints/license.js";
 import { handleLinkGrant } from "./endpoints/link-grant.js";
+import {
+  handlePrivateContactLinkIssue,
+  handlePrivateContactLinkRedeem,
+  handlePrivateContactLinkRevoke,
+  handlePrivateContactLinkStatus,
+} from "./endpoints/private-contact-links.js";
 import { handleBillingPortal } from "./endpoints/portal.js";
 import {
   handlePrekeyBundleGet,
@@ -477,6 +483,18 @@ async function dispatch(
   }
 
   if (method === "POST") {
+    if (path === "/v1/private-contact-links/issue") {
+      return await handlePrivateContactLinkIssue(request, env);
+    }
+    if (path === "/v1/private-contact-links/redeem") {
+      return await handlePrivateContactLinkRedeem(request, env);
+    }
+    if (path === "/v1/private-contact-links/revoke") {
+      return await handlePrivateContactLinkRevoke(request, env);
+    }
+    if (path === "/v1/private-contact-links/status") {
+      return await handlePrivateContactLinkStatus(request, env);
+    }
     if (path === "/v1/ai/generate") return await handleAiGenerate(request, env);
     if (path === "/v1/credits/spend") return await handleCreditSpend(request, env);
     if (path === "/v1/discovery-cards") return await handleDiscoveryCardsPost(request, env);

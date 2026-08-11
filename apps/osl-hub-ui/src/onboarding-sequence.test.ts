@@ -20,6 +20,7 @@ describe("T15-C1 onboarding sequence", () => {
     expect(ONBOARDING_SEQUENCE).toEqual([
       "welcome",
       "recovery",
+      "identity-choice",
       "pro",
       "forward-secrecy",
       "privacy",
