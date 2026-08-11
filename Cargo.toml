@@ -12,6 +12,7 @@ members = [
     "crates/ipc",
     "crates/message-lifecycle",
     "crates/runtime",
+    "crates/release-trust",
     "crates/sensitive-classify",
     "crates/store",
     "tests/task-4609-topup-driver",
