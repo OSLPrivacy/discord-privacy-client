@@ -1,0 +1,12 @@
+{
+    "schema":  "osl-carrier-baseline-candidate-v1",
+    "key":  "canary/composer-focused-probe",
+    "carrier":  "Discord",
+    "channel":  "canary",
+    "state":  "composer-focused-probe",
+    "png_sha256":  "40865dc72f7b2f24ee4ad3264dd77d88bff74b891e0990fcbc147330792e3b3d",
+    "manifest_sha256":  "f9e63a6ffc3e754b3e2609e1a41ca92484e280325f493d511fee0bb6a52be5c5",
+    "capture_author":  "task-5106-windows-live-capture",
+    "captured_at_utc":  "2026-08-11T11:33:41Z",
+    "review_status":  "pending_distinct_authorized_reviewer"
+}

@@ -1,0 +1,56 @@
+{
+  "schema": "osl-discord-composer-surface-contract-v1",
+  "carrier": "Discord",
+  "surface_kind": "composer",
+  "probe_content": "exact_probe",
+  "probe_sha256": "bb85e7b47a232c501ebbf16dfe3578f9d60dfd93f0b772c0b2abcb5a24630b95",
+  "channels": [
+    "stable",
+    "ptb",
+    "canary"
+  ],
+  "states": [
+    {
+      "state": "composer-focused-probe",
+      "has_keyboard_focus": true,
+      "content": "exact_probe"
+    },
+    {
+      "state": "composer-unfocused-probe",
+      "has_keyboard_focus": false,
+      "content": "exact_probe"
+    }
+  ],
+  "surfaces": [
+    {
+      "key": "stable/composer-focused-probe",
+      "channel": "stable",
+      "state": "composer-focused-probe"
+    },
+    {
+      "key": "stable/composer-unfocused-probe",
+      "channel": "stable",
+      "state": "composer-unfocused-probe"
+    },
+    {
+      "key": "ptb/composer-focused-probe",
+      "channel": "ptb",
+      "state": "composer-focused-probe"
+    },
+    {
+      "key": "ptb/composer-unfocused-probe",
+      "channel": "ptb",
+      "state": "composer-unfocused-probe"
+    },
+    {
+      "key": "canary/composer-focused-probe",
+      "channel": "canary",
+      "state": "composer-focused-probe"
+    },
+    {
+      "key": "canary/composer-unfocused-probe",
+      "channel": "canary",
+      "state": "composer-unfocused-probe"
+    }
+  ]
+}
