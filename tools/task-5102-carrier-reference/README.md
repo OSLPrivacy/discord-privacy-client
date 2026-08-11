@@ -28,6 +28,18 @@ reviewer, and trust-root key id. Runtime adaptation, capture authors, and
 passing diffs have no baseline write path; a stale parent also makes replayed
 acceptance fail closed.
 
+## Release carrier-fidelity policy (Task 5135)
+
+`release-policy/task-5135.json` is the immutable automated release bar for the
+Task 5103 comparator. `carrier-release-policy` requires every provisional
+research value exactly, per state and channel without averaging. Agents,
+candidates, automation, and runtime repair cannot submit noticeability
+calibration. The research's future blinded same-monitor human A/B calibration
+is outside this all-agent dispatchable task set. A later record is accepted
+only when a separate release authorization and the named human observer both
+verify with the pinned keys, and the record tightens at least one value while
+loosening none.
+
 `carrier-fidelity` consumes an `osl-carrier-fidelity-v1` manifest and compares
 each declared state/channel and owned ROI at equal physical dimensions. It has
 no resize path, no arbitrary mask input, and no cross-case aggregate score.

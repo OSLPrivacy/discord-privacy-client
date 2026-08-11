@@ -36,5 +36,9 @@ path = "src/bin/carrier_fidelity.rs"
 name = "carrier-fidelity-fixture"
 path = "src/bin/carrier_fidelity_fixture.rs"
 
+[[bin]]
+name = "carrier-release-policy"
+path = "src/bin/carrier_release_policy.rs"
+
 [workspace]
 resolver = "2"

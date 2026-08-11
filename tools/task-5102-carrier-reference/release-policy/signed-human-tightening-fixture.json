@@ -1,0 +1,22 @@
+{
+  "schema": "osl-carrier-human-ab-calibration-v1",
+  "authorization_id": "human-study-2026-08-11",
+  "authorization_scope": "tighten_task_5103_after_blinded_human_ab",
+  "authorization_signature_hex": "741292f836ea1ce0731f5c542ea96103d8358f3b78c5dd34b6576661b55ecc849496beb351df5cab18f739ef35ca1ae59d3cd208452a0c6fddd0c4f6376c2506",
+  "observer_kind": "human",
+  "observer_name": "Release Observer",
+  "observer_record_id": "observer-record-001",
+  "blinded_same_monitor_ab": true,
+  "signed_observer_record": true,
+  "observer_signature_hex": "b266dac672cd94903e2719fdd269396ab2bd572140c010413c8854b63079bc95b00e105694e4414693c7f358019a45de9678041e5e444460ba8877e9366a8304",
+  "tightened_limits": {
+    "boundary_displacement_px_max": 0.0,
+    "baseline_displacement_px_max": 0.0,
+    "flat_fill_delta_e00_median_lt": 0.9,
+    "flat_fill_delta_e00_p99_lt": 2.2,
+    "structure_mismatch_pct_max": 0.4,
+    "tile_size_physical_px": 16.0,
+    "tile_16x16_mismatch_pct_max": 4.5,
+    "exact_probe_raw_mismatch_pct_max": 0.4
+  }
+}

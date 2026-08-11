@@ -1,0 +1,17 @@
+{
+  "schema": "osl-carrier-release-policy-v1",
+  "policy_id": "task-5103-provisional-envelope",
+  "immutable_for_release": true,
+  "calibration_authority": "separately_authorized_signed_human_only",
+  "enforcement_scope": "per_state_per_channel_no_averaging",
+  "limits": {
+    "boundary_displacement_px_max": 0.0,
+    "baseline_displacement_px_max": 0.0,
+    "flat_fill_delta_e00_median_lt": 1.0,
+    "flat_fill_delta_e00_p99_lt": 2.3,
+    "structure_mismatch_pct_max": 0.5,
+    "tile_size_physical_px": 16.0,
+    "tile_16x16_mismatch_pct_max": 5.0,
+    "exact_probe_raw_mismatch_pct_max": 0.5
+  }
+}
