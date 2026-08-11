@@ -69,7 +69,7 @@ export function onboardingDeleteMarkup(choices: DeleteChoices): string {
     <h1 id="route-heading" tabindex="-1" class="del-title">What should OSL delete?</h1>
     <div class="del-list">
       ${row("Unsent private messages", draftScene(), onOffToggle("delete-drafts", choices.deleteDrafts, "Delete unsent private messages"))}
-      ${row("Old messages", ageScene(), onOffToggle("delete-old-messages", choices.deleteOldMessages, "Delete old messages"))}
+      ${row("Old messages", ageScene(), `${onOffToggle("delete-old-messages", choices.deleteOldMessages, "Delete old messages")}<small class="del-disclosure">This setting saves your preference but does not change which old messages can be opened in this release.</small>`)}
     </div>
     <p class="del-quiet">Everything kept is encrypted. Nothing is deleted without confirmation</p>
     <div class="setup-footer onboarding-actions">${continueButton('id="continue-defaults-review"', "del-continue")}</div>
