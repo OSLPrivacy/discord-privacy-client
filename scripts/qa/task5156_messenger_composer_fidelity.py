@@ -74,8 +74,8 @@ def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def png_pixels(path: Path) -> tuple[tuple[int, int], int, int]:
-    """Return dimensions, nontransparent pixels, and distinct RGB colours."""
+def png_pixels(path: Path) -> tuple[tuple[int, int], int, int, tuple[tuple[int, int, int, int], ...]]:
+    """Return dimensions, nontransparent count, colour count, and RGBA pixels."""
     try:
         blob = path.read_bytes()
     except OSError as error:
@@ -102,7 +102,7 @@ def png_pixels(path: Path) -> tuple[tuple[int, int], int, int]:
     except zlib.error as error:
         raise GateError(f"starved pixels: corrupt PNG {path}: {error}") from error
     previous = bytearray(stride)
-    cursor, nonempty, colours = 0, 0, set()
+    cursor, nonempty, colours, pixels = 0, 0, set(), []
     for _ in range(height):
         if cursor + stride + 1 > len(raw):
             raise GateError(f"starved pixels: truncated PNG {path}")
@@ -128,11 +128,12 @@ def png_pixels(path: Path) -> tuple[tuple[int, int], int, int]:
         for index in range(0, stride, channels):
             rgb = tuple(scan[index:index + 3])
             alpha = scan[index + 3] if channels == 4 else 255
+            pixels.append((*rgb, alpha))
             if alpha:
                 nonempty += 1
                 colours.add(rgb)
         previous = scan
-    return (width, height), nonempty, len(colours)
+    return (width, height), nonempty, len(colours), tuple(pixels)
 
 
 def scan_inventory(root: Path, kind: str) -> dict[str, int]:
@@ -183,7 +184,7 @@ def validate(manifest: dict[str, Any], root: Path, *, allow_test_pixels: bool = 
     if manifest["schema"] != SCHEMA or manifest["carrier"] != "Messenger" or manifest["origin"] != ORIGIN:
         raise GateError("manifest identity or Messenger origin changed")
     if manifest["evidenceMode"] != "reviewed_real_5130":
-        if not allow_test_pixels:
+        if not allow_test_pixels or manifest["evidenceMode"] != "test_only_synthetic_pixels":
             raise GateError("catalogue fixture substituted for reviewed real 5130 reference")
     receipts = require_object(manifest["gateReceipts"], "gateReceipts")
     require_exact(receipts, {"5103", "5130", "5131", "5135"}, "gate receipts")
@@ -224,8 +225,11 @@ def validate(manifest: dict[str, Any], root: Path, *, allow_test_pixels: bool = 
         reference_path, candidate_path = root / reference["path"], root / candidate["path"]
         if reference_path == candidate_path:
             raise GateError(f"state {state_id}: reference and candidate pixels are not independent")
-        ref_dimensions, ref_pixels, ref_colours = png_pixels(reference_path)
-        can_dimensions, can_pixels, can_colours = png_pixels(candidate_path)
+        ref_dimensions, ref_pixels, ref_colours, ref_rgba = png_pixels(reference_path)
+        try:
+            can_dimensions, can_pixels, can_colours, can_rgba = png_pixels(candidate_path)
+        except GateError as error:
+            raise GateError(f"state {state_id}: hidden candidate: {error}") from error
         if sha256(reference_path) != reference["sha256"] or sha256(candidate_path) != candidate["sha256"]:
             raise GateError(f"state {state_id}: pixel hash changed")
         if (list(ref_dimensions) != reference["dimensionsPhysicalPx"]
@@ -236,7 +240,17 @@ def validate(manifest: dict[str, Any], root: Path, *, allow_test_pixels: bool = 
             raise GateError(f"state {state_id}: starved reference pixels")
         if can_pixels == 0 or can_colours <= 2:
             raise GateError(f"state {state_id}: starved candidate pixels")
-        validate_metrics(require_object(state["metrics"], "metrics"), state_id)
+        metrics = require_object(state["metrics"], "metrics")
+        validate_metrics(metrics, state_id)
+        differing = sum(reference_pixel != candidate_pixel
+                        for reference_pixel, candidate_pixel in zip(ref_rgba, can_rgba))
+        actual_exact_mismatch = differing * 100.0 / len(ref_rgba)
+        if actual_exact_mismatch > ENVELOPE["exactRawMismatchPercentMax"]:
+            raise GateError(
+                f"state {state_id}: edge defect: actual exact raw mismatch "
+                f"{actual_exact_mismatch:.6f}% exceeds "
+                f"{ENVELOPE['exactRawMismatchPercentMax']:.6f}%"
+            )
         total_reference += ref_pixels
         total_candidate += can_pixels
     inventories = manifest["inventories"]
@@ -254,7 +268,10 @@ def validate(manifest: dict[str, Any], root: Path, *, allow_test_pixels: bool = 
         actual = scan_inventory(root, kind)
         for field in ZERO_FIELDS:
             if item[field] != 0 or actual[field] != 0:
-                raise GateError(f"inventory {kind}: {field}={max(item[field], actual[field])}, required 0")
+                raise GateError(
+                    f"illegal shipping promotion: inventory {kind}: "
+                    f"{field}={max(item[field], actual[field])}, required 0"
+                )
     return {
         "origin_bound_states": len(states), "reference_pixels": total_reference,
         "candidate_pixels": total_candidate, "shipping_inventories": len(inventories),
