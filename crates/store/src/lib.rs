@@ -198,7 +198,30 @@ pub struct StoredAttachment {
     pub plaintext: Vec<u8>,
     pub sender_discord_id: Option<String>,
 }
+
+/// Decrypted attachment data used by an explicit history copy.
+///
+/// Unlike [`StoredAttachment`], this DTO exposes every authenticated field
+/// needed to reproduce the attachment on another device. Rows are returned by
+/// [`MessageStore::list_history_attachments`] in their stable attachment
+/// order; none of these values are read from plaintext SQLite columns.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredHistoryAttachment {
+    pub random_filename: String,
+    pub mime: String,
+    pub plaintext: Vec<u8>,
+    pub sender_discord_id: Option<String>,
+    pub scope_type: Option<String>,
+    pub scope_id: Option<String>,
+    pub created_at: i64,
+}
 const BI_SENDER_MESSAGE_BURN_ID: &[u8] = b"osl-store-bi/sender_message_burn_id-v1";
+const BI_HISTORY_COPY_METADATA: &[u8] = b"osl-store-bi/history-copy-metadata-v1";
+const BI_HISTORY_COPY_METER: &[u8] = b"osl-store-bi/history-copy-meter-v1";
+const HISTORY_COPY_METADATA_AAD: &[u8] = b"osl-store/meta/history-copy-semantic-v1";
+const HISTORY_COPY_METER_AAD: &[u8] = b"osl-store/meta/history-copy-byte-meter-v1";
+const HISTORY_COPY_METER_SELECTOR: &str = "history-copy-byte-meter";
+const HISTORY_COPY_META_FORMAT: u8 = 1;
 
 /// Complete cryptographic and selector state needed to authenticate a live
 /// message row.
@@ -562,6 +585,67 @@ fn check_id(field: &str, value: &str) -> Result<(), StoreError> {
     Ok(())
 }
 
+/// Render a blind index as a SQLite TEXT key without retaining any plaintext
+/// namespace or message identifier in `_meta`.
+fn history_copy_meta_key(selector: &[u8]) -> String {
+    let mut out = String::with_capacity(selector.len() * 2);
+    for byte in selector {
+        use std::fmt::Write as _;
+        write!(&mut out, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    out
+}
+
+fn history_copy_aad(domain: &[u8], selector: &[u8]) -> Vec<u8> {
+    let mut aad = Vec::with_capacity(domain.len() + 8 + selector.len());
+    aad.extend_from_slice(domain);
+    aad.extend_from_slice(&(selector.len() as u64).to_le_bytes());
+    aad.extend_from_slice(selector);
+    aad
+}
+
+/// Store a compact versioned AEAD envelope in one existing `_meta.value`
+/// blob. The nonce remains random on every write.
+fn seal_history_copy_meta(
+    key: &aead::Key,
+    domain: &[u8],
+    selector: &[u8],
+    plaintext: &[u8],
+) -> Result<Vec<u8>, StoreError> {
+    let (nonce, ciphertext) = cipher::seal(key, &history_copy_aad(domain, selector), plaintext)?;
+    let mut envelope = Vec::with_capacity(1 + nonce.len() + ciphertext.len());
+    envelope.push(HISTORY_COPY_META_FORMAT);
+    envelope.extend_from_slice(&nonce);
+    envelope.extend_from_slice(&ciphertext);
+    Ok(envelope)
+}
+
+fn open_history_copy_meta(
+    key: &aead::Key,
+    domain: &[u8],
+    selector: &[u8],
+    envelope: &[u8],
+) -> Result<Vec<u8>, StoreError> {
+    let nonce_end = 1 + crypto::aead::NONCE_SIZE;
+    if envelope.len() < nonce_end + 16 {
+        return Err(StoreError::Corrupted(
+            "history-copy _meta envelope is truncated".to_string(),
+        ));
+    }
+    if envelope[0] != HISTORY_COPY_META_FORMAT {
+        return Err(StoreError::Corrupted(format!(
+            "history-copy _meta envelope has unsupported format {}",
+            envelope[0]
+        )));
+    }
+    cipher::unseal(
+        key,
+        &history_copy_aad(domain, selector),
+        &envelope[1..nonce_end],
+        &envelope[nonce_end..],
+    )
+}
+
 fn live_message_content_version(
     conn: &Connection,
     mid_bi: &[u8],
@@ -904,6 +988,112 @@ impl MessageStore {
 
     fn bi(&self, domain: &[u8], value: &str) -> Result<Vec<u8>, StoreError> {
         cipher::blind_index(&self.index_key, domain, value)
+    }
+
+    /// Persist opaque, per-message semantic state needed by explicit history
+    /// copy (for example reactions, edit provenance, thread links, and
+    /// expiration state).
+    ///
+    /// The caller owns the payload format. The message id is represented in
+    /// `_meta` only by a domain-separated keyed blind index, and the payload is
+    /// AEAD-sealed with that selector as associated data. Replacing metadata
+    /// always uses a fresh nonce.
+    pub fn put_history_copy_metadata(
+        &self,
+        discord_message_id: &str,
+        plaintext: &[u8],
+    ) -> Result<(), StoreError> {
+        check_id("discord_message_id", discord_message_id)?;
+        let selector = self.bi(BI_HISTORY_COPY_METADATA, discord_message_id)?;
+        let meta_key = history_copy_meta_key(&selector);
+        let envelope =
+            seal_history_copy_meta(&self.key, HISTORY_COPY_METADATA_AAD, &selector, plaintext)?;
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        schema::write_meta_blob(&tx, &meta_key, &envelope)?;
+        self.commit(tx)
+    }
+
+    /// Read and authenticate opaque semantic state previously stored for one
+    /// history-copy message.
+    pub fn get_history_copy_metadata(
+        &self,
+        discord_message_id: &str,
+    ) -> Result<Option<Vec<u8>>, StoreError> {
+        check_id("discord_message_id", discord_message_id)?;
+        let selector = self.bi(BI_HISTORY_COPY_METADATA, discord_message_id)?;
+        let meta_key = history_copy_meta_key(&selector);
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        schema::read_meta_blob(&conn, &meta_key)?
+            .map(|envelope| {
+                open_history_copy_meta(&self.key, HISTORY_COPY_METADATA_AAD, &selector, &envelope)
+            })
+            .transpose()
+    }
+
+    /// Return the durable byte total charged to explicit history copies.
+    ///
+    /// The counter is encrypted in `_meta`; its key is itself a blind index so
+    /// neither its purpose nor its value is plaintext at rest.
+    pub fn history_copy_bytes(&self) -> Result<u64, StoreError> {
+        let selector = self.bi(BI_HISTORY_COPY_METER, HISTORY_COPY_METER_SELECTOR)?;
+        let meta_key = history_copy_meta_key(&selector);
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let Some(envelope) = schema::read_meta_blob(&conn, &meta_key)? else {
+            return Ok(0);
+        };
+        let bytes =
+            open_history_copy_meta(&self.key, HISTORY_COPY_METER_AAD, &selector, &envelope)?;
+        if bytes.len() != std::mem::size_of::<u64>() {
+            return Err(StoreError::Corrupted(format!(
+                "history-copy byte meter has length {} (want 8)",
+                bytes.len()
+            )));
+        }
+        let mut value = [0u8; 8];
+        value.copy_from_slice(&bytes);
+        Ok(u64::from_le_bytes(value))
+    }
+
+    /// Atomically add `delta` to the durable explicit-history-copy byte meter
+    /// and return the new total.
+    pub fn add_history_copy_bytes(&self, delta: u64) -> Result<u64, StoreError> {
+        let selector = self.bi(BI_HISTORY_COPY_METER, HISTORY_COPY_METER_SELECTOR)?;
+        let meta_key = history_copy_meta_key(&selector);
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let current = match schema::read_meta_blob(&tx, &meta_key)? {
+            None => 0,
+            Some(envelope) => {
+                let bytes = open_history_copy_meta(
+                    &self.key,
+                    HISTORY_COPY_METER_AAD,
+                    &selector,
+                    &envelope,
+                )?;
+                if bytes.len() != std::mem::size_of::<u64>() {
+                    return Err(StoreError::Corrupted(format!(
+                        "history-copy byte meter has length {} (want 8)",
+                        bytes.len()
+                    )));
+                }
+                let mut value = [0u8; 8];
+                value.copy_from_slice(&bytes);
+                u64::from_le_bytes(value)
+            }
+        };
+        let updated = current
+            .checked_add(delta)
+            .ok_or_else(|| StoreError::Corrupted("history-copy byte meter overflow".to_string()))?;
+        let envelope = seal_history_copy_meta(
+            &self.key,
+            HISTORY_COPY_METER_AAD,
+            &selector,
+            &updated.to_le_bytes(),
+        )?;
+        schema::write_meta_blob(&tx, &meta_key, &envelope)?;
+        self.commit(tx)?;
+        Ok(updated)
     }
 
     /// Insert or replace a message in the store.
@@ -1936,6 +2126,62 @@ impl MessageStore {
         scope_id: Option<&str>,
         sender_discord_id: Option<&str>,
     ) -> Result<(), StoreError> {
+        let created_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        self.put_attachment_at(
+            discord_message_id,
+            random_filename,
+            mime,
+            plaintext,
+            scope_type,
+            scope_id,
+            sender_discord_id,
+            created_at,
+        )
+    }
+
+    /// Persist an attachment copied from another device while preserving the
+    /// authenticated source creation timestamp. The bytes are nevertheless
+    /// encrypted as a fresh local record with new content-key and nonce
+    /// material.
+    #[allow(clippy::too_many_arguments)]
+    pub fn put_history_copy_attachment(
+        &self,
+        discord_message_id: &str,
+        random_filename: &str,
+        mime: &str,
+        plaintext: &[u8],
+        scope_type: Option<&str>,
+        scope_id: Option<&str>,
+        sender_discord_id: Option<&str>,
+        created_at: i64,
+    ) -> Result<(), StoreError> {
+        self.put_attachment_at(
+            discord_message_id,
+            random_filename,
+            mime,
+            plaintext,
+            scope_type,
+            scope_id,
+            sender_discord_id,
+            created_at,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn put_attachment_at(
+        &self,
+        discord_message_id: &str,
+        random_filename: &str,
+        mime: &str,
+        plaintext: &[u8],
+        scope_type: Option<&str>,
+        scope_id: Option<&str>,
+        sender_discord_id: Option<&str>,
+        created_at: i64,
+    ) -> Result<(), StoreError> {
         check_id("discord_message_id", discord_message_id)?;
         check_id("random_filename", random_filename)?;
         let cache_key = format!("{discord_message_id}/{random_filename}");
@@ -2063,17 +2309,13 @@ impl MessageStore {
             }
             None => (next_seq(&tx, "attachments")?, 1),
         };
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
         let meta = AttachmentMeta {
             cache_key: cache_key.clone(),
             discord_message_id: discord_message_id.to_string(),
             random_filename: random_filename.to_string(),
             mime: mime.to_string(),
             byte_len: plaintext.len() as i64,
-            created_at: now,
+            created_at,
             scope_type: scope_type.map(str::to_string),
             scope_id: scope_id.map(str::to_string),
             sender_discord_id: sender_discord_id.map(str::to_string),
@@ -2245,6 +2487,160 @@ impl MessageStore {
         checkpoint_after_shred(&conn)?;
         self.sync_anchor_after_checkpoint(&mut conn)?;
         Ok(rows)
+    }
+
+    /// List and decrypt every live attachment for one message in stable
+    /// attachment order.
+    ///
+    /// The authenticated manifest is checked before any result is returned.
+    /// Ordering is the persisted opaque attachment sequence, with the blind
+    /// cache selector as a deterministic tie-breaker for corrupted/legacy
+    /// equal-sequence rows. Every returned DTO field comes from sealed
+    /// attachment metadata or the authenticated body.
+    pub fn list_history_attachments(
+        &self,
+        discord_message_id: &str,
+    ) -> Result<Vec<StoredHistoryAttachment>, StoreError> {
+        check_id("discord_message_id", discord_message_id)?;
+        let mid_bi = self.bi(cipher::BI_MESSAGE_ID, discord_message_id)?;
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let has_manifest = read_attachment_manifest(&conn, &self.key, &mid_bi)?.is_some();
+        if has_manifest {
+            validate_attachment_manifest(&conn, &self.key, &self.index_key, &mid_bi)?;
+        } else {
+            let owner_count: i64 = conn.query_row(
+                "SELECT \
+                    (SELECT COUNT(*) FROM messages WHERE mid_bi=?1 AND burned=0) + \
+                    (SELECT COUNT(*) FROM attachments WHERE mid_bi=?1 AND burned=0)",
+                params![&mid_bi],
+                |row| row.get(0),
+            )?;
+            if owner_count != 0 {
+                return Err(StoreError::Corrupted(
+                    "live message or attachment set has no manifest".to_string(),
+                ));
+            }
+            return Ok(Vec::new());
+        }
+
+        let rows: Vec<(Vec<u8>, AttachmentRow)> = {
+            let mut stmt = conn.prepare(
+                "SELECT ck_bi, meta_nonce, meta_ct, ciphertext, nonce, mid_bi, sender_bi, \
+                        seq, content_version, wrapped_key_nonce, wrapped_key \
+                   FROM attachments \
+                  WHERE mid_bi = ?1 AND burned = 0 \
+                  ORDER BY seq ASC, ck_bi ASC",
+            )?;
+            let mapped = stmt.query_map(params![&mid_bi], |row| {
+                Ok((
+                    row.get(0)?,
+                    AttachmentRow {
+                        meta_nonce: row.get(1)?,
+                        meta_ct: row.get(2)?,
+                        ciphertext: row.get(3)?,
+                        nonce: row.get(4)?,
+                        mid_bi: row.get(5)?,
+                        sender_bi: row.get(6)?,
+                        seq: row.get(7)?,
+                        content_version: row.get(8)?,
+                        wrapped_key_nonce: row.get(9)?,
+                        wrapped_key: row.get(10)?,
+                    },
+                ))
+            })?;
+            let mut out = Vec::new();
+            for row in mapped {
+                out.push(row?);
+            }
+            out
+        };
+
+        let mut attachments = Vec::with_capacity(rows.len());
+        for (ck_bi, row) in rows {
+            if row.mid_bi != mid_bi {
+                return Err(StoreError::Corrupted(
+                    "attachment message selector changed during history-copy read".to_string(),
+                ));
+            }
+            if row.content_version < 1 {
+                return Err(StoreError::Corrupted(
+                    "attachment content version must be positive".to_string(),
+                ));
+            }
+            let meta_bytes = cipher::unseal(
+                &self.key,
+                &cipher::attachment_meta_aad(&ck_bi, &row.mid_bi, row.seq, row.content_version),
+                &row.meta_nonce,
+                &row.meta_ct,
+            )?;
+            let meta = cipher::decode_attachment_meta(&meta_bytes)?;
+            if meta.discord_message_id != discord_message_id {
+                return Err(StoreError::Corrupted(
+                    "attachment message id does not match history-copy source".to_string(),
+                ));
+            }
+            let expected_mid = self.bi(cipher::BI_MESSAGE_ID, &meta.discord_message_id)?;
+            if expected_mid != row.mid_bi {
+                return Err(StoreError::Corrupted(
+                    "attachment message selector does not match its sealed metadata".to_string(),
+                ));
+            }
+            let expected_cache_key =
+                format!("{}/{}", meta.discord_message_id, meta.random_filename);
+            let expected_ck = self.bi(cipher::BI_CACHE_KEY, &meta.cache_key)?;
+            if expected_ck != ck_bi || meta.cache_key != expected_cache_key {
+                return Err(StoreError::Corrupted(
+                    "attachment cache selector does not match its sealed metadata".to_string(),
+                ));
+            }
+            let expected_sender = match meta.sender_discord_id.as_deref() {
+                Some(sender) => Some(self.bi(cipher::BI_SENDER_ID, sender)?),
+                None => None,
+            };
+            if expected_sender != row.sender_bi {
+                return Err(StoreError::Corrupted(
+                    "attachment sender selector does not match its sealed metadata".to_string(),
+                ));
+            }
+            if meta.byte_len < 0 {
+                return Err(StoreError::Corrupted(
+                    "attachment byte length must not be negative".to_string(),
+                ));
+            }
+            let wrapper_nonce = row.wrapped_key_nonce.as_deref().ok_or_else(|| {
+                StoreError::Corrupted("live attachment row has no wrapped-key nonce".to_string())
+            })?;
+            let wrapper = row.wrapped_key.as_deref().ok_or_else(|| {
+                StoreError::Corrupted("live attachment row has no wrapped content key".to_string())
+            })?;
+            let plaintext = cipher::unseal_attachment_body(
+                &self.key,
+                &ck_bi,
+                &row.mid_bi,
+                row.seq,
+                row.content_version,
+                &meta_bytes,
+                wrapper_nonce,
+                wrapper,
+                &row.nonce,
+                &row.ciphertext,
+            )?;
+            if plaintext.len() != meta.byte_len as usize {
+                return Err(StoreError::Corrupted(
+                    "attachment body length does not match sealed metadata".to_string(),
+                ));
+            }
+            attachments.push(StoredHistoryAttachment {
+                random_filename: meta.random_filename,
+                mime: meta.mime,
+                plaintext,
+                sender_discord_id: meta.sender_discord_id,
+                scope_type: meta.scope_type,
+                scope_id: meta.scope_id,
+                created_at: meta.created_at,
+            });
+        }
+        Ok(attachments)
     }
 
     /// Fetch a previously-persisted decrypted attachment.

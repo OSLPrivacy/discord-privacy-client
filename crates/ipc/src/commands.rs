@@ -14673,7 +14673,54 @@ fn active_account_for_transfer(state: &AppState) -> Result<String, String> {
 struct HistoryCopyPackage {
     version: u32,
     account: String,
-    messages: Vec<StoredMessageDto>,
+    messages: Vec<HistoryCopyMessage>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct HistoryCopyMessage {
+    source_message_id: String,
+    message: StoredMessageDto,
+    attachments: Vec<HistoryCopyAttachment>,
+    semantics: HistoryCopySemantics,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct HistoryCopyAttachment {
+    random_filename: String,
+    mime: String,
+    plaintext: Vec<u8>,
+    sender_discord_id: Option<String>,
+    scope_type: Option<String>,
+    scope_id: Option<String>,
+    created_at: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum HistoryCopyExpirationState {
+    NonExpiring,
+    Active { timer_minutes: u32 },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryCopyReaction {
+    pub reaction_id: String,
+    pub target_message_id: String,
+    pub actor_discord_id: String,
+    pub emoji: String,
+    pub reacted_at: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryCopySemantics {
+    pub stable_order: u64,
+    pub thread_root_id: Option<String>,
+    pub reactions: Vec<HistoryCopyReaction>,
+    pub expiration: HistoryCopyExpirationState,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -14691,8 +14738,13 @@ pub struct CopyMyHistoryHereResult {
     pub confirmation_sentence: String,
     pub copied_count: usize,
     pub plaintext_bytes_written: u64,
+    pub attachment_count: usize,
+    pub attachment_bytes_written: u64,
+    pub actual_copied_bytes_written: u64,
     pub monthly_data_bytes_before: u64,
     pub monthly_data_bytes_after: u64,
+    pub source_to_copy_ids: BTreeMap<String, String>,
+    pub source_to_copy_reaction_ids: BTreeMap<String, String>,
 }
 
 pub fn cmd_osl_copy_my_history_here_confirmation(
@@ -14709,9 +14761,64 @@ pub fn cmd_osl_copy_my_history_here_confirmation(
 }
 
 pub fn cmd_osl_history_copy_month_data_bytes(state: &AppState) -> u64 {
-    state
-        .history_copy_data_allowance_this_month_bytes
-        .load(Ordering::SeqCst)
+    let persisted = state
+        .message_store
+        .lock()
+        .expect("message_store mutex poisoned")
+        .as_ref()
+        .and_then(|store| store.history_copy_bytes().ok());
+    persisted.unwrap_or_else(|| {
+        state
+            .history_copy_data_allowance_this_month_bytes
+            .load(Ordering::SeqCst)
+    })
+}
+
+pub fn cmd_osl_record_history_copy_semantics(
+    state: &AppState,
+    discord_message_id: String,
+    semantics: HistoryCopySemantics,
+) -> Result<(), String> {
+    let bytes = serde_json::to_vec(&semantics)
+        .map_err(|error| format!("OSL: history semantics serialize: {error}"))?;
+    let guard = state
+        .message_store
+        .lock()
+        .expect("message_store mutex poisoned");
+    let store = guard
+        .as_ref()
+        .ok_or_else(|| "OSL: message history is not open".to_string())?;
+    store
+        .put_history_copy_metadata(&discord_message_id, &bytes)
+        .map_err(|error| format!("OSL: history semantics write: {error}"))
+}
+
+pub fn cmd_osl_read_history_copy_semantics(
+    state: &AppState,
+    discord_message_id: String,
+) -> Result<Option<HistoryCopySemantics>, String> {
+    let guard = state
+        .message_store
+        .lock()
+        .expect("message_store mutex poisoned");
+    let store = guard
+        .as_ref()
+        .ok_or_else(|| "OSL: message history is not open".to_string())?;
+    let Some(bytes) = store
+        .get_history_copy_metadata(&discord_message_id)
+        .map_err(|error| format!("OSL: history semantics read: {error}"))?
+    else {
+        return Ok(None);
+    };
+    serde_json::from_slice(&bytes)
+        .map(Some)
+        .map_err(|error| format!("OSL: history semantics parse: {error}"))
+}
+
+fn fresh_history_copy_id() -> String {
+    let bytes = crypto::random::random_bytes(16);
+    let suffix: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    format!("osl-history-copy-{suffix}")
 }
 
 pub fn cmd_osl_export_history_for_copy(
@@ -14736,14 +14843,31 @@ pub fn cmd_osl_export_history_for_copy(
     let Some(store) = guard.as_ref() else {
         return Err("OSL: message history is not open".to_string());
     };
+    let selected: std::collections::BTreeSet<String> =
+        discord_message_ids.iter().cloned().collect();
+    if selected.len() != discord_message_ids.len() {
+        return Err(
+            "OSL: history copy selection contains a duplicate source message id".to_string(),
+        );
+    }
     let mut messages = Vec::with_capacity(discord_message_ids.len());
-    for message_id in discord_message_ids {
+    for (fallback_order, message_id) in discord_message_ids.into_iter().enumerate() {
         let Some(message) = store
             .get(&message_id)
             .map_err(|e| format!("OSL: copy history read: {e}"))?
         else {
+            let retained_stub = store
+                .count_message_records(std::slice::from_ref(&message_id))
+                .map_err(|e| format!("OSL: copy history retention read: {e}"))?
+                == 1;
+            if retained_stub {
+                return Err(format!(
+                    "OSL: source.message[{}].expirationState=expired-before-copy; existing retention rule destroyed its content, so no id-only stub was copied",
+                    crate::log_id::log_id(&message_id)
+                ));
+            }
             return Err(format!(
-                "OSL: selected history message {} is not on this device",
+                "OSL: source.message[{}] is not on this device",
                 crate::log_id::log_id(&message_id)
             ));
         };
@@ -14752,11 +14876,89 @@ pub fn cmd_osl_export_history_for_copy(
                 "OSL: selected history message is not in the chosen conversation".to_string(),
             );
         }
-        messages.push(StoredMessageDto::from(message));
+        let attachments = store
+            .list_history_attachments(&message_id)
+            .map_err(|e| {
+                format!(
+                    "OSL: source.message[{}].attachments read: {e}",
+                    crate::log_id::log_id(&message_id)
+                )
+            })?
+            .into_iter()
+            .map(|attachment| HistoryCopyAttachment {
+                random_filename: attachment.random_filename,
+                mime: attachment.mime,
+                plaintext: attachment.plaintext,
+                sender_discord_id: attachment.sender_discord_id,
+                scope_type: attachment.scope_type,
+                scope_id: attachment.scope_id,
+                created_at: attachment.created_at,
+            })
+            .collect();
+        let mut semantics = match store.get_history_copy_metadata(&message_id).map_err(|e| {
+            format!(
+                "OSL: source.message[{}].semantics read: {e}",
+                crate::log_id::log_id(&message_id)
+            )
+        })? {
+            Some(bytes) => serde_json::from_slice(&bytes).map_err(|e| {
+                format!(
+                    "OSL: source.message[{}].semantics parse: {e}",
+                    crate::log_id::log_id(&message_id)
+                )
+            })?,
+            None => HistoryCopySemantics {
+                stable_order: fallback_order as u64,
+                thread_root_id: None,
+                reactions: Vec::new(),
+                expiration: HistoryCopyExpirationState::NonExpiring,
+            },
+        };
+        semantics.expiration = match store.message_timer_minutes(&message_id).map_err(|e| {
+            format!(
+                "OSL: source.message[{}].expirationState read: {e}",
+                crate::log_id::log_id(&message_id)
+            )
+        })? {
+            Some(timer_minutes) => HistoryCopyExpirationState::Active { timer_minutes },
+            None => HistoryCopyExpirationState::NonExpiring,
+        };
+        if let Some(parent) = message.reply_parent_id.as_ref() {
+            if !selected.contains(parent) {
+                return Err(format!(
+                    "OSL: source.message[{}].replyParentId points outside the copied selection",
+                    crate::log_id::log_id(&message_id)
+                ));
+            }
+        }
+        if let Some(root) = semantics.thread_root_id.as_ref() {
+            if !selected.contains(root) {
+                return Err(format!(
+                    "OSL: source.message[{}].threadRootId points outside the copied selection",
+                    crate::log_id::log_id(&message_id)
+                ));
+            }
+        }
+        for reaction in &semantics.reactions {
+            if reaction.target_message_id != message_id {
+                return Err(format!(
+                    "OSL: source.message[{}].reactions[{}].targetMessageId points to the wrong source object",
+                    crate::log_id::log_id(&message_id),
+                    crate::log_id::log_id(&reaction.reaction_id)
+                ));
+            }
+        }
+        messages.push(HistoryCopyMessage {
+            source_message_id: message_id,
+            message: StoredMessageDto::from(message),
+            attachments,
+            semantics,
+        });
     }
+    messages.sort_by_key(|item| item.semantics.stable_order);
     seal_history_copy_package(
         &HistoryCopyPackage {
-            version: 1,
+            version: 2,
             account,
             messages,
         },
@@ -14813,7 +15015,7 @@ fn open_history_copy_package(blob_b64: &str, phrase: &str) -> Result<HistoryCopy
         })?;
     let package: HistoryCopyPackage =
         serde_json::from_slice(&plaintext).map_err(|e| format!("OSL: history copy parse: {e}"))?;
-    if package.version != 1 {
+    if package.version != 2 {
         return Err("OSL: history copy: unsupported or missing version".to_string());
     }
     cmd_osl_copy_my_history_here_confirmation(package.messages.len())?;
@@ -14837,7 +15039,25 @@ pub fn cmd_osl_copy_my_history_here(
     let confirmation = cmd_osl_copy_my_history_here_confirmation(package.messages.len())?;
     let before = cmd_osl_history_copy_month_data_bytes(state);
     let mut bytes_written = 0u64;
+    let mut attachment_bytes_written = 0u64;
+    let mut attachment_count = 0usize;
     let mut copied_count = 0usize;
+    let mut source_to_copy_ids = BTreeMap::new();
+    let mut source_to_copy_reaction_ids = BTreeMap::new();
+    for item in &package.messages {
+        if item.source_message_id != item.message.discord_message_id {
+            return Err(format!(
+                "OSL: source.message[{}].id does not match its packaged message id",
+                crate::log_id::log_id(&item.source_message_id)
+            ));
+        }
+        if source_to_copy_ids
+            .insert(item.source_message_id.clone(), fresh_history_copy_id())
+            .is_some()
+        {
+            return Err("OSL: history copy contains a duplicate source message id".to_string());
+        }
+    }
     {
         let guard = state
             .message_store
@@ -14846,32 +15066,157 @@ pub fn cmd_osl_copy_my_history_here(
         let Some(store) = guard.as_ref() else {
             return Err("OSL: message history is not open on this device".to_string());
         };
-        for dto in package.messages {
-            let plaintext_len = u64::try_from(dto.plaintext.as_bytes().len())
+        for item in package.messages {
+            let copy_id = source_to_copy_ids
+                .get(&item.source_message_id)
+                .cloned()
+                .ok_or_else(|| "OSL: history copy id remap is incomplete".to_string())?;
+            let plaintext_len = u64::try_from(item.message.plaintext.as_bytes().len())
                 .map_err(|_| "OSL: history copy byte count overflow".to_string())?;
+            let mut dto = item.message;
+            dto.discord_message_id = copy_id.clone();
+            dto.reply_parent_id = dto
+                .reply_parent_id
+                .map(|source_parent| {
+                    source_to_copy_ids
+                        .get(&source_parent)
+                        .cloned()
+                        .ok_or_else(|| {
+                            format!(
+                                "OSL: source.message[{}].replyParentId has no copied object",
+                                crate::log_id::log_id(&item.source_message_id)
+                            )
+                        })
+                })
+                .transpose()?;
             let message = StoredMessage::from(dto);
+            if message.edit_revision < 1 {
+                return Err(format!(
+                    "OSL: source.message[{}].editRevision must be positive",
+                    crate::log_id::log_id(&item.source_message_id)
+                ));
+            }
+            for _ in 0..message.edit_revision {
+                store
+                    .put(&message)
+                    .map_err(|e| format!("OSL: copy history write: {e}"))?;
+            }
+            let mut semantics = item.semantics;
+            semantics.thread_root_id = semantics
+                .thread_root_id
+                .map(|source_root| {
+                    source_to_copy_ids
+                        .get(&source_root)
+                        .cloned()
+                        .ok_or_else(|| {
+                            format!(
+                                "OSL: source.message[{}].threadRootId has no copied object",
+                                crate::log_id::log_id(&item.source_message_id)
+                            )
+                        })
+                })
+                .transpose()?;
+            for reaction in &mut semantics.reactions {
+                let source_reaction_id = reaction.reaction_id.clone();
+                reaction.target_message_id = source_to_copy_ids
+                    .get(&reaction.target_message_id)
+                    .cloned()
+                    .ok_or_else(|| {
+                        format!(
+                            "OSL: source.message[{}].reactions[{}].targetMessageId has no copied object",
+                            crate::log_id::log_id(&item.source_message_id),
+                            crate::log_id::log_id(&reaction.reaction_id)
+                        )
+                    })?;
+                reaction.reaction_id = fresh_history_copy_id();
+                if source_to_copy_reaction_ids
+                    .insert(source_reaction_id, reaction.reaction_id.clone())
+                    .is_some()
+                {
+                    return Err(format!(
+                        "OSL: source.message[{}].reactions contains a duplicate reaction id",
+                        crate::log_id::log_id(&item.source_message_id)
+                    ));
+                }
+            }
+            if let HistoryCopyExpirationState::Active { timer_minutes } = &semantics.expiration {
+                store
+                    .record_message_timer_minutes(&copy_id, *timer_minutes)
+                    .map_err(|e| {
+                        format!(
+                            "OSL: copy.message[{}].expirationState write: {e}",
+                            crate::log_id::log_id(&copy_id)
+                        )
+                    })?;
+            }
+            for attachment in item.attachments {
+                let attachment_len = u64::try_from(attachment.plaintext.len())
+                    .map_err(|_| "OSL: history attachment byte count overflow".to_string())?;
+                store
+                    .put_history_copy_attachment(
+                        &copy_id,
+                        &attachment.random_filename,
+                        &attachment.mime,
+                        &attachment.plaintext,
+                        attachment.scope_type.as_deref(),
+                        attachment.scope_id.as_deref(),
+                        attachment.sender_discord_id.as_deref(),
+                        attachment.created_at,
+                    )
+                    .map_err(|e| {
+                        format!(
+                            "OSL: copy.message[{}].attachment[{}] write: {e}",
+                            crate::log_id::log_id(&copy_id),
+                            crate::log_id::log_id(&attachment.random_filename)
+                        )
+                    })?;
+                attachment_bytes_written = attachment_bytes_written
+                    .checked_add(attachment_len)
+                    .ok_or_else(|| "OSL: history attachment byte count overflow".to_string())?;
+                attachment_count += 1;
+            }
+            let semantic_bytes = serde_json::to_vec(&semantics)
+                .map_err(|e| format!("OSL: copy history semantics serialize: {e}"))?;
             store
-                .put(&message)
-                .map_err(|e| format!("OSL: copy history write: {e}"))?;
+                .put_history_copy_metadata(&copy_id, &semantic_bytes)
+                .map_err(|e| {
+                    format!(
+                        "OSL: copy.message[{}].semantics write: {e}",
+                        crate::log_id::log_id(&copy_id)
+                    )
+                })?;
             bytes_written = bytes_written
                 .checked_add(plaintext_len)
                 .ok_or_else(|| "OSL: history copy byte count overflow".to_string())?;
             copied_count += 1;
         }
+        let actual_bytes = bytes_written
+            .checked_add(attachment_bytes_written)
+            .ok_or_else(|| "OSL: history copy actual byte count overflow".to_string())?;
+        store
+            .add_history_copy_bytes(actual_bytes)
+            .map_err(|e| format!("OSL: history copy persisted meter: {e}"))?;
     }
-    let previous = state
-        .history_copy_data_allowance_this_month_bytes
-        .fetch_add(bytes_written, Ordering::SeqCst);
-    let after = previous
-        .checked_add(bytes_written)
-        .ok_or_else(|| "OSL: history copy data allowance overflow".to_string())?;
+    let actual_copied_bytes_written = bytes_written
+        .checked_add(attachment_bytes_written)
+        .ok_or_else(|| "OSL: history copy actual byte count overflow".to_string())?;
+    state.history_copy_data_allowance_this_month_bytes.store(
+        before.saturating_add(actual_copied_bytes_written),
+        Ordering::SeqCst,
+    );
+    let after = cmd_osl_history_copy_month_data_bytes(state);
     Ok(CopyMyHistoryHereResult {
         action_label: confirmation.action_label,
         confirmation_sentence: confirmation.sentence,
         copied_count,
         plaintext_bytes_written: bytes_written,
+        attachment_count,
+        attachment_bytes_written,
+        actual_copied_bytes_written,
         monthly_data_bytes_before: before,
         monthly_data_bytes_after: after,
+        source_to_copy_ids,
+        source_to_copy_reaction_ids,
     })
 }
 
