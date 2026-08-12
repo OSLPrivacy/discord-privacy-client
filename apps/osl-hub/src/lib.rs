@@ -344,6 +344,8 @@ pub mod scrub_imap;
 #[cfg(feature = "core")]
 pub mod scrub_index;
 pub mod scrub_receipt;
+/// Fail-closed Scrub consent binding for live in-place provider account changes.
+pub mod scrub_account_rebinding;
 #[cfg(feature = "core")]
 pub mod security;
 pub mod setting_groups;
