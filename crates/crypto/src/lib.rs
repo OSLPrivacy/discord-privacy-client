@@ -67,6 +67,7 @@ pub mod ed25519;
 pub mod error;
 pub mod hkdf;
 pub mod ml_kem_768;
+pub mod modern_protection;
 pub mod padding;
 pub mod pointer;
 pub mod pqxdh;
