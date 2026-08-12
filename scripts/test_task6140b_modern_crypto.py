@@ -57,11 +57,14 @@ class Task6140bModernCryptoTests(unittest.TestCase):
             "id=personal-export:padded-low-entropy-key",
             "id=backup:shared-cross-domain-key",
             "id=carrier:prepare_peer_prose_text_inner:1000:threshold-plus-one:plaintext",
-            "constructor=prepare_peer_prose_text_inner threshold=1000 part=none route=none observed=replacement=plaintext",
+            "constructor=prepare_peer_prose_text_inner threshold=1000 case=threshold-plus-one byte_count=1001 part=none",
             "id=carrier:split_native_overlay_text:40960:multipart-middle:unauthenticated-encryption",
-            "constructor=split_native_overlay_text threshold=40960 part=1 route=none",
+            "constructor=split_native_overlay_text threshold=40960 case=multipart-middle byte_count=81921 part=1",
             "id=carrier:split_native_overlay_text:40960:final-part-after-long-prefix:direct-route",
-            "threshold=40960 part=7 route=direct observed=route=direct direct_egress_bytes=1",
+            "threshold=40960 case=final-part-after-long-prefix byte_count=286721 part=7 route=direct",
+            "operation=provider-route primitive=none effective_key_bits=none kdf=none observed=route=direct direct_egress_bytes=1 support=Supported protection=green delivery=green small_tor=green",
+            "id=recovery:32-bit-key exit=1 domain=recovery category=strength defect=key-bits",
+            "object=task6140-recovery-object operation=verify primitive=Ed25519 effective_key_bits=32 kdf=none",
             "TASK6140B_STARVATION kind=domain count=5 each_exit=1",
             "TASK6140B_STARVATION kind=path count=14 each_exit=1",
             "TASK6140B_STARVATION kind=tor_observation count=14 each_exit=1",
@@ -87,6 +90,7 @@ class Task6140bModernCryptoTests(unittest.TestCase):
         self.assertEqual(baseline["domainInventory"], list(gate.DOMAINS))
         self.assertEqual(len(baseline["carrierPaths"]), 14)
         self.assertEqual(len(baseline["torObservations"]), 14)
+        self.assertEqual(baseline["carrierMatrix"][0]["support"], "Supported")
         for domain in gate.PASSWORD_DOMAINS:
             argon = proof.proof_for(baseline, domain)["argon2id"]
             self.assertEqual(
@@ -97,11 +101,15 @@ class Task6140bModernCryptoTests(unittest.TestCase):
             domain_proof = proof.proof_for(baseline, domain)
             self.assertEqual(domain_proof["boundFields"], list(gate.BOUND_FIELDS))
             self.assertEqual(domain_proof["key"]["bits"], 256)
+            self.assertEqual(domain_proof["objectId"], f"task6140-{domain}-object")
+            self.assertIn(domain_proof["operation"], ("verify", "open", "restore", "send"))
+            self.assertEqual(domain_proof["key"]["effectiveBits"], 128 if domain == "recovery" else 256)
             self.assertTrue(domain_proof["key"]["fresh"])
         for path, observation in zip(baseline["carrierPaths"], baseline["torObservations"]):
             self.assertTrue(path["encrypted"] and path["authenticated"] and path["beforeRenderCommit"])
             self.assertEqual(path["capturePlaintext"], 0)
             self.assertEqual(path["exactArrivals"], 1)
+            self.assertEqual(path["prefixBytes"], (path["part"] or 0) * path["threshold"])
             self.assertEqual(observation["route"], "bundled-tor")
             self.assertEqual(observation["directEgressBytes"], 0)
 
@@ -124,6 +132,13 @@ class Task6140bModernCryptoTests(unittest.TestCase):
                     threshold=mutation.threshold,
                     part=mutation.part,
                     route=mutation.route,
+                    case=mutation.case,
+                    byte_count=mutation.byte_count,
+                    object_id=mutation.object_id,
+                    operation=mutation.operation,
+                    primitive=mutation.primitive,
+                    effective_key_bits=mutation.effective_key_bits,
+                    kdf=mutation.kdf,
                 )
 
     def test_every_domain_path_tor_observation_and_mutant_starvation_is_red(self) -> None:
@@ -151,12 +166,16 @@ class Task6140bModernCryptoTests(unittest.TestCase):
                 proof.require_red(
                     proof.run_checker(no_path, directory, f"path-{index}"),
                     "carrier", "starvation", f"path:{path['pathId']}", **common,
+                    case=path["case"], byte_count=str(path["bytes"]),
+                    object_id=path["pathId"], operation="send",
                 )
                 no_tor = copy.deepcopy(baseline)
                 no_tor["torObservations"] = [item for item in no_tor["torObservations"] if item["pathId"] != path["pathId"]]
                 proof.require_red(
                     proof.run_checker(no_tor, directory, f"tor-{index}"),
                     "carrier", "starvation", f"tor:{path['pathId']}", route="absent", **common,
+                    case=path["case"], byte_count=str(path["bytes"]),
+                    object_id=path["pathId"], operation="provider-route",
                 )
             for index, mutant in enumerate(gate.REQUIRED_MUTANTS):
                 candidate = copy.deepcopy(baseline)

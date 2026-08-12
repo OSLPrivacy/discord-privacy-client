@@ -38,6 +38,13 @@ class Mutation:
     threshold: str = "none"
     part: str = "none"
     route: str = "none"
+    case: str = "none"
+    byte_count: str = "none"
+    object_id: str = "none"
+    operation: str = "none"
+    primitive: str = "none"
+    effective_key_bits: str = "none"
+    kdf: str = "none"
 
 
 def argon2id() -> dict[str, Any]:
@@ -54,8 +61,17 @@ def argon2id() -> dict[str, Any]:
 
 def domain_proof(domain: str, index: int) -> dict[str, Any]:
     recovery = domain == "recovery"
+    operation = {
+        "recovery": "verify",
+        "enclave-export": "open",
+        "personal-export": "open",
+        "backup": "restore",
+        "carrier": "send",
+    }[domain]
     return {
         "domain": domain,
+        "objectId": f"task6140-{domain}-object",
+        "operation": operation,
         "primitive": {
             "algorithm": "Ed25519" if recovery else "XChaCha20-Poly1305-IETF",
             "library": "ed25519-dalek" if recovery else "chacha20poly1305",
@@ -66,6 +82,7 @@ def domain_proof(domain: str, index: int) -> dict[str, Any]:
         },
         "key": {
             "bits": 256,
+            "effectiveBits": 128 if recovery else 256,
             "provenance": "CSPRNG:OsRng",
             "keyId": f"6140-{domain}-key-{index}",
             "fresh": True,
@@ -123,6 +140,7 @@ def baseline_contract() -> dict[str, Any]:
         "carrierMatrix": [{
             "implementationId": gate.IMPLEMENTATION_ID,
             "cell": gate.CELL,
+            "support": "Supported",
             "constructors": [
                 {"name": constructor, "threshold": threshold}
                 for constructor, threshold in gate.CONSTRUCTORS
@@ -170,62 +188,99 @@ def mutate_route(constructor: str, threshold: int, case: str) -> Callable[[dict[
     ).update(route="direct", directEgressBytes=1)
 
 
+def mutation_domain_context(
+    domain: str,
+    *,
+    primitive: str | None = None,
+    effective_key_bits: int | None = None,
+) -> dict[str, str]:
+    proof = domain_proof(domain, gate.DOMAINS.index(domain))
+    return {
+        "object_id": proof["objectId"],
+        "operation": proof["operation"],
+        "primitive": primitive or proof["primitive"]["algorithm"],
+        "effective_key_bits": str(
+            effective_key_bits if effective_key_bits is not None else proof["key"]["effectiveBits"]
+        ),
+        "kdf": proof["argon2id"]["algorithm"] if proof["argon2id"] else "none",
+    }
+
+
 def mutations() -> list[Mutation]:
     items: list[Mutation] = []
     for domain in gate.DOMAINS:
         items.extend([
             Mutation(
                 f"{domain}:custom-toy-primitive", domain, "primitive", "custom-toy-primitive",
-                "functioning_custom_toy=1",
+                "functioning_custom_toy=1 functional_operation=1",
                 mutate_proof(domain, "primitive", custom=True, algorithm="ToyPrimitive"),
+                **mutation_domain_context(domain, primitive="ToyPrimitive"),
             ),
             Mutation(
                 f"{domain}:32-bit-key", domain, "strength", "key-bits",
-                "effective_bits=32", mutate_proof(domain, "key", bits=32),
+                "effective_bits=32 functional_operation=1",
+                mutate_proof(domain, "key", bits=32, effectiveBits=32),
+                **mutation_domain_context(domain, effective_key_bits=32),
             ),
             Mutation(
                 f"{domain}:padded-low-entropy-key", domain, "strength", "padded-low-entropy-key",
                 "source_bits=32 padded_to=256",
                 mutate_proof(domain, "key", deterministicallyPadded=True),
+                **mutation_domain_context(domain),
             ),
             Mutation(
                 f"{domain}:shared-cross-domain-key", domain, "separation", "shared-cross-domain-key",
                 "cross_domain_key_reuse=1", mutate_proof(domain, "key", sharedAcrossDomains=True),
+                **mutation_domain_context(domain),
             ),
             Mutation(
                 f"{domain}:algorithm-kdf-downgrade", domain, "downgrade", "algorithm-kdf-downgrade",
                 "downgrade_accepted=1", mutate_proof(domain, "primitive", downgradeAllowed=True),
+                **mutation_domain_context(domain),
             ),
         ])
     for domain in gate.PASSWORD_DOMAINS:
         items.extend([
             Mutation(
                 f"{domain}:weak-argon-salt", domain, "kdf", "weak-argon-salt",
-                "salt_bits=64", mutate_argon(domain, saltBits=64),
+                "salt_bits=64 functional_operation=1", mutate_argon(domain, saltBits=64),
+                **mutation_domain_context(domain),
             ),
             Mutation(
                 f"{domain}:weak-argon-memory", domain, "kdf", "weak-argon-memory",
-                "memory_kib=32768", mutate_argon(domain, memoryKiB=32_768),
+                "memory_kib=32768 functional_operation=1", mutate_argon(domain, memoryKiB=32_768),
+                **mutation_domain_context(domain),
             ),
             Mutation(
                 f"{domain}:weak-argon-iterations", domain, "kdf", "weak-argon-iterations",
-                "iterations=2", mutate_argon(domain, iterations=2),
+                "iterations=2 functional_operation=1", mutate_argon(domain, iterations=2),
+                **mutation_domain_context(domain),
             ),
             Mutation(
                 f"{domain}:weak-argon-parallelism", domain, "kdf", "weak-argon-parallelism",
-                "parallelism=0", mutate_argon(domain, parallelism=0),
+                "parallelism=0 functional_operation=1", mutate_argon(domain, parallelism=0),
+                **mutation_domain_context(domain),
             ),
         ])
     case_parts = {case: part for case, _offset, part in gate.CASES}
     for constructor, threshold in gate.CONSTRUCTORS:
         for case in gate.QUALIFYING_BOUNDARY_CASES:
+            expected_path = next(
+                path for path in gate.expected_paths()
+                if path["constructor"] == constructor and path["case"] == case
+            )
             common = {
                 "domain": "carrier",
                 "cell": gate.CELL,
                 "constructor": constructor,
                 "threshold": str(threshold),
                 "part": "none" if case_parts[case] is None else str(case_parts[case]),
+                "case": case,
+                "byte_count": str(expected_path["bytes"]),
+                "object_id": path_id(constructor, threshold, case),
+                "operation": "send",
             }
+            route_common = {**common, "operation": "provider-route"}
             items.extend([
                 Mutation(
                     f"carrier:{constructor}:{threshold}:{case}:plaintext",
@@ -251,8 +306,8 @@ def mutations() -> list[Mutation]:
                 Mutation(
                     f"carrier:{constructor}:{threshold}:{case}:direct-route",
                     category="route", defect="direct-route", route="direct",
-                    observed="route=direct direct_egress_bytes=1",
-                    apply=mutate_route(constructor, threshold, case), **common,
+                    observed="route=direct direct_egress_bytes=1 support=Supported protection=green delivery=green small_tor=green",
+                    apply=mutate_route(constructor, threshold, case), **route_common,
                 ),
             ])
     return items
@@ -289,6 +344,13 @@ def require_red(
     threshold: str = "none",
     part: str = "none",
     route: str = "none",
+    case: str = "none",
+    byte_count: str = "none",
+    object_id: str = "none",
+    operation: str = "none",
+    primitive: str = "none",
+    effective_key_bits: str = "none",
+    kdf: str = "none",
 ) -> None:
     output = result.stdout + result.stderr
     expected = (
@@ -301,9 +363,18 @@ def require_red(
         f"threshold={threshold}",
         f"part={part}",
         f"route={route}",
+        f"case={case}",
+        f"byte_count={byte_count}",
+        f"object={object_id}",
+        f"operation={operation}",
+        f"primitive={primitive}",
+        f"effective_key_bits={effective_key_bits}",
+        f"kdf={kdf}",
     )
     if result.returncode != 1 or any(item not in output for item in expected):
         raise RuntimeError(f"expected named red {expected}: exit={result.returncode} {output}")
+    if "TASK6140B_OK" in output:
+        raise RuntimeError(f"red candidate inherited green security claim: {output}")
 
 
 def prove_mutants(directory: Path, starved: str | None) -> list[str]:
@@ -326,13 +397,20 @@ def prove_mutants(directory: Path, starved: str | None) -> list[str]:
             red, mutation.domain, mutation.category, mutation.defect,
             cell=mutation.cell, constructor=mutation.constructor,
             threshold=mutation.threshold, part=mutation.part, route=mutation.route,
+            case=mutation.case, byte_count=mutation.byte_count,
+            object_id=mutation.object_id, operation=mutation.operation,
+            primitive=mutation.primitive, effective_key_bits=mutation.effective_key_bits,
+            kdf=mutation.kdf,
         )
         require_green(run_checker(baseline, directory, f"restored-{index}"), mutation.mutation_id)
         lines.append(
             f"TASK6140B_MUTANT id={mutation.mutation_id} exit=1 domain={mutation.domain} "
             f"category={mutation.category} defect={mutation.defect} cell={mutation.cell} "
-            f"constructor={mutation.constructor} threshold={mutation.threshold} part={mutation.part} "
-            f"route={mutation.route} observed={mutation.observed} restored_exit=0 discarded=true"
+            f"constructor={mutation.constructor} threshold={mutation.threshold} "
+            f"case={mutation.case} byte_count={mutation.byte_count} part={mutation.part} "
+            f"route={mutation.route} object={mutation.object_id} operation={mutation.operation} "
+            f"primitive={mutation.primitive} effective_key_bits={mutation.effective_key_bits} "
+            f"kdf={mutation.kdf} observed={mutation.observed} restored_exit=0 discarded=true"
         )
     return lines
 
@@ -359,6 +437,8 @@ def prove_starvation(directory: Path) -> tuple[list[str], int]:
             "carrier", "starvation", f"path:{path['pathId']}", cell=gate.CELL,
             constructor=path["constructor"], threshold=str(path["threshold"]),
             part="none" if path["part"] is None else str(path["part"]),
+            case=path["case"], byte_count=str(path["bytes"]),
+            object_id=path["pathId"], operation="send",
         )
         count += 1
     lines.append(f"TASK6140B_STARVATION kind=path count={len(gate.expected_paths())} each_exit=1")
@@ -371,6 +451,8 @@ def prove_starvation(directory: Path) -> tuple[list[str], int]:
             "carrier", "starvation", f"tor:{path['pathId']}", cell=gate.CELL,
             constructor=path["constructor"], threshold=str(path["threshold"]),
             part="none" if path["part"] is None else str(path["part"]), route="absent",
+            case=path["case"], byte_count=str(path["bytes"]),
+            object_id=path["pathId"], operation="provider-route",
         )
         count += 1
     lines.append(f"TASK6140B_STARVATION kind=tor_observation count={len(gate.expected_paths())} each_exit=1")

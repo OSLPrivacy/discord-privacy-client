@@ -70,6 +70,13 @@ def expected_paths() -> list[dict[str, Any]]:
     paths: list[dict[str, Any]] = []
     for constructor, threshold in CONSTRUCTORS:
         for case, offset, part in CASES:
+            if case in ("multipart-first", "multipart-middle", "multipart-final"):
+                byte_count = 2 * threshold + 1
+            elif case == "final-part-after-long-prefix":
+                byte_count = 7 * threshold + 1
+            else:
+                byte_count = threshold + offset
+            prefix_bytes = 0 if part is None else part * threshold
             paths.append({
                 "pathId": f"{IMPLEMENTATION_ID}:{CELL}:{constructor}:{threshold}:{case}",
                 "implementationId": IMPLEMENTATION_ID,
@@ -77,7 +84,8 @@ def expected_paths() -> list[dict[str, Any]]:
                 "constructor": constructor,
                 "threshold": threshold,
                 "case": case,
-                "bytes": threshold + offset,
+                "bytes": byte_count,
+                "prefixBytes": prefix_bytes,
                 "part": part,
             })
     return paths
@@ -110,6 +118,13 @@ class Refusal(RuntimeError):
     threshold: str = "none"
     part: str = "none"
     route: str = "none"
+    case: str = "none"
+    byte_count: str = "none"
+    object_id: str = "none"
+    operation: str = "none"
+    primitive: str = "none"
+    effective_key_bits: str = "none"
+    kdf: str = "none"
 
     def __post_init__(self) -> None:
         RuntimeError.__init__(self, self.detail)
@@ -126,10 +141,18 @@ def refuse(
     threshold: int | str = "none",
     part: int | str | None = "none",
     route: str = "none",
+    case: str = "none",
+    byte_count: int | str = "none",
+    object_id: str = "none",
+    operation: str = "none",
+    primitive: str = "none",
+    effective_key_bits: int | str = "none",
+    kdf: str = "none",
 ) -> None:
     raise Refusal(
         domain, category, defect, detail, cell, constructor, str(threshold),
-        "none" if part is None else str(part), route,
+        "none" if part is None else str(part), route, case, str(byte_count),
+        object_id, operation, primitive, str(effective_key_bits), kdf,
     )
 
 
@@ -175,11 +198,13 @@ def validate_primitive(domain: str, proof: dict[str, Any]) -> str:
 def validate_key(domain: str, proof: dict[str, Any]) -> str:
     key = exact_keys(
         proof["key"],
-        {"bits", "provenance", "keyId", "fresh", "lowEntropy", "deterministicallyPadded", "sharedAcrossDomains", "separation"},
+        {"bits", "effectiveBits", "provenance", "keyId", "fresh", "lowEntropy", "deterministicallyPadded", "sharedAcrossDomains", "separation"},
         domain,
         "key-shape",
     )
     require(key["bits"] == 256, domain, "strength", "key-bits", f"bits={key['bits']}")
+    expected_effective_bits = 128 if domain == "recovery" else 256
+    require(key["effectiveBits"] == expected_effective_bits, domain, "strength", "effective-key-bits", f"effectiveBits={key['effectiveBits']}")
     require(key["provenance"] == "CSPRNG:OsRng", domain, "strength", "key-provenance", str(key["provenance"]))
     require(key["fresh"] is True, domain, "strength", "fresh-key", "fresh=false")
     require(key["lowEntropy"] is False, domain, "strength", "low-entropy-key", "lowEntropy=true")
@@ -213,14 +238,34 @@ def validate_argon(domain: str, proof: dict[str, Any]) -> None:
 def validate_domain(proof: Any, expected_domain: str) -> str:
     proof = exact_keys(
         proof,
-        {"domain", "primitive", "key", "argon2id", "nonce", "boundFields", "oracle", "discarded"},
+        {"domain", "objectId", "operation", "primitive", "key", "argon2id", "nonce", "boundFields", "oracle", "discarded"},
         expected_domain,
         "domain-proof-shape",
     )
     require(proof["domain"] == expected_domain, expected_domain, "inventory", "domain-name", str(proof["domain"]))
-    validate_primitive(expected_domain, proof)
-    key_id = validate_key(expected_domain, proof)
-    validate_argon(expected_domain, proof)
+    expected_operation = {
+        "recovery": "verify",
+        "enclave-export": "open",
+        "personal-export": "open",
+        "backup": "restore",
+        "carrier": "send",
+    }[expected_domain]
+    require(proof["objectId"] == f"task6140-{expected_domain}-object", expected_domain, "inventory", "object-id", str(proof["objectId"]))
+    require(proof["operation"] == expected_operation, expected_domain, "oracle", "operation", str(proof["operation"]))
+    try:
+        validate_primitive(expected_domain, proof)
+        key_id = validate_key(expected_domain, proof)
+        validate_argon(expected_domain, proof)
+    except Refusal as error:
+        error.object_id = str(proof.get("objectId", "none"))
+        error.operation = str(proof.get("operation", "none"))
+        primitive = proof.get("primitive", {})
+        key = proof.get("key", {})
+        argon = proof.get("argon2id")
+        error.primitive = str(primitive.get("algorithm", "none")) if isinstance(primitive, dict) else "none"
+        error.effective_key_bits = str(key.get("effectiveBits", "none")) if isinstance(key, dict) else "none"
+        error.kdf = str(argon.get("algorithm", "none")) if isinstance(argon, dict) else "none"
+        raise
     if expected_domain == "recovery":
         require(proof["nonce"] is None, expected_domain, "nonce", "unexpected-nonce", "must be null")
     else:
@@ -249,6 +294,10 @@ def path_context(path: dict[str, Any]) -> dict[str, Any]:
         "constructor": str(path.get("constructor", "none")),
         "threshold": path.get("threshold", "none"),
         "part": path.get("part"),
+        "case": str(path.get("case", "none")),
+        "byte_count": path.get("bytes", "none"),
+        "object_id": str(path.get("pathId", "none")),
+        "operation": "send",
     }
 
 
@@ -256,6 +305,7 @@ def validate_carrier(contract: dict[str, Any]) -> None:
     expected_matrix = [{
         "implementationId": IMPLEMENTATION_ID,
         "cell": CELL,
+        "support": "Supported",
         "constructors": [
             {"name": constructor, "threshold": threshold}
             for constructor, threshold in CONSTRUCTORS
@@ -289,6 +339,7 @@ def validate_carrier(contract: dict[str, Any]) -> None:
     require(len(observed) == len(observations), "carrier", "route", "tor-duplicate", "duplicate/unnamed", cell=CELL)
     for wanted in expected:
         context = path_context(wanted)
+        context["operation"] = "provider-route"
         item = observed.get(wanted["pathId"])
         require(item is not None, "carrier", "starvation", f"tor:{wanted['pathId']}", "Tor observation absent", route="absent", **context)
         item = exact_keys(item, {"pathId", "requestId", "observed", "route", "directEgressBytes"}, "carrier", "tor-shape")
@@ -346,7 +397,9 @@ def main(argv: list[str] | None = None) -> int:
             "TASK6140B_FAIL "
             f"domain={error.domain} category={error.category} defect={error.defect} "
             f"cell={error.cell} constructor={error.constructor} threshold={error.threshold} "
-            f"part={error.part} route={error.route} detail={error.detail}",
+            f"case={error.case} byte_count={error.byte_count} part={error.part} route={error.route} "
+            f"object={error.object_id} operation={error.operation} primitive={error.primitive} "
+            f"effective_key_bits={error.effective_key_bits} kdf={error.kdf} detail={error.detail}",
             file=sys.stderr,
         )
         return 1
