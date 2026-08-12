@@ -44,6 +44,9 @@ pub mod bad_message_rules;
 pub mod both_sides_burn_progress;
 pub mod build_switch_metadata;
 pub mod burned_scopes_file;
+/// The machine-readable catalogue of OSL-central moderation systems that must
+/// not exist, read by the TASK 6594 central-absence sweep.
+pub mod central_moderation_needles;
 pub mod cipher_store_client;
 pub mod commands;
 pub mod control_inbox_dead_letter;
@@ -54,6 +57,10 @@ pub mod destruct_ack;
 pub mod email_send_modes;
 pub mod email_whitelist_kinds;
 pub mod enclave_removal;
+/// Enclave-scoped custom roles, the KEY/RELAY/TRUST permission catalogue, one
+/// resolver, and the signed instructions an Enclave's own people use to
+/// remove, mute, restrict, revoke and delete inside their own Enclave.
+pub mod enclave_self_moderation;
 pub mod fresh_start;
 pub mod friend_request;
 pub mod friend_service_name;
