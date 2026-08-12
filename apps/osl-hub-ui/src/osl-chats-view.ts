@@ -1,3 +1,6 @@
+import { formatOslChatText, projectSpoilerContent, spoilerRevealId, type OslChatFormat } from "./osl-chat-spoilers";
+import { senderCaptureDisclosureMarkup } from "./view-once-capture-disclosure";
+
 // Matches the enforced OSL Chat logical-message limit in broker.rs.
 export const OSL_CHAT_MAX_DRAFT_BYTES = 1024 * 1024;
 
@@ -145,6 +148,8 @@ export interface OslChatMessage {
   body: string;
   state: OslChatDeliveryState;
   timestampLabel: string;
+  expiresAt?: number;
+  format?: OslChatFormat;
 }
 
 export interface OslChatsViewModel {
@@ -154,6 +159,8 @@ export interface OslChatsViewModel {
   draft: string;
   busy: boolean;
   viewOnce?: boolean;
+  spoiler?: boolean;
+  revealedSpoilerIds?: ReadonlySet<string>;
   homeLogoUrl?: string;
   /**
    * Remote attachment copies OSL asked the relay to delete and could NOT
@@ -221,6 +228,7 @@ export function firstPartyOslServiceSurface(
 const chatIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 17.5 3.5 20v-5.2A8 8 0 0 1 3 12c0-4.4 4-8 9-8s9 3.6 9 8-4 8-9 8a10 10 0 0 1-5-1.5Z"/></svg>';
 const settingsIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1a1.7 1.7 0 0 0 1.9.3A1.7 1.7 0 0 0 10 3v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/></svg>';
 const onceIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="9" cy="9" r="2"/><path d="m4 17 5-5 4 4 2-2 5 4"/></svg>';
+const spoilerIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12s3.3-5 9-5 9 5 9 5-3.3 5-9 5-9-5-9-5Z"/><circle cx="12" cy="12" r="2.5"/></svg>';
 const sendIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>';
 const consentTickIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 13 4 4 10-10"/></svg>';
 const buildTickIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 5 6v5c0 4.6 2.8 8.1 7 10 4.2-1.9 7-5.4 7-10V6l-7-3Z"/><path d="m8.5 12 2.2 2.2 4.8-5"/></svg>';
@@ -357,11 +365,19 @@ export function oslChatHandshakeWarning(friend: OslChatFriend): string {
   return `Nothing has ever arrived from ${friend.nickname}, so OSL cannot tell whether they finished their half. Until they add your invite, verify you and turn this chat on, what you send here cannot be opened on their device. Both people must complete every step.`;
 }
 
-function messageRow(message: OslChatMessage, friend: OslChatFriend): string {
+function messageRow(message: OslChatMessage, friend: OslChatFriend, revealedSpoilerIds: ReadonlySet<string>): string {
   const label = deliveryLabel(message.state);
   const unreadable = oslChatMessageUnreadableNote(message, friend.handshakeConfirmed === true);
-  return `<article class="osl-chat-message is-${message.direction}" data-message-id="${escapeHtml(message.messageId)}">
-    <div class="osl-chat-message-meta"><strong>${message.direction === "outgoing" ? "You" : escapeHtml(friend.nickname)}</strong><time>${escapeHtml(message.timestampLabel)}</time></div><p class="osl-chat-message-text">${escapeHtml(message.body)}</p>
+  const revealId = spoilerRevealId("message", message.messageId);
+  const isSpoiler = message.format === "spoiler";
+  const revealed = isSpoiler && revealedSpoilerIds.has(revealId);
+  const content = isSpoiler
+    ? revealed
+      ? `<p class="osl-chat-message-text is-spoiler-revealed">${escapeHtml(projectSpoilerContent(message.body, true).screenText)}</p>`
+      : `<button class="osl-chat-spoiler-control" type="button" data-osl-chat-spoiler-reveal="${escapeHtml(revealId)}" aria-label="Reveal spoiler from ${message.direction === "outgoing" ? "you" : escapeHtml(friend.nickname)}"><span aria-hidden="true">SPOILER · Reveal</span></button>`
+    : `<p class="osl-chat-message-text">${escapeHtml(message.body)}</p>`;
+  return `<article class="osl-chat-message is-${message.direction}${isSpoiler ? " is-spoiler" : ""}" data-message-id="${escapeHtml(message.messageId)}">
+    <div class="osl-chat-message-meta"><strong>${message.direction === "outgoing" ? "You" : escapeHtml(friend.nickname)}</strong><time>${escapeHtml(message.timestampLabel)}</time></div>${content}
     <footer><span class="osl-chat-message-state is-${message.state}">${label}</span>${unreadable ? `<span class="osl-chat-message-unreadable">${escapeHtml(unreadable)}</span>` : ""}</footer>
   </article>`;
 }
@@ -403,7 +419,7 @@ function emptyThread(): string {
 }
 
 function activeThread(model: OslChatsViewModel, friend: OslChatFriend): string {
-  const bytes = oslChatDraftBytes(model.draft);
+  const bytes = oslChatDraftBytes(formatOslChatText(model.draft, model.spoiler ? "spoiler" : "plain"));
   const withinLimit = bytes <= OSL_CHAT_MAX_DRAFT_BYTES;
   const hasDraft = model.draft.trim().length > 0;
   const canSend = friend.verified && friend.ready && hasDraft && withinLimit && !model.busy;
@@ -412,8 +428,9 @@ function activeThread(model: OslChatsViewModel, friend: OslChatFriend): string {
     : !friend.ready
       ? "Chat is not ready."
       : "";
+  const revealedSpoilerIds = model.revealedSpoilerIds ?? new Set<string>();
   const messages = model.messages.length
-    ? model.messages.map((message) => messageRow(message, friend)).join("")
+    ? model.messages.map((message) => messageRow(message, friend, revealedSpoilerIds)).join("")
     : '<p class="osl-chat-thread-empty">No messages yet.</p>';
   const handshakeWarning = oslChatHandshakeWarning(friend);
   const unconfirmed = handshakeWarning
@@ -426,7 +443,7 @@ function activeThread(model: OslChatsViewModel, friend: OslChatFriend): string {
     ${deletionUnconfirmedRow(model.deletionUnconfirmed ?? 0)}
     <form class="osl-chat-composer" data-osl-chat-compose="${escapeHtml(friend.personId)}">
       <label for="osl-chat-draft">Message</label>
-      <div class="osl-chat-composer-bar"><label class="osl-chat-view-once" title="View once"><input id="osl-chat-view-once" type="checkbox" ${model.viewOnce ? "checked" : ""} ${model.busy ? "disabled" : ""}/>${onceIcon}<span><strong>View once</strong><small>Kept out of OSL history. OSL asks for the sent copy to be deleted once it is opened, and says here when it cannot confirm that. View Once applies to protected text only; files and images are not view-once.</small></span></label><textarea id="osl-chat-draft" rows="1" placeholder="Message ${escapeHtml(friend.nickname)}" autocomplete="off" spellcheck="true" aria-describedby="osl-chat-draft-count osl-chat-readiness">${escapeHtml(model.draft)}</textarea><button class="osl-chat-send" type="submit" aria-label="${model.busy ? "Sending" : "Send"}" data-osl-chat-send-context="${friend.verified && friend.ready && !model.busy ? "1" : "0"}" ${canSend ? "" : "disabled"}>${sendIcon}<span>${model.busy ? "Sending…" : "Send"}</span></button></div>
+      <div class="osl-chat-composer-bar"><label class="osl-chat-view-once" title="View once"><input id="osl-chat-view-once" type="checkbox" ${model.viewOnce ? "checked" : ""} ${model.busy ? "disabled" : ""}/>${onceIcon}<span><strong>View once</strong><small>Kept out of OSL history. OSL asks for the sent copy to be deleted once it is opened, and says here when it cannot confirm that. View Once applies to protected text only; files and images are not view-once.</small>${senderCaptureDisclosureMarkup()}</span></label><label class="osl-chat-spoiler-format" title="SPOILER"><input id="osl-chat-spoiler" type="checkbox" ${model.spoiler ? "checked" : ""} ${model.busy ? "disabled" : ""}/>${spoilerIcon}<span><strong>SPOILER</strong><small>Recipients choose when to reveal the text or attachment on their own device.</small></span></label><textarea id="osl-chat-draft" rows="1" placeholder="Message ${escapeHtml(friend.nickname)}" autocomplete="off" spellcheck="true" aria-describedby="osl-chat-draft-count osl-chat-readiness">${escapeHtml(model.draft)}</textarea><button class="osl-chat-send" type="submit" aria-label="${model.busy ? "Sending" : "Send"}" data-osl-chat-send-context="${friend.verified && friend.ready && !model.busy ? "1" : "0"}" ${canSend ? "" : "disabled"}>${sendIcon}<span>${model.busy ? "Sending…" : "Send"}</span></button></div>
       <div class="osl-chat-composer-meta"><span id="osl-chat-readiness" class="osl-chat-readiness">${readiness}</span><output id="osl-chat-draft-count" class="osl-chat-byte-count${withinLimit ? "" : " is-over"}">${bytes.toLocaleString("en-US")} / ${OSL_CHAT_MAX_DRAFT_BYTES.toLocaleString("en-US")}</output></div>
     </form>
   </section>`;

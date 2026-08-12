@@ -18,6 +18,7 @@ members = [
     "crates/sensitive-classify",
     "crates/store",
     "crates/stronger-authority",
+    "crates/view-once-capture",
     "tests/task-4609-topup-driver",
     "tests/task-4611-crypto-topup-driver",
     "tests/task-4613-metering-privacy-driver",

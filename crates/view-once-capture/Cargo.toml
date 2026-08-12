@@ -1,0 +1,40 @@
+[package]
+name = "view-once-capture"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# TASK 6844. Honest sender notification for view-once screenshots.
+#
+# The crate is deliberately small and dependency-light. The reason is not
+# tidiness: the exact shipping code has to be cross-compiled to Windows and run
+# against a real desktop capture to be believed, and every transitive
+# dependency is a chance for that build to be impossible on the machine holding
+# the evidence.
+#
+# It signs with `ed25519-dalek` directly rather than through `crates/crypto`.
+# That is the same primitive and the same pinned major that `crypto::ed25519`
+# itself wraps -- `crypto` additionally pulls ML-KEM, AES-GCM and Argon2, none
+# of which a capture event needs.
+
+[dependencies]
+ed25519-dalek = { version = "2.0", features = ["rand_core"] }
+rand = { workspace = true }
+rand_core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+zeroize = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.59.0", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_DataExchange",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
