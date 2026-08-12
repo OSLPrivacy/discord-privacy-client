@@ -575,6 +575,38 @@ pub const PRODUCTION_KEYS: &[ProductionKey] = &[
         key: "service.payment_voucher.failed",
         placeholders: &[],
     },
+    ProductionKey {
+        key: "release.capability.carrier_list",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "release.capability.matrix_note",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "strip.help",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "notification.help",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "account.export.independent_copy_warning",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "account.export.key_storage_warning",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "recovery.kit.theft_warning",
+        placeholders: &[],
+    },
+    ProductionKey {
+        key: "succession.warning.period_successor",
+        placeholders: &["period", "successor"],
+    },
 ];
 
 /// Q7 registers English only. This is intentionally a fixed one-element list,

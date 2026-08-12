@@ -10,6 +10,7 @@ import "./friend-invite.css";
 import "./recovery-screen.css";
 import "./onboarding-mullvad.css";
 import "./appearance-settings.css";
+import { accountExportSettingsContent, runAccountExport, type AccountExportState } from "./account-export";
 import { invoke } from "@tauri-apps/api/core";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -232,6 +233,7 @@ import { PublicNamePageController } from "./public-name-page";
 import { createHubPrivateContactLink, revokeHubPrivateContactLink } from "./adapters";
 import { identityChoiceMarkup, PrivateContactLinkPageController, type IdentityDiscoveryChoice } from "./onboarding-identity";
 import { catalogueScreenMarkup } from "./catalogue/screen-catalogue";
+import { releaseCapabilitiesMarkup, RELEASE_CAPABILITY_COPY } from "./release-capabilities";
 
 export type Route = "onboarding" | "home" | "inbox" | "people" | "privacy" | "activity" | "connections" | "service" | "settings" | "mullvad" | "osl-chat" | "osl-mail" | "osl-servers" | "signal-qa";
 
@@ -345,7 +347,7 @@ const NATIVE_DISCORD_COMPOSER_UNREACHABLE_EVENT = "osl://native-discord-composer
 const NATIVE_DISCORD_COMPOSER_UNREACHABLE_REASONS = ["zorder-band", "keyboard-focus", "session-ended"] as const;
 type NativeDiscordComposerUnreachableReason = (typeof NATIVE_DISCORD_COMPOSER_UNREACHABLE_REASONS)[number];
 type OnboardingRoute = "pro" | "welcome" | "create" | "import" | "unlock" | "keylost" | "account-recovery" | "recovery" | "identity-choice" | "private-link" | "mullvad" | "sending" | "defaults" | "tor" | "forward-secrecy" | "cover" | "passwords" | "burnpass" | "privacy" | "tutorial" | "detected" | "install" | "apps" | "browser" | "decoy";
-type SettingsSection = "account" | "apps" | "scrub" | "cleanup" | "notifications" | "appearance" | "about";
+type SettingsSection = "account" | "export" | "apps" | "scrub" | "cleanup" | "notifications" | "appearance" | "about" | "release-capabilities";
 type SavedAccountMode = "ask" | "use" | "clean";
 type BurnScope = "chat" | "app" | "account";
 type BurnResult = {
@@ -481,6 +483,7 @@ const recoveryKitUnsavedFlag = createRecoveryKitUnsavedFlag({
   write: (unsaved) => setHubRecoveryKitUnsaved(unsaved),
 });
 let settingsSection: SettingsSection = "account";
+let accountExportState: AccountExportState = { kind: "idle" };
 let activeService: LinkedService | null = null;
 let activeHomeAppId: HomeAppId | null = null;
 let appLaunchPendingId: HomeAppId | null = null;
@@ -2934,6 +2937,7 @@ function recoveryContent(): string {
     <h1 id="route-heading" tabindex="-1" class="recovery-screen-title">Save your recovery kit</h1>
     <div class="recovery-phrase-list">${recoveryKitSecretCardsMarkup(secrets, escapeHtml)}</div>
     <button class="signin-unlock osl-continue recovery-copy" id="copy-recovery-kit" type="button"><span class="signin-unlock-label" data-copy-label="Copy recovery kit" data-copied-label="Copied">Copy recovery kit</span>${recoveryCopyIcon()}${recoveryCopiedIcon()}</button>
+    <p class="recovery-kit-theft-warning">${escapeHtml(RELEASE_CAPABILITY_COPY.recoveryKitTheftSentence)}</p>
     <label class="recovery-saved-row"><input class="sr-only" id="recovery-saved" type="checkbox" ${recoverySavedAcknowledged ? "checked" : ""}/>${recoveryCheckbox()}<span>I saved my recovery kit</span></label>
     ${continueButton(`id="recovery-continue" ${recoverySavedAcknowledged ? "" : "disabled aria-disabled=\"true\""}`, "recovery-continue-button")}
   </section>`;
@@ -4255,7 +4259,8 @@ export function primarySidebarMarkup(): string {
 function appLauncherStrip(): string {
   const configured = configuredTopStripApps(homeAppsFromServices(services), homeTileOrder)
     .filter((app) => !hiddenServices.has(app.serviceId ?? ""));
-  return `<nav class="app-launcher-strip" aria-label="Your apps">${configured.map((app) => `<button class="app-launcher in-dom-tooltip-anchor ${activeHomeAppId === app.id ? "active" : ""} ${appLaunchPendingId === app.id ? "pending" : ""}" data-home-app="${app.id}" aria-label="Open ${escapeHtml(app.displayName)}" ${appLaunchPendingId ? "disabled" : ""}>${homeAppLogo(app)}${inDomTooltipMarkup(app.displayName)}</button>`).join("")}</nav>`;
+  const apps = configured.map((app) => `<button class="app-launcher in-dom-tooltip-anchor ${activeHomeAppId === app.id ? "active" : ""} ${appLaunchPendingId === app.id ? "pending" : ""}" data-home-app="${app.id}" aria-label="Open ${escapeHtml(app.displayName)}" ${appLaunchPendingId ? "disabled" : ""}>${homeAppLogo(app)}${inDomTooltipMarkup(app.displayName)}</button>`).join("");
+  return `<nav class="app-launcher-strip" aria-label="Your apps">${apps}<p class="strip-help">${escapeHtml(RELEASE_CAPABILITY_COPY.stripHelpSentence)}</p></nav>`;
 }
 
 function simpleDeviceStatusMarkup(): string {
@@ -5525,7 +5530,7 @@ function burnRevocationMarkup(revocation: BurnRevocationReceipt | undefined): st
 }
 
 function burnGuaranteeMarkup(effects: string): string {
-  return `<section class="burn-truth burn-guarantees" aria-labelledby="burn-guarantee-title"><strong id="burn-guarantee-title">Before you continue</strong><p>${escapeHtml(effects)}</p>${burnFeatureClaimsMarkup()}</section>`;
+  return `<section class="burn-truth burn-guarantees" aria-labelledby="burn-guarantee-title"><strong id="burn-guarantee-title">Before you continue</strong><p>${escapeHtml(effects)}</p><p class="burn-independent-export-warning">${escapeHtml(RELEASE_CAPABILITY_COPY.independentExportSentence)}</p>${burnFeatureClaimsMarkup()}</section>`;
 }
 
 function burnDialogMarkup(): string {
@@ -5641,7 +5646,7 @@ function serviceGuideContent(service: LinkedService, step: ServiceGuideStep): st
 }
 
 function settingsContent(): string {
-  const items: Array<[SettingsSection, string]> = [["account", "Account"], ["apps", "Apps"], ["scrub", "Scrub"], ["cleanup", "Cleanup"], ["notifications", "Notifications"], ["appearance", "Appearance"], ["about", "About"]];
+  const items: Array<[SettingsSection, string]> = [["account", "Account"], ["export", "Export my data"], ["apps", "Apps"], ["scrub", "Scrub"], ["cleanup", "Cleanup"], ["notifications", "Notifications"], ["appearance", "Appearance"], ["about", "About"], ["release-capabilities", "Release capabilities"]];
   // These buttons pick a section WITHIN Settings, so they are not `page`.
   // Settings itself is the page, and the primary sidebar already marks it
   // `aria-current="page"`; marking a section button the same way put two
@@ -5653,6 +5658,7 @@ function settingsContent(): string {
 
 function settingsSectionContent(): string {
   if (settingsSection === "account") return `${identitySettingsContent()}${settingsDivider()}${passwordSecuritySettingsContent({ bootstrapStatus: core.readiness.bootstrapStatus, passwordRoleStatus }, passwordEyeIcon)}${accountAdvancedSettingsContent()}${renderRecoveryStatesSettings()}`;
+  if (settingsSection === "export") return accountExportSettingsContent(accountExportState);
   if (settingsSection === "apps") return `${serviceAccountsSettingsContent()}${optionalComponentsSettingsContent()}${sendingSettingsContent()}`;
   if (settingsSection === "scrub") return privacySettingsContent({
     proActive: licenseState.access === "pro" || licenseState.access === "offlineGrace",
@@ -5673,6 +5679,7 @@ function settingsSectionContent(): string {
   if (settingsSection === "cleanup") return massCleanupSettingsContent();
   if (settingsSection === "notifications") return notificationSettingsContent();
   if (settingsSection === "appearance") return appearanceSettingsContent(appearancePreferences, themeChoice, appearanceProfileDraft.record("global")!);
+  if (settingsSection === "release-capabilities") return releaseCapabilitiesMarkup();
   return updateSettingsContent();
 }
 
@@ -6207,7 +6214,7 @@ function notificationSettingsContent(): string {
   const activity = notificationsEnabled && visibleNotifications.length
     ? visibleNotifications.map((item) => `<article class="notification-event"><span><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(notificationPreviewContent ? item.detail : "Private OSL activity")}</small></span><time>${escapeHtml(item.createdAt)}</time></article>`).join("")
     : `<div class="empty-state"><strong>${notificationsEnabled ? "Nothing new" : "Activity is off"}</strong><p>${notificationsEnabled ? "New OSL security and chat events appear here." : "Turn on local activity to see OSL events on this device."}</p></div>`;
-  return `<h2>Activity</h2><p>Private events created by OSL on this device.</p><section class="notification-events" aria-label="Recent OSL activity">${activity}</section><div class="settings-list"><label class="setting-line interactive"><span><strong>Local OSL activity</strong><small>Master control for activity on this device.</small></span><input id="notifications-opt-in" type="checkbox" ${notificationsEnabled ? "checked" : ""}/></label><label class="setting-line interactive"><span><strong>Security changes</strong><small>Friend encryption-key changes that need verification.</small></span><input id="notification-security-activity" type="checkbox" ${notificationSecurityActivity ? "checked" : ""}/></label><label class="setting-line interactive"><span><strong>Show details</strong><small>Off by default. When off, Activity hides event content.</small></span><input id="notification-previews" type="checkbox" ${notificationPreviewContent ? "checked" : ""}/></label><label class="setting-line interactive"><span><strong>Suggest chat approval</strong><small>Suggestions never enable decryption.</small></span><input id="notification-scope-suggestions" type="checkbox" ${notificationScopeSuggestions ? "checked" : ""}/></label></div>${oslChatNotificationSettings()}<details class="settings-disclosure notification-apps"><summary><span><strong>Connected apps</strong><small>Provider unread counts are not read</small></span></summary><div class="notification-app-list">${apps}</div></details>`;
+  return `<h2>Activity</h2><p>Private events created by OSL on this device.</p><p class="notification-help">${escapeHtml(RELEASE_CAPABILITY_COPY.notificationHelpSentence)}</p><section class="notification-events" aria-label="Recent OSL activity">${activity}</section><div class="settings-list"><label class="setting-line interactive"><span><strong>Local OSL activity</strong><small>Master control for activity on this device.</small></span><input id="notifications-opt-in" type="checkbox" ${notificationsEnabled ? "checked" : ""}/></label><label class="setting-line interactive"><span><strong>Security changes</strong><small>Friend encryption-key changes that need verification.</small></span><input id="notification-security-activity" type="checkbox" ${notificationSecurityActivity ? "checked" : ""}/></label><label class="setting-line interactive"><span><strong>Show details</strong><small>Off by default. When off, Activity hides event content.</small></span><input id="notification-previews" type="checkbox" ${notificationPreviewContent ? "checked" : ""}/></label><label class="setting-line interactive"><span><strong>Suggest chat approval</strong><small>Suggestions never enable decryption.</small></span><input id="notification-scope-suggestions" type="checkbox" ${notificationScopeSuggestions ? "checked" : ""}/></label></div>${oslChatNotificationSettings()}<details class="settings-disclosure notification-apps"><summary><span><strong>Connected apps</strong><small>Provider unread counts are not read</small></span></summary><div class="notification-app-list">${apps}</div></details>`;
 }
 
 function oslChatNotificationSettings(): string {
@@ -7603,6 +7610,17 @@ function bindWorkspace(): void {
   document.querySelectorAll<HTMLButtonElement>("[data-settings-send-mode]").forEach((button) => button.addEventListener("click", () => {
     void changeSendingMode(button.dataset.settingsSendMode as SendMode);
   }));
+  document.querySelector<HTMLFormElement>("#account-export-form")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (accountExportState.kind === "saving") return;
+    const password = document.querySelector<HTMLInputElement>("#account-export-password")?.value ?? "";
+    accountExportState = { kind: "saving" };
+    render();
+    void runAccountExport(password, invoke).then((state) => {
+      accountExportState = state;
+      render();
+    });
+  });
   document.querySelector<HTMLButtonElement>("[data-inbox-start-private]")?.addEventListener("click", () => inboxPrimaryAction());
   document.querySelectorAll<HTMLButtonElement>("[data-inbox-filter]").forEach((button) => button.addEventListener("click", () => {
     inboxFilter = parseInboxFilter(button.dataset.inboxFilter);

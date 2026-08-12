@@ -7046,6 +7046,38 @@
     {
       "key": "screen.dialog.osl.profile.pane.text.n014",
       "value": "A profile is a display name and a colour. Your identity is the key, and that does not change here."
+    },
+    {
+      "key": "release.capability.carrier_list",
+      "value": "This release can send through: Discord. All other integrations are unavailable and are not covered by send, offline, Tor or protection tests."
+    },
+    {
+      "key": "release.capability.matrix_note",
+      "value": "For each integration, only the content types marked Supported are covered by send, offline, Tor, and protection tests; text support does not imply attachment, paste, share, or streaming support."
+    },
+    {
+      "key": "strip.help",
+      "value": "Quick settings are verified only for: Discord. On every other integration, use full Settings; Strip controls may be unavailable."
+    },
+    {
+      "key": "notification.help",
+      "value": "Notification actions are informational shortcuts; confirm security, recovery and payment state inside the app before acting."
+    },
+    {
+      "key": "account.export.independent_copy_warning",
+      "value": "Exports are independent copies. Burn, timers, retention, disconnect, and account deletion cannot remove an archive or key you saved outside OSL."
+    },
+    {
+      "key": "account.export.key_storage_warning",
+      "value": "Storing the archive and its key together defeats the encryption. Keep the key in a different protected location; anyone who obtains both can read the export."
+    },
+    {
+      "key": "recovery.kit.theft_warning",
+      "value": "Anyone who obtains this recovery kit may race to take over the account and revoke your devices. Store it encrypted and offline."
+    },
+    {
+      "key": "succession.warning.period_successor",
+      "value": "After {period} without a successfully authenticated foreground owner action, ownership transfers automatically to {successor} and you may lose owner access. Background sync does not reset this timer."
     }
   ]
 }
