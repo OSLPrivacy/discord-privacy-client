@@ -5891,10 +5891,29 @@ code {
 .app-launcher.pending { border-color: var(--brand); background: var(--brand-wash); }
 .app-tile.pending .app-logo-plate { border: 0; background: transparent; }
 .home-module.module-unavailable { opacity: .33; }
-.home-dashboard.editing .app-tile { cursor: grab; outline: 1px dashed color-mix(in srgb, var(--brand) 30%, var(--line)); outline-offset: -3px; }
+.home-dashboard.editing .app-tile { cursor: grab; outline: 0; }
+.home-dashboard.editing .app-tile.app-unavailable { opacity: 1; }
+.home-dashboard.editing .home-module.module-unavailable { opacity: 1; }
+.home-dashboard.editing .app-tile.tile-hidden { opacity: 1; }
+.home-dashboard.editing .app-tile > button:first-child:disabled { opacity: 1; }
+.home-dashboard.editing .app-tile.tile-hidden > button:first-child { opacity: .42; }
+.home-dashboard.editing .app-tile-copy small { visibility: hidden; }
 .home-dashboard.editing .app-tile.dragging { opacity: .35; }
-.tile-edit-controls { inset: -8px -8px auto auto; display: block; }
-.tile-edit-controls .tile-remove { width: 26px; height: 26px; border: 0; background: var(--danger); color: white; font-size: 18px; line-height: 1; }
+.tile-edit-controls { inset: 2px 16px auto auto; display: block; }
+.home-osl-section .tile-edit-controls { inset: 6px 6px auto auto; }
+.tile-edit-controls .tile-remove {
+  width: 18px;
+  height: 18px;
+  min-width: 18px;
+  min-height: 0;
+  border: 0;
+  background: #e5383b;
+  color: #080c0d;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+}
+.app-tile.tile-hidden .tile-edit-controls .tile-remove { background: #3dd68c; }
 .tile-keyboard-controls { position: absolute; top: 112px; right: 0; display: flex; gap: 2px; opacity: 0; }
 .app-tile:focus-within .tile-keyboard-controls { opacity: 1; }
 .tile-keyboard-controls button { width: 28px; height: 28px; }
@@ -6227,6 +6246,7 @@ code {
   display: grid;
   place-items: center;
 }
+.home-dashboard.editing .home-section-action { color: var(--brand); }
 .home-dashboard .app-grid {
   grid-template-columns: repeat(8, minmax(96px, 1fr));
   column-gap: 20px;
@@ -6343,6 +6363,156 @@ code {
   .home-dashboard .home-osl-section .app-grid { grid-template-columns: repeat(3, minmax(74px, 104px)); column-gap: 18px; }
   .home-primary { padding: 24px 16px 94px; }
 }
+
+/* The Home handoff is a launcher canvas, not a sidebar destination. Keep its
+   chrome and content aligned to the full 1280px composition while leaving the
+   destination sidebar intact everywhere else. */
+.hub-layout.with-primary-sidebar:has(.home-dashboard) {
+  grid-template-columns: minmax(0, 1fr);
+}
+.hub-layout.with-primary-sidebar:has(.home-dashboard) > .primary-sidebar {
+  display: none;
+}
+.hub-layout.with-primary-sidebar:has(.home-dashboard) .home-command-bar {
+  height: 58px;
+  min-height: 58px;
+  padding: 0 20px 0 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.hub-layout.with-primary-sidebar:has(.home-dashboard) .home-command-actions {
+  gap: 0;
+}
+.hub-layout.with-primary-sidebar:has(.home-dashboard) .home-command-actions [data-open-friends] {
+  display: none;
+}
+.hub-layout.with-primary-sidebar:has(.home-dashboard) .home-logo-button {
+  width: 100px;
+  display: flex;
+  align-items: center;
+}
+.hub-layout.with-primary-sidebar:has(.home-dashboard) .home-logo-button img {
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+}
+.hub-layout.with-primary-sidebar:has(.home-dashboard) .home-logo-button::after {
+  content: "OSL";
+  margin-left: 13px;
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: .04em;
+}
+.home-dashboard .home-profile-dock {
+  display: none;
+}
+.home-collapsed-actions {
+  position: fixed;
+  z-index: 24;
+  top: 75px;
+  right: 19px;
+  display: flex;
+  align-items: center;
+  gap: 28px;
+}
+.home-collapsed-actions .home-section-action,
+.home-collapsed-actions .home-command-icon {
+  width: 36px;
+  height: 36px;
+  padding: 9px;
+}
+.home-collapsed-actions .home-section-action svg,
+.home-collapsed-actions .home-command-icon svg {
+  width: 18px;
+  height: 18px;
+}
+.home-primary {
+  padding: 57px 0 60px;
+}
+.home-apps {
+  width: 1032px;
+  max-width: calc(100% - 48px);
+  margin: 0 auto;
+}
+.home-app-section,
+.home-app-section:first-child {
+  max-width: none;
+  margin: 0;
+  border-top: 0;
+}
+.home-app-section:first-child {
+  padding: 0;
+}
+.home-app-section:nth-child(2) {
+  padding-top: 41px;
+}
+.home-app-section:nth-child(3) {
+  padding-top: 57px;
+}
+.home-dashboard .home-osl-section .app-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  column-gap: 17px;
+}
+.home-dashboard .home-osl-section .app-tile,
+.home-dashboard .home-osl-section .app-tile > button:first-child {
+  min-height: 122px;
+}
+.home-dashboard .home-osl-section .app-tile > button:first-child {
+  border: 1px solid var(--line);
+  background: #0d1114;
+  color: var(--text) !important;
+}
+.home-dashboard .home-osl-section .osl-module-logo {
+  border: 0;
+  background: transparent;
+  color: var(--text) !important;
+}
+.home-dashboard .home-app-section:not(.home-osl-section) .app-grid {
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  column-gap: 10px;
+}
+.home-dashboard .home-app-section:not(.home-osl-section) .app-tile,
+.home-dashboard .home-app-section:not(.home-osl-section) .app-tile > button:first-child {
+  min-height: 123px;
+}
+.home-dashboard .home-app-section:not(.home-osl-section) .app-tile > button:first-child {
+  padding: 14px 4px 2px;
+  align-content: start;
+}
+.home-dashboard .app-unavailable,
+.home-dashboard .module-unavailable,
+.home-dashboard .app-tile > button:first-child:disabled {
+  opacity: 1;
+}
+.home-dashboard .app-tile-copy small {
+  display: none;
+}
+.home-dashboard .app-tile-copy strong {
+  color: var(--text);
+}
+.home-dashboard .home-app-section:not(.home-osl-section) .app-logo-plate {
+  border: 1px solid rgb(42 192 240 / 18%);
+  background: rgb(42 192 240 / 10%);
+}
+.home-dashboard .app-tile.app-unavailable .app-logo-plate {
+  filter: none;
+}
+.home-dashboard [data-tile-id="discord"] .company-logo { color: #5865f2; }
+.home-dashboard [data-tile-id="telegram"] .company-logo { color: #229ed9; }
+.home-dashboard [data-tile-id="signal"] .company-logo { color: #3a76f0; }
+.home-dashboard [data-tile-id="whatsapp"] .company-logo { color: #25d366; }
+.home-dashboard [data-tile-id="messenger"] .company-logo { color: #7b61ff; }
+.home-dashboard [data-tile-id="x"] .company-logo { color: #f4f7f8; }
+.home-dashboard [data-tile-id="gmail"] .company-logo { color: #ea4335; }
+.home-dashboard [data-tile-id="outlook"] .company-logo { color: #1473e6; }
+.home-dashboard [data-tile-id="proton"] .company-logo { color: #6d4aff; }
+.home-dashboard [data-tile-id="yahoo"] .company-logo { color: #6255c6; }
+.home-dashboard [data-tile-id="aol"] .company-logo { color: #159bd7; }
+.home-dashboard [data-tile-id="gmx"] .company-logo { color: #1264a3; }
+.home-dashboard [data-tile-id="maildotcom"] .company-logo { color: #1473b9; }
+.home-dashboard [data-tile-id="icloud"] .company-logo { color: #62cdf8; }
 
 /* Whitelist roster: every whitelisted person, where they are trusted, and how
    far their reach was deliberately widened. */
@@ -7718,4 +7888,26 @@ code {
 .pro-code-screen .signin-recovery {
   margin-top: 20px;
   align-self: center;
+}
+
+/* Contextual help stays in normal flow: it never covers or disables the
+   control it describes, and removing it leaves that control usable. */
+.coach-tip {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 10px 16px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--brand) 42%, var(--line));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--brand) 9%, var(--panel));
+}
+
+.coach-tip p { margin: 4px 0 0; color: var(--text-muted); }
+.coach-tip-actions { display: flex; flex-wrap: wrap; gap: 8px; flex: none; }
+.coach-tip button:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+
+@media (max-width: 640px) {
+  .coach-tip { flex-direction: column; }
 }

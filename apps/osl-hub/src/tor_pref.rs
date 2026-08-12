@@ -840,6 +840,8 @@ mod tests {
         "check_hub_recovery_word_retype",
         "get_hub_recovery_kit_unsaved",
         "set_hub_recovery_kit_unsaved",
+        "get_coach_tip_state",
+        "save_coach_tip_state",
         "lock_hub_session",
         "emit_active_session_reset",
         "get_hub_password_role_status",

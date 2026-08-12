@@ -6,6 +6,7 @@ import "@fontsource-variable/onest/wght.css";
 import "@fontsource-variable/source-sans-3/wght.css";
 import "./styles.css";
 import "./local-protected-sheet.css";
+import "./voice-call-dock.css";
 import "./friend-invite.css";
 import "./recovery-screen.css";
 import "./onboarding-mullvad.css";
@@ -229,6 +230,8 @@ import {
 } from "./discord-headless-qa-adapter";
 import type { SecureLocalStore } from "./secure-local-store";
 import { createOslChatSecureLocalStore } from "./osl-chat-secure-store";
+import { bindCoachTipControls, coachTipMarkup, coachTipSettingsMarkup, configureCoachTips, nativeCoachTipProfileStore } from "./coach-tips";
+import { activeVoiceCallDockMarkup, bindActiveVoiceCallDock, installVoiceCallAuthority, type VoiceCallAuthority } from "./voice-call-dock";
 import { PublicNamePageController } from "./public-name-page";
 import { createHubPrivateContactLink, revokeHubPrivateContactLink } from "./adapters";
 import { identityChoiceMarkup, PrivateContactLinkPageController, type IdentityDiscoveryChoice } from "./onboarding-identity";
@@ -4185,7 +4188,15 @@ function renderWorkspace(): void {
 }
 
 function workspaceShellMarkup(): string {
-  return `<div class="hub-layout with-primary-sidebar">${primarySidebarMarkup()}<section class="hub-workspace"><div class="desktop-top-row" data-tauri-drag-region="deep">${trustedHeader()}${desktopWindowControlsMarkup()}</div>${workspaceContent()}</section></div>${workspaceProtectedSheetMarkup()}`;
+  return `<div class="hub-layout with-primary-sidebar">${primarySidebarMarkup()}<section class="hub-workspace"><div class="desktop-top-row" data-tauri-drag-region="deep">${trustedHeader()}${desktopWindowControlsMarkup()}</div>${workspaceContent()}</section></div>${activeVoiceCallDockMarkup()}${workspaceProtectedSheetMarkup()}`;
+}
+
+/**
+ * The native encrypted-call owner is installed once and outlives route DOM.
+ * Join code calls this with its already-active authority; navigation never does.
+ */
+export function attachActiveVoiceCallAuthority(authority: VoiceCallAuthority | null): void {
+  installVoiceCallAuthority(authority, render);
 }
 
 export interface DestinationRouteTarget {
@@ -4503,10 +4514,13 @@ function trustedHeader(): string {
         ? "OSL app window"
         : "Needs setup";
   const serviceControls = route === "service" && activeService ? `<div class="service-context"><span class="service-context-logo">${serviceLogo(activeService.id)}</span><span><strong>${escapeHtml(activeHomeAppName())}</strong><small>${serviceSurfaceLabel}</small></span>${mailScope}${localProtection}</div>` : "";
+  const protectCoachTip = localProtection
+    ? coachTipMarkup("protect-message", "protected-workspace", ["#local-protected-toggle"])
+    : "";
   const onboardingContinue = route === "service" && onboardingServiceSetup && (activeEmbeddedHost || activeNativeHostId || activeDefaultBrowserCompanion)
     ? `<button class="button compact primary" id="onboarding-service-continue">Continue setup</button>`
     : "";
-  return `<div class="trusted-stack"><header class="workspace-header"><div class="hub-command"><button class="command-brand" data-route="home" aria-label="OSL Privacy home"><img class="osl-logo logo-treatment" src="${oslVectorLogoUrl}" alt=""/><span><strong>OSL Privacy</strong></span></button>${appLauncherStrip()}${simpleDeviceStatusMarkup()}</div>${nativeDiscordHeaderControls()}${serviceControls ? `<div class="context-command">${serviceControls}</div>` : ""}${onboardingContinue}${settingsButtonMarkup("workspace-settings")}</header>${updateBannerMarkup()}</div>`;
+  return `<div class="trusted-stack"><header class="workspace-header"><div class="hub-command"><button class="command-brand" data-route="home" aria-label="OSL Privacy home"><img class="osl-logo logo-treatment" src="${oslVectorLogoUrl}" alt=""/><span><strong>OSL Privacy</strong></span></button>${appLauncherStrip()}${simpleDeviceStatusMarkup()}</div>${nativeDiscordHeaderControls()}${serviceControls ? `<div class="context-command">${serviceControls}</div>` : ""}${onboardingContinue}${settingsButtonMarkup("workspace-settings")}</header>${protectCoachTip}${updateBannerMarkup()}</div>`;
 }
 
 function homeHeader(): string {
@@ -5675,6 +5689,7 @@ function settingsSectionContent(): string {
     scrubCategoryChooserMarkup: scrubCategoryChooserMarkup(),
     privacyScanResultsMarkup: privacyScanResultsMarkup(),
     autoScrubAssistantMarkup: autoScrubAssistantMarkup(licenseState.access === "pro" || licenseState.access === "offlineGrace"),
+    scanCoachTip: coachTipMarkup("private-scan", "privacy-scan", ["[data-scrub-route-scan]"]),
   });
   if (settingsSection === "cleanup") return massCleanupSettingsContent();
   if (settingsSection === "notifications") return notificationSettingsContent();
@@ -6283,6 +6298,9 @@ function identitySettingsContent(): string {
   // again, so a failing backend cannot drive render -> refresh -> render.
   if (!runningUnderVitest && accountUnlocked() && hubIdentitiesLoad === "pending") void refreshIdentitySlots(true);
   const identities = identityListMarkup();
+  const switchProfileCoachTip = hubIdentities.some((identity) => !identity.active)
+    ? coachTipMarkup("switch-profile", "profile-picker", ["[data-switch-identity]"])
+    : "";
   const recovery = newIdentityRecoveryPhrase
     ? recoveryCaptureGate.canRender()
       ? `<div class="warning recovery-secret"><strong>Save the new identity recovery phrase now</strong><code>${escapeHtml(newIdentityRecoveryPhrase)}</code><p>Visible only on this page. It clears if you leave or hide OSL.</p></div>`
@@ -6291,7 +6309,7 @@ function identitySettingsContent(): string {
   const messageRecovery = forwardSecrecyMode === "protectPast"
     ? "Protect past messages. Restart begins a fresh chain and late messages are lost."
     : "Keep group delivery as today. A persisted snapshot can recover prior message keys.";
-  return `<h2>Account</h2><p>One active identity on this device.</p>${identityStorageProtectionMarkup(classifyIdentityStorageProtection(identityStorageMethod))}<div class="identity-list">${identities}</div>${publicNamePage.render()}<div class="setting-line"><span><strong>Message recovery</strong><small>${messageRecovery}</small></span>${statusTag(forwardSecrecyMode === "protectPast" ? "Protect past" : "Keep delivery")}</div>${recovery}<form class="inline-form identity-create-form" id="identity-slot-form"><input id="identity-slot-label" maxlength="80" placeholder="New identity label" required/><button class="button primary">Create identity</button></form><details class="recovery-import settings-disclosure"><summary>Recover another identity</summary><form id="identity-recover-form" class="setup-surface"><input id="identity-recover-label" maxlength="80" placeholder="Identity label" required/><textarea id="identity-recover-phrase" rows="3" placeholder="12-word recovery phrase" required></textarea><button class="button">Recover identity</button></form></details>${activationSettingsContent()}`;
+  return `<h2>Account</h2><p>One active identity on this device.</p>${identityStorageProtectionMarkup(classifyIdentityStorageProtection(identityStorageMethod))}<div class="identity-list">${identities}</div>${publicNamePage.render()}${switchProfileCoachTip}<div class="setting-line"><span><strong>Message recovery</strong><small>${messageRecovery}</small></span>${statusTag(forwardSecrecyMode === "protectPast" ? "Protect past" : "Keep delivery")}</div>${recovery}<form class="inline-form identity-create-form" id="identity-slot-form"><input id="identity-slot-label" maxlength="80" placeholder="New identity label" required/><button class="button primary">Create identity</button></form><details class="recovery-import settings-disclosure"><summary>Recover another identity</summary><form id="identity-recover-form" class="setup-surface"><input id="identity-recover-label" maxlength="80" placeholder="Identity label" required/><textarea id="identity-recover-phrase" rows="3" placeholder="12-word recovery phrase" required></textarea><button class="button">Recover identity</button></form></details>${activationSettingsContent()}`;
 }
 
 /**
@@ -7468,6 +7486,7 @@ function setOslChatDraft(nextDraft: string, syncElement = true): void {
 }
 
 function bindWorkspace(): void {
+  bindCoachTipControls(document, render);
   bindPasswordVisibility();
   bindLocalProtectedSheet();
   bindSavedAccountControls();
@@ -9153,6 +9172,7 @@ async function switchIdentity(slotId: string): Promise<void> {
   identityStorageMethod = knownIdentityStorageMethods.get(slotId) ?? null;
   newIdentityRecoveryPhrase = null;
   await refreshIdentityScopedState();
+  await configureCoachTips(nativeCoachTipProfileStore(invoke)).catch(() => undefined);
   render();
 }
 
@@ -9364,7 +9384,7 @@ function updateSettingsContent(): string {
       : "The desktop updater is not available in this build. Report problems manually instead of waiting for a fix.";
   const stateName = updateStatus.state.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`);
   const actions = updateStatus.state === "available" ? `<button class="button" data-update-read>Read more on GitHub</button><button class="button primary" data-update-modal>Install</button>` : "";
-  return `<h2>About</h2><div class="update-status-card" data-update-state="${stateName}"><span class="dot"></span><div><strong>${status}</strong><small>${detail}</small></div></div><div class="settings-actions"><button class="button ${updateStatus.state === "available" ? "" : "primary"}" data-update-check ${updateStatus.state === "checking" || updateStatus.state === "installing" ? "disabled" : ""}>Check for updates</button>${actions}<button class="button" id="replay-onboarding-tour" type="button">Replay protected messaging tour</button></div><details class="settings-disclosure update-details"><summary>Update privacy</summary><p>Checks and installs use the trusted local updater. Every update package is verified against OSL's own signing key before it installs. Release notes are plain text; remote HTML is never rendered.</p><p>OSL is not code-signed by a publisher Windows recognises, so Windows may warn you about the installer. That is separate from the update check above, which does not rely on Windows.</p></details>${developerSettingsContent()}<details class="device-diagnostics settings-disclosure"><summary><span><strong>Device status</strong><small>${deviceReady ? "Ready" : "Needs attention"}</small></span></summary><p>${escapeHtml(coreReadinessLabel(core.readiness))}</p></details>`;
+  return `<h2>About</h2><div class="update-status-card" data-update-state="${stateName}"><span class="dot"></span><div><strong>${status}</strong><small>${detail}</small></div></div><div class="settings-actions"><button class="button ${updateStatus.state === "available" ? "" : "primary"}" data-update-check ${updateStatus.state === "checking" || updateStatus.state === "installing" ? "disabled" : ""}>Check for updates</button>${actions}<button class="button" id="replay-onboarding-tour" type="button">Replay protected messaging tour</button></div>${coachTipSettingsMarkup()}<details class="settings-disclosure update-details"><summary>Update privacy</summary><p>Checks and installs use the trusted local updater. Every update package is verified against OSL's own signing key before it installs. Release notes are plain text; remote HTML is never rendered.</p><p>OSL is not code-signed by a publisher Windows recognises, so Windows may warn you about the installer. That is separate from the update check above, which does not rely on Windows.</p></details>${developerSettingsContent()}<details class="device-diagnostics settings-disclosure"><summary><span><strong>Device status</strong><small>${deviceReady ? "Ready" : "Needs attention"}</small></span></summary><p>${escapeHtml(coreReadinessLabel(core.readiness))}</p></details>`;
 }
 
 function bindUpdateControls(): void {
@@ -9487,6 +9507,7 @@ function startReadyWorkspaceLoads(): void {
   // refuses there and the store stays absent; by here the gate is open, so this
   // is the point at which such a profile actually gets migrated off plaintext.
   void ensureOslChatSecureLocalStore();
+  void configureCoachTips(nativeCoachTipProfileStore(invoke)).then(renderWhenIdle).catch(() => undefined);
   void openMullvadOnStartup();
   void loadHubPasswordRoleStatus().then((status) => { passwordRoleStatus = status; if (route === "settings" && settingsSection === "account") renderWhenIdle(); }).catch(() => undefined);
   void refreshUpdateStatus(true);

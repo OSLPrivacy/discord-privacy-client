@@ -3,13 +3,15 @@
 // `peer_attachment_io`, so it lives behind `core` like they do.
 pub mod account_burn_selection;
 #[cfg(feature = "core")]
+pub mod account_export;
+#[cfg(feature = "core")]
 pub mod account_identity_authority;
 #[cfg(feature = "core")]
 pub mod account_recovery;
-#[cfg(feature = "core")]
-pub mod allowed_place_commands;
 pub mod adapter_profile_boot;
 pub mod adapters;
+#[cfg(feature = "core")]
+pub mod allowed_place_commands;
 #[cfg(feature = "core")]
 #[cfg(feature = "core")]
 pub mod attachment_formats;
@@ -34,12 +36,12 @@ pub mod ai_consent;
 #[cfg(feature = "core")]
 pub mod app_own_names;
 pub mod attended_imap;
-pub mod bad_message_rules;
 #[cfg(feature = "core")]
 pub mod autoscrub_bridge;
 #[cfg(feature = "core")]
 pub mod autoscrub_run;
 pub mod background_priority;
+pub mod bad_message_rules;
 #[cfg(feature = "core")]
 pub mod browser_companion;
 // The persistent footprint store is sealed with `ipc`'s process key, so it
@@ -48,8 +50,8 @@ pub mod browser_companion;
 pub mod browser_footprint;
 #[cfg(feature = "core")]
 pub mod browser_profile_scan;
-pub mod bundled_model_pack;
 pub mod build_integrity;
+pub mod bundled_model_pack;
 pub mod burn_authorize;
 pub mod burn_contract;
 #[cfg(feature = "core")]
@@ -74,6 +76,8 @@ pub mod cloud_autoscrub_run;
 pub mod components;
 pub mod consent_ledger;
 pub mod control_contract;
+#[cfg(feature = "core")]
+pub mod coach_tips;
 // credits.rs existed but was never declared, so `crate::credits` failed to
 // resolve the moment ai_carrier started using it - the file shipped as an
 // orphan and only broke the build once something imported it.
@@ -84,22 +88,22 @@ pub mod credits;
 #[cfg(feature = "core")]
 pub mod diagnostics;
 pub mod discord_carrier_geometry;
+pub mod english_catalogue_entry;
 #[cfg(feature = "desktop")]
 pub mod entitlement_refresh;
 pub mod execution_consent;
-pub mod english_catalogue_entry;
 pub mod external_overlay;
 pub(crate) mod firefox_migration_coordinator;
-pub mod front_window_grab;
 #[cfg(feature = "core")]
 pub mod friend_account_reach;
+pub mod front_window_grab;
 pub mod hosted_audience;
 pub mod hosted_port;
 pub mod hosted_provider_recipe;
 pub mod hosted_session_port;
-pub mod installed_build_version;
-pub mod installed_build;
 pub mod instagram_send;
+pub mod installed_build;
+pub mod installed_build_version;
 pub mod invite_clipboard;
 // The iCloud Mail half of the shared mailbox reader (TASK 3071), and the iCloud
 // fill-in of the shared mail deleter (TASK 3073). Both are pure and free of this
@@ -131,10 +135,6 @@ pub mod native_discord_adapter;
 #[cfg(feature = "core")]
 pub mod native_outlook_adapter;
 pub mod native_signal_adapter;
-/// Bounded lifecycle commands for protected Signal rows.  These commands are
-/// intentionally separate from the placement-only native Signal adapter.
-pub mod signal_lifecycle_commands;
-pub mod signal_surface_finder;
 pub mod native_telegram_adapter;
 pub mod native_whatsapp_adapter;
 pub mod native_window_host;
@@ -157,6 +157,10 @@ pub mod preferences;
 pub mod privacy_scan;
 #[cfg(feature = "core")]
 pub mod pro_context_cover;
+/// Bounded lifecycle commands for protected Signal rows.  These commands are
+/// intentionally separate from the placement-only native Signal adapter.
+pub mod signal_lifecycle_commands;
+pub mod signal_surface_finder;
 // Pure decision boundary: no store handle, no tauri, so it stays ungated and
 // is checkable without the desktop build.
 pub mod pro_marked_deletion;
@@ -171,6 +175,8 @@ pub mod scrub_erasure_queue;
 pub mod scrub_erasure_tracker;
 pub mod scrub_evidence_manifest;
 pub mod shared_conversation_scroll;
+#[cfg(feature = "core")]
+pub mod shipping_icloud_mailbox_receive;
 #[cfg(feature = "core")]
 pub mod shipping_mailbox_pointer_reader;
 pub mod tor_pref;
@@ -209,9 +215,9 @@ pub(crate) mod seam_ledger;
 /// Every other implementation in the tree is `#[cfg(test)]`, which is why the
 /// offline send queue could not be wired at all before this module existed.
 pub mod secure_disk_backend;
-pub mod service_connections;
 #[cfg(feature = "core")]
 pub mod server_records;
+pub mod service_connections;
 #[cfg(feature = "core")]
 pub mod service_host;
 #[cfg(feature = "core")]
@@ -223,16 +229,16 @@ pub mod update_state_backup;
 pub mod updates;
 pub mod visual_binding;
 pub mod web_surface_adapter;
-/// Hermetic records for the direct X active-window discovery command.
-pub mod x_window_composer;
 pub mod website_driver;
 pub mod whatsapp_accessibility;
-pub mod whatsapp_window_composer;
 pub mod whatsapp_qa_host;
 #[cfg(feature = "core")]
 pub mod whatsapp_qa_pairing;
 pub mod whatsapp_qa_transport;
+pub mod whatsapp_window_composer;
 pub mod x_whitelist;
+/// Hermetic records for the direct X active-window discovery command.
+pub mod x_window_composer;
 
 // Native executable verification is exercised only by Windows callers. Keep
 // its fail-closed types available to cross-platform manifests and tests.
@@ -246,6 +252,8 @@ pub mod placement;
 
 #[cfg(feature = "core")]
 pub mod broker;
+#[cfg(feature = "core")]
+pub mod burn_job_fence;
 pub mod chat_app_timer_policy;
 pub mod chat_capture_protection;
 /// **The claim state.** What OSL may publicly say about each ruled surface, and
@@ -256,8 +264,6 @@ pub mod chat_capture_protection;
 pub mod claim_state;
 #[cfg(feature = "core")]
 pub mod cleanup;
-#[cfg(feature = "core")]
-pub mod burn_job_fence;
 #[cfg(feature = "core")]
 pub mod core_bridge;
 #[cfg(feature = "core")]
@@ -396,5 +402,3 @@ pub(crate) fn global_keystore_test_lock() -> std::sync::MutexGuard<'static, ()> 
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
-#[cfg(feature = "core")]
-pub mod shipping_icloud_mailbox_receive;

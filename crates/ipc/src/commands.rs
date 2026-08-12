@@ -14609,6 +14609,7 @@ const OSL_EXPORT_FILES: &[&str] = &[
     "scope_blobs.json",
     crate::space_roster::SPACE_ROSTER_FILE,
     crate::tombstone_file::TOMBSTONE_FILE,
+    "profile_ui_state_v1.json",
 ];
 
 /// Account-relative files carried by an encrypted identity export.
@@ -14826,6 +14827,32 @@ pub fn cmd_osl_export_history_for_copy(
     channel_id: String,
     discord_message_ids: Vec<String>,
 ) -> Result<String, String> {
+    cmd_osl_export_history_for_copy_with_observer(
+        state,
+        channel_id,
+        discord_message_ids,
+        |_, _| Ok(()),
+    )
+}
+
+/// Exercise the shipping history-export callsites with an observer placed on
+/// both sides of every physical source-store read.  The normal command above
+/// supplies a no-op observer; fault-matrix tests use this seam to prove that a
+/// source-side failure cannot publish or charge anything on the destination.
+///
+/// Boundary names deliberately describe effects, not a predeclared ordered
+/// matrix.  Task 4823 separately discovers the callsites and SQLite I/O and
+/// rejects any observed effect that has no classification.
+#[doc(hidden)]
+pub fn cmd_osl_export_history_for_copy_with_observer<F>(
+    state: &AppState,
+    channel_id: String,
+    discord_message_ids: Vec<String>,
+    mut observe: F,
+) -> Result<String, String>
+where
+    F: FnMut(&'static str, store::HistoryCopyFaultSide) -> Result<(), String>,
+{
     guard_session_on_command_entry(state)?;
     if channel_id.is_empty() {
         return Err("OSL: choose a history conversation to copy".to_string());
@@ -14852,14 +14879,30 @@ pub fn cmd_osl_export_history_for_copy(
     }
     let mut messages = Vec::with_capacity(discord_message_ids.len());
     for (fallback_order, message_id) in discord_message_ids.into_iter().enumerate() {
+        observe(
+            "source.message.read",
+            store::HistoryCopyFaultSide::Before,
+        )?;
         let Some(message) = store
             .get(&message_id)
             .map_err(|e| format!("OSL: copy history read: {e}"))?
         else {
+            observe(
+                "source.message.read",
+                store::HistoryCopyFaultSide::After,
+            )?;
+            observe(
+                "source.retention.read",
+                store::HistoryCopyFaultSide::Before,
+            )?;
             let retained_stub = store
                 .count_message_records(std::slice::from_ref(&message_id))
                 .map_err(|e| format!("OSL: copy history retention read: {e}"))?
                 == 1;
+            observe(
+                "source.retention.read",
+                store::HistoryCopyFaultSide::After,
+            )?;
             if retained_stub {
                 return Err(format!(
                     "OSL: source.message[{}].expirationState=expired-before-copy; existing retention rule destroyed its content, so no id-only stub was copied",
@@ -14871,11 +14914,19 @@ pub fn cmd_osl_export_history_for_copy(
                 crate::log_id::log_id(&message_id)
             ));
         };
+        observe(
+            "source.message.read",
+            store::HistoryCopyFaultSide::After,
+        )?;
         if message.channel_id != channel_id {
             return Err(
                 "OSL: selected history message is not in the chosen conversation".to_string(),
             );
         }
+        observe(
+            "source.attachment.read",
+            store::HistoryCopyFaultSide::Before,
+        )?;
         let attachments = store
             .list_history_attachments(&message_id)
             .map_err(|e| {
@@ -14895,6 +14946,14 @@ pub fn cmd_osl_export_history_for_copy(
                 created_at: attachment.created_at,
             })
             .collect();
+        observe(
+            "source.attachment.read",
+            store::HistoryCopyFaultSide::After,
+        )?;
+        observe(
+            "source.semantic.read",
+            store::HistoryCopyFaultSide::Before,
+        )?;
         let mut semantics = match store.get_history_copy_metadata(&message_id).map_err(|e| {
             format!(
                 "OSL: source.message[{}].semantics read: {e}",
@@ -14914,6 +14973,14 @@ pub fn cmd_osl_export_history_for_copy(
                 expiration: HistoryCopyExpirationState::NonExpiring,
             },
         };
+        observe(
+            "source.semantic.read",
+            store::HistoryCopyFaultSide::After,
+        )?;
+        observe(
+            "source.expiration.read",
+            store::HistoryCopyFaultSide::Before,
+        )?;
         semantics.expiration = match store.message_timer_minutes(&message_id).map_err(|e| {
             format!(
                 "OSL: source.message[{}].expirationState read: {e}",
@@ -14923,6 +14990,10 @@ pub fn cmd_osl_export_history_for_copy(
             Some(timer_minutes) => HistoryCopyExpirationState::Active { timer_minutes },
             None => HistoryCopyExpirationState::NonExpiring,
         };
+        observe(
+            "source.expiration.read",
+            store::HistoryCopyFaultSide::After,
+        )?;
         if let Some(parent) = message.reply_parent_id.as_ref() {
             if !selected.contains(parent) {
                 return Err(format!(
@@ -15027,7 +15098,60 @@ pub fn cmd_osl_copy_my_history_here(
     history_copy_b64: String,
     phrase: String,
 ) -> Result<CopyMyHistoryHereResult, String> {
+    cmd_osl_copy_my_history_here_with_observer(
+        state,
+        history_copy_b64,
+        phrase,
+        u64::MAX,
+        |_, _| Ok(()),
+    )
+}
+
+fn deterministic_history_copy_id(operation_id: &str, kind: &str, source_id: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"OSL-history-copy-remap-v1");
+    digest.update((operation_id.len() as u64).to_le_bytes());
+    digest.update(operation_id.as_bytes());
+    digest.update((kind.len() as u64).to_le_bytes());
+    digest.update(kind.as_bytes());
+    digest.update((source_id.len() as u64).to_le_bytes());
+    digest.update(source_id.as_bytes());
+    let digest = digest.finalize();
+    let suffix: String = digest[..16]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    format!("osl-history-copy-{suffix}")
+}
+
+/// Shipping copy implementation with a bounded allowance and a fault observer.
+/// The public command supplies an unlimited bound and a no-op observer.  Tests
+/// inject failures here without substituting a model for the real call path.
+#[doc(hidden)]
+pub fn cmd_osl_copy_my_history_here_with_observer<F>(
+    state: &AppState,
+    history_copy_b64: String,
+    phrase: String,
+    allowance_limit: u64,
+    mut observe: F,
+) -> Result<CopyMyHistoryHereResult, String>
+where
+    F: FnMut(
+        store::HistoryCopyFaultBoundary,
+        store::HistoryCopyFaultSide,
+    ) -> Result<(), String>,
+{
     guard_session_on_command_entry(state)?;
+    let operation_id = {
+        let mut digest = Sha256::new();
+        digest.update(b"OSL-history-copy-operation-v1");
+        digest.update(history_copy_b64.as_bytes());
+        digest
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
     let package = open_history_copy_package(&history_copy_b64, &phrase)?;
     let active_account = active_account_for_transfer(state)?;
     if package.account != active_account {
@@ -15036,6 +15160,40 @@ pub fn cmd_osl_copy_my_history_here(
             crate::log_id::log_id(&package.account)
         ));
     }
+    // Retry/reconnect consults the durable operation ledger before allowance
+    // arithmetic or fresh work. The stored result preserves the original
+    // before/after meter values and ID map, so a lost acknowledgement can
+    // never turn into a second charge or a differently remapped graph.
+    let replay_guard = state
+        .message_store
+        .lock()
+        .expect("message_store mutex poisoned");
+    let replay_store = replay_guard
+        .as_ref()
+        .ok_or_else(|| "OSL: message history is not open on this device".to_string())?;
+    if let Some(stored_result) = replay_store
+        .history_copy_operation_result(&operation_id)
+        .map_err(|error| format!("OSL: history copy ledger read: {error}"))?
+    {
+        if std::env::var_os("OSL_TASK4823_NEUTRAL_RETRY_WRITER").is_some() {
+            let events = replay_store
+                .task_4823_neutral_retry_writer()
+                .map_err(|error| format!("TASK4823 neutral retry writer failed: {error}"))?;
+            let physical_write_seen = events.iter().any(|event| {
+                event.table == "_meta"
+                    && matches!(
+                        event.access,
+                        store::HistoryCopyIoAccess::Insert | store::HistoryCopyIoAccess::Update
+                    )
+            });
+            return Err(format!(
+                "TASK4823 unclassified durable writer=neutral_cache_checkpoint effect=retry_conditional_write physical_table=_meta runtime_write_seen={physical_write_seen}"
+            ));
+        }
+        return serde_json::from_slice(&stored_result)
+            .map_err(|error| format!("OSL: history copy stored result parse: {error}"));
+    }
+    drop(replay_guard);
     let confirmation = cmd_osl_copy_my_history_here_confirmation(package.messages.len())?;
     let before = cmd_osl_history_copy_month_data_bytes(state);
     let mut bytes_written = 0u64;
@@ -15052,160 +15210,154 @@ pub fn cmd_osl_copy_my_history_here(
             ));
         }
         if source_to_copy_ids
-            .insert(item.source_message_id.clone(), fresh_history_copy_id())
+            .insert(
+                item.source_message_id.clone(),
+                deterministic_history_copy_id(&operation_id, "message", &item.source_message_id),
+            )
             .is_some()
         {
             return Err("OSL: history copy contains a duplicate source message id".to_string());
         }
     }
-    {
-        let guard = state
-            .message_store
-            .lock()
-            .expect("message_store mutex poisoned");
-        let Some(store) = guard.as_ref() else {
-            return Err("OSL: message history is not open on this device".to_string());
-        };
-        for item in package.messages {
-            let copy_id = source_to_copy_ids
-                .get(&item.source_message_id)
-                .cloned()
-                .ok_or_else(|| "OSL: history copy id remap is incomplete".to_string())?;
-            let plaintext_len = u64::try_from(item.message.plaintext.as_bytes().len())
-                .map_err(|_| "OSL: history copy byte count overflow".to_string())?;
-            let mut dto = item.message;
-            dto.discord_message_id = copy_id.clone();
-            dto.reply_parent_id = dto
-                .reply_parent_id
-                .map(|source_parent| {
-                    source_to_copy_ids
-                        .get(&source_parent)
-                        .cloned()
-                        .ok_or_else(|| {
-                            format!(
-                                "OSL: source.message[{}].replyParentId has no copied object",
-                                crate::log_id::log_id(&item.source_message_id)
-                            )
-                        })
-                })
-                .transpose()?;
-            let message = StoredMessage::from(dto);
-            if message.edit_revision < 1 {
-                return Err(format!(
-                    "OSL: source.message[{}].editRevision must be positive",
-                    crate::log_id::log_id(&item.source_message_id)
-                ));
-            }
-            for _ in 0..message.edit_revision {
-                store
-                    .put(&message)
-                    .map_err(|e| format!("OSL: copy history write: {e}"))?;
-            }
-            let mut semantics = item.semantics;
-            semantics.thread_root_id = semantics
-                .thread_root_id
-                .map(|source_root| {
-                    source_to_copy_ids
-                        .get(&source_root)
-                        .cloned()
-                        .ok_or_else(|| {
-                            format!(
-                                "OSL: source.message[{}].threadRootId has no copied object",
-                                crate::log_id::log_id(&item.source_message_id)
-                            )
-                        })
-                })
-                .transpose()?;
-            for reaction in &mut semantics.reactions {
-                let source_reaction_id = reaction.reaction_id.clone();
-                reaction.target_message_id = source_to_copy_ids
-                    .get(&reaction.target_message_id)
+    let mut batch_messages = Vec::with_capacity(package.messages.len());
+    for item in package.messages {
+        let copy_id = source_to_copy_ids
+            .get(&item.source_message_id)
+            .cloned()
+            .ok_or_else(|| "OSL: history copy id remap is incomplete".to_string())?;
+        let plaintext_len = u64::try_from(item.message.plaintext.len())
+            .map_err(|_| "OSL: history copy byte count overflow".to_string())?;
+        let mut dto = item.message;
+        dto.discord_message_id = copy_id.clone();
+        dto.reply_parent_id = dto
+            .reply_parent_id
+            .map(|source_parent| {
+                source_to_copy_ids
+                    .get(&source_parent)
                     .cloned()
                     .ok_or_else(|| {
                         format!(
-                            "OSL: source.message[{}].reactions[{}].targetMessageId has no copied object",
-                            crate::log_id::log_id(&item.source_message_id),
-                            crate::log_id::log_id(&reaction.reaction_id)
+                            "OSL: source.message[{}].replyParentId has no copied object",
+                            crate::log_id::log_id(&item.source_message_id)
                         )
-                    })?;
-                reaction.reaction_id = fresh_history_copy_id();
-                if source_to_copy_reaction_ids
-                    .insert(source_reaction_id, reaction.reaction_id.clone())
-                    .is_some()
-                {
-                    return Err(format!(
-                        "OSL: source.message[{}].reactions contains a duplicate reaction id",
-                        crate::log_id::log_id(&item.source_message_id)
-                    ));
-                }
-            }
-            if let HistoryCopyExpirationState::Active { timer_minutes } = &semantics.expiration {
-                store
-                    .record_message_timer_minutes(&copy_id, *timer_minutes)
-                    .map_err(|e| {
+                    })
+            })
+            .transpose()?;
+        let message = StoredMessage::from(dto);
+        if message.edit_revision < 1 {
+            return Err(format!(
+                "OSL: source.message[{}].editRevision must be positive",
+                crate::log_id::log_id(&item.source_message_id)
+            ));
+        }
+        let mut semantics = item.semantics;
+        let mut edges = Vec::new();
+        if let Some(parent) = message.reply_parent_id.as_ref() {
+            edges.push(store::HistoryCopyBatchEdge {
+                edge_id: format!("reply:{}:{parent}", copy_id),
+                payload: format!("reply\0{}\0{parent}", copy_id).into_bytes(),
+            });
+        }
+        semantics.thread_root_id = semantics
+            .thread_root_id
+            .map(|source_root| {
+                source_to_copy_ids
+                    .get(&source_root)
+                    .cloned()
+                    .ok_or_else(|| {
                         format!(
-                            "OSL: copy.message[{}].expirationState write: {e}",
-                            crate::log_id::log_id(&copy_id)
+                            "OSL: source.message[{}].threadRootId has no copied object",
+                            crate::log_id::log_id(&item.source_message_id)
                         )
-                    })?;
-            }
-            for attachment in item.attachments {
-                let attachment_len = u64::try_from(attachment.plaintext.len())
-                    .map_err(|_| "OSL: history attachment byte count overflow".to_string())?;
-                store
-                    .put_history_copy_attachment(
-                        &copy_id,
-                        &attachment.random_filename,
-                        &attachment.mime,
-                        &attachment.plaintext,
-                        attachment.scope_type.as_deref(),
-                        attachment.scope_id.as_deref(),
-                        attachment.sender_discord_id.as_deref(),
-                        attachment.created_at,
-                    )
-                    .map_err(|e| {
-                        format!(
-                            "OSL: copy.message[{}].attachment[{}] write: {e}",
-                            crate::log_id::log_id(&copy_id),
-                            crate::log_id::log_id(&attachment.random_filename)
-                        )
-                    })?;
-                attachment_bytes_written = attachment_bytes_written
-                    .checked_add(attachment_len)
-                    .ok_or_else(|| "OSL: history attachment byte count overflow".to_string())?;
-                attachment_count += 1;
-            }
-            let semantic_bytes = serde_json::to_vec(&semantics)
-                .map_err(|e| format!("OSL: copy history semantics serialize: {e}"))?;
-            store
-                .put_history_copy_metadata(&copy_id, &semantic_bytes)
-                .map_err(|e| {
+                    })
+            })
+            .transpose()?;
+        if let Some(root) = semantics.thread_root_id.as_ref() {
+            edges.push(store::HistoryCopyBatchEdge {
+                edge_id: format!("thread:{}:{root}", copy_id),
+                payload: format!("thread\0{}\0{root}", copy_id).into_bytes(),
+            });
+        }
+        for reaction in &mut semantics.reactions {
+            let source_reaction_id = reaction.reaction_id.clone();
+            reaction.target_message_id = source_to_copy_ids
+                .get(&reaction.target_message_id)
+                .cloned()
+                .ok_or_else(|| {
                     format!(
-                        "OSL: copy.message[{}].semantics write: {e}",
-                        crate::log_id::log_id(&copy_id)
+                        "OSL: source.message[{}].reactions[{}].targetMessageId has no copied object",
+                        crate::log_id::log_id(&item.source_message_id),
+                        crate::log_id::log_id(&reaction.reaction_id)
                     )
                 })?;
-            bytes_written = bytes_written
-                .checked_add(plaintext_len)
-                .ok_or_else(|| "OSL: history copy byte count overflow".to_string())?;
-            copied_count += 1;
+            reaction.reaction_id = deterministic_history_copy_id(
+                &operation_id,
+                "reaction",
+                &source_reaction_id,
+            );
+            if source_to_copy_reaction_ids
+                .insert(source_reaction_id, reaction.reaction_id.clone())
+                .is_some()
+            {
+                return Err(format!(
+                    "OSL: source.message[{}].reactions contains a duplicate reaction id",
+                    crate::log_id::log_id(&item.source_message_id)
+                ));
+            }
+            edges.push(store::HistoryCopyBatchEdge {
+                edge_id: format!("reaction:{}", reaction.reaction_id),
+                payload: serde_json::to_vec(reaction)
+                    .map_err(|e| format!("OSL: copy reaction edge serialize: {e}"))?,
+            });
         }
-        let actual_bytes = bytes_written
-            .checked_add(attachment_bytes_written)
-            .ok_or_else(|| "OSL: history copy actual byte count overflow".to_string())?;
-        store
-            .add_history_copy_bytes(actual_bytes)
-            .map_err(|e| format!("OSL: history copy persisted meter: {e}"))?;
+        let timer_minutes = match semantics.expiration {
+            HistoryCopyExpirationState::Active { timer_minutes } => Some(timer_minutes),
+            HistoryCopyExpirationState::NonExpiring => None,
+        };
+        let mut attachments = Vec::with_capacity(item.attachments.len());
+        for attachment in item.attachments {
+            let attachment_len = u64::try_from(attachment.plaintext.len())
+                .map_err(|_| "OSL: history attachment byte count overflow".to_string())?;
+            attachment_bytes_written = attachment_bytes_written
+                .checked_add(attachment_len)
+                .ok_or_else(|| "OSL: history attachment byte count overflow".to_string())?;
+            attachment_count += 1;
+            attachments.push(store::HistoryCopyBatchAttachment {
+                random_filename: attachment.random_filename,
+                mime: attachment.mime,
+                plaintext: attachment.plaintext,
+                sender_discord_id: attachment.sender_discord_id,
+                scope_type: attachment.scope_type,
+                scope_id: attachment.scope_id,
+                created_at: attachment.created_at,
+            });
+        }
+        let semantic_payload = serde_json::to_vec(&semantics)
+            .map_err(|e| format!("OSL: copy history semantics serialize: {e}"))?;
+        bytes_written = bytes_written
+            .checked_add(plaintext_len)
+            .ok_or_else(|| "OSL: history copy byte count overflow".to_string())?;
+        copied_count += 1;
+        batch_messages.push(store::HistoryCopyBatchMessage {
+            message,
+            timer_minutes,
+            semantic_payload,
+            attachments,
+            edges,
+        });
     }
     let actual_copied_bytes_written = bytes_written
         .checked_add(attachment_bytes_written)
         .ok_or_else(|| "OSL: history copy actual byte count overflow".to_string())?;
-    state.history_copy_data_allowance_this_month_bytes.store(
-        before.saturating_add(actual_copied_bytes_written),
-        Ordering::SeqCst,
-    );
-    let after = cmd_osl_history_copy_month_data_bytes(state);
-    Ok(CopyMyHistoryHereResult {
+    let projected_after = before
+        .checked_add(actual_copied_bytes_written)
+        .ok_or_else(|| "OSL: history copy allowance overflow".to_string())?;
+    if projected_after > allowance_limit {
+        return Err(format!(
+            "OSL: history copy allowance exhausted: before={before} copy={actual_copied_bytes_written} limit={allowance_limit}; nothing was copied or charged"
+        ));
+    }
+    let proposed_result = CopyMyHistoryHereResult {
         action_label: confirmation.action_label,
         confirmation_sentence: confirmation.sentence,
         copied_count,
@@ -15214,10 +15366,36 @@ pub fn cmd_osl_copy_my_history_here(
         attachment_bytes_written,
         actual_copied_bytes_written,
         monthly_data_bytes_before: before,
-        monthly_data_bytes_after: after,
+        monthly_data_bytes_after: projected_after,
         source_to_copy_ids,
         source_to_copy_reaction_ids,
-    })
+    };
+    let result_payload = serde_json::to_vec(&proposed_result)
+        .map_err(|error| format!("OSL: history copy result serialize: {error}"))?;
+    let batch = store::HistoryCopyBatch {
+        operation_id,
+        messages: batch_messages,
+        unique_bytes: actual_copied_bytes_written,
+        result: result_payload,
+    };
+    let guard = state
+        .message_store
+        .lock()
+        .expect("message_store mutex poisoned");
+    let store = guard
+        .as_ref()
+        .ok_or_else(|| "OSL: message history is not open on this device".to_string())?;
+    let outcome = store
+        .apply_history_copy_batch_with_observer(&batch, |boundary, side| {
+            observe(boundary, side).map_err(StoreError::Corrupted)
+        })
+        .map_err(|error| format!("OSL: atomic history copy: {error}"))?;
+    let result: CopyMyHistoryHereResult = serde_json::from_slice(&outcome.result)
+        .map_err(|error| format!("OSL: history copy stored result parse: {error}"))?;
+    state
+        .history_copy_data_allowance_this_month_bytes
+        .store(result.monthly_data_bytes_after, Ordering::SeqCst);
+    Ok(result)
 }
 
 fn decode_export_identity(
@@ -16597,7 +16775,6 @@ mod account_transfer_tests {
 }
 
 pub fn cmd_osl_verify_main_password(password: String) -> Result<(), String> {
-    record_activity_on_command_entry();
     let dir = password_dir()?;
     crate::main_password::verify_main_password(&dir, &password)
 }
@@ -16650,7 +16827,7 @@ mod duress_gate_tests {
     }
 
     #[test]
-    fn gate_wrong_password_threshold_reports_duress_and_runs_cleanup() {
+    fn gate_wrong_password_threshold_starts_cooldown_and_preserves_profile() {
         let temp = tempfile::TempDir::new().expect("tempdir");
         let base_dir = temp.path().join("base");
         let account_dir = temp.path().join("account");
@@ -16668,12 +16845,11 @@ mod duress_gate_tests {
         crate::main_password::write_lockout_pub(
             &base_dir,
             &crate::main_password::LockoutState {
-                version: 1,
+                version: 2,
                 password_failed_attempts: crate::main_password::DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT
                     - 1,
                 password_locked_until: None,
-                phrase_failed_attempts: 0,
-                phrase_locked_until: None,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -16685,17 +16861,19 @@ mod duress_gate_tests {
 
         let result = cmd_osl_verify_gate_password(&state, "wrong-password".to_owned()).unwrap();
 
-        assert_eq!(result.result, "duress");
+        assert_eq!(result.result, "wrong");
         assert_eq!(
             result.attempts_used,
             crate::main_password::DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT
         );
-        assert_eq!(result.lockout_seconds_remaining, 0);
-        assert!(!account_dir.join("identity.json").exists());
-        assert!(!account_dir.join("prekeys.json").exists());
-        assert!(!account_dir.join("store").exists());
-        assert!(!base_dir.join("password_marker.json").exists());
-        assert_eq!(crate::main_password::get_file_storage_key(), None);
+        assert_eq!(
+            result.lockout_seconds_remaining,
+            crate::main_password::PASSWORD_COOLDOWN_SECONDS as i64
+        );
+        assert!(account_dir.join("identity.json").exists());
+        assert!(account_dir.join("prekeys.json").exists());
+        assert!(account_dir.join("store").exists());
+        assert!(base_dir.join("password_marker.json").exists());
     }
 }
 
@@ -16770,20 +16948,23 @@ pub fn cmd_osl_verify_gate_password(
     state: &AppState,
     password: String,
 ) -> Result<GateVerifyDto, String> {
-    record_activity_on_command_entry();
     use crate::main_password::GateMatch;
     let dir = password_dir()?;
-    // Lockout-window check first (same as verify_main_password).
+    let _gate = crate::main_password::lock_gate_submissions()?;
     let mut lock = crate::main_password::read_lockout_pub(&dir);
-    let now = crate::main_password::now_unix_secs_pub();
-    if let Some(until) = lock.password_locked_until {
-        if now < until {
-            return Ok(GateVerifyDto {
-                result: "wrong".to_string(),
-                lockout_seconds_remaining: until - now,
-                attempts_used: lock.password_failed_attempts,
-            });
-        }
+    let elapsed_ms = crate::main_password::elapsed_realtime_ms()?;
+    if let Some((attempts_used, lockout_seconds_remaining)) =
+        crate::main_password::refuse_or_prepare_gate_submission(
+            &dir,
+            &mut lock,
+            elapsed_ms,
+        )?
+    {
+        return Ok(GateVerifyDto {
+            result: "wrong".to_string(),
+            lockout_seconds_remaining,
+            attempts_used,
+        });
     }
     let marker = crate::main_password::read_marker_pub(&dir)?;
     let outcome = crate::main_password::verify_gate_password_with_marker(&marker, &password)?;
@@ -16858,6 +17039,8 @@ pub fn cmd_osl_verify_gate_password(
             // deferred worker only after this local reload succeeds.
             lock.password_failed_attempts = 0;
             lock.password_locked_until = None;
+            lock.password_cooldown_started_elapsed_ms = None;
+            lock.password_cooldown_deadline_elapsed_ms = None;
             let _ = crate::main_password::write_lockout_pub(&dir, &lock);
             Ok(GateVerifyDto {
                 result: "main".to_string(),
@@ -16871,6 +17054,8 @@ pub fn cmd_osl_verify_gate_password(
             // distinguishing main from stealth via counter dynamics).
             lock.password_failed_attempts = 0;
             lock.password_locked_until = None;
+            lock.password_cooldown_started_elapsed_ms = None;
+            lock.password_cooldown_deadline_elapsed_ms = None;
             let _ = crate::main_password::write_lockout_pub(&dir, &lock);
             Ok(GateVerifyDto {
                 result: "stealth".to_string(),
@@ -16881,6 +17066,8 @@ pub fn cmd_osl_verify_gate_password(
         GateMatch::Duress => {
             lock.password_failed_attempts = 0;
             lock.password_locked_until = None;
+            lock.password_cooldown_started_elapsed_ms = None;
+            lock.password_cooldown_deadline_elapsed_ms = None;
             let _ = crate::main_password::write_lockout_pub(&dir, &lock);
             crate::main_password::execute_gate_duress(state)?;
             Ok(GateVerifyDto {
@@ -16892,6 +17079,8 @@ pub fn cmd_osl_verify_gate_password(
         GateMatch::Burn => {
             lock.password_failed_attempts = 0;
             lock.password_locked_until = None;
+            lock.password_cooldown_started_elapsed_ms = None;
+            lock.password_cooldown_deadline_elapsed_ms = None;
             let _ = crate::main_password::write_lockout_pub(&dir, &lock);
             Ok(GateVerifyDto {
                 result: "burn".to_string(),
@@ -16901,7 +17090,9 @@ pub fn cmd_osl_verify_gate_password(
         }
         GateMatch::Wrong => {
             match crate::main_password::record_wrong_password_attempt_or_duress(
-                state, &mut lock, now,
+                state,
+                &mut lock,
+                elapsed_ms,
             )? {
                 crate::main_password::WrongPasswordAttemptAction::Wrong {
                     attempts_used,
@@ -16911,16 +17102,6 @@ pub fn cmd_osl_verify_gate_password(
                     Ok(GateVerifyDto {
                         result: "wrong".to_string(),
                         lockout_seconds_remaining,
-                        attempts_used,
-                    })
-                }
-                crate::main_password::WrongPasswordAttemptAction::DuressTriggered {
-                    attempts_used,
-                } => {
-                    let _ = crate::main_password::write_lockout_pub(&dir, &lock);
-                    Ok(GateVerifyDto {
-                        result: "duress".to_string(),
-                        lockout_seconds_remaining: 0,
                         attempts_used,
                     })
                 }
@@ -21405,7 +21586,40 @@ pub fn cmd_osl_read_discovery_replies_switch(state: &AppState) -> Result<String,
         .app_preferences
         .lock()
         .expect("app_preferences mutex poisoned");
-    Ok(prefs.discovery_replies.as_str().to_owned())
+    if prefs.discovery_off_pending {
+        Ok("turning_off".to_owned())
+    } else {
+        Ok(prefs.discovery_replies.as_str().to_owned())
+    }
+}
+
+fn persist_discovery_preferences(
+    state: &AppState,
+    prefs: &crate::app_preferences::AppPreferences,
+    config_dir: Option<&Path>,
+) -> Result<(), String> {
+    let dir = match config_dir {
+        Some(dir) => dir.to_path_buf(),
+        None => keystore::osl_base_dir().map_err(|error| error.to_string())?,
+    };
+    let path = dir.join("app_preferences.json");
+    crate::app_preferences::write_app_preferences(&path, prefs).map_err(|error| {
+        record_persist_error(state, "app_preferences.json", &error);
+        error
+    })
+}
+
+fn discovery_client_authority(
+    state: &AppState,
+) -> Result<Option<(KeyServerClient, keystore::Identity)>, String> {
+    let client = state.keyserver_slot().clone();
+    let identity = state.identity_slot().clone();
+    match (client, identity) {
+        (Some(client), Some(identity)) => Ok(Some((client, identity))),
+        (None, None) => Ok(None),
+        (None, Some(_)) => Err("OSL: discovery transition needs a key server".to_owned()),
+        (Some(_), None) => Err("OSL: discovery transition needs a loaded identity".to_owned()),
+    }
 }
 
 pub fn cmd_osl_set_discovery_replies_switch(
@@ -21415,16 +21629,103 @@ pub fn cmd_osl_set_discovery_replies_switch(
 ) -> Result<String, String> {
     record_activity_on_command_entry();
     let switch = crate::app_preferences::parse_discovery_replies_switch(&value)?;
-    {
-        let mut prefs = state
+    let _transition = state
+        .discovery_transition_lock
+        .lock()
+        .expect("discovery_transition_lock mutex poisoned");
+    let current = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .clone();
+
+    if switch == crate::app_preferences::DiscoveryRepliesSwitch::Off {
+        if current.discovery_replies == switch && !current.discovery_off_pending {
+            return Ok("off".to_owned());
+        }
+
+        // This durable intent is written before network I/O. A crash or
+        // transport failure therefore leaves publishing and replies gated,
+        // while reads say `turning_off` rather than prematurely claiming off.
+        let mut pending = current;
+        pending.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        pending.discovery_off_pending = true;
+        persist_discovery_preferences(state, &pending, config_dir.as_deref())?;
+        *state
             .app_preferences
             .lock()
-            .expect("app_preferences mutex poisoned");
-        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
-        prefs.discovery_replies = switch;
+            .expect("app_preferences mutex poisoned") = pending.clone();
+
+        let (client, identity) = discovery_client_authority(state)?.ok_or_else(|| {
+            "OSL: enabled discovery transition needs a loaded identity and key server".to_owned()
+        })?;
+        client
+            .take_back_discovery_cards(&identity)
+            .map_err(|error| format!("OSL: discovery take-back failed: {error}"))?;
+
+        let mut finished = pending;
+        finished.discovery_replies = crate::app_preferences::DiscoveryRepliesSwitch::Off;
+        finished.discovery_off_pending = false;
+        persist_discovery_preferences(state, &finished, config_dir.as_deref())?;
+        *state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned") = finished;
+        return Ok("off".to_owned());
     }
-    persist_app_preferences_now(state, config_dir);
-    Ok(switch.as_str().to_owned())
+
+    if let Some((client, identity)) = discovery_client_authority(state)? {
+        client
+            .enable_discovery_replies(&identity)
+            .map_err(|error| format!("OSL: discovery enable failed: {error}"))?;
+    }
+    let mut enabled = current;
+    enabled.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+    enabled.discovery_replies = crate::app_preferences::DiscoveryRepliesSwitch::On;
+    enabled.discovery_off_pending = false;
+    persist_discovery_preferences(state, &enabled, config_dir.as_deref())?;
+    *state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned") = enabled;
+    Ok("on".to_owned())
+}
+
+/// Finish a transition whose durable intent survived a process/OS restart.
+/// This is safe to call repeatedly: take-back and the final preference write
+/// are idempotent.
+pub fn cmd_osl_resume_discovery_off_transition(
+    state: &AppState,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<String, String> {
+    record_activity_on_command_entry();
+    let _transition = state
+        .discovery_transition_lock
+        .lock()
+        .expect("discovery_transition_lock mutex poisoned");
+    let mut prefs = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .clone();
+    if !prefs.discovery_off_pending {
+        return Ok(prefs.discovery_replies.as_str().to_owned());
+    }
+    let (client, identity) = discovery_client_authority(state)?.ok_or_else(|| {
+        "OSL: pending discovery take-back needs a loaded identity and key server".to_owned()
+    })?;
+    client
+        .take_back_discovery_cards(&identity)
+        .map_err(|error| format!("OSL: discovery take-back resume failed: {error}"))?;
+    prefs.discovery_replies = crate::app_preferences::DiscoveryRepliesSwitch::Off;
+    prefs.discovery_off_pending = false;
+    prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+    persist_discovery_preferences(state, &prefs, config_dir.as_deref())?;
+    *state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned") = prefs;
+    Ok("off".to_owned())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -21442,6 +21743,13 @@ pub fn cmd_osl_walk_discovery_publish_path(
         .app_preferences
         .lock()
         .expect("app_preferences mutex poisoned");
+    if prefs.discovery_off_pending {
+        return Ok(DiscoveryPublishReportDto {
+            cards_written: 0,
+            answers_written: 0,
+            status: "skipped: discovery replies are turning off".to_owned(),
+        });
+    }
     if prefs.discovery_replies == crate::app_preferences::DiscoveryRepliesSwitch::Off {
         return Ok(DiscoveryPublishReportDto {
             cards_written: 0,
@@ -21461,6 +21769,91 @@ pub fn cmd_osl_walk_discovery_publish_path(
         answers_written: cards_written,
         status: "published".to_owned(),
     })
+}
+
+pub fn cmd_osl_publish_discovery_card(
+    state: &AppState,
+    app_id: String,
+    account_handle: String,
+    sealed_note: String,
+) -> Result<DiscoveryPublishReportDto, String> {
+    record_activity_on_command_entry();
+    let _transition = state
+        .discovery_transition_lock
+        .lock()
+        .expect("discovery_transition_lock mutex poisoned");
+    let prefs = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .clone();
+    if prefs.discovery_off_pending
+        || prefs.discovery_replies == crate::app_preferences::DiscoveryRepliesSwitch::Off
+    {
+        return Ok(DiscoveryPublishReportDto {
+            cards_written: 0,
+            answers_written: 0,
+            status: "refused: discovery replies are off".to_owned(),
+        });
+    }
+    let setting = match prefs.discovery_setting {
+        crate::app_preferences::DiscoverySetting::Never => {
+            return Ok(DiscoveryPublishReportDto {
+                cards_written: 0,
+                answers_written: 0,
+                status: "refused: discovery setting is never".to_owned(),
+            });
+        }
+        crate::app_preferences::DiscoverySetting::Allowed => "allowed",
+        crate::app_preferences::DiscoverySetting::SharedRoom => "shared-room",
+        crate::app_preferences::DiscoverySetting::Anyone => "allowed",
+    };
+    let (client, identity) = discovery_client_authority(state)?.ok_or_else(|| {
+        "OSL: discovery publish needs a loaded identity and key server".to_owned()
+    })?;
+    let published = client
+        .publish_discovery_card(&identity, &app_id, &account_handle, setting, &sealed_note)
+        .map_err(|error| format!("OSL: discovery publish failed: {error}"))?;
+    Ok(DiscoveryPublishReportDto {
+        cards_written: published.wrote as usize,
+        answers_written: 0,
+        status: "published".to_owned(),
+    })
+}
+
+pub fn cmd_osl_answer_discovery_ping(state: &AppState) -> Result<Vec<u8>, String> {
+    record_activity_on_command_entry();
+    let _transition = state
+        .discovery_transition_lock
+        .lock()
+        .expect("discovery_transition_lock mutex poisoned");
+    let prefs = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned");
+    if prefs.discovery_off_pending
+        || prefs.discovery_replies == crate::app_preferences::DiscoveryRepliesSwitch::Off
+        || prefs.discovery_setting == crate::app_preferences::DiscoverySetting::Never
+    {
+        Ok(Vec::new())
+    } else {
+        Ok(b"OSL-DISCOVERY-REPLY-v1".to_vec())
+    }
+}
+
+pub fn cmd_osl_query_discovery_card(
+    state: &AppState,
+    drawer_name: String,
+    label: String,
+) -> Result<Option<keystore::client::DiscoveryCardResponse>, String> {
+    record_activity_on_command_entry();
+    let client = state
+        .keyserver_slot()
+        .clone()
+        .ok_or_else(|| "OSL: discovery query needs a key server".to_owned())?;
+    client
+        .read_discovery_card(&drawer_name, &label)
+        .map_err(|error| format!("OSL: discovery query failed: {error}"))
 }
 
 // ---- Phase 9-D: onboarding tour + VPN warning ----

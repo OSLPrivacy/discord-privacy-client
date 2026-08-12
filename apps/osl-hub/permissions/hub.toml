@@ -4,6 +4,11 @@ description = "Read the local, non-sensitive OSL Privacy preview preferences."
 commands.allow = ["get_onboarding_preferences"]
 
 [[permission]]
+identifier = "allow-export-hub-account-data"
+description = "Reauthorize the signed-in account, choose separate native archive and key destinations, and return only a full-readback verification receipt."
+commands.allow = ["export_hub_account_data"]
+
+[[permission]]
 identifier = "allow-ai-carrier-status"
 description = "Read only whether the optional local AI carrier is ready; this exposes no model, cover, message, capability, or conversation data."
 commands.allow = ["ai_carrier_status"]
@@ -407,6 +412,16 @@ commands.allow = ["get_hub_recovery_kit_unsaved"]
 identifier = "allow-set-recovery-kit-unsaved"
 description = "Update only the encrypted, account-scoped recovery-kit saved acknowledgement. Split from the read permission: one permission per command is the rule here, and bundling a read with a write grants more than a reader needs."
 commands.allow = ["set_hub_recovery_kit_unsaved"]
+
+[[permission]]
+identifier = "allow-get-coach-tip-state"
+description = "Read only the fixed, encrypted, account-scoped coach-tip dismissal document."
+commands.allow = ["get_coach_tip_state"]
+
+[[permission]]
+identifier = "allow-save-coach-tip-state"
+description = "Save only a strictly validated coach-tip dismissal document after an explicit owner action."
+commands.allow = ["save_coach_tip_state"]
 
 [[permission]]
 identifier = "allow-lock-hub-session"
@@ -1131,6 +1146,16 @@ commands.allow = ["get_follow_active_app_choice"]
 identifier = "allow-set-follow-active-app-choice"
 description = "Persist only the explicit on/off choice for whether the trusted OSL window follows whichever app is in front."
 commands.allow = ["set_follow_active_app_choice"]
+
+[[permission]]
+identifier = "allow-get-discovery-replies-switch"
+description = "Read the native discovery reply master transition without exposing account or card data."
+commands.allow = ["get_discovery_replies_switch"]
+
+[[permission]]
+identifier = "allow-set-discovery-replies-switch"
+description = "Run the native discovery reply master transition, including release-keyserver withdrawal before off is returned."
+commands.allow = ["set_discovery_replies_switch"]
 
 [[permission]]
 identifier = "allow-create-hub-named-server"

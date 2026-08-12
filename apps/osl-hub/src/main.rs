@@ -2,6 +2,9 @@
 
 #[cfg(feature = "whatsapp-qa-identity")]
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use osl_privacy_hub::account_export::{
+    self, AccountExportSnapshot, OwnedAttachment, OwnedDocument, PostWriteMediaFault,
+};
 use osl_privacy_hub::account_recovery;
 use osl_privacy_hub::ai_carrier::{
     ai_carrier_status_for, set_ai_carrier_preview_enabled_for, AiCarrierState,
@@ -115,6 +118,7 @@ use std::sync::{
     Mutex,
 };
 use tauri::{Emitter, Manager, State};
+use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_updater::UpdaterExt;
 #[cfg(feature = "whatsapp-qa-identity")]
 use zeroize::{Zeroize, Zeroizing};
@@ -1587,6 +1591,31 @@ async fn set_hub_recovery_kit_unsaved(unsaved: bool) -> Result<(), String> {
     .map_err(|_| "OSL recovery-kit status worker failed".to_owned())?
 }
 
+#[tauri::command]
+async fn get_coach_tip_state(
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<osl_privacy_hub::coach_tips::CoachTipState, String> {
+    let _session = session.transition.lock().await;
+    let _owner = active_unlocked_osl_user_id(&core)?;
+    tauri::async_runtime::spawn_blocking(osl_privacy_hub::coach_tips::get_active)
+        .await
+        .map_err(|_| "OSL profile UI state worker failed".to_owned())?
+}
+
+#[tauri::command]
+async fn save_coach_tip_state(
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    state: osl_privacy_hub::coach_tips::CoachTipState,
+) -> Result<osl_privacy_hub::coach_tips::CoachTipState, String> {
+    let _session = session.transition.lock().await;
+    let _owner = active_unlocked_osl_user_id(&core)?;
+    tauri::async_runtime::spawn_blocking(move || osl_privacy_hub::coach_tips::save_active(state))
+        .await
+        .map_err(|_| "OSL profile UI state worker failed".to_owned())?
+}
+
 /// A7: manual "Lock now" from the trusted OSL Privacy UI.
 ///
 /// Locking is not a UI flag. This drops the identity secret, the prekey pool,
@@ -1602,6 +1631,176 @@ async fn lock_hub_session(app: tauri::AppHandle) -> Result<ipc::commands::Sessio
     })
     .await
     .map_err(|_| "OSL session lock worker failed".to_string())?
+}
+
+/// Settings → Export my data. The renderer supplies only the reauthorization
+/// credential. Both destinations are chosen in parented native save journeys,
+/// and neither path nor key material crosses into JavaScript.
+#[tauri::command]
+async fn export_hub_account_data(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+    session: State<'_, HubAccountSessionState>,
+    password: String,
+) -> Result<account_export::ExportReceipt, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL Settings window may export account data".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    let verify_app = app.clone();
+    let verification = tauri::async_runtime::spawn_blocking(move || {
+        startup_gate::verify_password_role(&verify_app.state::<HubCoreState>(), password)
+    })
+    .await
+    .map_err(|_| "OSL export reauthorization worker failed".to_owned())??;
+    if verification.role != VerifiedGateRole::Main {
+        return Err("Export my data requires the signed-in account's current password".to_owned());
+    }
+    let owner = active_unlocked_osl_user_id(&app.state::<HubCoreState>())?;
+    tauri::async_runtime::spawn_blocking(move || export_hub_account_data_inner(&app, &owner))
+        .await
+        .map_err(|_| "OSL account export worker failed".to_owned())?
+}
+
+fn export_hub_account_data_inner(
+    app: &tauri::AppHandle,
+    owner: &str,
+) -> Result<account_export::ExportReceipt, String> {
+    let parent = app
+        .get_webview_window("main")
+        .ok_or_else(|| "The trusted export save window is unavailable".to_owned())?;
+    let archive_path = app
+        .dialog()
+        .file()
+        .set_parent(&parent)
+        .set_title("Save encrypted OSL account export")
+        .set_file_name("osl-account-export.oslexport")
+        .add_filter("OSL encrypted export", &["oslexport"])
+        .blocking_save_file()
+        .ok_or_else(|| "Archive save was cancelled".to_owned())?
+        .into_path()
+        .map_err(|_| "The archive destination is unavailable".to_owned())?;
+    let key_path = app
+        .dialog()
+        .file()
+        .set_parent(&parent)
+        .set_title("Save separate OSL export key")
+        .set_file_name("osl-account-export.key.json")
+        .add_filter("OSL export key", &["json"])
+        .blocking_save_file()
+        .ok_or_else(|| "Key save was cancelled".to_owned())?
+        .into_path()
+        .map_err(|_| "The key destination is unavailable".to_owned())?;
+    if archive_path == key_path {
+        return Err("Archive and key require separate save locations".to_owned());
+    }
+
+    let core = app.state::<HubCoreState>();
+    if active_unlocked_osl_user_id(&core)? != owner {
+        return Err("The signed-in account changed during export".to_owned());
+    }
+    let identity = ipc::commands::cmd_osl_get_identity_info(&core.osl)?;
+    let profile = osl_profile::get_active_profile(owner)?;
+    let identity_fields = serde_json::json!({
+        "identity": identity,
+        "profile": profile,
+    });
+    let mut documents = vec![
+        OwnedDocument {
+            class: "identity_profile".to_owned(),
+            id: "active-identity-profile".to_owned(),
+            owner_id: owner.to_owned(),
+            fields: identity_fields,
+            attachment_ids: Vec::new(),
+        },
+        OwnedDocument {
+            class: "settings".to_owned(),
+            id: "account-security-settings".to_owned(),
+            owner_id: owner.to_owned(),
+            fields: security::account_export_settings_document()?,
+            attachment_ids: Vec::new(),
+        },
+    ];
+    for (person_id, fields) in security::account_export_friend_documents()? {
+        documents.push(OwnedDocument {
+            class: "friend_relationships".to_owned(),
+            id: person_id,
+            owner_id: owner.to_owned(),
+            fields,
+            attachment_ids: Vec::new(),
+        });
+    }
+
+    let mut attachments = Vec::new();
+    let store_guard = core
+        .osl
+        .message_store
+        .lock()
+        .map_err(|_| "OSL message store is unavailable for export".to_owned())?;
+    let store = store_guard
+        .as_ref()
+        .ok_or_else(|| "OSL message store is unavailable for export".to_owned())?;
+    let mut cursor = None;
+    loop {
+        let page = store
+            .account_export_page(cursor, account_export::PAGE_ITEMS as u32)
+            .map_err(|error| format!("OSL message export page failed: {error}"))?;
+        if page.is_empty() {
+            break;
+        }
+        for row in page {
+            cursor = Some(row.cursor);
+            let message = row.message;
+            let message_id = message.discord_message_id.clone();
+            let attachment_ids = row
+                .attachments
+                .iter()
+                .map(|attachment| format!("{}:{}", message_id, attachment.random_filename))
+                .collect::<Vec<_>>();
+            documents.push(OwnedDocument {
+                class: "messages".to_owned(),
+                id: message_id.clone(),
+                owner_id: owner.to_owned(),
+                fields: serde_json::json!({
+                    "discordMessageId": message_id.clone(),
+                    "channelId": message.channel_id,
+                    "senderDiscordId": message.sender_discord_id,
+                    "senderOslUserId": message.sender_osl_user_id,
+                    "plaintext": message.plaintext,
+                    "decryptedAt": message.decrypted_at,
+                    "replyParentId": message.reply_parent_id,
+                    "editRevision": message.edit_revision,
+                    "burned": message.burned,
+                    "timerMinutes": row.timer_minutes,
+                }),
+                attachment_ids: attachment_ids.clone(),
+            });
+            for (id, attachment) in attachment_ids.into_iter().zip(row.attachments) {
+                attachments.push(OwnedAttachment {
+                    id,
+                    owner_id: owner.to_owned(),
+                    message_id: message_id.clone(),
+                    filename: attachment.random_filename,
+                    mime_type: attachment.mime,
+                    bytes: attachment.plaintext,
+                });
+            }
+        }
+    }
+    drop(store_guard);
+    if active_unlocked_osl_user_id(&core)? != owner {
+        return Err("The signed-in account changed during export".to_owned());
+    }
+    account_export::export_to_user_paths(
+        &AccountExportSnapshot {
+            account_id: owner.to_owned(),
+            documents,
+            attachments,
+        },
+        &archive_path,
+        &key_path,
+        PostWriteMediaFault::None,
+    )
 }
 
 /// Send a ratchet-independent SESSION_RESET to the currently authorised peer
@@ -6171,9 +6370,12 @@ async fn create_hub_private_contact_link(
     active_unlocked_osl_user_id(&core)?;
     let friend_code = security::export_friend_code(&core)?.friend_code;
     let issued = tauri::async_runtime::spawn_blocking(move || {
-        private_contact_link_client()?.issue_private_contact_link(&friend_code)
+        private_contact_link_client()?
+            .issue_private_contact_link(&friend_code)
             .map_err(|error| format!("OSL private contact link issue failed: {error}"))
-    }).await.map_err(|_| "OSL private contact link issue was interrupted".to_owned())??;
+    })
+    .await
+    .map_err(|_| "OSL private contact link issue was interrupted".to_owned())??;
     Ok(HubPrivateContactLink {
         link_value: issued.link_value,
         revocation_secret: issued.revocation_secret,
@@ -6195,7 +6397,9 @@ async fn get_hub_private_contact_link_status(
         private_contact_link_client()?
             .private_contact_link_status(&link_value, &revocation_secret)
             .map_err(|error| format!("OSL private contact link status failed: {error}"))
-    }).await.map_err(|_| "OSL private contact link status was interrupted".to_owned())??;
+    })
+    .await
+    .map_err(|_| "OSL private contact link status was interrupted".to_owned())??;
     Ok(HubPrivateContactLinkStatus {
         issued_at_unix_seconds: status.issued_at_unix_seconds,
         expires_at_unix_seconds: status.expires_at_unix_seconds,
@@ -6215,7 +6419,9 @@ async fn revoke_hub_private_contact_link(
         private_contact_link_client()?
             .revoke_private_contact_link(&link_value, &revocation_secret)
             .map_err(|error| format!("OSL private contact link revocation failed: {error}"))
-    }).await.map_err(|_| "OSL private contact link revocation was interrupted".to_owned())?
+    })
+    .await
+    .map_err(|_| "OSL private contact link revocation was interrupted".to_owned())?
 }
 
 #[tauri::command]
@@ -6232,7 +6438,9 @@ async fn add_hub_private_contact_link(
         private_contact_link_client()?
             .redeem_private_contact_link(&link_value)
             .map_err(|_| "OSL private contact link is unavailable".to_owned())
-    }).await.map_err(|_| "OSL private contact link redemption was interrupted".to_owned())??;
+    })
+    .await
+    .map_err(|_| "OSL private contact link redemption was interrupted".to_owned())??;
     security::add_friend_code(&core, &security_state, friend_code, alias)
 }
 
@@ -9732,6 +9940,24 @@ fn resolve_english_catalogue_string(
         .resolve(&key, variables)
         .map_err(|error| error.to_string())
 }
+
+#[tauri::command]
+fn get_discovery_replies_switch(state: tauri::State<'_, HubCoreState>) -> Result<String, String> {
+    ipc::commands::cmd_osl_read_discovery_replies_switch(&state.osl)
+}
+
+#[tauri::command]
+async fn set_discovery_replies_switch(
+    state: tauri::State<'_, HubCoreState>,
+    value: String,
+) -> Result<String, String> {
+    let osl = state.osl.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        ipc::commands::cmd_osl_set_discovery_replies_switch(&osl, value, None)
+    })
+    .await
+    .map_err(|error| format!("OSL: discovery transition task failed: {error}"))?
+}
 macro_rules! hub_tauri_generate_handler {
     ($($(#[$meta:meta])* $command:ident),* $(,)?) => {
         tauri::generate_handler![$($(#[$meta])* $command,)*]
@@ -9776,11 +10002,12 @@ macro_rules! hub_tauri_command_names {
 #[cfg(feature = "signal-qa-shell")]
 fn main() {
     let english_catalogue =
-        osl_privacy_hub::english_catalogue_entry::load_packaged_windows_catalogue()
-            .unwrap_or_else(|error| {
+        osl_privacy_hub::english_catalogue_entry::load_packaged_windows_catalogue().unwrap_or_else(
+            |error| {
                 eprintln!("5205 Windows startup refusal: {error}");
                 std::process::exit(78);
-            });
+            },
+        );
     let builder = tauri::Builder::default().setup(move |app| {
         app.manage(english_catalogue);
         let profiles =
@@ -9816,11 +10043,12 @@ fn main() {
 #[cfg(not(feature = "signal-qa-shell"))]
 fn main() {
     let english_catalogue =
-        osl_privacy_hub::english_catalogue_entry::load_packaged_windows_catalogue()
-            .unwrap_or_else(|error| {
+        osl_privacy_hub::english_catalogue_entry::load_packaged_windows_catalogue().unwrap_or_else(
+            |error| {
                 eprintln!("5205 Windows startup refusal: {error}");
                 std::process::exit(78);
-            });
+            },
+        );
     if let Some(exit_code) =
         osl_privacy_hub::allowed_place_commands::run_allowed_place_cli_from_env()
     {

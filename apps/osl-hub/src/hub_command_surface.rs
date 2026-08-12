@@ -604,6 +604,8 @@ macro_rules! hub_tauri_commands {
             get_onboarding_preferences,
             ai_carrier_status,
             set_ai_carrier_preview_enabled,
+            get_discovery_replies_switch,
+            set_discovery_replies_switch,
             build_integrity_status,
             resolve_english_catalogue_string,
             list_hub_app_notifications,
@@ -650,7 +652,10 @@ macro_rules! hub_tauri_commands {
             check_hub_password_reset_phrase,
             get_hub_recovery_kit_unsaved,
             set_hub_recovery_kit_unsaved,
+            get_coach_tip_state,
+            save_coach_tip_state,
             lock_hub_session,
+            export_hub_account_data,
             emit_active_session_reset,
             get_hub_password_role_status,
             set_hub_stealth_password,
@@ -1804,6 +1809,17 @@ mod tauri_registration_surface_tests {
             &permissions,
             &capability,
             &commands,
+        );
+    }
+
+    #[test]
+    fn coach_tip_state_commands_are_registered_and_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &["get_coach_tip_state", "save_coach_tip_state"],
         );
     }
 
