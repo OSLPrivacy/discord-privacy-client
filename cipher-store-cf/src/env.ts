@@ -37,4 +37,9 @@ export interface Env {
   TELEGRAM_OPERATOR_CHAT_IDS?: string;
   /** Legacy single owner destination retained during deployment migration. */
   TELEGRAM_ADMIN_CHAT_ID?: string;
+  /** Independent issuer keys for the only two lawful upload authorities. */
+  MONTHLY_UPLOAD_AUTHORITY_PUBKEY_B64?: string;
+  SOLD_UPLOAD_AUTHORITY_PUBKEY_B64?: string;
+  /** Enables deterministic crash hooks only in the task-specific workerd run. */
+  TASK_5215_TEST_MODE?: string;
 }
