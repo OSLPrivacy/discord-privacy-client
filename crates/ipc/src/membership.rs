@@ -31,6 +31,7 @@
 //! conceal a removal, so callers must surface that state rather than present a
 //! confident recipient list.
 
+pub use crate::membership_size_rules::{GROUP_CHAT_FULL_ERROR, GROUP_CHAT_MAX_PEOPLE};
 use crate::scope::{Scope, ScopeKind};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -72,6 +73,11 @@ pub struct ScopeMembership {
     /// membership key → set of member Discord snowflakes.
     #[serde(default)]
     map: HashMap<String, HashSet<String>>,
+    /// One monotonic advance per accepted group-roster transaction. Kept in
+    /// the same durable document as the roster so a refusal cannot advance one
+    /// without the other.
+    #[serde(default)]
+    gc_versions: HashMap<String, u64>,
     /// Runtime-only provenance for the membership snapshot. It is not stored
     /// in membership.json; loading establishes it for this session.
     #[serde(skip)]
@@ -80,7 +86,7 @@ pub struct ScopeMembership {
 
 impl PartialEq for ScopeMembership {
     fn eq(&self, other: &Self) -> bool {
-        self.map == other.map
+        self.map == other.map && self.gc_versions == other.gc_versions
     }
 }
 
@@ -111,11 +117,64 @@ impl ScopeMembership {
     }
 
     /// Record `discord_id` as observed in a GC.
-    pub fn note_gc_member(&mut self, gc_id: &str, discord_id: &str) {
-        self.map
-            .entry(gc_key(gc_id))
-            .or_default()
-            .insert(discord_id.to_string());
+    pub fn note_gc_member(&mut self, gc_id: &str, discord_id: &str) -> Result<bool, &'static str> {
+        self.admit_gc_members(gc_id, [discord_id])
+    }
+
+    /// Atomically add observed people to a group chat. Validation happens on
+    /// the complete candidate set before either roster or version changes.
+    pub fn admit_gc_members<I, S>(&mut self, gc_id: &str, members: I) -> Result<bool, &'static str>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let key = gc_key(gc_id);
+        let mut candidate = self.map.get(&key).cloned().unwrap_or_default();
+        candidate.extend(members.into_iter().map(|member| member.as_ref().to_owned()));
+        crate::membership_size_rules::enforce_group_chat_candidate_size(candidate.len())?;
+        if self.map.get(&key) == Some(&candidate) {
+            return Ok(false);
+        }
+        self.map.insert(key.clone(), candidate);
+        let version = self.gc_versions.entry(key).or_default();
+        *version = version
+            .checked_add(1)
+            .expect("group roster version exhausted");
+        Ok(true)
+    }
+
+    /// Atomically replace a group roster (gateway refresh). Empty rosters are
+    /// permitted, but a candidate above the product ceiling is refused with no
+    /// state or version change.
+    pub fn set_gc_members<I, S>(&mut self, gc_id: &str, members: I) -> Result<bool, &'static str>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let key = gc_key(gc_id);
+        let candidate: HashSet<String> = members
+            .into_iter()
+            .map(|member| member.as_ref().to_owned())
+            .collect();
+        crate::membership_size_rules::enforce_group_chat_candidate_size(candidate.len())?;
+        let current = self.map.get(&key).cloned().unwrap_or_default();
+        if current == candidate {
+            return Ok(false);
+        }
+        if candidate.is_empty() {
+            self.map.remove(&key);
+        } else {
+            self.map.insert(key.clone(), candidate);
+        }
+        let version = self.gc_versions.entry(key).or_default();
+        *version = version
+            .checked_add(1)
+            .expect("group roster version exhausted");
+        Ok(true)
+    }
+
+    pub fn gc_version(&self, gc_id: &str) -> u64 {
+        self.gc_versions.get(&gc_key(gc_id)).copied().unwrap_or(0)
     }
 
     /// Bulk form: note every id in `members` for a server channel.
@@ -177,14 +236,12 @@ impl ScopeMembership {
     }
 
     /// Bulk form: note every id in `members` for a GC.
-    pub fn note_gc_members<I, S>(&mut self, gc_id: &str, members: I)
+    pub fn note_gc_members<I, S>(&mut self, gc_id: &str, members: I) -> Result<bool, &'static str>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        for m in members {
-            self.note_gc_member(gc_id, m.as_ref());
-        }
+        self.admit_gc_members(gc_id, members)
     }
 
     /// Is `discord_id` a known member anywhere in server `server_id`?

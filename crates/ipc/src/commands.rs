@@ -4864,7 +4864,8 @@ pub fn cmd_osl_encrypt_message_v2_wire(
             .scope_membership
             .lock()
             .expect("scope_membership mutex poisoned");
-        mem.note_gc_members(&scope.id, channel_members.iter().cloned());
+        mem.admit_gc_members(&scope.id, channel_members.iter().cloned())
+            .map_err(str::to_owned)?;
     }
 
     ensure_dynamic_membership_oracle_is_not_degraded(state, &scope)?;
@@ -16798,11 +16799,24 @@ pub fn cmd_osl_membership_update(
     member_ids: Vec<String>,
 ) -> Result<(), String> {
     record_activity_on_command_entry();
+    let unique: std::collections::HashSet<_> = member_ids.iter().collect();
+    crate::membership_size_rules::enforce_group_chat_candidate_size(unique.len())
+        .map_err(str::to_owned)?;
+    let mut membership = state
+        .scope_membership
+        .lock()
+        .expect("scope_membership mutex poisoned");
     let mut g = state
         .channel_members
         .lock()
         .expect("channel_members mutex poisoned");
+    membership
+        .set_gc_members(&channel_id, member_ids.iter())
+        .map_err(str::to_owned)?;
     g.insert(channel_id, member_ids);
+    drop(g);
+    drop(membership);
+    persist_scope_membership_now(state);
     Ok(())
 }
 
@@ -17205,20 +17219,20 @@ pub fn cmd_osl_create_group_conversation(
     let name = normalize_group_name(name)?;
     let member_ids = normalize_group_member_ids(member_ids)?;
     let group_id = named_group_id(&name, &member_ids);
-    {
-        let mut membership = state
-            .scope_membership
-            .lock()
-            .expect("scope_membership mutex poisoned");
-        membership.note_gc_members(&group_id, member_ids.iter());
-    }
-    {
-        let mut channel_members = state
-            .channel_members
-            .lock()
-            .expect("channel_members mutex poisoned");
-        channel_members.insert(group_id.clone(), member_ids.clone());
-    }
+    let mut membership = state
+        .scope_membership
+        .lock()
+        .expect("scope_membership mutex poisoned");
+    let mut channel_members = state
+        .channel_members
+        .lock()
+        .expect("channel_members mutex poisoned");
+    membership
+        .set_gc_members(&group_id, member_ids.iter())
+        .map_err(str::to_owned)?;
+    channel_members.insert(group_id.clone(), member_ids.clone());
+    drop(channel_members);
+    drop(membership);
     persist_scope_membership_now(state);
     let scope = crate::scope::Scope::gc(group_id.clone());
     Ok(NamedGroupConversationDto {
@@ -17261,6 +17275,8 @@ fn normalize_group_member_ids(member_ids: Vec<String>) -> Result<Vec<String>, St
     if normalized.len() < 3 {
         return Err("OSL: group conversations require at least three members".to_owned());
     }
+    crate::membership_size_rules::enforce_group_chat_candidate_size(normalized.len())
+        .map_err(str::to_owned)?;
     Ok(normalized)
 }
 
@@ -17314,10 +17330,9 @@ pub fn cmd_osl_note_scope_membership(
                 }
                 _ => false,
             },
-            crate::scope::ScopeKind::Gc => {
-                m.note_gc_members(&scope.id, &member_ids);
-                true
-            }
+            crate::scope::ScopeKind::Gc => m
+                .admit_gc_members(&scope.id, &member_ids)
+                .map_err(str::to_owned)?,
             // Dm: the peer IS the scope (no accrual needed).
             // ServerFull: accrues via its channels' observations.
             crate::scope::ScopeKind::Dm | crate::scope::ScopeKind::ServerFull => false,

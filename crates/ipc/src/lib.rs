@@ -63,6 +63,8 @@ pub mod license_lifecycle;
 pub mod log_id;
 pub mod main_password;
 pub mod membership;
+pub mod membership_service;
+pub mod membership_size_rules;
 pub mod message_expiry_dial;
 pub mod migration;
 pub mod named_places;
