@@ -1,0 +1,76 @@
+{
+  "affinity_control": 0,
+  "affinity_shielded": 17,
+  "application": {
+    "claims_protection": true,
+    "disclosure": "Blocks Windows screen capture of this story. It cannot block a camera pointed at your screen, an external capture device, or a photo of your display.",
+    "enforced": true,
+    "error": null,
+    "mode": "production-primitive",
+    "primitive": "SetWindowDisplayAffinity/WDA_EXCLUDEFROMCAPTURE",
+    "requested_on": true,
+    "unavailable_copy": null
+  },
+  "baseline_capture": {
+    "captured": true,
+    "control": {
+      "black_pixels": 0,
+      "known_colour_pixels": 52256,
+      "total_pixels": 52256
+    },
+    "image": "D:\\osl-lane-targets\\i\\task6860-capture\\capture-6860.baseline.bmp",
+    "image_bytes": 580854,
+    "shielded": {
+      "black_pixels": 0,
+      "known_colour_pixels": 52256,
+      "total_pixels": 52256
+    }
+  },
+  "capture_attempted": true,
+  "capture_method": "win32-bitblt-srccopy-captureblt-desktop-dc",
+  "capture_region": {
+    "height": 220,
+    "left": 30,
+    "top": 30,
+    "width": 660
+  },
+  "control_rect": [
+    40,
+    40,
+    340,
+    240
+  ],
+  "cosmetic_mode": false,
+  "disclosure": "Blocks Windows screen capture of this story. It cannot block a camera pointed at your screen, an external capture device, or a photo of your display.",
+  "expected_shielded_affinity": 17,
+  "known_colour_rgb": [
+    30,
+    200,
+    100
+  ],
+  "platform_supported": true,
+  "primitive": "SetWindowDisplayAffinity/WDA_EXCLUDEFROMCAPTURE",
+  "shielded_capture": {
+    "captured": true,
+    "control": {
+      "black_pixels": 0,
+      "known_colour_pixels": 52256,
+      "total_pixels": 52256
+    },
+    "image": "D:\\osl-lane-targets\\i\\task6860-capture\\capture-6860.shielded.bmp",
+    "image_bytes": 580854,
+    "shielded": {
+      "black_pixels": 0,
+      "known_colour_pixels": 0,
+      "total_pixels": 52256
+    }
+  },
+  "shielded_rect": [
+    380,
+    40,
+    680,
+    240
+  ],
+  "target_os": "windows",
+  "task": "6860"
+}

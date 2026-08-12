@@ -1,0 +1,15 @@
+{
+  "application_enforced": false,
+  "application_error": "no supported capture-protection primitive on this platform",
+  "capture_attempted": false,
+  "claims_protection": false,
+  "control_enabled": false,
+  "cosmetic_mode": false,
+  "disclosure": null,
+  "platform_supported": false,
+  "primitive": null,
+  "setting_on": false,
+  "target_os": "linux",
+  "task": "6860",
+  "unavailable_copy": "Screenshot shield is unavailable on this system, so this build makes no capture-protection claim here."
+}
