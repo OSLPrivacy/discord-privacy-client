@@ -4861,6 +4861,33 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "61c41af27dd6d1e27b1b16b489db798443478cef1f06a660c96db617ba5de3b1"
 
 [[package]]
+name = "task-5200-account-export"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "chacha20poly1305",
+ "hkdf",
+ "rand 0.8.7",
+ "serde",
+ "serde_json",
+ "sha2",
+ "task-5200-clean-reader",
+ "tempfile",
+]
+
+[[package]]
+name = "task-5200-clean-reader"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "chacha20poly1305",
+ "hkdf",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "tauri"
 version = "2.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
