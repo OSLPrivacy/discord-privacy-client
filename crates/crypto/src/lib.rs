@@ -62,6 +62,7 @@
 pub mod aead;
 pub mod aes_gcm;
 pub mod attachment;
+pub mod carrier_protection;
 pub mod ed25519;
 pub mod error;
 pub mod hkdf;
