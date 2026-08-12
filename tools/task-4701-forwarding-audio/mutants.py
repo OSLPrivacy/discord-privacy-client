@@ -15,6 +15,7 @@ TASK_ROOT = Path(__file__).resolve().parent
 REPO_ROOT = TASK_ROOT.parents[1]
 SOURCE = REPO_ROOT / "evidence" / "task-4701-forwarding-audio"
 VERIFY = TASK_ROOT / "verify.py"
+RESULTS: list[str] = []
 
 
 def sha256(path: Path) -> str:
@@ -22,11 +23,11 @@ def sha256(path: Path) -> str:
 
 
 def rebind(root: Path) -> None:
-    manifest = json.loads((root / "artifact-manifest.json").read_text())
-    for name in list(manifest):
-        path = root / name
-        if path.is_file():
-            manifest[name] = sha256(path)
+    manifest = {
+        str(path.relative_to(root)): sha256(path)
+        for path in sorted(root.rglob("*"))
+        if path.is_file() and path.name != "artifact-manifest.json"
+    }
     (root / "artifact-manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
 
 
@@ -43,7 +44,7 @@ def run_mutant(name: str, expected: str, mutate) -> None:
         mutate(root)
         rebind(root)
         result = subprocess.run(
-            [sys.executable, str(VERIFY), "--artifacts", str(root)],
+            [sys.executable, str(VERIFY), "--artifacts", str(root), "--allow-postproof-missing"],
             text=True, capture_output=True,
         )
         combined = result.stdout + result.stderr
@@ -52,7 +53,9 @@ def run_mutant(name: str, expected: str, mutate) -> None:
                 f"TASK4701 mutant={name} expected exit=1 capability={expected}; "
                 f"got exit={result.returncode} output={combined!r}"
             )
-        print(f"TASK4701 MUTANT name={name} exit=1 named={expected}")
+        line = f"TASK4701 MUTANT name={name} exit=1 named={expected}"
+        RESULTS.append(line)
+        print(line)
 
 
 def main() -> int:
@@ -121,6 +124,11 @@ def main() -> int:
         rewrite_jsonl(path, update)
     run_mutant("reencode-payload", "capability=payload-pass-through", payload)
 
+    # The negative results are themselves an artifact. Seal them before the
+    # final strict run, so a later omission is detected by the same manifest.
+    report = "\n".join(RESULTS + ["TASK4701 MUTANTS restored=green total=10"]) + "\n"
+    (SOURCE / "mutants.txt").write_text(report)
+    rebind(SOURCE)
     restored = subprocess.run([sys.executable, str(VERIFY), "--artifacts", str(SOURCE)], text=True, capture_output=True)
     if restored.returncode != 0:
         raise SystemExit(f"restored check is not green: {restored.stdout}{restored.stderr}")

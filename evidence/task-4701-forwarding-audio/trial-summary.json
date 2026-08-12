@@ -2,7 +2,7 @@
   "candidate": "LiveKit Server",
   "clear_client_verdict": "transport encryption required",
   "decoded_frames": 0,
-  "duration_seconds": 605.000154993,
+  "duration_seconds": 605.000145933,
   "recording_outputs": 0,
   "recoveries": {
     "speaker-A": {
@@ -21,7 +21,7 @@
   "reencoded_frames": 0,
   "room": "osl-task-4701-one-machine",
   "room_sids": [
-    "RM_qshjiE2Hg6Uo"
+    "RM_eHH4VWungT5D"
   ],
   "sent_frames": {
     "speaker-A": 3000,
@@ -35,7 +35,7 @@
   "speaker_a_ingress_payloads": 3000,
   "speaker_a_unique_egress_payloads": 3000,
   "speaker_processes": 3,
-  "trial_ended_wall_unix_ns": 1786481109385743316,
-  "trial_started_wall_unix_ns": 1786480484198639999,
+  "trial_ended_wall_unix_ns": 1786502880219805045,
+  "trial_started_wall_unix_ns": 1786502255003363421,
   "version_output": "livekit-server version 1.13.5"
 }

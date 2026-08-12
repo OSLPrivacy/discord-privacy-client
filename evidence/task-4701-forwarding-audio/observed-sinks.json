@@ -2,690 +2,690 @@
   "fd_targets": [
     {
       "fd": 0,
-      "pid": 1732766,
+      "pid": 2379683,
       "role": "livekit-server",
-      "target": "/dev/pts/5"
+      "target": "/dev/null"
     },
     {
       "fd": 1,
-      "pid": 1732766,
+      "pid": 2379683,
       "role": "livekit-server",
       "target": "/home/liamw/osl-exec-i/evidence/task-4701-forwarding-audio/livekit-server.txt"
     },
     {
       "fd": 2,
-      "pid": 1732766,
+      "pid": 2379683,
       "role": "livekit-server",
       "target": "/home/liamw/osl-exec-i/evidence/task-4701-forwarding-audio/livekit-server.txt"
     },
     {
       "fd": 3,
-      "pid": 1732766,
+      "pid": 2379683,
       "role": "livekit-server",
       "target": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/osl-dispatch.service/cpu.max"
     },
     {
       "fd": 4,
-      "pid": 1732766,
+      "pid": 2379683,
       "role": "livekit-server",
-      "target": "socket:[46462473]"
+      "target": "socket:[61202469]"
     },
     {
       "fd": 5,
-      "pid": 1732766,
+      "pid": 2379683,
       "role": "livekit-server",
       "target": "anon_inode:[eventpoll]"
     },
     {
       "fd": 6,
-      "pid": 1732766,
+      "pid": 2379683,
       "role": "livekit-server",
       "target": "anon_inode:[eventfd]"
     },
     {
       "fd": 7,
-      "pid": 1732766,
+      "pid": 2379683,
       "role": "livekit-server",
-      "target": "socket:[46463617]"
+      "target": "socket:[61202477]"
     },
     {
       "fd": 8,
-      "pid": 1732766,
+      "pid": 2379683,
       "role": "livekit-server",
-      "target": "socket:[46469246]"
+      "target": "socket:[61199722]"
     },
     {
       "fd": 9,
-      "pid": 1732766,
+      "pid": 2379683,
       "role": "livekit-server",
-      "target": "socket:[46469247]"
+      "target": "socket:[61189859]"
     },
     {
       "fd": 10,
-      "pid": 1732766,
+      "pid": 2379683,
       "role": "livekit-server",
-      "target": "socket:[46469248]"
+      "target": "socket:[61199725]"
     },
     {
       "fd": 11,
-      "pid": 1732766,
+      "pid": 2379683,
       "role": "livekit-server",
-      "target": "socket:[46467494]"
+      "target": "socket:[61201490]"
     },
     {
       "fd": 12,
-      "pid": 1732766,
+      "pid": 2379683,
       "role": "livekit-server",
-      "target": "socket:[46470417]"
+      "target": "socket:[61201491]"
     },
     {
       "fd": 13,
-      "pid": 1732766,
+      "pid": 2379683,
       "role": "livekit-server",
-      "target": "socket:[46470418]"
+      "target": "socket:[61201492]"
     },
     {
       "fd": 14,
-      "pid": 1732766,
+      "pid": 2379683,
       "role": "livekit-server",
-      "target": "socket:[46470419]"
+      "target": "socket:[61201493]"
     },
     {
       "fd": 15,
-      "pid": 1732766,
+      "pid": 2379683,
       "role": "livekit-server",
-      "target": "socket:[46463637]"
+      "target": "socket:[61201494]"
     },
     {
       "fd": 16,
-      "pid": 1732766,
+      "pid": 2379683,
       "role": "livekit-server",
-      "target": "socket:[46463638]"
+      "target": "socket:[61201495]"
     },
     {
       "fd": 17,
-      "pid": 1732766,
+      "pid": 2379683,
       "role": "livekit-server",
-      "target": "socket:[46463639]"
+      "target": "socket:[61201496]"
     },
     {
       "fd": 18,
-      "pid": 1732766,
+      "pid": 2379683,
       "role": "livekit-server",
-      "target": "socket:[46463640]"
+      "target": "socket:[61201497]"
     },
     {
       "fd": 19,
-      "pid": 1732766,
+      "pid": 2379683,
       "role": "livekit-server",
-      "target": "socket:[46463641]"
+      "target": "socket:[61201498]"
     },
     {
       "fd": 20,
-      "pid": 1732766,
+      "pid": 2379683,
       "role": "livekit-server",
-      "target": "socket:[46461735]"
+      "target": "socket:[61194984]"
     },
     {
       "fd": 21,
-      "pid": 1732766,
+      "pid": 2379683,
       "role": "livekit-server",
-      "target": "socket:[46466467]"
+      "target": "socket:[61194985]"
     },
     {
       "fd": 22,
-      "pid": 1732766,
+      "pid": 2379683,
       "role": "livekit-server",
-      "target": "socket:[46466468]"
+      "target": "socket:[61194986]"
     },
     {
       "fd": 23,
-      "pid": 1732766,
+      "pid": 2379683,
       "role": "livekit-server",
-      "target": "socket:[46462508]"
+      "target": "socket:[61194987]"
     },
     {
       "fd": 24,
-      "pid": 1732766,
+      "pid": 2379683,
       "role": "livekit-server",
-      "target": "socket:[46470435]"
+      "target": "socket:[61194988]"
     },
     {
       "fd": 25,
-      "pid": 1732766,
+      "pid": 2379683,
       "role": "livekit-server",
-      "target": "socket:[46460729]"
+      "target": "socket:[61194989]"
     },
     {
       "fd": 26,
-      "pid": 1732766,
+      "pid": 2379683,
       "role": "livekit-server",
-      "target": "socket:[46464409]"
+      "target": "socket:[61194990]"
     },
     {
       "fd": 27,
-      "pid": 1732766,
+      "pid": 2379683,
       "role": "livekit-server",
-      "target": "socket:[46464410]"
+      "target": "socket:[61194992]"
     },
     {
       "fd": 28,
-      "pid": 1732766,
+      "pid": 2379683,
       "role": "livekit-server",
-      "target": "socket:[46464411]"
+      "target": "socket:[61194993]"
     },
     {
       "fd": 0,
-      "pid": 1732767,
+      "pid": 2379684,
       "role": "tls-front-door",
-      "target": "/dev/pts/5"
+      "target": "/dev/null"
     },
     {
       "fd": 1,
-      "pid": 1732767,
+      "pid": 2379684,
       "role": "tls-front-door",
       "target": "/home/liamw/osl-exec-i/evidence/task-4701-forwarding-audio/tls-front-door.jsonl"
     },
     {
       "fd": 2,
-      "pid": 1732767,
+      "pid": 2379684,
       "role": "tls-front-door",
       "target": "/home/liamw/osl-exec-i/evidence/task-4701-forwarding-audio/tls-front-door.jsonl"
     },
     {
       "fd": 3,
-      "pid": 1732767,
+      "pid": 2379684,
       "role": "tls-front-door",
-      "target": "socket:[46460716]"
+      "target": "socket:[61189832]"
     },
     {
       "fd": 4,
-      "pid": 1732767,
+      "pid": 2379684,
       "role": "tls-front-door",
-      "target": "socket:[46460718]"
+      "target": "socket:[61201489]"
     },
     {
       "fd": 5,
-      "pid": 1732767,
+      "pid": 2379684,
       "role": "tls-front-door",
-      "target": "socket:[46460723]"
+      "target": "socket:[61189838]"
     },
     {
       "fd": 6,
-      "pid": 1732767,
+      "pid": 2379684,
       "role": "tls-front-door",
-      "target": "socket:[46460724]"
+      "target": "socket:[61189856]"
     },
     {
       "fd": 8,
-      "pid": 1732767,
+      "pid": 2379684,
       "role": "tls-front-door",
-      "target": "socket:[46463635]"
+      "target": "socket:[61199721]"
     },
     {
       "fd": 9,
-      "pid": 1732767,
+      "pid": 2379684,
       "role": "tls-front-door",
-      "target": "socket:[46463636]"
+      "target": "socket:[61189858]"
     },
     {
       "fd": 10,
-      "pid": 1732767,
+      "pid": 2379684,
       "role": "tls-front-door",
-      "target": "socket:[46466465]"
+      "target": "socket:[61199724]"
     },
     {
       "fd": 0,
-      "pid": 1732792,
+      "pid": 2379781,
       "role": "speaker-A",
-      "target": "/dev/pts/5"
+      "target": "/dev/null"
     },
     {
       "fd": 1,
-      "pid": 1732792,
+      "pid": 2379781,
       "role": "speaker-A",
       "target": "/home/liamw/osl-exec-i/evidence/task-4701-forwarding-audio/speaker-A.jsonl"
     },
     {
       "fd": 2,
-      "pid": 1732792,
+      "pid": 2379781,
       "role": "speaker-A",
       "target": "/home/liamw/osl-exec-i/evidence/task-4701-forwarding-audio/speaker-A.stderr.txt"
     },
     {
       "fd": 3,
-      "pid": 1732792,
+      "pid": 2379781,
       "role": "speaker-A",
       "target": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/osl-dispatch.service/cpu.max"
     },
     {
       "fd": 4,
-      "pid": 1732792,
+      "pid": 2379781,
       "role": "speaker-A",
-      "target": "socket:[46460725]"
+      "target": "socket:[61189855]"
     },
     {
       "fd": 5,
-      "pid": 1732792,
+      "pid": 2379781,
       "role": "speaker-A",
       "target": "anon_inode:[eventpoll]"
     },
     {
       "fd": 6,
-      "pid": 1732792,
+      "pid": 2379781,
       "role": "speaker-A",
       "target": "anon_inode:[eventfd]"
     },
     {
       "fd": 7,
-      "pid": 1732792,
+      "pid": 2379781,
       "role": "speaker-A",
-      "target": "socket:[46463645]"
+      "target": "socket:[61199730]"
     },
     {
       "fd": 8,
-      "pid": 1732792,
+      "pid": 2379781,
       "role": "speaker-A",
-      "target": "socket:[46463646]"
+      "target": "socket:[61199731]"
     },
     {
       "fd": 9,
-      "pid": 1732792,
+      "pid": 2379781,
       "role": "speaker-A",
-      "target": "socket:[46463647]"
+      "target": "socket:[61199732]"
     },
     {
       "fd": 10,
-      "pid": 1732792,
+      "pid": 2379781,
       "role": "speaker-A",
-      "target": "socket:[46463648]"
+      "target": "socket:[61199733]"
     },
     {
       "fd": 11,
-      "pid": 1732792,
+      "pid": 2379781,
       "role": "speaker-A",
-      "target": "socket:[46462504]"
+      "target": "socket:[61196904]"
     },
     {
       "fd": 12,
-      "pid": 1732792,
+      "pid": 2379781,
       "role": "speaker-A",
-      "target": "socket:[46467514]"
-    },
-    {
-      "fd": 13,
-      "pid": 1732792,
-      "role": "speaker-A",
-      "target": "socket:[46462505]"
+      "target": "socket:[61196905]"
     },
     {
       "fd": 14,
-      "pid": 1732792,
+      "pid": 2379781,
       "role": "speaker-A",
-      "target": "socket:[46462517]"
+      "target": "socket:[61199841]"
     },
     {
       "fd": 15,
-      "pid": 1732792,
+      "pid": 2379781,
       "role": "speaker-A",
-      "target": "socket:[46467515]"
+      "target": "socket:[61198944]"
     },
     {
       "fd": 16,
-      "pid": 1732792,
+      "pid": 2379781,
       "role": "speaker-A",
-      "target": "socket:[46462518]"
+      "target": "socket:[61195007]"
+    },
+    {
+      "fd": 17,
+      "pid": 2379781,
+      "role": "speaker-A",
+      "target": "socket:[61198943]"
+    },
+    {
+      "fd": 18,
+      "pid": 2379781,
+      "role": "speaker-A",
+      "target": "socket:[61199842]"
     },
     {
       "fd": 19,
-      "pid": 1732792,
+      "pid": 2379781,
       "role": "speaker-A",
-      "target": "socket:[46470428]"
+      "target": "socket:[61201512]"
     },
     {
       "fd": 20,
-      "pid": 1732792,
+      "pid": 2379781,
       "role": "speaker-A",
-      "target": "socket:[46470429]"
+      "target": "socket:[61201513]"
     },
     {
       "fd": 21,
-      "pid": 1732792,
+      "pid": 2379781,
       "role": "speaker-A",
-      "target": "socket:[46470430]"
+      "target": "socket:[61201514]"
     },
     {
       "fd": 22,
-      "pid": 1732792,
+      "pid": 2379781,
       "role": "speaker-A",
-      "target": "socket:[46470431]"
+      "target": "socket:[61201515]"
     },
     {
       "fd": 23,
-      "pid": 1732792,
+      "pid": 2379781,
       "role": "speaker-A",
-      "target": "socket:[46470433]"
+      "target": "socket:[61201517]"
     },
     {
       "fd": 24,
-      "pid": 1732792,
+      "pid": 2379781,
       "role": "speaker-A",
-      "target": "socket:[46470434]"
+      "target": "socket:[61201518]"
     },
     {
       "fd": 25,
-      "pid": 1732792,
+      "pid": 2379781,
       "role": "speaker-A",
-      "target": "socket:[46467516]"
-    },
-    {
-      "fd": 26,
-      "pid": 1732792,
-      "role": "speaker-A",
-      "target": "socket:[46468378]"
+      "target": "socket:[61198945]"
     },
     {
       "fd": 0,
-      "pid": 1732797,
+      "pid": 2379782,
       "role": "speaker-B",
-      "target": "/dev/pts/5"
+      "target": "/dev/null"
     },
     {
       "fd": 1,
-      "pid": 1732797,
+      "pid": 2379782,
       "role": "speaker-B",
       "target": "/home/liamw/osl-exec-i/evidence/task-4701-forwarding-audio/speaker-B.jsonl"
     },
     {
       "fd": 2,
-      "pid": 1732797,
+      "pid": 2379782,
       "role": "speaker-B",
       "target": "/home/liamw/osl-exec-i/evidence/task-4701-forwarding-audio/speaker-B.stderr.txt"
     },
     {
       "fd": 3,
-      "pid": 1732797,
+      "pid": 2379782,
       "role": "speaker-B",
       "target": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/osl-dispatch.service/cpu.max"
     },
     {
       "fd": 4,
-      "pid": 1732797,
+      "pid": 2379782,
       "role": "speaker-B",
-      "target": "socket:[46462487]"
+      "target": "socket:[61201488]"
     },
     {
       "fd": 5,
-      "pid": 1732797,
+      "pid": 2379782,
       "role": "speaker-B",
       "target": "anon_inode:[eventpoll]"
     },
     {
       "fd": 6,
-      "pid": 1732797,
+      "pid": 2379782,
       "role": "speaker-B",
       "target": "anon_inode:[eventfd]"
     },
     {
       "fd": 7,
-      "pid": 1732797,
+      "pid": 2379782,
       "role": "speaker-B",
-      "target": "socket:[46462491]"
+      "target": "socket:[61199737]"
     },
     {
       "fd": 8,
-      "pid": 1732797,
+      "pid": 2379782,
       "role": "speaker-B",
-      "target": "socket:[46462492]"
+      "target": "socket:[61199738]"
     },
     {
       "fd": 9,
-      "pid": 1732797,
+      "pid": 2379782,
       "role": "speaker-B",
-      "target": "socket:[46462493]"
+      "target": "socket:[61199739]"
     },
     {
       "fd": 10,
-      "pid": 1732797,
+      "pid": 2379782,
       "role": "speaker-B",
-      "target": "socket:[46462494]"
+      "target": "socket:[61199740]"
     },
     {
       "fd": 11,
-      "pid": 1732797,
+      "pid": 2379782,
       "role": "speaker-B",
-      "target": "socket:[46462496]"
+      "target": "socket:[61201501]"
     },
     {
       "fd": 12,
-      "pid": 1732797,
+      "pid": 2379782,
       "role": "speaker-B",
-      "target": "socket:[46462497]"
+      "target": "socket:[61201502]"
     },
     {
       "fd": 13,
-      "pid": 1732797,
+      "pid": 2379782,
       "role": "speaker-B",
-      "target": "socket:[46462509]"
+      "target": "socket:[61203475]"
     },
     {
       "fd": 14,
-      "pid": 1732797,
+      "pid": 2379782,
       "role": "speaker-B",
-      "target": "socket:[46462510]"
+      "target": "socket:[61195722]"
     },
     {
       "fd": 15,
-      "pid": 1732797,
+      "pid": 2379782,
       "role": "speaker-B",
-      "target": "socket:[46463663]"
+      "target": "socket:[61195005]"
     },
     {
       "fd": 16,
-      "pid": 1732797,
+      "pid": 2379782,
       "role": "speaker-B",
-      "target": "socket:[46461736]"
+      "target": "socket:[61195723]"
+    },
+    {
+      "fd": 17,
+      "pid": 2379782,
+      "role": "speaker-B",
+      "target": "socket:[61195006]"
+    },
+    {
+      "fd": 18,
+      "pid": 2379782,
+      "role": "speaker-B",
+      "target": "socket:[61198942]"
     },
     {
       "fd": 19,
-      "pid": 1732797,
+      "pid": 2379782,
       "role": "speaker-B",
-      "target": "socket:[46467500]"
+      "target": "socket:[61199750]"
     },
     {
       "fd": 20,
-      "pid": 1732797,
+      "pid": 2379782,
       "role": "speaker-B",
-      "target": "socket:[46467501]"
+      "target": "socket:[61199751]"
     },
     {
       "fd": 21,
-      "pid": 1732797,
+      "pid": 2379782,
       "role": "speaker-B",
-      "target": "socket:[46467502]"
+      "target": "socket:[61199752]"
     },
     {
       "fd": 22,
-      "pid": 1732797,
+      "pid": 2379782,
       "role": "speaker-B",
-      "target": "socket:[46467503]"
+      "target": "socket:[61199753]"
     },
     {
       "fd": 23,
-      "pid": 1732797,
+      "pid": 2379782,
       "role": "speaker-B",
-      "target": "socket:[46460727]"
+      "target": "socket:[61199755]"
     },
     {
       "fd": 24,
-      "pid": 1732797,
+      "pid": 2379782,
       "role": "speaker-B",
-      "target": "socket:[46460728]"
-    },
-    {
-      "fd": 25,
-      "pid": 1732797,
-      "role": "speaker-B",
-      "target": "socket:[46460732]"
-    },
-    {
-      "fd": 26,
-      "pid": 1732797,
-      "role": "speaker-B",
-      "target": "socket:[46463664]"
+      "target": "socket:[61199756]"
     },
     {
       "fd": 0,
-      "pid": 1732798,
+      "pid": 2379783,
       "role": "speaker-C",
-      "target": "/dev/pts/5"
+      "target": "/dev/null"
     },
     {
       "fd": 1,
-      "pid": 1732798,
+      "pid": 2379783,
       "role": "speaker-C",
       "target": "/home/liamw/osl-exec-i/evidence/task-4701-forwarding-audio/speaker-C.jsonl"
     },
     {
       "fd": 2,
-      "pid": 1732798,
+      "pid": 2379783,
       "role": "speaker-C",
       "target": "/home/liamw/osl-exec-i/evidence/task-4701-forwarding-audio/speaker-C.stderr.txt"
     },
     {
       "fd": 3,
-      "pid": 1732798,
+      "pid": 2379783,
       "role": "speaker-C",
       "target": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/osl-dispatch.service/cpu.max"
     },
     {
       "fd": 4,
-      "pid": 1732798,
+      "pid": 2379783,
       "role": "speaker-C",
-      "target": "socket:[46470416]"
+      "target": "socket:[61189854]"
     },
     {
       "fd": 5,
-      "pid": 1732798,
+      "pid": 2379783,
       "role": "speaker-C",
       "target": "anon_inode:[eventpoll]"
     },
     {
       "fd": 6,
-      "pid": 1732798,
+      "pid": 2379783,
       "role": "speaker-C",
       "target": "anon_inode:[eventfd]"
     },
     {
       "fd": 7,
-      "pid": 1732798,
+      "pid": 2379783,
       "role": "speaker-C",
-      "target": "socket:[46461728]"
+      "target": "socket:[61202492]"
     },
     {
       "fd": 8,
-      "pid": 1732798,
+      "pid": 2379783,
       "role": "speaker-C",
-      "target": "socket:[46461729]"
+      "target": "socket:[61202493]"
     },
     {
       "fd": 9,
-      "pid": 1732798,
+      "pid": 2379783,
       "role": "speaker-C",
-      "target": "socket:[46461730]"
+      "target": "socket:[61202494]"
     },
     {
       "fd": 10,
-      "pid": 1732798,
+      "pid": 2379783,
       "role": "speaker-C",
-      "target": "socket:[46461731]"
+      "target": "socket:[61202495]"
     },
     {
       "fd": 11,
-      "pid": 1732798,
+      "pid": 2379783,
       "role": "speaker-C",
-      "target": "socket:[46463650]"
+      "target": "socket:[61194977]"
     },
     {
       "fd": 12,
-      "pid": 1732798,
+      "pid": 2379783,
       "role": "speaker-C",
-      "target": "socket:[46467505]"
+      "target": "socket:[61194978]"
     },
     {
       "fd": 13,
-      "pid": 1732798,
+      "pid": 2379783,
       "role": "speaker-C",
-      "target": "socket:[46466466]"
+      "target": "socket:[61195727]"
     },
     {
       "fd": 14,
-      "pid": 1732798,
+      "pid": 2379783,
       "role": "speaker-C",
-      "target": "socket:[46465463]"
+      "target": "socket:[61195724]"
     },
     {
       "fd": 15,
-      "pid": 1732798,
+      "pid": 2379783,
       "role": "speaker-C",
-      "target": "socket:[46465464]"
+      "target": "socket:[61195728]"
     },
     {
       "fd": 16,
-      "pid": 1732798,
+      "pid": 2379783,
       "role": "speaker-C",
-      "target": "socket:[46465465]"
+      "target": "socket:[61189881]"
+    },
+    {
+      "fd": 17,
+      "pid": 2379783,
+      "role": "speaker-C",
+      "target": "socket:[61189882]"
     },
     {
       "fd": 19,
-      "pid": 1732798,
+      "pid": 2379783,
       "role": "speaker-C",
-      "target": "socket:[46463658]"
+      "target": "socket:[61202500]"
     },
     {
       "fd": 20,
-      "pid": 1732798,
+      "pid": 2379783,
       "role": "speaker-C",
-      "target": "socket:[46463659]"
+      "target": "socket:[61202501]"
     },
     {
       "fd": 21,
-      "pid": 1732798,
+      "pid": 2379783,
       "role": "speaker-C",
-      "target": "socket:[46463660]"
+      "target": "socket:[61202502]"
     },
     {
       "fd": 22,
-      "pid": 1732798,
+      "pid": 2379783,
       "role": "speaker-C",
-      "target": "socket:[46463661]"
+      "target": "socket:[61202503]"
     },
     {
       "fd": 23,
-      "pid": 1732798,
+      "pid": 2379783,
       "role": "speaker-C",
-      "target": "socket:[46467495]"
+      "target": "socket:[61194982]"
     },
     {
       "fd": 24,
-      "pid": 1732798,
+      "pid": 2379783,
       "role": "speaker-C",
-      "target": "socket:[46467496]"
+      "target": "socket:[61194983]"
     },
     {
       "fd": 25,
-      "pid": 1732798,
+      "pid": 2379783,
       "role": "speaker-C",
-      "target": "socket:[46462507]"
-    },
-    {
-      "fd": 26,
-      "pid": 1732798,
-      "role": "speaker-C",
-      "target": "socket:[46465466]"
+      "target": "socket:[61201542]"
     }
   ],
-  "network_snapshot": "Netid State  Recv-Q Send-Q                   Local Address:Port  Peer Address:PortProcess                                       \nudp   UNCONN 0      0                              0.0.0.0:59320      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=1732798,fd=15))\nudp   UNCONN 0      0                              0.0.0.0:43280      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=1732792,fd=12))\nudp   UNCONN 0      0                              0.0.0.0:60240      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=1732798,fd=9)) \nudp   UNCONN 0      0                              0.0.0.0:60913      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=1732792,fd=21))\nudp   UNCONN 0      0                              0.0.0.0:44830      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=1732797,fd=9)) \nudp   UNCONN 0      0                              0.0.0.0:45900      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=1732792,fd=14))\nudp   UNCONN 0      0                       172.24.228.196:46968      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=1732792,fd=11))\nudp   UNCONN 0      0                              0.0.0.0:47040      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=1732797,fd=21))\nudp   UNCONN 0      0                           127.0.0.54:53         0.0.0.0:*                                                 \nudp   UNCONN 0      0                        127.0.0.53%lo:53         0.0.0.0:*                                                 \nudp   UNCONN 0      0                            127.0.0.1:323        0.0.0.0:*                                                 \nudp   UNCONN 0      0                              0.0.0.0:49497      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=1732792,fd=25))\nudp   UNCONN 0      0                            127.0.0.1:17901      0.0.0.0:*    users:((\"livekit-server\",pid=1732766,fd=21)) \nudp   UNCONN 0      0                            127.0.0.1:17902      0.0.0.0:*    users:((\"livekit-server\",pid=1732766,fd=12)) \nudp   UNCONN 0      0                            127.0.0.1:17924      0.0.0.0:*    users:((\"livekit-server\",pid=1732766,fd=11)) \nudp   UNCONN 0      0                       172.24.228.196:17932      0.0.0.0:*    users:((\"livekit-server\",pid=1732766,fd=22)) \nudp   UNCONN 0      0                            127.0.0.1:17939      0.0.0.0:*    users:((\"livekit-server\",pid=1732766,fd=17)) \nudp   UNCONN 0      0                            127.0.0.1:17943      0.0.0.0:*    users:((\"livekit-server\",pid=1732766,fd=26)) \nudp   UNCONN 0      0                            127.0.0.1:17953      0.0.0.0:*    users:((\"livekit-server\",pid=1732766,fd=20)) \nudp   UNCONN 0      0                       172.24.228.196:17956      0.0.0.0:*    users:((\"livekit-server\",pid=1732766,fd=27)) \nudp   UNCONN 0      0                       172.24.228.196:17957      0.0.0.0:*    users:((\"livekit-server\",pid=1732766,fd=15)) \nudp   UNCONN 0      0                       172.24.228.196:17963      0.0.0.0:*    users:((\"livekit-server\",pid=1732766,fd=18)) \nudp   UNCONN 0      0                       172.24.228.196:17966      0.0.0.0:*    users:((\"livekit-server\",pid=1732766,fd=23)) \nudp   UNCONN 0      0                       172.24.228.196:17993      0.0.0.0:*    users:((\"livekit-server\",pid=1732766,fd=13)) \nudp   UNCONN 0      0                       172.24.228.196:35292      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=1732798,fd=23))\nudp   UNCONN 0      0                              0.0.0.0:51955      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=1732792,fd=9)) \nudp   UNCONN 0      0                              0.0.0.0:52033      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=1732792,fd=26))\nudp   UNCONN 0      0                              0.0.0.0:36131      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=1732797,fd=15))\nudp   UNCONN 0      0                              0.0.0.0:36335      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=1732797,fd=13))\nudp   UNCONN 0      0                              0.0.0.0:53036      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=1732792,fd=16))\nudp   UNCONN 0      0                              0.0.0.0:36949      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=1732798,fd=25))\nudp   UNCONN 0      0                              0.0.0.0:5353       0.0.0.0:*    users:((\"osl-task-4701-s\",pid=1732797,fd=19))\nudp   UNCONN 0      0                              0.0.0.0:5353       0.0.0.0:*    users:((\"osl-task-4701-s\",pid=1732792,fd=19))\nudp   UNCONN 0      0                              0.0.0.0:5353       0.0.0.0:*    users:((\"osl-task-4701-s\",pid=1732798,fd=19))\nudp   UNCONN 0      0                              0.0.0.0:5353       0.0.0.0:*    users:((\"osl-task-4701-s\",pid=1732797,fd=7)) \nudp   UNCONN 0      0                              0.0.0.0:5353       0.0.0.0:*    users:((\"osl-task-4701-s\",pid=1732792,fd=7)) \nudp   UNCONN 0      0                              0.0.0.0:5353       0.0.0.0:*    users:((\"osl-task-4701-s\",pid=1732798,fd=7)) \nudp   UNCONN 0      0                              0.0.0.0:54634      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=1732797,fd=25))\nudp   UNCONN 0      0                              0.0.0.0:38833      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=1732797,fd=26))\nudp   UNCONN 0      0                       172.24.228.196:55486      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=1732792,fd=23))\nudp   UNCONN 0      0                              0.0.0.0:55563      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=1732798,fd=26))\nudp   UNCONN 0      0                              0.0.0.0:39368      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=1732797,fd=14))\nudp   UNCONN 0      0                              0.0.0.0:39491      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=1732798,fd=12))\nudp   UNCONN 0      0                       172.24.228.196:39709      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=1732797,fd=11))\nudp   UNCONN 0      0                              0.0.0.0:40503      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=1732798,fd=16))\nudp   UNCONN 0      0                       172.24.228.196:56939      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=1732797,fd=23))\nudp   UNCONN 0      0                              0.0.0.0:40949      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=1732797,fd=16))\nudp   UNCONN 0      0                              0.0.0.0:41253      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=1732792,fd=15))\nudp   UNCONN 0      0                              0.0.0.0:57926      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=1732798,fd=21))\nudp   UNCONN 0      0                              0.0.0.0:58319      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=1732798,fd=14))\nudp   UNCONN 0      0                       172.24.228.196:58465      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=1732798,fd=11))\nudp   UNCONN 0      0                                    *:42590            *:*    users:((\"cloudflared\",pid=349,fd=4))         \nudp   UNCONN 0      0                                    *:59547            *:*    users:((\"cloudflared\",pid=349,fd=7))         \nudp   UNCONN 0      0                                    *:43446            *:*    users:((\"cloudflared\",pid=349,fd=8))         \nudp   UNCONN 0      0                                 [::]:44563         [::]:*    users:((\"osl-task-4701-s\",pid=1732798,fd=10))\nudp   UNCONN 0      0      [fe80::215:5dff:fe80:3f43]%eth0:44957         [::]:*    users:((\"osl-task-4701-s\",pid=1732798,fd=13))\nudp   UNCONN 0      0                                 [::]:45318         [::]:*    users:((\"osl-task-4701-s\",pid=1732797,fd=22))\nudp   UNCONN 0      0      [fe80::215:5dff:fe80:3f43]%eth0:46741         [::]:*    users:((\"osl-task-4701-s\",pid=1732798,fd=24))\nudp   UNCONN 0      0      [fe80::215:5dff:fe80:3f43]%eth0:46807         [::]:*    users:((\"osl-task-4701-s\",pid=1732797,fd=12))\nudp   UNCONN 0      0                                 [::]:47437         [::]:*    users:((\"osl-task-4701-s\",pid=1732797,fd=10))\nudp   UNCONN 0      0                                 [::]:47571         [::]:*    users:((\"osl-task-4701-s\",pid=1732792,fd=10))\nudp   UNCONN 0      0                                 [::]:47805         [::]:*    users:((\"osl-task-4701-s\",pid=1732792,fd=22))\nudp   UNCONN 0      0                                [::1]:323           [::]:*                                                 \nudp   UNCONN 0      0                                 [::]:33656         [::]:*    users:((\"osl-task-4701-s\",pid=1732798,fd=22))\nudp   UNCONN 0      0      [fe80::215:5dff:fe80:3f43]%eth0:17916         [::]:*    users:((\"livekit-server\",pid=1732766,fd=25)) \nudp   UNCONN 0      0      [fe80::215:5dff:fe80:3f43]%eth0:17919         [::]:*    users:((\"livekit-server\",pid=1732766,fd=24)) \nudp   UNCONN 0      0      [fe80::215:5dff:fe80:3f43]%eth0:17924         [::]:*    users:((\"livekit-server\",pid=1732766,fd=19)) \nudp   UNCONN 0      0      [fe80::215:5dff:fe80:3f43]%eth0:17944         [::]:*    users:((\"livekit-server\",pid=1732766,fd=28)) \nudp   UNCONN 0      0      [fe80::215:5dff:fe80:3f43]%eth0:17983         [::]:*    users:((\"livekit-server\",pid=1732766,fd=16)) \nudp   UNCONN 0      0      [fe80::215:5dff:fe80:3f43]%eth0:17997         [::]:*    users:((\"livekit-server\",pid=1732766,fd=14)) \nudp   UNCONN 0      0                                    *:51906            *:*    users:((\"cloudflared\",pid=349,fd=9))         \nudp   UNCONN 0      0      [fe80::215:5dff:fe80:3f43]%eth0:52282         [::]:*    users:((\"osl-task-4701-s\",pid=1732797,fd=24))\nudp   UNCONN 0      0                                 [::]:5353          [::]:*    users:((\"osl-task-4701-s\",pid=1732797,fd=20))\nudp   UNCONN 0      0                                 [::]:5353          [::]:*    users:((\"osl-task-4701-s\",pid=1732792,fd=20))\nudp   UNCONN 0      0                                 [::]:5353          [::]:*    users:((\"osl-task-4701-s\",pid=1732798,fd=20))\nudp   UNCONN 0      0                                 [::]:5353          [::]:*    users:((\"osl-task-4701-s\",pid=1732797,fd=8)) \nudp   UNCONN 0      0                                 [::]:5353          [::]:*    users:((\"osl-task-4701-s\",pid=1732792,fd=8)) \nudp   UNCONN 0      0                                 [::]:5353          [::]:*    users:((\"osl-task-4701-s\",pid=1732798,fd=8)) \nudp   UNCONN 0      0      [fe80::215:5dff:fe80:3f43]%eth0:38800         [::]:*    users:((\"osl-task-4701-s\",pid=1732792,fd=13))\nudp   UNCONN 0      0      [fe80::215:5dff:fe80:3f43]%eth0:56499         [::]:*    users:((\"osl-task-4701-s\",pid=1732792,fd=24))\ntcp   LISTEN 0      4096                         127.0.0.1:17880      0.0.0.0:*    users:((\"livekit-server\",pid=1732766,fd=7))  \ntcp   LISTEN 0      128                          127.0.0.1:17443      0.0.0.0:*    users:((\"python3\",pid=1732767,fd=3))         \ntcp   LISTEN 0      10                           127.0.0.1:34431      0.0.0.0:*    users:((\"chrome-headless\",pid=2811413,fd=38))\ntcp   LISTEN 0      10                           127.0.0.1:36781      0.0.0.0:*    users:((\"chrome-headless\",pid=771897,fd=40)) \ntcp   LISTEN 0      4096                         127.0.0.1:20241      0.0.0.0:*    users:((\"cloudflared\",pid=349,fd=10))        \ntcp   LISTEN 0      4096                         127.0.0.1:4226       0.0.0.0:*    users:((\"sccache\",pid=3811892,fd=11))        \ntcp   LISTEN 0      10                           127.0.0.1:38621      0.0.0.0:*    users:((\"chrome-headless\",pid=2799665,fd=40))\ntcp   LISTEN 0      5                            127.0.0.1:8899       0.0.0.0:*    users:((\"python3\",pid=276333,fd=3))          \ntcp   LISTEN 0      128                          127.0.0.1:8789       0.0.0.0:*    users:((\"osl-crypto-watc\",pid=6178,fd=14))   \ntcp   LISTEN 0      10                           127.0.0.1:42923      0.0.0.0:*    users:((\"chrome-headless\",pid=762955,fd=40)) \ntcp   LISTEN 0      4096                           0.0.0.0:22         0.0.0.0:*                                                 \ntcp   LISTEN 0      10                           127.0.0.1:43279      0.0.0.0:*    users:((\"chrome-headless\",pid=2804760,fd=42))\ntcp   LISTEN 0      10                           127.0.0.1:44345      0.0.0.0:*    users:((\"chrome-headless\",pid=767210,fd=44)) \ntcp   LISTEN 0      4096                         127.0.0.1:11434      0.0.0.0:*                                                 \ntcp   LISTEN 0      4096                        127.0.0.54:53         0.0.0.0:*                                                 \ntcp   LISTEN 0      4096                     127.0.0.53%lo:53         0.0.0.0:*                                                 \ntcp   LISTEN 0      511                            0.0.0.0:4175       0.0.0.0:*    users:((\"node\",pid=4006261,fd=22))           \ntcp   LISTEN 0      4096                                 *:17881            *:*    users:((\"livekit-server\",pid=1732766,fd=4))  \ntcp   LISTEN 0      4096                              [::]:22            [::]:*                                                 \nNetid State      Recv-Q Send-Q  Local Address:Port     Peer Address:Port Process                                                           \ntcp   ESTAB      0      0           127.0.0.1:17880       127.0.0.1:44562 users:((\"livekit-server\",pid=1732766,fd=9))                      \ntcp   CLOSE-WAIT 1      0           127.0.0.1:4226        127.0.0.1:50274 users:((\"sccache\",pid=3811892,fd=19))                            \ntcp   ESTAB      0      0           127.0.0.1:4226        127.0.0.1:40066 users:((\"sccache\",pid=3811892,fd=21))                            \ntcp   ESTAB      0      0           127.0.0.1:40066       127.0.0.1:4226  users:((\"sccache\",pid=1707949,fd=8),(\"sccache\",pid=1707949,fd=7))\ntcp   ESTAB      0      0           127.0.0.1:40074       127.0.0.1:4226  users:((\"sccache\",pid=1707948,fd=8),(\"sccache\",pid=1707948,fd=7))\ntcp   ESTAB      0      0           127.0.0.1:40080       127.0.0.1:4226  users:((\"sccache\",pid=1707950,fd=8),(\"sccache\",pid=1707950,fd=7))\ntcp   ESTAB      0      0           127.0.0.1:40106       127.0.0.1:4226  users:((\"sccache\",pid=1708731,fd=8),(\"sccache\",pid=1708731,fd=7))\ntcp   ESTAB      0      0           127.0.0.1:17443       127.0.0.1:49328 users:((\"python3\",pid=1732767,fd=5))                             \ntcp   ESTAB      0      0           127.0.0.1:46642       127.0.0.1:4226  users:((\"sccache\",pid=1720899,fd=8),(\"sccache\",pid=1720899,fd=7))\ntcp   ESTAB      0      0           127.0.0.1:49610       127.0.0.1:4226  users:((\"sccache\",pid=1667921,fd=8),(\"sccache\",pid=1667921,fd=7))\ntcp   ESTAB      0      0           127.0.0.1:50188       127.0.0.1:4226  users:((\"sccache\",pid=1704582,fd=8),(\"sccache\",pid=1704582,fd=7))\ntcp   ESTAB      0      0           127.0.0.1:50230       127.0.0.1:4226  users:((\"sccache\",pid=1704897,fd=8),(\"sccache\",pid=1704897,fd=7))\ntcp   ESTAB      0      0           127.0.0.1:50234       127.0.0.1:4226  users:((\"sccache\",pid=1704906,fd=8),(\"sccache\",pid=1704906,fd=7))\ntcp   ESTAB      0      0           127.0.0.1:50258       127.0.0.1:4226  users:((\"sccache\",pid=1704999,fd=8),(\"sccache\",pid=1704999,fd=7))\ntcp   ESTAB      0      0           127.0.0.1:17880       127.0.0.1:44564 users:((\"livekit-server\",pid=1732766,fd=8))                      \ntcp   ESTAB      0      0      172.24.228.196:33700  172.64.155.209:443   users:((\"codex\",pid=1441413,fd=33))                              \ntcp   ESTAB      0      0      172.24.228.196:34234  172.64.155.209:443   users:((\"codex\",pid=1456922,fd=49))                              \ntcp   ESTAB      0      0      172.24.228.196:34238  172.64.155.209:443   users:((\"codex\",pid=1459864,fd=37))                              \ntcp   ESTAB      0      0      172.24.228.196:34666  172.64.155.209:443   users:((\"codex\",pid=1497089,fd=48))                              \ntcp   ESTAB      0      0      172.24.228.196:34696  172.64.155.209:443   users:((\"codex\",pid=1497089,fd=52))                              \ntcp   ESTAB      0      0      172.24.228.196:35252  172.64.155.209:443   users:((\"codex\",pid=1707111,fd=61))                              \ntcp   ESTAB      0      0      172.24.228.196:35606  172.64.155.209:443   users:((\"codex\",pid=1450931,fd=49))                              \ntcp   ESTAB      0      0      172.24.228.196:37012  172.64.155.209:443   users:((\"codex\",pid=1704527,fd=46))                              \ntcp   ESTAB      0      0      172.24.228.196:37032  172.64.155.209:443   users:((\"codex\",pid=1707111,fd=36))                              \ntcp   ESTAB      0      0      172.24.228.196:37790  172.64.155.209:443   users:((\"codex\",pid=1588262,fd=47))                              \ntcp   ESTAB      0      0      172.24.228.196:37834  172.64.155.209:443   users:((\"codex\",pid=1450931,fd=40))                              \ntcp   ESTAB      0      0           127.0.0.1:4226        127.0.0.1:50234 users:((\"sccache\",pid=3811892,fd=17))                            \ntcp   ESTAB      0      0      172.24.228.196:41338  172.64.155.209:443   users:((\"codex\",pid=1328910,fd=45))                              \ntcp   ESTAB      0      0      172.24.228.196:43840  172.64.155.209:443   users:((\"codex\",pid=1441413,fd=51))                              \ntcp   ESTAB      0      0      172.24.228.196:44094  172.64.155.209:443   users:((\"codex\",pid=1441413,fd=54))                              \ntcp   ESTAB      0      0      172.24.228.196:45020  172.64.155.209:443   users:((\"codex\",pid=1326371,fd=53))                              \ntcp   ESTAB      0      0      172.24.228.196:45050  172.64.155.209:443   users:((\"codex\",pid=1448427,fd=52))                              \ntcp   ESTAB      0      0      172.24.228.196:45770  172.64.155.209:443   users:((\"codex\",pid=1453343,fd=47))                              \ntcp   ESTAB      0      0      172.24.228.196:47240  172.64.155.209:443   users:((\"codex\",pid=1441413,fd=49))                              \ntcp   ESTAB      0      0      172.24.228.196:47366  172.64.155.209:443   users:((\"codex\",pid=1404253,fd=42))                              \ntcp   ESTAB      0      0      172.24.228.196:48152  172.64.155.209:443   users:((\"codex\",pid=1707111,fd=76))                              \ntcp   ESTAB      0      0      172.24.228.196:48698  172.64.155.209:443   users:((\"codex\",pid=1453343,fd=39))                              \ntcp   ESTAB      0      0      172.24.228.196:48832  172.64.155.209:443   users:((\"codex\",pid=1326371,fd=61))                              \ntcp   ESTAB      0      0      172.24.228.196:49354  172.64.155.209:443   users:((\"codex\",pid=1326371,fd=54))                              \ntcp   ESTAB      0      0      172.24.228.196:49676  172.64.155.209:443   users:((\"codex\",pid=1334653,fd=36))                              \ntcp   ESTAB      0      0           127.0.0.1:17443       127.0.0.1:49334 users:((\"python3\",pid=1732767,fd=6))                             \ntcp   ESTAB      0      0      172.24.228.196:54706  172.64.155.209:443   users:((\"codex\",pid=1448427,fd=49))                              \ntcp   ESTAB      0      0      172.24.228.196:54764  172.64.155.209:443   users:((\"codex\",pid=1450931,fd=36))                              \ntcp   ESTAB      0      0      172.24.228.196:57828  172.64.155.209:443   users:((\"codex\",pid=1707111,fd=42))                              \ntcp   ESTAB      0      0      172.24.228.196:60338  172.64.155.209:443   users:((\"codex\",pid=1459864,fd=43))                              \ntcp   ESTAB      0      0      172.24.228.196:60358  172.64.155.209:443   users:((\"codex\",pid=1704527,fd=55))                              \ntcp   ESTAB      0      0           127.0.0.1:4226        127.0.0.1:40080 users:((\"sccache\",pid=3811892,fd=23))                            \ntcp   ESTAB      0      0           127.0.0.1:4226        127.0.0.1:46642 users:((\"sccache\",pid=3811892,fd=24))                            \ntcp   ESTAB      0      0      172.24.228.196:40448 149.154.166.110:443   users:((\"python3\",pid=60806,fd=4))                               \ntcp   ESTAB      0      0           127.0.0.1:4226        127.0.0.1:50188 users:((\"sccache\",pid=3811892,fd=15))                            \ntcp   ESTAB      0      0           127.0.0.1:49314       127.0.0.1:17443 users:((\"osl-task-4701-s\",pid=1732797,fd=4))                     \ntcp   ESTAB      0      0           127.0.0.1:49328       127.0.0.1:17443 users:((\"osl-task-4701-s\",pid=1732798,fd=4))                     \ntcp   ESTAB      0      0           127.0.0.1:49334       127.0.0.1:17443 users:((\"osl-task-4701-s\",pid=1732792,fd=4))                     \ntcp   ESTAB      0      0           127.0.0.1:17443       127.0.0.1:49314 users:((\"python3\",pid=1732767,fd=4))                             \ntcp   ESTAB      0      0           127.0.0.1:4226        127.0.0.1:40106 users:((\"sccache\",pid=3811892,fd=20))                            \ntcp   ESTAB      0      0           127.0.0.1:17880       127.0.0.1:44584 users:((\"livekit-server\",pid=1732766,fd=10))                     \ntcp   ESTAB      0      0      172.24.228.196:36794    104.18.32.47:443   users:((\"codex\",pid=1588262,fd=40))                              \ntcp   ESTAB      0      0      172.24.228.196:36800    104.18.32.47:443   users:((\"codex\",pid=1334653,fd=19))                              \ntcp   ESTAB      0      0      172.24.228.196:37980    104.18.32.47:443   users:((\"codex\",pid=1459864,fd=47))                              \ntcp   ESTAB      0      0      172.24.228.196:38156    104.18.32.47:443   users:((\"codex\",pid=1456922,fd=44))                              \ntcp   ESTAB      0      0      172.24.228.196:40514    104.18.32.47:443   users:((\"codex\",pid=1326371,fd=34))                              \ntcp   ESTAB      0      0      172.24.228.196:40842    104.18.32.47:443   users:((\"codex\",pid=1621984,fd=39))                              \ntcp   ESTAB      0      0      172.24.228.196:41040    104.18.32.47:443   users:((\"codex\",pid=1497089,fd=44))                              \ntcp   ESTAB      0      0      172.24.228.196:42436    104.18.32.47:443   users:((\"codex\",pid=1704527,fd=39))                              \ntcp   ESTAB      0      0      172.24.228.196:43036    104.18.32.47:443   users:((\"codex\",pid=1685002,fd=52))                              \ntcp   ESTAB      0      0      172.24.228.196:43044    104.18.32.47:443   users:((\"codex\",pid=1448427,fd=19))                              \ntcp   ESTAB      0      0           127.0.0.1:4226        127.0.0.1:50230 users:((\"sccache\",pid=3811892,fd=16))                            \ntcp   ESTAB      0      44     172.24.228.196:52456   217.216.53.84:22    users:((\"ssh\",pid=1733079,fd=3))                                 \ntcp   ESTAB      0      0      172.24.228.196:46932    104.18.32.47:443   users:((\"codex\",pid=1326371,fd=19))                              \ntcp   ESTAB      0      0           127.0.0.1:44562       127.0.0.1:17880 users:((\"python3\",pid=1732767,fd=8))                             \ntcp   ESTAB      0      0           127.0.0.1:44564       127.0.0.1:17880 users:((\"python3\",pid=1732767,fd=10))                            \ntcp   ESTAB      0      0           127.0.0.1:44584       127.0.0.1:17880 users:((\"python3\",pid=1732767,fd=9))                             \ntcp   ESTAB      0      0      172.24.228.196:47932    104.18.32.47:443   users:((\"codex\",pid=1685002,fd=45))                              \ntcp   ESTAB      0      0      172.24.228.196:48548    104.18.32.47:443   users:((\"codex\",pid=1334653,fd=46))                              \ntcp   ESTAB      0      0      172.24.228.196:48696    104.18.32.47:443   users:((\"codex\",pid=1404253,fd=40))                              \ntcp   ESTAB      0      0      172.24.228.196:48910    104.18.32.47:443   users:((\"codex\",pid=1328910,fd=43))                              \ntcp   ESTAB      0      0      172.24.228.196:49654    104.18.32.47:443   users:((\"codex\",pid=1456922,fd=33))                              \ntcp   ESTAB      0      0      172.24.228.196:50014    104.18.32.47:443   users:((\"codex\",pid=1588262,fd=34))                              \ntcp   ESTAB      0      0      172.24.228.196:50394    104.18.32.47:443   users:((\"codex\",pid=1328910,fd=46))                              \ntcp   ESTAB      0      0      172.24.228.196:50718    104.18.32.47:443   users:((\"codex\",pid=1621984,fd=33))                              \ntcp   ESTAB      0      0      172.24.228.196:51384    104.18.32.47:443   users:((\"codex\",pid=1441413,fd=52))                              \ntcp   ESTAB      0      0      172.24.228.196:51774    104.18.32.47:443   users:((\"codex\",pid=1685002,fd=50))                              \ntcp   ESTAB      0      0      172.24.228.196:58246    104.18.32.47:443   users:((\"codex\",pid=1621984,fd=50))                              \ntcp   ESTAB      0      0           127.0.0.1:4226        127.0.0.1:49610 users:((\"sccache\",pid=3811892,fd=31))                            \ntcp   ESTAB      0      0           127.0.0.1:4226        127.0.0.1:50258 users:((\"sccache\",pid=3811892,fd=18))                            \ntcp   ESTAB      0      0           127.0.0.1:4226        127.0.0.1:40074 users:((\"sccache\",pid=3811892,fd=22))                            \n",
+  "network_snapshot": "Netid State  Recv-Q Send-Q                   Local Address:Port  Peer Address:PortProcess                                       \nudp   UNCONN 0      0                              0.0.0.0:43561      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=2379782,fd=9)) \nudp   UNCONN 0      0                       172.24.228.196:43572      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=2379783,fd=11))\nudp   UNCONN 0      0                              0.0.0.0:43713      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=2379783,fd=21))\nudp   UNCONN 0      0                              0.0.0.0:60259      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=2379783,fd=14))\nudp   UNCONN 0      0                              0.0.0.0:60345      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=2379782,fd=18))\nudp   UNCONN 0      0                       172.24.228.196:44017      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=2379783,fd=23))\nudp   UNCONN 0      0                       172.24.228.196:45859      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=2379782,fd=11))\nudp   UNCONN 0      0                              0.0.0.0:45925      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=2379781,fd=14))\nudp   UNCONN 0      0                       172.24.228.196:46396      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=2379781,fd=23))\nudp   UNCONN 0      0                              0.0.0.0:48195      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=2379783,fd=15))\nudp   UNCONN 0      0                           127.0.0.54:53         0.0.0.0:*                                                 \nudp   UNCONN 0      0                        127.0.0.53%lo:53         0.0.0.0:*                                                 \nudp   UNCONN 0      0                              0.0.0.0:49318      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=2379781,fd=21))\nudp   UNCONN 0      0                            127.0.0.1:323        0.0.0.0:*                                                 \nudp   UNCONN 0      0                              0.0.0.0:34178      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=2379783,fd=16))\nudp   UNCONN 0      0                            127.0.0.1:17902      0.0.0.0:*    users:((\"livekit-server\",pid=2379683,fd=20)) \nudp   UNCONN 0      0                       172.24.228.196:17934      0.0.0.0:*    users:((\"livekit-server\",pid=2379683,fd=18)) \nudp   UNCONN 0      0                       172.24.228.196:17940      0.0.0.0:*    users:((\"livekit-server\",pid=2379683,fd=21)) \nudp   UNCONN 0      0                       172.24.228.196:17943      0.0.0.0:*    users:((\"livekit-server\",pid=2379683,fd=15)) \nudp   UNCONN 0      0                       172.24.228.196:17944      0.0.0.0:*    users:((\"livekit-server\",pid=2379683,fd=27)) \nudp   UNCONN 0      0                       172.24.228.196:17947      0.0.0.0:*    users:((\"livekit-server\",pid=2379683,fd=12)) \nudp   UNCONN 0      0                            127.0.0.1:17956      0.0.0.0:*    users:((\"livekit-server\",pid=2379683,fd=26)) \nudp   UNCONN 0      0                            127.0.0.1:17957      0.0.0.0:*    users:((\"livekit-server\",pid=2379683,fd=14)) \nudp   UNCONN 0      0                            127.0.0.1:17967      0.0.0.0:*    users:((\"livekit-server\",pid=2379683,fd=17)) \nudp   UNCONN 0      0                       172.24.228.196:17978      0.0.0.0:*    users:((\"livekit-server\",pid=2379683,fd=24)) \nudp   UNCONN 0      0                            127.0.0.1:17982      0.0.0.0:*    users:((\"livekit-server\",pid=2379683,fd=23)) \nudp   UNCONN 0      0                            127.0.0.1:17999      0.0.0.0:*    users:((\"livekit-server\",pid=2379683,fd=11)) \nudp   UNCONN 0      0                              0.0.0.0:50927      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=2379782,fd=21))\nudp   UNCONN 0      0                              0.0.0.0:51520      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=2379781,fd=15))\nudp   UNCONN 0      0                              0.0.0.0:35296      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=2379782,fd=17))\nudp   UNCONN 0      0                              0.0.0.0:51783      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=2379783,fd=9)) \nudp   UNCONN 0      0                              0.0.0.0:36102      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=2379783,fd=25))\nudp   UNCONN 0      0                              0.0.0.0:52801      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=2379783,fd=17))\nudp   UNCONN 0      0                       172.24.228.196:36551      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=2379782,fd=23))\nudp   UNCONN 0      0                              0.0.0.0:53305      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=2379782,fd=14))\nudp   UNCONN 0      0                              0.0.0.0:53855      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=2379782,fd=16))\nudp   UNCONN 0      0                              0.0.0.0:54230      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=2379782,fd=13))\nudp   UNCONN 0      0                              0.0.0.0:38056      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=2379781,fd=16))\nudp   UNCONN 0      0                              0.0.0.0:54504      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=2379783,fd=13))\nudp   UNCONN 0      0                              0.0.0.0:5353       0.0.0.0:*    users:((\"osl-task-4701-s\",pid=2379783,fd=19))\nudp   UNCONN 0      0                              0.0.0.0:5353       0.0.0.0:*    users:((\"osl-task-4701-s\",pid=2379782,fd=19))\nudp   UNCONN 0      0                              0.0.0.0:5353       0.0.0.0:*    users:((\"osl-task-4701-s\",pid=2379781,fd=19))\nudp   UNCONN 0      0                              0.0.0.0:5353       0.0.0.0:*    users:((\"osl-task-4701-s\",pid=2379783,fd=7)) \nudp   UNCONN 0      0                              0.0.0.0:5353       0.0.0.0:*    users:((\"osl-task-4701-s\",pid=2379782,fd=7)) \nudp   UNCONN 0      0                              0.0.0.0:5353       0.0.0.0:*    users:((\"osl-task-4701-s\",pid=2379781,fd=7)) \nudp   UNCONN 0      0                              0.0.0.0:54552      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=2379781,fd=18))\nudp   UNCONN 0      0                              0.0.0.0:54872      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=2379781,fd=9)) \nudp   UNCONN 0      0                              0.0.0.0:38547      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=2379781,fd=17))\nudp   UNCONN 0      0                       172.24.228.196:55378      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=2379781,fd=11))\nudp   UNCONN 0      0                              0.0.0.0:40586      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=2379782,fd=15))\nudp   UNCONN 0      0                              0.0.0.0:58509      0.0.0.0:*    users:((\"osl-task-4701-s\",pid=2379781,fd=25))\nudp   UNCONN 0      0                                    *:42590            *:*    users:((\"cloudflared\",pid=349,fd=4))         \nudp   UNCONN 0      0      [fe80::215:5dff:fe80:3f43]%eth0:59204         [::]:*    users:((\"osl-task-4701-s\",pid=2379782,fd=12))\nudp   UNCONN 0      0                                    *:59547            *:*    users:((\"cloudflared\",pid=349,fd=7))         \nudp   UNCONN 0      0                                    *:43446            *:*    users:((\"cloudflared\",pid=349,fd=8))         \nudp   UNCONN 0      0      [fe80::215:5dff:fe80:3f43]%eth0:59987         [::]:*    users:((\"osl-task-4701-s\",pid=2379783,fd=12))\nudp   UNCONN 0      0      [fe80::215:5dff:fe80:3f43]%eth0:44575         [::]:*    users:((\"osl-task-4701-s\",pid=2379781,fd=24))\nudp   UNCONN 0      0                                 [::]:48460         [::]:*    users:((\"osl-task-4701-s\",pid=2379782,fd=10))\nudp   UNCONN 0      0                                [::1]:323           [::]:*                                                 \nudp   UNCONN 0      0                                 [::]:34193         [::]:*    users:((\"osl-task-4701-s\",pid=2379782,fd=22))\nudp   UNCONN 0      0      [fe80::215:5dff:fe80:3f43]%eth0:17921         [::]:*    users:((\"livekit-server\",pid=2379683,fd=19)) \nudp   UNCONN 0      0      [fe80::215:5dff:fe80:3f43]%eth0:17922         [::]:*    users:((\"livekit-server\",pid=2379683,fd=28)) \nudp   UNCONN 0      0      [fe80::215:5dff:fe80:3f43]%eth0:17935         [::]:*    users:((\"livekit-server\",pid=2379683,fd=22)) \nudp   UNCONN 0      0      [fe80::215:5dff:fe80:3f43]%eth0:17938         [::]:*    users:((\"livekit-server\",pid=2379683,fd=13)) \nudp   UNCONN 0      0      [fe80::215:5dff:fe80:3f43]%eth0:17974         [::]:*    users:((\"livekit-server\",pid=2379683,fd=16)) \nudp   UNCONN 0      0      [fe80::215:5dff:fe80:3f43]%eth0:17993         [::]:*    users:((\"livekit-server\",pid=2379683,fd=25)) \nudp   UNCONN 0      0      [fe80::215:5dff:fe80:3f43]%eth0:34642         [::]:*    users:((\"osl-task-4701-s\",pid=2379783,fd=24))\nudp   UNCONN 0      0                                    *:51906            *:*    users:((\"cloudflared\",pid=349,fd=9))         \nudp   UNCONN 0      0                                 [::]:51921         [::]:*    users:((\"osl-task-4701-s\",pid=2379783,fd=10))\nudp   UNCONN 0      0                                 [::]:35570         [::]:*    users:((\"osl-task-4701-s\",pid=2379781,fd=22))\nudp   UNCONN 0      0                                 [::]:36547         [::]:*    users:((\"osl-task-4701-s\",pid=2379781,fd=10))\nudp   UNCONN 0      0      [fe80::215:5dff:fe80:3f43]%eth0:53116         [::]:*    users:((\"osl-task-4701-s\",pid=2379782,fd=24))\nudp   UNCONN 0      0                                 [::]:5353          [::]:*    users:((\"osl-task-4701-s\",pid=2379783,fd=20))\nudp   UNCONN 0      0                                 [::]:5353          [::]:*    users:((\"osl-task-4701-s\",pid=2379782,fd=20))\nudp   UNCONN 0      0                                 [::]:5353          [::]:*    users:((\"osl-task-4701-s\",pid=2379781,fd=20))\nudp   UNCONN 0      0                                 [::]:5353          [::]:*    users:((\"osl-task-4701-s\",pid=2379783,fd=8)) \nudp   UNCONN 0      0                                 [::]:5353          [::]:*    users:((\"osl-task-4701-s\",pid=2379782,fd=8)) \nudp   UNCONN 0      0                                 [::]:5353          [::]:*    users:((\"osl-task-4701-s\",pid=2379781,fd=8)) \nudp   UNCONN 0      0                                 [::]:41007         [::]:*    users:((\"osl-task-4701-s\",pid=2379783,fd=22))\nudp   UNCONN 0      0      [fe80::215:5dff:fe80:3f43]%eth0:57957         [::]:*    users:((\"osl-task-4701-s\",pid=2379781,fd=12))\ntcp   LISTEN 0      4096                         127.0.0.1:17880      0.0.0.0:*    users:((\"livekit-server\",pid=2379683,fd=7))  \ntcp   LISTEN 0      128                          127.0.0.1:17443      0.0.0.0:*    users:((\"python3\",pid=2379684,fd=3))         \ntcp   LISTEN 0      4096                           0.0.0.0:8333       0.0.0.0:*    users:((\"bitcoind\",pid=1685432,fd=28))       \ntcp   LISTEN 0      128                          127.0.0.1:18081      0.0.0.0:*    users:((\"monerod\",pid=1685499,fd=14))        \ntcp   LISTEN 0      100                          127.0.0.1:18082      0.0.0.0:*    users:((\"monerod\",pid=1685499,fd=21))        \ntcp   LISTEN 0      128                          127.0.0.1:18088      0.0.0.0:*    users:((\"monero-wallet-r\",pid=1685576,fd=17))\ntcp   LISTEN 0      10                           127.0.0.1:34431      0.0.0.0:*    users:((\"chrome-headless\",pid=2811413,fd=38))\ntcp   LISTEN 0      10                           127.0.0.1:36781      0.0.0.0:*    users:((\"chrome-headless\",pid=771897,fd=40)) \ntcp   LISTEN 0      4096                         127.0.0.1:20241      0.0.0.0:*    users:((\"cloudflared\",pid=349,fd=10))        \ntcp   LISTEN 0      4096                         127.0.0.1:4226       0.0.0.0:*    users:((\"sccache\",pid=1790024,fd=11))        \ntcp   LISTEN 0      10                           127.0.0.1:38621      0.0.0.0:*    users:((\"chrome-headless\",pid=2799665,fd=40))\ntcp   LISTEN 0      128                            0.0.0.0:18080      0.0.0.0:*    users:((\"monerod\",pid=1685499,fd=10))        \ntcp   LISTEN 0      128                          127.0.0.1:8332       0.0.0.0:*    users:((\"bitcoind\",pid=1685432,fd=12))       \ntcp   LISTEN 0      4096                         127.0.0.1:8334       0.0.0.0:*    users:((\"bitcoind\",pid=1685432,fd=27))       \ntcp   LISTEN 0      5                            127.0.0.1:8899       0.0.0.0:*    users:((\"python3\",pid=276333,fd=3))          \ntcp   LISTEN 0      128                          127.0.0.1:8789       0.0.0.0:*    users:((\"osl-crypto-watc\",pid=6178,fd=14))   \ntcp   LISTEN 0      10                           127.0.0.1:42923      0.0.0.0:*    users:((\"chrome-headless\",pid=762955,fd=40)) \ntcp   LISTEN 0      4096                           0.0.0.0:22         0.0.0.0:*                                                 \ntcp   LISTEN 0      10                           127.0.0.1:43279      0.0.0.0:*    users:((\"chrome-headless\",pid=2804760,fd=42))\ntcp   LISTEN 0      10                           127.0.0.1:44345      0.0.0.0:*    users:((\"chrome-headless\",pid=767210,fd=44)) \ntcp   LISTEN 0      4096                         127.0.0.1:11434      0.0.0.0:*                                                 \ntcp   LISTEN 0      4096                        127.0.0.54:53         0.0.0.0:*                                                 \ntcp   LISTEN 0      4096                     127.0.0.53%lo:53         0.0.0.0:*                                                 \ntcp   LISTEN 0      511                            0.0.0.0:4175       0.0.0.0:*    users:((\"node\",pid=4006261,fd=22))           \ntcp   LISTEN 0      4096                              [::]:8333          [::]:*    users:((\"bitcoind\",pid=1685432,fd=26))       \ntcp   LISTEN 0      4096                                 *:17881            *:*    users:((\"livekit-server\",pid=2379683,fd=4))  \ntcp   LISTEN 0      4096                              [::]:22            [::]:*                                                 \nNetid State   Recv-Q Send-Q  Local Address:Port     Peer Address:Port Process                                                           \ntcp   ESTAB   0      0      172.24.228.196:60150   82.34.145.205:8333  users:((\"bitcoind\",pid=1685432,fd=32))                           \ntcp   ESTAB   0      0           127.0.0.1:17880       127.0.0.1:39240 users:((\"livekit-server\",pid=2379683,fd=8))                      \ntcp   ESTAB   0      0           127.0.0.1:17443       127.0.0.1:37534 users:((\"python3\",pid=2379684,fd=5))                             \ntcp   ESTAB   0      0      172.24.228.196:35516    51.77.217.35:8333  users:((\"bitcoind\",pid=1685432,fd=33))                           \ntcp   ESTAB   0      0      172.24.228.196:33294  134.199.218.80:18080 users:((\"monerod\",pid=1685499,fd=27))                            \ntcp   ESTAB   0      0      172.24.228.196:48694   35.236.139.60:8333  users:((\"bitcoind\",pid=1685432,fd=35))                           \ntcp   ESTAB   0      0           127.0.0.1:18081       127.0.0.1:53946 users:((\"monerod\",pid=1685499,fd=22))                            \ntcp   ESTAB   0      0      172.24.228.196:45312   34.149.66.165:443   users:((\"claude\",pid=2642823,fd=14))                             \ntcp   ESTAB   0      0           127.0.0.1:4226        127.0.0.1:50852 users:((\"sccache\",pid=1790024,fd=12))                            \ntcp   ESTAB   0      0           127.0.0.1:50852       127.0.0.1:4226  users:((\"sccache\",pid=2380354,fd=8),(\"sccache\",pid=2380354,fd=7))\ntcp   ESTAB   0      0      172.24.228.196:40004   149.50.101.90:18080 users:((\"monerod\",pid=1685499,fd=32))                            \ntcp   ESTAB   0      0      172.24.228.196:57330   139.162.47.70:18080 users:((\"monerod\",pid=1685499,fd=36))                            \ntcp   ESTAB   0      0      172.24.228.196:35104  172.64.155.209:443   users:((\"codex\",pid=2360612,fd=56))                              \ntcp   ESTAB   0      0      172.24.228.196:53362    67.250.1.176:8333  users:((\"bitcoind\",pid=1685432,fd=21))                           \ntcp   ESTAB   0      0      172.24.228.196:43348  172.64.155.209:443   users:((\"codex\",pid=2351505,fd=71))                              \ntcp   ESTAB   0      0      172.24.228.196:42922 134.209.151.104:18080 users:((\"monerod\",pid=1685499,fd=28))                            \ntcp   ESTAB   0      0      172.24.228.196:45464  172.64.155.209:443   users:((\"codex\",pid=2355613,fd=47))                              \ntcp   ESTAB   0      0      172.24.228.196:45472  172.64.155.209:443   users:((\"codex\",pid=2357621,fd=49))                              \ntcp   ESTAB   0      0      172.24.228.196:58602  172.64.155.209:443   users:((\"codex\",pid=2353923,fd=61))                              \ntcp   ESTAB   0      0      172.24.228.196:59410  172.64.155.209:443   users:((\"codex\",pid=2362957,fd=48))                              \ntcp   ESTAB   0      0           127.0.0.1:17880       127.0.0.1:39238 users:((\"livekit-server\",pid=2379683,fd=9))                      \ntcp   ESTAB   0      0      172.24.228.196:34066   96.18.184.112:18080 users:((\"monerod\",pid=1685499,fd=37))                            \ntcp   ESTAB   0      0      172.24.228.196:53756    212.252.3.28:8333  users:((\"bitcoind\",pid=1685432,fd=37))                           \ntcp   ESTAB   0      0      172.24.228.196:57000 165.245.165.157:18080 users:((\"monerod\",pid=1685499,fd=24))                            \ntcp   ESTAB   0      0           127.0.0.1:37534       127.0.0.1:17443 users:((\"osl-task-4701-s\",pid=2379782,fd=4))                     \ntcp   ESTAB   0      0           127.0.0.1:37548       127.0.0.1:17443 users:((\"osl-task-4701-s\",pid=2379783,fd=4))                     \ntcp   ESTAB   0      0           127.0.0.1:37550       127.0.0.1:17443 users:((\"osl-task-4701-s\",pid=2379781,fd=4))                     \ntcp   ESTAB   0      0      172.24.228.196:42392    194.77.71.65:18080 users:((\"monerod\",pid=1685499,fd=29))                            \ntcp   ESTAB   0      0      172.24.228.196:52618 149.154.166.110:443   users:((\"python3\",pid=60806,fd=4))                               \ntcp   ESTAB   0      0      172.24.228.196:59212  161.35.173.140:18080 users:((\"monerod\",pid=1685499,fd=31))                            \ntcp   ESTAB   0      0           127.0.0.1:17443       127.0.0.1:37548 users:((\"python3\",pid=2379684,fd=4))                             \ntcp   ESTAB   0      0           127.0.0.1:53946       127.0.0.1:18081 users:((\"monero-wallet-r\",pid=1685576,fd=19))                    \ntcp   ESTAB   0      0      172.24.228.196:35108   109.189.169.5:8333  users:((\"bitcoind\",pid=1685432,fd=29))                           \ntcp   ESTAB   0      0      172.24.228.196:39228     24.8.139.25:8333  users:((\"bitcoind\",pid=1685432,fd=31))                           \ntcp   ESTAB   0      0           127.0.0.1:17880       127.0.0.1:39256 users:((\"livekit-server\",pid=2379683,fd=10))                     \ntcp   ESTAB   0      0      172.24.228.196:37156   160.79.104.10:443   users:((\"claude\",pid=2642823,fd=11))                             \ntcp   ESTAB   0      0      172.24.228.196:59982    37.114.46.29:18080 users:((\"monerod\",pid=1685499,fd=33))                            \ntcp   ESTAB   0      0      172.24.228.196:58652   160.79.104.10:443   users:((\"claude\",pid=2642823,fd=10))                             \ntcp   ESTAB   0      0      172.24.228.196:33882    104.18.32.47:443   users:((\"codex\",pid=2246468,fd=34))                              \ntcp   ESTAB   0      0      172.24.228.196:33958    104.18.32.47:443   users:((\"codex\",pid=2248360,fd=36))                              \ntcp   ESTAB   0      0      172.24.228.196:36926    104.18.32.47:443   users:((\"codex\",pid=2362957,fd=47))                              \ntcp   ESTAB   0      0      172.24.228.196:51750    34.38.84.102:18080 users:((\"monerod\",pid=1685499,fd=26))                            \ntcp   CLOSING 1      1      172.24.228.196:37640    104.18.32.47:443                                                                    \ntcp   ESTAB   0      0      172.24.228.196:37642    104.18.32.47:443   users:((\"codex\",pid=2376498,fd=35))                              \ntcp   CLOSING 1      1      172.24.228.196:37654    104.18.32.47:443                                                                    \ntcp   CLOSING 1      1      172.24.228.196:37686    104.18.32.47:443                                                                    \ntcp   CLOSING 1      1      172.24.228.196:37692    104.18.32.47:443                                                                    \ntcp   CLOSING 1      1      172.24.228.196:37704    104.18.32.47:443                                                                    \ntcp   CLOSING 1      1      172.24.228.196:37724    104.18.32.47:443                                                                    \ntcp   CLOSING 1      1      172.24.228.196:37740    104.18.32.47:443                                                                    \ntcp   CLOSING 1      1      172.24.228.196:37772    104.18.32.47:443                                                                    \ntcp   CLOSING 1      1      172.24.228.196:37780    104.18.32.47:443                                                                    \ntcp   ESTAB   0      0      172.24.228.196:37792    104.18.32.47:443   users:((\"codex\",pid=2355613,fd=53))                              \ntcp   ESTAB   0      0      172.24.228.196:37954    104.18.32.47:443   users:((\"codex\",pid=2351505,fd=50))                              \ntcp   ESTAB   0      0      172.24.228.196:38008    104.18.32.47:443   users:((\"codex\",pid=2376498,fd=34))                              \ntcp   ESTAB   0      0      172.24.228.196:38954    104.18.32.47:443   users:((\"codex\",pid=2351505,fd=41))                              \ntcp   ESTAB   0      0      172.24.228.196:39238    104.18.32.47:443   users:((\"codex\",pid=2353923,fd=34))                              \ntcp   ESTAB   51     0      172.24.228.196:40422    104.18.32.47:443   users:((\"codex\",pid=2360612,fd=47))                              \ntcp   ESTAB   0      0      172.24.228.196:40506    104.18.32.47:443   users:((\"codex\",pid=2357621,fd=46))                              \ntcp   CLOSING 1      1      172.24.228.196:40554    104.18.32.47:443                                                                    \ntcp   CLOSING 1      1      172.24.228.196:40608    104.18.32.47:443                                                                    \ntcp   CLOSING 1      1      172.24.228.196:40616    104.18.32.47:443                                                                    \ntcp   CLOSING 1      1      172.24.228.196:40640    104.18.32.47:443                                                                    \ntcp   CLOSING 1      1      172.24.228.196:40650    104.18.32.47:443                                                                    \ntcp   CLOSING 1      1      172.24.228.196:40674    104.18.32.47:443                                                                    \ntcp   CLOSING 1      1      172.24.228.196:40682    104.18.32.47:443                                                                    \ntcp   CLOSING 1      1      172.24.228.196:40694    104.18.32.47:443                                                                    \ntcp   CLOSING 1      1      172.24.228.196:40806    104.18.32.47:443                                                                    \ntcp   CLOSING 1      1      172.24.228.196:40842    104.18.32.47:443                                                                    \ntcp   CLOSING 1      1      172.24.228.196:40862    104.18.32.47:443                                                                    \ntcp   CLOSING 1      1      172.24.228.196:40874    104.18.32.47:443                                                                    \ntcp   CLOSING 1      1      172.24.228.196:40912    104.18.32.47:443                                                                    \ntcp   CLOSING 1      1      172.24.228.196:40924    104.18.32.47:443                                                                    \ntcp   CLOSING 1      1      172.24.228.196:40934    104.18.32.47:443                                                                    \ntcp   CLOSING 1      1      172.24.228.196:40950    104.18.32.47:443                                                                    \ntcp   ESTAB   0      0      172.24.228.196:40960    104.18.32.47:443   users:((\"codex\",pid=2357621,fd=48))                              \ntcp   CLOSING 1      1      172.24.228.196:40970    104.18.32.47:443                                                                    \ntcp   ESTAB   0      0      172.24.228.196:41052    104.18.32.47:443   users:((\"codex\",pid=2373853,fd=36))                              \ntcp   ESTAB   0      0           127.0.0.1:39238       127.0.0.1:17880 users:((\"python3\",pid=2379684,fd=9))                             \ntcp   ESTAB   0      0           127.0.0.1:39240       127.0.0.1:17880 users:((\"python3\",pid=2379684,fd=8))                             \ntcp   ESTAB   0      0           127.0.0.1:39256       127.0.0.1:17880 users:((\"python3\",pid=2379684,fd=10))                            \ntcp   CLOSING 1      1      172.24.228.196:43426    104.18.32.47:443                                                                    \ntcp   CLOSING 1      1      172.24.228.196:43432    104.18.32.47:443                                                                    \ntcp   CLOSING 1      1      172.24.228.196:43444    104.18.32.47:443                                                                    \ntcp   CLOSING 1      1      172.24.228.196:43448    104.18.32.47:443                                                                    \ntcp   ESTAB   0      0           127.0.0.1:17443       127.0.0.1:37550 users:((\"python3\",pid=2379684,fd=6))                             \ntcp   ESTAB   0      0      172.24.228.196:45350    104.18.32.47:443   users:((\"codex\",pid=2355613,fd=58))                              \ntcp   ESTAB   0      1221   172.24.228.196:45358    104.18.32.47:443   users:((\"codex\",pid=2379760,fd=46))                              \ntcp   ESTAB   0      0      172.24.228.196:46598   83.135.90.115:18080 users:((\"monerod\",pid=1685499,fd=25))                            \ntcp   ESTAB   0      0      172.24.228.196:47904    104.18.32.47:443   users:((\"codex\",pid=2248360,fd=54))                              \ntcp   ESTAB   0      0      172.24.228.196:57716 165.227.209.148:18080 users:((\"monerod\",pid=1685499,fd=34))                            \ntcp   ESTAB   0      0      172.24.228.196:51322    104.18.32.47:443   users:((\"codex\",pid=2246468,fd=33))                              \ntcp   ESTAB   0      0      172.24.228.196:53992  107.13.231.162:8333  users:((\"bitcoind\",pid=1685432,fd=30))                           \ntcp   ESTAB   0      0      172.24.228.196:53384    104.18.32.47:443   users:((\"codex\",pid=2353923,fd=49))                              \ntcp   ESTAB   0      0      172.24.228.196:53534    104.18.32.47:443   users:((\"codex\",pid=2351505,fd=34))                              \ntcp   ESTAB   0      0      172.24.228.196:53944    104.18.32.47:443   users:((\"codex\",pid=2353923,fd=55))                              \ntcp   ESTAB   0      0      172.24.228.196:53980    104.18.32.47:443   users:((\"codex\",pid=2351505,fd=48))                              \ntcp   ESTAB   0      0      172.24.228.196:53986    104.18.32.47:443   users:((\"codex\",pid=2360612,fd=38))                              \ntcp   ESTAB   0      0      172.24.228.196:54136    104.18.32.47:443   users:((\"codex\",pid=2355613,fd=35))                              \ntcp   ESTAB   0      0      172.24.228.196:55738    104.18.32.47:443   users:((\"codex\",pid=2248360,fd=34))                              \ntcp   ESTAB   0      0      172.24.228.196:51296   146.190.249.7:18080 users:((\"monerod\",pid=1685499,fd=23))                            \ntcp   ESTAB   0      0      172.24.228.196:57712 165.232.184.231:18080 users:((\"monerod\",pid=1685499,fd=30))                            \ntcp   ESTAB   0      0      172.24.228.196:57780    104.18.32.47:443   users:((\"codex\",pid=2246468,fd=47))                              \ntcp   ESTAB   0      0      172.24.228.196:51680     85.50.0.250:18080 users:((\"monerod\",pid=1685499,fd=38))                            \ntcp   ESTAB   0      130    172.24.228.196:34270  77.173.132.140:8333  users:((\"bitcoind\",pid=1685432,fd=34))                           \ntcp   ESTAB   0      0      172.24.228.196:35094   74.15.142.224:8333  users:((\"bitcoind\",pid=1685432,fd=36))                           \ntcp   ESTAB   0      0      172.24.228.196:54758    159.65.99.39:18080 users:((\"monerod\",pid=1685499,fd=35))                            \n",
   "qualification_audit_outputs_are_ciphertext_only": true,
   "recording_file_sinks": [],
   "recording_network_sinks": [],

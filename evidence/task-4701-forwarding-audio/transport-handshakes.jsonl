@@ -1,7 +1,7 @@
-{"event": "clear_refused", "peer": "127.0.0.1:49300", "verdict": "transport encryption required"}
-{"cipher": "TLS_AES_256_GCM_SHA384", "event": "tls_handshake", "peer": "127.0.0.1:49314", "protocol": "TLSv1.3", "transport_encryption_required": true}
-{"cipher": "TLS_AES_256_GCM_SHA384", "event": "tls_handshake", "peer": "127.0.0.1:49328", "protocol": "TLSv1.3", "transport_encryption_required": true}
-{"cipher": "TLS_AES_256_GCM_SHA384", "event": "tls_handshake", "peer": "127.0.0.1:49334", "protocol": "TLSv1.3", "transport_encryption_required": true}
-{"connection_type": "udp", "event": "media_transport_handshake", "participant": "speaker-C", "protocol": "WebRTC DTLS-SRTP", "room": "osl-task-4701-one-machine", "room_id": "RM_qshjiE2Hg6Uo", "transport_encryption_required": true}
-{"connection_type": "udp", "event": "media_transport_handshake", "participant": "speaker-B", "protocol": "WebRTC DTLS-SRTP", "room": "osl-task-4701-one-machine", "room_id": "RM_qshjiE2Hg6Uo", "transport_encryption_required": true}
-{"connection_type": "udp", "event": "media_transport_handshake", "participant": "speaker-A", "protocol": "WebRTC DTLS-SRTP", "room": "osl-task-4701-one-machine", "room_id": "RM_qshjiE2Hg6Uo", "transport_encryption_required": true}
+{"event": "clear_refused", "peer": "127.0.0.1:37532", "verdict": "transport encryption required"}
+{"cipher": "TLS_AES_256_GCM_SHA384", "event": "tls_handshake", "peer": "127.0.0.1:37534", "protocol": "TLSv1.3", "transport_encryption_required": true}
+{"cipher": "TLS_AES_256_GCM_SHA384", "event": "tls_handshake", "peer": "127.0.0.1:37550", "protocol": "TLSv1.3", "transport_encryption_required": true}
+{"cipher": "TLS_AES_256_GCM_SHA384", "event": "tls_handshake", "peer": "127.0.0.1:37548", "protocol": "TLSv1.3", "transport_encryption_required": true}
+{"connection_type": "udp", "event": "media_transport_handshake", "participant": "speaker-B", "protocol": "WebRTC DTLS-SRTP", "room": "osl-task-4701-one-machine", "room_id": "RM_eHH4VWungT5D", "transport_encryption_required": true}
+{"connection_type": "udp", "event": "media_transport_handshake", "participant": "speaker-A", "protocol": "WebRTC DTLS-SRTP", "room": "osl-task-4701-one-machine", "room_id": "RM_eHH4VWungT5D", "transport_encryption_required": true}
+{"connection_type": "udp", "event": "media_transport_handshake", "participant": "speaker-C", "protocol": "WebRTC DTLS-SRTP", "room": "osl-task-4701-one-machine", "room_id": "RM_eHH4VWungT5D", "transport_encryption_required": true}

@@ -8,9 +8,9 @@
     "executable": "/tmp/osl-task-4701-cache/livekit-server",
     "executable_sha256": "51a1bbe04439b33d6d7a6d6d83fdefad9b938162c341f0f07f75af03e456b49a",
     "expected_executable": "/tmp/osl-task-4701-cache/livekit-server",
-    "pid": 1732766,
+    "pid": 2379683,
     "role": "livekit-server",
-    "start_ticks": "14628687"
+    "start_ticks": "16805767"
   },
   {
     "cmdline": [
@@ -22,9 +22,9 @@
     "executable": "/usr/bin/python3.12",
     "executable_sha256": "1643dacd9feaedc58f3cc581e4d22577dfe25c09b10282936186ccf0f2e61118",
     "expected_executable": null,
-    "pid": 1732767,
+    "pid": 2379684,
     "role": "tls-front-door",
-    "start_ticks": "14628687"
+    "start_ticks": "16805767"
   },
   {
     "cmdline": [
@@ -44,14 +44,14 @@
       "--interval-ms",
       "200",
       "--start-unix-ns",
-      "1786480504360272118"
+      "1786502275160206464"
     ],
     "executable": "/tmp/osl-task-4701-cache/osl-task-4701-speaker",
     "executable_sha256": "a028cbfdff72d0b6abaf839c897506f4e391a5c8a294736d45eb12a4711e30fa",
     "expected_executable": "/tmp/osl-task-4701-cache/osl-task-4701-speaker",
-    "pid": 1732792,
+    "pid": 2379781,
     "role": "speaker-A",
-    "start_ticks": "14628703"
+    "start_ticks": "16805783"
   },
   {
     "cmdline": [
@@ -71,14 +71,14 @@
       "--interval-ms",
       "200",
       "--start-unix-ns",
-      "1786480504360272118"
+      "1786502275160206464"
     ],
     "executable": "/tmp/osl-task-4701-cache/osl-task-4701-speaker",
     "executable_sha256": "a028cbfdff72d0b6abaf839c897506f4e391a5c8a294736d45eb12a4711e30fa",
     "expected_executable": "/tmp/osl-task-4701-cache/osl-task-4701-speaker",
-    "pid": 1732797,
+    "pid": 2379782,
     "role": "speaker-B",
-    "start_ticks": "14628703"
+    "start_ticks": "16805783"
   },
   {
     "cmdline": [
@@ -98,13 +98,13 @@
       "--interval-ms",
       "200",
       "--start-unix-ns",
-      "1786480504360272118"
+      "1786502275160206464"
     ],
     "executable": "/tmp/osl-task-4701-cache/osl-task-4701-speaker",
     "executable_sha256": "a028cbfdff72d0b6abaf839c897506f4e391a5c8a294736d45eb12a4711e30fa",
     "expected_executable": "/tmp/osl-task-4701-cache/osl-task-4701-speaker",
-    "pid": 1732798,
+    "pid": 2379783,
     "role": "speaker-C",
-    "start_ticks": "14628704"
+    "start_ticks": "16805783"
   }
 ]
