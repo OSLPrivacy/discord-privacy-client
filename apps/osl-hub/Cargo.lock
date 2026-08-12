@@ -2402,6 +2402,7 @@ dependencies = [
  "hmac",
  "keystore",
  "message-lifecycle",
+ "osl-english-catalogue",
  "osl-ratchet-next",
  "png 0.17.16",
  "rand 0.8.7",
@@ -3309,6 +3310,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "osl-english-catalogue"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "osl-hub"
 version = "0.1.0"
 dependencies = [
@@ -3326,6 +3335,7 @@ dependencies = [
  "message-lifecycle",
  "minisign-verify",
  "osl-cover-draft",
+ "osl-english-catalogue",
  "osl-ratchet-next",
  "pdf-extract",
  "quick-xml",
@@ -3341,6 +3351,7 @@ dependencies = [
  "sha2",
  "stego",
  "store",
+ "story-privacy",
  "tar",
  "tauri",
  "tauri-build",
@@ -4659,6 +4670,19 @@ dependencies = [
  "crypto",
  "rusqlite",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "story-privacy"
+version = "0.0.1"
+dependencies = [
+ "crypto",
+ "hex",
+ "runtime",
+ "serde",
+ "serde_json",
+ "sha2",
+ "zeroize",
 ]
 
 [[package]]

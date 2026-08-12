@@ -1,0 +1,25 @@
+[package]
+name = "task-6860-capture-proof"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# The shield decision under test. This binary deliberately calls the production
+# entry point rather than the Win32 API directly, so a cosmetic shield in the
+# product would show up here as an unprotected capture.
+story-privacy = { path = "../../../crates/story-privacy" }
+serde_json = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.59.0", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[[bin]]
+name = "task-6860-capture-proof"
+path = "src/main.rs"

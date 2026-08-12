@@ -362,6 +362,8 @@ pub mod signal_extra_device_sender;
 pub mod spaces;
 #[cfg(feature = "core")]
 pub mod startup_gate;
+#[cfg(feature = "core")]
+pub mod story_privacy_surface;
 
 // Share the original Tauri-free bootstrap verbatim so the app loads the same
 // sealed identity and local security state without forking that logic.

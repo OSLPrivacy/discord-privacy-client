@@ -42,6 +42,10 @@ transport = { path = "../../crates/transport" }
 # no I/O; `message_expiry` is the sealed-storage and scheduling shell around it.
 message-lifecycle = { path = "../../crates/message-lifecycle", optional = true }
 runtime = { path = "../../crates/runtime", optional = true }
+# TASK 6860: story default audience, auto-burn, view receipts and the honest
+# screenshot shield. Not optional -- the surface below has to be able to tell
+# the user this platform has no capture-protection primitive.
+story-privacy = { path = "../../crates/story-privacy", optional = true }
 # The carrier planner shapes the payload-bearing cover to the protected row's
 # rendered line count (`stego::shape_cover`). `discord_carrier_geometry` is not
 # behind `core`, so this cannot be an optional dependency: the planner must obey
@@ -109,7 +113,7 @@ rfd = { version = "=0.16.0", default-features = false, features = ["gtk3"] }
 # Nothing that provisions a disposable QA account may be listed here: see
 # `whatsapp-qa-identity` below for the half that was split back out.
 default = ["core", "whatsapp-qa-shell", "native-cover-writer"]
-core = ["dep:bip39", "dep:crypto", "dep:ipc", "dep:keystore", "dep:message-lifecycle", "dep:store", "dep:tracing", "dep:tracing-subscriber"]
+core = ["dep:bip39", "dep:crypto", "dep:ipc", "dep:keystore", "dep:message-lifecycle", "dep:store", "dep:story-privacy", "dep:tracing", "dep:tracing-subscriber"]
 desktop = ["dep:runtime", "dep:tauri", "dep:tauri-plugin-dialog", "dep:tauri-plugin-single-instance", "dep:tauri-plugin-updater", "dep:tokio", "core"]
 native-cover-writer = ["cover-ai/local-model"]
 custom-protocol = ["tauri/custom-protocol"]

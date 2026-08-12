@@ -2026,6 +2026,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "story-privacy"
+version = "0.0.1"
+dependencies = [
+ "crypto",
+ "hex",
+ "runtime",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "zeroize",
+]
+
+[[package]]
 name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2067,6 +2081,15 @@ name = "target-triple"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3a6bfce3d99adfa72d24750a61f782f3036a81e7f86d8841ee1326deaebd171"
+
+[[package]]
+name = "task-6860-capture-proof"
+version = "0.0.1"
+dependencies = [
+ "serde_json",
+ "story-privacy",
+ "windows-sys 0.59.0",
+]
 
 [[package]]
 name = "tempfile"
