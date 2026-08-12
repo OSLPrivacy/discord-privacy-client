@@ -86,6 +86,15 @@ mod windows_check {
         viewer_osl_user_id: String,
         viewer_device_id: String,
         viewer_public_key_hex: String,
+        /// The viewer device key, carried to the second process.
+        ///
+        /// A real viewer device holds its own signing key across a restart, so
+        /// this is the device's own capability and nothing more. The delivery
+        /// phase needs it to mint an event that is *correctly signed* and
+        /// *wrongly bound*: without it, an event pointed at another message
+        /// fails the signature check first and the binding check is never the
+        /// thing that refused it.
+        viewer_secret_hex: String,
         open_nonce_hex: String,
         path_label: String,
         screen_width: i32,
@@ -273,12 +282,14 @@ mod windows_check {
         let claims = absolute_capture_claims_in(text);
         if !claims.is_empty() {
             return Err(format!(
-                "the {surface} copy makes an absolute screenshot claim: {claims:?}"
+                "the {surface} copy shown for message {MESSAGE_ID} makes an absolute screenshot \
+                 claim: {claims:?}"
             ));
         }
         if !discloses_capture_limits(text) {
             return Err(format!(
-                "the {surface} copy does not disclose the capture-detection limits before use"
+                "the {surface} copy shown for message {MESSAGE_ID} does not disclose the \
+                 capture-detection limits before use"
             ));
         }
         println!(
@@ -332,8 +343,10 @@ mod windows_check {
             }
         }
         let observed = observed.ok_or_else(|| {
-            "no supported Windows capture was observed while the view-once viewer was open"
-                .to_owned()
+            format!(
+                "no supported Windows capture was observed while the view-once viewer for message \
+                 {MESSAGE_ID} was open"
+            )
         })?;
 
         let evidence = if starving("simulated-event") {
@@ -489,6 +502,7 @@ mod windows_check {
             viewer_osl_user_id: VIEWER_ID.to_owned(),
             viewer_device_id: VIEWER_DEVICE_ID.to_owned(),
             viewer_public_key_hex: hex(viewer_public.as_bytes()),
+            viewer_secret_hex: hex(viewer_secret.as_bytes()),
             open_nonce_hex: event.binding.open_nonce_hex(),
             path_label: observed.path.label().to_owned(),
             screen_width: evidence.screen_width,
@@ -537,8 +551,11 @@ mod windows_check {
         let pending = outbox.pending().into_iter().cloned().collect::<Vec<_>>();
         if pending.len() != 1 {
             return Err(format!(
-                "after restart the viewer holds {} capture event(s) to deliver, not 1",
-                pending.len()
+                "after restart the viewer holds {} capture event(s) to deliver for message {} \
+                 open {}, not 1",
+                pending.len(),
+                report.message_id,
+                report.open_nonce_hex
             ));
         }
         let event = pending.into_iter().next().expect("one pending event");
@@ -571,7 +588,10 @@ mod windows_check {
             AcceptOutcome::Notify(sentence) => notifications.push(sentence),
             other => {
                 return Err(format!(
-                    "the real capture did not notify the sender: {other:?}"
+                    "the real capture of message {} during open {} did not notify the sender: \
+                     {other:?}",
+                    event.binding.message_id,
+                    event.binding.open_nonce_hex()
                 ))
             }
         }
@@ -630,8 +650,22 @@ mod windows_check {
             AcceptOutcome::RejectedForgedSignature(reason) => {
                 println!("6844 forgery rejected=true reason=\"{reason}\"")
             }
-            AcceptOutcome::Notify(sentence) => notifications.push(sentence),
-            other => return Err(format!("the forged event was refused oddly: {other:?}")),
+            AcceptOutcome::Notify(sentence) => {
+                notifications.push(sentence);
+                return Err(format!(
+                    "a forged capture event, signed by a key the viewer device never held, \
+                     notified the sender about message {} (event open {})",
+                    forged.binding.message_id,
+                    forged.binding.open_nonce_hex()
+                ));
+            }
+            other => {
+                return Err(format!(
+                    "the forged event for message {} open {} was refused oddly: {other:?}",
+                    forged.binding.message_id,
+                    forged.binding.open_nonce_hex()
+                ))
+            }
         }
 
         // Tampering: the real event, re-pointed at another message.
@@ -641,11 +675,92 @@ mod windows_check {
             AcceptOutcome::RejectedWrongBinding(reason) => {
                 println!("6844 another_message rejected=true reason=\"{reason}\"")
             }
-            AcceptOutcome::Notify(sentence) => notifications.push(sentence),
+            AcceptOutcome::Notify(sentence) => {
+                notifications.push(sentence);
+                return Err(format!(
+                    "an event re-pointed at message {} notified the sender about message {} \
+                     (event open {})",
+                    other_message.binding.message_id,
+                    sent.message_id,
+                    other_message.binding.open_nonce_hex()
+                ));
+            }
             other => {
                 return Err(format!(
-                    "the other-message event was refused oddly: {other:?}"
+                    "the event re-pointed at message {} (open {}) was refused oddly: {other:?}",
+                    other_message.binding.message_id,
+                    other_message.binding.open_nonce_hex()
                 ))
+            }
+        }
+
+        // Rebinding, signed correctly. The viewer device signs an event for
+        // another message, another viewer and another device of its own
+        // accord, so the signature verifies and the binding check is the only
+        // thing left that can refuse it. Without this, dropping a binding
+        // comparison would still be caught — as a *signature* failure — and
+        // the binding check itself would never be exercised.
+        let secret_bytes = unhex(&report.viewer_secret_hex)?;
+        let viewer_secret = sig::SecretKey::from_bytes(
+            secret_bytes
+                .try_into()
+                .map_err(|_| "the viewer device key is not 32 bytes".to_owned())?,
+        );
+        for (field, rebound_binding) in [
+            (
+                "message",
+                ViewOnceOpenBinding {
+                    message_id: "msg-6844-somebody-elses-message".to_owned(),
+                    ..event.binding.clone()
+                },
+            ),
+            (
+                "viewer",
+                ViewOnceOpenBinding {
+                    viewer_osl_user_id: "viewer-6844-somebody-else".to_owned(),
+                    ..event.binding.clone()
+                },
+            ),
+            (
+                "viewer device",
+                ViewOnceOpenBinding {
+                    viewer_device_id: "viewer-device-6844-another-device".to_owned(),
+                    ..event.binding.clone()
+                },
+            ),
+        ] {
+            let rebound = sign_capture_event(
+                rebound_binding,
+                event.path,
+                event.observed_at_ms,
+                event.evidence,
+                &viewer_secret,
+            )?;
+            let nonce = rebound.binding.open_nonce_hex();
+            match notifier.accept(&rebound, &sent)? {
+                AcceptOutcome::RejectedWrongBinding(reason) => {
+                    println!("6844 rebound_{} rejected=true signature_valid=true reason=\"{reason}\"",
+                        field.replace(' ', "_"))
+                }
+                AcceptOutcome::Notify(sentence) => {
+                    notifications.push(sentence);
+                    return Err(format!(
+                        "a correctly signed capture event rebound to another {field} notified the \
+                         sender about message {} (event names message {}, viewer {}, device {}, \
+                         open {nonce})",
+                        sent.message_id,
+                        rebound.binding.message_id,
+                        rebound.binding.viewer_osl_user_id,
+                        rebound.binding.viewer_device_id
+                    ));
+                }
+                other => {
+                    return Err(format!(
+                        "the event rebound to another {field} (message {}, open {nonce}) was \
+                         refused oddly: {other:?}",
+                        rebound.binding.message_id
+                    ))
+                }
             }
         }
 
@@ -671,8 +786,10 @@ mod windows_check {
 
         if notifications.len() != 1 {
             return Err(format!(
-                "the sender was notified {} times; exactly 1 is required",
-                notifications.len()
+                "the sender was notified {} times about message {} open {}; exactly 1 is required",
+                notifications.len(),
+                report.message_id,
+                report.open_nonce_hex
             ));
         }
         let sentence = &notifications[0];
@@ -690,12 +807,17 @@ mod windows_check {
         }
         let mut restarted_notifier = SenderCaptureNotifier::open(&sender_dir)?;
         if restarted_notifier.accept(&event, &sent)? != AcceptOutcome::AlreadyNotified {
-            return Err("after restart the sender would notify again for the same open".to_owned());
+            return Err(format!(
+                "after restart the sender would notify again about message {} for the same open {}",
+                event.binding.message_id,
+                event.binding.open_nonce_hex()
+            ));
         }
         if restarted_notifier.notified_count() != 1 {
             return Err(format!(
-                "the sender ledger holds {} notified opens, not 1",
-                restarted_notifier.notified_count()
+                "the sender ledger holds {} notified opens for message {}, not 1",
+                restarted_notifier.notified_count(),
+                event.binding.message_id
             ));
         }
         println!(
@@ -733,6 +855,13 @@ mod windows_check {
         let dir = value("--dir").ok_or_else(|| "--dir is required".to_owned())?;
         let phase = value("--phase").ok_or_else(|| "--phase is required".to_owned())?;
         let dir = PathBuf::from(dir);
+        // Which source tree the *library* under test was compiled from — not
+        // this binary's own, because the two can differ: artifacts of two
+        // copies of this crate share a file name, and a stale one in a shared
+        // target directory linked itself into a freshly built check once
+        // already. A mutation proof that cannot say which library answered
+        // proves nothing.
+        println!("6844 built_from={}", view_once_capture::BUILT_FROM);
         let knob = starve();
         if !knob.is_empty() {
             println!("6844 starvation={knob}");

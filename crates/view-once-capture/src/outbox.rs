@@ -35,6 +35,14 @@ pub struct OutboxRecord {
     pub acknowledged: bool,
 }
 
+/// The event an outbox operation could not find, named by the open it belongs
+/// to. An error about "an event" tells a reader nothing; the open nonce is the
+/// identity of the one capture the caller meant.
+fn no_such_event(open_nonce: &[u8; 16]) -> String {
+    let nonce: String = open_nonce.iter().map(|byte| format!("{byte:02x}")).collect();
+    format!("no capture event for open {nonce} is queued")
+}
+
 /// File-backed outbox. Every constructor reads whatever is already on disk,
 /// which is what makes a restart indistinguishable from a reconnect.
 pub struct CaptureOutbox {
@@ -101,7 +109,7 @@ impl CaptureOutbox {
             .records
             .iter_mut()
             .find(|record| record.event.binding.open_nonce == *open_nonce)
-            .ok_or_else(|| "no such capture event is queued".to_owned())?;
+            .ok_or_else(|| no_such_event(open_nonce))?;
         record.attempts = record.attempts.saturating_add(1);
         let attempts = record.attempts;
         self.flush()?;
@@ -114,7 +122,7 @@ impl CaptureOutbox {
         self.records
             .retain(|record| record.event.binding.open_nonce != *open_nonce);
         if self.records.len() == before {
-            return Err("no such capture event is queued".to_owned());
+            return Err(no_such_event(open_nonce));
         }
         self.flush()
     }
@@ -218,6 +226,20 @@ mod tests {
         assert!(outbox.enqueue(queued.clone()).expect("first"));
         assert!(!outbox.enqueue(queued).expect("second"));
         assert_eq!(outbox.pending_count(), 1);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_operation_on_an_event_that_is_not_queued_names_the_open() {
+        let dir = temp_dir("names-open");
+        let mut outbox = CaptureOutbox::open(&dir).expect("open");
+        let error = outbox.note_attempt(&[0xab; 16]).expect_err("nothing queued");
+        assert_eq!(
+            error,
+            "no capture event for open abababababababababababababababab is queued"
+        );
+        let error = outbox.acknowledge(&[0xab; 16]).expect_err("nothing queued");
+        assert!(error.contains("abababababababababababababababab"), "{error}");
         let _ = fs::remove_dir_all(&dir);
     }
 

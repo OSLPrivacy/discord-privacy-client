@@ -301,6 +301,56 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// The event is signed by the *real* viewer device key, so the signature
+    /// verifies and only the binding comparison can refuse it. Without a
+    /// correctly signed event, dropping a binding comparison would still look
+    /// caught — as a signature failure — and this check would prove nothing.
+    #[test]
+    fn a_correctly_signed_event_rebound_to_another_viewer_notifies_nobody() {
+        let (dir, sent, secret) = fixture("other-viewer");
+        let mut notifier = SenderCaptureNotifier::open(&dir).expect("open");
+        for (field, rebound) in [
+            (
+                "viewer",
+                ViewOnceOpenBinding {
+                    viewer_osl_user_id: "someone-else".to_owned(),
+                    ..binding("msg-a", 11)
+                },
+            ),
+            (
+                "viewer device",
+                ViewOnceOpenBinding {
+                    viewer_device_id: "another-device".to_owned(),
+                    ..binding("msg-a", 12)
+                },
+            ),
+            (
+                "sender",
+                ViewOnceOpenBinding {
+                    sender_osl_user_id: "another-sender".to_owned(),
+                    ..binding("msg-a", 13)
+                },
+            ),
+        ] {
+            let event = sign_capture_event(
+                rebound,
+                SupportedCapturePath::PrintScreenClipboard,
+                1,
+                evidence(),
+                &secret,
+            )
+            .expect("the real viewer device signs it");
+            let outcome = notifier.accept(&event, &sent).expect("accept");
+            assert!(
+                matches!(outcome, AcceptOutcome::RejectedWrongBinding(ref reason) if reason.contains(field)),
+                "a correctly signed event rebound to another {field} was not refused as a binding \
+                 mismatch: {outcome:?}"
+            );
+        }
+        assert_eq!(notifier.notified_count(), 0);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn an_adversary_signing_their_own_event_notifies_nobody() {
         let (dir, sent, _) = fixture("forged");

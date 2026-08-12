@@ -47,6 +47,17 @@
 //! and is cleared only once the sender has acknowledged it, so a reconnect or
 //! a restart delivers it rather than losing it.
 
+/// The source tree this library was compiled from.
+///
+/// TASK 6845 builds this crate from throwaway copies and runs the 6844 check
+/// against them. Two copies of the crate produce artifacts with the same file
+/// name, so a shared target directory lets one build's library end up linked
+/// into another build's binary while cargo still reports both as fresh. That
+/// happened, silently, and a mutated library answered for the shipping one.
+/// The check prints this constant so the library that actually answered can be
+/// named, rather than assumed.
+pub const BUILT_FROM: &str = env!("CARGO_MANIFEST_DIR");
+
 pub mod disclosure;
 pub mod event;
 pub mod notifier;
