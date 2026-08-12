@@ -8,9 +8,9 @@
     "executable": "/tmp/osl-task-4701-cache/livekit-server",
     "executable_sha256": "51a1bbe04439b33d6d7a6d6d83fdefad9b938162c341f0f07f75af03e456b49a",
     "expected_executable": "/tmp/osl-task-4701-cache/livekit-server",
-    "pid": 2379683,
+    "pid": 2722311,
     "role": "livekit-server",
-    "start_ticks": "16805767"
+    "start_ticks": "16986568"
   },
   {
     "cmdline": [
@@ -22,9 +22,9 @@
     "executable": "/usr/bin/python3.12",
     "executable_sha256": "1643dacd9feaedc58f3cc581e4d22577dfe25c09b10282936186ccf0f2e61118",
     "expected_executable": null,
-    "pid": 2379684,
+    "pid": 2722313,
     "role": "tls-front-door",
-    "start_ticks": "16805767"
+    "start_ticks": "16986568"
   },
   {
     "cmdline": [
@@ -44,14 +44,14 @@
       "--interval-ms",
       "200",
       "--start-unix-ns",
-      "1786502275160206464"
+      "1786504083294793970"
     ],
     "executable": "/tmp/osl-task-4701-cache/osl-task-4701-speaker",
-    "executable_sha256": "a028cbfdff72d0b6abaf839c897506f4e391a5c8a294736d45eb12a4711e30fa",
+    "executable_sha256": "8e3692de9fa46eea56cfc115ef4cd88a23dd4ac955490b2cfb067ab371f664bc",
     "expected_executable": "/tmp/osl-task-4701-cache/osl-task-4701-speaker",
-    "pid": 2379781,
+    "pid": 2722410,
     "role": "speaker-A",
-    "start_ticks": "16805783"
+    "start_ticks": "16986596"
   },
   {
     "cmdline": [
@@ -71,14 +71,14 @@
       "--interval-ms",
       "200",
       "--start-unix-ns",
-      "1786502275160206464"
+      "1786504083294793970"
     ],
     "executable": "/tmp/osl-task-4701-cache/osl-task-4701-speaker",
-    "executable_sha256": "a028cbfdff72d0b6abaf839c897506f4e391a5c8a294736d45eb12a4711e30fa",
+    "executable_sha256": "8e3692de9fa46eea56cfc115ef4cd88a23dd4ac955490b2cfb067ab371f664bc",
     "expected_executable": "/tmp/osl-task-4701-cache/osl-task-4701-speaker",
-    "pid": 2379782,
+    "pid": 2722431,
     "role": "speaker-B",
-    "start_ticks": "16805783"
+    "start_ticks": "16986603"
   },
   {
     "cmdline": [
@@ -98,13 +98,13 @@
       "--interval-ms",
       "200",
       "--start-unix-ns",
-      "1786502275160206464"
+      "1786504083294793970"
     ],
     "executable": "/tmp/osl-task-4701-cache/osl-task-4701-speaker",
-    "executable_sha256": "a028cbfdff72d0b6abaf839c897506f4e391a5c8a294736d45eb12a4711e30fa",
+    "executable_sha256": "8e3692de9fa46eea56cfc115ef4cd88a23dd4ac955490b2cfb067ab371f664bc",
     "expected_executable": "/tmp/osl-task-4701-cache/osl-task-4701-speaker",
-    "pid": 2379783,
+    "pid": 2722432,
     "role": "speaker-C",
-    "start_ticks": "16805783"
+    "start_ticks": "16986604"
   }
 ]

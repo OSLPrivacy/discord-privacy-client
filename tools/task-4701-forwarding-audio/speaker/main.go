@@ -87,6 +87,12 @@ func main() {
 
 	out := &emitter{e: json.NewEncoder(os.Stdout)}
 	var subscriptions atomic.Int32
+	// These counters sit at the release client's encrypted media interface:
+	// immediately after the client hands a packet to WebRTC and immediately
+	// after it gets one back. They deliberately count observed bytes, never
+	// codec duration or a synthetic bitrate estimate.
+	var mediaSentBytes atomic.Uint64
+	var mediaReceivedBytes atomic.Uint64
 	callback := &lksdk.RoomCallback{
 		ParticipantCallback: lksdk.ParticipantCallback{
 			OnTrackSubscribed: func(track *webrtc.TrackRemote, publication *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
@@ -102,6 +108,7 @@ func main() {
 							return
 						}
 						payload := packet.Payload
+						mediaReceivedBytes.Add(uint64(len(payload)))
 						out.emit(map[string]any{
 							"event": "receive", "identity": identity, "origin": rp.Identity(),
 							"payload_sha256": hashPayload(payload), "payload_hex": hex.EncodeToString(payload),
@@ -160,6 +167,13 @@ func main() {
 		"event": "trial_start", "identity": identity, "start_unix_ns": startUnixNS,
 		"subscriptions": subscriptions.Load(), "frames": frames, "interval_ms": intervalMS,
 	})
+	baselineSentBytes := mediaSentBytes.Load()
+	baselineReceivedBytes := mediaReceivedBytes.Load()
+	out.emit(map[string]any{
+		"event": "interface_counter_baseline", "identity": identity,
+		"counter_source": "release-client-media-interface",
+		"sent_bytes":     baselineSentBytes, "received_bytes": baselineReceivedBytes,
+	})
 
 	interval := time.Duration(intervalMS) * time.Millisecond
 	for sequence := 0; sequence < frames; sequence++ {
@@ -172,6 +186,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "send %s sequence=%d: %v\n", identity, sequence, err)
 			os.Exit(1)
 		}
+		mediaSentBytes.Add(uint64(len(payload)))
 		out.emit(map[string]any{
 			"event": "send", "identity": identity, "sequence": sequence,
 			"payload_sha256": hashPayload(payload), "payload_hex": hex.EncodeToString(payload),
@@ -181,9 +196,16 @@ func main() {
 	if delay := time.Until(minimumEnd.Add(5 * time.Second)); delay > 0 {
 		time.Sleep(delay)
 	}
+	trialSentBytes := mediaSentBytes.Load() - baselineSentBytes
+	trialReceivedBytes := mediaReceivedBytes.Load() - baselineReceivedBytes
 	out.emit(map[string]any{
 		"event": "trial_end", "identity": identity, "start_unix_ns": startUnixNS,
 		"end_unix_ns": time.Now().UnixNano(), "connected_unix_ns": connectedAt.UnixNano(),
 		"sent_frames": frames, "decoded_frames": 0, "reencoded_frames": 0,
+	})
+	out.emit(map[string]any{
+		"event": "interface_counters", "identity": identity,
+		"counter_source": "release-client-media-interface",
+		"sent_bytes":     trialSentBytes, "received_bytes": trialReceivedBytes,
 	})
 }
