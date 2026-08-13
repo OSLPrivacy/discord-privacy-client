@@ -10082,6 +10082,12 @@ fn main() {
             },
         );
     if let Some(exit_code) =
+        osl_privacy_hub::discord_typing_box_check::run_discord_typing_box_check_cli_from_env()
+    {
+        std::process::exit(exit_code);
+    }
+
+    if let Some(exit_code) =
         osl_privacy_hub::allowed_place_commands::run_allowed_place_cli_from_env()
     {
         std::process::exit(exit_code);
