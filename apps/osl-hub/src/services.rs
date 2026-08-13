@@ -226,6 +226,191 @@ pub struct SharedConversationPlace {
     pub channel: Option<ConversationPlaceParent>,
 }
 
+/// The three official Discord releases are separate applications with separate
+/// persistent stores.  This is intentionally not a Chromium-profile concept:
+/// Discord ignores `--user-data-dir` for the account store that matters here.
+#[derive(Debug, Clone, Copy, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiscordReleaseChannel {
+    Stable,
+    Ptb,
+    Canary,
+}
+
+impl DiscordReleaseChannel {
+    pub const ALL: [Self; 3] = [Self::Stable, Self::Ptb, Self::Canary];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Stable => "stable",
+            Self::Ptb => "ptb",
+            Self::Canary => "canary",
+        }
+    }
+
+    pub const fn executable_name(self) -> &'static str {
+        match self {
+            Self::Stable => "Discord.exe",
+            Self::Ptb => "DiscordPTB.exe",
+            Self::Canary => "DiscordCanary.exe",
+        }
+    }
+}
+
+/// The exact launch observed for one official Discord release.  Launches are
+/// carried into the reader so a caller cannot hide profile switching behind a
+/// lower-level process helper.
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DiscordReleaseLaunch {
+    pub executable_name: String,
+    pub arguments: Vec<String>,
+}
+
+impl DiscordReleaseLaunch {
+    pub fn official(channel: DiscordReleaseChannel) -> Self {
+        Self {
+            executable_name: channel.executable_name().to_owned(),
+            arguments: Vec::new(),
+        }
+    }
+}
+
+/// Read-only places observed in exactly one official Discord release store.
+/// `store_id` is an opaque store identity supplied by the Windows/UIA adapter,
+/// not a profile path and never a credential-bearing database handle.
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DiscordReleaseStore {
+    pub channel: DiscordReleaseChannel,
+    pub store_id: String,
+    pub launch: DiscordReleaseLaunch,
+    pub places: Vec<ConversationPlaceCandidate>,
+}
+
+impl DiscordReleaseStore {
+    pub fn official(
+        channel: DiscordReleaseChannel,
+        store_id: impl Into<String>,
+        places: impl IntoIterator<Item = ConversationPlaceCandidate>,
+    ) -> Self {
+        Self {
+            channel,
+            store_id: store_id.into(),
+            launch: DiscordReleaseLaunch::official(channel),
+            places: places.into_iter().collect(),
+        }
+    }
+}
+
+/// The complete independent-store topology required to read Discord places.
+/// A struct, rather than a vector, makes omission of Stable, PTB, or Canary
+/// unrepresentable at this shared-reader boundary.
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DiscordReleaseStores {
+    pub stable: DiscordReleaseStore,
+    pub ptb: DiscordReleaseStore,
+    pub canary: DiscordReleaseStore,
+}
+
+impl DiscordReleaseStores {
+    pub fn new(
+        stable: DiscordReleaseStore,
+        ptb: DiscordReleaseStore,
+        canary: DiscordReleaseStore,
+    ) -> Result<Self, String> {
+        let stores = Self {
+            stable,
+            ptb,
+            canary,
+        };
+        stores.validate()?;
+        Ok(stores)
+    }
+
+    pub fn stores(&self) -> [&DiscordReleaseStore; 3] {
+        [&self.stable, &self.ptb, &self.canary]
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        let stores = self.stores();
+        for (expected, store) in DiscordReleaseChannel::ALL.into_iter().zip(stores) {
+            if store.channel != expected {
+                return Err(format!(
+                    "Discord {} release store was supplied for the {} slot",
+                    store.channel.as_str(),
+                    expected.as_str()
+                ));
+            }
+            validate_discord_release_store(store)?;
+        }
+
+        for (index, store) in stores.iter().enumerate() {
+            if let Some(previous) = stores[..index]
+                .iter()
+                .find(|previous| previous.store_id == store.store_id)
+            {
+                return Err(format!(
+                    "Discord release stores must be independent; {} and {} resolve to store {}",
+                    previous.channel.as_str(),
+                    store.channel.as_str(),
+                    store.store_id
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+fn validate_discord_release_store(store: &DiscordReleaseStore) -> Result<(), String> {
+    validate_conversation_place_text(&store.store_id, "Discord release store id")?;
+    if !store
+        .launch
+        .executable_name
+        .eq_ignore_ascii_case(store.channel.executable_name())
+    {
+        return Err(format!(
+            "Discord {} release must launch {}",
+            store.channel.as_str(),
+            store.channel.executable_name()
+        ));
+    }
+    if store.launch.arguments.iter().any(|argument| {
+        argument
+            .trim_start()
+            .to_ascii_lowercase()
+            .starts_with("--user-data-dir")
+    }) {
+        return Err(format!(
+            "Discord {} release launch must not use --user-data-dir",
+            store.channel.as_str()
+        ));
+    }
+    Ok(())
+}
+
+/// Read every conversation place the approved Discord account can open across
+/// Stable, PTB, and Canary.  Topology is verified before the consent check: an
+/// unsafe launch or aliased store is a configuration failure, never a silent
+/// empty result.
+pub fn read_discord_shared_places(
+    owner_osl_user_id: &str,
+    account_id: &str,
+    release_stores: &DiscordReleaseStores,
+) -> Result<Vec<SharedConversationPlace>, String> {
+    release_stores.validate()?;
+    read_shared_conversation_places(
+        owner_osl_user_id,
+        "discord",
+        account_id,
+        release_stores
+            .stores()
+            .into_iter()
+            .flat_map(|store| store.places.iter().cloned()),
+    )
+}
+
 /// A place the Instagram browser accessibility reader observed.  The public
 /// kinds deliberately say `Own`: the reader is scoped to things the signed-in
 /// account can later review for Scrub, and never treats another person's post
