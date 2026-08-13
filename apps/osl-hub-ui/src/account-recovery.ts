@@ -117,12 +117,19 @@ export function recoveryScreenMarkup(flow: AccountRecoveryFlow): string {
   // that actually matters: this is NOT the identity phrase. Two phrases with
   // similar names and different consequences is the confusion worth spending a
   // line on.
+  const wordBoxes = Array.from({ length: 12 }, (_, index) => {
+    const position = index + 1;
+    return `<label class="recovery-word-box" for="forgot-recovery-word-${position}"><span>${position}</span><input id="forgot-recovery-word-${position}" data-recovery-kit-word="forgot-password" type="password" autocomplete="off" autocapitalize="none" spellcheck="false" /></label>`;
+  }).join("");
   return `<section class="stealth-screen restore-screen forgot-screen" aria-labelledby="route-heading">
     <h1 id="route-heading" tabindex="-1" class="stealth-title forgot-title">Password reset</h1>
     <p class="stealth-quiet">Your password recovery phrase sets a new password. It is not your identity phrase</p>
     <form class="password-form stealth-form" data-account-recovery-phrase novalidate>
       <span class="restore-label-row"><label for="account-recovery-phrase">Password recovery phrase</label><em>stays on this device</em></span>
-      <textarea class="restore-phrase" id="account-recovery-phrase" name="recoveryPhrase" rows="3" autocomplete="off" autocapitalize="none" spellcheck="false" required></textarea>
+      <div class="recovery-kit-upload-row"><button class="button ghost recovery-kit-upload" id="forgot-recovery-kit-upload" data-recovery-kit-upload="forgot-password" type="button">Upload recovery kit</button><p id="forgot-recovery-kit-status" class="recovery-kit-status" role="status" aria-live="polite"></p></div>
+      <div class="recovery-word-grid" data-recovery-word-grid="forgot-password" aria-label="Twelve-word password recovery phrase">${wordBoxes}</div>
+      <textarea class="restore-phrase sr-only" id="account-recovery-phrase" name="recoveryPhrase" rows="3" autocomplete="off" autocapitalize="none" spellcheck="false" required></textarea>
+      <p class="unlock-error" id="forgot-recovery-kit-error" role="alert"></p>
       ${error}
       <button class="stealth-submit restore-submit" type="submit"><span>Verify phrase</span>${RECOVERY_ARROW}</button>
     </form>

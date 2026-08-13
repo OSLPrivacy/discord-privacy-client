@@ -32,6 +32,7 @@ const ACCOUNT_STATE_FILES: &[&str] = &[
     "scope_blobs.json",
     ipc::space_roster::SPACE_ROSTER_FILE,
     ipc::tombstone_file::TOMBSTONE_FILE,
+    crate::enclave_sidebar_state::ENCLAVE_SIDEBAR_STATE_FILE,
     "store/messages.sqlite",
 ];
 
@@ -580,7 +581,7 @@ pub fn enter_duress_pin_for_full_wipe_report(
         // refusal path, so bind it with `_` and let it drop immediately: a main
         // password must not yield usable key material on the duress route.
         ipc::main_password::GateMatch::Main(_)
-        | ipc::main_password::GateMatch::Stealth
+        | ipc::main_password::GateMatch::Stealth(_)
         | ipc::main_password::GateMatch::Duress => {
             return Err("OSL duress action requires the burn password".to_owned())
         }
@@ -601,7 +602,7 @@ pub fn enter_duress_pin_for_full_wipe_report(
             Err("OSL duress action requires the burn password".to_owned())
         }
         crate::startup_gate::VerifiedGateRole::Main
-        | crate::startup_gate::VerifiedGateRole::Stealth => {
+        | crate::startup_gate::VerifiedGateRole::Stealth(_) => {
             Err("OSL duress action requires the burn password".to_owned())
         }
     }
@@ -638,6 +639,24 @@ where
 
 fn isolated_account_dir() -> Result<std::path::PathBuf, String> {
     keystore::osl_config_dir().map_err(|_| "OSL Privacy account storage is unavailable".to_owned())
+}
+
+/// Read the locally sealed account identifier without loading recovery words.
+///
+/// Password recovery starts while the normal session is locked, so the active
+/// in-memory identity is intentionally absent. The device-sealed identity is
+/// still the account binding needed to refuse somebody else's kit before any
+/// word reaches the renderer.
+pub fn sealed_identity_user_id_for_recovery() -> Result<Option<String>, String> {
+    let dir = isolated_account_dir()?;
+    let identity_path = dir.join("identity.json");
+    if !identity_path.is_file() {
+        return Ok(None);
+    }
+    let sealer = persistent_sealer()?;
+    let identity = keystore::load_identity(&identity_path, sealer.as_ref())
+        .map_err(|_| "OSL identity storage is unavailable".to_owned())?;
+    Ok(Some(identity.user_id.clone()))
 }
 
 pub(crate) fn persistent_sealer() -> Result<Box<dyn Sealer>, String> {

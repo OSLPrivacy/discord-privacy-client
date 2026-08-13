@@ -145,10 +145,13 @@ import {
   setHubAlternatePassword,
   setupHubMainPassword,
   setupHubMainPasswordWithoutRecovery,
+  loadHubRecoveryKitFile,
+  setHubMainPasswordAfterRecovery,
   unavailableCoreIntegration,
   unconfiguredLicenseState,
   unlockHubPasswordGate,
   validateHubActivationCode,
+  verifyHubRecoveryPhrase,
   type BootstrapStatus,
   type CoreIntegration,
   type HubLicenseState,
@@ -465,19 +468,15 @@ let passwordRoleStatus: HubPasswordRoleStatus | null = null;
 // account-recovery.ts actually runs and its refusals reach the screen.
 let accountRecoveryFlow: AccountRecoveryFlow = initialAccountRecoveryFlow;
 let legacyRecoveryMigration: LegacyRecoveryMigration | null = null;
-/**
- * There is no native verifier behind this yet: no Tauri command exists that
- * turns a password recovery phrase into a recovery token, and none that sets a
- * password from one (see the task log for L-ATTR). The shipping dependency
- * therefore fails closed with a message the user can act on, exactly like the
- * "not available in this build" wording the alternate-password roles use, and
- * introduces no IPC. Tests inject a real one through `__oslHubUiTest`.
- */
-const passwordRecoveryUnavailable = "Password recovery is not available in this build. Your password was not changed.";
 let accountRecoveryDependencies: AccountRecoveryDependencies = {
-  verifyPhrase: () => Promise.reject(new Error(passwordRecoveryUnavailable)),
-  setPassword: () => Promise.reject(new Error(passwordRecoveryUnavailable)),
+  verifyPhrase: async (phrase) => ({
+    ok: true,
+    recoveryToken: await verifyHubRecoveryPhrase(phrase),
+    lockoutStatus: { passwordLockedUntil: null, passwordAttemptsUsed: 0, phraseLockedUntil: null, phraseAttemptsUsed: 0, now: Math.floor(Date.now() / 1000) },
+  }),
+  setPassword: (newPassword, recoveryToken) => setHubMainPasswordAfterRecovery(newPassword, recoveryToken),
 };
+const passwordRecoveryUnavailable = "Password recovery migration is not available in this build. Nothing was changed.";
 let recoveryMigrationDependencies: RecoveryMigrationDependencies = {
   addPhraseWrap: () => Promise.reject(new Error(passwordRecoveryUnavailable)),
   freshStart: () => Promise.reject(new Error(passwordRecoveryUnavailable)),
@@ -2898,11 +2897,17 @@ function importIdentityForm(): string {
   // "6 minimum. 12+ suggested." under a box reads as a rule you already broke.
   const eye = (id: string, label: string) =>
     `<button class="password-eye" type="button" data-password-toggle="${id}" aria-controls="${id}" aria-label="${label}">${passwordEyeIcon()}</button>`;
+  const wordBoxes = Array.from({ length: 12 }, (_, index) => {
+    const position = index + 1;
+    return `<label class="recovery-word-box" for="restore-recovery-word-${position}"><span>${position}</span><input id="restore-recovery-word-${position}" data-recovery-kit-word="restore-account" type="password" autocomplete="off" autocapitalize="none" spellcheck="false" /></label>`;
+  }).join("");
   return `<section class="stealth-screen restore-screen" aria-labelledby="route-heading">
     <h1 id="route-heading" tabindex="-1" class="stealth-title restore-title">Restore your account</h1>
     <form class="password-form stealth-form" id="identity-import-form" novalidate>
       <span class="restore-label-row"><label for="identity-recovery-phrase">Recovery phrase</label><em>stays on this device</em></span>
-      <textarea class="restore-phrase" id="identity-recovery-phrase" rows="3" autocomplete="off" autocapitalize="none" spellcheck="false" required aria-describedby="import-error"></textarea>
+      <div class="recovery-kit-upload-row"><button class="button ghost recovery-kit-upload" id="restore-recovery-kit-upload" data-recovery-kit-upload="restore-account" type="button">Upload recovery kit</button><p id="restore-recovery-kit-status" class="recovery-kit-status" role="status" aria-live="polite"></p></div>
+      <div class="recovery-word-grid" data-recovery-word-grid="restore-account" aria-label="Twelve-word identity phrase">${wordBoxes}</div>
+      <textarea class="restore-phrase sr-only" id="identity-recovery-phrase" rows="3" autocomplete="off" autocapitalize="none" spellcheck="false" required aria-describedby="import-error"></textarea>
       <span class="restore-label-row"><label for="import-password">New password</label><em>6 minimum · 12+ suggested</em></span>
       <div class="password-input-row"><input id="import-password" type="password" minlength="6" maxlength="128" autocomplete="new-password" required/>${eye("import-password", "Show password")}</div>
       <span class="restore-label-row"><label for="import-password-confirm">Confirm password</label></span>
@@ -3321,6 +3326,7 @@ function bindOnboarding(): void {
     render();
   }));
   bindAccountRecovery();
+  bindRecoveryKitUploads();
   document.querySelector<HTMLButtonElement>("#skip-pro-setup")?.addEventListener("click", () => {
     onboardingRoute = onboardingRouteForBuild(continueFromProOnboarding("skipped").route);
     render();
@@ -3688,6 +3694,42 @@ function bindAccountRecovery(): void {
     void runLegacyPhraseWrap(formValue(event.currentTarget as HTMLFormElement, "currentPassword"));
   });
   document.querySelector<HTMLButtonElement>("[data-recovery-fresh-start]")?.addEventListener("click", () => void runRecoveryFreshStart());
+}
+
+/**
+ * The "Upload recovery kit" button on both recovery pages. The renderer never
+ * names a file and never sees bytes: the desktop command opens the installed
+ * picker, freezes the selection and hands back twelve validated words or a
+ * refusal. Loading only fills the ordinary form — the import and the password
+ * reset stay on the existing submit handlers, so a kit cannot reach an
+ * importer that typing could not.
+ */
+function bindRecoveryKitUploads(): void {
+  const phraseField = (page: string) => page === "forgot-password" ? "#account-recovery-phrase" : "#identity-recovery-phrase";
+  document.querySelectorAll<HTMLButtonElement>("[data-recovery-kit-upload]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const page = button.dataset.recoveryKitUpload === "forgot-password" ? "forgot-password" : "restore-account";
+      const status = document.querySelector<HTMLElement>(`#${page === "forgot-password" ? "forgot" : "restore"}-recovery-kit-status`);
+      if (status) status.textContent = "";
+      void (async () => {
+        try {
+          const loaded = await loadHubRecoveryKitFile(page);
+          // A cancel is not a refusal: the boxes keep whatever they held.
+          if (!loaded) return;
+          const boxes = Array.from(document.querySelectorAll<HTMLInputElement>(`[data-recovery-kit-word="${page}"]`));
+          loaded.words.forEach((word, index) => {
+            const box = boxes[index];
+            if (box) box.value = word;
+          });
+          const phrase = document.querySelector<HTMLTextAreaElement>(phraseField(page));
+          if (phrase) phrase.value = loaded.words.join(" ");
+        } catch (error) {
+          // Fixed sentences from the native refusal; never a recovery word.
+          if (status) status.textContent = error instanceof Error ? error.message : "That file could not be read. Nothing was changed.";
+        }
+      })();
+    });
+  });
 }
 
 function bindOnboardingPasswordRole(): void {

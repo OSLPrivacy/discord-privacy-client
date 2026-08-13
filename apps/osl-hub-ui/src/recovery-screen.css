@@ -213,3 +213,14 @@
 @media (max-width: 42rem) {
   .recovery-screen { width: 100%; padding: 0 16px; }
 }
+
+/* File loading is deliberately a separate step: words remain in the existing
+   recovery journey's numbered boxes and are never rendered in a filename or a
+   status/error string. */
+.recovery-kit-upload-row { display: flex; align-items: center; gap: 10px; margin: 8px 0 12px; }
+.recovery-kit-status { margin: 0; color: var(--osl-setup-muted); font-size: 13px; }
+.recovery-word-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.recovery-word-box { display: grid; grid-template-columns: 1.5rem minmax(0, 1fr); align-items: center; gap: 5px; }
+.recovery-word-box > span { color: var(--osl-setup-muted); font-size: 12px; text-align: right; }
+.recovery-word-box input { min-width: 0; width: 100%; }
+@media (max-width: 42rem) { .recovery-word-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

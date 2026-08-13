@@ -6,10 +6,10 @@ pub mod account_burn_selection;
 pub mod account_identity_authority;
 #[cfg(feature = "core")]
 pub mod account_recovery;
-#[cfg(feature = "core")]
-pub mod allowed_place_commands;
 pub mod adapter_profile_boot;
 pub mod adapters;
+#[cfg(feature = "core")]
+pub mod allowed_place_commands;
 #[cfg(feature = "core")]
 #[cfg(feature = "core")]
 pub mod attachment_formats;
@@ -35,12 +35,13 @@ pub mod ai_consent;
 #[cfg(feature = "core")]
 pub mod app_own_names;
 pub mod attended_imap;
-pub mod bad_message_rules;
-#[cfg(feature = "core")]
+#[cfg(all(test, feature = "core"))]
 pub mod autoscrub_bridge;
-#[cfg(feature = "core")]
+pub mod autoscrub_find_only;
+#[cfg(all(test, feature = "core"))]
 pub mod autoscrub_run;
 pub mod background_priority;
+pub mod bad_message_rules;
 #[cfg(feature = "core")]
 pub mod browser_companion;
 // The persistent footprint store is sealed with `ipc`'s process key, so it
@@ -49,8 +50,8 @@ pub mod browser_companion;
 pub mod browser_footprint;
 #[cfg(feature = "core")]
 pub mod browser_profile_scan;
-pub mod bundled_model_pack;
 pub mod build_integrity;
+pub mod bundled_model_pack;
 pub mod burn_authorize;
 pub mod burn_contract;
 #[cfg(feature = "core")]
@@ -61,6 +62,10 @@ pub mod burn_review_state;
 #[cfg(feature = "core")]
 pub mod burn_server;
 pub mod carrier_placement;
+/// Crash-safe, consent-bound carrier restart transactions. The controller is
+/// separated from the external observer, process lease and installed recovery
+/// worker so destructive progress never exists only in OSL memory.
+pub mod carrier_restart;
 /// What a live carry receipt is bound to. Not behind a feature: the publication
 /// gate that reads it must exist in every build that can compile the native
 /// adapters.
@@ -69,7 +74,7 @@ pub mod cloud_autoscrub_authority;
 pub mod cloud_autoscrub_consent;
 pub mod cloud_autoscrub_envelope;
 pub mod cloud_autoscrub_execution;
-#[cfg(feature = "core")]
+#[cfg(all(test, feature = "core"))]
 pub mod cloud_autoscrub_run;
 #[cfg(feature = "core")]
 pub mod components;
@@ -85,23 +90,23 @@ pub mod credits;
 #[cfg(feature = "core")]
 pub mod diagnostics;
 pub mod discord_carrier_geometry;
+pub mod english_catalogue_entry;
 #[cfg(feature = "desktop")]
 pub mod entitlement_refresh;
 pub mod execution_consent;
-pub mod english_catalogue_entry;
 pub mod external_overlay;
 pub(crate) mod firefox_migration_coordinator;
-pub mod front_window_grab;
 pub mod follow_active_app_window;
 #[cfg(feature = "core")]
 pub mod friend_account_reach;
+pub mod front_window_grab;
 pub mod hosted_audience;
 pub mod hosted_port;
 pub mod hosted_provider_recipe;
 pub mod hosted_session_port;
-pub mod installed_build_version;
-pub mod installed_build;
 pub mod instagram_send;
+pub mod installed_build;
+pub mod installed_build_version;
 pub mod invite_clipboard;
 // The iCloud Mail half of the shared mailbox reader (TASK 3071), and the iCloud
 // fill-in of the shared mail deleter (TASK 3073). Both are pure and free of this
@@ -141,15 +146,15 @@ pub mod native_window_host;
 #[cfg(feature = "core")]
 pub mod osl_chat_alert_words;
 #[cfg(feature = "core")]
-pub mod osl_chat_drag_drop;
-#[cfg(feature = "core")]
 pub mod osl_chat_attachment_download_permission;
 #[cfg(feature = "core")]
-pub mod osl_chat_pro_attachment_send;
+pub mod osl_chat_drag_drop;
 #[cfg(feature = "core")]
 pub mod osl_chat_file_limits;
 #[cfg(feature = "core")]
 pub mod osl_chat_local_state_key;
+#[cfg(feature = "core")]
+pub mod osl_chat_pro_attachment_send;
 #[cfg(feature = "core")]
 pub mod osl_mail;
 #[cfg(feature = "core")]
@@ -195,6 +200,14 @@ pub mod scrub_hosted {
     pub mod x_web;
     pub mod yahoo_mail;
 }
+// TASK 6804 — reading a recovery-kit file the Windows picker selected. Lives in
+// the library, not in `main.rs`, because `main.rs` is compiled by nothing on a
+// Linux host: the validator, the refusals and the identity comparison are only
+// proven if they are here.
+#[cfg(feature = "core")]
+pub mod recovery_kit_file;
+#[cfg(feature = "desktop")]
+pub mod recovery_kit_picker;
 #[cfg(feature = "core")]
 pub mod remove_everything;
 #[cfg(all(feature = "core", feature = "desktop"))]
@@ -218,9 +231,9 @@ pub(crate) mod seam_ledger;
 /// Every other implementation in the tree is `#[cfg(test)]`, which is why the
 /// offline send queue could not be wired at all before this module existed.
 pub mod secure_disk_backend;
-pub mod service_connections;
 #[cfg(feature = "core")]
 pub mod server_records;
+pub mod service_connections;
 #[cfg(feature = "core")]
 pub mod service_host;
 pub mod service_result_words;
@@ -245,6 +258,10 @@ pub mod whatsapp_qa_host;
 #[cfg(feature = "core")]
 pub mod whatsapp_qa_pairing;
 pub mod whatsapp_qa_transport;
+/// TASK 6810: the pinned, signed install path behind the merged setup page's
+/// `NOT DETECTED` rows. Platform-independent by design so its integrity
+/// boundary is exercised wherever the tests run.
+pub mod windows_app_install;
 pub mod x_whitelist;
 
 // Native executable verification is exercised only by Windows callers. Keep
@@ -285,6 +302,8 @@ pub mod discord_qa_inbound_receipt;
 pub mod eager_fetch;
 #[cfg(feature = "core")]
 pub mod eager_fetch_retry;
+#[cfg(feature = "core")]
+pub mod enclave_sidebar_state;
 pub mod identity_binding_verifier;
 #[cfg(feature = "core")]
 pub mod identity_registry;
@@ -351,7 +370,6 @@ pub mod scrub_receipt;
 pub mod scrub_account_rebinding;
 #[cfg(feature = "core")]
 pub mod security;
-pub mod setting_groups;
 #[cfg(feature = "core")]
 pub mod security_credentials;
 pub mod sensitive_warning;
@@ -359,6 +377,7 @@ pub mod sensitive_warning;
 pub mod service_burn_selection;
 #[cfg(feature = "core")]
 pub mod service_scope_index;
+pub mod setting_groups;
 pub mod shared_mail_deleter;
 pub mod shared_mail_reader_types;
 pub mod shared_mailbox_reader;
@@ -370,6 +389,8 @@ pub mod signal_extra_device_sender;
 pub mod spaces;
 #[cfg(feature = "core")]
 pub mod startup_gate;
+#[cfg(feature = "core")]
+pub mod stealth_session;
 
 // Share the original Tauri-free bootstrap verbatim so the app loads the same
 // sealed identity and local security state without forking that logic.

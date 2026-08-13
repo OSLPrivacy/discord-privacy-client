@@ -94,6 +94,21 @@ description = "Allow only the trusted main OSL window to create one named first-
 commands.allow = ["create_osl_chat_group_conversation"]
 
 [[permission]]
+identifier = "allow-create-hub-space-invitations"
+description = "Allow only the trusted main OSL window to create a creator-only group or Enclave and separately bind pending envelopes to exact keyed recipients."
+commands.allow = ["create_hub_space_invitations"]
+
+[[permission]]
+identifier = "allow-list-hub-space-invitations"
+description = "Allow the trusted main OSL window to list only invitation envelopes addressed to the currently unlocked keyed identity."
+commands.allow = ["list_hub_space_invitations"]
+
+[[permission]]
+identifier = "allow-act-on-hub-space-invitation"
+description = "Allow the currently unlocked exact keyed recipient to activate the installed Accept or Decline control with the complete frozen native invitation envelope."
+commands.allow = ["act_on_hub_space_invitation"]
+
+[[permission]]
 identifier = "allow-open-osl-chat-text"
 description = "Allow only the trusted main OSL window to drain and open authenticated first-party chat messages for the active verified friend."
 commands.allow = ["open_osl_chat_text"]
@@ -309,31 +324,6 @@ description = "Read only the checked Scrub account ids saved for the active loca
 commands.allow = ["get_scrub_account_permissions"]
 
 [[permission]]
-identifier = "allow-get-autoscrub-run-fl"
-description = "Read the bounded local AutoScrub run fleet status; returns review state only and grants no mutation authority."
-commands.allow = ["get_autoscrub_run_fl"]
-
-[[permission]]
-identifier = "allow-start-autoscrub-reviewed-run"
-description = "Start one explicitly reviewed local AutoScrub run only after native entitlement, reviewed-batch consent, and identity binding checks."
-commands.allow = ["start_autoscrub_reviewed_run"]
-
-[[permission]]
-identifier = "allow-request-autoscrub-global-stop"
-description = "Request a global stop confirmation for local AutoScrub runs; this does not end a run without an explicit follow-up choice."
-commands.allow = ["request_autoscrub_global_stop"]
-
-[[permission]]
-identifier = "allow-keep-scanning-after-autoscrub-stop-request"
-description = "Choose Keep scanning after an AutoScrub stop request so the active local run continues."
-commands.allow = ["keep_scanning_after_autoscrub_stop_request"]
-
-[[permission]]
-identifier = "allow-stop-autoscrub-now-after-stop-request"
-description = "Choose Stop now after an AutoScrub stop request so the active local run ends."
-commands.allow = ["stop_autoscrub_now_after_stop_request"]
-
-[[permission]]
 identifier = "allow-list-linked-services"
 description = "Read the static demo service and account registry."
 commands.allow = ["list_linked_services"]
@@ -429,6 +419,21 @@ description = "Allow only the trusted main OSL window to decrypt and re-read thi
 commands.allow = ["view_hub_recovery_phrase"]
 
 [[permission]]
+identifier = "allow-load-hub-recovery-kit-file"
+description = "Open the installed native recovery-kit picker and return words only after its one frozen byte buffer passes format, version, integrity, and identity checks. The renderer supplies neither a path nor bytes."
+commands.allow = ["load_hub_recovery_kit_file"]
+
+[[permission]]
+identifier = "allow-verify-hub-recovery-phrase"
+description = "Verify the password-recovery phrase from the trusted OSL window and return only the one-time native recovery token needed for the following password change."
+commands.allow = ["verify_hub_recovery_phrase"]
+
+[[permission]]
+identifier = "allow-set-hub-main-password-after-recovery"
+description = "Consume the native one-time recovery token to replace the local main password after its phrase was verified."
+commands.allow = ["set_hub_main_password_after_recovery"]
+
+[[permission]]
 identifier = "allow-reset-hub-main-password-after-recovery"
 description = "Allow only the trusted main OSL window to replace the local unlock password after the owner's password-recovery phrase is verified."
 commands.allow = ["reset_hub_main_password_after_recovery"]
@@ -512,6 +517,21 @@ commands.allow = ["native_app_takeover_requires_consent"]
 identifier = "allow-install-native-app"
 description = "Start one fixed silent winget or Microsoft Store background install after an explicit trusted-UI click, without shell input or automatic elevation."
 commands.allow = ["install_native_app"]
+
+[[permission]]
+identifier = "allow-list-windows-app-rows"
+description = "Report only whether each of the five fixed setup products is present in one of its pinned Windows locations; accepts no path, package id, or source."
+commands.allow = ["list_windows_app_rows"]
+
+[[permission]]
+identifier = "allow-install-windows-app"
+description = "Install one of the five fixed setup products by resolving its official installer through the signed OSL release manifest, verifying the pinned publisher and digest, taking explicit consent and Windows elevation, and re-detecting afterwards; accepts only a fixed product id."
+commands.allow = ["install_windows_app"]
+
+[[permission]]
+identifier = "allow-open-windows-app"
+description = "Open only a freshly re-detected, publisher-verified executable of one of the five fixed setup products, with no arguments, after an explicit Open press."
+commands.allow = ["open_windows_app"]
 
 [[permission]]
 identifier = "allow-list-components"
@@ -1108,11 +1128,6 @@ description = "Allow only the trusted main OSL window to read bounded live progr
 commands.allow = ["read_protected_email_live_run_progress"]
 
 [[permission]]
-identifier = "allow-request-autoscrub-run-action"
-description = "Apply one bounded AutoScrub run action from the trusted bundled UI; skip retains prior progress and grants no mutation authority."
-commands.allow = ["request_autoscrub_run_action"]
-
-[[permission]]
 identifier = "allow-check-hub-recovery-words"
 description = "Allow only the trusted main OSL window to verify selected 1-based password-recovery phrase words against their positions, after the owner's current main password is supplied and verified."
 commands.allow = ["check_hub_recovery_words"]
@@ -1286,3 +1301,13 @@ commands.allow = ["check_hub_recovery_word_retype"]
 identifier = "allow-reset-every-setting"
 description = "Allow only the trusted main OSL window to restore every safe Settings, Look, Friends, and Behaviour choice to its documented default."
 commands.allow = ["reset_every_setting"]
+
+[[permission]]
+identifier = "allow-get-hub-new-friend-defaults"
+description = "Read the four independently validated new-friend defaults and any field-specific repair prompt from encrypted device-local state."
+commands.allow = ["get_hub_new_friend_defaults"]
+
+[[permission]]
+identifier = "allow-save-hub-new-friend-defaults"
+description = "Validate and save all four new-friend defaults to encrypted device-local state."
+commands.allow = ["save_hub_new_friend_defaults"]

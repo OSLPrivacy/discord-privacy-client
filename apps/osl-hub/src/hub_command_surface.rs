@@ -13,6 +13,7 @@
 //! live in the library, where they are compiled and proven. `main.rs` keeps
 //! only the `#[tauri::command]` wrappers that call them.
 
+#[cfg(test)]
 use crate::autoscrub_run::{self, AutoScrubFleetStatus, AutoScrubReviewedRunRequest};
 use crate::broker;
 use crate::browser_footprint::{self, FootprintObservation, NativeBrowserImportBinding};
@@ -33,6 +34,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use std::sync::Mutex;
 
+#[cfg(test)]
 pub fn build_review_ui_identity_binding_verifier(
     core: &HubCoreState,
 ) -> Result<IdentityBindingVerifier, String> {
@@ -61,6 +63,7 @@ pub fn compose_erasure_request_for_user(
     })
 }
 
+#[cfg(test)]
 pub fn require_review_ui_identity_binding_from_verifier(
     verifier: &IdentityBindingVerifier,
     request: &AutoScrubReviewedRunRequest,
@@ -74,6 +77,7 @@ pub fn require_review_ui_identity_binding_from_verifier(
         .map_err(|_| "A reviewed identity binding is required before starting AutoScrub".to_owned())
 }
 
+#[cfg(test)]
 pub fn start_autoscrub_reviewed_run_after_review_ui_binding<T, Start>(
     verifier: &IdentityBindingVerifier,
     request: AutoScrubReviewedRunRequest,
@@ -86,6 +90,7 @@ where
     start(request)
 }
 
+#[cfg(test)]
 pub fn start_autoscrub_reviewed_run_inner(
     core: &HubCoreState,
     request: AutoScrubReviewedRunRequest,
@@ -98,6 +103,7 @@ pub fn start_autoscrub_reviewed_run_inner(
     )
 }
 
+#[cfg(test)]
 pub fn start_autoscrub_reviewed_run_checked<BuildVerifier, Start>(
     core: &HubCoreState,
     request: AutoScrubReviewedRunRequest,
@@ -524,9 +530,6 @@ macro_rules! hub_tauri_commands {
             get_mass_cleanup_capabilities,
             discover_mass_cleanup_targets,
             execute_mass_cleanup_batch,
-            get_autoscrub_run_fl,
-            start_autoscrub_reviewed_run,
-            request_autoscrub_global_stop,
             compose_scrub_erasure_request,
             validate_hub_activation_code,
             clear_hub_activation_code,
@@ -536,6 +539,9 @@ macro_rules! hub_tauri_commands {
             import_hub_osl_identity_phrase,
             setup_hub_main_password,
             setup_hub_main_password_without_recovery,
+            load_hub_recovery_kit_file,
+            verify_hub_recovery_phrase,
+            set_hub_main_password_after_recovery,
             view_hub_recovery_phrase,
             check_hub_recovery_word_retype,
             get_hub_recovery_kit_unsaved,
@@ -553,6 +559,9 @@ macro_rules! hub_tauri_commands {
             open_hub_source_repository,
             list_native_apps,
             install_native_app,
+            list_windows_app_rows,
+            install_windows_app,
+            open_windows_app,
             get_mullvad_status,
             list_components,
             install_component,

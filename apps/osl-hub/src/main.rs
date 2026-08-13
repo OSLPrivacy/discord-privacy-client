@@ -6,7 +6,6 @@ use osl_privacy_hub::account_recovery;
 use osl_privacy_hub::ai_carrier::{
     ai_carrier_status_for, set_ai_carrier_preview_enabled_for, AiCarrierState,
 };
-use osl_privacy_hub::autoscrub_run::{self, AutoScrubFleetStatus, AutoScrubReviewedRunRequest};
 use osl_privacy_hub::broker::{
     self, DecryptedLocalProtectedMessage, HubBrokerState, OpenedHubAttachment,
     OpenedNativeOverlayTextBatch, OpenedPeerProseMessage, PreparedCoreMessage,
@@ -198,10 +197,9 @@ use osl_privacy_hub::hub_command_surface::{
     checked_hosted_session_scan_flow, compose_erasure_request_for_user,
     require_native_discord_product_send_authority,
     require_review_ui_identity_binding_from_verifier, service_kind_id,
-    start_autoscrub_reviewed_run_after_review_ui_binding, start_autoscrub_reviewed_run_checked,
-    start_autoscrub_reviewed_run_inner, with_native_discord_product_send_authority,
-    BrowserFootprintConsentRequest, CheckedHost, DiscordGuidedDeletionPlanState,
-    GuidedDeletionRunAuthorityInput, NativeDiscordProductSendAuthority,
+    with_native_discord_product_send_authority, BrowserFootprintConsentRequest, CheckedHost,
+    DiscordGuidedDeletionPlanState, GuidedDeletionRunAuthorityInput,
+    NativeDiscordProductSendAuthority,
 };
 use osl_privacy_hub::native_surface_capture;
 // The QA-evidence half of the surface is compiled only for the disposable QA
@@ -1400,26 +1398,6 @@ fn execute_mass_cleanup_batch(
     mass_cleanup::execute_batch(&state.osl, request)
 }
 
-#[tauri::command]
-fn get_autoscrub_run_fl(state: State<'_, HubCoreState>) -> Result<AutoScrubFleetStatus, String> {
-    autoscrub_run::fleet_status(&state.osl)
-}
-
-#[tauri::command]
-fn start_autoscrub_reviewed_run(
-    state: State<'_, HubCoreState>,
-    request: AutoScrubReviewedRunRequest,
-) -> Result<AutoScrubFleetStatus, String> {
-    start_autoscrub_reviewed_run_inner(&state, request)
-}
-
-#[tauri::command]
-fn request_autoscrub_global_stop(
-    state: State<'_, HubCoreState>,
-) -> Result<AutoScrubFleetStatus, String> {
-    autoscrub_run::request_global_stop(&state.osl)
-}
-
 /// Produce local statutory-erasure text for the user to review and send.
 /// The command has no transport side effect.
 #[tauri::command]
@@ -1464,9 +1442,11 @@ async fn clear_hub_activation_code(app: tauri::AppHandle) -> Result<HubLicenseSt
 async fn unlock_hub_password_gate(
     app: tauri::AppHandle,
     session: State<'_, HubAccountSessionState>,
+    clean_session: State<'_, osl_privacy_hub::stealth_session::StealthSessionState>,
     password: String,
 ) -> Result<HubGateUnlockResult, String> {
     let _session = session.transition.lock().await;
+    clean_session.prepare_for_gate(&app.state::<HubCoreState>())?;
     let verify_app = app.clone();
     let verification = tauri::async_runtime::spawn_blocking(move || {
         startup_gate::verify_password_role(&verify_app.state::<HubCoreState>(), password)
@@ -1494,15 +1474,15 @@ async fn unlock_hub_password_gate(
             let readiness = startup_gate::readiness_after_main(&app.state::<HubCoreState>());
             Ok(HubGateUnlockResult::unlocked(verification, readiness))
         }
-        VerifiedGateRole::Stealth => {
+        VerifiedGateRole::Stealth(file_key) => {
             service_host::desktop::shutdown(&app, &app.state::<ServiceHostState>()).await?;
             native_discord_overlay::clear_and_hide(&app);
             let _ = app.state::<NativeWindowHostState>().terminate();
             let _ = app.state::<MullvadWindowHostState>().restore();
             let _ = app.state::<BrowserCompanionState>().terminate();
             app.state::<HubBrokerState>().clear()?;
-            startup_gate::enter_stealth_landing(&app.state::<HubCoreState>());
-            Ok(HubGateUnlockResult::decoy(verification))
+            let readiness = clean_session.enter(&app.state::<HubCoreState>(), file_key)?;
+            Ok(HubGateUnlockResult::stealth(verification, readiness))
         }
         VerifiedGateRole::Duress => {
             service_host::desktop::shutdown(&app, &app.state::<ServiceHostState>()).await?;
@@ -1597,6 +1577,80 @@ async fn import_hub_osl_identity_phrase(
     .map_err(|_| "OSL identity import worker failed".to_string())?
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HubLoadedRecoveryKit {
+    page: String,
+    selected_path: String,
+    selected_sha256: String,
+    validated_sha256: String,
+    words: Vec<String>,
+}
+
+/// Pick, freeze, and validate a kit before the renderer receives its words.
+/// The command intentionally accepts no path or bytes from JavaScript.
+#[tauri::command]
+async fn load_hub_recovery_kit_file(
+    app: tauri::AppHandle,
+    page: String,
+) -> Result<Option<HubLoadedRecoveryKit>, String> {
+    let page = RecoveryKitPage::from_id(&page)
+        .ok_or_else(|| "That recovery page is unavailable. Nothing was changed.".to_owned())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let expected_account_id = if page == RecoveryKitPage::ForgotPassword {
+            password_lifecycle::sealed_identity_user_id_for_recovery()
+                .map_err(|_| RecoveryKitRefusal::Unreadable)?
+        } else {
+            None
+        };
+        let picker = DesktopRecoveryKitPicker::new(app);
+        load_recovery_kit_through_picker(page, &picker, expected_account_id.as_deref())
+            .map(|loaded| {
+                loaded.map(|kit| HubLoadedRecoveryKit {
+                    page: kit.page().id().to_owned(),
+                    selected_path: kit.path().to_owned(),
+                    selected_sha256: kit.selected_sha256().to_owned(),
+                    validated_sha256: kit.validated_sha256().to_owned(),
+                    words: kit.words(),
+                })
+            })
+            .map_err(|refusal| refusal.message().to_owned())
+    })
+    .await
+    .map_err(|_| "OSL could not load that recovery kit. Nothing was changed.".to_owned())?
+}
+
+#[tauri::command]
+async fn verify_hub_recovery_phrase(
+    app: tauri::AppHandle,
+    recovery_phrase: String,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        ipc::commands::cmd_osl_verify_recovery_phrase(&app.state::<HubCoreState>().osl, recovery_phrase)
+    })
+    .await
+    .map_err(|_| "We could not verify that recovery phrase. No password was changed.".to_owned())?
+    .map_err(|_| "We could not verify that recovery phrase. No password was changed.".to_owned())
+}
+
+#[tauri::command]
+async fn set_hub_main_password_after_recovery(
+    app: tauri::AppHandle,
+    new_password: String,
+    recovery_token: String,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        ipc::commands::cmd_osl_set_main_password_after_recovery(
+            &app.state::<HubCoreState>().osl,
+            new_password,
+            recovery_token,
+        )
+    })
+    .await
+    .map_err(|_| "We could not reset the password. Your existing data was not changed.".to_owned())?
+    .map_err(|_| "We could not reset the password. Your existing data was not changed.".to_owned())
+}
+
 #[tauri::command]
 async fn setup_hub_main_password(
     app: tauri::AppHandle,
@@ -1682,10 +1736,17 @@ async fn set_hub_recovery_kit_unsaved(unsaved: bool) -> Result<(), String> {
 /// open `MessageStore`. Every secret-bearing IPC command then refuses until the
 /// password gate runs again.
 #[tauri::command]
-async fn lock_hub_session(app: tauri::AppHandle) -> Result<ipc::commands::SessionLockDto, String> {
+async fn lock_hub_session(
+    app: tauri::AppHandle,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<ipc::commands::SessionLockDto, String> {
+    let _session = session.transition.lock().await;
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<HubCoreState>();
-        ipc::commands::cmd_osl_lock_session(&state.osl)
+        let report = ipc::commands::cmd_osl_lock_session(&state.osl)?;
+        app.state::<osl_privacy_hub::stealth_session::StealthSessionState>()
+            .leave(&state)?;
+        Ok(report)
     })
     .await
     .map_err(|_| "OSL session lock worker failed".to_string())?
@@ -2187,6 +2248,30 @@ fn list_native_apps() -> Vec<NativeAppStatus> {
 #[tauri::command]
 fn install_native_app(app_id: NativeAppId) -> Result<NativeInstallResult, String> {
     native_apps::install_native_app(app_id)
+}
+
+/// TASK 6810 — the merged setup page's rows, measured now.
+#[tauri::command]
+fn list_windows_app_rows() -> Vec<osl_privacy_hub::windows_app_install::InstallRow> {
+    osl_privacy_hub::windows_app_install::production_rows()
+}
+
+/// TASK 6810 — resolve the official installer through the signed release
+/// manifest, verify publisher and pinned digest, take consent and elevation,
+/// install through Windows, and re-detect. Answers only when it is over.
+#[tauri::command]
+fn install_windows_app(
+    product: osl_privacy_hub::windows_app_install::InstallProduct,
+) -> Result<osl_privacy_hub::windows_app_install::InstallRow, String> {
+    osl_privacy_hub::windows_app_install::production_install(product)
+}
+
+/// TASK 6810 — open a detected product, because Open was pressed.
+#[tauri::command]
+fn open_windows_app(
+    product: osl_privacy_hub::windows_app_install::InstallProduct,
+) -> Result<String, String> {
+    osl_privacy_hub::windows_app_install::production_open(product)
 }
 
 #[tauri::command]
@@ -3884,7 +3969,10 @@ fn native_discord_overlay_state(
         ttl_seconds: scope.ttl_seconds,
         decrypt_display_enabled: scope.decrypt_display_enabled,
         view_once_enabled: true,
-        attachments_enabled: ipc::tier_gate::is_paid_equivalent(&core.osl),
+        // Encryption is a confidentiality boundary for every shipping tier.
+        // Friend approval, not billing state, decides whether this control is
+        // usable; the native send path applies the Free/Pro size limit.
+        attachments_enabled: scope_approved,
         discord_marker_available: app.state::<NativeDiscordComposerState>().marker_available(),
         covertext_enabled: state.covertext_enabled(),
         lock_engaged: state.lock_engaged(),
@@ -5261,11 +5349,11 @@ async fn select_osl_chat_attachment(
     caller: tauri::WebviewWindow,
     session: State<'_, HubAccountSessionState>,
     view_once: bool,
+    spoiler: bool,
 ) -> Result<Option<broker::PreparedNativeOverlayAttachment>, String> {
     if caller.label() != "main" {
         return Err("Only the trusted OSL window may choose OSL Chat attachments".to_owned());
     }
-    require_active_pro_entitlement(&app.state::<HubCoreState>())?;
     let _session = session.transition.lock().await;
     tauri::async_runtime::spawn_blocking(move || {
         native_attachment_transport::select_osl_chat_attachment(
@@ -5274,6 +5362,7 @@ async fn select_osl_chat_attachment(
             &app.state::<HubSecurityState>(),
             &app.state::<HubBrokerState>(),
             view_once,
+            spoiler,
         )
     })
     .await
@@ -5289,7 +5378,6 @@ async fn list_osl_chat_attachments(
     if caller.label() != "main" {
         return Err("Only the trusted OSL window may list OSL Chat attachments".to_owned());
     }
-    require_active_pro_entitlement(&app.state::<HubCoreState>())?;
     let _session = session.transition.lock().await;
     tauri::async_runtime::spawn_blocking(move || {
         native_attachment_transport::list_osl_chat_pending(
@@ -5315,7 +5403,6 @@ async fn open_osl_chat_attachment(
     screenshot::apply_to_window(&caller, active_osl_capture_protection()).map_err(|_| {
         "Windows capture resistance is required to open OSL Chat attachments".to_owned()
     })?;
-    require_active_pro_entitlement(&app.state::<HubCoreState>())?;
     let _session = session.transition.lock().await;
     tauri::async_runtime::spawn_blocking(move || {
         native_attachment_transport::open_osl_chat_pending(
@@ -5340,7 +5427,6 @@ async fn select_native_discord_overlay_attachment(
     if caller.label() != native_discord_overlay::OVERLAY_LABEL {
         return Err("Only the trusted native Discord overlay may choose attachments".to_owned());
     }
-    require_active_pro_entitlement(&app.state::<HubCoreState>())?;
     let _session = session.transition.lock().await;
     tauri::async_runtime::spawn_blocking(move || {
         let (context_epoch, host) = require_overlay_context_snapshot(&app)?;
@@ -5369,7 +5455,6 @@ async fn list_native_discord_overlay_attachments(
     if caller.label() != native_discord_overlay::OVERLAY_LABEL {
         return Err("Only the trusted native Discord overlay may list attachments".to_owned());
     }
-    require_active_pro_entitlement(&app.state::<HubCoreState>())?;
     let _session = session.transition.lock().await;
     tauri::async_runtime::spawn_blocking(move || {
         let (context_epoch, host) = require_overlay_context_snapshot(&app)?;
@@ -5395,7 +5480,6 @@ async fn open_native_discord_overlay_attachment(
     if caller.label() != native_discord_overlay::OVERLAY_LABEL {
         return Err("Only the trusted native Discord overlay may open attachments".to_owned());
     }
-    require_active_pro_entitlement(&app.state::<HubCoreState>())?;
     let _session = session.transition.lock().await;
     tauri::async_runtime::spawn_blocking(move || {
         let (context_epoch, host) = require_overlay_context_snapshot(&app)?;
@@ -9625,13 +9709,18 @@ fn set_ai_carrier_preview_enabled(
 
 #[tauri::command]
 fn build_integrity_status(state: tauri::State<'_, BuildIntegrity>) -> BuildIntegrity {
+    *state.inner()
+}
+
 #[tauri::command]
 fn resolve_english_catalogue_string(
     catalogue: tauri::State<'_, osl_english_catalogue::EnglishCatalogue>,
     key: String,
     variables: std::collections::BTreeMap<String, String>,
 ) -> Result<osl_english_catalogue::ResolvedString, String> {
-    catalogue.resolve(&key, variables).map_err(|error| error.to_string())
+    catalogue
+        .resolve(&key, variables)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -9639,10 +9728,9 @@ fn resolve_person_service_result(
     catalogue: tauri::State<'_, osl_english_catalogue::EnglishCatalogue>,
     result: osl_english_catalogue::ServiceResultEnvelope,
 ) -> Result<osl_english_catalogue::ResolvedString, String> {
-    catalogue.resolve_service_result(&result).map_err(|error| error.to_string())
-}
-
-    *state.inner()
+    catalogue
+        .resolve_service_result(&result)
+        .map_err(|error| error.to_string())
 }
 
 macro_rules! hub_tauri_generate_handler {
@@ -9688,8 +9776,13 @@ macro_rules! hub_tauri_command_names {
 
 #[cfg(feature = "signal-qa-shell")]
 fn main() {
-    let english_catalogue = osl_privacy_hub::english_catalogue_entry::load_packaged_windows_catalogue()
-        .unwrap_or_else(|error| { eprintln!("5205 Windows startup refusal: {error}"); std::process::exit(78); });
+    let english_catalogue =
+        osl_privacy_hub::english_catalogue_entry::load_packaged_windows_catalogue().unwrap_or_else(
+            |error| {
+                eprintln!("5205 Windows startup refusal: {error}");
+                std::process::exit(78);
+            },
+        );
     let builder = tauri::Builder::default().setup(move |app| {
         app.manage(english_catalogue);
         let profiles =
@@ -9699,6 +9792,7 @@ fn main() {
                 })?;
         app.manage(HubCoreState::default());
         app.manage(HubAccountSessionState::default());
+        app.manage(osl_privacy_hub::stealth_session::StealthSessionState::default());
         app.manage(NativeWindowHostState::default());
         app.manage(NativeDiscordComposerState::default());
         app.manage(profiles);
@@ -9711,22 +9805,27 @@ fn main() {
         list_native_apps,
         host_native_app_window,
         resize_native_app_window,
-        resolve_english_catalogue_string,
-        resolve_person_service_result,
         focus_native_app_window,
         detach_native_app_window,
         get_signal_protected_send_readiness,
+        resolve_english_catalogue_string,
+        resolve_person_service_result,
     ]);
     let app = builder
         .build(tauri::generate_context!("tauri.signal-qa.conf.json"))
         .expect("error while running OSL Signal QA");
     app.run(|_app_handle, _event| {});
 }
-    let english_catalogue = osl_privacy_hub::english_catalogue_entry::load_packaged_windows_catalogue()
-        .unwrap_or_else(|error| { eprintln!("5205 Windows startup refusal: {error}"); std::process::exit(78); });
 
 #[cfg(not(feature = "signal-qa-shell"))]
 fn main() {
+    let english_catalogue =
+        osl_privacy_hub::english_catalogue_entry::load_packaged_windows_catalogue().unwrap_or_else(
+            |error| {
+                eprintln!("5205 Windows startup refusal: {error}");
+                std::process::exit(78);
+            },
+        );
     if let Some(exit_code) =
         osl_privacy_hub::allowed_place_commands::run_allowed_place_cli_from_env()
     {
@@ -9912,10 +10011,10 @@ fn main() {
             });
         }
     });
-        app.manage(english_catalogue);
     startup_breadcrumb("setup_before"); // STARTUP-TRACE
-    let builder = builder.setup(|app| {
+    let builder = builder.setup(move |app| {
         startup_breadcrumb("setup_enter"); // STARTUP-TRACE
+        app.manage(english_catalogue);
         let profiles =
             osl_privacy_hub::adapter_profile_boot::load_verified_adapter_profiles_at_boot()
                 .map_err(|_| {

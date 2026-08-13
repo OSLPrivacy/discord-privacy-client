@@ -82,6 +82,17 @@ export interface HubMainPasswordNoRecoverySetupResult {
   readiness: HubPasswordReadiness;
 }
 
+/** A kit is never supplied by the renderer: the desktop command opens the
+ * installed picker, freezes its selected bytes, and returns words only after
+ * validation succeeds. */
+export interface HubLoadedRecoveryKit {
+  page: "forgot-password" | "restore-account";
+  selectedPath: string;
+  selectedSha256: string;
+  validatedSha256: string;
+  words: string[];
+}
+
 export interface HubPasswordRoleStatus {
   mainPasswordSet: boolean;
   stealthPasswordSet: boolean;
@@ -106,7 +117,7 @@ export interface HubGateBurnResult {
 }
 
 export interface HubGateUnlockResult {
-  outcome: "unlocked" | "decoy" | "burned" | "duress" | "wrong";
+  outcome: "unlocked" | "stealth" | "burned" | "duress" | "wrong";
   lockoutSecondsRemaining: number;
   attemptsUsed: number;
   readiness: CoreReadiness | null;
@@ -279,6 +290,47 @@ export async function importHubOslIdentityPhrase(recoveryPhrase: string): Promis
   return parseIdentitySetupResult(await invoke<unknown>("import_hub_osl_identity_phrase", { recoveryPhrase: recoveryPhrase.trim() }));
 }
 
+function parseLoadedRecoveryKit(value: unknown): HubLoadedRecoveryKit {
+  if (!value || typeof value !== "object") throw new Error("recovery kit unavailable");
+  const kit = value as Record<string, unknown>;
+  const page = kit.page;
+  const words = kit.words;
+  if (
+    (page !== "forgot-password" && page !== "restore-account")
+    || typeof kit.selectedPath !== "string"
+    || !/^[0-9a-f]{64}$/u.test(String(kit.selectedSha256 ?? ""))
+    || kit.selectedSha256 !== kit.validatedSha256
+    || !Array.isArray(words)
+    || words.length !== 12
+    || !words.every((word) => typeof word === "string" && /^[a-z]+$/u.test(word))
+  ) throw new Error("recovery kit unavailable");
+  return {
+    page,
+    selectedPath: kit.selectedPath,
+    selectedSha256: kit.selectedSha256 as string,
+    validatedSha256: kit.validatedSha256 as string,
+    words: [...words] as string[],
+  };
+}
+
+export async function loadHubRecoveryKitFile(page: "forgot-password" | "restore-account"): Promise<HubLoadedRecoveryKit | null> {
+  if (!isTauriRuntime()) throw new Error("recovery kit unavailable");
+  const loaded = await invoke<unknown>("load_hub_recovery_kit_file", { page });
+  return loaded === null ? null : parseLoadedRecoveryKit(loaded);
+}
+
+export async function verifyHubRecoveryPhrase(recoveryPhrase: string): Promise<string> {
+  if (!isTauriRuntime() || !isRecoveryPhrase(recoveryPhrase)) throw new Error("recovery phrase unavailable");
+  const token = await invoke<unknown>("verify_hub_recovery_phrase", { recoveryPhrase: recoveryPhrase.trim() });
+  if (typeof token !== "string" || token.length === 0) throw new Error("recovery phrase unavailable");
+  return token;
+}
+
+export async function setHubMainPasswordAfterRecovery(newPassword: string, recoveryToken: string): Promise<void> {
+  if (!isTauriRuntime() || !isValidNewMainPassword(newPassword) || !recoveryToken) throw new Error("password reset unavailable");
+  await invoke("set_hub_main_password_after_recovery", { newPassword, recoveryToken });
+}
+
 export async function setupHubMainPassword(password: string): Promise<HubMainPasswordSetupResult> {
   if (!isTauriRuntime() || !isValidNewMainPassword(password)) throw new Error("setup unavailable");
   return parseMainPasswordSetupResult(await invoke<unknown>("setup_hub_main_password", { password }));
@@ -365,7 +417,7 @@ export function parseHubGateUnlockResult(raw: unknown): HubGateUnlockResult {
   if (!isExactRecord(raw, ["outcome", "lockoutSecondsRemaining", "attemptsUsed", "readiness", "burn"])) {
     throw new Error("invalid password-gate response");
   }
-  const outcomes: readonly HubGateUnlockResult["outcome"][] = ["unlocked", "decoy", "burned", "duress", "wrong"];
+  const outcomes: readonly HubGateUnlockResult["outcome"][] = ["unlocked", "stealth", "burned", "duress", "wrong"];
   if (
     !outcomes.includes(raw.outcome as HubGateUnlockResult["outcome"])
     || !Number.isSafeInteger(raw.lockoutSecondsRemaining)
