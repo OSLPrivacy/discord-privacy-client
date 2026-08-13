@@ -49,6 +49,8 @@ mod anchor;
 mod cipher;
 mod error;
 mod schema;
+/// TASK 4657 — the post, story and archive-item records OSL Chats stores.
+pub mod social;
 
 pub use anchor::{AnchorKeystore, AnchorRecord, KeystoreBackedAnchor, MonotonicAnchor};
 pub use error::StoreError;

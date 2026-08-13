@@ -19,6 +19,18 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 
 thiserror = { workspace = true }
 
+# TASK 4657: the post/story/archive record binds TASK 4651's four frozen
+# visibility stable IDs. They are read from the shipping settings crate rather
+# than re-declared here, so the product has one visibility vocabulary and not
+# two that can drift apart.
+content-defaults = { path = "../content-defaults" }
+
+# TASK 4657: the independent body/media digest carried by every social record.
+# Independent of the AEAD tag on purpose — the tag proves the row was not
+# altered on disk, the digest proves the bytes the author signed are the bytes
+# that came back.
+sha2 = { workspace = true }
+
 [dev-dependencies]
 # The v3 fixture in `tests/blind_index_test.rs` must seal rows the way the
 # *old* build did, not the way the current one does. Lifting sealed bytes out
@@ -31,3 +43,14 @@ crypto = { path = "../crypto" }
 # pulls a getrandom requiring edition-2024 / rustc 1.85+ which
 # is past our MSRV).
 tempfile = "=3.13"
+# TASK 4657's check hashes its own preimage rather than calling the store's
+# helper, so a production module that changed how it hashes cannot drag the
+# control along with it.
+sha2 = { workspace = true }
+
+# TASK 4657. `harness = false` so a starved production path exits 1 by content,
+# field and byte offset — a libtest binary exits 101 and cargo wraps it, which
+# is not the exit code the finish line names.
+[[test]]
+name = "task_4657_social_records"
+harness = false
