@@ -130,6 +130,7 @@ pub mod mail_owner_check;
 /// so it is testable in every build that can compile this crate.
 pub mod main_window_reveal;
 pub mod messenger_whitelist_kinds;
+pub mod messenger_cover_placement;
 pub mod model_pack_install;
 pub mod models;
 pub mod mullvad_window_host;
