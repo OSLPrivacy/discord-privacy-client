@@ -24,6 +24,10 @@ use crate::native_a11y::{
     resolve_uia2_composer, Uia2AcquireError, Uia2Acquired, Uia2ComposerError, Uia2ComposerMatcher,
     Uia2Editable, Uia2PlacementRefusal, Uia2Syscalls, Uia2WindowPlan, Uia2WindowResolveError,
 };
+use task_5104_appearance_fingerprint::{
+    AppearanceGuard, CaptureObservation, DriftEvent, SurfaceKind as AppearanceSurfaceKind,
+    WarmUiaObservation,
+};
 
 pub use crate::native_a11y::TELEGRAM_OUTER_WINDOW_CLASS;
 
@@ -546,6 +550,174 @@ pub enum TelegramSelectorError {
     Ambiguous,
     Invalid,
     LimitExceeded,
+}
+
+/// A value that may be substituted into an OSL-owned Telegram paint surface.
+/// There is deliberately no fallback or guessed CSS value: strings and pixels
+/// are accepted only after they were measured on the live carrier surface.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TelegramMeasuredPaint {
+    ExactPixels(Vec<u8>),
+    Value { name: String, value: String },
+}
+
+/// The non-content output of one live appearance read.  The fingerprint inputs
+/// are the task-5104 privacy-preserving fields; `paint` is the separate exact
+/// pixel/measured-value payload that may be copied into the OSL surface.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TelegramAppearanceSample {
+    pub uia: WarmUiaObservation,
+    pub capture: CaptureObservation,
+    pub paint: Vec<TelegramMeasuredPaint>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TelegramPaintSurface {
+    Composer,
+    Row,
+}
+
+/// The resolved target is opaque to the repair controller.  Its sole purpose
+/// is to force every repair through the structural resolver again rather than
+/// retaining an old editable or row handle.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TelegramStructuralPaintTarget {
+    pub surface: TelegramPaintSurface,
+    pub node_index: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TelegramAppearanceRepairFailure {
+    Structural,
+    SampleUnavailable,
+    SamplesUnstable,
+    Appearance,
+    Local5103Comparison,
+    /// The caller attempted to paint after the owning surface changed.  This
+    /// is an error, never a best-effort repaint; command handlers map it to
+    /// exit status 1.
+    StaleRepaint,
+}
+
+/// Narrow seam between Telegram's structural resolver, 5104 observation, 5103
+/// local comparison, and the 5105 fail-closed UI controller.  Implementations
+/// must keep `hide`, `apply_measured`, and `refuse_5105` content-free.
+pub trait TelegramAppearanceRepairPort {
+    fn hide_before_repair(&mut self);
+    fn resolve_structure(
+        &mut self,
+        surface: TelegramPaintSurface,
+    ) -> Result<TelegramStructuralPaintTarget, TelegramSelectorError>;
+    fn sample(
+        &mut self,
+        target: &TelegramStructuralPaintTarget,
+    ) -> Result<TelegramAppearanceSample, TelegramAppearanceRepairFailure>;
+    fn apply_measured(
+        &mut self,
+        target: &TelegramStructuralPaintTarget,
+        paint: &[TelegramMeasuredPaint],
+    ) -> Result<(), TelegramAppearanceRepairFailure>;
+    /// Runs the local task-5103 regional comparison against the just-painted
+    /// OSL surface. `false` means the paint is removed and 5105 is entered.
+    fn local_5103_matches(&mut self, target: &TelegramStructuralPaintTarget) -> bool;
+    /// Idempotent 5105 entry. It must clear OSL pixels before surfacing its one
+    /// refusal and must not write or otherwise alter Telegram content.
+    fn refuse_5105(&mut self, reason: TelegramAppearanceRepairFailure);
+}
+
+fn valid_measured_paint(paint: &[TelegramMeasuredPaint]) -> bool {
+    !paint.is_empty()
+        && paint.iter().all(|entry| match entry {
+            TelegramMeasuredPaint::ExactPixels(bytes) => !bytes.is_empty(),
+            TelegramMeasuredPaint::Value { name, value } => {
+                !name.trim().is_empty() && !value.trim().is_empty()
+            }
+        })
+}
+
+/// Hide, re-resolve, and re-sample a Telegram paint surface before every
+/// repair. Both samples must agree byte-for-byte and are fed through the 5104
+/// guard twice; the only resulting substitution is exact pixels or a measured
+/// value. A failed 5103 comparison, missing structural evidence, sample
+/// starvation, or stale repaint clears the OSL surface and enters 5105 once.
+pub fn repair_telegram_appearance_before_paint(
+    port: &mut dyn TelegramAppearanceRepairPort,
+    guard: &mut AppearanceGuard,
+    surface: TelegramPaintSurface,
+    now_secs: u64,
+) -> Result<(), TelegramAppearanceRepairFailure> {
+    port.hide_before_repair();
+    let target = match port.resolve_structure(surface) {
+        Ok(target) if target.surface == surface => target,
+        _ => return refuse_telegram_appearance(port, TelegramAppearanceRepairFailure::Structural),
+    };
+    let first = match port.sample(&target) {
+        Ok(sample) if valid_measured_paint(&sample.paint) => sample,
+        _ => {
+            return refuse_telegram_appearance(
+                port,
+                TelegramAppearanceRepairFailure::SampleUnavailable,
+            )
+        }
+    };
+    let second = match port.sample(&target) {
+        Ok(sample) if valid_measured_paint(&sample.paint) => sample,
+        _ => {
+            return refuse_telegram_appearance(
+                port,
+                TelegramAppearanceRepairFailure::SampleUnavailable,
+            )
+        }
+    };
+    if first != second {
+        return refuse_telegram_appearance(port, TelegramAppearanceRepairFailure::SamplesUnstable);
+    }
+    let expected_kind = match surface {
+        TelegramPaintSurface::Composer => AppearanceSurfaceKind::Composer,
+        TelegramPaintSurface::Row => AppearanceSurfaceKind::MessageRow,
+    };
+    if first.uia.scope.surface_kind != expected_kind {
+        return refuse_telegram_appearance(port, TelegramAppearanceRepairFailure::Appearance);
+    }
+    // A repair starts a new two-observation agreement. It cannot reuse an old
+    // fingerprint after a drift-triggered hide.
+    guard.invalidate(DriftEvent::BeforeReveal);
+    let fingerprinted = guard
+        .remeasure(
+            DriftEvent::BeforeReveal,
+            now_secs,
+            first.uia.clone(),
+            first.capture.clone(),
+        )
+        .and_then(|_| {
+            guard.reveal(
+                now_secs.saturating_add(1),
+                second.uia.clone(),
+                second.capture.clone(),
+            )
+        });
+    if fingerprinted.is_err() {
+        return refuse_telegram_appearance(port, TelegramAppearanceRepairFailure::Appearance);
+    }
+    if let Err(error) = port.apply_measured(&target, &second.paint) {
+        return refuse_telegram_appearance(port, error);
+    }
+    if !port.local_5103_matches(&target) {
+        return refuse_telegram_appearance(
+            port,
+            TelegramAppearanceRepairFailure::Local5103Comparison,
+        );
+    }
+    Ok(())
+}
+
+fn refuse_telegram_appearance(
+    port: &mut dyn TelegramAppearanceRepairPort,
+    reason: TelegramAppearanceRepairFailure,
+) -> Result<(), TelegramAppearanceRepairFailure> {
+    port.hide_before_repair();
+    port.refuse_5105(reason);
+    Err(reason)
 }
 
 #[derive(Clone, Eq, PartialEq)]

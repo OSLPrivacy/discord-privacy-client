@@ -21,6 +21,7 @@ tar = "=0.4.46"
 zip = { version = "=8.6.0", default-features = false, features = ["deflate"] }
 lopdf = { version = "=0.42.0", default-features = false }
 adapter-profile = { path = "../../crates/adapter-profile" }
+task-5104-appearance-fingerprint = { path = "../../tools/task-5104-appearance-fingerprint" }
 cover-draft = { path = "../../crates/cover-draft", package = "osl-cover-draft" }
 # This policy must be linked by the desktop send boundary, rather than living
 # only in an isolated workspace test crate.
