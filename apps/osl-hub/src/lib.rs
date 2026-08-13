@@ -261,6 +261,13 @@ pub mod whatsapp_window_composer;
 pub mod x_whitelist;
 /// Hermetic records for the direct X active-window discovery command.
 pub mod x_window_composer;
+pub mod x_public_cover;
+/// Receiver-backed protected/normal display state for marked X DM and post
+/// rows. Kept separate from the web adapter so only receiving-job evidence can
+/// populate protected text.
+pub mod x_eye_state;
+#[cfg(feature = "core")]
+pub mod x_shipping_eye;
 
 // Native executable verification is exercised only by Windows callers. Keep
 // its fail-closed types available to cross-platform manifests and tests.
