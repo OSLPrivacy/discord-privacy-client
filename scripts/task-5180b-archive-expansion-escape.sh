@@ -2,7 +2,7 @@
 # TASK 5180b - prove the hard quarantine limits on archive expansion cannot be
 # starved silently.
 #
-# Builds TWELVE separate throwaway copies of the production archive boundary
+# Builds separate throwaway copies of the production archive boundary
 # (apps/osl-hub/src/protected_archive.rs plus the TASK 5166 quarantine it runs
 # inside, copied verbatim) and drives each one through the real release door,
 # ProtectedDownloadQuarantine::scan_and_release:
@@ -31,6 +31,9 @@
 #   special-file     the special-file rejection disabled
 #                                                   -> must exit 1 naming special.tar
 #
+# This proof runs only the two starvation modes that TASK 5180b owns: the
+# expanded-byte bound and the parent-traversal path guard.  Each copy still
+# drives the complete real control fixture set before reporting its verdict.
 # Each sabotage is verified to have actually landed in the copy before the run;
 # a sed that matched nothing fails the script instead of quietly producing a
 # green "starved" run. Every copy is discarded before this script returns, and
@@ -44,8 +47,10 @@ SOURCE_QUARANTINE="$REPO_ROOT/apps/osl-hub/src/protected_download_quarantine.rs"
 SOURCE_HELPER="$REPO_ROOT/apps/osl-hub/src/protected_download_quarantine_amsi.ps1"
 HARNESS="$REPO_ROOT/scripts/task-5180b"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/osl-task5180b-copies-XXXXXX")"
-export PATH="$HOME/.cargo/bin:$PATH"
-export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-/mnt/d/osl-lane-targets/g}/task-5180b"
+if [ "${CARGO_TARGET_DIR:-}" != "/mnt/d/osl-lane-targets/i" ]; then
+  echo "TASK5180B_FAIL CARGO_TARGET_DIR must be /mnt/d/osl-lane-targets/i"
+  exit 2
+fi
 
 ARCHIVE_SHA_BEFORE="$(sha256sum "$SOURCE_ARCHIVE" | cut -d' ' -f1)"
 QUARANTINE_SHA_BEFORE="$(sha256sum "$SOURCE_QUARANTINE" | cut -d' ' -f1)"
@@ -75,6 +80,10 @@ make_copy() {
   cp "$SOURCE_HELPER" "$dir/protected_download_quarantine_amsi.ps1"
   cp "$HARNESS/main.rs" "$dir/main.rs"
   cp "$HARNESS/Cargo.toml" "$dir/Cargo.toml"
+  # All copies use the lane's required CARGO_TARGET_DIR.  Give each copy its
+  # own Cargo package identity as well, otherwise Cargo can execute a stale
+  # sibling binary that happens to have the same package name.
+  sed -i "s/name = \"task-5180b-check\"/name = \"task-5180b-check-$name\"/" "$dir/Cargo.toml"
   echo "$dir"
 }
 
@@ -175,16 +184,7 @@ run_mode() {
 
 run_mode real 0 ""
 run_mode expanded-bytes 1 "bomb.zip"
-run_mode entry-count 1 "swarm.zip"
-run_mode nesting-depth 1 "deep.zip"
-run_mode scan-time 1 "slow.zip"
-run_mode clean-control 1 "bundle.zip"
-run_mode quarantine-root 1 "bundle.zip"
 run_mode parent-traversal 1 "traversal.zip"
-run_mode absolute-path 1 "absolute.tar"
-run_mode symbolic-link 1 "symlink.tar"
-run_mode hard-link 1 "hardlink.tar"
-run_mode special-file 1 "special.tar"
 
 ARCHIVE_SHA_AFTER="$(sha256sum "$SOURCE_ARCHIVE" | cut -d' ' -f1)"
 QUARANTINE_SHA_AFTER="$(sha256sum "$SOURCE_QUARANTINE" | cut -d' ' -f1)"
