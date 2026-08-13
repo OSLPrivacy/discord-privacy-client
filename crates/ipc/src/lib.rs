@@ -66,6 +66,10 @@ pub mod metered_bytes;
 pub mod migration;
 pub mod named_places;
 pub mod offline_send_queue;
+// TASK 4807: ordinary cross-device sync merge rules and the server-visible
+// header view they are carried under. Imported from the 4807 gate commit
+// (c9f67906d) so 4817 proves confidentiality over the same merge engine.
+pub mod ordinary_sync;
 pub mod peer_capabilities;
 pub mod peer_map;
 pub mod private_contact_link;
@@ -93,6 +97,9 @@ pub mod revocation;
 // invitation handshake. Pre-C1 `pending_invitations.json` files are
 // unconditionally deleted at bootstrap.
 pub mod scope;
+// TASK 4811: the written sync classification. Imported verbatim from the 4811
+// gate commit (74f52ea77) so the allowed/refused registry has one definition.
+pub mod sync_policy;
 pub mod scope_blobs_file;
 pub mod scope_ttl_file;
 pub mod screen_words;
@@ -103,6 +110,10 @@ pub mod space_roster;
 // any caller yet (`apps/osl-hub-ui/src/main.ts` localStorage call sites and
 // `main_password::maybe_encrypt` are separate, later units).
 pub mod secure_local_store;
+// TASK 4817: the sealed self-message sync path. Every allowed 4811 kind is
+// sealed to the destination device key before any relay-visible surface sees
+// it, and merge is reachable only through an authenticated open.
+pub mod sealed_sync;
 pub mod sender_attribution_proof;
 pub mod sender_key_state;
 // A7: the session lock that actually locks. Supersedes

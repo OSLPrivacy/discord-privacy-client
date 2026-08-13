@@ -1,0 +1,28 @@
+[package]
+name = "task-4817-relay"
+version = "0.0.1"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+# Deliberately its own workspace root: this audit tool is built on demand with
+# `--manifest-path` and must not change the shipping workspace's member list.
+[workspace]
+
+# TASK 4817: a deliberately maximally-retentive relay. It is the stand-in for a
+# carrier server that keeps everything it is handed: an in-memory queue, a real
+# SQLite database, per-message blobs, a channel cache, an access log carrying
+# whole request bodies, a telemetry stream, a crash export and an on-demand dump
+# of its own process memory. Confidentiality has to come from the sealing, not
+# from the relay being polite.
+
+[[bin]]
+name = "task-4817-relay"
+path = "src/relay.rs"
+
+[[bin]]
+name = "task-4817-tap"
+path = "src/tap.rs"
+
+[dependencies]
+rusqlite = { version = "=0.32.1", features = ["bundled"] }
