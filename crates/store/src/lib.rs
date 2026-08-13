@@ -51,6 +51,9 @@ mod error;
 mod schema;
 /// TASK 4657 — the post, story and archive-item records OSL Chats stores.
 pub mod social;
+/// TASK 4658 — the chosen fetch rule, enforced by who holds a key rather than
+/// by anything the store reads.
+pub mod social_distribution;
 
 pub use anchor::{AnchorKeystore, AnchorRecord, KeystoreBackedAnchor, MonotonicAnchor};
 pub use error::StoreError;

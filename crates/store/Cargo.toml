@@ -54,3 +54,9 @@ sha2 = { workspace = true }
 [[test]]
 name = "task_4657_social_records"
 harness = false
+
+# TASK 4658. Same reason: a starved distribution path has to exit 1 by option,
+# content type, viewer and byte offset, and it must never panic its way to 101.
+[[test]]
+name = "task_4658_fetch_rule"
+harness = false
