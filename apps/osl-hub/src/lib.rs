@@ -140,6 +140,8 @@ pub mod native_discord_adapter;
 #[cfg(feature = "core")]
 pub mod native_outlook_adapter;
 pub mod native_signal_adapter;
+#[cfg(feature = "core")]
+pub mod native_signal_row_words;
 pub mod native_telegram_adapter;
 pub mod native_whatsapp_adapter;
 pub mod native_window_host;
