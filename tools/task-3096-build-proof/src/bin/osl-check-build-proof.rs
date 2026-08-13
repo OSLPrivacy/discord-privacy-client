@@ -12,6 +12,7 @@ use task_3096_build_proof::check_build_proof_file_wording;
 const PROOF_FLAG: &str = "--proof-file";
 const KEY_FLAG: &str = "--trusted-public-key-file";
 const FINGERPRINT_FLAG: &str = "--build-fingerprint";
+const DEVICE_FLAG: &str = "--device-id";
 const TIME_FLAG: &str = "--at-unix-seconds";
 
 fn main() {
@@ -29,6 +30,9 @@ fn run(args: impl IntoIterator<Item = String>) -> Result<String, String> {
     let fingerprint = values
         .get(FINGERPRINT_FLAG)
         .ok_or_else(|| format!("missing required build fingerprint: {FINGERPRINT_FLAG}"))?;
+    let device_id = values
+        .get(DEVICE_FLAG)
+        .ok_or_else(|| format!("missing required device ID: {DEVICE_FLAG}"))?;
     let checked_at = match values.get(TIME_FLAG) {
         Some(value) => value
             .parse::<u64>()
@@ -43,10 +47,14 @@ fn run(args: impl IntoIterator<Item = String>) -> Result<String, String> {
         .get(KEY_FLAG)
         .and_then(|path| read_base64_key(path).ok());
 
-    Ok(
-        check_build_proof_file_wording(proof_path, trusted_public_key, fingerprint, checked_at)
-            .to_string(),
+    Ok(check_build_proof_file_wording(
+        proof_path,
+        trusted_public_key,
+        fingerprint,
+        device_id,
+        checked_at,
     )
+    .to_string())
 }
 
 fn parse_flags(args: impl IntoIterator<Item = String>) -> Result<BTreeMap<String, String>, String> {
@@ -57,7 +65,15 @@ fn parse_flags(args: impl IntoIterator<Item = String>) -> Result<BTreeMap<String
             Some((flag, value)) => (flag, Some(value.to_owned())),
             None => (argument.as_str(), None),
         };
-        if ![PROOF_FLAG, KEY_FLAG, FINGERPRINT_FLAG, TIME_FLAG].contains(&flag) {
+        if ![
+            PROOF_FLAG,
+            KEY_FLAG,
+            FINGERPRINT_FLAG,
+            DEVICE_FLAG,
+            TIME_FLAG,
+        ]
+        .contains(&flag)
+        {
             return Err(format!("unknown argument: {argument}"));
         }
         if values.contains_key(flag) {

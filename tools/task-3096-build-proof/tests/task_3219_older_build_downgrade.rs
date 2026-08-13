@@ -108,6 +108,8 @@ fn current_side_answer(proof_path: &Path) -> String {
             fixture("task3097-trusted-public.base64").to_str().unwrap(),
             "--build-fingerprint",
             FINGERPRINT,
+            "--device-id",
+            DEVICE,
             "--at-unix-seconds",
             CHECKED_AT,
         ])

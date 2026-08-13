@@ -8,12 +8,13 @@ use std::{
 use ed25519_dalek::SigningKey;
 use task_3096_build_proof::{
     make_build_proof, sign_build_proof, BuildProofInput, SignedBuildProof,
-    CANNOT_TELL_MISSING_PROOF, CANNOT_TELL_UNAVAILABLE_PROOF,
+    CANNOT_TELL_MISSING_PROOF, CANNOT_TELL_UNAVAILABLE_PROOF, MODIFIED_BUILD_FINGERPRINT_MISMATCH,
 };
 
 const ORIGINAL: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 const CHANGED: &str = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
 const CHECKED_AT: &str = "1787000000";
+const DEVICE: &str = "device:qa-laptop-3098";
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
@@ -38,7 +39,7 @@ impl Drop for TempDir {
 fn signed_proof(fingerprint: &str, seed: [u8; 32]) -> SignedBuildProof {
     let proof = make_build_proof(BuildProofInput {
         build_fingerprint: fingerprint.to_owned(),
-        device_id: "device:qa-laptop-3098".to_owned(),
+        device_id: DEVICE.to_owned(),
         person_id: "person:liam-3098".to_owned(),
         made_at_unix_seconds: 1_786_000_000,
         stops_counting_at_unix_seconds: 1_788_000_000,
@@ -71,6 +72,8 @@ fn invoke(proof: Option<&Path>, key: Option<&Path>) -> Output {
     command.args([
         "--build-fingerprint",
         ORIGINAL,
+        "--device-id",
+        DEVICE,
         "--at-unix-seconds",
         CHECKED_AT,
     ]);
@@ -106,7 +109,7 @@ fn checker_returns_all_three_required_answers() {
     let missing_answer = answer(&invoke(None, None));
 
     assert_eq!(good_answer, "unmodified");
-    assert_eq!(changed_answer, "modified");
+    assert_eq!(changed_answer, MODIFIED_BUILD_FINGERPRINT_MISMATCH);
     assert_eq!(missing_answer, CANNOT_TELL_MISSING_PROOF);
 
     println!("TASK3098_GOOD proof_count=1 answer={good_answer}");

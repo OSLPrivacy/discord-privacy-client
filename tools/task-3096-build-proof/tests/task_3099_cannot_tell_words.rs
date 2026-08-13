@@ -13,6 +13,7 @@ use task_3096_build_proof::{
 };
 
 const FINGERPRINT: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+const DEVICE: &str = "device:qa-laptop-3099";
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
 struct TempDir(PathBuf);
@@ -38,7 +39,7 @@ fn write_proof_and_key(directory: &Path) -> (PathBuf, PathBuf) {
     let signing_key = SigningKey::from_bytes(&seed);
     let proof = make_build_proof(BuildProofInput {
         build_fingerprint: FINGERPRINT.to_owned(),
-        device_id: "device:qa-laptop-3099".to_owned(),
+        device_id: DEVICE.to_owned(),
         person_id: "person:liam-3099".to_owned(),
         made_at_unix_seconds: 1_786_000_000,
         stops_counting_at_unix_seconds: 1_788_000_000,
@@ -58,7 +59,7 @@ fn write_proof_and_key(directory: &Path) -> (PathBuf, PathBuf) {
 
 fn invoke(extra_args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_osl-check-build-proof"))
-        .args(["--build-fingerprint", FINGERPRINT])
+        .args(["--build-fingerprint", FINGERPRINT, "--device-id", DEVICE])
         .args(extra_args)
         .output()
         .expect("run direct build-proof command")

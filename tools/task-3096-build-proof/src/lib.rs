@@ -55,6 +55,7 @@ pub enum BuildProofCheck {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CannotTellReason {
     MissingProof,
+    DifferentDevice,
     ExpiredProof,
     OldBuild,
     UnavailableProof,
@@ -70,11 +71,15 @@ pub enum BuildProofAnswer {
 
 pub const CANNOT_TELL_MISSING_PROOF: &str =
     "OSL cannot check this person's app because its proof is missing.";
+pub const CANNOT_TELL_DIFFERENT_DEVICE_PROOF: &str =
+    "OSL cannot check this person's app because its proof belongs to a different device.";
 pub const CANNOT_TELL_EXPIRED_PROOF: &str =
     "OSL cannot check this person's app because its proof has expired.";
 pub const CANNOT_TELL_OLD_BUILD: &str =
     "OSL cannot check this person's app because that OSL build is too old.";
 pub const CANNOT_TELL_UNAVAILABLE_PROOF: &str = "OSL cannot check this person's app.";
+pub const MODIFIED_BUILD_FINGERPRINT_MISMATCH: &str =
+    "modified: authenticated proof fingerprint does not match this build.";
 
 impl fmt::Display for BuildProofCheck {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -90,8 +95,11 @@ impl fmt::Display for BuildProofAnswer {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::Unmodified => "unmodified",
-            Self::Modified => "modified",
+            Self::Modified => MODIFIED_BUILD_FINGERPRINT_MISMATCH,
             Self::CannotTell(CannotTellReason::MissingProof) => CANNOT_TELL_MISSING_PROOF,
+            Self::CannotTell(CannotTellReason::DifferentDevice) => {
+                CANNOT_TELL_DIFFERENT_DEVICE_PROOF
+            }
             Self::CannotTell(CannotTellReason::ExpiredProof) => CANNOT_TELL_EXPIRED_PROOF,
             Self::CannotTell(CannotTellReason::OldBuild) => CANNOT_TELL_OLD_BUILD,
             Self::CannotTell(CannotTellReason::UnavailableProof) => CANNOT_TELL_UNAVAILABLE_PROOF,
@@ -165,16 +173,22 @@ pub fn check_build_proof(
     signed: Option<&SignedBuildProof>,
     trusted_public_key: Option<[u8; 32]>,
     observed_build_fingerprint: &str,
+    observed_device_id: &str,
     checked_at_unix_seconds: u64,
 ) -> BuildProofCheck {
     let (Some(signed), Some(trusted_public_key)) = (signed, trusted_public_key) else {
         return BuildProofCheck::CannotTell;
     };
     if validate_fingerprint(observed_build_fingerprint).is_err()
+        || validate_identifier("observed device ID", observed_device_id).is_err()
         || verify_signed_build_proof(signed, trusted_public_key).is_err()
         || checked_at_unix_seconds < signed.proof.made_at_unix_seconds
         || checked_at_unix_seconds >= signed.proof.stops_counting_at_unix_seconds
     {
+        return BuildProofCheck::CannotTell;
+    }
+
+    if signed.proof.device_id != observed_device_id {
         return BuildProofCheck::CannotTell;
     }
 
@@ -191,6 +205,7 @@ pub fn check_build_proof_file(
     proof_path: Option<&Path>,
     trusted_public_key: Option<[u8; 32]>,
     observed_build_fingerprint: &str,
+    observed_device_id: &str,
     checked_at_unix_seconds: u64,
 ) -> BuildProofCheck {
     let Some(proof_path) = proof_path else {
@@ -206,6 +221,7 @@ pub fn check_build_proof_file(
         Some(&signed),
         trusted_public_key,
         observed_build_fingerprint,
+        observed_device_id,
         checked_at_unix_seconds,
     )
 }
@@ -217,6 +233,7 @@ pub fn check_build_proof_wording(
     signed: Option<&SignedBuildProof>,
     trusted_public_key: Option<[u8; 32]>,
     observed_build_fingerprint: &str,
+    observed_device_id: &str,
     checked_at_unix_seconds: u64,
 ) -> BuildProofAnswer {
     let Some(signed) = signed else {
@@ -229,6 +246,7 @@ pub fn check_build_proof_wording(
         return BuildProofAnswer::CannotTell(CannotTellReason::UnavailableProof);
     };
     if validate_fingerprint(observed_build_fingerprint).is_err()
+        || validate_identifier("observed device ID", observed_device_id).is_err()
         || verify_signed_build_proof(signed, trusted_public_key).is_err()
         || checked_at_unix_seconds < signed.proof.made_at_unix_seconds
     {
@@ -236,6 +254,10 @@ pub fn check_build_proof_wording(
     }
     if checked_at_unix_seconds >= signed.proof.stops_counting_at_unix_seconds {
         return BuildProofAnswer::CannotTell(CannotTellReason::ExpiredProof);
+    }
+
+    if signed.proof.device_id != observed_device_id {
+        return BuildProofAnswer::CannotTell(CannotTellReason::DifferentDevice);
     }
 
     if signed.proof.build_fingerprint == observed_build_fingerprint {
@@ -250,6 +272,7 @@ pub fn check_build_proof_file_wording(
     proof_path: Option<&Path>,
     trusted_public_key: Option<[u8; 32]>,
     observed_build_fingerprint: &str,
+    observed_device_id: &str,
     checked_at_unix_seconds: u64,
 ) -> BuildProofAnswer {
     let Some(proof_path) = proof_path else {
@@ -265,6 +288,7 @@ pub fn check_build_proof_file_wording(
         Some(&signed),
         trusted_public_key,
         observed_build_fingerprint,
+        observed_device_id,
         checked_at_unix_seconds,
     )
 }
