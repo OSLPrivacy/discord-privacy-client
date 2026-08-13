@@ -5809,7 +5809,10 @@ fn begin_peer_attachment(
     if view_once {
         crate::view_once_eligibility::require_view_once_attachment_eligibility(&mime_type)?;
     }
-    if plaintext_size == 0 || plaintext_size > ipc::attachment_wire::MAX_STREAMED_ATTACHMENT_BYTES {
+    let account_tier = crate::attachment_limits::shipping_account_tier(&core.osl);
+    if crate::attachment_limits::check_attachment_size(plaintext_size, account_tier).is_err()
+        || plaintext_size > ipc::attachment_wire::MAX_STREAMED_ATTACHMENT_BYTES
+    {
         return Err(ERROR.to_owned());
     }
     let ttl_seconds = security::scope_security(manual.scope.clone())
@@ -5822,10 +5825,12 @@ fn begin_peer_attachment(
     let expires_at = created_at
         .checked_add(i64::from(ttl_seconds))
         .ok_or_else(|| ERROR.to_owned())?;
-    let mut attachment_key = [0u8; 32];
-    attachment_key.copy_from_slice(&crypto::random::random_bytes(32));
-    let mut content_id = [0u8; 16];
-    content_id.copy_from_slice(&crypto::random::random_bytes(16));
+    // One attachment, one key. See `attachment_content_key`: this draw is the
+    // sole source of the content-encryption key, so nothing about this
+    // attachment's key depends on its metadata, its bytes, or any other
+    // attachment's key.
+    let attachment_key = crate::attachment_content_key::draw_content_key();
+    let content_id = crate::attachment_content_key::draw_content_id();
     Ok(NativeOverlayAttachmentSealPlan {
         attachment_id: random_peer_message_id(),
         created_at,
@@ -8155,8 +8160,9 @@ fn prepare_peer_attachment_at(
         "osl-{}.mp4",
         attachment_id.strip_prefix("peer-").unwrap_or("attachment")
     );
-    let mut attachment_key = [0u8; 32];
-    attachment_key.copy_from_slice(&crypto::random::random_bytes(32));
+    // One attachment, one key — the in-band v3 path draws from the same
+    // single source as the streaming path. See `attachment_content_key`.
+    let mut attachment_key = crate::attachment_content_key::draw_content_key();
     let sealed_bytes = ipc::attachment_wire::seal_attachment_v3(
         crypto::aead::Key::from_bytes(attachment_key),
         &original_bytes,

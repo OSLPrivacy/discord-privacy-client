@@ -14,6 +14,7 @@ pub mod adapters;
 #[cfg(feature = "core")]
 pub mod attachment_formats;
 pub mod attachment_limits;
+pub mod attachment_content_key;
 #[cfg(feature = "core")]
 #[cfg(feature = "core")]
 pub mod attachment_partial_guard;
