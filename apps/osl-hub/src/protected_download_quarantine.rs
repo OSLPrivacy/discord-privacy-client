@@ -33,6 +33,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use base64::Engine as _;
 use sha2::{Digest, Sha256};
 
+use crate::protected_archive::{ArchiveInspection, ArchiveLimits};
+
 /// Directory, under the app-local data root, that holds not-yet-cleared
 /// plaintext. Created `0o700` and re-checked on every open.
 pub const QUARANTINE_DIRECTORY: &str = "protected-download-quarantine";
@@ -141,6 +143,18 @@ pub enum QuarantineReason {
     ScanBindingMismatch,
     AmsiInvocationCount,
     QuarantineUnreadable,
+    // TASK 5180: a container is only as clean as its entries, so an archive
+    // that could not be fully expanded and scanned inside quarantine is
+    // withheld, and the refusal names the bound that stopped it.
+    ArchiveExpandedBytes,
+    ArchiveEntryCount,
+    ArchiveNestingDepth,
+    ArchiveScanTime,
+    ArchiveUnsafeEntry,
+    ArchiveUnsupported,
+    ArchiveUnreadable,
+    ArchiveEntryNotClean,
+    ArchiveOutsideQuarantine,
 }
 
 impl QuarantineReason {
@@ -155,6 +169,15 @@ impl QuarantineReason {
             QuarantineReason::ScanBindingMismatch => "scan_binding_mismatch",
             QuarantineReason::AmsiInvocationCount => "amsi_invocation_count",
             QuarantineReason::QuarantineUnreadable => "quarantine_unreadable",
+            QuarantineReason::ArchiveExpandedBytes => "archive_expanded_bytes",
+            QuarantineReason::ArchiveEntryCount => "archive_entry_count",
+            QuarantineReason::ArchiveNestingDepth => "archive_nesting_depth",
+            QuarantineReason::ArchiveScanTime => "archive_scan_time",
+            QuarantineReason::ArchiveUnsafeEntry => "archive_unsafe_entry",
+            QuarantineReason::ArchiveUnsupported => "archive_unsupported",
+            QuarantineReason::ArchiveUnreadable => "archive_unreadable",
+            QuarantineReason::ArchiveEntryNotClean => "archive_entry_not_clean",
+            QuarantineReason::ArchiveOutsideQuarantine => "archive_outside_quarantine",
         }
     }
 }
@@ -218,6 +241,10 @@ pub struct ExposedDownload {
     pub path: PathBuf,
     pub bytes_exposed: u64,
     pub scan: CleanScan,
+    /// TASK 5180: present when the released file was a container. It is the
+    /// measurement of the expansion that had to finish, inside quarantine and
+    /// inside every bound, before this release was allowed.
+    pub archive: Option<ArchiveInspection>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -271,6 +298,7 @@ pub struct ProtectedDownloadQuarantine {
     quarantine_root: PathBuf,
     exposure_root: PathBuf,
     max_signature_age_seconds: u64,
+    archive_limits: ArchiveLimits,
 }
 
 impl ProtectedDownloadQuarantine {
@@ -296,6 +324,7 @@ impl ProtectedDownloadQuarantine {
             quarantine_root,
             exposure_root,
             max_signature_age_seconds: MAX_SIGNATURE_AGE_SECONDS,
+            archive_limits: ArchiveLimits::shipping(),
         })
     }
 
@@ -304,6 +333,18 @@ impl ProtectedDownloadQuarantine {
     pub fn with_max_signature_age_seconds(mut self, seconds: u64) -> Self {
         self.max_signature_age_seconds = seconds;
         self
+    }
+
+    /// TASK 5180: tighten the archive-expansion bounds. `clamped` means a
+    /// caller can only ever ask for *less* than the shipping ceiling; a wider
+    /// request silently gets the shipping ceiling back.
+    pub fn with_archive_limits(mut self, limits: ArchiveLimits) -> Self {
+        self.archive_limits = limits.clamped();
+        self
+    }
+
+    pub fn archive_limits(&self) -> ArchiveLimits {
+        self.archive_limits
     }
 
     pub fn quarantine_root(&self) -> &Path {
@@ -600,22 +641,50 @@ impl ProtectedDownloadQuarantine {
             path: destination,
             bytes_exposed: exposed_len,
             scan: scan.clone(),
+            archive: None,
         })
     }
 
-    /// The shipping path: scan, then release, with no window for a caller to
-    /// forget the second half.
+    /// The shipping path: scan, then - if the bytes are a container - expand
+    /// and scan every entry inside quarantine within the four hard bounds, and
+    /// only then release. There is no window for a caller to forget a step and
+    /// no second door: an archive that does not survive
+    /// [`crate::protected_archive`] never reaches the `rename`.
     pub fn scan_and_release(
         &self,
         held: QuarantinedDownload,
         provider: &dyn AmsiProvider,
         now_unix: u64,
     ) -> ProtectedDownloadOutcome {
-        match self.scan(&held, provider, now_unix) {
-            Ok(scan) => match self.release(held, &scan) {
-                Ok(exposed) => ProtectedDownloadOutcome::Exposed(exposed),
-                Err(withheld) => ProtectedDownloadOutcome::Withheld(withheld),
-            },
+        let scan = match self.scan(&held, provider, now_unix) {
+            Ok(scan) => scan,
+            Err(withheld) => return ProtectedDownloadOutcome::Withheld(withheld),
+        };
+        // TASK 5180. The whole-file verdict above says nothing about the
+        // entries a user would actually open, so a container is expanded and
+        // scanned entry by entry before the release door opens.
+        let inspection = match crate::protected_archive::inspect_if_archive(
+            self,
+            &held,
+            provider,
+            self.archive_limits,
+            now_unix,
+        ) {
+            Ok(inspection) => inspection,
+            Err(refusal) => {
+                return ProtectedDownloadOutcome::Withheld(WithheldDownload::new(
+                    refusal.quarantine_reason(),
+                    &refusal.reason(),
+                    &held.path,
+                    scan.amsi_invocations,
+                ))
+            }
+        };
+        match self.release(held, &scan) {
+            Ok(mut exposed) => {
+                exposed.archive = inspection;
+                ProtectedDownloadOutcome::Exposed(exposed)
+            }
             Err(withheld) => ProtectedDownloadOutcome::Withheld(withheld),
         }
     }

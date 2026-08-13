@@ -181,6 +181,9 @@ pub mod proprietary_module_lifecycle;
 // nothing but std/sha2/hex/base64, so the 5166b bypass harness can compile this
 // exact source file on its own.
 pub mod download_zone_handoff;
+// TASK 5180: the archive-expansion boundary the quarantine release door runs
+// before a container may leave.
+pub mod protected_archive;
 pub mod protected_download_final_save;
 pub mod protected_download_quarantine;
 pub mod scrub_erasure;
