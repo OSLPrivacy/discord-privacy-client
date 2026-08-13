@@ -1,0 +1,12 @@
+{
+  "host-headroom.json": "a294c48a88bc1b93645a8fca8fa3183b0bfd2ad272f1e85c2427346b4821fc7b",
+  "interface-counters.json": "09a1e6271d559fba484beffdd38f2a8a64e5a82209004f0815286e523705c82a",
+  "livekit-server.txt": "2c483ebb3f2b0a1015ef18a3001fa5a281b9e66144cc49668df1768e473a399a",
+  "net-dev-counters.json": "84a323cd73140f15551ccca8bbf8854b82903b8385bf38fd4497745283f3e8ba",
+  "process-identities.json": "d8ccbd2387fa7517a4a1c40b5ddc5d424541e5fb5dc8abfbb90af147093eb8b0",
+  "speaker-00.events.jsonl": "b370a0a7fed368a8f5e7e00546e257c61312424ffefd0bd001981e50ffc668e7",
+  "speaker-00.stderr.txt": "f26f8228b0acc031eeede6e082ecd2a6d45da40c746494314db9e0d3933adc41",
+  "speaker-01.events.jsonl": "21ad7b3a6f4edfea6a4163cf148f4e1c01419ec634f9ee83f4418d89bcb46dad",
+  "speaker-01.stderr.txt": "b6f5920f4fde192f5494c58f61596e57192c46491bfa699e7167ebc30b7ac299",
+  "trial-config.json": "f7cce1ebd0bd473abd9f6f7100e0c773147a788efd033c8ee3d7fd844f16a34c"
+}

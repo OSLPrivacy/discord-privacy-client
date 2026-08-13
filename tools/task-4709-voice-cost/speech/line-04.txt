@@ -1,0 +1,1 @@
+Let's talk about the shipping timeline for the next release, because engineering flagged a dependency that might slip the date by almost two weeks.

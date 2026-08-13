@@ -1,0 +1,46 @@
+{
+  "counter_source": "/proc/<pid>/io (kernel per-process read/write syscall byte accounting)",
+  "io_after": {
+    "speaker-00": {
+      "cancelled_write_bytes": 0,
+      "rchar": 121865,
+      "read_bytes": 0,
+      "syscr": 8262,
+      "syscw": 7997,
+      "wchar": 70089,
+      "write_bytes": 4096
+    },
+    "speaker-01": {
+      "cancelled_write_bytes": 0,
+      "rchar": 124718,
+      "read_bytes": 0,
+      "syscr": 8323,
+      "syscw": 8062,
+      "wchar": 70569,
+      "write_bytes": 4096
+    }
+  },
+  "io_after_wall_unix_ns": 1786631463443235607,
+  "io_before": {
+    "speaker-00": {
+      "cancelled_write_bytes": 0,
+      "rchar": 56884,
+      "read_bytes": 0,
+      "syscr": 175,
+      "syscw": 107,
+      "wchar": 7005,
+      "write_bytes": 4096
+    },
+    "speaker-01": {
+      "cancelled_write_bytes": 0,
+      "rchar": 59377,
+      "read_bytes": 0,
+      "syscr": 191,
+      "syscw": 127,
+      "wchar": 7125,
+      "write_bytes": 4096
+    }
+  },
+  "io_before_wall_unix_ns": 1786631282448131950,
+  "sampled_by": "orchestrator (measure.py), never self-reported by the speaker process"
+}

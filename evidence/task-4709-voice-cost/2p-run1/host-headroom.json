@@ -1,0 +1,129 @@
+{
+  "after": {
+    "cpu": {
+      "cpu_jiffies": {
+        "idle": 183956918,
+        "iowait": 7732495,
+        "irq": 0,
+        "nice": 40892333,
+        "softirq": 9953949,
+        "steal": 0,
+        "system": 46711596,
+        "user": 38756962
+      },
+      "cpu_total_jiffies": 328004253,
+      "loadavg_15m": 2.94,
+      "loadavg_1m": 2.04,
+      "loadavg_5m": 2.43,
+      "mem_available_kb": 18434016,
+      "mem_total_kb": 22545284,
+      "nproc": 11
+    },
+    "net_dev": {
+      "eth0": {
+        "rx_bytes": 78807881687,
+        "rx_packets": 79317581,
+        "tx_bytes": 34611269242,
+        "tx_packets": 57119440
+      },
+      "lo": {
+        "rx_bytes": 29901488045,
+        "rx_packets": 8806168,
+        "tx_bytes": 29901488045,
+        "tx_packets": 8806168
+      }
+    },
+    "uplink": {
+      "interface": "eth0",
+      "link_speed_mbps": 10000,
+      "rx_bytes": 78807881687,
+      "tx_bytes": 34611269242
+    },
+    "wall_unix_ns": 1786631467468327653
+  },
+  "before": {
+    "cpu": {
+      "cpu_jiffies": {
+        "idle": 183771108,
+        "iowait": 7731581,
+        "irq": 0,
+        "nice": 40880638,
+        "softirq": 9947672,
+        "steal": 0,
+        "system": 46701118,
+        "user": 38749284
+      },
+      "cpu_total_jiffies": 327781401,
+      "loadavg_15m": 3.14,
+      "loadavg_1m": 3.09,
+      "loadavg_5m": 2.75,
+      "mem_available_kb": 18357748,
+      "mem_total_kb": 22545284,
+      "nproc": 11
+    },
+    "net_dev": {
+      "eth0": {
+        "rx_bytes": 78803205607,
+        "rx_packets": 79306692,
+        "tx_bytes": 34600941899,
+        "tx_packets": 57110197
+      },
+      "lo": {
+        "rx_bytes": 29895248530,
+        "rx_packets": 8752211,
+        "tx_bytes": 29895248530,
+        "tx_packets": 8752211
+      }
+    },
+    "uplink": {
+      "interface": "eth0",
+      "link_speed_mbps": 10000,
+      "rx_bytes": 78803205607,
+      "tx_bytes": 34600941899
+    },
+    "wall_unix_ns": 1786631267442335931
+  },
+  "trial_end": {
+    "cpu": {
+      "cpu_jiffies": {
+        "idle": 183953192,
+        "iowait": 7732483,
+        "irq": 0,
+        "nice": 40891980,
+        "softirq": 9953792,
+        "steal": 0,
+        "system": 46711421,
+        "user": 38756863
+      },
+      "cpu_total_jiffies": 327999731,
+      "loadavg_15m": 2.94,
+      "loadavg_1m": 2.05,
+      "loadavg_5m": 2.44,
+      "mem_available_kb": 18674064,
+      "mem_total_kb": 22545284,
+      "nproc": 11
+    },
+    "net_dev": {
+      "eth0": {
+        "rx_bytes": 78807801072,
+        "rx_packets": 79317404,
+        "tx_bytes": 34611172320,
+        "tx_packets": 57119282
+      },
+      "lo": {
+        "rx_bytes": 29901475953,
+        "rx_packets": 8806071,
+        "tx_bytes": 29901475953,
+        "tx_packets": 8806071
+      }
+    },
+    "uplink": {
+      "interface": "eth0",
+      "link_speed_mbps": 10000,
+      "rx_bytes": 78807801072,
+      "tx_bytes": 34611172320
+    },
+    "wall_unix_ns": 1786631463443236107
+  },
+  "uplink_interface": "eth0"
+}

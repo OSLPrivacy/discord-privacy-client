@@ -1,0 +1,31 @@
+{
+  "after": {
+    "eth0": {
+      "rx_bytes": 78812235162,
+      "rx_packets": 79328896,
+      "tx_bytes": 34624158332,
+      "tx_packets": 57128817
+    },
+    "lo": {
+      "rx_bytes": 29907495971,
+      "rx_packets": 8858966,
+      "tx_bytes": 29907495971,
+      "tx_packets": 8858966
+    }
+  },
+  "before": {
+    "eth0": {
+      "rx_bytes": 78808129159,
+      "rx_packets": 79318304,
+      "tx_bytes": 34611806119,
+      "tx_packets": 57120124
+    },
+    "lo": {
+      "rx_bytes": 29901680029,
+      "rx_packets": 8807575,
+      "tx_bytes": 29901680029,
+      "tx_packets": 8807575
+    }
+  },
+  "counter_source": "/proc/net/dev (system-wide kernel interface counters)"
+}

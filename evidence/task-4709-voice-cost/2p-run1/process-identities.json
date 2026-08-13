@@ -1,0 +1,77 @@
+[
+  {
+    "cmdline": [
+      "/tmp/osl-task-4701-cache/livekit-server",
+      "--config",
+      "/home/liamw/osl-exec-c/tools/task-4709-voice-cost/config/livekit.yaml"
+    ],
+    "executable": "/tmp/osl-task-4701-cache/livekit-server",
+    "executable_sha256": "51a1bbe04439b33d6d7a6d6d83fdefad9b938162c341f0f07f75af03e456b49a",
+    "expected_executable": "/tmp/osl-task-4701-cache/livekit-server",
+    "pid": 3914142,
+    "role": "livekit-server",
+    "start_ticks": "29707006"
+  },
+  {
+    "cmdline": [
+      "/tmp/osl-task-4709-cache/osl-task-4709-speaker",
+      "--host",
+      "ws://127.0.0.1:17890",
+      "--api-key",
+      "OSLTask4709Key",
+      "--api-secret",
+      "<redacted-api-secret>",
+      "--room",
+      "osl-4709-2p-run1",
+      "--identity",
+      "speaker-00",
+      "--speech-file",
+      "/home/liamw/osl-exec-c/tools/task-4709-voice-cost/speech/speech-01.ogg",
+      "--duration-seconds",
+      "180",
+      "--start-unix-ns",
+      "1786631282442865832",
+      "--expected-peers",
+      "1",
+      "--events-out",
+      "/home/liamw/osl-exec-c/evidence/task-4709-voice-cost/2p-run1/speaker-00.events.jsonl"
+    ],
+    "executable": "/tmp/osl-task-4709-cache/osl-task-4709-speaker",
+    "executable_sha256": "975366c0e22aadb1a251e638d1853ddfff28a00359b4ad72004f00fc7fa75c01",
+    "expected_executable": "/tmp/osl-task-4709-cache/osl-task-4709-speaker",
+    "pid": 3914158,
+    "role": "speaker-00",
+    "start_ticks": "29707011"
+  },
+  {
+    "cmdline": [
+      "/tmp/osl-task-4709-cache/osl-task-4709-speaker",
+      "--host",
+      "ws://127.0.0.1:17890",
+      "--api-key",
+      "OSLTask4709Key",
+      "--api-secret",
+      "<redacted-api-secret>",
+      "--room",
+      "osl-4709-2p-run1",
+      "--identity",
+      "speaker-01",
+      "--speech-file",
+      "/home/liamw/osl-exec-c/tools/task-4709-voice-cost/speech/speech-02.ogg",
+      "--duration-seconds",
+      "180",
+      "--start-unix-ns",
+      "1786631282442865832",
+      "--expected-peers",
+      "1",
+      "--events-out",
+      "/home/liamw/osl-exec-c/evidence/task-4709-voice-cost/2p-run1/speaker-01.events.jsonl"
+    ],
+    "executable": "/tmp/osl-task-4709-cache/osl-task-4709-speaker",
+    "executable_sha256": "975366c0e22aadb1a251e638d1853ddfff28a00359b4ad72004f00fc7fa75c01",
+    "expected_executable": "/tmp/osl-task-4709-cache/osl-task-4709-speaker",
+    "pid": 3914159,
+    "role": "speaker-01",
+    "start_ticks": "29707011"
+  }
+]
