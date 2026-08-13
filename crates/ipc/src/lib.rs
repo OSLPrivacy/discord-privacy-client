@@ -114,6 +114,10 @@ pub mod secure_local_store;
 // sealed to the destination device key before any relay-visible surface sees
 // it, and merge is reachable only through an authenticated open.
 pub mod sealed_sync;
+// Selective-audience delivery is deliberately a separate wire from v=3:
+// v=3 slot hashes are useful for ordinary delivery, but would let an
+// identity-blind store associate a selective recipient slot with a public key.
+pub mod selective_visibility;
 pub mod sender_attribution_proof;
 pub mod sender_key_state;
 // A7: the session lock that actually locks. Supersedes
