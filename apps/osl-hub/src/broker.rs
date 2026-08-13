@@ -3056,6 +3056,25 @@ fn unproven_rehydrated_rows(
         .collect()
 }
 
+fn rehydrated_attribution_ids_are_unique(rows: &[RehydratedNativeDiscordRow]) -> bool {
+    let mut discord_messages = HashSet::new();
+    let mut locators = HashSet::new();
+    let mut carriers = HashSet::new();
+    let mut blobs = HashSet::new();
+    let mut ciphertexts = HashSet::new();
+    let mut payloads = HashSet::new();
+    rows.iter()
+        .filter_map(|row| row.attribution.as_ref())
+        .all(|attribution| {
+            discord_messages.insert(attribution.discord_message_id.clone())
+                && locators.insert(attribution.native_locator_sha256.clone())
+                && carriers.insert(attribution.carrier_sha256.clone())
+                && blobs.insert(attribution.blob_id.clone())
+                && ciphertexts.insert(attribution.ciphertext_sha256.clone())
+                && payloads.insert(attribution.payload_id.clone())
+        })
+}
+
 /// Turn the rows read back out of Discord into the transcript the protected
 /// overlay renders.
 ///

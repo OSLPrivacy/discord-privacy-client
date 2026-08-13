@@ -239,8 +239,9 @@ pub mod server_records;
 pub mod service_connections;
 #[cfg(feature = "core")]
 pub mod service_host;
-pub mod service_result_words;
 pub mod shipping_receive;
+#[cfg(feature = "core")]
+pub mod shipping_email_receive;
 #[cfg(feature = "core")]
 pub mod services;
 #[cfg(feature = "core")]
