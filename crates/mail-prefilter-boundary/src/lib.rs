@@ -7,6 +7,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
+pub mod task_5902_audit;
+
+pub mod authenticated_sender;
+
 pub const EVIDENCE_SCHEMA: &str = "osl-task-4350-live-evidence-v1";
 pub const PROCESS_ENTRY_BOUNDARY: &str =
     "mail-prefilter-boundary/raw-provider-response-before-serde-parsing";
@@ -181,11 +185,13 @@ fn provider_prefilter_request_from_senders(
 /// Opaque authorization minted only by resolving the application's friend-authority lookup.
 /// Callers cannot construct or alter one and the shipping reader never accepts sender strings.
 #[derive(Debug, Clone)]
+#[cfg(test)]
 pub struct AllowedSenderGrant {
     provider_id: String,
     request: ProviderPrefilterRequest,
 }
 
+#[cfg(test)]
 pub trait AllowedSenderLookup {
     type Error: fmt::Display;
 
@@ -196,6 +202,7 @@ pub trait AllowedSenderLookup {
     ) -> Result<Vec<String>, Self::Error>;
 }
 
+#[cfg(test)]
 pub fn lookup_allowed_sender_grant<L: AllowedSenderLookup>(
     provider_id: &str,
     lookup: &mut L,
@@ -259,12 +266,14 @@ pub struct CandidateIdsResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg(test)]
 pub struct BodyResponse {
     pub message_id: String,
     pub body: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(test)]
 pub enum RawResponseKind {
     CandidateIds,
     Header,
@@ -272,6 +281,7 @@ pub enum RawResponseKind {
 }
 
 /// Provider transport. The only mailbox-enumeration call requires a policy-built prefilter.
+#[cfg(test)]
 pub trait ProviderMailbox {
     type Error: fmt::Display;
 
@@ -284,6 +294,7 @@ pub trait ProviderMailbox {
 }
 
 /// Called synchronously on the raw response bytes, before any serde parser sees those bytes.
+#[cfg(test)]
 pub trait ProcessEntryObserver {
     type Error: fmt::Display;
 
@@ -296,8 +307,11 @@ pub trait ProcessEntryObserver {
     ) -> Result<(), Self::Error>;
 }
 
-/// Shipping read pipeline. It has no unfiltered/late-filter entry point.
-pub fn read_allowed_conversations<T, O>(
+/// Legacy TASK 4350 harness retained only for its unit tests. Production mail
+/// must use `authenticated_sender::read_authenticated_conversations`; sender
+/// and folder fields can never authorize a body fetch.
+#[cfg(test)]
+pub(crate) fn read_allowed_conversations<T, O>(
     provider_id: &str,
     grant: AllowedSenderGrant,
     transport: &mut T,

@@ -1,6 +1,8 @@
 const AUTO_DESTRUCT_ATTEMPT_LIMIT = 10;
 const WARNING_START_ATTEMPT = 7;
 
+export const COOLDOWN_LIMIT_DISCLOSURE = "The 15-minute unlock cooldown can be bypassed by restoring or modifying OSL data files; it is not protection against someone with access to those files.";
+
 /**
  * Explain the remaining safe entries immediately before the gate's
  * auto-destruct boundary. The destructive attempt itself never reaches the

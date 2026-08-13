@@ -1042,6 +1042,7 @@ dependencies = [
  "bip39",
  "ciborium",
  "crypto",
+ "hex",
  "hkdf",
  "hmac",
  "keystore",
@@ -1257,8 +1258,11 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 name = "mail-prefilter-boundary"
 version = "0.0.1"
 dependencies = [
+ "base64",
+ "crypto",
  "serde",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -2095,6 +2099,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3a6bfce3d99adfa72d24750a61f782f3036a81e7f86d8841ee1326deaebd171"
 
 [[package]]
+name = "task-0456c-cold-sink"
+version = "0.0.1"
+dependencies = [
+ "base64",
+ "crypto",
+ "flate2",
+ "hex",
+ "ipc",
+ "keystore",
+ "rand 0.8.6",
+ "serde",
+ "serde_json",
+ "sha2",
+ "store",
+ "tracing",
+ "walkdir",
+ "zeroize",
+]
+
+[[package]]
 name = "task-4609-topup-driver"
 version = "0.0.1"
 dependencies = [
@@ -2448,6 +2472,20 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "view-once-capture"
+version = "0.0.1"
+dependencies = [
+ "ed25519-dalek",
+ "rand 0.8.6",
+ "rand_core 0.6.4",
+ "serde",
+ "serde_json",
+ "sha2",
+ "windows-sys 0.59.0",
+ "zeroize",
+]
 
 [[package]]
 name = "walkdir"
