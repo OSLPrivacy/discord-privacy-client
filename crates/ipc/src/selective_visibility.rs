@@ -85,6 +85,8 @@ pub struct ClientSurfaces {
 
 impl ClientSurfaces {
     pub fn hidden() -> Self {
+        // TASK6843-HIDDEN-SURFACES: this must remain an all-zero shape.  The
+        // mutation proof replaces this exact line in disposable copies.
         Self::default()
     }
 
@@ -159,6 +161,8 @@ pub fn seal(
     plaintext: &[u8],
 ) -> Result<String, SelectiveError> {
     validate_members(members)?;
+    // TASK6843-KEY-ISSUANCE: selecting a hidden member here issues its usable
+    // local wrap even though the store itself remains identity-blind.
     let selected = selected_indices(members.len(), &audience)?;
     let snapshot = membership_snapshot(members);
     let selected_commitments = selected
@@ -319,6 +323,8 @@ pub fn receive(
     )
     .map_err(|_| SelectiveError::Crypto)?;
     let (plaintext, manifest) = decode_payload(&payload)?;
+    // TASK6843-MEMBERSHIP-BINDING: a current-roster change must reject before
+    // rendering, even if this recipient can still open its old wrap.
     if manifest.membership_snapshot != membership_snapshot(current_members) {
         return Err(SelectiveError::MembershipRace);
     }
@@ -337,6 +343,7 @@ pub fn receive(
         &signature,
     )
     .map_err(|_| SelectiveError::InvalidSignature)?;
+    // TASK6843-MANIFEST-SIGNATURE: the sender-bound manifest is not optional.
     if !valid {
         return Err(SelectiveError::InvalidSignature);
     }

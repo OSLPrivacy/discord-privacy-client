@@ -115,7 +115,9 @@ fn task_6842_every_only_these_and_hide_from_combination_is_recipient_key_deliver
             assert_eq!(store.0.len(), 1, "one opaque object per selective send");
             assert_eq!(
                 opaque_slot_count(&object).unwrap(),
-                (0..4).filter(|member| selected_by(&mode, *member)).count()
+                (0..4).filter(|member| selected_by(&mode, *member)).count(),
+                "identity-blind store issued a hidden key for member 0 message {}",
+                String::from_utf8_lossy(&message)
             );
 
             // The store-visible slot area contains no recipient X25519 public
@@ -123,10 +125,12 @@ fn task_6842_every_only_these_and_hide_from_combination_is_recipient_key_deliver
             // map any wrap to one of the four identities.
             let object_raw = raw(&object);
             let slots = &object_raw[34..34 + opaque_slot_count(&object).unwrap() * 1182];
-            for member in &members {
+            for (member_index, member) in members.iter().enumerate() {
                 assert!(!slots
                     .windows(32)
-                    .any(|w| w == member.public.x25519_pub.as_bytes()));
+                    .any(|w| w == member.public.x25519_pub.as_bytes()),
+                    "identity-blind store exposed member {member_index} key for message {}",
+                    String::from_utf8_lossy(&message));
             }
 
             for (member_index, member) in members.iter().enumerate() {
@@ -146,7 +150,7 @@ fn task_6842_every_only_these_and_hide_from_combination_is_recipient_key_deliver
                         else {
                             panic!("selected member {member_index} lost its usable key wrap")
                         };
-                        assert_eq!(plaintext, message);
+                        assert_eq!(plaintext, message, "selected member {member_index} opened the wrong message");
                         assert_eq!(marker, SENT_ONLY_SELECTIVE_AUDIENCE_MARKER);
                         assert_eq!(surfaces, ClientSurfaces::selected());
                         assert_eq!(manifest.membership_snapshot, expected_snapshot);
@@ -155,9 +159,28 @@ fn task_6842_every_only_these_and_hide_from_combination_is_recipient_key_deliver
                     } else {
                         let SelectiveDelivery::Hidden { surfaces } = delivery else {
                             panic!(
-                                "hidden member {member_index} received a message-derived surface"
+                                "hidden member {member_index} message {} received a message-derived surface",
+                                String::from_utf8_lossy(&message)
                             )
                         };
+                        for (surface, value) in [
+                            ("timeline", surfaces.timeline_entries),
+                            ("message-key", surfaces.message_keys),
+                            ("object-hint", surfaces.object_hints),
+                            ("placeholder", surfaces.placeholders),
+                            ("unread", surfaces.unread_increments),
+                            ("notification", surfaces.notifications),
+                            ("reaction-target", surfaces.reaction_targets),
+                            ("reply-target", surfaces.reply_targets),
+                            ("timing-hint", surfaces.osl_timing_metadata),
+                        ] {
+                            assert_eq!(
+                                value,
+                                0,
+                                "hidden member {member_index} message {} leaked {surface}",
+                                String::from_utf8_lossy(&message)
+                            );
+                        }
                         assert!(surfaces.is_zero());
                         hidden_opens += 1;
                     }
@@ -199,7 +222,8 @@ fn task_6842_fail_closed_fault_matrix_rejects_membership_key_wrap_signature_and_
             &sender_signing_public,
             &changed_roster
         ),
-        Err(SelectiveError::MembershipRace)
+        Err(SelectiveError::MembershipRace),
+        "member 0 message bound decision rendered after concurrent membership mutation"
     );
 
     // Signature starvation/wrong sender key cannot become a visible message.
@@ -211,7 +235,8 @@ fn task_6842_fail_closed_fault_matrix_rejects_membership_key_wrap_signature_and_
             &wrong_sender_signing_public,
             &roster
         ),
-        Err(SelectiveError::InvalidSignature)
+        Err(SelectiveError::InvalidSignature),
+        "member 0 message bound decision accepted a detached audience manifest"
     );
 
     // Break the first selected wrap. The selected member degrades to exactly
@@ -249,15 +274,15 @@ fn task_6842_fail_closed_fault_matrix_rejects_membership_key_wrap_signature_and_
     // Explicitly name every hidden surface: each is zero, and no optional
     // field can act as an OSL-controlled timing/reaction/reply oracle.
     let hidden = ClientSurfaces::hidden();
-    assert_eq!(hidden.timeline_entries, 0);
-    assert_eq!(hidden.message_keys, 0);
-    assert_eq!(hidden.object_hints, 0);
-    assert_eq!(hidden.placeholders, 0);
-    assert_eq!(hidden.unread_increments, 0);
-    assert_eq!(hidden.notifications, 0);
-    assert_eq!(hidden.reaction_targets, 0);
-    assert_eq!(hidden.reply_targets, 0);
-    assert_eq!(hidden.osl_timing_metadata, 0);
+    assert_eq!(hidden.timeline_entries, 0, "hidden message leaked timeline");
+    assert_eq!(hidden.message_keys, 0, "hidden message leaked message-key");
+    assert_eq!(hidden.object_hints, 0, "hidden message leaked object-hint");
+    assert_eq!(hidden.placeholders, 0, "hidden message leaked placeholder");
+    assert_eq!(hidden.unread_increments, 0, "hidden message leaked unread");
+    assert_eq!(hidden.notifications, 0, "hidden message leaked notification");
+    assert_eq!(hidden.reaction_targets, 0, "hidden message leaked reaction-target");
+    assert_eq!(hidden.reply_targets, 0, "hidden message leaked reply-target");
+    assert_eq!(hidden.osl_timing_metadata, 0, "hidden message leaked timing-hint");
     println!(
         "TASK6842_FAULTS membership_race=MembershipRace wrong_signer=InvalidSignature broken_wrap=Hidden body_tamper=Crypto hidden_surfaces=9"
     );
