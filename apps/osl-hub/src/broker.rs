@@ -197,6 +197,11 @@ const VIEW_ONCE_UNAVAILABLE: &str = "This view-once message is unavailable or ex
 const LOCAL_PROTECTED_MESSAGE_TYPE: u8 = 0x80;
 const LOCAL_PROTECTED_FILE: &str = "hub_local_protected.json";
 const NATIVE_OVERLAY_RECEIPTS_FILE: &str = "hub_native_overlay_receipts.json";
+/// The eye's durable, provider-bound view of a protected row.  This is kept
+/// separately from delivery receipts: a receipt says that OSL transported a
+/// message, while this ledger says which live application row was actually
+/// authenticated and opened for display.
+const PROTECTED_ROW_RECORDS_FILE: &str = "hub_protected_row_records.json";
 const OSL_CHAT_REACTIONS_FILE: &str = "hub_osl_chat_reactions.json";
 const LOCAL_PROTECTED_LABEL: &str = "local_protected_loopback";
 /// Must change only with the broker relay call sites themselves. The current
@@ -336,6 +341,7 @@ pub struct HubBrokerState {
     inner: Mutex<BrokerInner>,
     local_protected_transition: Mutex<()>,
     native_overlay_receipt_transition: Mutex<()>,
+    protected_row_record_transition: Mutex<()>,
     osl_chat_reaction_transition: Mutex<()>,
     inbound_privacy_receipts: Mutex<BTreeMap<([u8; 32], [u8; 32]), ReceiptState>>,
     native_overlay_received_view_once: Mutex<BTreeMap<String, i64>>,
@@ -348,6 +354,7 @@ impl core::fmt::Debug for HubBrokerState {
             .field("inner", &"<redacted>")
             .field("local_protected_transition", &"<mutex>")
             .field("native_overlay_receipt_transition", &"<mutex>")
+            .field("protected_row_record_transition", &"<mutex>")
             .field("osl_chat_reaction_transition", &"<mutex>")
             .field("inbound_privacy_receipts", &"<mutex>")
             .field(
@@ -1870,6 +1877,27 @@ struct NativeOverlayReceiptLedger {
     records: BTreeMap<String, NativeOverlayReceiptRecord>,
 }
 
+/// One protected message as the trusted eye control displays it.  This is a
+/// common record shape for every carrier: app-owned row identity, the exact
+/// public cover, private words, and whether opening has happened.  It is not
+/// `Debug` because two fields are message content.
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProtectedRowRecord {
+    pub app_id: String,
+    pub app_row_id: String,
+    pub cover_text: String,
+    pub private_words: String,
+    pub opened: bool,
+}
+
+#[derive(Default, Deserialize, Serialize)]
+struct ProtectedRowRecordLedger {
+    version: u32,
+    #[serde(default)]
+    records: BTreeMap<String, ProtectedRowRecord>,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 struct OslChatReactionRecord {
     scope_key_sha256: String,
@@ -3078,6 +3106,7 @@ pub fn rehydrate_native_discord_overlay_history(
 ) -> Result<RehydratedNativeDiscordTranscript, String> {
     let context_token = broker.active_native_manual_context_token()?;
     let manual = broker.manual_peer_for(&context_token)?;
+    let context = broker.context_for(&context_token)?;
     let mut counts = RehydrateDecodeCounts {
         rows: rows.len(),
         ..RehydrateDecodeCounts::default()
@@ -3093,6 +3122,9 @@ pub fn rehydrate_native_discord_overlay_history(
     // covers still come back, so the conversation is visible; nothing is opened.
     let decrypt_display_enabled =
         security::scope_security(manual.scope.clone())?.decrypt_display_enabled;
+    // Do not write while decoding: a duplicate/ambiguous snapshot is rejected
+    // as a whole below, and must leave zero durable records behind.
+    let mut pending_row_records = Vec::new();
     // ONE bounded slice for the whole decode leg.
     //
     // A row whose cover really is a pointer costs a cipher-store fetch to open,
@@ -3167,6 +3199,18 @@ pub fn rehydrate_native_discord_overlay_history(
             }
             match bind_authenticated_native_row(evidence, authenticated) {
                 Some(bound) => {
+                    // Persist only after the carrier fetch, crypto proof, and
+                    // native app-row proof all agreed.  In particular, do not
+                    // accept a watched accessibility row or a fabricated
+                    // pointer: neither reaches this branch with an exact
+                    // peer-owned Discord message identity.
+                    if bound.1 == RehydratedRowOrientation::Incoming {
+                        pending_row_records.push((
+                            evidence.clone(),
+                            candidate.clone(),
+                            bound.0.clone(),
+                        ));
+                    }
                     counts.plaintext += 1;
                     Some(bound)
                 }
@@ -3179,6 +3223,21 @@ pub fn rehydrate_native_discord_overlay_history(
     );
     let mut rows = rows;
     if !rehydrated_attribution_ids_are_unique(&rows) {
+        let opened = counts.plaintext;
+        for row in &mut rows {
+            row.plaintext = None;
+            row.orientation = None;
+            row.attribution = None;
+        }
+        counts.plaintext = 0;
+        counts.refused += opened;
+    } else if pending_row_records
+        .iter()
+        .any(|(evidence, cover, private)| {
+            record_opened_native_discord_row(core, broker, &context, evidence, cover, private)
+                .is_err()
+        })
+    {
         let opened = counts.plaintext;
         for row in &mut rows {
             row.plaintext = None;
@@ -6604,6 +6663,139 @@ fn native_overlay_receipt_path() -> Result<std::path::PathBuf, String> {
         .map_err(|_| "OSL receipt storage is unavailable".to_owned())
 }
 
+fn protected_row_records_path() -> Result<std::path::PathBuf, String> {
+    keystore::osl_config_dir()
+        .map(|dir| dir.join(PROTECTED_ROW_RECORDS_FILE))
+        .map_err(|_| "OSL protected-row storage is unavailable".to_owned())
+}
+
+fn load_protected_row_records(
+    path: &Path,
+    file_key: &[u8; 32],
+) -> Result<ProtectedRowRecordLedger, String> {
+    let Some(bytes) = crate::atomic_file::read_recoverable_bounded(
+        path,
+        MAX_LOCAL_LEDGER_BYTES as u64,
+        "OSL protected-row ledger",
+    )?
+    else {
+        return Ok(ProtectedRowRecordLedger::default());
+    };
+    if bytes.len() > MAX_LOCAL_LEDGER_BYTES || !ipc::main_password::has_enc_magic(&bytes) {
+        return Err("OSL protected-row ledger is invalid or not encrypted".to_owned());
+    }
+    let plaintext = ipc::main_password::decrypt_at_rest(&bytes, file_key)
+        .map_err(|_| "OSL protected-row ledger could not be decrypted".to_owned())?;
+    let ledger: ProtectedRowRecordLedger = serde_json::from_slice(&plaintext)
+        .map_err(|_| "OSL protected-row ledger is malformed".to_owned())?;
+    if ledger.version != NATIVE_OVERLAY_ACK_VERSION
+        || ledger.records.len() > MAX_LOCAL_LEDGER_ENTRIES
+    {
+        return Err("OSL protected-row ledger version or size is invalid".to_owned());
+    }
+    Ok(ledger)
+}
+
+fn write_protected_row_records(
+    path: &Path,
+    ledger: &ProtectedRowRecordLedger,
+    file_key: &[u8; 32],
+) -> Result<(), String> {
+    let plaintext = serde_json::to_vec(ledger)
+        .map_err(|_| "OSL protected-row ledger could not be encoded".to_owned())?;
+    if plaintext.len() > MAX_LOCAL_LEDGER_BYTES {
+        return Err("OSL protected-row ledger exceeds its storage limit".to_owned());
+    }
+    let encrypted = ipc::main_password::encrypt_at_rest(&plaintext, file_key)
+        .map_err(|_| "OSL protected-row ledger encryption failed".to_owned())?;
+    crate::atomic_file::write_recoverable(path, &encrypted, "OSL protected-row ledger")
+}
+
+fn record_opened_native_discord_row(
+    core: &HubCoreState,
+    broker: &HubBrokerState,
+    context: &HubConversationContext,
+    evidence: &crate::native_discord_adapter::NativeDiscordRowAttributionEvidence,
+    cover_text: &str,
+    private_words: &str,
+) -> Result<(), String> {
+    // This is intentionally stricter than a pointer decode.  A development
+    // fixture can fabricate a pointer, but it cannot create a shipping record
+    // without the native producer's peer-owned Discord row identity and the
+    // carrier commitment that was read from that same row.
+    if !protected_row_record_is_admissible(context, evidence, cover_text, private_words) {
+        return Err("OSL protected row does not have a trusted Discord binding".to_owned());
+    }
+    let (_, file_key) = local_protected_identity_for_receipt(core, context, false)?;
+    let _transition = broker
+        .protected_row_record_transition
+        .lock()
+        .map_err(|_| "OSL protected-row state is unavailable".to_owned())?;
+    let path = protected_row_records_path()?;
+    let mut ledger = load_protected_row_records(&path, &file_key)?;
+    let key = format!("discord:{}", evidence.discord_message_id);
+    let record = ProtectedRowRecord {
+        app_id: "discord".to_owned(),
+        app_row_id: evidence.discord_message_id.clone(),
+        cover_text: cover_text.to_owned(),
+        private_words: private_words.to_owned(),
+        opened: true,
+    };
+    match ledger.records.get(&key) {
+        Some(existing)
+            if existing.app_id == record.app_id
+                && existing.app_row_id == record.app_row_id
+                && existing.cover_text == record.cover_text
+                && existing.private_words == record.private_words
+                && existing.opened =>
+        {
+            return Ok(())
+        }
+        Some(_) => {
+            return Err("OSL protected row identity was reused with different content".to_owned())
+        }
+        None => {}
+    }
+    if ledger.records.len() >= MAX_LOCAL_LEDGER_ENTRIES {
+        return Err("OSL protected-row ledger is full".to_owned());
+    }
+    ledger.version = NATIVE_OVERLAY_ACK_VERSION;
+    ledger.records.insert(key, record);
+    write_protected_row_records(&path, &ledger, &file_key)
+}
+
+fn protected_row_record_is_admissible(
+    context: &HubConversationContext,
+    evidence: &crate::native_discord_adapter::NativeDiscordRowAttributionEvidence,
+    cover_text: &str,
+    private_words: &str,
+) -> bool {
+    context.service_id == "discord"
+        && evidence.poster == crate::native_discord_adapter::NativeDiscordRowPoster::PeerAccount
+        && bounded_attribution_id(&evidence.discord_message_id)
+        && !cover_text.is_empty()
+        && !private_words.is_empty()
+        && crate::native_discord_adapter::native_row_attribution_carrier_sha256(cover_text)
+            == evidence.carrier_sha256
+}
+
+/// The sole reader for the eye control. It is scoped to the active native
+/// Discord context and returns only records whose provider binding was already
+/// accepted on the shipping receive path.
+pub fn opened_native_discord_protected_rows(
+    core: &HubCoreState,
+    broker: &HubBrokerState,
+) -> Result<Vec<ProtectedRowRecord>, String> {
+    let token = broker.active_native_manual_context_token()?;
+    let context = broker.context_for(&token)?;
+    if context.service_id != "discord" {
+        return Err("OSL native Discord protection is not active".to_owned());
+    }
+    let (_, file_key) = local_protected_identity_for_receipt(core, &context, false)?;
+    let ledger = load_protected_row_records(&protected_row_records_path()?, &file_key)?;
+    Ok(ledger.records.into_values().collect())
+}
+
 fn load_native_overlay_receipts(
     path: &Path,
     file_key: &[u8; 32],
@@ -9783,6 +9975,118 @@ mod tests {
             keystore::set_active_account_dir(None);
             keystore::set_base_dir_override(None);
         }
+    }
+
+    #[test]
+    fn task_3504_shipping_row_record_requires_live_carrier_and_app_row_binding() {
+        let temp = tempfile::tempdir().expect("protected-row temp directory");
+        let path = temp.path().join("protected-row-ledger");
+        let file_key = [41u8; 32];
+        let cover = "task3504 live Discord cover text";
+        let private_words = "task3504 exact private words";
+        let context = HubConversationContext {
+            service_id: "discord".to_owned(),
+            account_id: "native-discord-task3504".to_owned(),
+            conversation_kind: HubConversationKind::Dm,
+            conversation_id: "task3504-conversation".to_owned(),
+            space_id: None,
+            participant_osl_ids: vec!["alice".to_owned(), "bob".to_owned()],
+            self_osl_id: "bob".to_owned(),
+        };
+        let evidence = crate::native_discord_adapter::NativeDiscordRowAttributionEvidence {
+            discord_message_id: "123456789012345678".to_owned(),
+            poster_identity_sha256: "a".repeat(64),
+            who_wrote_it: crate::row_who_wrote_it::SharedRowWhoWroteIt::Theirs,
+            native_locator_sha256: "b".repeat(64),
+            carrier_sha256: crate::native_discord_adapter::native_row_attribution_carrier_sha256(
+                cover,
+            ),
+            scope_binding_sha256: "c".repeat(64),
+            window_generation: 1,
+            row_index: 0,
+            poster: crate::native_discord_adapter::NativeDiscordRowPoster::PeerAccount,
+        };
+        let save =
+            |path: &Path,
+             evidence: &crate::native_discord_adapter::NativeDiscordRowAttributionEvidence,
+             carrier: &str| {
+                let mut ledger = ProtectedRowRecordLedger {
+                    version: NATIVE_OVERLAY_ACK_VERSION,
+                    ..ProtectedRowRecordLedger::default()
+                };
+                if protected_row_record_is_admissible(&context, evidence, carrier, private_words) {
+                    ledger.records.insert(
+                        format!("discord:{}", evidence.discord_message_id),
+                        ProtectedRowRecord {
+                            app_id: "discord".to_owned(),
+                            app_row_id: evidence.discord_message_id.clone(),
+                            cover_text: carrier.to_owned(),
+                            private_words: private_words.to_owned(),
+                            opened: true,
+                        },
+                    );
+                }
+                write_protected_row_records(path, &ledger, &file_key).expect("save protected rows");
+                load_protected_row_records(path, &file_key).expect("read protected rows")
+            };
+        let saved = save(&path, &evidence, cover);
+        assert_eq!(saved.records.len(), 1);
+        let record = saved.records.values().next().expect("one row record");
+        assert_eq!(record.app_row_id, "123456789012345678");
+        assert_eq!(record.cover_text, cover);
+        assert_eq!(record.private_words, private_words);
+        assert!(record.opened);
+
+        let no_fetch = save(
+            &temp.path().join("no-fetch"),
+            &evidence,
+            "fabricated pointer",
+        );
+        assert_eq!(
+            no_fetch.records.len(),
+            0,
+            "removing carrier fetch saves zero records"
+        );
+        let mut unbound = evidence.clone();
+        unbound.poster = crate::native_discord_adapter::NativeDiscordRowPoster::SelfAccount;
+        let no_binding = save(&temp.path().join("no-binding"), &unbound, cover);
+        assert_eq!(
+            no_binding.records.len(),
+            0,
+            "removing app-row binding saves zero records"
+        );
+        println!("TASK_3504 records=1 app_row_id={} cover_text=\"{}\" private_words=\"{}\" opened=true no_fetch_records=0 no_binding_records=0", record.app_row_id, record.cover_text, record.private_words);
+    }
+
+    #[test]
+    fn whatsapp_capture_only_draft_uses_utf8_ceiling_and_refuses_without_truncation() {
+        let ceiling = WHATSAPP_CAPTURE_ONLY_DRAFT_BYTE_CEILING;
+        let under = "a".repeat(ceiling - 1);
+        let exact = "a".repeat(ceiling);
+        let over = "a".repeat(ceiling + 1);
+        let multibyte_exact = "é".repeat(ceiling / 2);
+
+        assert_eq!(under.len(), ceiling - 1);
+        assert_eq!(exact.len(), ceiling);
+        assert_eq!(multibyte_exact.len(), ceiling);
+        assert!(validate_whatsapp_capture_only_draft(&under).is_ok());
+        assert!(validate_whatsapp_capture_only_draft(&exact).is_ok());
+        assert!(validate_whatsapp_capture_only_draft(&multibyte_exact).is_ok());
+
+        let refusal = validate_whatsapp_capture_only_draft(&over).unwrap_err();
+        assert_eq!(over.len(), ceiling + 1);
+        assert_eq!(
+            refusal,
+            format!(
+                "WhatsApp capture-only draft is {} UTF-8 bytes and exceeds the {ceiling}-byte ceiling",
+                ceiling + 1
+            )
+        );
+        assert_eq!(
+            over.len(),
+            ceiling + 1,
+            "the refused draft was not truncated"
+        );
     }
 
     #[test]
