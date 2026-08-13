@@ -43,6 +43,7 @@ fn main() -> ExitCode {
     let mut body_path: Option<PathBuf> = None;
     let mut out_path: Option<PathBuf> = None;
     let mut forge_public: Option<String> = None;
+    let mut path_override: Option<String> = None;
     let mut tamper = false;
 
     let mut args = std::env::args().skip(1);
@@ -59,6 +60,9 @@ fn main() -> ExitCode {
             "--body" => body_path = Some(PathBuf::from(args.next().unwrap_or_default())),
             "--out" => out_path = Some(PathBuf::from(args.next().unwrap_or_default())),
             "--forge-public" => forge_public = Some(args.next().unwrap_or_default()),
+            // Reaches a path the manifest does not classify, so the check can
+            // ask the deployed router what it does with an unknown route.
+            "--path" => path_override = Some(args.next().unwrap_or_default()),
             other => {
                 eprintln!("osl-chats-client: unknown argument {other}");
                 return ExitCode::from(2);
@@ -95,8 +99,21 @@ fn main() -> ExitCode {
             eprintln!("osl-chats-client: cannot write identity: {error}");
             return ExitCode::from(2);
         }
+        // Installing a client installs its route manifest: every endpoint this
+        // client can reach, what parent identifiers it must carry, whose
+        // authorship it may claim, and which roles are meant to be allowed.
+        let manifest = ipc::chats_route_manifest::manifest_json();
+        if let Err(error) = std::fs::write(install_dir.join("route-manifest.json"), &manifest) {
+            eprintln!("osl-chats-client: cannot write route manifest: {error}");
+            return ExitCode::from(2);
+        }
         let fingerprint = fingerprint_of(&public_key_b64).unwrap_or_default();
         println!("TASK6120CLIENT generated label={label} person={person} public={public_key_b64} fp={fingerprint}");
+        println!(
+            "TASK6206CLIENT manifest label={label} routes={} bytes={}",
+            ipc::chats_route_manifest::CLIENT_ROUTES.len(),
+            manifest.len()
+        );
         return ExitCode::SUCCESS;
     }
 
@@ -154,8 +171,9 @@ fn main() -> ExitCode {
             return ExitCode::from(3);
         }
     };
+    let path = path_override.unwrap_or_else(|| format!("/v1/chats/{op}"));
     let request = format!(
-        "POST /v1/chats/{op} HTTP/1.1\r\nhost: {host_port}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nx-osl-key: {presented_key}\r\nx-osl-sig: {signature_b64}\r\nx-osl-nonce: {nonce}\r\nconnection: close\r\n\r\n",
+        "POST {path} HTTP/1.1\r\nhost: {host_port}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nx-osl-key: {presented_key}\r\nx-osl-sig: {signature_b64}\r\nx-osl-nonce: {nonce}\r\nconnection: close\r\n\r\n",
         sent_body.len()
     );
     if stream.write_all(request.as_bytes()).is_err() || stream.write_all(&sent_body).is_err() {

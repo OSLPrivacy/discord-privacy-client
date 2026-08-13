@@ -23,9 +23,152 @@ use std::process::ExitCode;
 
 use base64::Engine as _;
 use ipc::chats_service_authority::{
-    fingerprint_of, signing_payload, ChatsAuthority, ChatsFixture, REFUSAL_SENTENCE,
+    all_ops, fingerprint_of, signing_payload, ChatsAuthority, ChatsFixture, REFUSAL_SENTENCE,
     REFUSE_BAD_SIGNATURE, REFUSE_REPLAYED_NONCE, REFUSE_UNKNOWN_IDENTITY,
 };
+
+/// One row of the deployed service's router.
+///
+/// This table is the service's own, written out here rather than imported from
+/// the installed client's manifest: the two are required to agree one-for-one,
+/// and a comparison against itself proves nothing. Dispatch goes through this
+/// table, so a route that is not in it is not reachable, and a route that is in
+/// it but that the authority does not answer is an unclassified deployed route.
+struct RouterRow {
+    method: &'static str,
+    path: &'static str,
+    op: &'static str,
+    kind: &'static str,
+    parent_binding: &'static str,
+    author_binding: &'static str,
+    allowed_roles: &'static [&'static str],
+}
+
+const ROUTER: &[RouterRow] = &[
+    RouterRow {
+        method: "POST",
+        path: "/v1/chats/role.grant",
+        op: "role.grant",
+        kind: "rights-write",
+        parent_binding: "enclaveId",
+        author_binding: "the signer is the granting actor; the target is named in the body",
+        allowed_roles: &["owner"],
+    },
+    RouterRow {
+        method: "POST",
+        path: "/v1/chats/roster.list",
+        op: "roster.list",
+        kind: "read",
+        parent_binding: "enclaveId, optional channelId",
+        author_binding: "none",
+        allowed_roles: &["owner", "member", "limited"],
+    },
+    RouterRow {
+        method: "POST",
+        path: "/v1/chats/channel.list",
+        op: "channel.list",
+        kind: "read",
+        parent_binding: "enclaveId",
+        author_binding: "none",
+        allowed_roles: &["owner", "member", "limited"],
+    },
+    RouterRow {
+        method: "POST",
+        path: "/v1/chats/history.read",
+        op: "history.read",
+        kind: "read",
+        parent_binding: "enclaveId, channelId or threadId",
+        author_binding: "none",
+        allowed_roles: &["owner", "member", "limited"],
+    },
+    RouterRow {
+        method: "POST",
+        path: "/v1/chats/history.search",
+        op: "history.search",
+        kind: "read",
+        parent_binding: "enclaveId, channelId",
+        author_binding: "none",
+        allowed_roles: &["owner", "member", "limited"],
+    },
+    RouterRow {
+        method: "POST",
+        path: "/v1/chats/history.sync",
+        op: "history.sync",
+        kind: "read",
+        parent_binding: "enclaveId, channelId",
+        author_binding: "none",
+        allowed_roles: &["owner", "member", "limited"],
+    },
+    RouterRow {
+        method: "POST",
+        path: "/v1/chats/history.subscribe",
+        op: "history.subscribe",
+        kind: "read",
+        parent_binding: "enclaveId, channelId",
+        author_binding: "none",
+        allowed_roles: &["owner", "member", "limited"],
+    },
+    RouterRow {
+        method: "POST",
+        path: "/v1/chats/blob.fetch",
+        op: "blob.fetch",
+        kind: "read",
+        parent_binding: "enclaveId, messageId resolved to its channel or thread",
+        author_binding: "none",
+        allowed_roles: &["owner", "member", "limited"],
+    },
+    RouterRow {
+        method: "POST",
+        path: "/v1/chats/message.create",
+        op: "message.create",
+        kind: "content-write",
+        parent_binding: "enclaveId, channelId, optional threadId whose parent must be that channelId",
+        author_binding: "the declared author must be the signer",
+        allowed_roles: &["owner", "limited"],
+    },
+    RouterRow {
+        method: "POST",
+        path: "/v1/chats/message.edit",
+        op: "message.edit",
+        kind: "content-write",
+        parent_binding: "enclaveId, channelId and optional threadId must be the message's own home",
+        author_binding: "only the message's original author",
+        allowed_roles: &["owner", "limited"],
+    },
+    RouterRow {
+        method: "POST",
+        path: "/v1/chats/message.delete",
+        op: "message.delete",
+        kind: "content-write",
+        parent_binding: "enclaveId, channelId and optional threadId must be the message's own home",
+        author_binding: "the message's original author, or a holder of remove-messages",
+        allowed_roles: &["owner", "limited"],
+    },
+    RouterRow {
+        method: "POST",
+        path: "/v1/chats/channel.create",
+        op: "channel.create",
+        kind: "content-write",
+        parent_binding: "enclaveId must be this enclave",
+        author_binding: "the declared creator must be the signer",
+        allowed_roles: &["owner", "limited"],
+    },
+    RouterRow {
+        method: "POST",
+        path: "/v1/chats/thread.create",
+        op: "thread.create",
+        kind: "content-write",
+        parent_binding: "enclaveId must be this enclave and channelId must be a channel of it",
+        author_binding: "the declared creator must be the signer",
+        allowed_roles: &["owner", "limited"],
+    },
+];
+
+fn router_row(method: &str, path: &str) -> Option<&'static RouterRow> {
+    ROUTER
+        .iter()
+        .find(|row| row.method == method && row.path == path)
+}
 
 fn main() -> ExitCode {
     let mut data_dir: Option<PathBuf> = None;
@@ -87,8 +230,16 @@ fn main() -> ExitCode {
 
     let audit_path = data_dir.join("audit.jsonl");
     let rights_path = data_dir.join("rights.json");
+    let store_path = data_dir.join("store.json");
+    let queue_path = data_dir.join("queue.jsonl");
+    let broadcast_path = data_dir.join("broadcast.jsonl");
+    let router_path = data_dir.join("router.json");
     let _ = File::create(&audit_path);
+    let _ = File::create(&queue_path);
+    let _ = File::create(&broadcast_path);
     write_rights(&rights_path, &authority);
+    write_store(&store_path, &authority);
+    write_router(&router_path, &build_tag);
 
     let listener = match TcpListener::bind(("127.0.0.1", port)) {
         Ok(listener) => listener,
@@ -130,9 +281,11 @@ fn main() -> ExitCode {
             respond(&mut stream, 200, b"{\"ok\":true}");
             break;
         }
-        let op = match request.path.strip_prefix("/v1/chats/") {
-            Some(op) if request.method == "POST" => op.to_owned(),
-            _ => {
+        // Dispatch goes through the router table and nowhere else: a path that
+        // is not a row here is not a route, whatever the authority can answer.
+        let op = match router_row(&request.method, &request.path) {
+            Some(row) => row.op.to_owned(),
+            None => {
                 respond(&mut stream, 404, b"{\"ok\":false,\"code\":\"unknown-route\"}");
                 continue;
             }
@@ -170,8 +323,20 @@ fn main() -> ExitCode {
         if let Some(previous) = before.get(&outcome.audit.rights_subject) {
             outcome.audit.rights_before = previous.clone();
         }
+        // Durable record, delivery queue and subscriber broadcast are all
+        // written before the answer goes back on the socket, so a client can
+        // never observe a reply that the service has not already committed —
+        // and a refused write, which carries none of the three, cannot have
+        // left a byte behind either.
+        for line in &outcome.queued {
+            append_json_line(&queue_path, line);
+        }
+        for line in &outcome.broadcast {
+            append_json_line(&broadcast_path, line);
+        }
         append_audit(&audit_path, &outcome.audit);
         write_rights(&rights_path, &authority);
+        write_store(&store_path, &authority);
         respond(&mut stream, outcome.status, &outcome.body);
     }
     ExitCode::SUCCESS
@@ -287,6 +452,50 @@ fn append_audit(path: &Path, entry: &ipc::chats_service_authority::AuditEntry) {
 
 fn write_rights(path: &Path, authority: &ChatsAuthority) {
     if let Ok(text) = serde_json::to_string_pretty(&authority.rights_snapshot()) {
+        let _ = std::fs::write(path, text);
+    }
+}
+
+/// The deployed service's durable records. Written to the service's own data
+/// directory after every request and never served to a client.
+fn write_store(path: &Path, authority: &ChatsAuthority) {
+    if let Ok(text) = serde_json::to_string_pretty(&authority.store_snapshot()) {
+        let _ = std::fs::write(path, text);
+    }
+}
+
+fn append_json_line(path: &Path, value: &serde_json::Value) {
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+        if let Ok(line) = serde_json::to_string(value) {
+            let _ = writeln!(file, "{line}");
+        }
+    }
+}
+
+/// The router this deployed build actually dispatches through, together with
+/// the ops its authority answers. The check compares the two against the
+/// installed client's manifest so that no deployed route goes unclassified.
+fn write_router(path: &Path, build_tag: &str) {
+    let rows: Vec<serde_json::Value> = ROUTER
+        .iter()
+        .map(|row| {
+            serde_json::json!({
+                "op": row.op,
+                "method": row.method,
+                "path": row.path,
+                "kind": row.kind,
+                "parentBinding": row.parent_binding,
+                "authorBinding": row.author_binding,
+                "allowedRoles": row.allowed_roles,
+            })
+        })
+        .collect();
+    let document = serde_json::json!({
+        "buildTag": build_tag,
+        "routes": rows,
+        "authorityOps": all_ops(),
+    });
+    if let Ok(text) = serde_json::to_string_pretty(&document) {
         let _ = std::fs::write(path, text);
     }
 }

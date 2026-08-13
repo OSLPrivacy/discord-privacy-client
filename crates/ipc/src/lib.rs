@@ -47,6 +47,12 @@ pub mod burned_scopes_file;
 /// The machine-readable catalogue of OSL-central moderation systems that must
 /// not exist, read by the TASK 6594 central-absence sweep.
 pub mod central_moderation_needles;
+/// The deployed OSL Chats content-write guards: membership, role, author and
+/// parent binding, one named guard per write endpoint.
+pub mod chats_content_guards;
+/// The installed OSL Chats client's route manifest — every endpoint it can
+/// reach, its parent/author binding and the roles allowed to use it.
+pub mod chats_route_manifest;
 /// The deployed OSL Chats authorization authority: the server-side half of the
 /// enclave permission model that `server_membership` and `spaces` describe.
 pub mod chats_service_authority;

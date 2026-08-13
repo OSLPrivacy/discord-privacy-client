@@ -38,6 +38,15 @@ use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::chats_content_guards::{
+    channel_create_author_allowed, channel_create_membership_allowed, channel_create_parent_allowed,
+    channel_create_role_allowed, message_create_author_allowed, message_create_membership_allowed,
+    message_create_parent_allowed, message_create_role_allowed, message_delete_author_allowed,
+    message_delete_membership_allowed, message_delete_parent_allowed, message_delete_role_allowed,
+    message_edit_author_allowed, message_edit_membership_allowed, message_edit_parent_allowed,
+    message_edit_role_allowed, thread_create_author_allowed, thread_create_membership_allowed,
+    thread_create_parent_allowed, thread_create_role_allowed,
+};
 use crate::server_membership::{
     ServerChannelAccess, ServerChannelAccessRecord, ServerMemberList, ServerMembershipStore,
     ServerPermission, ServerPermissionStore, ServerThreadPermissionStore,
@@ -106,10 +115,18 @@ pub const REFUSE_UNKNOWN_OP: &str = "unknown-op";
 pub const REFUSE_BAD_SIGNATURE: &str = "bad-signature";
 pub const REFUSE_REPLAYED_NONCE: &str = "replayed-nonce";
 
+// The four content-write refusals. Like the read refusals above they name
+// nothing: a client learns that its write was refused and not which of the
+// enclave, channel, thread, message or author it named actually exists.
+pub const REFUSE_WRITE_MEMBERSHIP: &str = "write-membership-refused";
+pub const REFUSE_WRITE_ROLE: &str = "write-role-refused";
+pub const REFUSE_WRITE_AUTHOR: &str = "write-author-binding-refused";
+pub const REFUSE_WRITE_PARENT: &str = "write-parent-binding-refused";
+
 /// The generic sentence a refused client receives. It names nothing.
 pub const REFUSAL_SENTENCE: &str = "OSL: this request is not allowed";
 
-/// The eight endpoints the deployed service exposes.
+/// The eight read and rights endpoints the deployed service exposes.
 pub const OPS: [&str; 8] = [
     "role.grant",
     "roster.list",
@@ -120,6 +137,23 @@ pub const OPS: [&str; 8] = [
     "history.subscribe",
     "blob.fetch",
 ];
+
+/// The five content-write endpoints the deployed service exposes.
+pub const CONTENT_WRITE_OPS: [&str; 5] = [
+    "message.create",
+    "message.edit",
+    "message.delete",
+    "channel.create",
+    "thread.create",
+];
+
+/// Every op [`ChatsAuthority::handle`] answers. The deployed service's router
+/// is required to expose exactly this set and no more: an op the authority
+/// handles that no router row reaches, or a router row the authority does not
+/// handle, is an unclassified deployed route.
+pub fn all_ops() -> Vec<&'static str> {
+    OPS.iter().chain(CONTENT_WRITE_OPS.iter()).copied().collect()
+}
 
 // ---------------------------------------------------------------------------
 // Seed fixture — the frozen enclave the service is deployed with.
@@ -149,6 +183,10 @@ pub struct FixtureMessage {
     #[serde(default)]
     pub thread_id: Option<String>,
     pub ciphertext_hex: String,
+    /// Who wrote it. Absent means the enclave owner, so a fixture written
+    /// before authorship existed still seeds.
+    #[serde(default)]
+    pub author: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -164,6 +202,15 @@ pub struct ChatsFixture {
     pub open_thread_id: String,
     pub child_thread_id: String,
     pub messages: Vec<FixtureMessage>,
+    /// When true a removed member keeps the rights they were granted before
+    /// removal. That is deliberately hostile to the service: it leaves a live
+    /// `send` / `make-channels` grant in the hands of somebody who is no longer
+    /// on the roster, so the membership guard is the only thing between that
+    /// grant and a durable write. Clearing the grant instead (the default, and
+    /// what the gate-6120 fixture does) would hide a bypassed membership guard
+    /// behind the role guard.
+    #[serde(default)]
+    pub retain_rights_after_exclusion: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -204,6 +251,11 @@ pub struct Outcome {
     pub status: u16,
     pub body: Vec<u8>,
     pub audit: AuditEntry,
+    /// Outbound deliveries this request queued, one per recipient. A refused
+    /// request queues none, because every guard returns before this is filled.
+    pub queued: Vec<serde_json::Value>,
+    /// Fan-out events this request published to live subscribers.
+    pub broadcast: Vec<serde_json::Value>,
 }
 
 // ---------------------------------------------------------------------------
@@ -227,6 +279,21 @@ pub struct ChatsAuthority {
     thread_history: BTreeMap<String, Vec<String>>,
     identities: BTreeMap<String, Identity>,
     seq: u64,
+    // -- durable content records ------------------------------------------
+    /// message id -> the person the deployed service attributes it to.
+    message_author: BTreeMap<String, String>,
+    /// message id -> how many times its content has been replaced.
+    message_revision: BTreeMap<String, u64>,
+    /// message id -> whether it has been retired.
+    message_deleted: BTreeMap<String, bool>,
+    /// channel id -> the person the deployed service attributes it to.
+    channel_creator: BTreeMap<String, String>,
+    /// thread id -> the person the deployed service attributes it to.
+    thread_creator: BTreeMap<String, String>,
+    /// Record id -> the enclave the request that made it declared. Seeded
+    /// records carry this enclave; a record that carries anything else is a
+    /// write that landed in the wrong server.
+    record_enclave: BTreeMap<String, String>,
 }
 
 impl ChatsAuthority {
@@ -325,6 +392,21 @@ impl ChatsAuthority {
             fixture.restricted_channel_id.clone(),
         );
 
+        let mut message_author: BTreeMap<String, String> = BTreeMap::new();
+        let mut message_revision: BTreeMap<String, u64> = BTreeMap::new();
+        let mut message_deleted: BTreeMap<String, bool> = BTreeMap::new();
+        let mut channel_creator: BTreeMap<String, String> = BTreeMap::new();
+        let mut thread_creator: BTreeMap<String, String> = BTreeMap::new();
+        let mut record_enclave: BTreeMap<String, String> = BTreeMap::new();
+        for channel_id in &channel_order {
+            channel_creator.insert(channel_id.clone(), fixture.owner_name.clone());
+            record_enclave.insert(format!("channel:{channel_id}"), fixture.enclave_id.clone());
+        }
+        for thread_id in [&fixture.open_thread_id, &fixture.child_thread_id] {
+            thread_creator.insert(thread_id.clone(), fixture.owner_name.clone());
+            record_enclave.insert(format!("thread:{thread_id}"), fixture.enclave_id.clone());
+        }
+
         let mut message_home = BTreeMap::new();
         let mut ciphertext = BTreeMap::new();
         let mut channel_history: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -362,6 +444,19 @@ impl ChatsAuthority {
                 (message.channel_id.clone(), message.thread_id.clone()),
             );
             ciphertext.insert(message.message_id.clone(), bytes);
+            message_author.insert(
+                message.message_id.clone(),
+                message
+                    .author
+                    .clone()
+                    .unwrap_or_else(|| fixture.owner_name.clone()),
+            );
+            message_revision.insert(message.message_id.clone(), 0);
+            message_deleted.insert(message.message_id.clone(), false);
+            record_enclave.insert(
+                format!("message:{}", message.message_id),
+                fixture.enclave_id.clone(),
+            );
         }
 
         // The excluded role is admitted and then removed, so the roster the
@@ -373,13 +468,15 @@ impl ChatsAuthority {
                 members
                     .remove_member_by_name(&fixture.enclave_id, identity.person_name.clone())
                     .map_err(|error| error.to_string())?;
-                permissions
-                    .set_person_permissions(
-                        fixture.enclave_id.clone(),
-                        identity.person_name.clone(),
-                        Vec::new(),
-                    )
-                    .map_err(|error| error.to_string())?;
+                if !fixture.retain_rights_after_exclusion {
+                    permissions
+                        .set_person_permissions(
+                            fixture.enclave_id.clone(),
+                            identity.person_name.clone(),
+                            Vec::new(),
+                        )
+                        .map_err(|error| error.to_string())?;
+                }
             }
         }
 
@@ -399,6 +496,12 @@ impl ChatsAuthority {
             thread_history,
             identities,
             seq: 0,
+            message_author,
+            message_revision,
+            message_deleted,
+            channel_creator,
+            thread_creator,
+            record_enclave,
         })
     }
 
@@ -435,6 +538,86 @@ impl ChatsAuthority {
             })
             .map(|permission| permission_token(*permission).to_owned())
             .collect()
+    }
+
+    /// Does this person hold this right, per the shipping permission store?
+    /// Deliberately not intersected with roster membership: a grant that
+    /// survives removal has to be stopped by the membership guard.
+    fn holds_right(&self, person_name: &str, permission: ServerPermission) -> bool {
+        self.permissions
+            .require_person_permission(&self.enclave_id, person_name, permission)
+            .is_ok()
+    }
+
+    /// Every durable record the deployed service holds, keyed by record id.
+    ///
+    /// This is the state a write changes and a refused write must not touch.
+    /// The service writes it to `store.json` in its own data directory after
+    /// every request; no client is ever served it, and the checker reads it off
+    /// the deployed service's disk rather than out of any response.
+    pub fn store_snapshot(&self) -> BTreeMap<String, serde_json::Value> {
+        let mut records: BTreeMap<String, serde_json::Value> = BTreeMap::new();
+        let members = self.member_list();
+        records.insert(
+            "roster".to_owned(),
+            serde_json::json!({
+                "enclave": self.enclave_id,
+                "members": members.members().into_iter().map(|member| member.name).collect::<Vec<_>>(),
+                "owner": self.owner_name,
+            }),
+        );
+        for channel_id in &self.channel_order {
+            let readers = self.channel_readers(channel_id).unwrap_or_default();
+            let access = match self.channels.get(channel_id).map(|record| &record.access) {
+                Some(ServerChannelAccess::Open) => "open",
+                _ => "limited",
+            };
+            records.insert(
+                format!("channel:{channel_id}"),
+                serde_json::json!({
+                    "access": access,
+                    "channelId": channel_id,
+                    "creator": self.channel_creator.get(channel_id).cloned().unwrap_or_default(),
+                    "enclave": self.record_enclave.get(&format!("channel:{channel_id}")).cloned().unwrap_or_default(),
+                    "readers": readers,
+                }),
+            );
+        }
+        for (thread_id, channel_id) in &self.thread_parent {
+            records.insert(
+                format!("thread:{thread_id}"),
+                serde_json::json!({
+                    "channelId": channel_id,
+                    "creator": self.thread_creator.get(thread_id).cloned().unwrap_or_default(),
+                    "enclave": self.record_enclave.get(&format!("thread:{thread_id}")).cloned().unwrap_or_default(),
+                    "threadId": thread_id,
+                }),
+            );
+        }
+        for (message_id, (channel_id, thread_id)) in &self.message_home {
+            let bytes = self.ciphertext.get(message_id).cloned().unwrap_or_default();
+            records.insert(
+                format!("message:{message_id}"),
+                serde_json::json!({
+                    "author": self.message_author.get(message_id).cloned().unwrap_or_default(),
+                    "bytes": bytes.len(),
+                    "channelId": channel_id,
+                    "ciphertextB64": base64::engine::general_purpose::STANDARD.encode(&bytes),
+                    "deleted": self.message_deleted.get(message_id).copied().unwrap_or(false),
+                    "enclave": self.record_enclave.get(&format!("message:{message_id}")).cloned().unwrap_or_default(),
+                    "messageId": message_id,
+                    "revision": self.message_revision.get(message_id).copied().unwrap_or(0),
+                    "threadId": thread_id,
+                }),
+            );
+        }
+        for (person, rights) in self.rights_snapshot() {
+            records.insert(
+                format!("rights:{person}"),
+                serde_json::json!({ "person": person, "rights": rights }),
+            );
+        }
+        records
     }
 
     pub fn rights_snapshot(&self) -> BTreeMap<String, Vec<String>> {
@@ -499,6 +682,11 @@ impl ChatsAuthority {
                 self.op_channel_stream(op, label, person, fingerprint, &parsed, resource)
             }
             "blob.fetch" => self.op_blob_fetch(label, person, fingerprint, &parsed, resource),
+            "message.create" => self.op_message_create(label, person, fingerprint, &parsed, resource),
+            "message.edit" => self.op_message_edit(label, person, fingerprint, &parsed, resource),
+            "message.delete" => self.op_message_delete(label, person, fingerprint, &parsed, resource),
+            "channel.create" => self.op_channel_create(label, person, fingerprint, &parsed, resource),
+            "thread.create" => self.op_thread_create(label, person, fingerprint, &parsed, resource),
             _ => self.finish(label, person, fingerprint, op, resource, None, 404, Err(REFUSE_UNKNOWN_OP)),
         }
     }
@@ -858,6 +1046,491 @@ impl ChatsAuthority {
         self.finish(label, person, fingerprint, "blob.fetch", resource, None, 200, Ok(payload))
     }
 
+    // -- content writes ----------------------------------------------------
+    //
+    // Every one of these five endpoints answers the same four questions in the
+    // same order — membership, role, author, parent binding — and each answer
+    // is one guard in `chats_content_guards`. Nothing durable is touched, and
+    // nothing is queued or broadcast, until all four have passed: every guard
+    // returns straight out of the handler, so a refused write cannot have
+    // reached a record, a delivery queue or a subscriber.
+
+    fn op_message_create(
+        &mut self,
+        label: String,
+        person: String,
+        fingerprint: String,
+        body: &serde_json::Value,
+        resource: String,
+    ) -> Outcome {
+        let declared_enclave = pick(body, "enclaveId");
+        let channel_id = pick(body, "channelId");
+        let thread_id = pick_opt(body, "threadId");
+        let message_id = pick(body, "messageId");
+        let author = pick(body, "author");
+        let ciphertext_hex = pick(body, "ciphertextHex");
+        if declared_enclave.is_empty()
+            || channel_id.is_empty()
+            || message_id.is_empty()
+            || author.is_empty()
+            || ciphertext_hex.is_empty()
+        {
+            return self.finish(label, person, fingerprint, "message.create", resource, None, 400, Err(REFUSE_BAD_REQUEST));
+        }
+
+        let readers = self.channel_readers(&channel_id).unwrap_or_default();
+        // PRODUCTION CHECK — message.create membership.
+        if !message_create_membership_allowed(readers.iter().any(|name| name == &person)) {
+            return self.finish(label, person, fingerprint, "message.create", resource, None, 403, Err(REFUSE_WRITE_MEMBERSHIP));
+        }
+        // PRODUCTION CHECK — message.create role.
+        if !message_create_role_allowed(self.holds_right(&person, ServerPermission::Send)) {
+            return self.finish(label, person, fingerprint, "message.create", resource, None, 403, Err(REFUSE_WRITE_ROLE));
+        }
+        // PRODUCTION CHECK — message.create author binding.
+        if !message_create_author_allowed(author == person) {
+            return self.finish(label, person, fingerprint, "message.create", resource, None, 403, Err(REFUSE_WRITE_AUTHOR));
+        }
+        let parent_holds = declared_enclave == self.enclave_id
+            && self.channels.contains_key(&channel_id)
+            && match &thread_id {
+                Some(thread) => {
+                    self.thread_parent.get(thread).map(String::as_str) == Some(channel_id.as_str())
+                }
+                None => true,
+            };
+        // PRODUCTION CHECK — message.create parent binding.
+        if !message_create_parent_allowed(parent_holds) {
+            return self.finish(label, person, fingerprint, "message.create", resource, None, 403, Err(REFUSE_WRITE_PARENT));
+        }
+
+        let bytes = match hex::decode(&ciphertext_hex) {
+            Ok(bytes) if !bytes.is_empty() => bytes,
+            _ => {
+                return self.finish(label, person, fingerprint, "message.create", resource, None, 400, Err(REFUSE_BAD_REQUEST))
+            }
+        };
+        if self.message_home.contains_key(&message_id) {
+            return self.finish(label, person, fingerprint, "message.create", resource, None, 400, Err(REFUSE_BAD_REQUEST));
+        }
+
+        self.message_home
+            .insert(message_id.clone(), (channel_id.clone(), thread_id.clone()));
+        self.ciphertext.insert(message_id.clone(), bytes.clone());
+        self.message_author.insert(message_id.clone(), author.clone());
+        self.message_revision.insert(message_id.clone(), 0);
+        self.message_deleted.insert(message_id.clone(), false);
+        self.record_enclave
+            .insert(format!("message:{message_id}"), declared_enclave.clone());
+        match &thread_id {
+            Some(thread) => {
+                self.thread_history
+                    .entry(thread.clone())
+                    .or_default()
+                    .push(message_id.clone());
+                let _ = self.threads.add_thread_message(
+                    self.enclave_id.clone(),
+                    channel_id.clone(),
+                    thread.clone(),
+                    message_id.clone(),
+                    hex::encode(&bytes),
+                    true,
+                );
+            }
+            None => self
+                .channel_history
+                .entry(channel_id.clone())
+                .or_default()
+                .push(message_id.clone()),
+        }
+
+        let payload = serde_json::json!({
+            "ok": true,
+            "op": "message.create",
+            "enclave": declared_enclave,
+            "channel": channel_id,
+            "thread": thread_id,
+            "messageId": message_id,
+            "author": author,
+            "revision": 0,
+            "bytes": bytes.len(),
+        });
+        let outcome = self.finish(label, person.clone(), fingerprint, "message.create", resource, None, 200, Ok(payload));
+        self.with_fanout(
+            outcome,
+            &readers,
+            &person,
+            "message.created",
+            serde_json::json!({
+                "channelId": channel_id,
+                "enclave": declared_enclave,
+                "messageId": message_id,
+                "threadId": thread_id,
+            }),
+        )
+    }
+
+    fn op_message_edit(
+        &mut self,
+        label: String,
+        person: String,
+        fingerprint: String,
+        body: &serde_json::Value,
+        resource: String,
+    ) -> Outcome {
+        let declared_enclave = pick(body, "enclaveId");
+        let channel_id = pick(body, "channelId");
+        let thread_id = pick_opt(body, "threadId");
+        let message_id = pick(body, "messageId");
+        let ciphertext_hex = pick(body, "ciphertextHex");
+        if declared_enclave.is_empty()
+            || channel_id.is_empty()
+            || message_id.is_empty()
+            || ciphertext_hex.is_empty()
+        {
+            return self.finish(label, person, fingerprint, "message.edit", resource, None, 400, Err(REFUSE_BAD_REQUEST));
+        }
+
+        let readers = self.channel_readers(&channel_id).unwrap_or_default();
+        // PRODUCTION CHECK — message.edit membership.
+        if !message_edit_membership_allowed(readers.iter().any(|name| name == &person)) {
+            return self.finish(label, person, fingerprint, "message.edit", resource, None, 403, Err(REFUSE_WRITE_MEMBERSHIP));
+        }
+        // PRODUCTION CHECK — message.edit role.
+        if !message_edit_role_allowed(self.holds_right(&person, ServerPermission::Send)) {
+            return self.finish(label, person, fingerprint, "message.edit", resource, None, 403, Err(REFUSE_WRITE_ROLE));
+        }
+        // An unknown message and somebody else's message get the same refusal,
+        // so an edit is not a way to ask which identifiers exist.
+        let original_author = self.message_author.get(&message_id).cloned().unwrap_or_default();
+        // PRODUCTION CHECK — message.edit author binding.
+        if !message_edit_author_allowed(!original_author.is_empty() && original_author == person) {
+            return self.finish(label, person, fingerprint, "message.edit", resource, None, 403, Err(REFUSE_WRITE_AUTHOR));
+        }
+        let home = self.message_home.get(&message_id).cloned();
+        let parent_holds = declared_enclave == self.enclave_id
+            && home
+                .as_ref()
+                .map(|(channel, thread)| channel == &channel_id && thread == &thread_id)
+                .unwrap_or(false);
+        // PRODUCTION CHECK — message.edit parent binding.
+        if !message_edit_parent_allowed(parent_holds) {
+            return self.finish(label, person, fingerprint, "message.edit", resource, None, 403, Err(REFUSE_WRITE_PARENT));
+        }
+
+        let bytes = match hex::decode(&ciphertext_hex) {
+            Ok(bytes) if !bytes.is_empty() => bytes,
+            _ => {
+                return self.finish(label, person, fingerprint, "message.edit", resource, None, 400, Err(REFUSE_BAD_REQUEST))
+            }
+        };
+        let revision = self.message_revision.get(&message_id).copied().unwrap_or(0) + 1;
+        self.ciphertext.insert(message_id.clone(), bytes.clone());
+        self.message_revision.insert(message_id.clone(), revision);
+
+        let payload = serde_json::json!({
+            "ok": true,
+            "op": "message.edit",
+            "enclave": declared_enclave,
+            "channel": channel_id,
+            "thread": thread_id,
+            "messageId": message_id,
+            "revision": revision,
+            "bytes": bytes.len(),
+        });
+        let outcome = self.finish(label, person.clone(), fingerprint, "message.edit", resource, None, 200, Ok(payload));
+        self.with_fanout(
+            outcome,
+            &readers,
+            &person,
+            "message.edited",
+            serde_json::json!({
+                "channelId": channel_id,
+                "enclave": declared_enclave,
+                "messageId": message_id,
+                "revision": revision,
+            }),
+        )
+    }
+
+    fn op_message_delete(
+        &mut self,
+        label: String,
+        person: String,
+        fingerprint: String,
+        body: &serde_json::Value,
+        resource: String,
+    ) -> Outcome {
+        let declared_enclave = pick(body, "enclaveId");
+        let channel_id = pick(body, "channelId");
+        let thread_id = pick_opt(body, "threadId");
+        let message_id = pick(body, "messageId");
+        if declared_enclave.is_empty() || channel_id.is_empty() || message_id.is_empty() {
+            return self.finish(label, person, fingerprint, "message.delete", resource, None, 400, Err(REFUSE_BAD_REQUEST));
+        }
+
+        let readers = self.channel_readers(&channel_id).unwrap_or_default();
+        // PRODUCTION CHECK — message.delete membership.
+        if !message_delete_membership_allowed(readers.iter().any(|name| name == &person)) {
+            return self.finish(label, person, fingerprint, "message.delete", resource, None, 403, Err(REFUSE_WRITE_MEMBERSHIP));
+        }
+        // PRODUCTION CHECK — message.delete role.
+        if !message_delete_role_allowed(self.holds_right(&person, ServerPermission::Send)) {
+            return self.finish(label, person, fingerprint, "message.delete", resource, None, 403, Err(REFUSE_WRITE_ROLE));
+        }
+        let original_author = self.message_author.get(&message_id).cloned().unwrap_or_default();
+        let moderator = self.holds_right(&person, ServerPermission::RemoveMessages);
+        // PRODUCTION CHECK — message.delete author binding.
+        if !message_delete_author_allowed(
+            !original_author.is_empty() && (original_author == person || moderator),
+        ) {
+            return self.finish(label, person, fingerprint, "message.delete", resource, None, 403, Err(REFUSE_WRITE_AUTHOR));
+        }
+        let home = self.message_home.get(&message_id).cloned();
+        let parent_holds = declared_enclave == self.enclave_id
+            && home
+                .as_ref()
+                .map(|(channel, thread)| channel == &channel_id && thread == &thread_id)
+                .unwrap_or(false);
+        // PRODUCTION CHECK — message.delete parent binding.
+        if !message_delete_parent_allowed(parent_holds) {
+            return self.finish(label, person, fingerprint, "message.delete", resource, None, 403, Err(REFUSE_WRITE_PARENT));
+        }
+
+        let revision = self.message_revision.get(&message_id).copied().unwrap_or(0) + 1;
+        self.ciphertext.insert(message_id.clone(), Vec::new());
+        self.message_revision.insert(message_id.clone(), revision);
+        self.message_deleted.insert(message_id.clone(), true);
+
+        let payload = serde_json::json!({
+            "ok": true,
+            "op": "message.delete",
+            "enclave": declared_enclave,
+            "channel": channel_id,
+            "thread": thread_id,
+            "messageId": message_id,
+            "revision": revision,
+            "deleted": true,
+        });
+        let outcome = self.finish(label, person.clone(), fingerprint, "message.delete", resource, None, 200, Ok(payload));
+        self.with_fanout(
+            outcome,
+            &readers,
+            &person,
+            "message.deleted",
+            serde_json::json!({
+                "channelId": channel_id,
+                "enclave": declared_enclave,
+                "messageId": message_id,
+                "revision": revision,
+            }),
+        )
+    }
+
+    fn op_channel_create(
+        &mut self,
+        label: String,
+        person: String,
+        fingerprint: String,
+        body: &serde_json::Value,
+        resource: String,
+    ) -> Outcome {
+        let declared_enclave = pick(body, "enclaveId");
+        let channel_id = pick(body, "channelId");
+        let creator = pick(body, "creator");
+        let access = pick(body, "access");
+        let named: Vec<String> = body
+            .get("members")
+            .and_then(serde_json::Value::as_array)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
+        if declared_enclave.is_empty() || channel_id.is_empty() || creator.is_empty() || access.is_empty() {
+            return self.finish(label, person, fingerprint, "channel.create", resource, None, 400, Err(REFUSE_BAD_REQUEST));
+        }
+
+        // PRODUCTION CHECK — channel.create membership.
+        if !channel_create_membership_allowed(self.is_current_member(&person)) {
+            return self.finish(label, person, fingerprint, "channel.create", resource, None, 403, Err(REFUSE_WRITE_MEMBERSHIP));
+        }
+        // PRODUCTION CHECK — channel.create role.
+        if !channel_create_role_allowed(self.holds_right(&person, ServerPermission::MakeChannels)) {
+            return self.finish(label, person, fingerprint, "channel.create", resource, None, 403, Err(REFUSE_WRITE_ROLE));
+        }
+        // PRODUCTION CHECK — channel.create author binding.
+        if !channel_create_author_allowed(creator == person) {
+            return self.finish(label, person, fingerprint, "channel.create", resource, None, 403, Err(REFUSE_WRITE_AUTHOR));
+        }
+        // PRODUCTION CHECK — channel.create parent binding.
+        if !channel_create_parent_allowed(declared_enclave == self.enclave_id) {
+            return self.finish(label, person, fingerprint, "channel.create", resource, None, 403, Err(REFUSE_WRITE_PARENT));
+        }
+
+        if self.channels.contains_key(&channel_id) {
+            return self.finish(label, person, fingerprint, "channel.create", resource, None, 400, Err(REFUSE_BAD_REQUEST));
+        }
+        let members = self.member_list();
+        let record = match access.as_str() {
+            "open" => self.threads.set_open_channel(&members, channel_id.clone()),
+            "limited" => self
+                .threads
+                .set_limited_channel(&members, channel_id.clone(), named.clone()),
+            _ => {
+                return self.finish(label, person, fingerprint, "channel.create", resource, None, 400, Err(REFUSE_BAD_REQUEST))
+            }
+        };
+        let record = match record {
+            Ok(record) => record,
+            Err(_) => {
+                return self.finish(label, person, fingerprint, "channel.create", resource, None, 400, Err(REFUSE_BAD_REQUEST))
+            }
+        };
+        self.channel_order.push(channel_id.clone());
+        self.channels.insert(channel_id.clone(), record);
+        self.channel_creator.insert(channel_id.clone(), creator.clone());
+        self.record_enclave
+            .insert(format!("channel:{channel_id}"), declared_enclave.clone());
+
+        let readers = self.channel_readers(&channel_id).unwrap_or_default();
+        let payload = serde_json::json!({
+            "ok": true,
+            "op": "channel.create",
+            "enclave": declared_enclave,
+            "channelId": channel_id,
+            "access": access,
+            "creator": creator,
+            "readers": readers,
+        });
+        let outcome = self.finish(label, person.clone(), fingerprint, "channel.create", resource, None, 200, Ok(payload));
+        self.with_fanout(
+            outcome,
+            &readers,
+            &person,
+            "channel.created",
+            serde_json::json!({
+                "channelId": channel_id,
+                "enclave": declared_enclave,
+            }),
+        )
+    }
+
+    fn op_thread_create(
+        &mut self,
+        label: String,
+        person: String,
+        fingerprint: String,
+        body: &serde_json::Value,
+        resource: String,
+    ) -> Outcome {
+        let declared_enclave = pick(body, "enclaveId");
+        let channel_id = pick(body, "channelId");
+        let thread_id = pick(body, "threadId");
+        let creator = pick(body, "creator");
+        if declared_enclave.is_empty() || channel_id.is_empty() || thread_id.is_empty() || creator.is_empty() {
+            return self.finish(label, person, fingerprint, "thread.create", resource, None, 400, Err(REFUSE_BAD_REQUEST));
+        }
+
+        let readers = self.channel_readers(&channel_id).unwrap_or_default();
+        // PRODUCTION CHECK — thread.create membership.
+        if !thread_create_membership_allowed(readers.iter().any(|name| name == &person)) {
+            return self.finish(label, person, fingerprint, "thread.create", resource, None, 403, Err(REFUSE_WRITE_MEMBERSHIP));
+        }
+        // PRODUCTION CHECK — thread.create role.
+        if !thread_create_role_allowed(self.holds_right(&person, ServerPermission::MakeChannels)) {
+            return self.finish(label, person, fingerprint, "thread.create", resource, None, 403, Err(REFUSE_WRITE_ROLE));
+        }
+        // PRODUCTION CHECK — thread.create author binding.
+        if !thread_create_author_allowed(creator == person) {
+            return self.finish(label, person, fingerprint, "thread.create", resource, None, 403, Err(REFUSE_WRITE_AUTHOR));
+        }
+        // PRODUCTION CHECK — thread.create parent binding.
+        if !thread_create_parent_allowed(
+            declared_enclave == self.enclave_id && self.channels.contains_key(&channel_id),
+        ) {
+            return self.finish(label, person, fingerprint, "thread.create", resource, None, 403, Err(REFUSE_WRITE_PARENT));
+        }
+
+        if self.thread_parent.contains_key(&thread_id) {
+            return self.finish(label, person, fingerprint, "thread.create", resource, None, 400, Err(REFUSE_BAD_REQUEST));
+        }
+        if self
+            .threads
+            .create_thread(self.enclave_id.clone(), channel_id.clone(), thread_id.clone())
+            .is_err()
+        {
+            return self.finish(label, person, fingerprint, "thread.create", resource, None, 400, Err(REFUSE_BAD_REQUEST));
+        }
+        self.thread_parent.insert(thread_id.clone(), channel_id.clone());
+        self.thread_creator.insert(thread_id.clone(), creator.clone());
+        self.record_enclave
+            .insert(format!("thread:{thread_id}"), declared_enclave.clone());
+
+        let payload = serde_json::json!({
+            "ok": true,
+            "op": "thread.create",
+            "enclave": declared_enclave,
+            "channelId": channel_id,
+            "threadId": thread_id,
+            "creator": creator,
+        });
+        let outcome = self.finish(label, person.clone(), fingerprint, "thread.create", resource, None, 200, Ok(payload));
+        self.with_fanout(
+            outcome,
+            &readers,
+            &person,
+            "thread.created",
+            serde_json::json!({
+                "channelId": channel_id,
+                "enclave": declared_enclave,
+                "threadId": thread_id,
+            }),
+        )
+    }
+
+    /// Attaches the delivery queue and the subscriber broadcast a completed
+    /// write produces. Only reached after all four guards have passed, so a
+    /// refused write leaves both empty and the service appends nothing.
+    fn with_fanout(
+        &self,
+        mut outcome: Outcome,
+        readers: &[String],
+        actor: &str,
+        event: &str,
+        detail: serde_json::Value,
+    ) -> Outcome {
+        if outcome.status != 200 {
+            return outcome;
+        }
+        let recipients: Vec<String> = readers
+            .iter()
+            .filter(|name| name.as_str() != actor)
+            .cloned()
+            .collect();
+        for recipient in &recipients {
+            let mut line = detail.clone();
+            if let Some(object) = line.as_object_mut() {
+                object.insert("event".to_owned(), serde_json::json!(event));
+                object.insert("recipient".to_owned(), serde_json::json!(recipient));
+                object.insert("seq".to_owned(), serde_json::json!(outcome.audit.seq));
+            }
+            outcome.queued.push(line);
+        }
+        let mut published = detail;
+        if let Some(object) = published.as_object_mut() {
+            object.insert("event".to_owned(), serde_json::json!(event));
+            object.insert("actor".to_owned(), serde_json::json!(actor));
+            object.insert("recipients".to_owned(), serde_json::json!(recipients.len()));
+            object.insert("seq".to_owned(), serde_json::json!(outcome.audit.seq));
+        }
+        outcome.broadcast.push(published);
+        outcome
+    }
+
     // -- shared ------------------------------------------------------------
 
     fn render_messages(&self, ids: Vec<String>) -> Vec<serde_json::Value> {
@@ -931,7 +1604,13 @@ impl ChatsAuthority {
             rights_after,
             response_bytes: body.len(),
         };
-        Outcome { status, body, audit }
+        Outcome {
+            status,
+            body,
+            audit,
+            queued: Vec::new(),
+            broadcast: Vec::new(),
+        }
     }
 
     pub fn audit_only(
@@ -948,16 +1627,27 @@ impl ChatsAuthority {
     }
 }
 
+fn pick(body: &serde_json::Value, key: &str) -> String {
+    body.get(key)
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_owned()
+}
+
+fn pick_opt(body: &serde_json::Value, key: &str) -> Option<String> {
+    body.get(key)
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
 fn request_resource(op: &str, body: &serde_json::Value) -> String {
-    let pick = |key: &str| {
-        body.get(key)
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default()
-            .to_owned()
-    };
+    let pick = |key: &str| pick(body, key);
     match op {
-        "blob.fetch" => pick("messageId"),
+        "blob.fetch" | "message.create" | "message.edit" | "message.delete" => pick("messageId"),
         "role.grant" => pick("target"),
+        "channel.create" => pick("channelId"),
+        "thread.create" => pick("threadId"),
         _ => {
             let thread = pick("threadId");
             if thread.is_empty() {
