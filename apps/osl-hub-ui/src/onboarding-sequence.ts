@@ -14,7 +14,6 @@ export const ONBOARDING_SEQUENCE = [
   "defaults",
   "sending",
   "cover",
-  "silent-visible",
   "visibility",
   "passwords",
   "burnpass",

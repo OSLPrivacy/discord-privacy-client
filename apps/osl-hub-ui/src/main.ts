@@ -34,6 +34,7 @@ import { onboardingPasswordRoleContent as passwordRoleContent } from "./password
 import { backOnboardingPasswordRole, canSetOnboardingPasswordRole, continueOnboardingPasswordRole, skipOnboardingPasswordRole, togglePasswordVisibility, type OnboardingPasswordRoleValues } from "./onboarding-password-role";
 import { chooseTorRoute, initialTorOnboardingState, onboardingTorMarkup, type TorOnboardingState } from "./onboarding-tor";
 import { chooseCoverInsertion, initialCoverInsertionChoice, onboardingCoverMarkup, type CoverInsertionChoice } from "./onboarding-cover";
+import { applyFriendingVisibilityPreset, friendingVisibilityAllows, friendingVisibilityMarkup, loadFriendingVisibility, saveFriendingVisibility, secondIdentityFriendingResultCount, setFriendingVisibilitySwitch, type FriendingVisibilityAction, type FriendingVisibilityPreset, type FriendingVisibilityState, type FriendingVisibilitySwitch } from "./friending-visibility";
 import { continueButton } from "./onboarding-controls";
 import { CLEAN_FILES_CHOICES, initialBeforeSendChecks, onboardingBeforeSendMarkup, type BeforeSendChecks, type CleanFilesChoice } from "./onboarding-before-send";
 import { initialDeleteChoices, onboardingDeleteMarkup, type DeleteChoices } from "./onboarding-delete";
@@ -353,8 +354,8 @@ const NATIVE_DISCORD_COMPOSER_UNREACHABLE_EVENT = "osl://native-discord-composer
 // warning.
 const NATIVE_DISCORD_COMPOSER_UNREACHABLE_REASONS = ["zorder-band", "keyboard-focus", "session-ended"] as const;
 type NativeDiscordComposerUnreachableReason = (typeof NATIVE_DISCORD_COMPOSER_UNREACHABLE_REASONS)[number];
-type OnboardingRoute = "pro" | "welcome" | "create" | "import" | "unlock" | "keylost" | "account-recovery" | "recovery" | "identity-choice" | "private-link" | "mullvad" | "sending" | "defaults" | "tor" | "forward-secrecy" | "cover" | "passwords" | "burnpass" | "privacy" | "tutorial" | "detected" | "install" | "apps" | "browser" | "decoy";
-type SettingsSection = "account" | "export" | "apps" | "scrub" | "cleanup" | "notifications" | "appearance" | "about" | "release-capabilities";
+type OnboardingRoute = "pro" | "welcome" | "create" | "import" | "unlock" | "keylost" | "account-recovery" | "recovery" | "identity-choice" | "private-link" | "mullvad" | "sending" | "defaults" | "tor" | "forward-secrecy" | "cover" | "visibility" | "passwords" | "burnpass" | "privacy" | "tutorial" | "detected" | "install" | "apps" | "browser" | "decoy";
+type SettingsSection = "account" | "export" | "apps" | "privacy" | "scrub" | "cleanup" | "notifications" | "appearance" | "about" | "release-capabilities";
 type SavedAccountMode = "ask" | "use" | "clean";
 type BurnScope = "chat" | "app" | "account";
 type BurnResult = {
@@ -498,6 +499,7 @@ const recoveryKitUnsavedFlag = createRecoveryKitUnsavedFlag({
   write: (unsaved) => setHubRecoveryKitUnsaved(unsaved),
 });
 let settingsSection: SettingsSection = "account";
+let friendingVisibility: FriendingVisibilityState = loadFriendingVisibility(localStorage);
 let accountExportState: AccountExportState = { kind: "idle" };
 let activeService: LinkedService | null = null;
 let activeHomeAppId: HomeAppId | null = null;
@@ -1959,7 +1961,7 @@ function dockOnboardingBackControl(): void {
 }
 
 function onboardingSetupNavigationMarkup(): string {
-  return ["pro", "forward-secrecy", "privacy", "defaults", "tor", "sending", "cover", "passwords", "burnpass", "browser", "detected", "install", "apps", "mullvad"].includes(onboardingRoute)
+  return ["pro", "forward-secrecy", "privacy", "defaults", "tor", "sending", "cover", "visibility", "passwords", "burnpass", "browser", "detected", "install", "apps", "mullvad"].includes(onboardingRoute)
     ? `<div class="setup-footer onboarding-actions onboarding-nav"><button class="button ghost onboarding-back" id="onboarding-back" type="button">Back</button></div>`
     : "";
 }
@@ -2025,6 +2027,7 @@ function onboardingContent(): string {
   if (onboardingRoute === "tor") return onboardingTorMarkup(torOnboarding);
   if (onboardingRoute === "forward-secrecy") return onboardingForwardSecrecyMarkup(forwardSecrecyOnboarding);
   if (onboardingRoute === "cover") return coverDraftSetupContent();
+  if (onboardingRoute === "visibility") return friendingVisibilityMarkup(friendingVisibility, "onboarding");
   if (onboardingRoute === "passwords") return onboardingPasswordRoleContent("stealth");
   if (onboardingRoute === "burnpass") return onboardingPasswordRoleContent("burn");
   if (onboardingRoute === "privacy") return onboardingPrivacyContent();
@@ -3131,6 +3134,27 @@ async function chooseNoPublicName(): Promise<void> {
   render();
 }
 
+function persistFriendingVisibility(next: FriendingVisibilityState): void {
+  friendingVisibility = next;
+  saveFriendingVisibility(localStorage, friendingVisibility);
+}
+
+/** Both rendered copies call this one binding and therefore one Settings store. */
+function bindFriendingVisibilityControls(): void {
+  document.querySelectorAll<HTMLInputElement>("[data-friending-visibility-switch]").forEach((input) => input.addEventListener("change", () => {
+    const key = input.dataset.friendingVisibilitySwitch;
+    if (!key || !["findableByPublicUsername", "friendRequestsAllowed", "messageRequestsAllowed", "profileViewable"].includes(key)) return;
+    persistFriendingVisibility(setFriendingVisibilitySwitch(friendingVisibility, key as FriendingVisibilitySwitch, input.checked));
+    render();
+  }));
+  document.querySelectorAll<HTMLButtonElement>("[data-friending-visibility-preset]").forEach((button) => button.addEventListener("click", () => {
+    const preset = button.dataset.friendingVisibilityPreset;
+    if (preset !== "SILENT" && preset !== "VISIBLE") return;
+    persistFriendingVisibility(applyFriendingVisibilityPreset(friendingVisibility, preset as FriendingVisibilityPreset));
+    render();
+  }));
+}
+
 function bindOnboarding(): void {
   document.querySelectorAll<HTMLButtonElement>("[data-onboarding]").forEach((button) => button.addEventListener("click", () => {
     onboardingRoute = onboardingRouteForBuild(button.dataset.onboarding as OnboardingRoute);
@@ -3451,7 +3475,9 @@ function bindOnboarding(): void {
       render();
     }
   }));
-  document.querySelector("#continue-cover-draft")?.addEventListener("click", () => { onboardingRoute = "passwords"; render(); });
+  document.querySelector("#continue-cover-draft")?.addEventListener("click", () => { onboardingRoute = "visibility"; render(); });
+  bindFriendingVisibilityControls();
+  document.querySelector<HTMLButtonElement>("#continue-friending-visibility")?.addEventListener("click", () => { onboardingRoute = "passwords"; render(); });
   bindOnboardingPasswordRole();
   document.querySelectorAll<HTMLButtonElement>("button[data-password-role-next]").forEach((button) => button.addEventListener("click", () => {
     onboardingRoute = button.dataset.passwordRoleNext as OnboardingRoute;
@@ -5782,7 +5808,7 @@ function serviceGuideContent(service: LinkedService, step: ServiceGuideStep): st
 }
 
 function settingsContent(): string {
-  const items: Array<[SettingsSection, string]> = [["account", "Account"], ["export", "Export my data"], ["apps", "Apps"], ["scrub", "Scrub"], ["cleanup", "Cleanup"], ["notifications", "Notifications"], ["appearance", "Appearance"], ["about", "About"], ["release-capabilities", "Release capabilities"]];
+  const items: Array<[SettingsSection, string]> = [["account", "Account"], ["export", "Export my data"], ["apps", "Apps"], ["privacy", "Privacy"], ["scrub", "Scrub"], ["cleanup", "Cleanup"], ["notifications", "Notifications"], ["appearance", "Appearance"], ["about", "About"], ["release-capabilities", "Release capabilities"]];
   // These buttons pick a section WITHIN Settings, so they are not `page`.
   // Settings itself is the page, and the primary sidebar already marks it
   // `aria-current="page"`; marking a section button the same way put two
@@ -5796,6 +5822,7 @@ function settingsSectionContent(): string {
   if (settingsSection === "account") return `${identitySettingsContent()}${settingsDivider()}${passwordSecuritySettingsContent({ bootstrapStatus: core.readiness.bootstrapStatus, passwordRoleStatus }, passwordEyeIcon)}${accountAdvancedSettingsContent()}${renderRecoveryStatesSettings()}`;
   if (settingsSection === "export") return accountExportSettingsContent(accountExportState);
   if (settingsSection === "apps") return `${serviceAccountsSettingsContent()}${optionalComponentsSettingsContent()}${sendingSettingsContent()}`;
+  if (settingsSection === "privacy") return friendingVisibilityMarkup(friendingVisibility, "settings");
   if (settingsSection === "scrub") return privacySettingsContent({
     proActive: licenseState.access === "pro" || licenseState.access === "offlineGrace",
     scanBusy: privacyScanBusy,
@@ -7612,6 +7639,7 @@ function bindWorkspace(): void {
   bindPasswordVisibility();
   bindLocalProtectedSheet();
   bindSavedAccountControls();
+  bindFriendingVisibilityControls();
   document.querySelectorAll<HTMLButtonElement>("[data-osl-chat-open]").forEach((button) => button.addEventListener("click", () => {
     void openOslChat(button.dataset.oslChatOpen ?? "");
   }));
