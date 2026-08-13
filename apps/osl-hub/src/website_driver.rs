@@ -149,6 +149,9 @@ pub struct MessengerPrivateComposerState {
     pub private_bytes: usize,
     pub counter_text: String,
     pub messenger_composer_characters: usize,
+    /// Whether the carrier composer is still the initial measurement or was
+    /// freshly rebound from the original conversation evidence.
+    pub composer_repair: String,
 }
 
 /// Classifies an already-open browser conversation from canonical service URL
@@ -263,6 +266,9 @@ pub enum WebsiteDriverError {
     TextPlacementFailed,
     NamedControlNotFound,
     PageUnavailable,
+    MessengerComposerNotFound,
+    MessengerComposerMoved,
+    MessengerComposerAmbiguous,
 }
 
 impl fmt::Display for WebsiteDriverError {
@@ -276,6 +282,11 @@ impl fmt::Display for WebsiteDriverError {
             Self::TextPlacementFailed => "website text could not be placed",
             Self::NamedControlNotFound => "website named control was not found",
             Self::PageUnavailable => "website page is unavailable",
+            Self::MessengerComposerNotFound => "Messenger composer was not found",
+            Self::MessengerComposerMoved => "Messenger composer moved and could not be repaired",
+            Self::MessengerComposerAmbiguous => {
+                "Messenger composer is ambiguous; refusing to guess"
+            }
         })
     }
 }
@@ -714,6 +725,14 @@ fn read_messenger_private_composer_state(
     expression: &str,
 ) -> Result<MessengerPrivateComposerState, WebsiteDriverError> {
     let value = evaluate_target(websocket_url, expression)?;
+    if let Some(refusal) = value.get("refusal").and_then(serde_json::Value::as_str) {
+        return Err(match refusal {
+            "messenger_composer_not_found" => WebsiteDriverError::MessengerComposerNotFound,
+            "messenger_composer_moved" => WebsiteDriverError::MessengerComposerMoved,
+            "messenger_composer_ambiguous" => WebsiteDriverError::MessengerComposerAmbiguous,
+            _ => WebsiteDriverError::ReadFailed,
+        });
+    }
     serde_json::from_value(value).map_err(|_| WebsiteDriverError::ReadFailed)
 }
 
@@ -916,34 +935,68 @@ const INSTALL_MESSENGER_PRIVATE_COMPOSER_EXPRESSION: &str = r#"
 (() => {
   const expectedName = __OSL_COMPOSER_NAME__;
   if (document.getElementById('osl-messenger-private-composer')) {
-    return window.__oslMessengerPrivateComposerState?.() || null;
+    return window.__oslMessengerPrivateComposerState?.() || { refusal: 'messenger_composer_moved' };
   }
   const compact = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+  const visible = (element) => {
+    if (!element || !element.isConnected || element.hidden || element.getAttribute('aria-hidden') === 'true') return false;
+    const style = window.getComputedStyle(element);
+    return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0' && element.getClientRects().length > 0;
+  };
   const nameOf = (element) => compact(
     element.getAttribute('aria-label') || element.getAttribute('placeholder') || element.getAttribute('title')
   );
-  const candidates = document.querySelectorAll(
+  const allCandidates = () => Array.from(document.querySelectorAll(
     '[data-osl-messenger-composer="active"], [data-osl-composer], [contenteditable="true"][role="textbox"], textarea[role="textbox"], input[role="textbox"], [role="textbox"]'
+  ));
+  const initiallyMeasured = allCandidates().filter((element) =>
+    visible(element) && nameOf(element) === expectedName && !element.disabled && !element.readOnly
   );
-  const composer = Array.from(candidates).find((element) =>
-    nameOf(element) === expectedName && !element.disabled && !element.readOnly
-  );
-  if (!composer) return null;
+  if (initiallyMeasured.length === 0) return { refusal: 'messenger_composer_not_found' };
+  if (initiallyMeasured.length !== 1) return { refusal: 'messenger_composer_ambiguous' };
+  let composer = initiallyMeasured[0];
+  // The original discovery admitted a visible, editable textbox in the active
+  // conversation. Retain that conversation root as evidence; repair never
+  // widens to a similarly named box elsewhere in the page.
+  const conversationRoot = composer.closest('[data-osl-active-conversation="true"], [data-active-conversation="true"], [role="main"]');
+  const candidateFromInitialEvidence = (element) =>
+    visible(element) &&
+    element.getAttribute('role') === 'textbox' &&
+    !!nameOf(element) &&
+    !/search/i.test(nameOf(element)) &&
+    (!conversationRoot || conversationRoot.contains(element));
+  let repair = 'unchanged';
 
-  const contentEditableComposer = composer.isContentEditable;
-  const composerValue = () => contentEditableComposer ? composer.textContent : composer.value;
-  const clearMessenger = () => {
-    if (contentEditableComposer) composer.textContent = '';
-    else composer.value = '';
-    composer.dispatchEvent(new Event('input', { bubbles: true }));
+  const lockComposer = (element) => {
+    const contentEditableComposer = element.isContentEditable;
+    const clear = () => {
+      if (contentEditableComposer) element.textContent = '';
+      else element.value = '';
+      element.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    clear();
+    element.setAttribute('data-osl-private-lock', 'true');
+    element.setAttribute('aria-disabled', 'true');
+    element.style.pointerEvents = 'none';
+    if (contentEditableComposer) element.setAttribute('contenteditable', 'false');
+    else element.readOnly = true;
+    return { clear, characters: () => Array.from(contentEditableComposer ? element.textContent : element.value || '').length };
   };
-  const messengerCharacters = () => Array.from(composerValue() || '').length;
-  clearMessenger();
-  composer.setAttribute('data-osl-private-lock', 'true');
-  composer.setAttribute('aria-disabled', 'true');
-  composer.style.pointerEvents = 'none';
-  if (contentEditableComposer) composer.setAttribute('contenteditable', 'false');
-  else composer.readOnly = true;
+  let locked = lockComposer(composer);
+
+  // A rename/remount is checked before every private-box action. Re-discovery
+  // uses the same textbox and conversation evidence as initial measurement,
+  // requires exactly one candidate, and records no provider text.
+  const ensureComposer = () => {
+    if (composer.isConnected && visible(composer) && nameOf(composer) === expectedName) return null;
+    const candidates = allCandidates().filter(candidateFromInitialEvidence);
+    if (candidates.length === 0) return 'messenger_composer_not_found';
+    if (candidates.length !== 1) return 'messenger_composer_ambiguous';
+    composer = candidates[0];
+    locked = lockComposer(composer);
+    repair = 'repaired';
+    return null;
+  };
 
   const box = document.createElement('section');
   box.id = 'osl-messenger-private-composer';
@@ -960,19 +1013,26 @@ const INSTALL_MESSENGER_PRIVATE_COMPOSER_EXPRESSION: &str = r#"
   const privateText = box.querySelector('#osl-messenger-private-text');
   const count = box.querySelector('#osl-messenger-private-count');
   const update = () => {
-    clearMessenger();
+    const refusal = ensureComposer();
+    if (refusal) return refusal;
+    locked.clear();
     count.textContent = `${new TextEncoder().encode(privateText.value).length} bytes`;
+    return null;
   };
-  privateText.addEventListener('input', update);
+  privateText.addEventListener('input', () => {
+    window.__oslMessengerPrivateComposerRefusal = update();
+  });
   window.__oslMessengerPrivateComposerState = () => ({
     locked: composer.getAttribute('data-osl-private-lock') === 'true',
     privateBoxVisible: document.body.contains(box),
     privateBytes: new TextEncoder().encode(privateText.value).length,
     counterText: count.textContent,
-    messengerComposerCharacters: messengerCharacters()
+    messengerComposerCharacters: locked.characters(),
+    composerRepair: repair
   });
-  update();
-  return window.__oslMessengerPrivateComposerState();
+  const refusal = update();
+  window.__oslMessengerPrivateComposerRefusal = refusal;
+  return refusal ? { refusal } : window.__oslMessengerPrivateComposerState();
 })()
 "#;
 
@@ -982,7 +1042,13 @@ const WRITE_MESSENGER_PRIVATE_TEXT_EXPRESSION: &str = r#"
   if (!privateText || !window.__oslMessengerPrivateComposerState) return null;
   privateText.value = __OSL_TEXT__;
   privateText.dispatchEvent(new Event('input', { bubbles: true }));
-  return window.__oslMessengerPrivateComposerState();
+  // The event handler checks and repairs the carrier before this readback. A
+  // refusal remains explicit so Rust never treats a stale visual as success.
+  const refusal = window.__oslMessengerPrivateComposerRefusal;
+  if (refusal) return { refusal };
+  const state = window.__oslMessengerPrivateComposerState();
+  if (!state.locked) return { refusal: 'messenger_composer_moved' };
+  return state;
 })()
 "#;
 
