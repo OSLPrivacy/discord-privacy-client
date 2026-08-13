@@ -47,6 +47,9 @@ pub mod burned_scopes_file;
 /// The machine-readable catalogue of OSL-central moderation systems that must
 /// not exist, read by the TASK 6594 central-absence sweep.
 pub mod central_moderation_needles;
+/// The deployed OSL Chats authorization authority: the server-side half of the
+/// enclave permission model that `server_membership` and `spaces` describe.
+pub mod chats_service_authority;
 pub mod cipher_store_client;
 pub mod commands;
 pub mod control_inbox_dead_letter;
@@ -56,6 +59,13 @@ pub mod decoy_mp4;
 pub mod destruct_ack;
 pub mod email_send_modes;
 pub mod email_whitelist_kinds;
+/// Signed, customisable Enclave categories, channels, modes and per-role
+/// permission overrides, with one deterministic access resolver.
+pub mod enclave_layout;
+/// Least-privilege bot principals, exact per-channel READ/POST/COMMANDS
+/// grants, human-signed command initiation, and bot-signed responses.
+pub mod enclave_bot_permissions;
+pub mod enclave_leave;
 pub mod enclave_removal;
 /// Enclave-scoped custom roles, the KEY/RELAY/TRUST permission catalogue, one
 /// resolver, and the signed instructions an Enclave's own people use to
@@ -102,6 +112,7 @@ pub mod revocation;
 // 9-C1: `pending_invitations` module removed alongside the
 // invitation handshake. Pre-C1 `pending_invitations.json` files are
 // unconditionally deleted at bootstrap.
+pub mod metered_bytes;
 pub mod production_kind_admission;
 pub mod scope;
 pub mod scope_blobs_file;
@@ -110,7 +121,6 @@ pub mod screen_words;
 pub mod server_membership;
 pub mod shipping_email;
 pub mod space_roster;
-pub mod metered_bytes;
 // Unit a45: encrypted UI-side storage contract (checklist A6). Defines the
 // `SecureLocalStore` trait + `SealedStore` reference impl; does not migrate
 // any caller yet (`apps/osl-hub-ui/src/main.ts` localStorage call sites and
@@ -144,6 +154,13 @@ pub mod wire_rn;
 // OSL-RN per-peer health state. Kept separate from ratchet sessions so a
 // recovery delete cannot erase the durable fact that a peer desynchronised.
 pub mod rn_health;
+
+/// TASK 6856 acceptance check for customisable Enclave categories, channels,
+/// modes and overrides. It lives beside the crate rather than in `tests/`
+/// because `cargo test -p ipc --lib` builds only this crate's library, which
+/// keeps the check independent of the crate's binary targets.
+#[cfg(test)]
+mod task_6856_enclave_layout;
 
 // A handful of things this crate reaches for are genuinely process-global:
 // `keystore::set_base_dir_override` / `set_active_account_dir` (an `RwLock`
