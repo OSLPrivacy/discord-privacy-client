@@ -10,6 +10,7 @@
 pub enum ShippingService {
     Discord,
     OslChats,
+    Signal,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -23,6 +24,14 @@ impl<P> ArrivedMessageRow<P> {
     pub fn osl_chats(carrier_row_id: impl Into<String>, payload: P) -> Self {
         Self {
             service: ShippingService::OslChats,
+            carrier_row_id: carrier_row_id.into(),
+            payload,
+        }
+    }
+
+    pub fn signal(carrier_row_id: impl Into<String>, payload: P) -> Self {
+        Self {
+            service: ShippingService::Signal,
             carrier_row_id: carrier_row_id.into(),
             payload,
         }

@@ -245,6 +245,8 @@ pub mod services;
 #[cfg(feature = "core")]
 pub mod signal_message_reader;
 #[cfg(feature = "core")]
+pub mod signal_eye_control;
+#[cfg(feature = "core")]
 pub mod signal_place_reader;
 #[cfg(feature = "core")]
 pub mod signal_scroll_reader;

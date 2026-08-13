@@ -46,7 +46,7 @@ where
     T: CipherStoreTransport,
     S: LocalMessageStore,
 {
-    route_osl_chat_arrival(pointer.blob_id_hex(), pointer.clone(), journal, |row| {
+    route_osl_chat_arrival(pointer.blob_id.clone(), pointer.clone(), journal, |row| {
         driver.on_pointer_arrival(&row.payload)
     })
 }
