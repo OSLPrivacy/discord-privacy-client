@@ -178,6 +178,8 @@ pub mod shared_conversation_scroll;
 pub mod shared_mail_body_reader;
 #[cfg(feature = "core")]
 pub mod shipping_gmail_mailbox_receive;
+#[cfg(feature = "core")]
+pub mod shipping_mailbox_pointer_reader;
 pub mod tor_pref;
 #[cfg(feature = "core")]
 pub mod shipping_outlook_web_mailbox_receive;
