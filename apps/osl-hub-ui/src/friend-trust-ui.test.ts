@@ -45,6 +45,8 @@ describe("friend trust UI", () => {
     // The upgrade is a trust regression and has to be said out loud.
     expect(copy.invalidationNotice).toMatch(/cleared/i);
     expect(copy.invalidationNotice).toMatch(/verified again/i);
+    expect(copy.invalidationNotice).toMatch(/new device or an attack/i);
+    expect(copy.consequence).toMatch(/must match exactly/i);
     expect(copy.consequence).toMatch(/does not turn on decryption/i);
 
     // No number yet is stated, never faked with placeholder digits.

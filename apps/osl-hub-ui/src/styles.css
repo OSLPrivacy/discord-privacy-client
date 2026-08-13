@@ -7889,7 +7889,6 @@ code {
   margin-top: 20px;
   align-self: center;
 }
-
 /* Contextual help stays in normal flow: it never covers or disables the
    control it describes, and removing it leaves that control usable. */
 .coach-tip {
@@ -7911,3 +7910,8 @@ code {
 @media (max-width: 640px) {
   .coach-tip { flex-direction: column; }
 }
+.safety-number-panel { display: grid; gap: 12px; margin: 12px 0; }
+.safety-number-panel .verification-code { letter-spacing: .08em; font-variant-numeric: tabular-nums; white-space: normal; }
+.safety-number-scannable { width: min(100%, 260px); padding: 10px; background: white; border: 1px solid var(--line); }
+.safety-number-qr { display: block; width: 100%; height: auto; }
+.verification-code-unavailable { padding: 12px; border: 1px solid var(--warn); background: var(--panel-2); }

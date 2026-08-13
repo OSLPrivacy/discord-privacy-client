@@ -252,8 +252,8 @@ export function friendVerificationCopy(
     heading: `Your verification code for ${alias ?? "this friend"}. Their device shows this same code:`,
     code: safetyNumber && safetyNumber.length > 0 ? safetyNumber : "Unavailable",
     instruction: "Ask your friend to read out the code on their screen, over a channel that is not this app, and type it here",
-    consequence: "The codes match only if you are talking to the device OSL holds keys for. Accepting lets OSL encrypt to that key. It does not turn on decryption in any chat or approve any conversation.",
-    invalidationNotice: "Verifications recorded by earlier versions of OSL have been cleared. Those compared a code OSL generated against itself, so they proved nothing; every friend has to be verified again.",
+    consequence: "The code must match exactly: the codes match only if you are talking to the device OSL holds keys for. Accepting lets OSL encrypt to that key. It does not turn on decryption in any chat or approve any conversation.",
+    invalidationNotice: "A changed key can mean a new device or an attack. Verifications recorded by earlier versions of OSL have been cleared. Those compared a code OSL generated against itself, so they proved nothing; every friend has to be verified again.",
   };
 }
 

@@ -591,17 +591,16 @@ struct PeopleFile {
 
 /// Schema version of `hub_people.json`.
 ///
-/// Version 3 is the first version in which `safety_number_verified` means what
-/// it says. Every earlier file recorded verifications made against a one-sided
-/// number — a value OSL generated and then compared against itself — so those
-/// flags record only that a button was pressed. They are cleared on load, not
-/// migrated: there is nothing in them to carry forward.
-const PEOPLE_SCHEMA_VERSION: u32 = 3;
+/// Version 4 is the first schema whose verification claims cover the full
+/// 60-digit bilateral safety number. Earlier claims either used a one-sided
+/// number or the retired 30-digit bilateral format, so they are cleared on
+/// load rather than migrated: there is nothing in them to carry forward.
+const PEOPLE_SCHEMA_VERSION: u32 = 4;
 
 /// The sole definition of a verified peer in the Hub.
 ///
-/// Pre-v3 files contain a self-referential ceremony result, never a bilateral
-/// verification, and a pending key change invalidates any earlier result.
+/// Pre-v4 files do not prove comparison of the current full bilateral number,
+/// and a pending key change invalidates any earlier result.
 pub fn peer_is_verified(
     people_schema_version: u32,
     safety_number_verified: bool,
@@ -610,7 +609,7 @@ pub fn peer_is_verified(
     people_schema_version >= PEOPLE_SCHEMA_VERSION && safety_number_verified && !pending_key_change
 }
 
-/// Load `hub_people.json`, invalidating pre-v3 verification claims.
+/// Load `hub_people.json`, invalidating pre-v4 verification claims.
 ///
 /// Every read of the People file goes through here so no caller can observe the
 /// stale flags. The clear happens in memory **before** the write, so a crash or
@@ -4989,16 +4988,16 @@ fn safety_number_matches(expected: &str, supplied: &str) -> bool {
     let expected = normalise_safety_number(expected);
     let supplied = normalise_safety_number(supplied);
     let comparison_value = |digits: &str| {
-        let mut value = [0u8; 32];
-        for (slot, digit) in value[..30].iter_mut().zip(digits.bytes()) {
+        let mut value = [0u8; 64];
+        for (slot, digit) in value[..60].iter_mut().zip(digits.bytes()) {
             *slot = digit;
         }
         let length = u16::try_from(digits.len()).unwrap_or(u16::MAX);
-        value[30..].copy_from_slice(&length.to_be_bytes());
+        value[62..].copy_from_slice(&length.to_be_bytes());
         value
     };
     let equal = ipc::revocation::ct_eq(&comparison_value(&expected), &comparison_value(&supplied));
-    equal && expected.len() == 30 && supplied.len() == 30
+    equal && expected.len() == 60 && supplied.len() == 60
 }
 
 /// Which friend does this DM-kind scope belong to, as far as OSL can prove?
@@ -6970,24 +6969,24 @@ mod tests {
 
     #[test]
     fn safety_number_comparison_requires_the_complete_number_but_ignores_grouping() {
-        let expected = "12345 67890 12345 67890 12345 67890";
+        let expected = "12345 67890 12345 67890 12345 67890 12345 67890 12345 67890 12345 67890";
         assert!(!safety_number_matches(
             expected,
-            "12345 67890 12345 67890 12345 67891"
+            "12345 67890 12345 67890 12345 67890 12345 67890 12345 67890 12345 67891"
         ));
         assert!(safety_number_matches(
             expected,
-            "123-456\n789 012 345-678-901-234-567-890"
+            "123-456\n789 012 345-678-901-234-567-890-123-456-789-012-345-678-901-234-567-890"
         ));
         assert!(!safety_number_matches(expected, ""));
-        assert!(!safety_number_matches("", "123456789012345678901234567890"));
+        assert!(!safety_number_matches("", "123456789012345678901234567890123456789012345678901234567890"));
         assert!(!safety_number_matches(
             expected,
-            "12345678901234567890123456789"
+            "12345678901234567890123456789012345678901234567890123456789"
         ));
         assert!(!safety_number_matches(
             expected,
-            "1234567890123456789012345678901"
+            "1234567890123456789012345678901234567890123456789012345678901"
         ));
     }
 
@@ -7060,7 +7059,7 @@ mod tests {
                 .chars()
                 .filter(char::is_ascii_digit)
                 .count(),
-            30,
+            60,
         );
         assert!(!on_alice.safety_number_verified);
         assert!(!on_bob.safety_number_verified);
@@ -7106,7 +7105,7 @@ mod tests {
             .safety_number_verified
         );
 
-        // Refusals. A different pair's real 30-digit number, and a single
+        // Refusals. A different pair's real 60-digit number, and a single
         // altered digit, are both rejected — and neither marks anyone verified.
         use_device(&carol_dir);
         let mut altered = normalise_safety_number(&on_carol.safety_number).into_bytes();

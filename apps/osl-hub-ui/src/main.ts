@@ -210,6 +210,7 @@ import { applyOslChatDraftToElement, firstPartyOslSurfaceContract, OSL_CHAT_KEY_
 import { createOslChatDeliveryRuntime, mergeOslChatTimeline, oslChatHistoryMessages, receivedOslChatBatchMessage, type OslChatDeliveryHost } from "./osl-chat-runtime";
 import { createOslChatTypingController, OSL_CHAT_TYPING_INCOMING_EVENT, OSL_CHAT_TYPING_OUTGOING_EVENT, type OslChatTypingPreferences, type OslChatTypingSignal } from "./typing-indicator";
 import { peopleReverificationNoticeMarkup } from "./people-reverification-notice";
+import { safetyNumberPanelMarkup } from "./safety-number-panel";
 import { parseEnclaveAudience, type EnclaveAudience } from "./osl-collab";
 import { addFriendFailureStatus, bindFriendRemovalControls, bindMainWindowFocusChanges, friendHandshakeDetail, friendHandshakeSummary, friendInviteCardMarkup, friendRemovalButtonMarkup, friendTrustAction, friendVerificationCopy, inviteCopyFailureToast, onboardingPaintDecision, ownedConfirmationSubmitDisabled, RecoveryCaptureGate, removeHubFriend, shouldClearRemovedFriendChat, verificationSubmission, type FriendVerificationCopy } from "./ui-behavior";
 import { runRecoveryReveal, submitsRecoveryReveal } from "./recovery-reveal";
@@ -5729,7 +5730,7 @@ function burnDialogMarkup(): string {
 }
 
 function verificationDialogMarkup(copy: FriendVerificationCopy): string {
-  return `<p>${escapeHtml(copy.heading)}</p><code class="verification-code" aria-label="Shared verification code for this friend">${escapeHtml(copy.code)}</code><label class="owned-confirmation-entry" for="friend-verification-input"><span>${escapeHtml(copy.instruction)}</span><input id="friend-verification-input" autocomplete="off" spellcheck="false" inputmode="numeric" autocapitalize="none" maxlength="96" placeholder="Spaces and grouping do not matter"/></label><p>${escapeHtml(copy.consequence)}</p><p>${escapeHtml(copy.invalidationNotice)}</p>`;
+  return `<p>${escapeHtml(copy.heading)}</p>${safetyNumberPanelMarkup(copy.code)}<label class="owned-confirmation-entry" for="friend-verification-input"><span>${escapeHtml(copy.instruction)}</span><input id="friend-verification-input" autocomplete="off" spellcheck="false" inputmode="numeric" autocapitalize="none" maxlength="96" placeholder="Spaces and grouping do not matter"/></label><p>${escapeHtml(copy.consequence)}</p><p>${escapeHtml(copy.invalidationNotice)}</p>`;
 }
 
 function ownedConfirmationMarkup(): string {

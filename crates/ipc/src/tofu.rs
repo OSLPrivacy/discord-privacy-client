@@ -14,14 +14,14 @@
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+use sha2::{Digest, Sha256, Sha512};
 
 const SAFETY_NUMBER_DOMAIN: &[u8] = b"OSL-SAFETY-NUMBER-v2";
-const SAFETY_NUMBER_DOMAIN_V3: &[u8] = b"OSL-SAFETY-NUMBER-v3";
+const SAFETY_NUMBER_DOMAIN_V4: &[u8] = b"OSL-SAFETY-NUMBER-v4";
 
-/// Six groups of five decimal digits, the shape both devices display and the
+/// Twelve groups of five decimal digits, the shape both devices display and the
 /// shape `safety_number_matches` compares.
-const SAFETY_NUMBER_GROUPS: usize = 6;
+const SAFETY_NUMBER_GROUPS: usize = 12;
 /// Bytes consumed per displayed group. Five bytes (40 bits) reduced mod 100000
 /// is Signal's `DisplayableFingerprint` chunk encoding: 40 bits into a 5-digit
 /// decimal group leaves a bias below 2^-23, so all 100000 values are reachable
@@ -146,7 +146,7 @@ fn derive_bundle_safety_number(bundle: &KeyBundle) -> Result<String, &'static st
 ///
 /// Decoding first is what makes the number representation-independent: two
 /// devices that base64 the same key with different padding still agree.
-fn absorb_canonical_bundle(hasher: &mut Sha256, bundle: &KeyBundle) -> Result<(), &'static str> {
+fn absorb_canonical_bundle<D: Digest>(hasher: &mut D, bundle: &KeyBundle) -> Result<(), &'static str> {
     for encoded in [
         Some(bundle.ed25519_pub.as_str()),
         Some(bundle.x25519_pub.as_str()),
@@ -174,7 +174,7 @@ pub fn validate_key_bundle(bundle: &KeyBundle) -> Result<(), &'static str> {
     absorb_canonical_bundle(&mut hasher, bundle)
 }
 
-/// The **two-party** safety number, v3 — the only number a human may be asked
+/// The **two-party** safety number, v4 — the only number a human may be asked
 /// to compare.
 ///
 /// v2 (`derive_bundle_safety_number`) hashes ONE bundle, so the two devices in a
@@ -187,19 +187,17 @@ pub fn validate_key_bundle(bundle: &KeyBundle) -> Result<(), &'static str> {
 ///
 /// ```text
 /// low, high := the two bundles ordered by raw 32-byte ed25519_pub, lexicographic
-/// digest    := SHA-256( "OSL-SAFETY-NUMBER-v3" ‖ canon(low) ‖ canon(high) )
-/// groups    := for i in 0..6 { be_u40(digest[5i..5i+5]) % 100000, zero-padded to 5 }
-/// number    := groups.join(" ")                       // 30 digits, 6 groups
+/// digest    := SHA-512( "OSL-SAFETY-NUMBER-v4" ‖ canon(low) ‖ canon(high) )
+/// groups    := for i in 0..12 { be_u40(digest[5i..5i+5]) % 100000, zero-padded to 5 }
+/// number    := groups.join(" ")                       // 60 digits, 12 groups
 /// ```
 ///
 /// The construction follows Signal's numeric fingerprint: a domain-separated
 /// hash over both parties' key material, ordered so the result is symmetric,
-/// rendered as six 5-digit groups by Signal's `DisplayableFingerprint` chunk
-/// encoding (five bytes reduced mod 100000). It differs from Signal in two
-/// deliberate ways, both recorded in `03-CONTRACTS/identity.md` §3:
-/// OSL combines the two parties into one 30-digit number rather than
-/// concatenating two 30-digit halves into 60, and OSL does not apply Signal's
-/// 5200 iterations of preimage hardening. Both are owner decisions (OQ-1).
+/// rendered as twelve 5-digit groups by Signal's `DisplayableFingerprint`
+/// chunk encoding (five bytes reduced mod 100000). SHA-512 supplies enough
+/// independent chunks for the full 60 digits without duplicating either
+/// identity's value. The number remains one ordered, bilateral derivation.
 ///
 /// Ordering is over the *decoded* Ed25519 bytes, not the base64 text, so the
 /// two devices agree even if they encode the same key differently.
@@ -221,8 +219,8 @@ pub fn safety_number_pair(a: &KeyBundle, b: &KeyBundle) -> Result<String, &'stat
     }
     let (low, high) = if a_ik < b_ik { (a, b) } else { (b, a) };
 
-    let mut hasher = Sha256::new();
-    hasher.update(SAFETY_NUMBER_DOMAIN_V3);
+    let mut hasher = Sha512::new();
+    hasher.update(SAFETY_NUMBER_DOMAIN_V4);
     absorb_canonical_bundle(&mut hasher, low)?;
     absorb_canonical_bundle(&mut hasher, high)?;
     let digest = hasher.finalize();
@@ -271,15 +269,15 @@ mod tests {
     }
 
     #[test]
-    fn pair_number_is_thirty_digits_in_six_groups() {
+    fn pair_number_is_sixty_digits_in_twelve_groups() {
         let number = safety_number_pair(&bundle(1, 2, 3, Some(4)), &bundle(5, 6, 7, None)).unwrap();
         let groups: Vec<&str> = number.split(' ').collect();
-        assert_eq!(groups.len(), 6);
+        assert_eq!(groups.len(), 12);
         assert!(groups.iter().all(|group| group.len() == 5));
         assert!(groups
             .iter()
             .all(|group| group.bytes().all(|byte| byte.is_ascii_digit())));
-        assert_eq!(number.chars().filter(char::is_ascii_digit).count(), 30);
+        assert_eq!(number.chars().filter(char::is_ascii_digit).count(), 60);
     }
 
     /// A one-sided number would collide for every pair that shares one member.
@@ -355,10 +353,10 @@ mod tests {
         assert!(validate_key_bundle(&good).is_ok());
     }
 
-    /// v2 and v3 must never collide by value: the domain tag change is what
+    /// v2 and v4 must never collide by value: the domain tag change is what
     /// makes every cached v2 number invalid rather than silently accepted.
     #[test]
-    fn the_v3_number_is_not_a_v2_number() {
+    fn the_v4_number_is_not_a_v2_number() {
         let alice = bundle(1, 2, 3, Some(4));
         let bob = bundle(5, 6, 7, Some(8));
         let pair = safety_number_pair(&alice, &bob).unwrap();
