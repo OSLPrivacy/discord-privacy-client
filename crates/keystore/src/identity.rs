@@ -342,14 +342,89 @@ impl DevicePrivateKeys {
         ]
     }
 
-    pub fn write_private_key_file(&self, path: &Path) -> crate::Result<()> {
+    /// TASK 5402: write this device's private keys sealed to the device.
+    ///
+    /// This used to be `write_private_key_file`, which called `fs::write` with
+    /// [`Self::private_key_file_bytes`] — sixty-four raw bytes of X25519 and
+    /// Ed25519 secret, in the clear, in the replacement profile a lost-device
+    /// recovery had just created. The file IS the secret, so there is no hash
+    /// form available; it has to be authenticated ciphertext. Device private
+    /// keys are meaningful only on the device that holds them, so the unlock
+    /// key is the platform sealer (TPM → OS credential store → encrypted
+    /// process-ephemeral) rather than a passphrase: another OS account's
+    /// credential store cannot open it, and nothing beside the file carries the
+    /// key.
+    pub fn save_sealed_private_key_file(
+        &self,
+        path: &Path,
+        sealer: &dyn crate::sealer::Sealer,
+    ) -> crate::Result<()> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::write(path, self.private_key_file_bytes())?;
+        let plaintext = Zeroizing::new(self.private_key_file_bytes());
+        let sealed = crate::secret_at_rest::seal_with_device_sealer(
+            DEVICE_PRIVATE_KEY_FILE_DOMAIN,
+            sealer,
+            &plaintext[..],
+        )
+        .map_err(|error| crate::Error::Sealer(crate::sealer::SealerError::Malformed(
+            error.to_string(),
+        )))?;
+        fs::write(path, &sealed)?;
+        crate::secret_trace::record(
+            crate::secret_trace::SecretOp::Write,
+            crate::secret_trace::SecretClass::IdentityPrivateMaterial,
+            crate::secret_trace::Protection::DeviceSealedAead,
+            "keystore::identity::DevicePrivateKeys::save_sealed_private_key_file",
+            path,
+            sealed.len(),
+        );
         Ok(())
     }
+
+    /// Inverse of [`Self::save_sealed_private_key_file`].
+    ///
+    /// Returns the same sixty-four bytes the sealed file was created from, and
+    /// nothing at all for a wrong OS account, a wrong device or a tampered
+    /// file.
+    pub fn open_sealed_private_key_file(
+        path: &Path,
+        sealer: &dyn crate::sealer::Sealer,
+    ) -> crate::Result<Zeroizing<[u8; DEVICE_PRIVATE_KEY_FILE_BYTES]>> {
+        let bytes = fs::read(path)?;
+        let opened = crate::secret_at_rest::open_with_device_sealer(
+            DEVICE_PRIVATE_KEY_FILE_DOMAIN,
+            sealer,
+            &bytes,
+        )
+        .map_err(|error| {
+            crate::Error::Sealer(crate::sealer::SealerError::Malformed(error.to_string()))
+        })?;
+        if opened.len() != DEVICE_PRIVATE_KEY_FILE_BYTES {
+            return Err(crate::Error::BlobFieldLength {
+                field: "device_private_keys",
+                got: opened.len(),
+                expected: DEVICE_PRIVATE_KEY_FILE_BYTES,
+            });
+        }
+        let mut out = Zeroizing::new([0u8; DEVICE_PRIVATE_KEY_FILE_BYTES]);
+        out.copy_from_slice(&opened);
+        crate::secret_trace::record(
+            crate::secret_trace::SecretOp::Read,
+            crate::secret_trace::SecretClass::IdentityPrivateMaterial,
+            crate::secret_trace::Protection::DeviceSealedAead,
+            "keystore::identity::DevicePrivateKeys::open_sealed_private_key_file",
+            path,
+            bytes.len(),
+        );
+        Ok(out)
+    }
 }
+
+/// AEAD associated data for a sealed `device-private-keys.bin`, so the blob
+/// cannot be replayed as any other device-sealed record.
+pub const DEVICE_PRIVATE_KEY_FILE_DOMAIN: &[u8] = b"OSL/device-private-keys/file/v1";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DevicePublicKeys {

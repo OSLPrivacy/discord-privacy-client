@@ -66,8 +66,20 @@ pub fn open_exported_identity(
         .map_err(|_| "OSL transfer bundle is malformed".to_owned())?;
     let (scratch_dir, scratch) = scratch_path()?;
     let result = (|| {
+        let staged_bytes = sealed_identity.len();
         fs::write(&scratch, sealed_identity)
             .map_err(|_| "OSL transfer bundle could not be staged".to_owned())?;
+        // TASK 5402: the staging file is a real temp-directory at-rest surface,
+        // even though it lives for one call. What lands there is the bundle's
+        // own code-derived ciphertext, never the identity.
+        keystore::secret_trace::record(
+            keystore::secret_trace::SecretOp::Write,
+            keystore::secret_trace::SecretClass::RecoveryPackage,
+            keystore::secret_trace::Protection::UserDerivedAead,
+            "osl_privacy_hub::device_transfer::open_exported_identity",
+            &scratch,
+            staged_bytes,
+        );
         let transfer_sealer = TransferCodeSealer::derive(one_time_code, transfer_identifier)?;
         keystore::load_identity(&scratch, &transfer_sealer)
             .map_err(|_| "OSL transfer bundle could not be opened".to_owned())
@@ -110,6 +122,14 @@ fn seal_identity_for_transfer(
             .map_err(|_| "OSL could not seal the transfer bundle".to_owned())?;
         let sealed_identity =
             fs::read(&scratch).map_err(|_| "OSL could not read the transfer bundle".to_owned())?;
+        keystore::secret_trace::record(
+            keystore::secret_trace::SecretOp::Write,
+            keystore::secret_trace::SecretClass::RecoveryPackage,
+            keystore::secret_trace::Protection::UserDerivedAead,
+            "osl_privacy_hub::device_transfer::export_identity_bundle",
+            &scratch,
+            sealed_identity.len(),
+        );
         Ok(TransferBundle {
             version: TRANSFER_BUNDLE_VERSION,
             transfer_identifier: transfer_identifier.to_owned(),

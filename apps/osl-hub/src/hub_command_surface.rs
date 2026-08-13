@@ -650,6 +650,8 @@ macro_rules! hub_tauri_commands {
             reset_hub_main_password_after_recovery,
             view_hub_recovery_phrase,
             check_hub_password_reset_phrase,
+            pick_hub_recovery_kit_file,
+            derive_hub_recovery_kit_identity,
             get_hub_recovery_kit_unsaved,
             set_hub_recovery_kit_unsaved,
             get_coach_tip_state,

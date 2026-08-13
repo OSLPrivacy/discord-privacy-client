@@ -4,6 +4,7 @@ import {
   handleDiscoveryCardRead,
   handleDiscoveryCardsPublish,
   handleDiscoveryCardsTakeBack,
+  handleDiscoveryRepliesEnable,
 } from "../lib/discovery-card.js";
 
 export async function handleDiscoveryCardsPost(
@@ -11,6 +12,13 @@ export async function handleDiscoveryCardsPost(
   env: Env,
 ): Promise<Response> {
   return await handleDiscoveryCardPost(request, env.DB);
+}
+
+export async function handleDiscoveryRepliesEnablePost(
+  request: Request,
+  env: Env,
+): Promise<Response> {
+  return await handleDiscoveryRepliesEnable(request, env.DB);
 }
 
 export async function handleDiscoveryCardsRead(

@@ -6165,7 +6165,6 @@ pub enum NativeDiscordRowPoster {
 /// returning plaintext.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeDiscordRowAttributionEvidence {
-
     pub discord_message_id: String,
     pub poster_identity_sha256: String,
     pub who_wrote_it: SharedRowWhoWroteIt,
@@ -6384,6 +6383,11 @@ pub(crate) fn native_row_attribution_from_provider(
     } else {
         SharedRowWhoWroteIt::NotPublishedByApp
     };
+    let poster = match who_wrote_it {
+        SharedRowWhoWroteIt::Yours => NativeDiscordRowPoster::SelfAccount,
+        SharedRowWhoWroteIt::Theirs => NativeDiscordRowPoster::PeerAccount,
+        SharedRowWhoWroteIt::NotPublishedByApp => return None,
+    };
     let authority_runtime_ids = [
         observation.self_avatar_runtime_id.as_slice(),
         observation.self_user_panel_runtime_id.as_slice(),
@@ -6432,12 +6436,19 @@ pub(crate) fn native_row_attribution_from_provider(
         scope_binding_sha256,
         window_generation,
         row_index,
+        poster,
     })
 }
 
 /// Whole-snapshot refusal at the native producer. The broker repeats this at
 /// its own boundary, but a partial/ambiguous provider walk never leaves here as
 /// a mixed proof batch.
+///
+/// Public carrier text is deliberately not unique here. Anyone in the
+/// conversation can copy a visible cover verbatim; treating that copy as a
+/// snapshot-level failure lets one public row erase every protected row on the
+/// screen. Replay detection belongs after authentication, where the broker can
+/// compare the protected payload's message id, sender key and nonce per row.
 #[cfg(any(test, target_os = "windows"))]
 pub(crate) fn native_row_producer_batch_is_valid(
     rows: &[VisibleMessageRow],
@@ -6452,7 +6463,6 @@ pub(crate) fn native_row_producer_batch_is_valid(
     let mut peer_poster = None::<String>;
     let mut message_ids = std::collections::HashSet::with_capacity(rows.len());
     let mut locators = std::collections::HashSet::with_capacity(rows.len());
-    let mut carriers = std::collections::HashSet::with_capacity(rows.len());
     rows.iter().enumerate().all(|(row_index, row)| {
         let Some(evidence) = row.attribution.as_ref() else {
             return false;
@@ -6489,7 +6499,6 @@ pub(crate) fn native_row_producer_batch_is_valid(
             && matching_carriers == 1
             && message_ids.insert(evidence.discord_message_id.clone())
             && locators.insert(evidence.native_locator_sha256.clone())
-            && carriers.insert(evidence.carrier_sha256.clone())
     })
 }
 

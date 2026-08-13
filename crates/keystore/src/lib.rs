@@ -40,6 +40,11 @@ pub mod proof_challenge;
 pub mod recipients;
 mod recoverable_file;
 pub mod sealer;
+/// TASK 5402 — the passphrase-derived and device-sealed envelopes every
+/// recoverable secret is written through.
+pub mod secret_at_rest;
+/// TASK 5402 — the runtime writer/read trace for secret material.
+pub mod secret_trace;
 mod sender_filter_rollout;
 pub mod sensitive_memory;
 /// Validates response bytes before service operations consume reply fields.

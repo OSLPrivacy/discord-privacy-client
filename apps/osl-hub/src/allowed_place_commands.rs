@@ -1,26 +1,12 @@
-use crate::security::{
-    AllowedPlaceDirectionState,
-    HubSecurityState,
-    self,
-};
+use crate::security::{self, AllowedPlaceDirectionState, HubSecurityState};
 use ipc::allowed_places::{
-    AllowedPlaceQuery,
-    AllowedPlaceRecord,
-    add_allowed_place_record,
-    allowed_place_is_allowed,
-    list_allowed_place_records,
-    remove_allowed_place_record,
-};
-use std::path::{
-    Path,
-    PathBuf,
-};
-use std::sync::{
-    Mutex,
-    MutexGuard,
+    add_allowed_place_record, allowed_place_is_allowed, list_allowed_place_records,
+    remove_allowed_place_record, AllowedPlaceQuery, AllowedPlaceRecord,
 };
 use serde::Serialize;
 use std::ffi::OsString;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
 
 pub const ALLOWED_PLACE_CLI_FLAG: &str = "--allowed-place";
 

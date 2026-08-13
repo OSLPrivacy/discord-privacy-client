@@ -46,6 +46,9 @@ fn direct_command_returns_the_prepared_x_records_and_never_leaks_x_kind() {
         field(&x, "PLACE_KIND"),
         field(&x, "COMPOSER")
     );
-    println!("TASK1101_INSTAGRAM kind={}", field(&instagram, "PLACE_KIND"));
+    println!(
+        "TASK1101_INSTAGRAM kind={}",
+        field(&instagram, "PLACE_KIND")
+    );
     println!("TASK1101_NON_X_FIXTURES_WITH_X_KIND=0");
 }

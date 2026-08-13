@@ -116,7 +116,9 @@ fn the_schedule_cannot_be_edited_into_naming_an_unapproved_account() {
         "a refused edit leaves the row byte-for-byte as it was"
     );
     assert!(
-        !surface.scheduled_account_ids().contains(&UNAPPROVED.to_string()),
+        !surface
+            .scheduled_account_ids()
+            .contains(&UNAPPROVED.to_string()),
         "no schedule anywhere may name the unapproved account"
     );
 }
@@ -128,11 +130,8 @@ fn the_schedule_cannot_be_edited_into_naming_an_unapproved_account() {
 fn the_direct_invoke_is_no_way_around_the_approval() {
     let mut surface = surface();
 
-    let before = run_autoscrub_schedule_account_command(
-        &mut surface,
-        AUTOSCRUB_SCHEDULE_ROWS_COMMAND,
-        "{}",
-    );
+    let before =
+        run_autoscrub_schedule_account_command(&mut surface, AUTOSCRUB_SCHEDULE_ROWS_COMMAND, "{}");
     assert!(before.contains("\"rowCount\":0"), "{before}");
 
     let saved = run_autoscrub_schedule_account_command(
@@ -161,11 +160,8 @@ fn the_direct_invoke_is_no_way_around_the_approval() {
     );
     assert_eq!(parsed["accountId"], serde_json::json!(UNAPPROVED));
 
-    let after = run_autoscrub_schedule_account_command(
-        &mut surface,
-        AUTOSCRUB_SCHEDULE_ROWS_COMMAND,
-        "{}",
-    );
+    let after =
+        run_autoscrub_schedule_account_command(&mut surface, AUTOSCRUB_SCHEDULE_ROWS_COMMAND, "{}");
     assert!(after.contains("\"rowCount\":1"), "{after}");
     assert!(after.contains(APPROVED), "{after}");
     assert!(
@@ -188,7 +184,11 @@ fn a_fresh_save_for_an_unapproved_account_is_refused_too() {
         .expect_err("an unapproved account may not be scheduled at all");
     assert_eq!(refused.reason, ACCOUNT_NOT_APPROVED_FOR_AUTOSCRUB);
     assert_eq!(refused.command, AUTOSCRUB_SCHEDULE_COMMAND);
-    assert_eq!(surface.schedule_row_count(), 0, "a refused save writes no row");
+    assert_eq!(
+        surface.schedule_row_count(),
+        0,
+        "a refused save writes no row"
+    );
     assert!(surface.schedule_row("pine-daily").is_none());
 }
 
@@ -314,7 +314,10 @@ fn approving_the_sibling_is_what_makes_the_edit_go_through() {
         .expect("an approved sibling may be named");
     assert_eq!(outcome.saved.account_id, UNAPPROVED);
     assert_eq!(outcome.saved.schedule_name, SCHEDULE);
-    assert_eq!(outcome.saved.cadence, FIXTURE_CADENCE, "only the account moved");
+    assert_eq!(
+        outcome.saved.cadence, FIXTURE_CADENCE,
+        "only the account moved"
+    );
     assert_eq!(outcome.row_count, 1, "an edit replaces, it does not add");
 }
 

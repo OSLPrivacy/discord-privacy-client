@@ -1218,6 +1218,16 @@ description = "Save the local Scrub setup account count, automatic schedule, and
 commands.allow = ["save_scrub_setup"]
 
 [[permission]]
+identifier = "allow-pick-hub-recovery-kit-file"
+description = "Open the installed native file picker for one OSL recovery kit from the trusted bundled OSL Privacy UI and return only that one selection's frozen path, length, SHA-256 digest and bytes; it browses nothing, reads no other file, and writes nothing."
+commands.allow = ["pick_hub_recovery_kit_file"]
+
+[[permission]]
+identifier = "allow-derive-hub-recovery-kit-identity"
+description = "Return only the public osl_ routing label a recovery kit's twelve-word identity phrase reconstructs, so a kit belonging to another account is refused before its phrase reaches the authenticated importer; it installs nothing and writes nothing."
+commands.allow = ["derive_hub_recovery_kit_identity"]
+
+[[permission]]
 identifier = "allow-check-hub-password-reset-phrase"
 description = "Check a password-recovery phrase from the trusted bundled OSL Privacy UI and return only an approved/refused reset verdict plus the opaque token required by the password-change step."
 commands.allow = ["check_hub_password_reset_phrase"]

@@ -5,19 +5,15 @@
 //! local readiness and a feature inventory. Remote service webviews receive no
 //! Tauri capability and therefore cannot call this bridge.
 
-use std::sync::{
-    Arc,
-    Mutex,
+use crate::runtime_switches::{
+    read_startup_test_only_runtime_switches, ResolvedTestOnlyRunTimeSwitches,
+    PASSWORD_SCREEN_ACCESS_SKIP_FOR_TEST,
 };
 use ipc::AppState;
 use serde::Serialize;
 use std::fmt;
 use std::sync::atomic::Ordering;
-use crate::runtime_switches::{
-    PASSWORD_SCREEN_ACCESS_SKIP_FOR_TEST,
-    ResolvedTestOnlyRunTimeSwitches,
-    read_startup_test_only_runtime_switches,
-};
+use std::sync::{Arc, Mutex};
 
 pub struct HubCoreState {
     pub osl: Arc<AppState>,

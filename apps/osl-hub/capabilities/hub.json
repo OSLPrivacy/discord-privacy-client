@@ -240,6 +240,8 @@
     "allow-get-hub-look-choice",
     "allow-list-hub-look-choices",
     "allow-save-scrub-setup",
+    "allow-pick-hub-recovery-kit-file",
+    "allow-derive-hub-recovery-kit-identity",
     "allow-check-hub-password-reset-phrase",
     "allow-set-hub-friend-account-reach-choice",
     "allow-list-hub-friend-account-reach-choices",

@@ -1,0 +1,25 @@
+# TASK 5166b - throwaway harness crate for the protected-download quarantine
+# bypass proof. `scripts/task-5166b-quarantine-bypass.sh` copies this file, its
+# `main.rs`, and the VERBATIM production sources
+# `apps/osl-hub/src/protected_download_quarantine.rs` and
+# `apps/osl-hub/src/protected_download_quarantine_amsi.ps1` into a throwaway
+# directory, sabotages one line of the copied boundary, and discards the copy.
+# Nothing here is part of the shipped binary.
+[package]
+name = "task-5166b-check"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "task-5166b-check"
+path = "main.rs"
+
+# The production boundary depends on nothing else, which is what lets this
+# harness compile the real source rather than a re-implementation of it.
+[dependencies]
+sha2 = "=0.10.9"
+hex = "=0.4.3"
+base64 = "=0.22.1"
+
+[workspace]

@@ -103,22 +103,11 @@ pub fn verify_password_role(
         "wrong" => VerifiedGateRole::Wrong,
         _ => return Err("OSL password gate returned an invalid role".to_owned()),
     };
-    let role = role_after_duress_threshold(parsed_role, result.attempts_used);
     Ok(GatePasswordVerification {
-        role,
+        role: parsed_role,
         lockout_seconds_remaining: result.lockout_seconds_remaining,
         attempts_used: result.attempts_used,
     })
-}
-
-fn role_after_duress_threshold(role: VerifiedGateRole, attempts_used: u32) -> VerifiedGateRole {
-    if role == VerifiedGateRole::Wrong
-        && attempts_used >= ipc::main_password::DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT
-    {
-        VerifiedGateRole::Duress
-    } else {
-        role
-    }
 }
 
 // D80: `verify_duress_pin` was deleted here. It existed only to serve the
@@ -293,17 +282,14 @@ mod tests {
     }
 
     #[test]
-    fn burn_code_and_wrong_password_threshold_keep_distinct_paths() {
+    fn burn_code_and_wrong_password_cooldown_keep_distinct_paths() {
         let _serial = crate::global_keystore_test_lock();
         let _reset = KeystoreGlobalReset;
         let state = HubCoreState::default();
 
         let below_threshold = GatePasswordVerification {
-            role: role_after_duress_threshold(
-                VerifiedGateRole::Wrong,
-                ipc::main_password::DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT - 1,
-            ),
-            lockout_seconds_remaining: 3600,
+            role: VerifiedGateRole::Wrong,
+            lockout_seconds_remaining: 0,
             attempts_used: ipc::main_password::DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT - 1,
         };
         let below_result = HubGateUnlockResult::wrong(below_threshold);
@@ -311,16 +297,13 @@ mod tests {
         assert!(below_result.burn.is_none());
 
         let threshold_verification = GatePasswordVerification {
-            role: role_after_duress_threshold(
-                VerifiedGateRole::Wrong,
-                ipc::main_password::DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT,
-            ),
-            lockout_seconds_remaining: 3600,
+            role: VerifiedGateRole::Wrong,
+            lockout_seconds_remaining: ipc::main_password::PASSWORD_COOLDOWN_SECONDS as i64,
             attempts_used: ipc::main_password::DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT,
         };
-        assert_eq!(threshold_verification.role, VerifiedGateRole::Duress);
-        let threshold_result = HubGateUnlockResult::duress(threshold_verification);
-        assert_eq!(threshold_result.outcome, "duress");
+        assert_eq!(threshold_verification.role, VerifiedGateRole::Wrong);
+        let threshold_result = HubGateUnlockResult::wrong(threshold_verification);
+        assert_eq!(threshold_result.outcome, "wrong");
         assert!(threshold_result.burn.is_none());
 
         let (burn_config, burn_local, burn_core, burn_profiles, _) = populate_cleanup_roots("burn");
@@ -348,7 +331,7 @@ mod tests {
     // unlock input calls. If a second verifier is ever reintroduced for a
     // second field, this test still passes -- but the "no advertisement" tests
     // in the UI suite will not.
-    fn duress_password_and_wrong_password_threshold_share_the_single_verifier() {
+    fn explicit_duress_password_and_wrong_password_cooldown_remain_distinct() {
         let _serial = crate::global_keystore_test_lock();
         let _reset = KeystoreGlobalReset;
 
@@ -387,14 +370,14 @@ mod tests {
         assert!(!explicit_duress_dir.join("prekeys.json").exists());
         assert!(!explicit_duress_dir.join("password_marker.json").exists());
 
-        let threshold_dir = temp_dir("threshold-duress");
+        let threshold_dir = temp_dir("threshold-cooldown");
         std::fs::create_dir_all(&threshold_dir).unwrap();
         keystore::set_active_account_dir(None);
         keystore::set_base_dir_override(Some(threshold_dir.clone()));
         let threshold_state = HubCoreState::default();
         *threshold_state.osl.identity.lock().unwrap() = Some(keystore::identity_from_entropy(
             [42; 16],
-            "osl_test_threshold_duress".to_owned(),
+            "osl_test_threshold_cooldown".to_owned(),
         ));
         std::fs::write(threshold_dir.join("identity.json"), b"identity").unwrap();
         std::fs::write(threshold_dir.join("prekeys.json"), b"prekeys").unwrap();
@@ -413,23 +396,26 @@ mod tests {
 
         let threshold =
             verify_password_role(&threshold_state, "wrong-threshold-pin-8421".to_owned()).unwrap();
-        assert_eq!(threshold.role, VerifiedGateRole::Duress);
+        assert_eq!(threshold.role, VerifiedGateRole::Wrong);
         assert_eq!(
             threshold.attempts_used,
             ipc::main_password::DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT
         );
-        assert_eq!(threshold.lockout_seconds_remaining, 0);
-        let threshold_result = HubGateUnlockResult::duress(threshold);
-        assert_eq!(threshold_result.outcome, "duress");
+        assert_eq!(
+            threshold.lockout_seconds_remaining,
+            ipc::main_password::PASSWORD_COOLDOWN_SECONDS as i64
+        );
+        let threshold_result = HubGateUnlockResult::wrong(threshold);
+        assert_eq!(threshold_result.outcome, "wrong");
         assert!(threshold_result.readiness.is_none());
         assert!(
             threshold_result.burn.is_none(),
-            "wrong-password duress threshold must not be reported as the burn-password path"
+            "wrong-password cooldown must not be reported as the burn-password path"
         );
-        assert!(ipc::main_password::get_file_storage_key().is_none());
-        assert!(!threshold_dir.join("identity.json").exists());
-        assert!(!threshold_dir.join("prekeys.json").exists());
-        assert!(!threshold_dir.join("password_marker.json").exists());
+        assert_eq!(ipc::main_password::get_file_storage_key(), Some([0x42; 32]));
+        assert!(threshold_dir.join("identity.json").exists());
+        assert!(threshold_dir.join("prekeys.json").exists());
+        assert!(threshold_dir.join("password_marker.json").exists());
 
         let (burn_config, burn_local, burn_core, burn_profiles, burn_native_profiles) =
             populate_cleanup_roots("shared-burn-path");

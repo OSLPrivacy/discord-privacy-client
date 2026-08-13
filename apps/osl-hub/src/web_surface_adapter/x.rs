@@ -100,10 +100,7 @@ pub trait XSurfaceDriver: Send + Sync {
     /// Ask the focused X surface for the exact named controls requested by the
     /// caller.  A driver must refuse unknown names rather than treating them as
     /// generic browser controls.
-    fn named_controls(
-        &self,
-        _names: &[&str],
-    ) -> Result<Vec<XNamedControl>, AdapterRefusal> {
+    fn named_controls(&self, _names: &[&str]) -> Result<Vec<XNamedControl>, AdapterRefusal> {
         Err(AdapterRefusal::PlatformUnsupported)
     }
 
@@ -140,7 +137,10 @@ impl<D: XSurfaceDriver> XWebBackend<D> {
     ) -> Result<XFoundBrowserPlaceComposer, AdapterRefusal> {
         let surface = self.driver.active_browser_surface()?;
         if surface.origin != "https://x.com/messages"
-            || !matches!(surface.place_kind.as_str(), "direct_message" | "public_post")
+            || !matches!(
+                surface.place_kind.as_str(),
+                "direct_message" | "public_post"
+            )
             || surface.browser_title.trim().is_empty()
             || surface.composer.trim().is_empty()
         {

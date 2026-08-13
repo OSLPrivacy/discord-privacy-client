@@ -469,7 +469,6 @@ pub fn parse_discovery_replies_switch(value: &str) -> Result<DiscoveryRepliesSwi
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppPreferences {
-
     #[serde(default)]
     pub version: u32,
     #[serde(default)]
@@ -530,6 +529,11 @@ pub struct AppPreferences {
     pub discovery_setting: DiscoverySetting,
     #[serde(default)]
     pub discovery_replies: DiscoveryRepliesSwitch,
+    /// Durable intent written before the remote take-back. While set, local
+    /// publishing and ping replies are refused, but the UI must not claim the
+    /// completed `off` state until reconciliation succeeds.
+    #[serde(default)]
+    pub discovery_off_pending: bool,
 }
 
 impl Default for AppPreferences {
@@ -563,6 +567,7 @@ impl Default for AppPreferences {
             behaviour_choices: HashMap::new(),
             discovery_setting: DiscoverySetting::default(),
             discovery_replies: DiscoveryRepliesSwitch::default(),
+            discovery_off_pending: false,
         }
     }
 }

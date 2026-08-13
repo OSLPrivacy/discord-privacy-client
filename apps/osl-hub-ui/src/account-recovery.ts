@@ -17,6 +17,17 @@ export {
   type RecoveryMigrationDependencies,
 } from "./recovery-migration";
 
+// TASK 6804. The phrase step's single textarea became twelve numbered boxes
+// plus an "Upload recovery kit" chip, so a saved kit file can fill them instead
+// of being retyped from a screenshot. The hidden aggregate the grid writes
+// keeps the id and the `recoveryPhrase` field name the submit path above
+// already reads, so the state machine below is untouched by the change.
+import {
+  emptyRecoveryWordBoxes,
+  recoveryWordBoxesMarkup,
+  type RecoveryWordBoxes,
+} from "./recovery-kit-upload-6804";
+
 export type AccountRecoveryFlow = {
   step: "phrase" | "password" | "complete";
   recoveryToken: string | null;
@@ -103,7 +114,10 @@ export async function submitRecoveredPassword(
 const RECOVERY_ARROW = `<svg class="signin-icon signin-arrow" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12 h14"/><path d="M13 6 l6 6 -6 6"/></svg>`;
 const RECOVERY_EYE = `<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M1.8 10s2.9-4.7 8.2-4.7 8.2 4.7 8.2 4.7-2.9 4.7-8.2 4.7S1.8 10 1.8 10Z"/><circle cx="10" cy="10" r="2.25"/><path d="M3 3l14 14"/></svg>`;
 
-export function recoveryScreenMarkup(flow: AccountRecoveryFlow): string {
+export function recoveryScreenMarkup(
+  flow: AccountRecoveryFlow,
+  boxes: RecoveryWordBoxes = emptyRecoveryWordBoxes(),
+): string {
   if (flow.step === "complete") {
     return `<section class="setup-surface recovery-surface"><h1 id="route-heading" tabindex="-1">Password reset</h1><p>Your password was reset. Sign in with the new password.</p></section>`;
   }
@@ -134,8 +148,14 @@ export function recoveryScreenMarkup(flow: AccountRecoveryFlow): string {
     <h1 id="route-heading" tabindex="-1" class="stealth-title forgot-title">Password reset</h1>
     <p class="stealth-quiet">Your password recovery phrase sets a new password. It is not your identity phrase</p>
     <form class="password-form stealth-form" data-account-recovery-phrase novalidate>
-      <span class="restore-label-row"><label for="account-recovery-phrase">Password recovery phrase</label><em>stays on this device</em></span>
-      <textarea class="restore-phrase" id="account-recovery-phrase" name="recoveryPhrase" rows="3" autocomplete="off" autocapitalize="none" spellcheck="false" required></textarea>
+      ${recoveryWordBoxesMarkup({
+        slot: "password",
+        idPrefix: "account-recovery",
+        phraseFieldId: "account-recovery-phrase",
+        phraseFieldName: "recoveryPhrase",
+        label: "Password recovery phrase",
+        hint: "stays on this device",
+      }, boxes)}
       ${error}
       <button class="stealth-submit restore-submit" type="submit"><span>Verify phrase</span>${RECOVERY_ARROW}</button>
     </form>

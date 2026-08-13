@@ -1,0 +1,13 @@
+# TASK 4401 shipping-policy freeze.  One class per line; do not turn this into
+# a keyword allow-list.  A switched path that has any one of these effects is
+# a test tool even when it has a benign-looking name.
+unprovided-input-or-authority
+authentication-or-peer-identity-bypass
+authorization-or-recipient-consent-bypass
+encryption-integrity-or-freshness-weakening
+burn-deletion-or-retention-weakening
+capacity-accounting-weakening
+tenant-process-or-store-isolation-weakening
+seeded-identity-data-or-fixture-substitution
+automation-debug-or-probe-production-entry
+other-frozen-security-or-privacy-invariant

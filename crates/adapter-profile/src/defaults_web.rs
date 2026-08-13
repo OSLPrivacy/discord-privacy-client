@@ -370,7 +370,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn task_1248_yahoo_mapping_contains_all_six_named_targets() {
         let targets = yahoo_web_mail_targets();

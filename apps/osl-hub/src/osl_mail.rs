@@ -6,28 +6,17 @@
 //! mailbox is local state established only after a signed provision response
 //! succeeds.
 
-use base64::{engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD}, Engine as _};
-use serde::{
-    Deserialize,
-    Serialize,
-};
-use serde_json::{
-    Map,
-    Value,
-};
-use sha2::{
-    Digest,
-    Sha256,
-};
 use crate::claim_state::{
-    CarrierEvidence,
-    DeliveryEvidence,
-    PublicClaim,
-    Surface,
-    claim_of,
-    public_claim,
+    claim_of, public_claim, CarrierEvidence, DeliveryEvidence, PublicClaim, Surface,
 };
 use crate::core_bridge::HubCoreState;
+use base64::{
+    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+    Engine as _,
+};
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 

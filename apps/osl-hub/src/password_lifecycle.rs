@@ -371,9 +371,7 @@ pub fn import_native_identity_phrase(
     }
     let dir = isolated_account_dir()?;
     ensure_empty_identity_slot(&state.osl, &dir)?;
-    let entropy = parse_identity_phrase(&phrase)?;
-    let mut identity = keystore::identity_from_entropy(entropy, "osl-pending".to_owned());
-    identity.user_id = native_user_id(&identity);
+    let identity = identity_for_recovery_phrase(&phrase)?;
     let sealer = persistent_sealer()?;
     let result = install_identity(
         &state.osl,
@@ -658,6 +656,33 @@ pub(crate) fn identity_recovery_phrase(identity: &Identity) -> Result<String, St
     Mnemonic::from_entropy_in(Language::English, &entropy)
         .map(|mnemonic| mnemonic.to_string())
         .map_err(|_| "OSL identity recovery phrase could not be created".to_owned())
+}
+
+/// The identity a twelve-word identity recovery phrase reconstructs.
+///
+/// `import_native_identity_phrase` above calls this rather than repeating it,
+/// so the identity that an import *installs* and the identity that TASK 6804's
+/// recovery-kit comparison *predicts* are produced by one piece of code. Two
+/// copies of this derivation would let the comparison drift into agreeing with
+/// a kit the importer would then reject, or refusing one it would have
+/// accepted — and either way the user is told something untrue about their own
+/// account.
+pub(crate) fn identity_for_recovery_phrase(phrase: &str) -> Result<Identity, String> {
+    let entropy = parse_identity_phrase(phrase)?;
+    let mut identity = keystore::identity_from_entropy(entropy, "osl-pending".to_owned());
+    identity.user_id = native_user_id(&identity);
+    Ok(identity)
+}
+
+/// TASK 6804 — which account a recovery kit's identity phrase belongs to.
+///
+/// Read-only by construction: it derives keys in memory, writes nothing,
+/// installs nothing and returns only the public `osl_` routing label. It exists
+/// so a kit belonging to another account is refused on the Restore Account
+/// screen *before* its phrase reaches the authenticated importer, rather than
+/// after an import has already replaced something.
+pub fn identity_user_id_for_recovery_phrase(phrase: &str) -> Result<String, String> {
+    identity_for_recovery_phrase(phrase).map(|identity| identity.user_id.clone())
 }
 
 pub(crate) fn parse_identity_phrase(phrase: &str) -> Result<[u8; 16], String> {

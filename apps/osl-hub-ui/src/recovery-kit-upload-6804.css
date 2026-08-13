@@ -1,0 +1,111 @@
+/* ---------------------------------------------------------------------------
+   TASK 6804 — the twelve numbered word boxes and the "Upload recovery kit"
+   chip, on Forgot Password and Restore Account.
+
+   The single textarea these replace asked a person to retype twelve words as
+   one run of text and gave them nothing to check their place against. Twelve
+   numbered boxes are the same content with the position made visible, which is
+   what somebody comparing against a written-down kit actually needs.
+
+   Everything here reuses the stealth/restore card's own variables so the grid
+   sits in the same face, the same input colour and the same accent as the
+   password fields directly beneath it.
+   --------------------------------------------------------------------------- */
+
+.stealth-form .recovery-word-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin: 0;
+}
+
+.stealth-form .recovery-word-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 0 10px;
+  border: 1px solid var(--st-input-line);
+  background: var(--st-input);
+  transition: border-color .2s;
+}
+
+.stealth-form .recovery-word-box:focus-within { border-color: var(--osl-setup-accent); }
+
+/* The number is the whole point of the redesign, so it is not decoration: it
+   keeps a fixed column width at every digit count so the twelve inputs still
+   start on the same x. */
+.stealth-form .recovery-word-number {
+  flex: 0 0 auto;
+  min-width: 14px;
+  font-family: "Source Sans 3 Variable", "Source Sans 3", var(--font-ui);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  color: var(--osl-setup-quiet);
+  user-select: none;
+}
+
+/* Monospace, for the same reason the textarea was: a person is comparing this
+   against something they wrote down, and two faces make that harder. */
+.stealth-form .recovery-word-input {
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 9px 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  font-family: Consolas, "Cascadia Mono", "DejaVu Sans Mono", monospace;
+  font-size: 14px;
+  letter-spacing: .02em;
+  color: var(--osl-setup-text);
+}
+
+.stealth-form .recovery-word-input:focus { outline: none; }
+
+.recovery-kit-chip-row {
+  display: flex;
+  justify-content: flex-start;
+  margin: 12px 0 0;
+}
+
+/* A chip, not a button: uploading a kit is the alternative to typing, never the
+   step. It must not compete with the screen's one primary action. */
+.stealth-form .recovery-kit-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 12px;
+  border: 1px solid var(--st-input-line);
+  border-radius: 999px;
+  background: transparent;
+  font-family: "Source Sans 3 Variable", "Source Sans 3", var(--font-ui);
+  font-size: 12.5px;
+  color: var(--osl-setup-quiet);
+  cursor: pointer;
+  transition: border-color .2s, color .2s;
+}
+
+.stealth-form .recovery-kit-chip:hover:not(:disabled),
+.stealth-form .recovery-kit-chip:focus-visible {
+  border-color: var(--osl-setup-accent);
+  color: var(--osl-setup-text);
+}
+
+.stealth-form .recovery-kit-chip:disabled { cursor: progress; opacity: .6; }
+.stealth-form .recovery-kit-chip-icon { flex: 0 0 auto; }
+
+.recovery-kit-refusal[hidden] { display: none; }
+.recovery-word-grid + .recovery-kit-chip-row + .recovery-kit-refusal { margin-top: 10px; }
+.recovery-kit-chip-row + .restore-label-row,
+.recovery-kit-refusal + .restore-label-row { margin-top: 18px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .stealth-form .recovery-word-box,
+  .stealth-form .recovery-kit-chip { transition: none; }
+}
+
+@media (max-width: 40rem) {
+  .stealth-form .recovery-word-grid { grid-template-columns: repeat(2, 1fr); }
+}

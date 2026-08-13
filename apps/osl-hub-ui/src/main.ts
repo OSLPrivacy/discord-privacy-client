@@ -9,6 +9,7 @@ import "./local-protected-sheet.css";
 import "./voice-call-dock.css";
 import "./friend-invite.css";
 import "./recovery-screen.css";
+import "./recovery-kit-upload-6804.css";
 import "./onboarding-mullvad.css";
 import "./appearance-settings.css";
 import { accountExportSettingsContent, runAccountExport, type AccountExportState } from "./account-export";
@@ -112,6 +113,8 @@ import {
   coreReadinessLabel,
   clearHubActivationCode,
   createHubOslIdentity,
+  deriveHubRecoveryKitIdentity,
+  pickHubRecoveryKitFile,
   identityProtectionStatus,
   importHubOslIdentityPhrase,
   isActivationCode,
@@ -211,6 +214,7 @@ import { addFriendFailureStatus, bindFriendRemovalControls, bindMainWindowFocusC
 import { runRecoveryReveal, submitsRecoveryReveal } from "./recovery-reveal";
 import { addLegacyPhraseWrap, initialAccountRecoveryFlow, legacyMarkerRecoveryRefused, legacyRecoveryMigrationMarkup, recoveryScreenMarkup, submitRecoveredPassword, submitRecoveryPhrase, type AccountRecoveryDependencies, type AccountRecoveryFlow, type LegacyRecoveryMigration, type RecoveryMigrationDependencies } from "./account-recovery";
 import { RECOVERY_SHOW_ANYWAY_ACKNOWLEDGEMENT, recoveryKitReducer, recoveryKitSecretCardsMarkup, recoveryKitView, visibleRecoverySecrets, type RecoveryKitAction, type RecoveryKitState, type RecoveryKitView } from "./recovery-kit";
+import { applyRecoveryKitOutcome, decodeRecoveryKitBytes, emptyRecoveryWordBoxes, loadRecoveryKitFile, recoveryWordBoxesMarkup, recoveryWordBoxesPhrase, typeRecoveryWord, type RecoveryKitSlot, type RecoveryKitUploadDependencies, type RecoveryWordBoxes } from "./recovery-kit-upload-6804";
 import { resumeOnboardingRoute } from "./onboarding-resume";
 import { createRecoveryKitUnsavedFlag } from "./recovery-kit-flag";
 import { loadHubRecoveryKitUnsaved, setHubRecoveryKitUnsaved } from "./adapters";
@@ -431,6 +435,14 @@ let passwordRoleStatus: HubPasswordRoleStatus | null = null;
 // The flow now lives here so the already-specified state machine in
 // account-recovery.ts actually runs and its refusals reach the screen.
 let accountRecoveryFlow: AccountRecoveryFlow = initialAccountRecoveryFlow;
+// TASK 6804. The twelve numbered word boxes behind each of the two recovery
+// screens. They are held here rather than read back off the DOM because a
+// refused upload has to leave them byte-for-byte as they were, and re-reading a
+// re-rendered DOM is how "unchanged" quietly becomes "whatever survived the
+// last render".
+let forgotPasswordWordBoxes: RecoveryWordBoxes = emptyRecoveryWordBoxes();
+let restoreAccountWordBoxes: RecoveryWordBoxes = emptyRecoveryWordBoxes();
+let recoveryKitUploadBusy = false;
 let legacyRecoveryMigration: LegacyRecoveryMigration | null = null;
 // The approved phrase remains in memory only for the short interval between
 // the native phrase check and the native reset. The opaque token ties that
@@ -1997,7 +2009,7 @@ function onboardingContent(): string {
     // migration screen, which is the only place the two repair paths exist.
     return legacyRecoveryMigration
       ? legacyRecoveryMigrationMarkup(legacyRecoveryMigration)
-      : recoveryScreenMarkup(accountRecoveryFlow);
+      : recoveryScreenMarkup(accountRecoveryFlow, forgotPasswordWordBoxes);
   }
   if (onboardingRoute === "import") return importIdentityForm();
   if (onboardingRoute === "recovery") return recoveryContent();
@@ -2781,7 +2793,7 @@ async function refreshBrowserImportReadiness(): Promise<void> {
   }
 }
 
-function importIdentityForm(): string {
+function importIdentityForm(boxes: RecoveryWordBoxes = restoreAccountWordBoxes): string {
   // 2026-08-06 restyle. Built from the same parts as the stealth and burn
   // screens: same card, same inputs, same eye toggles, same button and link.
   // The two helper sentences became hints beside their labels -- a standalone
@@ -2791,8 +2803,14 @@ function importIdentityForm(): string {
   return `<section class="stealth-screen restore-screen" aria-labelledby="route-heading">
     <h1 id="route-heading" tabindex="-1" class="stealth-title restore-title">Restore your account</h1>
     <form class="password-form stealth-form" id="identity-import-form" novalidate>
-      <span class="restore-label-row"><label for="identity-recovery-phrase">Recovery phrase</label><em>stays on this device</em></span>
-      <textarea class="restore-phrase" id="identity-recovery-phrase" rows="3" autocomplete="off" autocapitalize="none" spellcheck="false" required aria-describedby="import-error"></textarea>
+      ${recoveryWordBoxesMarkup({
+        slot: "identity",
+        idPrefix: "identity-recovery",
+        phraseFieldId: "identity-recovery-phrase",
+        phraseFieldName: "recoveryPhrase",
+        label: "Recovery phrase",
+        hint: "stays on this device",
+      }, boxes)}
       <span class="restore-label-row"><label for="import-password">New password</label><em>6 minimum · 12+ suggested</em></span>
       <div class="password-input-row"><input id="import-password" type="password" minlength="6" maxlength="128" autocomplete="new-password" required/>${eye("import-password", "Show password")}</div>
       <span class="restore-label-row"><label for="import-password-confirm">Confirm password</label></span>
@@ -3132,6 +3150,10 @@ function bindOnboarding(): void {
   bindPasswordVisibility();
   bindPasswordForm();
   bindImportForm();
+  // TASK 6804. Both recovery screens draw the same twelve numbered boxes and
+  // the same upload chip, so one binding serves them and the slot on each
+  // control says which screen it belongs to.
+  bindRecoveryKitWordBoxes();
   document.querySelector<HTMLButtonElement>("#choose-no-public-name")?.addEventListener("click", () => void chooseNoPublicName());
   document.querySelector<HTMLButtonElement>("#create-another-private-contact-link")?.addEventListener("click", async () => {
     await privateContactLinkPage.create();
@@ -3464,6 +3486,98 @@ function resetAccountRecovery(): void {
   accountRecoveryFlow = initialAccountRecoveryFlow;
   legacyRecoveryMigration = null;
   approvedAccountRecovery = null;
+  forgotPasswordWordBoxes = emptyRecoveryWordBoxes();
+}
+
+/* ------------------------------------------------ TASK 6804 recovery kits */
+
+/**
+ * SHA-256 over raw bytes, as lowercase hex.
+ *
+ * This is the renderer's half of the freeze: the native picker digests the file
+ * it resolved, and this digests the bytes that actually arrived. Only when the
+ * two agree does anything look inside them.
+ */
+async function recoveryKitDigestHex(bytes: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", bytes.slice().buffer);
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function recoveryKitUploadDependencies(): RecoveryKitUploadDependencies {
+  return {
+    pickFile: () => pickHubRecoveryKitFile(),
+    readBytes: async (picked) => {
+      const bytes = decodeRecoveryKitBytes(picked.bytesBase64);
+      if (bytes === null) throw new Error("recovery kit bytes are unreadable");
+      return bytes;
+    },
+    digestHex: recoveryKitDigestHex,
+    // Both authorities are asked on both screens. Forgot Password runs on a
+    // device that still holds its account, so `localUserId` is the account
+    // being reset; Restore Account runs on a device that holds nothing, so the
+    // only authority there is the identity the backend derives from the kit's
+    // own identity phrase. Asking for both means neither screen depends on the
+    // one that happens to be silent for it.
+    resolveIdentity: async (document, picked) => ({
+      localUserId: picked.localUserId,
+      derivedUserId: await deriveHubRecoveryKitIdentity(document.identityWords.join(" ")).catch(() => null),
+    }),
+  };
+}
+
+function recoveryKitWordBoxesFor(slot: RecoveryKitSlot): RecoveryWordBoxes {
+  return slot === "password" ? forgotPasswordWordBoxes : restoreAccountWordBoxes;
+}
+
+function setRecoveryKitWordBoxes(slot: RecoveryKitSlot, boxes: RecoveryWordBoxes): void {
+  if (slot === "password") forgotPasswordWordBoxes = boxes;
+  else restoreAccountWordBoxes = boxes;
+}
+
+/**
+ * Keep the hidden aggregate the existing submit paths read in step with the
+ * boxes without re-rendering, because re-rendering on every keystroke would
+ * take the caret out of the box being typed in.
+ */
+function syncRecoveryPhraseField(slot: RecoveryKitSlot): void {
+  const id = slot === "password" ? "account-recovery-phrase" : "identity-recovery-phrase";
+  const field = document.querySelector<HTMLInputElement>(`#${id}`);
+  if (!field) return;
+  field.value = recoveryWordBoxesPhrase(recoveryKitWordBoxesFor(slot));
+  field.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+async function runRecoveryKitUpload(slot: RecoveryKitSlot, chip: HTMLButtonElement): Promise<void> {
+  if (recoveryKitUploadBusy) return;
+  recoveryKitUploadBusy = true;
+  chip.disabled = true;
+  try {
+    const outcome = await loadRecoveryKitFile(slot, recoveryKitUploadDependencies());
+    // Cancellation returns the very same object, so this assignment is what
+    // "cancelling changes nothing" looks like rather than a special case.
+    setRecoveryKitWordBoxes(slot, applyRecoveryKitOutcome(recoveryKitWordBoxesFor(slot), outcome));
+  } finally {
+    recoveryKitUploadBusy = false;
+    render();
+    syncRecoveryPhraseField(slot);
+  }
+}
+
+function bindRecoveryKitWordBoxes(): void {
+  document.querySelectorAll<HTMLInputElement>("[data-recovery-word]").forEach((input) => {
+    input.addEventListener("input", () => {
+      const slot = input.dataset.recoveryWordSlot === "password" ? "password" : "identity";
+      const position = Number(input.dataset.recoveryWord ?? "0");
+      setRecoveryKitWordBoxes(slot, typeRecoveryWord(recoveryKitWordBoxesFor(slot), position, input.value));
+      syncRecoveryPhraseField(slot);
+    });
+  });
+  document.querySelectorAll<HTMLButtonElement>("[data-recovery-kit-upload]").forEach((chip) => {
+    chip.addEventListener("click", () => {
+      const slot = chip.dataset.recoveryKitUpload === "password" ? "password" : "identity";
+      void runRecoveryKitUpload(slot, chip);
+    });
+  });
 }
 
 function formValue(form: HTMLFormElement, name: string): string {
@@ -4052,7 +4166,11 @@ function isVerifiedBurnGate(gate: Awaited<ReturnType<typeof unlockHubPasswordGat
 
 function bindImportForm(): void {
   const form = document.querySelector<HTMLFormElement>("#identity-import-form");
-  const phrase = document.querySelector<HTMLTextAreaElement>("#identity-recovery-phrase");
+  // TASK 6804: this is now the hidden aggregate the twelve numbered boxes
+  // write into, not the textarea it used to be. It keeps its id and its value
+  // semantics, so everything below reads the same twelve words it always did.
+  const phrase = document.querySelector<HTMLInputElement>("#identity-recovery-phrase");
+  const firstWordBox = document.querySelector<HTMLInputElement>("#identity-recovery-word-1");
   const password = document.querySelector<HTMLInputElement>("#import-password");
   const confirm = document.querySelector<HTMLInputElement>("#import-password-confirm");
   const submit = document.querySelector<HTMLButtonElement>("#identity-import-submit");
@@ -4071,6 +4189,10 @@ function bindImportForm(): void {
     let phraseSecret = phrase.value;
     let passwordSecret = password.value;
     phrase.value = "";
+    // TASK 6804: the visible words are the twelve boxes now, so clearing the
+    // aggregate alone would leave the phrase on screen after submission.
+    restoreAccountWordBoxes = emptyRecoveryWordBoxes();
+    document.querySelectorAll<HTMLInputElement>('[data-recovery-word-slot="identity"]').forEach((box) => { box.value = ""; });
     password.value = "";
     confirm.value = "";
     submit.disabled = true;
@@ -4101,7 +4223,7 @@ function bindImportForm(): void {
       if (!refreshedCore) {
         error.textContent = "OSL could not verify the recovered account. Try again.";
         submit.disabled = false;
-        phrase.focus();
+        firstWordBox?.focus();
         return;
       }
       core = refreshedCore;
@@ -4122,7 +4244,7 @@ function bindImportForm(): void {
         ? "Account recovered. Create its password to continue."
         : localActionError(failure, "Recovery was rejected or secure storage is unavailable.");
       submit.disabled = false;
-      phrase.focus();
+      firstWordBox?.focus();
     }
   });
 }

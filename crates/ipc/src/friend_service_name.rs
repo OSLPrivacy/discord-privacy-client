@@ -171,7 +171,8 @@ pub fn save_friend_service_name_file_state(
     state: &FriendServiceNameFileState,
 ) -> Result<(), String> {
     state.validate()?;
-    fs::create_dir_all(dir).map_err(|_| "OSL friend service name storage is unavailable".to_owned())?;
+    fs::create_dir_all(dir)
+        .map_err(|_| "OSL friend service name storage is unavailable".to_owned())?;
     let body = serde_json::to_vec(state)
         .map_err(|_| "OSL friend service name list could not be encoded".to_owned())?;
     let sealed = crate::main_password::maybe_encrypt(&body)?;
@@ -180,7 +181,9 @@ pub fn save_friend_service_name_file_state(
         .map_err(|_| "OSL friend service name list could not be persisted".to_owned())
 }
 
-pub fn load_friend_service_name_file_state(dir: &Path) -> Result<FriendServiceNameFileState, String> {
+pub fn load_friend_service_name_file_state(
+    dir: &Path,
+) -> Result<FriendServiceNameFileState, String> {
     let path = dir.join(BINDING_STATE_FILE);
     if !path.exists() {
         return Ok(FriendServiceNameFileState::new());

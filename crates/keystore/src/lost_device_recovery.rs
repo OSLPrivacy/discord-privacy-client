@@ -170,28 +170,72 @@ impl LostDeviceRecoveryKit {
         Ok(kit)
     }
 
-    pub fn load(path: &Path) -> Result<Self, LostDeviceRecoveryError> {
-        let bytes = Zeroizing::new(
-            fs::read(path).map_err(|error| LostDeviceRecoveryError::KitIo(error.to_string()))?,
+    /// Open a kit written by [`Self::save_protected`].
+    ///
+    /// A wrong passphrase, a wrong domain or one altered byte returns
+    /// `KitProtection` and no key material at all.
+    pub fn open_protected(path: &Path, passphrase: &str) -> Result<Self, LostDeviceRecoveryError> {
+        let sealed =
+            fs::read(path).map_err(|error| LostDeviceRecoveryError::KitIo(error.to_string()))?;
+        let body = crate::secret_at_rest::open_with_passphrase(
+            LOST_DEVICE_RECOVERY_KIT_DOMAIN,
+            passphrase,
+            &sealed,
+        )
+        .map_err(|error| LostDeviceRecoveryError::KitProtection(error.to_string()))?;
+        let kit = Self::from_bytes(&body)?;
+        crate::secret_trace::record(
+            crate::secret_trace::SecretOp::Read,
+            crate::secret_trace::SecretClass::RecoveryAuthority,
+            crate::secret_trace::Protection::UserDerivedAead,
+            "keystore::lost_device_recovery::LostDeviceRecoveryKit::open_protected",
+            path,
+            sealed.len(),
         );
-        Self::from_bytes(&bytes)
+        Ok(kit)
     }
 
     /// Create a new file; never overwrite another kit.
-    pub fn save(&self, path: &Path) -> Result<(), LostDeviceRecoveryError> {
+    ///
+    /// TASK 5402: this used to be `save`, writing [`Self::to_bytes`] straight
+    /// to disk — the thirty-two-byte Ed25519 recovery-authority seed in the
+    /// clear, in the artifact a user is told to keep somewhere durable and
+    /// off-device. It is now authenticated ciphertext under an Argon2id key
+    /// derived from `passphrase` and from nothing that is stored beside it.
+    /// User-derived rather than device-sealed, because this kit's whole job is
+    /// to still open when every device is gone.
+    pub fn save_protected(
+        &self,
+        path: &Path,
+        passphrase: &str,
+    ) -> Result<(), LostDeviceRecoveryError> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
                 .map_err(|error| LostDeviceRecoveryError::KitIo(error.to_string()))?;
         }
+        let sealed = crate::secret_at_rest::seal_with_passphrase(
+            LOST_DEVICE_RECOVERY_KIT_DOMAIN,
+            passphrase,
+            &self.to_bytes(),
+        )
+        .map_err(|error| LostDeviceRecoveryError::KitProtection(error.to_string()))?;
         let mut file = OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(path)
             .map_err(|error| LostDeviceRecoveryError::KitIo(error.to_string()))?;
-        let bytes = self.to_bytes();
-        file.write_all(&bytes)
+        file.write_all(&sealed)
             .and_then(|_| file.sync_all())
-            .map_err(|error| LostDeviceRecoveryError::KitIo(error.to_string()))
+            .map_err(|error| LostDeviceRecoveryError::KitIo(error.to_string()))?;
+        crate::secret_trace::record(
+            crate::secret_trace::SecretOp::Write,
+            crate::secret_trace::SecretClass::RecoveryAuthority,
+            crate::secret_trace::Protection::UserDerivedAead,
+            "keystore::lost_device_recovery::LostDeviceRecoveryKit::save_protected",
+            path,
+            sealed.len(),
+        );
+        Ok(())
     }
 
     pub fn prepare_replacement(
@@ -269,9 +313,10 @@ impl LostDeviceRecoveryService {
     pub fn bootstrap(
         initial_device_keys: Vec<[u8; ed25519::PUBLIC_KEY_SIZE]>,
         issued_kit_path: &Path,
+        issued_kit_passphrase: &str,
     ) -> Result<(Self, LostDeviceRecoveryKit), LostDeviceRecoveryError> {
         let kit = LostDeviceRecoveryKit::generate(0);
-        kit.save(issued_kit_path)?;
+        kit.save_protected(issued_kit_path, issued_kit_passphrase)?;
         let service = Self {
             inner: Arc::new(Mutex::new(LostDeviceRecoveryServiceInner {
                 recovery: LostDeviceRecoveryState {
@@ -480,14 +525,41 @@ pub struct PackagedReplacementProfile {
     device_keys: DevicePrivateKeys,
     device_key_path: PathBuf,
     successor_kit_path: PathBuf,
+    /// The passphrase this profile's successor kit is sealed under. Held only
+    /// in memory for the life of the recovery; nothing writes it to the
+    /// profile, which is the whole point of TASK 5402's "never persisted in
+    /// plaintext beside it".
+    successor_kit_passphrase: String,
 }
 
 impl PackagedReplacementProfile {
+    /// `successor_kit_passphrase` protects the successor recovery kit this
+    /// profile will write. It is never stored in the profile.
     pub fn new_clean(
         profile_dir: impl Into<PathBuf>,
         device_name: impl Into<String>,
+        successor_kit_passphrase: impl Into<String>,
+    ) -> Result<Self, LostDeviceRecoveryError> {
+        let sealer = crate::sealer::select_best_sealer();
+        Self::new_clean_with_sealer(
+            profile_dir,
+            device_name,
+            successor_kit_passphrase,
+            sealer.as_ref(),
+        )
+    }
+
+    /// [`Self::new_clean`] against an explicit device sealer.
+    pub fn new_clean_with_sealer(
+        profile_dir: impl Into<PathBuf>,
+        device_name: impl Into<String>,
+        successor_kit_passphrase: impl Into<String>,
+        sealer: &dyn crate::sealer::Sealer,
     ) -> Result<Self, LostDeviceRecoveryError> {
         let profile_dir = profile_dir.into();
+        let successor_kit_passphrase = successor_kit_passphrase.into();
+        crate::secret_at_rest::validate_kit_passphrase(&successor_kit_passphrase)
+            .map_err(|error| LostDeviceRecoveryError::KitProtection(error.to_string()))?;
         if profile_dir.exists() {
             let mut entries = fs::read_dir(&profile_dir)
                 .map_err(|error| LostDeviceRecoveryError::ProfileIo(error.to_string()))?;
@@ -501,7 +573,7 @@ impl PackagedReplacementProfile {
         let device_keys = DevicePrivateKeys::generate_on_device(device_name);
         let device_key_path = profile_dir.join("device-private-keys.bin");
         device_keys
-            .write_private_key_file(&device_key_path)
+            .save_sealed_private_key_file(&device_key_path, sealer)
             .map_err(|error| LostDeviceRecoveryError::ProfileIo(error.to_string()))?;
         let successor_kit_path = profile_dir.join("recovery-kit.osl");
         Ok(Self {
@@ -509,7 +581,12 @@ impl PackagedReplacementProfile {
             device_keys,
             device_key_path,
             successor_kit_path,
+            successor_kit_passphrase,
         })
+    }
+
+    pub fn successor_kit_passphrase(&self) -> &str {
+        &self.successor_kit_passphrase
     }
 
     pub fn replacement_device_key(&self) -> [u8; ed25519::PUBLIC_KEY_SIZE] {
@@ -525,7 +602,10 @@ impl PackagedReplacementProfile {
     }
 
     pub fn saved_successor_kit(&self) -> Result<LostDeviceRecoveryKit, LostDeviceRecoveryError> {
-        LostDeviceRecoveryKit::load(&self.successor_kit_path)
+        LostDeviceRecoveryKit::open_protected(
+            &self.successor_kit_path,
+            &self.successor_kit_passphrase,
+        )
     }
 
     pub fn receive_messages(
@@ -557,7 +637,10 @@ impl ProductionRecoveryClient {
     ) -> Result<RecoveryAuthorization, LostDeviceRecoveryError> {
         // Save before release so a successful atomic grant can never be a
         // dead-end. A losing unaccepted successor is removed immediately.
-        prepared.successor_kit.save(profile.successor_kit_path())?;
+        prepared.successor_kit.save_protected(
+            profile.successor_kit_path(),
+            profile.successor_kit_passphrase(),
+        )?;
         match service.authorize_replacement(prepared.declaration) {
             Ok(authorization) => Ok(authorization),
             Err(error) => {
@@ -593,6 +676,9 @@ pub enum LostDeviceRecoveryError {
     ServiceUnavailable,
     ProfileNotClean,
     KitIo(String),
+    /// The kit's at-rest envelope refused: wrong passphrase, wrong domain,
+    /// altered bytes, or weakened Argon2id parameters.
+    KitProtection(String),
     ProfileIo(String),
 }
 
@@ -618,6 +704,9 @@ impl fmt::Display for LostDeviceRecoveryError {
             Self::ServiceUnavailable => f.write_str("recovery service unavailable"),
             Self::ProfileNotClean => f.write_str("replacement profile is not clean"),
             Self::KitIo(error) => write!(f, "recovery kit I/O failed: {error}"),
+            Self::KitProtection(detail) => {
+                write!(f, "recovery kit at-rest protection refused: {detail}")
+            }
             Self::ProfileIo(error) => write!(f, "replacement profile I/O failed: {error}"),
         }
     }

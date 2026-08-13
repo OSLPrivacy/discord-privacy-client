@@ -781,8 +781,11 @@ fn task_4816_copy_my_history_preserves_semantic_manifest() {
     let phrase = bip39::Mnemonic::from_entropy_in(bip39::Language::English, &[0x48; 16])
         .unwrap()
         .to_string();
-    let result = cmd_osl_copy_my_history_here(&copy_state, package, phrase)
+    let result = cmd_osl_copy_my_history_here(&copy_state, package.clone(), phrase.clone())
         .expect("real Copy my history here click");
+    let retry_result = cmd_osl_copy_my_history_here(&copy_state, package, phrase)
+        .expect("idempotent history-copy retry");
+    assert_eq!(retry_result, result);
     assert_eq!(result.action_label, COPY_MY_HISTORY_HERE_ACTION_LABEL);
     assert_eq!(result.copied_count, ITEM_COUNT);
     assert_eq!(result.source_to_copy_ids.len(), ITEM_COUNT);
@@ -979,6 +982,34 @@ fn task_4816_copy_my_history_preserves_semantic_manifest() {
     println!("TASK4816 persisted_meter_after_restart={persisted_meter}");
     println!("TASK4816 starvation_subprocesses=16 all_exit_1=true");
     println!("TASK4816 mutation_subprocesses=5 all_exit_1=true");
+    if std::env::var_os("OSL_TASK4823_NEUTRAL_RETRY_WRITER").is_none() {
+        let output = spawn_ignored("task_4816_neutral_retry_writer_child", "neutralRetryWriter");
+        let text = child_text(&output);
+        assert_eq!(output.status.code(), Some(1), "{text}");
+        assert!(text.contains("neutral_cache_checkpoint"), "{text}");
+        println!("TASK4816 neutral_retry_writer=neutral_cache_checkpoint exit=1");
+    }
+}
+
+#[test]
+#[ignore = "throwaway child normalizes the deliberately red gate to exit 1"]
+fn task_4816_neutral_retry_writer_child() {
+    let output = Command::new(std::env::current_exe().expect("current test binary"))
+        .args([
+            "--exact",
+            "task_4816_copy_my_history_preserves_semantic_manifest",
+            "--nocapture",
+        ])
+        .env("OSL_TASK4823_NEUTRAL_RETRY_WRITER", "1")
+        .output()
+        .unwrap();
+    let text = child_text(&output);
+    assert_eq!(output.status.code(), Some(101), "{text}");
+    assert!(text.contains("neutral_cache_checkpoint"), "{text}");
+    eprintln!(
+        "TASK4816 unclassified writer=neutral_cache_checkpoint effect=retry_conditional_write"
+    );
+    std::process::exit(1);
 }
 
 #[test]

@@ -1,5 +1,27 @@
+use crate::secret_trace::{self, Protection, SecretClass};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+
+/// [`write_recoverable`] for a payload that carries secret material.
+///
+/// TASK 5402: the caller declares the class and the protection it already
+/// applied, and this records the committed file AND the two companions this
+/// primitive creates. The `.bak` companion is a complete previous copy of the
+/// record, so an at-rest audit that only ever looked at `identity.json` would
+/// be blind to a full second copy of the same secret sitting beside it.
+pub(crate) fn write_recoverable_secret(
+    path: &Path,
+    bytes: &[u8],
+    class: SecretClass,
+    protection: Protection,
+    writer: &'static str,
+) -> std::io::Result<()> {
+    let result = write_recoverable(path, bytes);
+    if result.is_ok() {
+        secret_trace::record_recoverable_write(class, protection, writer, path, bytes.len());
+    }
+    result
+}
 
 pub(crate) fn write_recoverable(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let parent = path

@@ -10,6 +10,7 @@ use osl_privacy_hub::broker::{
 };
 use osl_privacy_hub::core_bridge::HubCoreState;
 use osl_privacy_hub::peer_attachment_io;
+use osl_privacy_hub::protected_download_quarantine;
 use osl_privacy_hub::security::HubSecurityState;
 use osl_privacy_hub::service_host::ActiveServiceHost;
 use std::fs::File;
@@ -771,8 +772,14 @@ fn open_pending_inner(
             opened_in_native_viewer: true,
         });
     }
+    // TASK 5166: the plaintext's first and only home is the access-controlled
+    // OSL-private quarantine. `decrypt_target_root` is the quarantine root, so
+    // the streaming decryptor below never writes a protected byte into the
+    // staging directory an external reader can be pointed at.
+    let quarantine =
+        protected_download_quarantine::ProtectedDownloadQuarantine::for_app_root(&local_root)?;
     let opened = match peer_attachment_io::decrypt_file(
-        &local_root,
+        quarantine.decrypt_target_root(),
         &mut sealed,
         &plan.original_filename,
         &plan.mime_type,
@@ -812,6 +819,49 @@ fn open_pending_inner(
         plaintext_size: plan.plaintext_size,
         view_once_consumed: plan.view_once,
         opened_in_native_viewer: true,
+    };
+    // TASK 5166: nothing reaches an external reader until the exact quarantined
+    // bytes have come back explicitly clean from the local AMSI provider and
+    // still hash the same at move time. Absence, error, timeout, detection and
+    // stale signatures all land in the `Withheld` arm, which exposes no byte and
+    // returns the local quarantine reason in OSL's own words.
+    let staged = opened
+        .release_to_external_reader()
+        .ok_or_else(|| "the decrypted attachment is no longer staged".to_owned())?;
+    let quarantine_path = staged.path().to_owned();
+    let held = match quarantine.adopt(quarantine_path.clone()) {
+        Ok(held) => held,
+        Err(error) => {
+            let _ = peer_attachment_io::remove_plaintext_with_retries(
+                quarantine.decrypt_target_root(),
+                &quarantine_path,
+            );
+            return Err(error);
+        }
+    };
+    let exposed = match quarantine.scan_and_release(
+        held,
+        &protected_download_quarantine::WindowsAmsiProvider::new(),
+        protected_download_quarantine::now_unix_seconds(),
+    ) {
+        protected_download_quarantine::ProtectedDownloadOutcome::Exposed(exposed) => exposed,
+        protected_download_quarantine::ProtectedDownloadOutcome::Withheld(withheld) => {
+            let _ = quarantine.discard_withheld(&withheld);
+            return Err(withheld.local_reason_text);
+        }
+    };
+    let opened = match peer_attachment_io::adopt_released_plaintext(
+        &local_root,
+        exposed.path.clone(),
+        &plan.original_filename,
+        &plan.mime_type,
+        exposed.bytes_exposed,
+    ) {
+        Ok(opened) => opened,
+        Err(error) => {
+            let _ = peer_attachment_io::remove_plaintext_with_retries(&local_root, &exposed.path);
+            return Err(error);
+        }
     };
     // Replay is committed and the encrypted inbox capability is already gone, so
     // the remote burn cannot reopen this attachment. Hand the decrypted copy to

@@ -97,6 +97,12 @@ pub(crate) mod firefox_migration_coordinator;
 #[cfg(feature = "core")]
 pub mod friend_account_reach;
 pub mod front_window_grab;
+/// TASK 6832: real GIF messages — provider search and direct-file picks fetched
+/// through the client privacy proxy, tracker-stripped, then encrypted as
+/// ordinary attachments under the same channel keys. Pure above its transport
+/// seam, so the whole contract is testable in every build that can compile this
+/// crate.
+pub mod gif_message;
 pub mod hosted_audience;
 pub mod hosted_port;
 pub mod hosted_provider_recipe;
@@ -170,6 +176,13 @@ pub mod pro_marked_deletion;
 pub mod pro_marked_deletion_outcomes;
 pub mod proprietary_module_boundary;
 pub mod proprietary_module_lifecycle;
+// TASK 5166: the quarantine-and-AMSI boundary every protected download crosses
+// before any byte is visible outside OSL. Deliberately ungated and dependent on
+// nothing but std/sha2/hex/base64, so the 5166b bypass harness can compile this
+// exact source file on its own.
+pub mod download_zone_handoff;
+pub mod protected_download_final_save;
+pub mod protected_download_quarantine;
 pub mod scrub_erasure;
 pub mod scrub_erasure_queue;
 pub mod scrub_erasure_tracker;

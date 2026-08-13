@@ -1,4 +1,3 @@
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BadMessageRuleChoice {
@@ -70,7 +69,6 @@ pub enum BadMessageMatchTreatment {
 }
 
 impl BadMessageMatchTreatment {
-
     pub fn as_str(self) -> &'static str {
         match self {
             Self::PossibleMatch => "possible_match",
@@ -262,9 +260,8 @@ mod tests {
 
         assert!(rules.iter().all(|rule| !rule.id.is_empty()));
         assert!(rules.iter().all(|rule| !rule.explanation.is_empty()));
-    use super::*;
+        use super::*;
     }
-
 
     #[test]
     fn task_1412_saves_two_rules_and_two_words_as_possible_matches() {

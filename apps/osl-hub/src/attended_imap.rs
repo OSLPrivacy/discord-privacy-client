@@ -4,18 +4,9 @@
 //! inspection results, deterministic local fixture, and delete-authority checks
 //! that a reviewed IMAP adapter must satisfy before it can mutate a mailbox.
 
-use std::collections::{
-    BTreeMap,
-    BTreeSet,
-};
-use serde::{
-    Deserialize,
-    Serialize,
-};
-use sha2::{
-    Digest,
-    Sha256,
-};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use zeroize::Zeroizing;
 

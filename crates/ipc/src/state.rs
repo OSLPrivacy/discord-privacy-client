@@ -195,6 +195,10 @@ pub struct AppState {
     /// directory is process-global, so two concurrent switch commands must
     /// never interleave validation, marker updates, and state reloads.
     pub account_switch_lock: Mutex<()>,
+    /// Linearizes discovery publish/reply/master-switch work in this client.
+    /// The key server provides the cross-request ordering; this lock prevents
+    /// the UI command path from releasing a publish in the middle of off.
+    pub discovery_transition_lock: Mutex<()>,
     pub identity: Mutex<Option<Identity>>,
     /// Live prekey lifecycle for the loaded identity. This is absent
     /// until an identity is explicitly installed; default AppState must
@@ -446,6 +450,7 @@ impl Default for AppState {
     fn default() -> Self {
         Self {
             account_switch_lock: Mutex::new(()),
+            discovery_transition_lock: Mutex::new(()),
             identity: Mutex::new(None),
             prekey_state: Mutex::new(None),
             keyserver: Mutex::new(None),

@@ -1,0 +1,39 @@
+{
+  "controls": [
+    {
+      "name": "OSL blue",
+      "role": "radio"
+    },
+    {
+      "name": "High contrast",
+      "role": "checkbox"
+    },
+    {
+      "name": "Custom accent",
+      "role": "button"
+    },
+    {
+      "name": "Save",
+      "role": "button"
+    },
+    {
+      "name": "Reset",
+      "role": "button"
+    }
+  ],
+  "image": {
+    "bytes": 24827,
+    "colors": 730,
+    "height": 768,
+    "sha256": "f1399e186a329859dc1a7ecdb893d90e30735565f6fe021daf268dc11b3485b8",
+    "width": 1024
+  },
+  "schema": "osl-task-0774-look-screen-tree-v1",
+  "screen": "1024x768x24",
+  "selected": "Custom accent",
+  "title": {
+    "name": "Look",
+    "role": "heading"
+  },
+  "variant": "custom-accent"
+}

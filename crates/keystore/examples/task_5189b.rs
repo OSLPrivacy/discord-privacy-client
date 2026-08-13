@@ -3,6 +3,11 @@ use keystore::{
     LostDeviceRecoveryService, PackagedReplacementProfile, PreparedLostDeviceRecovery,
     ProductionRecoveryClient, RecoveryAuthorization,
 };
+/// TASK 5402: a lost-device recovery kit is now written as authenticated
+/// ciphertext under an Argon2id key derived from this passphrase. It is the
+/// user-held secret the kit file itself never contains.
+const KIT_PASSPHRASE: &str = "task-5189-kit-passphrase";
+
 use std::{
     env,
     sync::{Arc, Barrier},
@@ -70,17 +75,17 @@ fn run() -> Result<String, String> {
         .collect::<Vec<_>>();
     let issued_kit_path = temp.path().join("issued-recovery-kit.osl");
     let (service, current_kit) =
-        LostDeviceRecoveryService::bootstrap(old_devices, &issued_kit_path)
+        LostDeviceRecoveryService::bootstrap(old_devices, &issued_kit_path, KIT_PASSPHRASE)
             .map_err(|error| format!("setup: {error}"))?;
     let service = Arc::new(service);
     let consumed_authority = current_kit.public_authority();
     let consumed_epoch = current_kit.recovery_epoch();
 
     let profile_a =
-        PackagedReplacementProfile::new_clean(temp.path().join("replacement-a"), "replacement-a")
+        PackagedReplacementProfile::new_clean(temp.path().join("replacement-a"), "replacement-a", KIT_PASSPHRASE)
             .map_err(|error| format!("setup: {error}"))?;
     let profile_b =
-        PackagedReplacementProfile::new_clean(temp.path().join("replacement-b"), "replacement-b")
+        PackagedReplacementProfile::new_clean(temp.path().join("replacement-b"), "replacement-b", KIT_PASSPHRASE)
             .map_err(|error| format!("setup: {error}"))?;
     let prepared_a = ProductionRecoveryClient::construct_declaration(&current_kit, &profile_a)
         .map_err(|error| format!("setup: {error}"))?;

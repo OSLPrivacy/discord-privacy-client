@@ -5,23 +5,16 @@
 //! handles, paths, plaintext, upload capabilities, and keys remain in the
 //! non-serializable secret half of each job and zeroize when replaced/removed.
 
-use sha2::{
-    Digest,
-    Sha256,
-};
-use zeroize::{
-    Zeroize,
-    Zeroizing,
-};
-#[cfg(windows)]
-use windows_sys::Win32::Security::Cryptography::{
-    BCRYPT_USE_SYSTEM_PREFERRED_RNG,
-    BCryptGenRandom,
-};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fmt;
 use std::io::Read;
+#[cfg(windows)]
+use windows_sys::Win32::Security::Cryptography::{
+    BCryptGenRandom, BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+};
+use zeroize::{Zeroize, Zeroizing};
 
 pub const MAX_ATTACHMENT_SIZE: u64 = 512 * 1024 * 1024;
 pub const MAX_CAPTION_BYTES: usize = 4_096;

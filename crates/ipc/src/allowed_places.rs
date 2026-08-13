@@ -30,7 +30,6 @@ pub enum AllowedPlaceStoreError {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AllowedPlaceRecord {
-
     pub app: String,
     pub account: String,
     pub kind: String,
@@ -39,7 +38,6 @@ pub struct AllowedPlaceRecord {
     pub place_name: String,
     #[serde(default)]
     pub person_name: String,
-
 }
 
 impl AllowedPlaceRecord {

@@ -838,6 +838,8 @@ mod tests {
         "reset_hub_main_password_after_recovery",
         "check_hub_password_reset_phrase",
         "check_hub_recovery_word_retype",
+        "pick_hub_recovery_kit_file",
+        "derive_hub_recovery_kit_identity",
         "get_hub_recovery_kit_unsaved",
         "set_hub_recovery_kit_unsaved",
         "get_coach_tip_state",

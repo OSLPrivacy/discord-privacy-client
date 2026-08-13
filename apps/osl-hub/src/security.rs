@@ -1255,6 +1255,30 @@ pub fn list_people(core: &HubCoreState) -> Result<Vec<PersonDto>, String> {
         .collect()
 }
 
+/// Complete, unprojected friend records for a portable owner export. Unlike
+/// `list_people`, this does not apply UI display caps to nested account-owned
+/// fields.
+pub fn account_export_friend_documents() -> Result<Vec<(String, serde_json::Value)>, String> {
+    require_unlocked()?;
+    let people = load_people_file(&config_dir()?)?;
+    people
+        .people
+        .into_iter()
+        .map(|(person_id, metadata)| {
+            serde_json::to_value(metadata)
+                .map(|value| (person_id, value))
+                .map_err(|_| "OSL friend record could not be encoded for export".to_owned())
+        })
+        .collect()
+}
+
+/// Complete encrypted account settings, decoded only inside the trusted core.
+pub fn account_export_settings_document() -> Result<serde_json::Value, String> {
+    require_unlocked()?;
+    serde_json::to_value(load_security_preferences()?)
+        .map_err(|_| "OSL settings could not be encoded for export".to_owned())
+}
+
 /// Set or clear a user-owned nickname for one friend. The nickname is written
 /// only to the encrypted device-local People file; it is never included in a
 /// friend code, peer key lookup, or Cloudflare request.
@@ -5831,7 +5855,10 @@ mod tests {
             &security,
             friend_a.clone(),
             vec![],
-            vec![FriendPageShareConversation { checked: true, ..conversation.clone() }],
+            vec![FriendPageShareConversation {
+                checked: true,
+                ..conversation.clone()
+            }],
             "off".to_owned(),
         )
         .unwrap();
@@ -5850,12 +5877,33 @@ mod tests {
             &security,
             friend_c.clone(),
             vec![],
-            vec![FriendPageShareConversation { checked: true, ..conversation.clone() }],
+            vec![FriendPageShareConversation {
+                checked: true,
+                ..conversation.clone()
+            }],
         )
         .unwrap();
-        let reopened_a = read_friend_page_share_data(&security, friend_a.clone(), vec![], vec![conversation.clone()]).unwrap();
-        let reopened_b = read_friend_page_share_data(&security, friend_b.clone(), vec![], vec![conversation.clone()]).unwrap();
-        let reopened_c = read_friend_page_share_data(&security, friend_c.clone(), vec![], vec![conversation.clone()]).unwrap();
+        let reopened_a = read_friend_page_share_data(
+            &security,
+            friend_a.clone(),
+            vec![],
+            vec![conversation.clone()],
+        )
+        .unwrap();
+        let reopened_b = read_friend_page_share_data(
+            &security,
+            friend_b.clone(),
+            vec![],
+            vec![conversation.clone()],
+        )
+        .unwrap();
+        let reopened_c = read_friend_page_share_data(
+            &security,
+            friend_c.clone(),
+            vec![],
+            vec![conversation.clone()],
+        )
+        .unwrap();
         let stored: SecurityPreferences =
             load_encrypted_json(&harness.path().join(SECURITY_PREFS_FILE)).unwrap();
         let cancelled_saved_changes = stored
@@ -5877,7 +5925,10 @@ mod tests {
         let mut throwaway = reopened_a.clone();
         throwaway.conversations[0].checked = false;
         let throwaway_check_fails = !choice(&throwaway);
-        assert!(throwaway_check_fails, "the throwaway Allow -> Block mutation must be detected");
+        assert!(
+            throwaway_check_fails,
+            "the throwaway Allow -> Block mutation must be detected"
+        );
 
         println!(
             "TASK0838 friend_share_actions friend_a={} reopened=Allow friend_b={} reopened=Block friend_c={} fresh_default=Block cancelled_saved_changes={} isolation={} throwaway_changed_values=1 throwaway_check=FAIL",
@@ -8325,12 +8376,9 @@ key"
             Vec::new(),
         )
         .expect("server-channel burn succeeds");
-        let after = ipc::commands::cmd_osl_load_channel_history(
-            &core.osl,
-            channel_id.to_owned(),
-            Some(10),
-        )
-        .expect("load channel history after burn");
+        let after =
+            ipc::commands::cmd_osl_load_channel_history(&core.osl, channel_id.to_owned(), Some(10))
+                .expect("load channel history after burn");
         let still_present = after.iter().any(|row| row.plaintext == mark);
         println!(
             "TASK0530 server_channel_burn rows_destroyed={} marked_channel_message_still_present={} marked=\"{}\"",

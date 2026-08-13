@@ -2861,6 +2861,10 @@ pub struct RehydrateDecodeCounts {
     pub store_unreachable: usize,
     /// The token resolved and a proof refused it, or a local precondition did.
     pub refused: usize,
+    /// Rows whose authenticated wire did not agree with the provider-owned row.
+    pub authentication_refused: usize,
+    /// Rows whose authenticated payload identity already appeared on this screen.
+    pub replay_refused: usize,
     /// Opened, and then withheld because re-showing it would spend it.
     pub view_once_skipped: usize,
     /// Rows this account really did open. The only tally the eye can paint from.
@@ -2937,10 +2941,11 @@ fn bounded_attribution_id(value: &str) -> bool {
 
 /// Validate the native half of the row proof before any pointer is opened.
 ///
-/// This is deliberately all-or-nothing. Row order and uniqueness describe a
-/// snapshot, not independent suggestions: accepting the remaining rows after a
-/// duplicate or reordered proof would let an ambiguous producer result choose
-/// which ciphertext is painted over which visible row.
+/// This is deliberately all-or-nothing for provider-owned row identity and
+/// order. Public carrier text is not unique: another row can copy it byte for
+/// byte. Treating that copy as a batch failure lets anyone erase every protected
+/// row on screen. Carrier replays are therefore decided per row only after the
+/// protected payload's own identity has authenticated.
 fn native_row_evidence_batch_is_valid(
     rows: &[crate::native_discord_adapter::VisibleMessageRow],
     scope_binding: &str,
@@ -2955,7 +2960,6 @@ fn native_row_evidence_batch_is_valid(
     let mut peer_poster_identity = None::<String>;
     let mut message_ids = HashSet::with_capacity(rows.len());
     let mut locators = HashSet::with_capacity(rows.len());
-    let mut carriers = HashSet::with_capacity(rows.len());
 
     rows.iter().enumerate().all(|(row_index, row)| {
         let Some(evidence) = row.attribution.as_ref() else {
@@ -3007,7 +3011,6 @@ fn native_row_evidence_batch_is_valid(
             && matching_carriers == 1
             && message_ids.insert(evidence.discord_message_id.clone())
             && locators.insert(evidence.native_locator_sha256.clone())
-            && carriers.insert(evidence.carrier_sha256.clone())
     })
 }
 
@@ -3023,25 +3026,6 @@ fn unproven_rehydrated_rows(
             bounds: row.bounds,
         })
         .collect()
-}
-
-fn rehydrated_attribution_ids_are_unique(rows: &[RehydratedNativeDiscordRow]) -> bool {
-    let mut discord_messages = HashSet::new();
-    let mut locators = HashSet::new();
-    let mut carriers = HashSet::new();
-    let mut blobs = HashSet::new();
-    let mut ciphertexts = HashSet::new();
-    let mut payloads = HashSet::new();
-    rows.iter()
-        .filter_map(|row| row.attribution.as_ref())
-        .all(|attribution| {
-            discord_messages.insert(attribution.discord_message_id.clone())
-                && locators.insert(attribution.native_locator_sha256.clone())
-                && carriers.insert(attribution.carrier_sha256.clone())
-                && blobs.insert(attribution.blob_id.clone())
-                && ciphertexts.insert(attribution.ciphertext_sha256.clone())
-                && payloads.insert(attribution.payload_id.clone())
-        })
 }
 
 /// Turn the rows read back out of Discord into the transcript the protected
@@ -3101,6 +3085,7 @@ pub fn rehydrate_native_discord_overlay_history(
     // Discord's own row shows through. Nothing is invented, nothing is dropped,
     // and no row is consumed -- the next edge reads again from scratch.
     let decode_deadline = Instant::now() + Duration::from_millis(REHYDRATE_DECODE_BUDGET_MS);
+    let mut payload_identities = PayloadIdentityStore::default();
     let rows = rehydrated_rows(
         rows.into_iter()
             .map(|row| (row.line, row.decode_candidates, row.bounds, row.attribution)),
@@ -3158,29 +3143,28 @@ pub fn rehydrate_native_discord_overlay_history(
                 counts.view_once_skipped += 1;
                 return None;
             }
-            match bind_authenticated_native_row(evidence, authenticated) {
-                Some(bound) => {
+            match bind_authenticated_native_row_once(
+                &mut payload_identities,
+                evidence,
+                authenticated,
+            ) {
+                NativeRowBindOutcome::Rendered(bound) => {
                     counts.plaintext += 1;
                     Some(bound)
                 }
-                None => {
+                NativeRowBindOutcome::AuthenticationRefused => {
+                    counts.authentication_refused += 1;
+                    counts.refused += 1;
+                    None
+                }
+                NativeRowBindOutcome::ReplayRefused => {
+                    counts.replay_refused += 1;
                     counts.refused += 1;
                     None
                 }
             }
         },
     );
-    let mut rows = rows;
-    if !rehydrated_attribution_ids_are_unique(&rows) {
-        let opened = counts.plaintext;
-        for row in &mut rows {
-            row.plaintext = None;
-            row.orientation = None;
-            row.attribution = None;
-        }
-        counts.plaintext = 0;
-        counts.refused += opened;
-    }
     Ok(RehydratedNativeDiscordTranscript { rows, counts })
 }
 
@@ -3738,11 +3722,63 @@ fn authenticate_native_overlay_wrapped_payload(
 /// only then decrypt and validate the payload's own bindings. Nothing is
 /// decrypted before an orientation has been proven, so widening `accepted` adds
 /// a second complete proof rather than removing part of the first.
+///
+/// Authenticated identity of one protected payload, independent of the public
+/// cover that happened to point at it. The message id comes from the decrypted
+/// payload; the sender key and nonce come from that same authenticated v3 wire.
+#[derive(Clone, Eq, Hash, PartialEq)]
+struct ProtectedPayloadIdentity {
+    message_id: String,
+    sender_key: [u8; 32],
+    nonce: [u8; crypto::aes_gcm::NONCE_SIZE],
+}
+
+/// Per-screen replay store. A new rehydration starts fresh so repainting a
+/// genuine history row does not turn it into a replay. Within one screenful,
+/// only an exact authenticated `(message id, sender key, nonce)` repeats.
+#[derive(Default)]
+struct PayloadIdentityStore {
+    seen: HashSet<ProtectedPayloadIdentity>,
+}
+
+impl PayloadIdentityStore {
+    fn remember_if_new(&mut self, identity: ProtectedPayloadIdentity) -> bool {
+        self.seen.insert(identity)
+    }
+}
+
+#[derive(Clone)]
 struct AuthenticatedProsePointer {
     payload: PeerProtectedPayload,
     orientation: PeerWireOrientation,
     blob_id: String,
     ciphertext_sha256: String,
+    identity: ProtectedPayloadIdentity,
+}
+
+enum NativeRowBindOutcome {
+    Rendered((String, RehydratedRowOrientation, RehydratedRowAttribution)),
+    AuthenticationRefused,
+    ReplayRefused,
+}
+
+/// Bind the authenticated payload to its provider-owned row before consulting
+/// the replay store. A copied cover posted by the wrong account therefore
+/// authentication-refuses without either becoming, or poisoning, a replay.
+fn bind_authenticated_native_row_once(
+    identities: &mut PayloadIdentityStore,
+    evidence: &crate::native_discord_adapter::NativeDiscordRowAttributionEvidence,
+    authenticated: AuthenticatedProsePointer,
+) -> NativeRowBindOutcome {
+    let identity = authenticated.identity.clone();
+    let Some(bound) = bind_authenticated_native_row(evidence, authenticated) else {
+        return NativeRowBindOutcome::AuthenticationRefused;
+    };
+    if identities.remember_if_new(identity) {
+        NativeRowBindOutcome::Rendered(bound)
+    } else {
+        NativeRowBindOutcome::ReplayRefused
+    }
 }
 
 /// Join one native visible-row proof to one already authenticated protected
@@ -3849,6 +3885,8 @@ fn authenticate_oriented_prose_pointer(
             verify_manual_v3(core, &verified, &recovered.wire, orientation.wire_sender()).is_ok()
         })
         .ok_or(PeerProsePointerFailure::Rejected)?;
+    let inspected = inspect_v3_wire(&recovered.wire, ipc::wire_v2::MSG_TYPE_CONTENT)
+        .map_err(|_| PeerProsePointerFailure::Rejected)?;
     let context = broker.context_for(context_token)?;
     let payload =
         decrypt_direct_manual_v3(core, &verified, orientation.wire_sender(), &recovered.wire)
@@ -3873,11 +3911,17 @@ fn authenticate_oriented_prose_pointer(
     validate_authenticated_sender_order_scope(core, &verified, &context, &payload)
         .map_err(|_| PeerProsePointerError::Pointer(PeerProsePointerFailure::Rejected))?;
     let ciphertext_sha256 = sha256_hex(recovered.wire.as_bytes());
+    let identity = ProtectedPayloadIdentity {
+        message_id: payload.message_id.clone(),
+        sender_key: inspected.sender_ik,
+        nonce: inspected.body_nonce,
+    };
     Ok(AuthenticatedProsePointer {
         payload,
         orientation,
         blob_id: recovered.blob_id,
         ciphertext_sha256,
+        identity,
     })
 }
 
@@ -7382,9 +7426,9 @@ fn peer_prose_token_outcome(
 struct InspectedV3Content {
     sender_ik: [u8; 32],
     recipient_hashes: Vec<[u8; 8]>,
+    body_nonce: [u8; crypto::aes_gcm::NONCE_SIZE],
 }
 
-#[cfg(test)]
 fn inspect_v3_content_wire(wire: &str) -> Result<InspectedV3Content, ()> {
     inspect_v3_wire(wire, ipc::wire_v2::MSG_TYPE_CONTENT)
 }
@@ -7403,7 +7447,10 @@ fn inspect_v3_wire(wire: &str, expected_message_type: u8) -> Result<InspectedV3C
         .checked_mul(ipc::wire_v2::SLOT_V3_BYTES)
         .ok_or(())?;
     let slots_end = 35usize.checked_add(slots_bytes).ok_or(())?;
-    if raw.len() < slots_end + 12 + 16 {
+    let body_nonce_end = slots_end
+        .checked_add(crypto::aes_gcm::NONCE_SIZE)
+        .ok_or(())?;
+    if raw.len() < body_nonce_end + crypto::aes_gcm::TAG_SIZE {
         return Err(());
     }
     let mut sender_ik = [0u8; 32];
@@ -7415,9 +7462,12 @@ fn inspect_v3_wire(wire: &str, expected_message_type: u8) -> Result<InspectedV3C
         hash.copy_from_slice(&raw[start..start + 8]);
         recipient_hashes.push(hash);
     }
+    let mut body_nonce = [0u8; crypto::aes_gcm::NONCE_SIZE];
+    body_nonce.copy_from_slice(&raw[slots_end..body_nonce_end]);
     Ok(InspectedV3Content {
         sender_ik,
         recipient_hashes,
+        body_nonce,
     })
 }
 
@@ -15371,6 +15421,7 @@ mod tests {
         let valid_receive = InspectedV3Content {
             sender_ik: selected_friend,
             recipient_hashes: vec![friend_hash, self_hash],
+            body_nonce: [0x51; crypto::aes_gcm::NONCE_SIZE],
         };
         assert!(verify_inspected_manual_v3(
             &valid_receive,
@@ -15382,6 +15433,7 @@ mod tests {
         let wrong_recipient = InspectedV3Content {
             sender_ik: selected_friend,
             recipient_hashes: vec![self_hash, [0x99; 8]],
+            body_nonce: [0x52; crypto::aes_gcm::NONCE_SIZE],
         };
         assert!(verify_inspected_manual_v3(
             &wrong_recipient,
@@ -16618,9 +16670,18 @@ ok i will weekend again with you",
     fn bridge_era_evidence(
         poster: crate::native_discord_adapter::NativeDiscordRowPoster,
     ) -> crate::native_discord_adapter::NativeDiscordRowAttributionEvidence {
+        let who_wrote_it = match poster {
+            crate::native_discord_adapter::NativeDiscordRowPoster::SelfAccount => {
+                crate::native_discord_adapter::SharedRowWhoWroteIt::Yours
+            }
+            crate::native_discord_adapter::NativeDiscordRowPoster::PeerAccount => {
+                crate::native_discord_adapter::SharedRowWhoWroteIt::Theirs
+            }
+        };
         crate::native_discord_adapter::NativeDiscordRowAttributionEvidence {
             discord_message_id: "111111111111111111".to_owned(),
             poster_identity_sha256: "a".repeat(64),
+            who_wrote_it,
             poster,
             native_locator_sha256: "b".repeat(64),
             carrier_sha256: "c".repeat(64),
@@ -16636,6 +16697,7 @@ ok i will weekend again with you",
         plaintext: &str,
         fill: char,
     ) -> AuthenticatedProsePointer {
+        let identity_byte = u8::try_from(u32::from(fill)).expect("matrix fill is ASCII");
         AuthenticatedProsePointer {
             payload: PeerProtectedPayload {
                 version: PEER_PROTECTED_VERSION,
@@ -16659,6 +16721,11 @@ ok i will weekend again with you",
             orientation,
             blob_id: fill.to_string().repeat(32),
             ciphertext_sha256: fill.to_string().repeat(64),
+            identity: ProtectedPayloadIdentity {
+                message_id: payload_id.to_owned(),
+                sender_key: [identity_byte; 32],
+                nonce: [identity_byte; crypto::aes_gcm::NONCE_SIZE],
+            },
         }
     }
 
@@ -16674,6 +16741,192 @@ ok i will weekend again with you",
             bounds: Some([10, top, 500, top + 24]),
             attribution: Some(evidence),
         }
+    }
+
+    fn task_5093_evidence(
+        message_id: &str,
+        poster_identity: &str,
+        carrier: &str,
+        seed: i32,
+        row_index: usize,
+    ) -> crate::native_discord_adapter::NativeDiscordRowAttributionEvidence {
+        crate::native_discord_adapter::native_row_attribution_from_provider(
+            matrix_native_observation(message_id, poster_identity, carrier, seed),
+            &[carrier.to_owned()],
+            "trusted-scope",
+            7,
+            row_index,
+        )
+        .expect("native row evidence is complete")
+    }
+
+    fn task_5093_real_authenticated_payload() -> AuthenticatedProsePointer {
+        let pair = native_manual_pair("task-5093-payload-identity");
+        let wire = prepare_direct_manual_v3(
+            &pair.core,
+            &pair.alice_binding,
+            &pair.alice_manual,
+            &pair.alice_context,
+            "task 5093 private words: juniper ember copper".to_owned(),
+            PeerProtectionPolicy {
+                view_once: false,
+                require_capture_protection: true,
+                created_at: 1_700_000_000,
+                expires_at: 1_700_003_600,
+                send_order: None,
+            },
+            "peer-50930000000000000000000000000000".to_owned(),
+            None,
+        )
+        .expect("shipping v3 path encrypts the genuine payload");
+        let inspected = inspect_v3_content_wire(&wire).expect("shipping v3 wire is inspectable");
+        assert_eq!(inspected.sender_ik, *pair.alice.x25519_public.as_bytes());
+        let payload = decrypt_direct_manual_v3(
+            &pair.core,
+            &pair.alice_binding,
+            ManualWireSender::SelfIdentity,
+            &wire,
+        )
+        .expect("shipping v3 path decrypts the genuine payload");
+        AuthenticatedProsePointer {
+            identity: ProtectedPayloadIdentity {
+                message_id: payload.message_id.clone(),
+                sender_key: inspected.sender_ik,
+                nonce: inspected.body_nonce,
+            },
+            payload,
+            orientation: PeerWireOrientation::SelfToPeer,
+            blob_id: "8".repeat(32),
+            ciphertext_sha256: sha256_hex(wire.as_bytes()),
+        }
+    }
+
+    #[test]
+    fn task_5093_visible_cover_copy_is_not_a_replay_refusal() {
+        use crate::native_discord_adapter::native_row_producer_batch_is_valid;
+
+        const COVER: &str = "the quiet harbour keeps every lantern burning tonight";
+        let genuine = task_5093_evidence("444444444444444441", "111111111111111111", COVER, 41, 0);
+        let attacker = task_5093_evidence("444444444444444442", "222222222222222222", COVER, 51, 1);
+        let rows = vec![
+            matrix_visible_row(genuine.clone(), COVER, 10),
+            matrix_visible_row(attacker.clone(), COVER, 40),
+        ];
+        assert_eq!(rows[0].line.as_bytes(), rows[1].line.as_bytes());
+        assert!(native_row_producer_batch_is_valid(
+            &rows,
+            "trusted-scope",
+            7
+        ));
+        assert!(native_row_evidence_batch_is_valid(
+            &rows,
+            "trusted-scope",
+            7
+        ));
+
+        let authenticated = task_5093_real_authenticated_payload();
+        let mut identities = PayloadIdentityStore::default();
+        let genuine_outcome =
+            bind_authenticated_native_row_once(&mut identities, &genuine, authenticated.clone());
+        let attacker_outcome =
+            bind_authenticated_native_row_once(&mut identities, &attacker, authenticated);
+
+        let genuine_rendered = matches!(&genuine_outcome, NativeRowBindOutcome::Rendered(_));
+        let attacker_private_words_opened = usize::from(matches!(
+            &attacker_outcome,
+            NativeRowBindOutcome::Rendered(_)
+        ));
+        let authentication_refusals = usize::from(matches!(
+            &attacker_outcome,
+            NativeRowBindOutcome::AuthenticationRefused
+        ));
+        let replay_refusals = usize::from(matches!(
+            &genuine_outcome,
+            NativeRowBindOutcome::ReplayRefused
+        )) + usize::from(matches!(
+            &attacker_outcome,
+            NativeRowBindOutcome::ReplayRefused
+        ));
+        assert!(genuine_rendered);
+        assert_eq!(attacker_private_words_opened, 0);
+        assert_eq!(authentication_refusals, 1);
+        assert_eq!(replay_refusals, 0);
+        println!(
+            "TASK5093 copied_visible_text rows=2 attacker_private_words_opened={attacker_private_words_opened} replay_refusals={replay_refusals} authentication_refusals={authentication_refusals} genuine_rendered={genuine_rendered}"
+        );
+    }
+
+    #[test]
+    fn task_5093_real_payload_identity_replay_refuses_only_replayed_row() {
+        const FIRST_COVER: &str = "the winter garden waits beside the silver morning";
+        const REPLAY_COVER: &str = "a different public cover cannot hide a payload replay";
+        let first = task_5093_evidence(
+            "444444444444444451",
+            "111111111111111111",
+            FIRST_COVER,
+            61,
+            0,
+        );
+        let replay = task_5093_evidence(
+            "444444444444444452",
+            "111111111111111111",
+            REPLAY_COVER,
+            71,
+            1,
+        );
+        let rows = vec![
+            matrix_visible_row(first.clone(), FIRST_COVER, 10),
+            matrix_visible_row(replay.clone(), REPLAY_COVER, 40),
+        ];
+        assert_ne!(rows[0].line, rows[1].line);
+        assert!(native_row_evidence_batch_is_valid(
+            &rows,
+            "trusted-scope",
+            7
+        ));
+
+        let authenticated = task_5093_real_authenticated_payload();
+        let replay_identity = authenticated.identity.clone();
+        let mut identities = PayloadIdentityStore::default();
+        let original =
+            bind_authenticated_native_row_once(&mut identities, &first, authenticated.clone());
+        let repeated = bind_authenticated_native_row_once(&mut identities, &replay, authenticated);
+        let original_rendered = matches!(&original, NativeRowBindOutcome::Rendered(_));
+        let replayed_row_refused = matches!(&repeated, NativeRowBindOutcome::ReplayRefused);
+        let replay_refusals = usize::from(matches!(&original, NativeRowBindOutcome::ReplayRefused))
+            + usize::from(replayed_row_refused);
+        let authentication_refusals = usize::from(matches!(
+            &repeated,
+            NativeRowBindOutcome::AuthenticationRefused
+        ));
+        assert!(original_rendered);
+        assert!(replayed_row_refused);
+        assert_eq!(replay_refusals, 1);
+        assert_eq!(authentication_refusals, 0);
+
+        // All three authenticated fields are load-bearing: changing any one
+        // makes a distinct payload identity rather than a replay.
+        for distinct in [
+            ProtectedPayloadIdentity {
+                message_id: "payload-task-5093-other-id".to_owned(),
+                ..replay_identity.clone()
+            },
+            ProtectedPayloadIdentity {
+                sender_key: [0x77; 32],
+                ..replay_identity.clone()
+            },
+            ProtectedPayloadIdentity {
+                nonce: [0x66; crypto::aes_gcm::NONCE_SIZE],
+                ..replay_identity.clone()
+            },
+        ] {
+            let mut control = PayloadIdentityStore::default();
+            assert!(control.remember_if_new(replay_identity.clone()));
+            assert!(control.remember_if_new(distinct));
+        }
+        println!(
+            "TASK5093 payload_replay rows=2 real_v3_payload=true identity=message_id+sender_key+nonce replay_refusals={replay_refusals} authentication_refusals={authentication_refusals} original_rendered={original_rendered} replayed_row_refused={replayed_row_refused}"
+        );
     }
 
     #[test]
@@ -16746,7 +16999,10 @@ ok i will weekend again with you",
                 bind_authenticated_native_row(evidence, authenticated)
             },
         );
-        assert!(rehydrated_attribution_ids_are_unique(&opened));
+        assert_eq!(
+            opened.iter().filter(|row| row.plaintext.is_some()).count(),
+            2
+        );
         assert_eq!(
             opened[0].orientation,
             Some(RehydratedRowOrientation::Outgoing)
@@ -16856,47 +17112,6 @@ ok i will weekend again with you",
             0,
         )
         .is_none());
-
-        let replayed_crypto_attribution = bind_authenticated_native_row(
-            &peer,
-            matrix_authenticated(
-                PeerWireOrientation::PeerToSelf,
-                "payload-own",
-                "replayed plaintext",
-                'a',
-            ),
-        )
-        .expect("individual proof is structurally valid")
-        .2;
-        let crypto_replay = vec![
-            RehydratedNativeDiscordRow {
-                flagtext: OWN_CARRIER.to_owned(),
-                plaintext: Some("own plaintext".to_owned()),
-                orientation: Some(RehydratedRowOrientation::Outgoing),
-                attribution: Some(
-                    bind_authenticated_native_row(
-                        &own,
-                        matrix_authenticated(
-                            PeerWireOrientation::SelfToPeer,
-                            "payload-own",
-                            "own plaintext",
-                            'a',
-                        ),
-                    )
-                    .unwrap()
-                    .2,
-                ),
-                bounds: Some([10, 10, 500, 34]),
-            },
-            RehydratedNativeDiscordRow {
-                flagtext: PEER_CARRIER.to_owned(),
-                plaintext: Some("replayed plaintext".to_owned()),
-                orientation: Some(RehydratedRowOrientation::Incoming),
-                attribution: Some(replayed_crypto_attribution),
-                bounds: Some([10, 40, 500, 64]),
-            },
-        ];
-        assert!(!rehydrated_attribution_ids_are_unique(&crypto_replay));
 
         let inconsistent_dto = rehydrated_native_discord_row_dto(
             RehydratedNativeDiscordRow {

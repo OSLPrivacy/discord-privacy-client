@@ -41,6 +41,7 @@ import {
   handleDiscoveryCardsPublishPost,
   handleDiscoveryCardsRead,
   handleDiscoveryCardsTakeBackPost,
+  handleDiscoveryRepliesEnablePost,
 } from "./endpoints/discovery-cards.js";
 import { handleCheckout } from "./endpoints/checkout.js";
 import { handleStripeDonationSession } from "./endpoints/donation-stripe.js";
@@ -501,6 +502,7 @@ async function dispatch(
     if (path === "/v1/discovery-cards/publish") return await handleDiscoveryCardsPublishPost(request, env);
     if (path === "/v1/discovery-cards/read") return await handleDiscoveryCardsRead(request, env);
     if (path === "/v1/discovery-cards/take-back") return await handleDiscoveryCardsTakeBackPost(request, env);
+    if (path === "/v1/discovery-cards/enable-replies") return await handleDiscoveryRepliesEnablePost(request, env);
     if (path === "/v1/update-attempts") {
       return withCors(await handleUpdateAttemptRecord(request, env), request);
     }

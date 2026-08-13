@@ -1604,6 +1604,65 @@ fn mailbox_message_ownership(
     }
 }
 
+/// Produce the conversation name from the two participants and the logical
+/// subject. Address order is canonical, and mail reply prefixes are discarded,
+/// so either participant computes the same name for `subject` and `Re:
+/// subject`. A changed reply subject without a stable provider thread id cannot
+/// be safely joined; this boundary intentionally does not guess one.
+///
+/// Ported verbatim from TASK 4120 (`11f5444b9`). `shipping_icloud_mailbox_receive.rs`
+/// (TASK 4344, already on this lane) imports it, but TASK 4120 landed on a
+/// different lane, so this crate did not compile here at all. The body is
+/// unchanged so the two lanes cannot compute different thread names for the
+/// same conversation.
+pub fn shared_mailbox_thread_name(
+    first_address: &str,
+    second_address: &str,
+    subject: &str,
+) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+
+    validate_mailbox_text(first_address, "mailbox first address", 254)?;
+    validate_mailbox_text(second_address, "mailbox second address", 254)?;
+    let normalized_subject = normalize_shared_mailbox_thread_subject(subject)?;
+
+    let mut addresses = [
+        first_address.to_ascii_lowercase(),
+        second_address.to_ascii_lowercase(),
+    ];
+    addresses.sort();
+    let mut hasher = Sha256::new();
+    hasher.update(b"osl.shared-mailbox.thread-name.v1\0");
+    for value in [
+        addresses[0].as_str(),
+        addresses[1].as_str(),
+        normalized_subject.as_str(),
+    ] {
+        hasher.update((value.len() as u64).to_be_bytes());
+        hasher.update(value.as_bytes());
+    }
+    Ok(format!("shared-mail-{:x}", hasher.finalize()))
+}
+
+fn normalize_shared_mailbox_thread_subject(subject: &str) -> Result<String, String> {
+    validate_mailbox_text(subject, "mailbox message subject", 512)?;
+    let mut normalized = subject.trim();
+    while normalized
+        .get(..3)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("re:"))
+    {
+        normalized = normalized
+            .get(3..)
+            .expect("the checked ASCII reply prefix ends on a character boundary")
+            .trim_start();
+    }
+    if normalized.is_empty() {
+        Err("mailbox message subject is invalid".to_owned())
+    } else {
+        Ok(normalized.to_ascii_lowercase())
+    }
+}
+
 fn validate_mailbox_text(value: &str, label: &str, max_bytes: usize) -> Result<(), String> {
     if value.trim() == value
         && !value.is_empty()

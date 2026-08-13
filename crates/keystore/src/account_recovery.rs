@@ -63,10 +63,9 @@ impl RecoveryKit {
         )
     }
 
-    /// Persist the private authority in the recovery-kit artifact.  No service
-    /// constructor accepts these bytes, so they cannot be uploaded through the
-    /// recovery protocol state surface.
-    pub fn save(&self, path: &Path) -> Result<(), RecoveryError> {
+    /// The recovery-kit artifact's plaintext body: domain, the genesis root,
+    /// the recovery public key, and the recovery private seed.
+    fn kit_body(&self) -> Zeroizing<Vec<u8>> {
         let mut bytes = Zeroizing::new(Vec::with_capacity(
             RECOVERY_KIT_DOMAIN.len() + ed25519::PUBLIC_KEY_SIZE * 2 + ed25519::SECRET_KEY_SIZE,
         ));
@@ -74,10 +73,84 @@ impl RecoveryKit {
         bytes.extend_from_slice(&self.initial_root);
         bytes.extend_from_slice(self.recovery_public.as_bytes());
         bytes.extend_from_slice(self.recovery_secret.as_bytes());
+        bytes
+    }
+
+    /// Persist the private authority in the recovery-kit artifact, as
+    /// authenticated ciphertext under an Argon2id key derived from
+    /// `passphrase`.  No service constructor accepts these bytes, so they
+    /// cannot be uploaded through the recovery protocol state surface.
+    ///
+    /// TASK 5402: this used to be `save`, an `fs::write` of the body above —
+    /// thirty-two raw bytes of Ed25519 recovery-authority seed on disk, in a
+    /// file whose entire purpose is to be copied somewhere durable and kept.
+    /// The unlock key is user-derived rather than device-sealed for the reason
+    /// the artifact exists at all: a recovery kit has to still open after every
+    /// device is gone.
+    pub fn save_protected(&self, path: &Path, passphrase: &str) -> Result<(), RecoveryError> {
+        let body = self.kit_body();
+        let sealed =
+            crate::secret_at_rest::seal_with_passphrase(RECOVERY_KIT_DOMAIN, passphrase, &body)
+                .map_err(|error| RecoveryError::RecoveryKitProtection(error.to_string()))?;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(RecoveryError::RecoveryKitIo)?;
         }
-        fs::write(path, bytes.as_slice()).map_err(RecoveryError::RecoveryKitIo)
+        fs::write(path, sealed.as_slice()).map_err(RecoveryError::RecoveryKitIo)?;
+        crate::secret_trace::record(
+            crate::secret_trace::SecretOp::Write,
+            crate::secret_trace::SecretClass::RecoveryAuthority,
+            crate::secret_trace::Protection::UserDerivedAead,
+            "keystore::account_recovery::RecoveryKit::save_protected",
+            path,
+            sealed.len(),
+        );
+        Ok(())
+    }
+
+    /// Recover the private authority from a kit written by
+    /// [`Self::save_protected`].  A wrong passphrase or a single altered byte
+    /// releases nothing.
+    pub fn open_protected(path: &Path, passphrase: &str) -> Result<Self, RecoveryError> {
+        let bytes = fs::read(path).map_err(RecoveryError::RecoveryKitIo)?;
+        let body =
+            crate::secret_at_rest::open_with_passphrase(RECOVERY_KIT_DOMAIN, passphrase, &bytes)
+                .map_err(|error| RecoveryError::RecoveryKitProtection(error.to_string()))?;
+        let expected =
+            RECOVERY_KIT_DOMAIN.len() + ed25519::PUBLIC_KEY_SIZE * 2 + ed25519::SECRET_KEY_SIZE;
+        if body.len() != expected || !body.starts_with(RECOVERY_KIT_DOMAIN) {
+            return Err(RecoveryError::RecoveryKitProtection(
+                "recovery kit body is not an OSL account-recovery kit".to_owned(),
+            ));
+        }
+        let mut cursor = RECOVERY_KIT_DOMAIN.len();
+        let mut initial_root = [0u8; ed25519::PUBLIC_KEY_SIZE];
+        initial_root.copy_from_slice(&body[cursor..cursor + ed25519::PUBLIC_KEY_SIZE]);
+        cursor += ed25519::PUBLIC_KEY_SIZE;
+        let mut public = [0u8; ed25519::PUBLIC_KEY_SIZE];
+        public.copy_from_slice(&body[cursor..cursor + ed25519::PUBLIC_KEY_SIZE]);
+        cursor += ed25519::PUBLIC_KEY_SIZE;
+        let mut secret = [0u8; ed25519::SECRET_KEY_SIZE];
+        secret.copy_from_slice(&body[cursor..cursor + ed25519::SECRET_KEY_SIZE]);
+        let recovery_secret = ed25519::SecretKey::from_bytes(secret);
+        let recovery_public = ed25519::derive_public(&recovery_secret);
+        if *recovery_public.as_bytes() != public {
+            return Err(RecoveryError::RecoveryKitProtection(
+                "recovery kit public authority does not match its private seed".to_owned(),
+            ));
+        }
+        crate::secret_trace::record(
+            crate::secret_trace::SecretOp::Read,
+            crate::secret_trace::SecretClass::RecoveryAuthority,
+            crate::secret_trace::Protection::UserDerivedAead,
+            "keystore::account_recovery::RecoveryKit::open_protected",
+            path,
+            bytes.len(),
+        );
+        Ok(Self {
+            recovery_secret,
+            recovery_public,
+            initial_root,
+        })
     }
 
     fn sign(
@@ -382,6 +455,9 @@ pub enum RecoveryError {
     SafetyNumberMismatch,
     InvalidDeviceList(DeviceListError),
     RecoveryKitIo(std::io::Error),
+    /// The kit's at-rest envelope refused: wrong passphrase, wrong domain,
+    /// altered bytes, or a weakened Argon2id parameter block.
+    RecoveryKitProtection(String),
 }
 
 impl fmt::Display for RecoveryError {
@@ -412,6 +488,9 @@ impl fmt::Display for RecoveryError {
             Self::SafetyNumberMismatch => f.write_str("safety number re-verification mismatch"),
             Self::InvalidDeviceList(error) => write!(f, "invalid device list: {error}"),
             Self::RecoveryKitIo(error) => write!(f, "recovery kit I/O failed: {error}"),
+            Self::RecoveryKitProtection(detail) => {
+                write!(f, "recovery kit at-rest protection refused: {detail}")
+            }
         }
     }
 }

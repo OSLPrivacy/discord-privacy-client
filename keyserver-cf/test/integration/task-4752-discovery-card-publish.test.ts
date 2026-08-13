@@ -49,11 +49,21 @@ async function takeBack() {
   return body;
 }
 
+async function enableReplies() {
+  const res = await SELF.fetch("http://test/v1/discovery-cards/enable-replies", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ account_id: "task-4752-account" }),
+  });
+  expect(res.status).toBe(200);
+}
+
 describe("TASK4752 publish a card and take it back", () => {
   it("publishes, takes back, switches, and repeats without duplicate live cards", async () => {
     await DB.prepare(
       "DELETE FROM discovery_cards WHERE writer_account_id IN (?, ?)",
     ).bind("task-4752-account", "task-4752-other").run();
+    await enableReplies();
 
     const initial = await accountRowCount("task-4752-account");
     expect(initial).toBe(0);
@@ -70,6 +80,7 @@ describe("TASK4752 publish a card and take it back", () => {
     expect(afterBack).toBe(0);
     console.log(`TASK4752 take-back removed ${back.removed} rows ${afterBack}`);
 
+    await enableReplies();
     const allowedAgain = await publish("allowed");
     const afterAllowedAgain = await accountRowCount("task-4752-account");
     expect(allowedAgain.wrote).toBe(1);
@@ -94,6 +105,7 @@ describe("TASK4752 publish a card and take it back", () => {
     await DB.prepare(
       "DELETE FROM discovery_cards WHERE writer_account_id IN (?, ?)",
     ).bind("task-4752-account", "task-4752-other").run();
+    await enableReplies();
 
     const current = currentDiscoveryEpochStamp();
     const previous = addDiscoveryEpochWeeks(current, -1);

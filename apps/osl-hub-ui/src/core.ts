@@ -304,6 +304,55 @@ export async function resetHubMainPasswordAfterRecovery(
   }));
 }
 
+/**
+ * TASK 6804 — one selection made by the installed native picker.
+ *
+ * `path`, `sizeBytes` and `sha256` are frozen by Rust at pick time and are the
+ * only description of the file the renderer ever sees. The renderer re-digests
+ * `bytesBase64` before validating it, so a file swapped between the dialog
+ * closing and the bytes arriving is refused rather than imported.
+ */
+export interface HubPickedRecoveryKitFile {
+  path: string;
+  sha256: string;
+  sizeBytes: number;
+  bytesBase64: string;
+  localUserId: string | null;
+}
+
+function parseHubPickedRecoveryKitFile(raw: unknown): HubPickedRecoveryKitFile | null {
+  if (raw === null || raw === undefined) return null;
+  if (!isExactRecord(raw, ["path", "sha256", "sizeBytes", "bytesBase64", "localUserId"])) {
+    throw new Error("invalid recovery kit selection");
+  }
+  if (
+    !isSafeText(raw.path, 4096)
+    || typeof raw.sha256 !== "string" || !/^[0-9a-f]{64}$/u.test(raw.sha256)
+    || !Number.isSafeInteger(raw.sizeBytes) || Number(raw.sizeBytes) <= 0
+    || typeof raw.bytesBase64 !== "string" || raw.bytesBase64.length === 0
+    || (raw.localUserId !== null && !isSafeText(raw.localUserId, 96))
+  ) throw new Error("invalid recovery kit selection");
+  return raw as unknown as HubPickedRecoveryKitFile;
+}
+
+/** Open the installed picker. `null` means the person cancelled it. */
+export async function pickHubRecoveryKitFile(): Promise<HubPickedRecoveryKitFile | null> {
+  if (!isTauriRuntime()) throw new Error("recovery kit picker unavailable");
+  return parseHubPickedRecoveryKitFile(await invoke<unknown>("pick_hub_recovery_kit_file"));
+}
+
+/**
+ * The identity a kit's own identity phrase belongs to, as the backend derives
+ * it. Read-only: it installs nothing and changes nothing on disk, and exists so
+ * a kit for another account is refused before its phrase reaches the importer.
+ */
+export async function deriveHubRecoveryKitIdentity(identityPhrase: string): Promise<string | null> {
+  const phrase = identityPhrase.trim();
+  if (!isTauriRuntime() || !isRecoveryPhrase(phrase)) return null;
+  const derived = await invoke<unknown>("derive_hub_recovery_kit_identity", { identityPhrase: phrase });
+  return isSafeText(derived, 96) ? derived : null;
+}
+
 export function isActivationCode(value: string): boolean {
   return /^OSL-[0-9A-Z]{4}(?:-[0-9A-Z]{4}){3}$/.test(value.trim().toUpperCase());
 }

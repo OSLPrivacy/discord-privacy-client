@@ -18,7 +18,28 @@ fn task_5168_recovers_compromised_account_root_at_epoch_four() {
         "recovery authority must be generated independently of root A"
     );
     let kit_path = temp.path().join("synthetic-recovery-kit.osl");
-    recovery_kit.save(&kit_path).expect("save recovery kit");
+    // TASK 5402: the kit artifact is authenticated ciphertext under an
+    // Argon2id key derived from this passphrase, which the file never carries.
+    const KIT_PASSPHRASE: &str = "task-5168-kit-passphrase";
+    recovery_kit
+        .save_protected(&kit_path, KIT_PASSPHRASE)
+        .expect("save recovery kit");
+    let kit_bytes = std::fs::read(&kit_path).expect("read saved recovery kit");
+    let reopened = RecoveryKit::open_protected(&kit_path, KIT_PASSPHRASE)
+        .expect("the kit passphrase reopens the saved kit");
+    assert_eq!(reopened.public_authority(), recovery_kit.public_authority());
+    assert!(
+        RecoveryKit::open_protected(&kit_path, "task-5168-kit-passphrasf").is_err(),
+        "a wrong kit passphrase must release nothing"
+    );
+    println!(
+        "task_5168 kit_file_bytes={} kit_carries_recovery_authority_plaintext={}",
+        kit_bytes.len(),
+        kit_bytes
+            .windows(32)
+            .filter(|window| *window == recovery_kit.public_authority())
+            .count()
+    );
 
     let mut service = RecoveryServiceState::new(
         recovery_kit.public_authority(),

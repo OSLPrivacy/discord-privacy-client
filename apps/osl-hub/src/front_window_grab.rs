@@ -60,7 +60,9 @@ where
         .into_iter()
         .map(|arg| arg.to_string_lossy().into_owned())
         .collect::<Vec<_>>();
-    let flag = args.iter().position(|arg| arg == FRONT_WINDOW_GRAB_CLI_FLAG)?;
+    let flag = args
+        .iter()
+        .position(|arg| arg == FRONT_WINDOW_GRAB_CLI_FLAG)?;
     let parsed = ParsedGrabArgs::parse(&args[flag + 1..]);
     let rendered = match parsed.and_then(run_front_window_grab_command) {
         Ok(value) => FrontWindowGrabCommandResult {
@@ -110,9 +112,8 @@ impl ParsedGrabArgs {
             }
             index += 2;
         }
-        let window_name = window_name.ok_or_else(|| {
-            front_window_grab_error("", 0, 0, "missing --window-name".to_owned())
-        })?;
+        let window_name = window_name
+            .ok_or_else(|| front_window_grab_error("", 0, 0, "missing --window-name".to_owned()))?;
         let window_number = window_number.ok_or_else(|| {
             front_window_grab_error(&window_name, 0, 0, "missing --window-number".to_owned())
         })?;
@@ -288,7 +289,9 @@ mod platform {
     }
 
     fn contains_window_name(haystack: &str, needle: &str) -> bool {
-        haystack.to_ascii_lowercase().contains(&needle.to_ascii_lowercase())
+        haystack
+            .to_ascii_lowercase()
+            .contains(&needle.to_ascii_lowercase())
     }
 
     fn normalize_window_name(value: &str) -> String {
@@ -374,11 +377,9 @@ mod platform {
         }
         buffer.truncate(length as usize);
         let path = OsString::from_wide(&buffer);
-        Path::new(&path).file_stem().map(|stem| {
-            stem.to_string_lossy()
-                .trim_end_matches(".exe")
-                .to_owned()
-        })
+        Path::new(&path)
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().trim_end_matches(".exe").to_owned())
     }
 }
 

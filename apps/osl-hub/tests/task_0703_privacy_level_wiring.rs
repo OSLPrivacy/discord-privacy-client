@@ -24,7 +24,10 @@ fn privacy_level_check_names_the_missing_changed_rule() {
         "| Discord | Installed Discord for Windows | Local protection |",
         1,
     );
-    assert_ne!(broken, original, "negative fixture must remove one level-to-rule link");
+    assert_ne!(
+        broken, original,
+        "negative fixture must remove one level-to-rule link"
+    );
     fs::write(&broken_plan, broken).expect("write broken GUI plan copy");
 
     let red = run_checker(&checker, &broken_plan);

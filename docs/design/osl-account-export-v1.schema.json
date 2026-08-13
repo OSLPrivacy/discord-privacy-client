@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openstandardlibraries.org/schemas/osl-account-export-v1.schema.json",
+  "title": "OSL portable account export v1 JSON records",
+  "type": "object",
+  "$defs": {
+    "keyFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["format", "version", "archiveId", "secretBase64", "secretSha256", "warning"],
+      "properties": {
+        "format": { "const": "OSL-EXPORT-KEY-1" },
+        "version": { "const": 1 },
+        "archiveId": { "type": "string", "minLength": 22, "maxLength": 22 },
+        "secretBase64": { "type": "string", "minLength": 43, "maxLength": 43 },
+        "secretSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "warning": { "const": "OSL cannot recover your export key. Save and verify it before leaving this screen." }
+      }
+    },
+    "ownedDocument": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["class", "id", "ownerId", "fields", "attachmentIds"],
+      "properties": {
+        "class": { "enum": ["identity_profile", "settings", "friend_relationships", "messages"] },
+        "id": { "type": "string", "minLength": 1 },
+        "ownerId": { "type": "string", "minLength": 1 },
+        "fields": {},
+        "attachmentIds": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true }
+      }
+    },
+    "manifestEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["index", "class", "objectId", "objectOffset", "plaintextBytes", "sha256", "finalBlockForObject"],
+      "properties": {
+        "index": { "type": "integer", "minimum": 1 },
+        "class": { "enum": ["identity_profile", "settings", "friend_relationships", "messages", "attachments"] },
+        "objectId": { "type": "string", "minLength": 1 },
+        "objectOffset": { "type": "integer", "minimum": 0 },
+        "plaintextBytes": { "type": "integer", "minimum": 0, "maximum": 65536 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "finalBlockForObject": { "type": "boolean" }
+      }
+    }
+  },
+  "oneOf": [
+    { "$ref": "#/$defs/keyFile" },
+    { "$ref": "#/$defs/ownedDocument" },
+    { "$ref": "#/$defs/manifestEntry" }
+  ]
+}

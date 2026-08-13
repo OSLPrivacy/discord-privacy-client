@@ -189,6 +189,7 @@ mod window_border;
 
 mod native_attachment_transport;
 mod native_discord_overlay;
+mod recovery_kit_picker;
 mod native_image_viewer;
 mod native_whatsapp_overlay;
 
@@ -1569,6 +1570,37 @@ async fn check_hub_password_reset_phrase(
     })
     .await
     .map_err(|_| "OSL password reset phrase worker failed".to_string())?
+}
+
+/// TASK 6804 — open the installed picker for a recovery kit.
+///
+/// `Ok(None)` is cancellation. It is deliberately not an error: a person who
+/// closes the dialog has not failed at anything, and a refusal message here
+/// would be read as one about their recovery kit.
+#[tauri::command]
+async fn pick_hub_recovery_kit_file(
+    app: tauri::AppHandle,
+) -> Result<Option<recovery_kit_picker::PickedRecoveryKitFileDto>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let core = app.state::<HubCoreState>();
+        recovery_kit_picker::pick_recovery_kit_file(&app, &core)
+    })
+    .await
+    .map_err(|_| "OSL recovery-kit picker worker failed".to_owned())?
+}
+
+/// TASK 6804 — which account a recovery kit's identity phrase belongs to.
+///
+/// Read-only: it derives in memory and returns only the public `osl_` routing
+/// label, so a kit for another account can be refused before its phrase reaches
+/// the authenticated importer and before a recovery attempt is spent.
+#[tauri::command]
+async fn derive_hub_recovery_kit_identity(identity_phrase: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        password_lifecycle::identity_user_id_for_recovery_phrase(&identity_phrase)
+    })
+    .await
+    .map_err(|_| "OSL recovery-kit identity worker failed".to_owned())?
 }
 
 #[tauri::command]

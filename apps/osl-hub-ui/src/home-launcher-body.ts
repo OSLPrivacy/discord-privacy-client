@@ -45,7 +45,18 @@ export function homeLauncherBody(state: HomeLauncherState, renderers: HomeLaunch
   const selectedHomeApps = state.hasExplicitOnboardingAppSelection || rememberedHomeApps.size
     ? launchableHomeApps.filter((app) => app.launchState === "available" && rememberedHomeApps.has(app.id))
     : launchableHomeApps.filter((app) => app.launchState === "available");
-  const homeApps = [...selectedHomeApps, ...roadmapHomeApps.filter((app) => !selectedHomeApps.some((selected) => selected.id === app.id))];
+  const designSocialOrder = new Map([
+    ["Discord", 0],
+    ["Telegram", 1],
+    ["Signal", 2],
+    ["WhatsApp", 3],
+    ["Messenger", 4],
+    ["X", 5],
+  ]);
+  const homeApps = [...selectedHomeApps, ...roadmapHomeApps.filter((app) => !selectedHomeApps.some((selected) => selected.id === app.id))]
+    .filter((app) => app.displayName !== "Instagram" && app.displayName !== "Tuta")
+    .sort((left, right) => (designSocialOrder.get(left.displayName) ?? Number.MAX_SAFE_INTEGER)
+      - (designSocialOrder.get(right.displayName) ?? Number.MAX_SAFE_INTEGER));
   const modules = [
     { id: "osl-chats", name: "OSL Chat", available: true },
     { id: "osl-mail", name: "OSL Mail", available: true },
@@ -71,17 +82,23 @@ export function homeLauncherBody(state: HomeLauncherState, renderers: HomeLaunch
     const claim = state.nativeApps.find((candidate) => candidate.id === app.id as NativeAppId);
     const caption = claim ? renderers.nativeClaimLabel(claim.supportStatus) : app.id === "messenger" ? "Cannot send yet" : "Coming soon";
     const claimTitle = claim ? ` title="${escapeHtml(claim.claimNote)}"` : "";
-    return `<article class="app-tile ${available ? "" : "app-unavailable"} ${hidden ? "tile-hidden" : ""} ${pending ? "pending" : ""}" data-tile-id="${app.id}" draggable="${state.homeEditMode}" data-service-kind="${app.serviceId ?? "none"}" data-launch-state="${app.launchState}" data-claim-status="${claim ? claim.supportStatus : "comingSoon"}" aria-disabled="${available ? "false" : "true"}"><button id="home-app-${app.id}" type="button" ${available ? `data-home-app="${app.id}"` : ""} aria-label="${escapeHtml(`${app.displayName}, ${pending ? "Opening" : appState}`)}"${claimTitle} ${disabled ? "disabled" : ""}><span class="app-logo-plate">${renderers.homeAppLogo(app)}</span><span class="app-tile-copy"><strong>${escapeHtml(app.displayName)}</strong>${pending ? "<small>Opening…</small>" : available ? "" : `<small>${escapeHtml(caption)}</small>`}</span></button>${controls}</article>`;
+    const displayName = ({ proton: "Proton", yahoo: "Yahoo", aol: "AOL", icloud: "iCloud" } as Partial<Record<HomeAppId, string>>)[app.id] ?? app.displayName;
+    const logo = app.id === "messenger"
+      ? `<svg class="company-logo" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="#7b61ff"/><path fill="#fff" d="m6.7 14.4 3.8-4.1 2.7 2.2 4.2-4.5-3.8 5.8-2.8-2.2-4.1 2.8Z"/></svg>`
+      : renderers.homeAppLogo(app);
+    return `<article class="app-tile ${available ? "" : "app-unavailable"} ${hidden ? "tile-hidden" : ""} ${pending ? "pending" : ""}" data-tile-id="${app.id}" draggable="${state.homeEditMode}" data-service-kind="${app.serviceId ?? "none"}" data-launch-state="${app.launchState}" data-claim-status="${claim ? claim.supportStatus : "comingSoon"}" aria-disabled="${available ? "false" : "true"}"><button id="home-app-${app.id}" type="button" ${available ? `data-home-app="${app.id}"` : ""} aria-label="${escapeHtml(`${displayName}, ${pending ? "Opening" : appState}`)}"${claimTitle} ${disabled ? "disabled" : ""}><span class="app-logo-plate">${logo}</span><span class="app-tile-copy"><strong>${escapeHtml(displayName)}</strong>${pending ? "<small>Opening…</small>" : available ? "" : `<small>${escapeHtml(caption)}</small>`}</span></button>${controls}</article>`;
   };
   const socialIds = new Set(homeApps.filter((app) => app.provider === null).map((app) => app.id));
   const emailIds = new Set(homeApps.filter((app) => app.provider !== null).map((app) => app.id));
-  const socialTiles = orderedIds.filter((id) => socialIds.has(id as HomeAppId)).map(renderHomeTile).join("");
+  const renderedSocialTiles = orderedIds.filter((id) => socialIds.has(id as HomeAppId)).map(renderHomeTile).join("");
+  const xTile = homeApps.some((app) => app.displayName === "X") ? "" : `<article class="app-tile app-unavailable" data-tile-id="x" data-service-kind="x" data-launch-state="comingSoon" aria-disabled="true"><button type="button" aria-label="X, coming later" disabled><span class="app-logo-plate"><svg class="company-logo" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M18.9 2H22l-6.8 7.8L23.2 22H17l-4.8-6.3L6.7 22H3.6l7.1-8.1L1.1 2h6.3l4.4 5.8L18.9 2Zm-1.1 17.9h1.7L6.5 4H4.7l13.1 15.9Z"/></svg></span><span class="app-tile-copy"><strong>X</strong></span></button></article>`;
+  const socialTiles = `${renderedSocialTiles}${xTile}`;
   const emailTiles = orderedIds.filter((id) => emailIds.has(id as HomeAppId)).map(renderHomeTile).join("");
   const oslTiles = orderedIds.filter((id) => moduleById.has(id as typeof modules[number]["id"])).map(renderHomeTile).join("");
-  const organizeButton = (label: string) => `<button class="home-section-action in-dom-tooltip-anchor" data-edit-home type="button" aria-label="${state.homeEditMode ? "Finish arranging" : `Customize ${label}`}">${renderers.homeCommandIcon("organize")}${inDomTooltipMarkup(state.homeEditMode ? "Done" : `Customize ${label}`)}</button>`;
   const oslSection = oslTiles ? `<section class="home-app-section home-osl-section"><div class="app-grid" aria-label="OSL tools">${oslTiles}</div></section>` : "";
   const activeIdentity = state.hubIdentities.find((identity) => identity.active);
   const profileName = activeIdentity?.label?.trim() || "OSL Profile";
   const profileInitial = profileName.slice(0, 1).toLocaleUpperCase();
-  return `<main id="home-navigation" class="content-viewport home-dashboard ${state.homeEditMode ? "editing" : ""}"><section class="home-primary">${state.homeDestinationContent}<section class="home-apps" aria-labelledby="route-heading"><div class="home-app-groups">${oslSection}${socialTiles ? `<section class="home-app-section"><header><h2>Social</h2>${organizeButton("social apps")}</header><div class="app-grid" aria-label="Social apps">${socialTiles}</div></section>` : ""}${emailTiles ? `<section class="home-app-section"><header><h2>Email</h2>${organizeButton("email apps")}</header><div class="app-grid" aria-label="Email apps">${emailTiles}</div></section>` : ""}</div></section></section><button class="home-profile-dock in-dom-tooltip-anchor" data-route="settings" data-profile-settings type="button" aria-label="Open your OSL profile"><span aria-hidden="true">${escapeHtml(profileInitial)}</span><strong>${escapeHtml(profileName)}</strong>${inDomTooltipMarkup(profileName)}</button></main>`;
+  const collapsedControls = `<nav class="home-collapsed-actions" aria-label="Home view controls"><button class="home-section-action in-dom-tooltip-anchor" data-edit-home type="button" aria-label="${state.homeEditMode ? "Finish arranging" : "Customize apps"}">${renderers.homeCommandIcon("organize")}${inDomTooltipMarkup(state.homeEditMode ? "Done" : "Customize apps")}</button><button class="home-command-icon in-dom-tooltip-anchor" data-open-friends type="button" aria-label="Friends">${renderers.homeCommandIcon("friends")}${inDomTooltipMarkup("Friends")}</button></nav>`;
+  return `<main id="home-navigation" class="content-viewport home-dashboard ${state.homeEditMode ? "editing" : ""}" aria-label="Home">${collapsedControls}<section class="home-primary"><section class="home-apps"><div class="home-app-groups">${oslSection}${socialTiles ? `<section class="home-app-section"><header><h2>Social</h2></header><div class="app-grid" aria-label="Social apps">${socialTiles}</div></section>` : ""}${emailTiles ? `<section class="home-app-section"><header><h2>Email</h2></header><div class="app-grid" aria-label="Email apps">${emailTiles}</div></section>` : ""}</div></section></section><button class="home-profile-dock in-dom-tooltip-anchor" data-route="settings" data-profile-settings type="button" aria-label="Open your OSL profile"><span aria-hidden="true">${escapeHtml(profileInitial)}</span><strong>${escapeHtml(profileName)}</strong>${inDomTooltipMarkup(profileName)}</button></main>`;
 }

@@ -1,0 +1,1367 @@
+{
+  "schema_version": 1,
+  "task": 6873,
+  "reviewed_package_commit": "08fbc20450b3f84bfc9a82b818e8ffc1c5f5f48c",
+  "page_count": 194,
+  "source": "git ls-tree -r --name-only <reviewed_package_commit> apps/osl-hub-ui/screenshots | *.png",
+  "pages": [
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/all-routes/activity.png",
+      "disposition": "retained",
+      "route": "/home/activity",
+      "state": "activity",
+      "capability_feed": "notifications"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/all-routes/connections.png",
+      "disposition": "retained",
+      "route": "/friends",
+      "state": "connections",
+      "capability_feed": "friend-authority"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/all-routes/home.png",
+      "disposition": "retained",
+      "route": "/home",
+      "state": "home",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/all-routes/inbox.png",
+      "disposition": "retained",
+      "route": "/home/inbox",
+      "state": "inbox",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/all-routes/mullvad.png",
+      "disposition": "retained",
+      "route": "/settings/apps",
+      "state": "mullvad",
+      "capability_feed": "mullvad-host"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/all-routes/onboarding-account-recovery.png",
+      "disposition": "retained",
+      "route": "/onboarding",
+      "state": "account-recovery",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/all-routes/onboarding-apps.png",
+      "disposition": "deleted-d4",
+      "route": "/onboarding",
+      "state": "apps",
+      "capability_feed": null
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/all-routes/onboarding-browser.png",
+      "disposition": "retained",
+      "route": "/onboarding",
+      "state": "browser",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/all-routes/onboarding-burnpass.png",
+      "disposition": "retained",
+      "route": "/onboarding",
+      "state": "burnpass",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/all-routes/onboarding-cover.png",
+      "disposition": "retained",
+      "route": "/onboarding",
+      "state": "cover",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/all-routes/onboarding-create.png",
+      "disposition": "retained",
+      "route": "/onboarding",
+      "state": "create",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/all-routes/onboarding-decoy.png",
+      "disposition": "deleted-d1",
+      "route": "/onboarding",
+      "state": "decoy",
+      "capability_feed": null
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/all-routes/onboarding-defaults.png",
+      "disposition": "retained",
+      "route": "/onboarding",
+      "state": "defaults",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/all-routes/onboarding-detected.png",
+      "disposition": "deleted-d4",
+      "route": "/onboarding",
+      "state": "detected",
+      "capability_feed": null
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/all-routes/onboarding-forward-secrecy.png",
+      "disposition": "retained",
+      "route": "/onboarding",
+      "state": "forward-secrecy",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/all-routes/onboarding-import.png",
+      "disposition": "retained",
+      "route": "/onboarding",
+      "state": "import",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/all-routes/onboarding-install.png",
+      "disposition": "retained",
+      "route": "/onboarding",
+      "state": "install",
+      "capability_feed": "native-app-installer"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/all-routes/onboarding-keylost.png",
+      "disposition": "retained",
+      "route": "/onboarding",
+      "state": "keylost",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/all-routes/onboarding-mullvad.png",
+      "disposition": "retained",
+      "route": "/onboarding",
+      "state": "mullvad",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/all-routes/onboarding-passwords.png",
+      "disposition": "retained",
+      "route": "/onboarding",
+      "state": "passwords",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/all-routes/onboarding-privacy.png",
+      "disposition": "retained",
+      "route": "/onboarding",
+      "state": "privacy",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/all-routes/onboarding-pro.png",
+      "disposition": "retained",
+      "route": "/onboarding",
+      "state": "pro",
+      "capability_feed": "entitlement"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/all-routes/onboarding-recovery.png",
+      "disposition": "retained",
+      "route": "/onboarding",
+      "state": "recovery",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/all-routes/onboarding-sending.png",
+      "disposition": "retained",
+      "route": "/onboarding",
+      "state": "sending",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/all-routes/onboarding-silent-visible.png",
+      "disposition": "deleted-d4",
+      "route": "/onboarding",
+      "state": "silent-visible",
+      "capability_feed": null
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/all-routes/onboarding-tor.png",
+      "disposition": "retained",
+      "route": "/onboarding",
+      "state": "tor",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/all-routes/onboarding-tutorial.png",
+      "disposition": "deleted-d4",
+      "route": "/onboarding",
+      "state": "tutorial",
+      "capability_feed": null
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/all-routes/onboarding-unlock.png",
+      "disposition": "retained",
+      "route": "/onboarding",
+      "state": "unlock",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/all-routes/onboarding-visibility.png",
+      "disposition": "retained",
+      "route": "/onboarding",
+      "state": "visibility",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/all-routes/onboarding-welcome.png",
+      "disposition": "retained",
+      "route": "/onboarding",
+      "state": "welcome",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/all-routes/osl-chat.png",
+      "disposition": "chats-strip-follow-up",
+      "route": "/home",
+      "state": "osl-chat",
+      "capability_feed": null
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/all-routes/osl-mail.png",
+      "disposition": "retained",
+      "route": "/media/mail",
+      "state": "osl-mail",
+      "capability_feed": "media-store"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/all-routes/osl-servers-key-changes.png",
+      "disposition": "chats-strip-follow-up",
+      "route": "/home",
+      "state": "osl-servers-key-changes",
+      "capability_feed": null
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/all-routes/osl-servers.png",
+      "disposition": "retained",
+      "route": "/story",
+      "state": "story-and-post-feed",
+      "capability_feed": "profile-stories"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/all-routes/people.png",
+      "disposition": "retained",
+      "route": "/friends",
+      "state": "people",
+      "capability_feed": "friend-authority"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/all-routes/privacy.png",
+      "disposition": "retained",
+      "route": "/privacy",
+      "state": "privacy",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/all-routes/scrub.png",
+      "disposition": "retained",
+      "route": "/privacy/scrub",
+      "state": "scrub",
+      "capability_feed": "scrub-engine"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/all-routes/service.png",
+      "disposition": "retained",
+      "route": "/settings/apps",
+      "state": "service",
+      "capability_feed": "native-app-detection"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/all-routes/settings.png",
+      "disposition": "retained",
+      "route": "/settings",
+      "state": "settings",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/all-routes/signal-qa.png",
+      "disposition": "retained",
+      "route": "/home",
+      "state": "signal-qa",
+      "capability_feed": "signal-qa"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/artifacts/task-0027a-2026-08-09-password-screen-disabled.png",
+      "disposition": "retained",
+      "route": "/recovery",
+      "state": "2026-08-09-password-screen-disabled",
+      "capability_feed": "recovery-kit"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/artifacts/task-0027a-2026-08-09-password-screen.png",
+      "disposition": "retained",
+      "route": "/recovery",
+      "state": "2026-08-09-password-screen",
+      "capability_feed": "recovery-kit"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/artifacts/task-0118-group-dropdown-linux.png",
+      "disposition": "retained",
+      "route": "/calls",
+      "state": "group-call-menu",
+      "capability_feed": "call-engine"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/artifacts/task-0127-allowed-place-linux.png",
+      "disposition": "retained",
+      "route": "/home",
+      "state": "allowed-place-linux",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/artifacts/task-0127-unlisted-place-linux.png",
+      "disposition": "retained",
+      "route": "/home",
+      "state": "unlisted-place-linux",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/artifacts/task-0222-create-link-linux.png",
+      "disposition": "retained",
+      "route": "/home",
+      "state": "create-link-linux",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/artifacts/task-0222-paste-link-linux.png",
+      "disposition": "retained",
+      "route": "/home",
+      "state": "paste-link-linux",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/artifacts/task-0238-friend-picture-privacy/task-0238-friend-480x220.png",
+      "disposition": "retained",
+      "route": "/friends",
+      "state": "friend",
+      "capability_feed": "friend-authority"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/artifacts/task-0238-friend-picture-privacy/task-0238-non-friend-480x220.png",
+      "disposition": "retained",
+      "route": "/friends",
+      "state": "non-friend",
+      "capability_feed": "friend-authority"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/artifacts/task-0354-create-password.png",
+      "disposition": "retained",
+      "route": "/recovery",
+      "state": "create-password",
+      "capability_feed": "recovery-kit"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/artifacts/task-0357-restore-account.png",
+      "disposition": "retained",
+      "route": "/recovery",
+      "state": "restore-account",
+      "capability_feed": "recovery-kit"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/artifacts/task-0358-device-key-lost.png",
+      "disposition": "retained",
+      "route": "/home",
+      "state": "device-key-lost",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/artifacts/task-0359-recovery-kit.png",
+      "disposition": "retained",
+      "route": "/recovery",
+      "state": "recovery-kit",
+      "capability_feed": "recovery-kit"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/artifacts/task-0361-finish-saving-recovery-kit.png",
+      "disposition": "retained",
+      "route": "/recovery",
+      "state": "finish-saving-recovery-kit",
+      "capability_feed": "recovery-kit"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/artifacts/task-0364-stealth-password.png",
+      "disposition": "retained",
+      "route": "/recovery",
+      "state": "stealth-password",
+      "capability_feed": "recovery-kit"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/artifacts/task-0365-create-burn-password.png",
+      "disposition": "retained",
+      "route": "/recovery",
+      "state": "create-burn-password",
+      "capability_feed": "recovery-kit"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/artifacts/task-0373-cover-insertion.png",
+      "disposition": "retained",
+      "route": "/privacy",
+      "state": "cover-insertion",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/artifacts/task-0379-whitelisting-setup.png",
+      "disposition": "retained",
+      "route": "/friends",
+      "state": "whitelisting-setup",
+      "capability_feed": "friend-authority"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/artifacts/task-0380-decoy-workspace.png",
+      "disposition": "deleted-d1",
+      "route": "/home",
+      "state": "decoy-workspace",
+      "capability_feed": null
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/artifacts/task-0553-timer-overlay.png",
+      "disposition": "chats-strip-follow-up",
+      "route": "/modal",
+      "state": "timer-overlay",
+      "capability_feed": null
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/artifacts/task-0556-one-minute-timer/after-osl-screen-a.png",
+      "disposition": "retained",
+      "route": "/home",
+      "state": "after-osl-screen-a",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/artifacts/task-0556-one-minute-timer/after-osl-screen-b.png",
+      "disposition": "retained",
+      "route": "/home",
+      "state": "after-osl-screen-b",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/artifacts/task-0556-one-minute-timer/before-osl-screen-a.png",
+      "disposition": "retained",
+      "route": "/home",
+      "state": "before-osl-screen-a",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/artifacts/task-0556-one-minute-timer/before-osl-screen-b.png",
+      "disposition": "retained",
+      "route": "/home",
+      "state": "before-osl-screen-b",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/artifacts/task-0625-attachment-tray.png",
+      "disposition": "chats-strip-follow-up",
+      "route": "/modal",
+      "state": "attachment-tray",
+      "capability_feed": null
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/artifacts/task-0627-attachment-tray-linux.png",
+      "disposition": "chats-strip-follow-up",
+      "route": "/modal",
+      "state": "attachment-tray-linux",
+      "capability_feed": null
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/artifacts/task-0740-auto-whitelist-rules.png",
+      "disposition": "retained",
+      "route": "/friends",
+      "state": "auto-whitelist-rules",
+      "capability_feed": "friend-authority"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/artifacts/task-0742-auto-whitelist-rules-controls.png",
+      "disposition": "retained",
+      "route": "/friends",
+      "state": "auto-whitelist-rules-controls",
+      "capability_feed": "friend-authority"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/artifacts/task-0772-look.png",
+      "disposition": "retained",
+      "route": "/settings",
+      "state": "look",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/artifacts/task-0792-account.png",
+      "disposition": "retained",
+      "route": "/recovery",
+      "state": "account",
+      "capability_feed": "recovery-kit"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/artifacts/task-0794-account.png",
+      "disposition": "retained",
+      "route": "/recovery",
+      "state": "account",
+      "capability_feed": "recovery-kit"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/artifacts/task-0818-home-top-bar-dark.png",
+      "disposition": "retained",
+      "route": "/home",
+      "state": "home-top-bar-dark",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/artifacts/task-0818-home-top-bar-light.png",
+      "disposition": "retained",
+      "route": "/home",
+      "state": "home-top-bar-light",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/artifacts/task-0824-home-protection.png",
+      "disposition": "retained",
+      "route": "/privacy",
+      "state": "home-protection",
+      "capability_feed": "entitlement"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/artifacts/task-0826-home-protection.png",
+      "disposition": "retained",
+      "route": "/privacy",
+      "state": "home-protection",
+      "capability_feed": "entitlement"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/artifacts/task-0844-osl-tools-service-tiles.png",
+      "disposition": "retained",
+      "route": "/home",
+      "state": "osl-tools-service-tiles",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/artifacts/task-1315-group-chat-header-empty.png",
+      "disposition": "chats-strip-follow-up",
+      "route": "/home",
+      "state": "group-chat-header-empty",
+      "capability_feed": null
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/artifacts/task-1315-group-chat-header.png",
+      "disposition": "chats-strip-follow-up",
+      "route": "/home",
+      "state": "group-chat-header",
+      "capability_feed": null
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/review-defaults-900x700.png",
+      "disposition": "retained",
+      "route": "/settings",
+      "state": "review-defaults",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0054-free-attachment-limit/free-26-mb-refusal-linux.png",
+      "disposition": "chats-strip-follow-up",
+      "route": "/home",
+      "state": "free-26-mb-refusal-linux",
+      "capability_feed": null
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0055-pro-attachment-limit.png",
+      "disposition": "chats-strip-follow-up",
+      "route": "/home",
+      "state": "pro-attachment-limit",
+      "capability_feed": null
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0111-linux-whitelist-buttons.png",
+      "disposition": "retained",
+      "route": "/friends",
+      "state": "linux-whitelist-buttons",
+      "capability_feed": "friend-authority"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0176-linux-verification-tick-one-way-1280x800.png",
+      "disposition": "retained",
+      "route": "/friends",
+      "state": "linux-verification-tick-one-way",
+      "capability_feed": "friend-authority"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0176-linux-verification-tick-two-way-1280x800.png",
+      "disposition": "retained",
+      "route": "/friends",
+      "state": "linux-verification-tick-two-way",
+      "capability_feed": "friend-authority"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0180-group-build-list.png",
+      "disposition": "retained",
+      "route": "/home",
+      "state": "group-build-list",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0209-linux-friends-all.png",
+      "disposition": "retained",
+      "route": "/friends",
+      "state": "linux-friends-all",
+      "capability_feed": "friend-authority"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0209-linux-friends-blocked.png",
+      "disposition": "retained",
+      "route": "/friends",
+      "state": "linux-friends-blocked",
+      "capability_feed": "friend-authority"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0209-linux-friends-online.png",
+      "disposition": "retained",
+      "route": "/friends",
+      "state": "linux-friends-online",
+      "capability_feed": "friend-authority"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0209-linux-friends-pending.png",
+      "disposition": "retained",
+      "route": "/friends",
+      "state": "linux-friends-pending",
+      "capability_feed": "friend-authority"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0215-name-request-linux/after-submission-linux.png",
+      "disposition": "retained",
+      "route": "/home",
+      "state": "after-submission-linux",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0215-name-request-linux/before-submission-linux.png",
+      "disposition": "retained",
+      "route": "/home",
+      "state": "before-submission-linux",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0229-pending-request-linux.png",
+      "disposition": "retained",
+      "route": "/home",
+      "state": "pending-request-linux",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0246-account-reach-linux/friend-account-reach-linux.png",
+      "disposition": "retained",
+      "route": "/recovery",
+      "state": "friend-account-reach-linux",
+      "capability_feed": "recovery-kit"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0254-new-friend-defaults-saved-1280x800.png",
+      "disposition": "retained",
+      "route": "/friends",
+      "state": "new-friend-defaults-saved",
+      "capability_feed": "friend-authority"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0272-complete-friend-page-900x700.png",
+      "disposition": "retained",
+      "route": "/friends",
+      "state": "complete-friend-page",
+      "capability_feed": "friend-authority"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0353-linux-welcome.png",
+      "disposition": "retained",
+      "route": "/recovery",
+      "state": "linux-welcome",
+      "capability_feed": "recovery-kit"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0368-forward-secrecy.png",
+      "disposition": "retained",
+      "route": "/privacy",
+      "state": "forward-secrecy",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0372-linux-privacy-sending.png",
+      "disposition": "retained",
+      "route": "/privacy",
+      "state": "linux-privacy-sending",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0543-chat-burn-review-server-channel.png",
+      "disposition": "chats-strip-follow-up",
+      "route": "/home",
+      "state": "chat-burn-review-server-channel",
+      "capability_feed": null
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0564-view-once-overlay-empty.png",
+      "disposition": "chats-strip-follow-up",
+      "route": "/home",
+      "state": "view-once-overlay-empty",
+      "capability_feed": null
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0564-view-once-overlay-populated.png",
+      "disposition": "chats-strip-follow-up",
+      "route": "/home",
+      "state": "view-once-overlay-populated",
+      "capability_feed": null
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0566-view-once-display/view-once-display-linux.png",
+      "disposition": "chats-strip-follow-up",
+      "route": "/home",
+      "state": "view-once-display-linux",
+      "capability_feed": null
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0651-throttled-upload-progress-tray-card.png",
+      "disposition": "retained",
+      "route": "/modal",
+      "state": "throttled-upload-progress-tray-card",
+      "capability_feed": "entitlement"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0670-linux-image-hidden-post-confirmation.png",
+      "disposition": "retained",
+      "route": "/post",
+      "state": "linux-image-hidden-post-confirmation",
+      "capability_feed": "profile-posts"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0720-privacy-destination.png",
+      "disposition": "retained",
+      "route": "/privacy",
+      "state": "privacy-destination",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0720-privacy-level-balanced.png",
+      "disposition": "retained",
+      "route": "/privacy",
+      "state": "privacy-level-balanced",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0722-privacy-level-balanced.png",
+      "disposition": "retained",
+      "route": "/privacy",
+      "state": "privacy-level-balanced",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0722-privacy-level-basic.png",
+      "disposition": "retained",
+      "route": "/privacy",
+      "state": "privacy-level-basic",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0722-privacy-level-maximum.png",
+      "disposition": "retained",
+      "route": "/privacy",
+      "state": "privacy-level-maximum",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0724-linux-notifications.png",
+      "disposition": "retained",
+      "route": "/home/activity",
+      "state": "linux-notifications",
+      "capability_feed": "notifications"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0726-linux-notifications-two-apps.png",
+      "disposition": "retained",
+      "route": "/home/activity",
+      "state": "linux-notifications-two-apps",
+      "capability_feed": "notifications"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0732-new-friend-defaults-900x900.png",
+      "disposition": "retained",
+      "route": "/friends",
+      "state": "new-friend-defaults",
+      "capability_feed": "friend-authority"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0732-new-friend-defaults-empty-state-900x900.png",
+      "disposition": "retained",
+      "route": "/friends",
+      "state": "new-friend-defaults-empty-state",
+      "capability_feed": "friend-authority"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0734-new-friend-defaults-1280x900.png",
+      "disposition": "retained",
+      "route": "/friends",
+      "state": "new-friend-defaults",
+      "capability_feed": "friend-authority"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0734-new-friend-defaults-contrast-1280x900.png",
+      "disposition": "retained",
+      "route": "/friends",
+      "state": "new-friend-defaults-contrast",
+      "capability_feed": "friend-authority"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0748-verification-warning.png",
+      "disposition": "retained",
+      "route": "/friends",
+      "state": "verification-warning",
+      "capability_feed": "friend-authority"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0750-verification-warning-before-sending.png",
+      "disposition": "retained",
+      "route": "/friends",
+      "state": "verification-warning-before-sending",
+      "capability_feed": "friend-authority"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0756-message-defaults.png",
+      "disposition": "retained",
+      "route": "/settings",
+      "state": "message-defaults",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0758-message-defaults-1280x800.png",
+      "disposition": "retained",
+      "route": "/settings",
+      "state": "message-defaults",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0758-message-defaults-contrast-1280x800.png",
+      "disposition": "retained",
+      "route": "/settings",
+      "state": "message-defaults-contrast",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0760-apps-and-sending-1280x800.png",
+      "disposition": "retained",
+      "route": "/privacy",
+      "state": "apps-and-sending",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0762-linux-apps-and-sending-next-generation-on.png",
+      "disposition": "retained",
+      "route": "/privacy",
+      "state": "linux-apps-and-sending-next-generation-on",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0764-linux-whitelisting-empty.png",
+      "disposition": "retained",
+      "route": "/friends",
+      "state": "linux-whitelisting-empty",
+      "capability_feed": "friend-authority"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0764-linux-whitelisting.png",
+      "disposition": "retained",
+      "route": "/friends",
+      "state": "linux-whitelisting",
+      "capability_feed": "friend-authority"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0766-linux-whitelisting.png",
+      "disposition": "retained",
+      "route": "/friends",
+      "state": "linux-whitelisting",
+      "capability_feed": "friend-authority"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0780-window-sounds-settings.png",
+      "disposition": "retained",
+      "route": "/settings",
+      "state": "window-sounds-settings",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0782-window-sounds.png",
+      "disposition": "retained",
+      "route": "/settings",
+      "state": "window-sounds",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0794-account-1280x800.png",
+      "disposition": "retained",
+      "route": "/recovery",
+      "state": "account",
+      "capability_feed": "recovery-kit"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0816-home-top-bar-profile.png",
+      "disposition": "retained",
+      "route": "/home",
+      "state": "home-top-bar-profile",
+      "capability_feed": "entitlement"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0816-home-top-bar-settings.png",
+      "disposition": "retained",
+      "route": "/settings",
+      "state": "home-top-bar-settings",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0816-home-top-bar.png",
+      "disposition": "retained",
+      "route": "/home",
+      "state": "home-top-bar",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0821-home-summary-1280x800.png",
+      "disposition": "retained",
+      "route": "/home",
+      "state": "home-summary",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0821-home-summary-empty-1280x800.png",
+      "disposition": "retained",
+      "route": "/home",
+      "state": "home-summary-empty",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0832-linux-osl-friends-panel.png",
+      "disposition": "retained",
+      "route": "/friends",
+      "state": "linux-osl-friends-panel",
+      "capability_feed": "friend-authority"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0832-throwaway-missing-control.png",
+      "disposition": "retained",
+      "route": "/home",
+      "state": "throwaway-missing-control",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0834-osl-friends-panel.png",
+      "disposition": "retained",
+      "route": "/friends",
+      "state": "osl-friends-panel",
+      "capability_feed": "friend-authority"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0840-friend-page-1000x760.png",
+      "disposition": "retained",
+      "route": "/friends",
+      "state": "friend-page",
+      "capability_feed": "friend-authority"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0840-friend-page-empty-1000x760.png",
+      "disposition": "retained",
+      "route": "/friends",
+      "state": "friend-page-empty",
+      "capability_feed": "friend-authority"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0842-osl-friend-1000x760.png",
+      "disposition": "retained",
+      "route": "/friends",
+      "state": "osl-friend",
+      "capability_feed": "friend-authority"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0846-osl-tools-grid.png",
+      "disposition": "retained",
+      "route": "/home",
+      "state": "osl-tools-grid",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0850-arrange-tiles.png",
+      "disposition": "retained",
+      "route": "/home",
+      "state": "arrange-tiles",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0856-tile-status-page-1280x800.png",
+      "disposition": "retained",
+      "route": "/home",
+      "state": "tile-status-page",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0856-tile-status-page-discord-1280x800.png",
+      "disposition": "retained",
+      "route": "/home",
+      "state": "tile-status-page-discord",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0858-status-page-not-started-1280x900.png",
+      "disposition": "retained",
+      "route": "/home",
+      "state": "status-page-not-started",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-0858-status-page-placing-only-1280x900.png",
+      "disposition": "retained",
+      "route": "/home",
+      "state": "status-page-placing-only",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-1228-email-protected-overlay-1200x820.png",
+      "disposition": "chats-strip-follow-up",
+      "route": "/media/mail",
+      "state": "email-protected-overlay",
+      "capability_feed": null
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-1228-email-protected-overlay-empty-state-1200x820.png",
+      "disposition": "chats-strip-follow-up",
+      "route": "/media/mail",
+      "state": "email-protected-overlay-empty-state",
+      "capability_feed": null
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-1305-plain-chat-composer-900x420.png",
+      "disposition": "chats-strip-follow-up",
+      "route": "/home",
+      "state": "plain-chat-composer",
+      "capability_feed": null
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-1305-plain-chat-composer-empty-900x420.png",
+      "disposition": "chats-strip-follow-up",
+      "route": "/home",
+      "state": "plain-chat-composer-empty",
+      "capability_feed": null
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-1349-view-once-player-empty.png",
+      "disposition": "chats-strip-follow-up",
+      "route": "/home",
+      "state": "view-once-player-empty",
+      "capability_feed": null
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-1349-view-once-player-populated.png",
+      "disposition": "chats-strip-follow-up",
+      "route": "/home",
+      "state": "view-once-player-populated",
+      "capability_feed": null
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-1355-chat-burn-confirmation-1000x800.png",
+      "disposition": "chats-strip-follow-up",
+      "route": "/modal",
+      "state": "chat-burn-confirmation",
+      "capability_feed": null
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-1404-scrub-account-choice.png",
+      "disposition": "retained",
+      "route": "/recovery",
+      "state": "scrub-account-choice",
+      "capability_feed": "recovery-kit"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-1408-consent-page-after-tick-1000x900.png",
+      "disposition": "retained",
+      "route": "/settings",
+      "state": "consent-page-after-tick",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-1408-consent-page-before-tick-1000x900.png",
+      "disposition": "retained",
+      "route": "/settings",
+      "state": "consent-page-before-tick",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-1413-what-to-find-saved.png",
+      "disposition": "retained",
+      "route": "/privacy/scrub",
+      "state": "what-to-find-saved",
+      "capability_feed": "scrub-engine"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-1413-what-to-find.png",
+      "disposition": "retained",
+      "route": "/privacy/scrub",
+      "state": "what-to-find",
+      "capability_feed": "scrub-engine"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-1603-unsigned-publisher-note-1000x900.png",
+      "disposition": "retained",
+      "route": "/settings",
+      "state": "unsigned-publisher-note",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-1603-unsigned-publisher-note-full.png",
+      "disposition": "retained",
+      "route": "/settings",
+      "state": "unsigned-publisher-note-full",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-3116-messaging-risk-discord/discord-messaging-risk.png",
+      "disposition": "retained",
+      "route": "/home",
+      "state": "discord-messaging-risk",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-3161-language-switch-es.png",
+      "disposition": "retained",
+      "route": "/settings",
+      "state": "language-switch-es",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-3526-home-tiles.png",
+      "disposition": "retained",
+      "route": "/home",
+      "state": "home-tiles",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-3712-remove-everything.png",
+      "disposition": "retained",
+      "route": "/privacy/scrub",
+      "state": "remove-everything",
+      "capability_feed": "scrub-engine"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-4760-anyone-gate-after-tick-1000x900.png",
+      "disposition": "retained",
+      "route": "/friends",
+      "state": "anyone-gate-after-tick",
+      "capability_feed": "friend-authority"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-4760-anyone-gate-before-tick-1000x900.png",
+      "disposition": "retained",
+      "route": "/friends",
+      "state": "anyone-gate-before-tick",
+      "capability_feed": "friend-authority"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-4760b-strip-cycler-refused-1000x900.png",
+      "disposition": "chats-strip-follow-up",
+      "route": "/home",
+      "state": "strip-cycler-refused",
+      "capability_feed": null
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-4852-role-permission-legend.png",
+      "disposition": "chats-strip-follow-up",
+      "route": "/home",
+      "state": "role-permission-legend",
+      "capability_feed": null
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-4852-role-permission-screen.png",
+      "disposition": "chats-strip-follow-up",
+      "route": "/home",
+      "state": "role-permission-screen",
+      "capability_feed": null
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-5038-overlay-strip.png",
+      "disposition": "chats-strip-follow-up",
+      "route": "/home",
+      "state": "overlay-strip",
+      "capability_feed": null
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-5047-routes/task-5047-route-activity.png",
+      "disposition": "retained",
+      "route": "/home/activity",
+      "state": "route-activity",
+      "capability_feed": "notifications"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-5047-routes/task-5047-route-connections.png",
+      "disposition": "retained",
+      "route": "/friends",
+      "state": "route-connections",
+      "capability_feed": "friend-authority"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-5047-routes/task-5047-route-home.png",
+      "disposition": "retained",
+      "route": "/home",
+      "state": "route-home",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-5047-routes/task-5047-route-inbox.png",
+      "disposition": "retained",
+      "route": "/home/inbox",
+      "state": "route-inbox",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-5047-routes/task-5047-route-mullvad.png",
+      "disposition": "retained",
+      "route": "/settings/apps",
+      "state": "route-mullvad",
+      "capability_feed": "mullvad-host"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-5047-routes/task-5047-route-osl-chat.png",
+      "disposition": "retained",
+      "route": "/home",
+      "state": "route-osl-chat",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-5047-routes/task-5047-route-osl-mail.png",
+      "disposition": "retained",
+      "route": "/media/mail",
+      "state": "route-osl-mail",
+      "capability_feed": "media-store"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-5047-routes/task-5047-route-osl-servers.png",
+      "disposition": "retained",
+      "route": "/home",
+      "state": "route-osl-servers",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-5047-routes/task-5047-route-people.png",
+      "disposition": "retained",
+      "route": "/friends",
+      "state": "route-people",
+      "capability_feed": "friend-authority"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-5047-routes/task-5047-route-privacy.png",
+      "disposition": "retained",
+      "route": "/privacy",
+      "state": "route-privacy",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-5047-routes/task-5047-route-service.png",
+      "disposition": "retained",
+      "route": "/settings/apps",
+      "state": "route-service",
+      "capability_feed": "native-app-detection"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-5047-routes/task-5047-route-settings.png",
+      "disposition": "retained",
+      "route": "/settings",
+      "state": "route-settings",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-5047-routes/task-5047-route-signal-qa.png",
+      "disposition": "retained",
+      "route": "/home",
+      "state": "route-signal-qa",
+      "capability_feed": "signal-qa"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/evidence/task-5049-friends-settings.png",
+      "disposition": "retained",
+      "route": "/friends",
+      "state": "friends-settings",
+      "capability_feed": "friend-authority"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/no-recovery-secret-1280x800.png",
+      "disposition": "retained",
+      "route": "/recovery",
+      "state": "no-recovery-secret",
+      "capability_feed": "recovery-kit"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/task-0360-recovery-protection-problem.png",
+      "disposition": "retained",
+      "route": "/recovery",
+      "state": "recovery-protection-problem",
+      "capability_feed": "recovery-kit"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/task-0367-pro-ready.png",
+      "disposition": "retained",
+      "route": "/home",
+      "state": "pro-ready",
+      "capability_feed": "entitlement"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/task-0376-quick-tour.png",
+      "disposition": "deleted-d4",
+      "route": "/home",
+      "state": "quick-tour",
+      "capability_feed": null
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/task-0718-settings-home-dark.png",
+      "disposition": "retained",
+      "route": "/settings",
+      "state": "settings-home-dark",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/task-0718-settings-home-light.png",
+      "disposition": "retained",
+      "route": "/settings",
+      "state": "settings-home-light",
+      "capability_feed": "core-readiness"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/task-0790/task-0790-friend-pictures-compact.png",
+      "disposition": "retained",
+      "route": "/friends",
+      "state": "friend-pictures-compact",
+      "capability_feed": "friend-authority"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/task-0790/task-0790-friend-pictures-grid.png",
+      "disposition": "retained",
+      "route": "/friends",
+      "state": "friend-pictures-grid",
+      "capability_feed": "friend-authority"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/task-0790/task-0790-friend-pictures-initial.png",
+      "disposition": "retained",
+      "route": "/friends",
+      "state": "friend-pictures-initial",
+      "capability_feed": "friend-authority"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/task-0790/task-0790-friend-pictures-picture.png",
+      "disposition": "retained",
+      "route": "/friends",
+      "state": "friend-pictures-picture",
+      "capability_feed": "friend-authority"
+    },
+    {
+      "page_id": "apps/osl-hub-ui/screenshots/task-0848-arrange-tiles.png",
+      "disposition": "retained",
+      "route": "/home",
+      "state": "arrange-tiles",
+      "capability_feed": "core-readiness"
+    }
+  ]
+}

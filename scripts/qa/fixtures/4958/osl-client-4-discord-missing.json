@@ -1,0 +1,130 @@
+{
+  "schema": "osl-vm-readiness-4958/1",
+  "machine": "osl-client-4",
+  "collectedUtc": "2026-08-07T12:00:00.0000000Z",
+  "evidenceSource": "accessibility-tree",
+  "source": "replay-synthetic",
+  "note": "exit-1 case: Discord is not installed on osl-client-4.",
+  "waitSeconds": 60,
+  "imageFilesWritten": 0,
+  "apps": [
+    {
+      "name": "Discord",
+      "installed": false,
+      "version": "",
+      "windowFound": false,
+      "windowTitle": "",
+      "windowControlType": "",
+      "windowSeconds": 60.0,
+      "signedIn": false,
+      "account": "",
+      "signedOutMarker": "",
+      "accountNamePattern": "",
+      "accessibilityNamesInspected": 0
+    },
+    {
+      "name": "Telegram Desktop",
+      "installed": true,
+      "version": "7.0.8",
+      "windowFound": true,
+      "windowTitle": "Telegram",
+      "windowControlType": "ControlType.Window",
+      "windowSeconds": 6.017,
+      "signedIn": true,
+      "account": "placeholder-burner-telegram",
+      "signedOutMarker": "",
+      "accountNamePattern": "^(?<handle>\\+\\d[\\d\\s]{6,20})$",
+      "accessibilityNamesInspected": 531
+    },
+    {
+      "name": "Signal Desktop",
+      "installed": true,
+      "version": "8.22.0",
+      "windowFound": true,
+      "windowTitle": "Signal",
+      "windowControlType": "ControlType.Window",
+      "windowSeconds": 9.883,
+      "signedIn": true,
+      "account": "placeholder-burner-signal",
+      "signedOutMarker": "",
+      "accountNamePattern": "^(?<handle>\\+\\d[\\d\\s]{6,20})$",
+      "accessibilityNamesInspected": 744
+    },
+    {
+      "name": "WhatsApp Desktop",
+      "installed": true,
+      "version": "22607.722.4.0",
+      "windowFound": true,
+      "windowTitle": "WhatsApp",
+      "windowControlType": "ControlType.Window",
+      "windowSeconds": 8.451,
+      "signedIn": true,
+      "account": "placeholder-burner-whatsapp",
+      "signedOutMarker": "",
+      "accountNamePattern": "^(?<handle>\\+\\d[\\d\\s]{6,20})$",
+      "accessibilityNamesInspected": 623
+    },
+    {
+      "name": "Chrome",
+      "installed": true,
+      "version": "151.0.7922.109",
+      "windowFound": true,
+      "windowTitle": "Inbox - Google Chrome",
+      "windowControlType": "ControlType.Window",
+      "windowSeconds": 3.204,
+      "signedIn": true,
+      "account": "placeholder-burner-mail",
+      "signedOutMarker": "",
+      "accountNamePattern": "Account Information,\\s*(?<handle>\\S+@\\S+)",
+      "accessibilityNamesInspected": 1102
+    },
+    {
+      "name": "Firefox",
+      "installed": true,
+      "version": "153.0.3",
+      "windowFound": true,
+      "windowTitle": "Mozilla Firefox",
+      "windowControlType": "ControlType.Window",
+      "windowSeconds": 4.771,
+      "signedIn": true,
+      "account": "placeholder-burner-firefox",
+      "signedOutMarker": "",
+      "accountNamePattern": "Account,\\s*(?<handle>\\S+@\\S+)",
+      "accessibilityNamesInspected": 498
+    }
+  ],
+  "quiet": {
+    "quiet": true,
+    "displayAndSleepTimeoutsZero": true,
+    "videoIdle": {
+      "ac": 0,
+      "dc": 0
+    },
+    "consoleLock": {
+      "ac": 0,
+      "dc": 0
+    },
+    "standbyIdle": {
+      "ac": 0,
+      "dc": 0
+    },
+    "hibernateIdle": {
+      "ac": 0,
+      "dc": 0
+    },
+    "screenSaverOff": true,
+    "notificationBannersOff": true,
+    "workstationLockDisabled": true,
+    "updateRestartWithoutAskingOff": true,
+    "lockUiWindowsInAccessibilityTree": 0,
+    "logonUiProcesses": 0
+  },
+  "osl": {
+    "exePath": "C:\\Users\\osladmin\\Desktop\\OSL Privacy\\OSL Privacy.exe",
+    "installed": true,
+    "windowFound": true,
+    "windowTitle": "OSL Privacy",
+    "windowControlType": "ControlType.Window",
+    "windowSeconds": 7.412
+  }
+}

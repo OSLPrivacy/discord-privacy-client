@@ -607,7 +607,9 @@ describe("D80 unlock screen renders one credential input", () => {
     const afterNearMatch = __oslHubUiTest.snapshot();
     const accountsAfterNearMatch = JSON.parse(harness.storage.get(savedAccountKey) ?? "[]").length;
     expect(afterNearMatch).toMatchObject({ route: "onboarding", onboardingRoute: "unlock" });
-    expect(harness.error.textContent).toBe("Password not recognized.");
+    expect(harness.error.textContent).toBe(
+      "Password not recognized. 9 attempts remaining before a 15-minute cooldown.",
+    );
     expect(accountsAfterNearMatch).toBe(1);
     expect(burnRequests).toBe(0);
     expect(burnConfirmationOpen).toBe(false);

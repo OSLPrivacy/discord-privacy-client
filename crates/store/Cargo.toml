@@ -15,7 +15,7 @@ crypto = { path = "../crypto" }
 # host's libsqlite3 — necessary for the `x86_64-pc-windows-gnu`
 # cross build that lacks system SQLite. Bundled SQLite is built
 # with FTS5 enabled by default (SQLITE_ENABLE_FTS5=1).
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.32", features = ["bundled", "hooks"] }
 
 thiserror = { workspace = true }
 

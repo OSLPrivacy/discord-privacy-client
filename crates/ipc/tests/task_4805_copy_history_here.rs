@@ -6,6 +6,7 @@ use ipc::commands::{
 };
 use ipc::state::AppState;
 use keystore::identity_from_entropy;
+use std::process::Command;
 use store::{MessageStore, StoredMessage};
 use tempfile::TempDir;
 
@@ -194,8 +195,11 @@ fn task_4805_new_device_stays_empty_until_copy_my_history_here() {
         .to_string();
     let package =
         cmd_osl_export_history_for_copy(&old_state, CHANNEL.to_owned(), ids).expect("history copy");
-    let result = cmd_osl_copy_my_history_here(&new_state, package, phrase)
+    let result = cmd_osl_copy_my_history_here(&new_state, package.clone(), phrase.clone())
         .expect("Copy my history here writes rows");
+    let retry_result = cmd_osl_copy_my_history_here(&new_state, package, phrase)
+        .expect("Copy my history here retry returns the durable operation");
+    assert_eq!(retry_result, result);
     let copied_count = marked_history_count(&new_state);
     let after_month_bytes = cmd_osl_history_copy_month_data_bytes(&new_state);
     let byte_delta = after_month_bytes - before_month_bytes;
@@ -236,4 +240,49 @@ fn task_4805_new_device_stays_empty_until_copy_my_history_here() {
         (lower_bound..=upper_bound).contains(&byte_delta),
         "data allowance delta {byte_delta} must match {expected_plaintext_bytes} within five percent"
     );
+
+    if std::env::var_os("OSL_TASK4823_NEUTRAL_RETRY_WRITER").is_none() {
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                "task_4805_neutral_retry_writer_child",
+                "--nocapture",
+            ])
+            .output()
+            .unwrap();
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(output.status.code(), Some(1), "{text}");
+        assert!(text.contains("neutral_cache_checkpoint"), "{text}");
+        println!("TASK4805 neutral_retry_writer=neutral_cache_checkpoint exit=1");
+    }
+}
+
+#[test]
+#[ignore = "throwaway child normalizes the deliberately red gate to exit 1"]
+fn task_4805_neutral_retry_writer_child() {
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "task_4805_new_device_stays_empty_until_copy_my_history_here",
+            "--nocapture",
+        ])
+        .env("OSL_TASK4823_NEUTRAL_RETRY_WRITER", "1")
+        .output()
+        .unwrap();
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.status.code(), Some(101), "{text}");
+    assert!(text.contains("neutral_cache_checkpoint"), "{text}");
+    eprintln!(
+        "TASK4805 unclassified writer=neutral_cache_checkpoint effect=retry_conditional_write"
+    );
+    std::process::exit(1);
 }

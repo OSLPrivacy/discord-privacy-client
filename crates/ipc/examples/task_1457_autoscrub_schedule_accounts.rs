@@ -54,7 +54,11 @@ fn main() {
     );
     println!("  {AUTOSCRUB_SCHEDULE_COMMAND} -> {reply}");
     let saved: serde_json::Value = serde_json::from_str(&reply).expect("a JSON reply");
-    assert_eq!(saved["ok"], serde_json::json!(true), "the save must be accepted");
+    assert_eq!(
+        saved["ok"],
+        serde_json::json!(true),
+        "the save must be accepted"
+    );
     let after_save = row_count(&mut surface);
     println!("  row count after  = {after_save}");
     assert_eq!(after_save, 1, "the count must be 1 after");
@@ -67,7 +71,11 @@ fn main() {
     );
     println!("  {AUTOSCRUB_SCHEDULE_ACCOUNT_COMMAND} -> {reply}");
     let refused: serde_json::Value = serde_json::from_str(&reply).expect("a JSON reply");
-    assert_eq!(refused["ok"], serde_json::json!(false), "it must be refused");
+    assert_eq!(
+        refused["ok"],
+        serde_json::json!(false),
+        "it must be refused"
+    );
     assert_eq!(
         refused["errorCode"],
         serde_json::json!(ACCOUNT_NOT_APPROVED_FOR_AUTOSCRUB),
@@ -91,7 +99,9 @@ fn main() {
     println!("  row count after the refusal = {after_refusal}");
     assert_eq!(after_refusal, 1, "the count must stay 1");
     assert!(
-        !surface.scheduled_account_ids().contains(&UNAPPROVED.to_string()),
+        !surface
+            .scheduled_account_ids()
+            .contains(&UNAPPROVED.to_string()),
         "no schedule may name the unapproved account"
     );
 

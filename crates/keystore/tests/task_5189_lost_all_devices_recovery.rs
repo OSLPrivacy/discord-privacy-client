@@ -8,6 +8,11 @@ use keystore::{
     LOST_DEVICE_RECOVERY_KIT_SCHEMA, LOST_DEVICE_RECOVERY_STATE_DOMAIN,
     ORDINARY_PAIRING_EXISTING_DEVICE_REQUIRED,
 };
+/// TASK 5402: a lost-device recovery kit is now written as authenticated
+/// ciphertext under an Argon2id key derived from this passphrase. It is the
+/// user-held secret the kit file itself never contains.
+const KIT_PASSPHRASE: &str = "task-5189-kit-passphrase";
+
 use std::{
     sync::{Arc, Barrier},
     thread,
@@ -25,7 +30,7 @@ fn task_5189_lost_all_devices_recovery_is_rotating_single_use_not_lifetime_singl
     for index in 1..=3 {
         let profile = PackagedReplacementProfile::new_clean(
             temp.path().join(format!("old-packaged-profile-{index}")),
-            format!("old-device-{index}"),
+            format!("old-device-{index}"), KIT_PASSPHRASE
         )
         .expect("create an old packaged profile");
         old_device_keys.push(profile.replacement_device_key());
@@ -35,7 +40,7 @@ fn task_5189_lost_all_devices_recovery_is_rotating_single_use_not_lifetime_singl
     // The running service, not a dead device, issues the first offline kit.
     let initially_issued_kit_path = temp.path().join("issued-current-recovery-kit.osl");
     let (service, first_kit) =
-        LostDeviceRecoveryService::bootstrap(old_device_keys.clone(), &initially_issued_kit_path)
+        LostDeviceRecoveryService::bootstrap(old_device_keys.clone(), &initially_issued_kit_path, KIT_PASSPHRASE)
             .expect("running service issues initial recovery kit");
     let service = Arc::new(service);
     assert_eq!(
@@ -44,7 +49,7 @@ fn task_5189_lost_all_devices_recovery_is_rotating_single_use_not_lifetime_singl
             .expect("running service saved issued kit")
             .as_slice()
     );
-    let first_kit = LostDeviceRecoveryKit::load(&initially_issued_kit_path)
+    let first_kit = LostDeviceRecoveryKit::open_protected(&initially_issued_kit_path, KIT_PASSPHRASE)
         .expect("load recovery kit into a clean replacement profile");
 
     // Dropping is the packaged-profile model's stop boundary. Only public keys
@@ -57,7 +62,7 @@ fn task_5189_lost_all_devices_recovery_is_rotating_single_use_not_lifetime_singl
     // grant.  Ordinary pairing also retains its old-device confirmation gate.
     let starved = PackagedReplacementProfile::new_clean(
         temp.path().join("starved-with-no-kit"),
-        "starved-with-no-kit",
+        "starved-with-no-kit", KIT_PASSPHRASE
     )
     .expect("create starved clean profile");
     let roster_before_starvation = service.roster_bytes();
@@ -102,12 +107,12 @@ fn task_5189_lost_all_devices_recovery_is_rotating_single_use_not_lifetime_singl
 
         let production_profile = PackagedReplacementProfile::new_clean(
             temp.path().join(format!("round-{round}-production")),
-            format!("round-{round}-production"),
+            format!("round-{round}-production"), KIT_PASSPHRASE
         )
         .expect("create clean production-client replacement profile");
         let external_profile = PackagedReplacementProfile::new_clean(
             temp.path().join(format!("round-{round}-external")),
-            format!("round-{round}-external"),
+            format!("round-{round}-external"), KIT_PASSPHRASE
         )
         .expect("create clean externally-signed replacement profile");
         let production_prepared =
@@ -268,12 +273,12 @@ fn task_5189_lost_all_devices_recovery_is_rotating_single_use_not_lifetime_singl
         // Even fresh signatures and fresh keys do not revive an old authority.
         let stale_a = PackagedReplacementProfile::new_clean(
             temp.path().join(format!("round-{round}-consumed-a")),
-            format!("round-{round}-consumed-a"),
+            format!("round-{round}-consumed-a"), KIT_PASSPHRASE
         )
         .expect("fresh stale-claim profile A");
         let stale_b = PackagedReplacementProfile::new_clean(
             temp.path().join(format!("round-{round}-consumed-b")),
-            format!("round-{round}-consumed-b"),
+            format!("round-{round}-consumed-b"), KIT_PASSPHRASE
         )
         .expect("fresh stale-claim profile B");
         let stale_a_key = stale_a.replacement_device_key();
@@ -315,7 +320,7 @@ fn task_5189_lost_all_devices_recovery_is_rotating_single_use_not_lifetime_singl
     let final_roster = service.roster_bytes();
     let final_authorized = service.authorized_device_keys();
     let tamper_profile =
-        PackagedReplacementProfile::new_clean(temp.path().join("tamper-profile"), "tamper-profile")
+        PackagedReplacementProfile::new_clean(temp.path().join("tamper-profile"), "tamper-profile", KIT_PASSPHRASE)
             .expect("create tamper profile");
     let valid_final =
         independently_sign_declaration(&current_kit, tamper_profile.replacement_device_key());
@@ -327,7 +332,7 @@ fn task_5189_lost_all_devices_recovery_is_rotating_single_use_not_lifetime_singl
     let mut changed_key = valid_final.clone();
     changed_key.replacement_device_key = PackagedReplacementProfile::new_clean(
         temp.path().join("changed-key-profile"),
-        "changed-key-profile",
+        "changed-key-profile", KIT_PASSPHRASE
     )
     .expect("changed key profile")
     .replacement_device_key();

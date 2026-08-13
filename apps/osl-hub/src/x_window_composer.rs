@@ -61,7 +61,8 @@ pub fn render_prepared_browser_fixture(value: &str) -> Result<String, String> {
     // origin before it releases the three records.  Other provider fixtures
     // deliberately cannot enter that X-only path.
     let record = if fixture == PreparedBrowserFixture::XDirect {
-        let found = XWebBackend::new(PreparedXDriver).find_active_browser_place_and_composer()
+        let found = XWebBackend::new(PreparedXDriver)
+            .find_active_browser_place_and_composer()
             .map_err(|_| "prepared X driver could not find its active browser".to_owned())?;
         if found != expected {
             return Err("prepared X driver did not match its fixture records".to_owned());

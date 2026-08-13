@@ -85,6 +85,37 @@ impl StagedAttachment {
     }
 }
 
+/// TASK 5166: take RAII ownership of a plaintext file the protected-download
+/// quarantine just released into `root`'s staging directory by one atomic
+/// rename. The path shape is re-validated here, so a release that landed
+/// anywhere but the staging directory under a legal `opened-*` name cannot be
+/// adopted and handed to an external reader.
+pub fn adopt_released_plaintext(
+    root: &Path,
+    path: PathBuf,
+    original_filename: &str,
+    declared_mime: &str,
+    plaintext_len: u64,
+) -> Result<StagedPlaintext, String> {
+    let mime_type = validate_metadata(original_filename, declared_mime)?;
+    validate_staging_path_in_root(root, &path)?;
+    let metadata = std::fs::symlink_metadata(&path)
+        .map_err(|_| "released attachment could not be checked".to_owned())?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err("released attachment is not a regular file".to_owned());
+    }
+    if metadata.len() != plaintext_len {
+        return Err("released attachment has an invalid plaintext size".to_owned());
+    }
+    Ok(StagedPlaintext::new(StagedAttachment {
+        root: root.to_owned(),
+        path,
+        original_filename: original_filename.to_owned(),
+        mime_type,
+        plaintext_len,
+    }))
+}
+
 struct PartialFile(PathBuf);
 
 impl Drop for PartialFile {

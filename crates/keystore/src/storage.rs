@@ -40,6 +40,7 @@
 
 use crate::identity::{Identity, IDENTITY_BLOB_VERSION};
 use crate::sealer::Sealer;
+use crate::secret_trace::{self, Protection, SecretClass, SecretOp};
 use crate::{Error, Result};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
@@ -145,8 +146,39 @@ pub fn save_identity(path: &Path, identity: &Identity, sealer: &dyn Sealer) -> R
     };
 
     let json = serde_json::to_vec_pretty(&on_disk)?;
-    crate::recoverable_file::write_recoverable(path, &json)?;
+    crate::recoverable_file::write_recoverable_secret(
+        path,
+        &json,
+        SecretClass::IdentityPrivateMaterial,
+        identity_protection(sealer),
+        "keystore::storage::save_identity",
+    )?;
+    // The same blob carries `recovery_entropy_b64`, the sixteen bytes the
+    // twelve-word identity phrase encodes and the whole identity rederives
+    // from. It is a recovery phrase in every sense that matters to an at-rest
+    // audit, so it is declared as its own class rather than being folded into
+    // "identity material" and quietly losing its own row in the inventory.
+    if identity.recovery_entropy.is_some() {
+        secret_trace::record(
+            SecretOp::Write,
+            SecretClass::RecoveryPhrase,
+            identity_protection(sealer),
+            "keystore::storage::save_identity",
+            path,
+            json.len(),
+        );
+    }
     Ok(())
+}
+
+/// A sealer that demands the INSECURE banner writes its input straight through,
+/// so the honest protection label for the blob it produced is `Plaintext`.
+fn identity_protection(sealer: &dyn Sealer) -> Protection {
+    if sealer.requires_insecure_banner() {
+        Protection::Plaintext
+    } else {
+        Protection::DeviceSealedAead
+    }
 }
 
 /// Load an identity from `path`. Validates that the on-disk method
@@ -172,6 +204,24 @@ pub fn load_identity(path: &Path, sealer: &dyn Sealer) -> Result<Identity> {
     let sealed = STANDARD.decode(&on_disk.sealed_b64)?;
     let inner_bytes = sealer.unseal(&sealed)?;
     let inner: InnerIdentity = serde_json::from_slice(&inner_bytes)?;
+    secret_trace::record(
+        SecretOp::Read,
+        SecretClass::IdentityPrivateMaterial,
+        identity_protection(sealer),
+        "keystore::storage::load_identity",
+        path,
+        bytes.len(),
+    );
+    if inner.recovery_entropy_b64.is_some() {
+        secret_trace::record(
+            SecretOp::Read,
+            SecretClass::RecoveryPhrase,
+            identity_protection(sealer),
+            "keystore::storage::load_identity",
+            path,
+            bytes.len(),
+        );
+    }
 
     let x25519_secret =
         decode_array::<{ x25519::SECRET_KEY_SIZE }>("x25519_secret", &inner.x25519_secret_b64)?;

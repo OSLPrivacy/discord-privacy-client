@@ -780,6 +780,27 @@ pub struct BurnResponse {
     pub deleted_count: u32,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct DiscoveryCardResponse {
+    pub drawer_name: String,
+    pub label: String,
+    pub sealed_note: String,
+    pub discovery_epoch: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct DiscoveryPublishResponse {
+    pub removed: u32,
+    pub wrote: u32,
+    pub card: DiscoveryCardResponse,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct DiscoveryReplyStateResponse {
+    pub enabled: bool,
+    pub removed: u32,
+}
+
 /// Body of `POST /v1/license/validate`.
 #[derive(Serialize)]
 struct LicenseValidateRequest<'a> {
@@ -871,6 +892,26 @@ struct BurnRequest<'a> {
     timestamp_ms: i64,
     request_id: String,
     burn_signature_b64: String,
+}
+
+#[derive(Serialize)]
+struct DiscoveryAccountRequest<'a> {
+    account_id: &'a str,
+}
+
+#[derive(Serialize)]
+struct DiscoveryPublishRequest<'a> {
+    account_id: &'a str,
+    app_id: &'a str,
+    account_handle: &'a str,
+    setting: &'a str,
+    sealed_note: &'a str,
+}
+
+#[derive(Serialize)]
+struct DiscoveryReadRequest<'a> {
+    drawer_name: &'a str,
+    label: &'a str,
 }
 
 #[derive(Serialize)]
@@ -2284,6 +2325,88 @@ impl KeyServerClient {
         )?;
         check_2xx(&resp)?;
         Ok(serde_json::from_slice(&resp.body)?)
+    }
+
+    /// Atomically enable discovery publishing for this identity at the
+    /// release key server. An explicit enable is required after take-back.
+    pub fn enable_discovery_replies(
+        &self,
+        identity: &Identity,
+    ) -> Result<DiscoveryReplyStateResponse> {
+        let bytes = serde_json::to_vec(&DiscoveryAccountRequest {
+            account_id: &identity.user_id,
+        })?;
+        let response = self.send_request(
+            "POST",
+            "/v1/discovery-cards/enable-replies",
+            Some(("application/json", &bytes)),
+        )?;
+        check_2xx(&response)?;
+        serde_json::from_slice(&response.body).map_err(Into::into)
+    }
+
+    /// Mark discovery disabled and delete all cards owned by this identity in
+    /// one key-server transaction. The server retains the disabled state so a
+    /// request already in flight is either ordered before this deletion or is
+    /// refused after it.
+    pub fn take_back_discovery_cards(
+        &self,
+        identity: &Identity,
+    ) -> Result<DiscoveryReplyStateResponse> {
+        let bytes = serde_json::to_vec(&DiscoveryAccountRequest {
+            account_id: &identity.user_id,
+        })?;
+        let response = self.send_request(
+            "POST",
+            "/v1/discovery-cards/take-back",
+            Some(("application/json", &bytes)),
+        )?;
+        check_2xx(&response)?;
+        serde_json::from_slice(&response.body).map_err(Into::into)
+    }
+
+    pub fn publish_discovery_card(
+        &self,
+        identity: &Identity,
+        app_id: &str,
+        account_handle: &str,
+        setting: &str,
+        sealed_note: &str,
+    ) -> Result<DiscoveryPublishResponse> {
+        let bytes = serde_json::to_vec(&DiscoveryPublishRequest {
+            account_id: &identity.user_id,
+            app_id,
+            account_handle,
+            setting,
+            sealed_note,
+        })?;
+        let response = self.send_request(
+            "POST",
+            "/v1/discovery-cards/publish",
+            Some(("application/json", &bytes)),
+        )?;
+        check_2xx(&response)?;
+        serde_json::from_slice(&response.body).map_err(Into::into)
+    }
+
+    pub fn read_discovery_card(
+        &self,
+        drawer_name: &str,
+        label: &str,
+    ) -> Result<Option<DiscoveryCardResponse>> {
+        let bytes = serde_json::to_vec(&DiscoveryReadRequest { drawer_name, label })?;
+        let response = self.send_request(
+            "POST",
+            "/v1/discovery-cards/read",
+            Some(("application/json", &bytes)),
+        )?;
+        if response.status == 404 {
+            return Ok(None);
+        }
+        check_2xx(&response)?;
+        serde_json::from_slice(&response.body)
+            .map(Some)
+            .map_err(Into::into)
     }
 
     /// Issue an HTTP request via the underlying reqwest client.

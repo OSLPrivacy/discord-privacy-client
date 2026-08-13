@@ -186,21 +186,20 @@ mod tests {
     use serde_json::Value;
     use store::{MessageStore, StoredMessage};
     use tempfile::TempDir;
-#[cfg(test)]
-mod tests {
-    use super::*;
+    #[cfg(test)]
+    mod tests {
+        use super::*;
 
-    const OWNER: &str = "owner-0533";
-    const DISCORD_ACCOUNT: &str = "discord-acct-0533";
-    const TELEGRAM_ACCOUNT: &str = "telegram-acct-0533";
-    const TASK_0534_OWNER: &str = "owner-0534";
-    const TASK_0534_SERVICE: &str = "discord";
-    const TASK_0534_ACCOUNT: &str = "discord-acct-0534";
-    const TASK_0534_OTHER_ACCOUNT: &str = "discord-acct-0534-other";
-    const TASK_0534_CHANNEL: &str = "task0534-channel";
-    const TASK_0534_SECRET: &[u8; 32] = &[0x34; 32];
+        const OWNER: &str = "owner-0533";
+        const DISCORD_ACCOUNT: &str = "discord-acct-0533";
+        const TELEGRAM_ACCOUNT: &str = "telegram-acct-0533";
+        const TASK_0534_OWNER: &str = "owner-0534";
+        const TASK_0534_SERVICE: &str = "discord";
+        const TASK_0534_ACCOUNT: &str = "discord-acct-0534";
+        const TASK_0534_OTHER_ACCOUNT: &str = "discord-acct-0534-other";
+        const TASK_0534_CHANNEL: &str = "task0534-channel";
+        const TASK_0534_SECRET: &[u8; 32] = &[0x34; 32];
     }
-
 
     fn row(
         service_id: &str,

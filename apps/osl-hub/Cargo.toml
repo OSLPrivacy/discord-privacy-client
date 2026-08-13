@@ -54,6 +54,8 @@ stego = { path = "../../crates/stego" }
 sensitive-classify = { path = "../../crates/sensitive-classify" }
 osl-english-catalogue = { path = "../../crates/english-catalogue" }
 sha2 = "=0.10.9"
+# TASK 5166: the protected-download quarantine hex-encodes its content hashes.
+hex = "=0.4.3"
 tracing = { version = "=0.1.44", optional = true }
 # D-142: this binary shipped with `tracing` events and no subscriber, so every
 # `tracing::error!` in the workspace was dropped by `NoSubscriber`. Same pin the
@@ -81,6 +83,7 @@ webpki-roots = "=1.0.9"
 
 [dev-dependencies]
 tempfile = "=3.13"
+hex = "=0.4.3"
 # `tests/osl_chat_eager_fetch.rs` builds a unique temp path with `Uuid::new_v4`.
 # This crate is excluded from the workspace, so the version is pinned explicitly
 # to the one already resolved in this crate's own lockfile.

@@ -1,0 +1,131 @@
+{
+  "task": 6818,
+  "leaver": "wren",
+  "members": [
+    { "handle": "wren", "name": "Wren" },
+    { "handle": "ash", "name": "Ash" },
+    { "handle": "brook", "name": "Brook" },
+    { "handle": "cy", "name": "Cy" },
+    { "handle": "dell", "name": "Dell" },
+    { "handle": "eve", "name": "Eve" }
+  ],
+  "places": [
+    {
+      "handle": "atlas-group",
+      "kind": "group",
+      "name": "Atlas Group",
+      "roles": [
+        { "key": "keeper", "label": "Keeper", "authorities": ["govern_place", "manage_channels", "moderate_members"] },
+        { "key": "member", "label": "Member", "authorities": [] }
+      ],
+      "members": [
+        { "handle": "ash", "roles": ["keeper"] },
+        { "handle": "brook", "roles": ["keeper"] },
+        { "handle": "wren", "roles": ["member"] },
+        { "handle": "cy", "roles": ["member"] }
+      ],
+      "channels": [],
+      "seed": [
+        { "sender": "ash", "mark": "before-departure/atlas-group", "body": "the plan for the week" },
+        { "sender": "wren", "mark": "before-departure/atlas-group", "body": "acknowledged" }
+      ]
+    },
+    {
+      "handle": "harbor-enclave",
+      "kind": "enclave",
+      "name": "Harbor Enclave",
+      "roles": [
+        { "key": "steward", "label": "Steward", "authorities": ["govern_place", "manage_channels", "moderate_members"] },
+        { "key": "member", "label": "Member", "authorities": [] }
+      ],
+      "members": [
+        { "handle": "ash", "roles": ["steward"] },
+        { "handle": "brook", "roles": ["steward"] },
+        { "handle": "wren", "roles": ["member"] },
+        { "handle": "cy", "roles": ["member"] }
+      ],
+      "channels": [
+        { "handle": "general", "name": "general", "members": "open" },
+        { "handle": "logistics", "name": "logistics", "members": ["wren", "ash"] },
+        { "handle": "stewards", "name": "stewards", "members": ["ash", "brook"] }
+      ],
+      "seed": [
+        { "sender": "ash", "mark": "before-departure/harbor-enclave/general", "body": "welcome to the harbor", "channel": "general" },
+        { "sender": "wren", "mark": "before-departure/harbor-enclave/logistics", "body": "crates counted", "channel": "logistics" },
+        { "sender": "brook", "mark": "before-departure/harbor-enclave/stewards", "body": "steward notes", "channel": "stewards" }
+      ]
+    },
+    {
+      "handle": "foundry-group",
+      "kind": "group",
+      "name": "Foundry Group",
+      "roles": [
+        { "key": "warden", "label": "Warden", "authorities": ["govern_place", "manage_channels", "moderate_members"] },
+        { "key": "titled", "label": "Owner", "authorities": [] },
+        { "key": "member", "label": "Member", "authorities": [] }
+      ],
+      "members": [
+        { "handle": "wren", "roles": ["warden"] },
+        { "handle": "dell", "roles": ["titled"] },
+        { "handle": "eve", "roles": ["member"] }
+      ],
+      "channels": [],
+      "seed": [
+        { "sender": "wren", "mark": "before-departure/foundry-group", "body": "castings scheduled" }
+      ]
+    },
+    {
+      "handle": "quarry-enclave",
+      "kind": "enclave",
+      "name": "Quarry Enclave",
+      "roles": [
+        { "key": "warden", "label": "Warden", "authorities": ["govern_place", "manage_channels", "moderate_members"] },
+        { "key": "titled", "label": "Owner", "authorities": [] },
+        { "key": "member", "label": "Member", "authorities": [] }
+      ],
+      "members": [
+        { "handle": "wren", "roles": ["warden"] },
+        { "handle": "dell", "roles": ["titled"] },
+        { "handle": "eve", "roles": ["member"] }
+      ],
+      "channels": [
+        { "handle": "hall", "name": "hall", "members": "open" },
+        { "handle": "survey", "name": "survey", "members": ["dell", "eve"] }
+      ],
+      "seed": [
+        { "sender": "wren", "mark": "before-departure/quarry-enclave/hall", "body": "the north face is cleared", "channel": "hall" },
+        { "sender": "dell", "mark": "before-departure/quarry-enclave/survey", "body": "survey pegs set", "channel": "survey" }
+      ]
+    },
+    {
+      "handle": "beacon-group",
+      "kind": "group",
+      "name": "Beacon Group",
+      "roles": [
+        { "key": "keeper", "label": "Keeper", "authorities": ["govern_place", "manage_channels", "moderate_members"] },
+        { "key": "member", "label": "Member", "authorities": [] }
+      ],
+      "members": [
+        { "handle": "cy", "roles": ["keeper"] },
+        { "handle": "wren", "roles": ["member"] },
+        { "handle": "eve", "roles": ["member"] }
+      ],
+      "channels": [],
+      "seed": [
+        { "sender": "cy", "mark": "before-departure/beacon-group", "body": "the beacon stays lit" }
+      ]
+    }
+  ],
+  "steps": [
+    { "op": "model", "step": "model-initial", "point": "initial" },
+    { "op": "leave", "step": "leave-atlas", "place": "atlas-group", "delete_local_history": false },
+    { "op": "leave", "step": "leave-harbor", "place": "harbor-enclave", "delete_local_history": false },
+    { "op": "leave", "step": "leave-foundry-blocked", "place": "foundry-group", "delete_local_history": true },
+    { "op": "leave", "step": "leave-quarry-blocked", "place": "quarry-enclave", "delete_local_history": false },
+    { "op": "transfer_authority", "step": "transfer-foundry", "place": "foundry-group", "role": "warden", "to": "dell" },
+    { "op": "transfer_authority", "step": "transfer-quarry", "place": "quarry-enclave", "role": "warden", "to": "dell" },
+    { "op": "model", "step": "model-after-transfer", "point": "after-transfer" },
+    { "op": "leave", "step": "leave-foundry", "place": "foundry-group", "delete_local_history": true },
+    { "op": "leave", "step": "leave-quarry", "place": "quarry-enclave", "delete_local_history": false }
+  ]
+}

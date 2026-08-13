@@ -30,6 +30,11 @@ export interface DiscoveryCardPublishOutcome {
   card: DiscoveryCard;
 }
 
+export interface DiscoveryReplyStateOutcome {
+  enabled: boolean;
+  removed: number;
+}
+
 interface DiscoveryCardRow {
   drawer_name: string;
   label: string;
@@ -194,17 +199,6 @@ function nonEmptyStringField(
   return value;
 }
 
-async function deleteDiscoveryCardsForAccount(
-  db: D1Database,
-  accountId: string,
-): Promise<number> {
-  const result = await db
-    .prepare("DELETE FROM discovery_cards WHERE writer_account_id = ?")
-    .bind(accountId)
-    .run();
-  return result.meta.changes ?? 0;
-}
-
 export async function sweepStaleDiscoveryCards(
   db: D1Database,
   now = new Date(),
@@ -292,14 +286,35 @@ export async function handleDiscoveryCardsPublish(
     discovery_epoch: discoveryEpoch,
   });
 
-  await sweepStaleDiscoveryCards(db, now);
-  const removed = await deleteDiscoveryCardsForAccount(db, accountId);
-  const written = await db
-    .prepare(
+  const nowSeconds = Math.floor(now.getTime() / 1000);
+  const currentEpochIndex = discoveryEpochIndex(currentDiscoveryEpochStamp(now));
+  if (currentEpochIndex === null) throw new Error("current discovery epoch invalid");
+  const results = await db.batch([
+    db.prepare("DELETE FROM discovery_cards WHERE discovery_epoch_index < ?")
+      .bind(currentEpochIndex - 1),
+    db.prepare(
+      `INSERT OR IGNORE INTO discovery_reply_state (account_id, enabled, updated_at)
+       VALUES (?1, 1, ?2)`,
+    ).bind(accountId, nowSeconds),
+    db.prepare(
+      `DELETE FROM discovery_cards
+        WHERE writer_account_id = ?1
+          AND writer_app_id = ?2
+          AND discovery_epoch_index = ?3
+          AND EXISTS (
+            SELECT 1 FROM discovery_reply_state
+             WHERE account_id = ?1 AND enabled = 1
+          )`,
+    ).bind(accountId, appId, epochIndex),
+    db.prepare(
       `INSERT INTO discovery_cards
          (drawer_name, label, sealed_note, discovery_epoch, discovery_epoch_index,
           updated_at, writer_account_id, writer_app_id, writer_setting)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)`,
+       SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9
+        WHERE EXISTS (
+          SELECT 1 FROM discovery_reply_state
+           WHERE account_id = ?7 AND enabled = 1
+        )`,
     )
     .bind(
       card.drawer_name,
@@ -307,16 +322,22 @@ export async function handleDiscoveryCardsPublish(
       card.sealed_note,
       card.discovery_epoch,
       epochIndex,
-      Math.floor(now.getTime() / 1000),
+      nowSeconds,
       accountId,
       appId,
       setting,
-    )
-    .run();
+    ),
+  ]);
+
+  const removed = results[2]?.meta.changes ?? 0;
+  const wrote = results[3]?.meta.changes ?? 0;
+  if (wrote !== 1) {
+    return json({ error: "discovery replies are off", removed, wrote }, { status: 409 });
+  }
 
   return json({
     removed,
-    wrote: written.meta.changes ?? 1,
+    wrote,
     card,
   } satisfies DiscoveryCardPublishOutcome, { status: 201 });
 }
@@ -333,9 +354,47 @@ export async function handleDiscoveryCardsTakeBack(
   const accountId = nonEmptyStringField(body as Record<string, unknown>, "account_id");
   if (accountId instanceof Response) return accountId;
 
-  await sweepStaleDiscoveryCards(db, now);
-  const removed = await deleteDiscoveryCardsForAccount(db, accountId);
-  return json({ removed });
+  const currentEpochIndex = discoveryEpochIndex(currentDiscoveryEpochStamp(now));
+  if (currentEpochIndex === null) throw new Error("current discovery epoch invalid");
+  const results = await db.batch([
+    db.prepare("DELETE FROM discovery_cards WHERE discovery_epoch_index < ?")
+      .bind(currentEpochIndex - 1),
+    db.prepare(
+      `INSERT INTO discovery_reply_state (account_id, enabled, updated_at)
+       VALUES (?1, 0, ?2)
+       ON CONFLICT(account_id) DO UPDATE SET
+         enabled = 0,
+         updated_at = excluded.updated_at`,
+    ).bind(accountId, Math.floor(now.getTime() / 1000)),
+    db.prepare("DELETE FROM discovery_cards WHERE writer_account_id = ?")
+      .bind(accountId),
+  ]);
+  return json({
+    enabled: false,
+    removed: results[2]?.meta.changes ?? 0,
+  } satisfies DiscoveryReplyStateOutcome);
+}
+
+export async function handleDiscoveryRepliesEnable(
+  request: Request,
+  db: D1Database,
+  now = new Date(),
+): Promise<Response> {
+  const body = await request.json().catch(() => null);
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return badRequest("account_id required");
+  }
+  const accountId = nonEmptyStringField(body as Record<string, unknown>, "account_id");
+  if (accountId instanceof Response) return accountId;
+
+  await db.prepare(
+    `INSERT INTO discovery_reply_state (account_id, enabled, updated_at)
+     VALUES (?1, 1, ?2)
+     ON CONFLICT(account_id) DO UPDATE SET
+       enabled = 1,
+       updated_at = excluded.updated_at`,
+  ).bind(accountId, Math.floor(now.getTime() / 1000)).run();
+  return json({ enabled: true, removed: 0 } satisfies DiscoveryReplyStateOutcome);
 }
 
 export async function handleDiscoveryCardRead(

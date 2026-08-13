@@ -1,20 +1,8 @@
-use std::path::{
-    Path,
-    PathBuf,
-};
-use serde::{
-    Deserialize,
-    Serialize,
-};
-use std::sync::atomic::{
-    AtomicUsize,
-    Ordering,
-};
-use std::time::{
-    SystemTime,
-    UNIX_EPOCH,
-};
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const BURN_REVIEW_STATE_VERSION: u8 = 1;
 const MAX_BURN_REVIEW_STATE_BYTES: u64 = 16 * 1024;

@@ -532,6 +532,22 @@ fn read_marker(dir: &Path) -> Result<PasswordMarker, String> {
             marker.version
         ));
     }
+    keystore::secret_trace::record(
+        keystore::secret_trace::SecretOp::Read,
+        keystore::secret_trace::SecretClass::UnlockVerifier,
+        keystore::secret_trace::Protection::SaltedMemoryHardVerifier,
+        "ipc::main_password::read_marker",
+        &path,
+        bytes.len(),
+    );
+    keystore::secret_trace::record(
+        keystore::secret_trace::SecretOp::Read,
+        keystore::secret_trace::SecretClass::RecoveryPhrase,
+        keystore::secret_trace::Protection::UserDerivedAead,
+        "ipc::main_password::read_marker",
+        &path,
+        bytes.len(),
+    );
     Ok(marker)
 }
 
@@ -573,6 +589,31 @@ fn write_marker(dir: &Path, marker: &PasswordMarker) -> Result<(), String> {
     }
     if had_previous {
         let _ = std::fs::remove_file(&backup);
+    }
+    // TASK 5402: the marker holds the salted Argon2id unlock verifier AND the
+    // recovery phrase as AES-256-GCM ciphertext under the password-derived key.
+    // Two classes, one file, and the `.tmp`/`.bak` companions this writer
+    // creates carry both.
+    for (class, protection) in [
+        (
+            keystore::secret_trace::SecretClass::UnlockVerifier,
+            keystore::secret_trace::Protection::SaltedMemoryHardVerifier,
+        ),
+        (
+            keystore::secret_trace::SecretClass::RecoveryPhrase,
+            keystore::secret_trace::Protection::UserDerivedAead,
+        ),
+    ] {
+        for target in [&path, &temporary, &backup] {
+            keystore::secret_trace::record(
+                keystore::secret_trace::SecretOp::Write,
+                class,
+                protection,
+                "ipc::main_password::write_marker",
+                target,
+                bytes.len(),
+            );
+        }
     }
     Ok(())
 }
@@ -652,6 +693,14 @@ fn read_device_bound_fallback_key(dir: &Path) -> Result<DeviceBoundFallbackStora
             dto.version
         ));
     }
+    keystore::secret_trace::record(
+        keystore::secret_trace::SecretOp::Read,
+        keystore::secret_trace::SecretClass::AdjacentDataKey,
+        keystore::secret_trace::Protection::DeviceSealedAead,
+        "ipc::main_password::read_device_bound_fallback_key",
+        &path,
+        bytes.len(),
+    );
     Ok(dto)
 }
 
@@ -665,7 +714,20 @@ fn write_device_bound_fallback_key(
     let path = device_bound_fallback_key_path(dir);
     let bytes = serde_json::to_vec_pretty(dto)
         .map_err(|e| format!("OSL: serialize file_storage_key_fallback: {e}"))?;
-    std::fs::write(&path, &bytes).map_err(|e| format!("OSL: write {}: {e}", path.display()))
+    std::fs::write(&path, &bytes).map_err(|e| format!("OSL: write {}: {e}", path.display()))?;
+    // TASK 5402: this file IS the adjacent data key that opens every
+    // `OSL-ENC1` state file in the same directory. It is only ever written
+    // sealed by the platform sealer; a plaintext key here would hand over
+    // everything the encryption beside it was protecting.
+    keystore::secret_trace::record(
+        keystore::secret_trace::SecretOp::Write,
+        keystore::secret_trace::SecretClass::AdjacentDataKey,
+        keystore::secret_trace::Protection::DeviceSealedAead,
+        "ipc::main_password::write_device_bound_fallback_key",
+        &path,
+        bytes.len(),
+    );
+    Ok(())
 }
 
 fn reset_password_lockout(dir: &Path) -> Result<(), String> {

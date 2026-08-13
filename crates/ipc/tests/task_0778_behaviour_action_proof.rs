@@ -124,15 +124,15 @@ fn task_0778_saved_choices_drive_action_result_and_tampering_fails_the_check() {
     ipc::main_password::ensure_device_bound_fallback_file_storage_key(dir.path())
         .expect("configure the temporary preference file key");
     let saved_preferences = load_app_preferences(&prefs_path);
-    let result_from_file: BehaviourActionResult = serde_json::from_slice(
-        &fs::read(&result_path).expect("read action result file"),
-    )
-    .expect("parse action result file");
+    let result_from_file: BehaviourActionResult =
+        serde_json::from_slice(&fs::read(&result_path).expect("read action result file"))
+            .expect("parse action result file");
     assert_result_matches_saved(&saved_preferences, &result_from_file)
         .expect("action result must match every saved choice");
 
     let altered_preferences_path = dir.path().join("app_preferences-altered-copy.json");
-    fs::copy(&prefs_path, &altered_preferences_path).expect("copy saved preferences for break check");
+    fs::copy(&prefs_path, &altered_preferences_path)
+        .expect("copy saved preferences for break check");
     let mut altered_preferences = load_app_preferences(&altered_preferences_path);
     altered_preferences
         .behaviour_choices

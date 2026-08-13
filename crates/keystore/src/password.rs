@@ -368,7 +368,17 @@ pub fn save_password_record(
         },
     };
     let json = serde_json::to_vec_pretty(&on_disk)?;
-    crate::recoverable_file::write_recoverable(path, &json)?;
+    crate::recoverable_file::write_recoverable_secret(
+        path,
+        &json,
+        crate::secret_trace::SecretClass::UnlockVerifier,
+        if sealer.requires_insecure_banner() {
+            crate::secret_trace::Protection::Plaintext
+        } else {
+            crate::secret_trace::Protection::SaltedMemoryHardVerifier
+        },
+        "keystore::password::save_password_record",
+    )?;
     Ok(())
 }
 
@@ -396,6 +406,14 @@ pub fn load_password_record(
     let sealed = STANDARD.decode(&on_disk.sealed_b64)?;
     let inner = sealer.unseal(&sealed)?;
     let record: PasswordRecord = serde_json::from_slice(&inner)?;
+    crate::secret_trace::record(
+        crate::secret_trace::SecretOp::Read,
+        crate::secret_trace::SecretClass::UnlockVerifier,
+        crate::secret_trace::Protection::SaltedMemoryHardVerifier,
+        "keystore::password::load_password_record",
+        path,
+        bytes.len(),
+    );
     Ok(record)
 }
 
