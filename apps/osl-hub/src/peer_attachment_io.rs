@@ -177,6 +177,36 @@ pub fn encrypt_file(
     })
 }
 
+/// Tier-aware shipping entry point. Admission is completed before
+/// [`encrypt_file`] creates the first OSL-owned staging path; both tiers then
+/// converge on the exact same streaming AEAD implementation.
+pub fn encrypt_file_for_account_tier(
+    app_local_data_dir: &Path,
+    source: &mut File,
+    original_filename: &str,
+    declared_mime: &str,
+    tier: crate::attachment_limits::AttachmentAccountTier,
+    key: aead::Key,
+    content_id: Vec<u8>,
+    attachment_index: u32,
+) -> Result<StagedAttachment, String> {
+    let plaintext_len = source
+        .metadata()
+        .map_err(|_| "attachment metadata could not be read".to_owned())?
+        .len();
+    crate::attachment_limits::check_attachment_size(plaintext_len, tier)
+        .map_err(|_| format!("attachment is outside the {} account limit", tier.label()))?;
+    encrypt_file(
+        app_local_data_dir,
+        source,
+        original_filename,
+        declared_mime,
+        key,
+        content_id,
+        attachment_index,
+    )
+}
+
 /// Decrypt to an OSL-owned plaintext staging file, for the non-image path where
 /// an external Windows reader needs a real path. The result is an RAII guard:
 /// dropping it removes the decrypted file, so no caller can return early and
@@ -559,6 +589,11 @@ pub fn describe_cipher_store_error(
     error: &ipc::cipher_store_client::CipherStoreError,
     phase: TransportPhase,
 ) -> String {
+    if let ipc::cipher_store_client::CipherStoreError::Status { body, .. } = error {
+        if let Some(rendered) = crate::service_result_words::render_service_response_body(body) {
+            return rendered;
+        }
+    }
     describe_transport_outcome(classify_cipher_store_error(error), phase)
 }
 
@@ -588,11 +623,6 @@ struct DeletionRecord {
 impl Drop for DeletionRecord {
     fn drop(&mut self) {
         self.fetch_token.zeroize();
-    }
-    if let ipc::cipher_store_client::CipherStoreError::Status { body, .. } = error {
-        if let Some(rendered) = crate::service_result_words::render_service_response_body(body) {
-            return rendered;
-        }
     }
 }
 

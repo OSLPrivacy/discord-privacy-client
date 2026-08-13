@@ -11,7 +11,7 @@ import type { Env } from "../env.js";
 import {
   ATTACHMENT_TIER_LIMITS,
   attachmentTierLimit,
-  checkAttachmentTierLimit,
+  checkSealedAttachmentTierLimit,
   type AttachmentTier,
   INCOMPLETE_SESSION_TTL_SECONDS,
   MAX_ATTACHMENT_PART_BYTES,
@@ -77,7 +77,7 @@ function enforceAccountTier(
   sizeBytes: number,
   fileCount: number,
 ): Response | null {
-  const result = checkAttachmentTierLimit(tier, sizeBytes, fileCount);
+  const result = checkSealedAttachmentTierLimit(tier, sizeBytes, fileCount);
   if (result.accepted) return null;
   if (result.reason === "too_many_files") {
     return error(
