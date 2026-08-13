@@ -41,6 +41,7 @@ rand = { workspace = true }
 rand_core = { workspace = true }
 serde = { workspace = true }
 serde_bytes = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 argon2 = "0.5"
 # Phase 9-A2: ratchet state persistence (mirror struct uses base64
