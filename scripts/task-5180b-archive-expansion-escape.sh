@@ -2,7 +2,7 @@
 # TASK 5180b - prove the hard quarantine limits on archive expansion cannot be
 # starved silently.
 #
-# Builds SEVEN separate throwaway copies of the production archive boundary
+# Builds TWELVE separate throwaway copies of the production archive boundary
 # (apps/osl-hub/src/protected_archive.rs plus the TASK 5166 quarantine it runs
 # inside, copied verbatim) and drives each one through the real release door,
 # ProtectedDownloadQuarantine::scan_and_release:
@@ -17,6 +17,19 @@
 #   clean-control    the per-entry receipt skipped     -> must exit 1 naming bundle.zip
 #   quarantine-root  the workspace moved out of the quarantine
 #                                                      -> must exit 1 naming bundle.zip
+#
+# TASK 5180a adds the hostile-entry guards. The two path modes replace the
+# rejection with the raw component - the "normalise it into the destination"
+# mistake - so the entry really is written outside the quarantine:
+#
+#   parent-traversal the `..` rejection replaced   -> must exit 1 naming traversal.zip
+#                                                     and the outside-quarantine path
+#   absolute-path    the absolute rejection replaced-> must exit 1 naming absolute.tar
+#                                                     and the outside-quarantine path
+#   symbolic-link    the symlink rejection disabled -> must exit 1 naming symlink.tar
+#   hard-link        the hard-link rejection disabled-> must exit 1 naming hardlink.tar
+#   special-file     the special-file rejection disabled
+#                                                   -> must exit 1 naming special.tar
 #
 # Each sabotage is verified to have actually landed in the copy before the run;
 # a sed that matched nothing fails the script instead of quietly producing a
@@ -90,6 +103,25 @@ starve() {
     quarantine-root)
       sed -i '/TASK5180-BOUND-QUARANTINE-ROOT/{n;s|^\( *\)let workspace_parent = .*$|\1let workspace_parent = std::env::temp_dir(); // starved by TASK 5180b|}' "$file"
       ;;
+    # --- TASK 5180a: the hostile-entry guards ---------------------------------
+    # The two path guards are not merely skipped: the raw component is pushed
+    # instead, which is precisely the "normalise it into the destination"
+    # mistake. The entry then really is written outside the quarantine.
+    parent-traversal)
+      sed -i '/TASK5180A-GUARD-PARENT-TRAVERSAL/{n;s|^\( *\)return Err(.*$|\1built.push(component.as_os_str()); // starved by TASK 5180b|}' "$file"
+      ;;
+    absolute-path)
+      sed -i '/TASK5180A-GUARD-ABSOLUTE-PATH/{n;s|^\( *\)return Err(.*$|\1built.push(component.as_os_str()); // starved by TASK 5180b|}' "$file"
+      ;;
+    symbolic-link)
+      sed -i '/TASK5180A-GUARD-SYMBOLIC-LINK/{n;s|^\( *\)if .*{$|\1if false { // starved by TASK 5180b|}' "$file"
+      ;;
+    hard-link)
+      sed -i '/TASK5180A-GUARD-HARD-LINK/{n;s|^\( *\)if .*{$|\1if false { // starved by TASK 5180b|}' "$file"
+      ;;
+    special-file)
+      sed -i '/TASK5180A-GUARD-SPECIAL-FILE/{n;s|^\( *\)if .*{$|\1if false { // starved by TASK 5180b|}' "$file"
+      ;;
     *)
       echo "TASK5180B_FAIL unknown starvation mode $mode"
       exit 2
@@ -148,6 +180,11 @@ run_mode nesting-depth 1 "deep.zip"
 run_mode scan-time 1 "slow.zip"
 run_mode clean-control 1 "bundle.zip"
 run_mode quarantine-root 1 "bundle.zip"
+run_mode parent-traversal 1 "traversal.zip"
+run_mode absolute-path 1 "absolute.tar"
+run_mode symbolic-link 1 "symlink.tar"
+run_mode hard-link 1 "hardlink.tar"
+run_mode special-file 1 "special.tar"
 
 ARCHIVE_SHA_AFTER="$(sha256sum "$SOURCE_ARCHIVE" | cut -d' ' -f1)"
 QUARANTINE_SHA_AFTER="$(sha256sum "$SOURCE_QUARANTINE" | cut -d' ' -f1)"

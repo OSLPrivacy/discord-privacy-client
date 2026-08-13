@@ -28,17 +28,31 @@
 //! bytes leave quarantine is still 5166's single atomic `rename` of the
 //! original archive.
 //!
-//! Scope note: the absolute-path, parent-traversal, link and special-file
-//! rejections belong to TASK 5180a, and password-protected or otherwise
-//! encrypted archives belong to TASK 5180c. This module fails closed on all of
-//! them today - a name that is not a plain relative path is refused as an
-//! unsafe entry, and a container this build cannot walk is refused as
-//! unsupported - so neither open task can be reached by releasing bytes.
+//! TASK 5180a adds the hostile-entry rejections on top of those bounds. An
+//! archive entry is refused outright - inside quarantine, before it is counted
+//! and before a single byte of it is written - when it is
+//!
+//! * an absolute path (`/etc/cron.d/x`, or a Windows drive prefix);
+//! * a parent traversal (`../../x`, at any position in the name);
+//! * a symbolic link or a hard link, whatever it points at;
+//! * a special file - character or block device, FIFO, socket, or any other
+//!   archive entry type that is not a plain file or a plain directory.
+//!
+//! None of these is normalised, sanitised or rewritten into the workspace: a
+//! hostile name is a refusal, and the refusal names the entry, the kind and how
+//! much had been unpacked when it fired (always zero for that entry). The
+//! destination path is *built* from validated components, so there is no code
+//! path that could write a hostile entry and check afterwards.
+//!
+//! Scope note: password-protected or otherwise encrypted archives belong to
+//! TASK 5180c. This module fails closed on them today - a container this build
+//! cannot walk is refused as unsupported - so that open task cannot be reached
+//! by releasing bytes.
 //!
 //! This module deliberately keeps every bound behind one guard line, marked
-//! by a `TASK5180-BOUND-*` comment directly above it, so the TASK 5180b
-//! starvation harness can compile these exact sources, disable one guard at a
-//! time, and watch the check go red.
+//! by a `TASK5180-BOUND-*` or `TASK5180A-GUARD-*` comment directly above it, so
+//! the TASK 5180b starvation harness can compile these exact sources, disable
+//! one guard at a time, and watch the check go red.
 
 use std::fs::{self, File};
 use std::io::{Read, Write};
@@ -225,6 +239,54 @@ pub fn sniff_archive_format(path: &Path) -> Result<ArchiveFormat, String> {
 // Refusals
 // ---------------------------------------------------------------------------
 
+/// The hostile archive-entry shapes TASK 5180a refuses outright. Every one of
+/// them is refused inside quarantine, before the entry is counted and before a
+/// single byte of it is written anywhere.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HostileEntryKind {
+    /// `/etc/cron.d/x`, `C:\Windows\x` - a name that would leave the workspace
+    /// by starting somewhere else entirely.
+    AbsolutePath,
+    /// `../x`, `a/../../x` - a name that would climb out of the workspace.
+    ParentTraversal,
+    /// A symbolic link entry, whatever it points at.
+    SymbolicLink,
+    /// A hard link entry, whatever it points at.
+    HardLink,
+    /// A character or block device, a FIFO, a socket, or any other entry type
+    /// that is neither a plain file nor a plain directory.
+    SpecialFile,
+    /// A name that is not usable at all: empty, control characters, or naming
+    /// no file once `.` components are dropped.
+    MalformedName,
+}
+
+impl HostileEntryKind {
+    /// Machine-readable name, used as the `limit=` tag of the refusal.
+    pub fn name(self) -> &'static str {
+        match self {
+            HostileEntryKind::AbsolutePath => "absolute-path",
+            HostileEntryKind::ParentTraversal => "parent-traversal",
+            HostileEntryKind::SymbolicLink => "symbolic-link",
+            HostileEntryKind::HardLink => "hard-link",
+            HostileEntryKind::SpecialFile => "special-file",
+            HostileEntryKind::MalformedName => "malformed-name",
+        }
+    }
+
+    /// How the 5166 quarantine records this rejection.
+    pub fn quarantine_reason(self) -> QuarantineReason {
+        match self {
+            HostileEntryKind::AbsolutePath => QuarantineReason::ArchiveAbsolutePath,
+            HostileEntryKind::ParentTraversal => QuarantineReason::ArchiveParentTraversal,
+            HostileEntryKind::SymbolicLink => QuarantineReason::ArchiveSymbolicLink,
+            HostileEntryKind::HardLink => QuarantineReason::ArchiveHardLink,
+            HostileEntryKind::SpecialFile => QuarantineReason::ArchiveSpecialFile,
+            HostileEntryKind::MalformedName => QuarantineReason::ArchiveUnsafeEntry,
+        }
+    }
+}
+
 /// Why an archive stayed in quarantine. Every variant names the bound or the
 /// entry that stopped it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -248,11 +310,20 @@ pub enum ArchiveRefusal {
         limit_ms: u128,
         elapsed_ms: u128,
     },
-    /// The entry name is not a plain relative path. TASK 5180a refines this
-    /// into the absolute-path, parent-traversal, link and special-file cases.
+    /// TASK 5180a. The entry is an absolute path, a parent traversal, a link or
+    /// a special file. `entries_unpacked` and `bytes_unpacked` are what the
+    /// expansion had already done when the guard fired - the refused entry
+    /// itself contributes nothing to either, because the guard runs before the
+    /// entry is counted and before its first byte is written.
     UnsafeEntry {
+        kind: HostileEntryKind,
         entry: String,
+        /// Where the entry pointed - the link target, or empty when it named
+        /// no target.
+        target: String,
         detail: String,
+        entries_unpacked: u32,
+        bytes_unpacked: u64,
     },
     /// A container this build cannot walk, including encrypted ones (TASK
     /// 5180c). Unable to verify, never released.
@@ -284,7 +355,7 @@ impl ArchiveRefusal {
             ArchiveRefusal::EntryCount { .. } => "entry-count",
             ArchiveRefusal::NestingDepth { .. } => "nesting-depth",
             ArchiveRefusal::ScanTime { .. } => "scan-time",
-            ArchiveRefusal::UnsafeEntry { .. } => "unsafe-entry",
+            ArchiveRefusal::UnsafeEntry { kind, .. } => kind.name(),
             ArchiveRefusal::UnsupportedFormat { .. } => "unsupported-format",
             ArchiveRefusal::Unreadable { .. } => "unreadable-archive",
             ArchiveRefusal::EntryNotClean { .. } => "entry-not-clean",
@@ -327,9 +398,26 @@ impl ArchiveRefusal {
                 "limit=scan-time the archive exceeded the scan-time limit of {limit_ms} ms \
                  (stopped at {elapsed_ms} ms)"
             ),
-            ArchiveRefusal::UnsafeEntry { entry, detail } => format!(
-                "limit=unsafe-entry archive entry '{entry}' was not unpacked: {detail}"
-            ),
+            ArchiveRefusal::UnsafeEntry {
+                kind,
+                entry,
+                target,
+                detail,
+                entries_unpacked,
+                bytes_unpacked,
+            } => {
+                let pointed = if target.is_empty() {
+                    String::new()
+                } else {
+                    format!(" -> '{target}'")
+                };
+                format!(
+                    "limit={} archive entry '{entry}'{pointed} was refused before any of its \
+                     bytes were unpacked: {detail} (entries-unpacked-before-refusal \
+                     {entries_unpacked}, bytes-unpacked-before-refusal {bytes_unpacked})",
+                    kind.name()
+                )
+            }
             ArchiveRefusal::UnsupportedFormat { format } => format!(
                 "limit=unsupported-format unable to verify a {format} container: this build \
                  cannot walk its entries"
@@ -357,7 +445,7 @@ impl ArchiveRefusal {
             ArchiveRefusal::EntryCount { .. } => QuarantineReason::ArchiveEntryCount,
             ArchiveRefusal::NestingDepth { .. } => QuarantineReason::ArchiveNestingDepth,
             ArchiveRefusal::ScanTime { .. } => QuarantineReason::ArchiveScanTime,
-            ArchiveRefusal::UnsafeEntry { .. } => QuarantineReason::ArchiveUnsafeEntry,
+            ArchiveRefusal::UnsafeEntry { kind, .. } => kind.quarantine_reason(),
             ArchiveRefusal::UnsupportedFormat { .. } => QuarantineReason::ArchiveUnsupported,
             ArchiveRefusal::Unreadable { .. } => QuarantineReason::ArchiveUnreadable,
             ArchiveRefusal::EntryNotClean { .. } => QuarantineReason::ArchiveEntryNotClean,
@@ -601,10 +689,24 @@ impl Expansion<'_> {
                     detail: format!("zip entry {index}: {error}"),
                 })?;
             let name = entry.name().to_owned();
+            // Every zip entry - file *and* directory - has its name validated
+            // before anything else happens to it.
+            let entry_path = self.entry_path(&name)?;
+            let mode = entry.unix_mode();
+            // TASK5180A-GUARD-SYMBOLIC-LINK
+            if entry.is_symlink() {
+                let target = zip_link_target(&mut entry);
+                return Err(self.at_current_progress(symbolic_link_entry(&name, &target)));
+            }
+            let special = special_unix_file_kind(mode);
+            // TASK5180A-GUARD-SPECIAL-FILE
+            if special.is_some() {
+                let kind_text = special.unwrap_or("special archive entry");
+                return Err(self.at_current_progress(special_file_entry(&name, kind_text)));
+            }
             if entry.is_dir() {
                 continue;
             }
-            let entry_path = self.entry_path(&name)?;
             self.count_entry(&name)?;
             self.copy_entry_bounded(&mut entry, &entry_path, &name)?;
             drop(entry);
@@ -633,18 +735,31 @@ impl Expansion<'_> {
                 .map(|path| path.display().to_string())
                 .unwrap_or_default();
             let kind = entry.header().entry_type();
+            let target = entry
+                .link_name()
+                .ok()
+                .flatten()
+                .map(|path| path.display().to_string())
+                .unwrap_or_default();
+            // Every tar entry - file, directory, link and special file alike -
+            // has its name validated before anything else happens to it.
+            let entry_path = self.entry_path(&name)?;
+            // TASK5180A-GUARD-SYMBOLIC-LINK
+            if kind.is_symlink() {
+                return Err(self.at_current_progress(symbolic_link_entry(&name, &target)));
+            }
+            // TASK5180A-GUARD-HARD-LINK
+            if kind.is_hard_link() {
+                return Err(self.at_current_progress(hard_link_entry(&name, &target)));
+            }
+            // TASK5180A-GUARD-SPECIAL-FILE
+            if is_special_tar_entry(kind) {
+                let kind_text = tar_special_kind_name(kind);
+                return Err(self.at_current_progress(special_file_entry(&name, kind_text)));
+            }
             if kind.is_dir() {
                 continue;
             }
-            // Anything that is not a plain file is refused here. TASK 5180a
-            // splits this into the link and special-file cases by name.
-            if !kind.is_file() {
-                return Err(ArchiveRefusal::UnsafeEntry {
-                    entry: name,
-                    detail: format!("tar entry type {:?} is not a regular file", kind),
-                });
-            }
-            let entry_path = self.entry_path(&name)?;
             self.count_entry(&name)?;
             self.copy_entry_bounded(&mut entry, &entry_path, &name)?;
             self.scan_and_recurse(&entry_path, &name, level)?;
@@ -671,50 +786,38 @@ impl Expansion<'_> {
     /// Where an entry's bytes are written. The path is *built* from validated
     /// `Component::Normal` parts pushed onto the workspace, never taken from
     /// the archive, so a hostile name is a refusal and never a normalisation.
+    ///
+    /// Called before the entry is counted and before its first byte is
+    /// written, at every nesting level, for files *and* directories.
     fn entry_path(&self, name: &str) -> Result<PathBuf, ArchiveRefusal> {
-        let trimmed = name.trim();
-        if trimmed.is_empty() {
-            return Err(ArchiveRefusal::UnsafeEntry {
-                entry: name.to_owned(),
-                detail: "the entry has no name".to_owned(),
-            });
+        match safe_relative_entry_path(name) {
+            Ok(relative) => Ok(self.workspace.join(relative)),
+            Err(refusal) => Err(self.at_current_progress(refusal)),
         }
-        if trimmed.contains('\0') || trimmed.chars().any(char::is_control) {
-            return Err(ArchiveRefusal::UnsafeEntry {
-                entry: name.to_owned(),
-                detail: "the entry name contains control characters".to_owned(),
-            });
+    }
+
+    /// Stamp a hostile-entry refusal with what the expansion had already done
+    /// when the guard fired. The refused entry contributes nothing to either
+    /// number: it is refused before `count_entry` and before
+    /// `copy_entry_bounded`.
+    fn at_current_progress(&self, refusal: ArchiveRefusal) -> ArchiveRefusal {
+        match refusal {
+            ArchiveRefusal::UnsafeEntry {
+                kind,
+                entry,
+                target,
+                detail,
+                ..
+            } => ArchiveRefusal::UnsafeEntry {
+                kind,
+                entry,
+                target,
+                detail,
+                entries_unpacked: self.entries_seen,
+                bytes_unpacked: self.expanded_bytes,
+            },
+            other => other,
         }
-        let mut built = self.workspace.clone();
-        let mut parts = 0usize;
-        for component in Path::new(trimmed).components() {
-            match component {
-                Component::Normal(part) => {
-                    built.push(part);
-                    parts += 1;
-                }
-                Component::RootDir | Component::Prefix(_) => {
-                    return Err(ArchiveRefusal::UnsafeEntry {
-                        entry: name.to_owned(),
-                        detail: "the entry is an absolute path".to_owned(),
-                    })
-                }
-                Component::ParentDir => {
-                    return Err(ArchiveRefusal::UnsafeEntry {
-                        entry: name.to_owned(),
-                        detail: "the entry leaves the workspace by parent traversal".to_owned(),
-                    })
-                }
-                Component::CurDir => {}
-            }
-        }
-        if parts == 0 {
-            return Err(ArchiveRefusal::UnsafeEntry {
-                entry: name.to_owned(),
-                detail: "the entry names no file".to_owned(),
-            });
-        }
-        Ok(built)
     }
 
     /// Counted *before* an entry's bytes are written, so the ceiling is a bound
@@ -833,6 +936,157 @@ impl Expansion<'_> {
         self.scanned_bytes = self.scanned_bytes.saturating_add(scan.content_len);
         Ok(())
     }
+}
+
+// ---------------------------------------------------------------------------
+// TASK 5180a - hostile entries
+// ---------------------------------------------------------------------------
+
+/// Build a hostile-entry refusal. The two progress counters are filled in by
+/// [`Expansion::at_current_progress`] at the call site that has them.
+fn hostile_entry(
+    kind: HostileEntryKind,
+    entry: &str,
+    target: &str,
+    detail: &str,
+) -> ArchiveRefusal {
+    ArchiveRefusal::UnsafeEntry {
+        kind,
+        entry: entry.to_owned(),
+        target: target.to_owned(),
+        detail: detail.to_owned(),
+        entries_unpacked: 0,
+        bytes_unpacked: 0,
+    }
+}
+
+fn absolute_path_entry(name: &str) -> ArchiveRefusal {
+    let detail = "the entry is an absolute path and would be written outside the expansion \
+                  workspace";
+    hostile_entry(HostileEntryKind::AbsolutePath, name, "", detail)
+}
+
+fn parent_traversal_entry(name: &str) -> ArchiveRefusal {
+    let detail = "the entry climbs out of the expansion workspace by parent traversal";
+    hostile_entry(HostileEntryKind::ParentTraversal, name, "", detail)
+}
+
+fn symbolic_link_entry(name: &str, target: &str) -> ArchiveRefusal {
+    let detail = "the entry is a symbolic link, which could redirect a later entry outside \
+                  quarantine";
+    hostile_entry(HostileEntryKind::SymbolicLink, name, target, detail)
+}
+
+fn hard_link_entry(name: &str, target: &str) -> ArchiveRefusal {
+    let detail = "the entry is a hard link, which could alias a file outside quarantine";
+    hostile_entry(HostileEntryKind::HardLink, name, target, detail)
+}
+
+fn special_file_entry(name: &str, kind_text: &str) -> ArchiveRefusal {
+    let detail =
+        format!("the entry is a {kind_text}, not a plain file, and is never materialised");
+    hostile_entry(HostileEntryKind::SpecialFile, name, "", &detail)
+}
+
+fn malformed_entry(name: &str, detail: &str) -> ArchiveRefusal {
+    hostile_entry(HostileEntryKind::MalformedName, name, "", detail)
+}
+
+/// Validate one archive entry name into a plain relative path, or refuse it.
+///
+/// Nothing here rewrites a hostile name into something safe: an absolute path
+/// and a parent traversal are each a refusal, so the only names that survive
+/// are the ones already made of ordinary components.
+fn safe_relative_entry_path(name: &str) -> Result<PathBuf, ArchiveRefusal> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err(malformed_entry(name, "the entry has no name"));
+    }
+    if trimmed.contains('\0') || trimmed.chars().any(char::is_control) {
+        return Err(malformed_entry(
+            name,
+            "the entry name contains control characters",
+        ));
+    }
+    // A Windows-style separator is a path separator on the machines this ships
+    // to, so it is treated as one here whatever this build runs on.
+    if trimmed.contains('\\') {
+        return Err(malformed_entry(
+            name,
+            "the entry name contains a backslash path separator",
+        ));
+    }
+    let mut built = PathBuf::new();
+    let mut parts = 0usize;
+    for component in Path::new(trimmed).components() {
+        match component {
+            Component::Normal(part) => {
+                built.push(part);
+                parts += 1;
+            }
+            Component::RootDir | Component::Prefix(_) => {
+                // TASK5180A-GUARD-ABSOLUTE-PATH
+                return Err(absolute_path_entry(name));
+            }
+            Component::ParentDir => {
+                // TASK5180A-GUARD-PARENT-TRAVERSAL
+                return Err(parent_traversal_entry(name));
+            }
+            Component::CurDir => {}
+        }
+    }
+    if parts == 0 {
+        return Err(malformed_entry(name, "the entry names no file"));
+    }
+    Ok(built)
+}
+
+/// The unix file-type bits, as they appear in a zip entry's external
+/// attributes.
+const UNIX_TYPE_MASK: u32 = 0o170_000;
+const UNIX_TYPE_FIFO: u32 = 0o010_000;
+const UNIX_TYPE_CHAR_DEVICE: u32 = 0o020_000;
+const UNIX_TYPE_BLOCK_DEVICE: u32 = 0o060_000;
+const UNIX_TYPE_SOCKET: u32 = 0o140_000;
+
+/// Name the special-file kind a unix mode describes, if it describes one. A
+/// mode with no file-type bits at all - which is what an ordinary zip entry
+/// written on Windows carries - is not a special file.
+fn special_unix_file_kind(mode: Option<u32>) -> Option<&'static str> {
+    match mode? & UNIX_TYPE_MASK {
+        UNIX_TYPE_FIFO => Some("FIFO"),
+        UNIX_TYPE_CHAR_DEVICE => Some("character device"),
+        UNIX_TYPE_BLOCK_DEVICE => Some("block device"),
+        UNIX_TYPE_SOCKET => Some("socket"),
+        _ => None,
+    }
+}
+
+/// A tar entry that is neither a plain file, a plain directory, a symbolic
+/// link nor a hard link. Links have their own guards, so this stays independent
+/// of them - and anything unrecognised lands here, which is the fail-closed
+/// side.
+fn is_special_tar_entry(kind: tar::EntryType) -> bool {
+    !(kind.is_file() || kind.is_dir() || kind.is_symlink() || kind.is_hard_link())
+}
+
+/// Owner-facing name for a tar entry type that is not a plain file.
+fn tar_special_kind_name(kind: tar::EntryType) -> &'static str {
+    match kind {
+        tar::EntryType::Char => "character device",
+        tar::EntryType::Block => "block device",
+        tar::EntryType::Fifo => "FIFO",
+        tar::EntryType::Continuous => "contiguous file",
+        _ => "special archive entry",
+    }
+}
+
+/// Read a zip symbolic link's target, which zip stores as the entry's content.
+/// Bounded, held in memory, never written to disk.
+fn zip_link_target(entry: &mut dyn Read) -> String {
+    let mut target = Vec::new();
+    let _ = entry.take(4096).read_to_end(&mut target);
+    String::from_utf8_lossy(&target).into_owned()
 }
 
 // ---------------------------------------------------------------------------

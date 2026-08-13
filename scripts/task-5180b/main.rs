@@ -20,6 +20,25 @@
 //!   quarantine-root   - the expansion workspace moved out of the quarantine
 //!                       -> bundle.zip is expanded outside the boundary.
 //!
+//! TASK 5180a adds the hostile-entry fixtures and the guards behind them:
+//!
+//!   parent-traversal  - the `..` rejection disabled -> traversal.zip writes
+//!                       its entry outside the quarantine.
+//!   absolute-path     - the absolute-path rejection disabled -> absolute.tar
+//!                       writes its entry outside the quarantine.
+//!   symbolic-link     - the symlink rejection disabled -> symlink.tar is
+//!                       unpacked and released.
+//!   hard-link         - the hard-link rejection disabled -> hardlink.tar is
+//!                       unpacked and released.
+//!   special-file      - the special-file rejection disabled -> special.tar is
+//!                       unpacked and released.
+//!
+//! The two path modes are the sharpest of the set: the boundary still refuses
+//! the archive afterwards, because `adopt` re-checks the quarantine root before
+//! an entry is scanned - but by then the bytes are already on disk outside the
+//! quarantine. A rejection applied after the write is exactly what this harness
+//! has to catch, so the escape is measured from the filesystem, by name.
+//!
 //! Every starved run must exit 1 naming the escaped fixture. The escape is
 //! measured from the filesystem and from the outcome the boundary returned -
 //! including a watcher thread that polls the system temp root for
@@ -34,7 +53,7 @@ mod protected_archive;
 mod protected_download_quarantine;
 
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -109,45 +128,152 @@ fn zip_bytes(entries: &[(String, Vec<u8>)]) -> Vec<u8> {
     cursor.into_inner()
 }
 
-fn tar_bytes(entries: &[(String, Vec<u8>)]) -> Vec<u8> {
-    let mut builder = tar::Builder::new(Vec::new());
-    for (name, bytes) in entries {
-        let mut header = tar::Header::new_ustar();
-        header.set_size(bytes.len() as u64);
-        header.set_mode(0o644);
-        header.set_mtime(0);
-        header.set_entry_type(tar::EntryType::Regular);
-        header.set_cksum();
-        builder
-            .append_data(&mut header, name.as_str(), &bytes[..])
-            .expect("tar entry");
-    }
-    builder.into_inner().expect("tar finish")
-}
-
 fn gzip_bytes(payload: &[u8]) -> Vec<u8> {
     let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     encoder.write_all(payload).expect("gzip write");
     encoder.finish().expect("gzip finish")
 }
 
+/// The clean control. TASK 5180a adds the ordinary nested directory entries -
+/// `notes/` in the zip and `deep/` in the inner tar - which must be walked,
+/// validated and skipped without ever being counted as entries.
 fn clean_nested_zip() -> Vec<u8> {
-    let inner_tar = tar_bytes(&[
-        (
-            "beta.txt".to_owned(),
-            b"TASK 5180 inner tar entry beta.\n".to_vec(),
+    let inner_tar = ustar_archive(vec![
+        ustar_entry(
+            "beta.txt",
+            TAR_REGULAR,
+            "",
+            b"TASK 5180 inner tar entry beta.\n",
         ),
-        ("deep/gamma.bin".to_owned(), vec![0x2au8; 96]),
+        ustar_entry("deep/", TAR_DIRECTORY, "", b""),
+        ustar_entry("deep/gamma.bin", TAR_REGULAR, "", &[0x2au8; 96]),
     ]);
     let delta_gz = gzip_bytes(b"TASK 5180 gzip member delta.\n");
-    zip_bytes(&[
-        (
-            "notes/alpha.txt".to_owned(),
-            b"TASK 5180 clean nested archive, entry alpha.\n".to_vec(),
+    let mut cursor = std::io::Cursor::new(Vec::new());
+    {
+        let mut writer = zip::ZipWriter::new(&mut cursor);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        writer.add_directory("notes", options).expect("zip dir");
+        writer
+            .start_file("notes/alpha.txt", options)
+            .expect("zip entry");
+        writer
+            .write_all(b"TASK 5180 clean nested archive, entry alpha.\n")
+            .expect("zip entry bytes");
+        writer.start_file("inner.tar", options).expect("zip entry");
+        writer.write_all(&inner_tar).expect("zip entry bytes");
+        writer
+            .start_file("delta.txt.gz", options)
+            .expect("zip entry");
+        writer.write_all(&delta_gz).expect("zip entry bytes");
+        writer.finish().expect("zip finish");
+    }
+    cursor.into_inner()
+}
+
+// ---------------------------------------------------------------------------
+// TASK 5180a - hand-built hostile archives
+// ---------------------------------------------------------------------------
+//
+// `tar::Builder` refuses to write a `..` or an absolute member name ("paths in
+// archives must be relative"), and an attacker is under no such obligation, so
+// these ustar headers are assembled byte by byte.
+
+const TAR_REGULAR: u8 = b'0';
+const TAR_HARD_LINK: u8 = b'1';
+const TAR_SYMLINK: u8 = b'2';
+const TAR_DIRECTORY: u8 = b'5';
+const TAR_FIFO: u8 = b'6';
+
+const TRAVERSAL_ESCAPE_NAME: &str = "osl-5180b-traversal-escape.txt";
+const ABSOLUTE_ESCAPE_NAME: &str = "osl-5180b-absolute-escape.txt";
+
+fn put(field: &mut [u8], value: &[u8]) {
+    let taken = value.len().min(field.len());
+    field[..taken].copy_from_slice(&value[..taken]);
+}
+
+fn ustar_entry(name: &str, type_flag: u8, link_name: &str, data: &[u8]) -> Vec<u8> {
+    let mut header = [0u8; 512];
+    put(&mut header[0..100], name.as_bytes());
+    put(&mut header[100..108], b"0000644\0");
+    put(&mut header[108..116], b"0000000\0");
+    put(&mut header[116..124], b"0000000\0");
+    put(
+        &mut header[124..136],
+        format!("{:011o}\0", data.len()).as_bytes(),
+    );
+    put(&mut header[136..148], b"00000000000\0");
+    put(&mut header[148..156], b"        ");
+    header[156] = type_flag;
+    put(&mut header[157..257], link_name.as_bytes());
+    put(&mut header[257..263], b"ustar\0");
+    put(&mut header[263..265], b"00");
+    put(&mut header[265..297], b"osl\0");
+    put(&mut header[297..329], b"osl\0");
+    put(&mut header[329..337], b"0000000\0");
+    put(&mut header[337..345], b"0000000\0");
+    let checksum: u32 = header.iter().map(|byte| u32::from(*byte)).sum();
+    put(&mut header[148..156], format!("{checksum:06o}\0 ").as_bytes());
+
+    let mut out = header.to_vec();
+    out.extend_from_slice(data);
+    let padding = (512 - data.len() % 512) % 512;
+    out.extend(std::iter::repeat_n(0u8, padding));
+    out
+}
+
+fn ustar_archive(entries: Vec<Vec<u8>>) -> Vec<u8> {
+    let mut out: Vec<u8> = entries.into_iter().flatten().collect();
+    out.extend(std::iter::repeat_n(0u8, 1024));
+    out
+}
+
+/// `../../<name>`: two levels up from the expansion workspace is the directory
+/// that holds the quarantine, i.e. outside it.
+fn traversal_zip() -> Vec<u8> {
+    zip_bytes(&[(
+        format!("../../{TRAVERSAL_ESCAPE_NAME}"),
+        b"TASK 5180b: this entry climbed out of the workspace.\n".to_vec(),
+    )])
+}
+
+/// An absolute member name pointing at this run's own throwaway root, so a
+/// starved guard writes somewhere this harness owns and cleans up.
+fn absolute_tar(root: &Path) -> Vec<u8> {
+    let name = root.join(ABSOLUTE_ESCAPE_NAME).display().to_string();
+    ustar_archive(vec![ustar_entry(
+        &name,
+        TAR_REGULAR,
+        "",
+        b"TASK 5180b: this entry named an absolute path.\n",
+    )])
+}
+
+fn symlink_tar() -> Vec<u8> {
+    ustar_archive(vec![
+        ustar_entry("escape-link", TAR_SYMLINK, "../..", b""),
+        ustar_entry(
+            "escape-link/osl-5180b-link-escape.txt",
+            TAR_REGULAR,
+            "",
+            b"TASK 5180b: written through a symlink.\n",
         ),
-        ("inner.tar".to_owned(), inner_tar),
-        ("delta.txt.gz".to_owned(), delta_gz),
     ])
+}
+
+fn hardlink_tar() -> Vec<u8> {
+    ustar_archive(vec![ustar_entry(
+        "hard-link.txt",
+        TAR_HARD_LINK,
+        "../../../etc/shadow",
+        b"",
+    )])
+}
+
+fn special_tar() -> Vec<u8> {
+    ustar_archive(vec![ustar_entry("pipe.fifo", TAR_FIFO, "", b"")])
 }
 
 fn over_byte_zip() -> Vec<u8> {
@@ -228,6 +354,40 @@ fn stray_expansion_bytes() -> u64 {
         total = total.saturating_add(directory_bytes(&entry.path()).max(1));
     }
     total
+}
+
+/// Every file under this run's root that is neither in a `quarantine`
+/// directory nor in an `exposure` directory - that is, every byte an archive
+/// entry managed to put outside the OSL quarantine. TASK 5180a: a starved path
+/// guard shows up here even though the boundary still refuses the archive
+/// afterwards, because the bytes are already written by then.
+fn files_outside_quarantine(root: &Path) -> Vec<(PathBuf, u64)> {
+    let mut found = Vec::new();
+    let mut pending = vec![root.to_owned()];
+    while let Some(directory) = pending.pop() {
+        let entries = match std::fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            match entry.file_type() {
+                Ok(kind) if kind.is_dir() => {
+                    if name != "quarantine" && name != "exposure" {
+                        pending.push(path);
+                    }
+                }
+                Ok(_) => {
+                    let size = entry.metadata().map(|meta| meta.len()).unwrap_or(0);
+                    found.push((path, size));
+                }
+                Err(_) => {}
+            }
+        }
+    }
+    found.sort();
+    found
 }
 
 // ---------------------------------------------------------------------------
@@ -475,6 +635,102 @@ fn main() {
         }
     }
 
+    // --- TASK 5180a: the hostile entries -----------------------------------
+    let baseline = files_outside_quarantine(&root);
+    println!("TASK5180B_OUTSIDE_QUARANTINE_BASELINE={}", baseline.len());
+    for (path, size) in &baseline {
+        escapes.push(format!(
+            "bundle.zip left {size} bytes outside the OSL quarantine at {}",
+            path.display()
+        ));
+    }
+    let hostiles: Vec<(&str, Vec<u8>, &str, &str)> = vec![
+        (
+            "traversal.zip",
+            traversal_zip(),
+            "archive_parent_traversal",
+            "limit=parent-traversal",
+        ),
+        (
+            "absolute.tar",
+            absolute_tar(&root),
+            "archive_absolute_path",
+            "limit=absolute-path",
+        ),
+        (
+            "symlink.tar",
+            symlink_tar(),
+            "archive_symbolic_link",
+            "limit=symbolic-link",
+        ),
+        (
+            "hardlink.tar",
+            hardlink_tar(),
+            "archive_hard_link",
+            "limit=hard-link",
+        ),
+        (
+            "special.tar",
+            special_tar(),
+            "archive_special_file",
+            "limit=special-file",
+        ),
+    ];
+    for (name, fixture, expected_reason, expected_limit) in hostiles {
+        let outcome = run_fixture(&root, name, &fixture, limits(), Duration::ZERO, &stray_peak);
+        // Measured from the filesystem, not from what the boundary said about
+        // itself: a guard that rejects *after* writing still leaves these.
+        let outside = files_outside_quarantine(&root);
+        println!(
+            "TASK5180B_HOSTILE fixture={name} outcome={} released_bytes={} \
+             outside_quarantine_files={} text={}",
+            outcome.reason,
+            outcome.released_bytes,
+            outside.len(),
+            outcome.text
+        );
+        for (path, size) in &outside {
+            escapes.push(format!(
+                "{name} wrote {size} bytes outside the OSL quarantine at {}",
+                path.display()
+            ));
+            // Cleared so the next fixture is measured on its own.
+            let _ = std::fs::remove_file(path);
+        }
+        if outcome.reason == "released" {
+            escapes.push(format!(
+                "{name} escaped the {expected_limit} guard and was released ({} bytes, {} \
+                 entries unpacked)",
+                outcome.released_bytes, outcome.entries_seen
+            ));
+            continue;
+        }
+        if outcome.reason != expected_reason {
+            escapes.push(format!(
+                "{name} was refused as '{}' instead of naming the {expected_limit} guard",
+                outcome.reason
+            ));
+        }
+        if !outcome.text.contains(expected_limit) {
+            escapes.push(format!(
+                "{name} was refused without naming {expected_limit}: {}",
+                outcome.text
+            ));
+        }
+        if !outcome.text.contains("archive entry '") {
+            escapes.push(format!(
+                "{name} was refused without naming the rejected entry: {}",
+                outcome.text
+            ));
+        }
+        if outcome.released_bytes != 0 || outcome.exposure_bytes != 0 {
+            escapes.push(format!(
+                "{name} released {} bytes and left {} bytes outside quarantine",
+                outcome.released_bytes, outcome.exposure_bytes
+            ));
+        }
+    }
+
     watching.store(false, Ordering::Release);
     let _ = watcher.join();
     let stray = stray_peak.load(Ordering::Acquire);
@@ -490,8 +746,9 @@ fn main() {
 
     if escapes.is_empty() {
         println!(
-            "TASK5180B_VERDICT=PASS the clean control released after all 6 entry receipts and \
-             every bound fixture was withheld with 0 bytes outside quarantine"
+            "TASK5180B_VERDICT=PASS the clean control released after all 6 entry receipts, every \
+             bound fixture was withheld, and all 5 hostile-entry fixtures were refused by name \
+             with 0 bytes outside quarantine"
         );
         println!("TASK5180B_EXIT=0");
         std::process::exit(0);
