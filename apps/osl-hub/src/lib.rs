@@ -133,6 +133,11 @@ pub mod mail_owner_check;
 pub mod main_window_reveal;
 pub mod messenger_whitelist_kinds;
 pub mod messenger_cover_placement;
+pub mod enclave_key_lifecycle;
+// Signed, recipient-bound invitations are deliberately separate from the
+// general membership writer.  An invite is only an offer until the intended
+// friend accepts its exact signed record.
+pub mod place_membership_invites;
 pub mod model_pack_install;
 pub mod models;
 pub mod mullvad_window_host;
