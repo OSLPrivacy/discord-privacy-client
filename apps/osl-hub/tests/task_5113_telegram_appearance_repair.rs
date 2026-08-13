@@ -4,8 +4,8 @@ use osl_privacy_hub::native_telegram_adapter::{
     TelegramPaintSurface, TelegramSelectorError, TelegramStructuralPaintTarget,
 };
 use task_5104_appearance_fingerprint::{
-    AppearanceGuard, CaptureObservation, ExposedTextAttributes, Rect, Scope, SurfaceKind,
-    WarmUiaObservation,
+    AppearanceGuard, CaptureObservation, DriftEvent, ExposedTextAttributes, Rect, Scope,
+    SurfaceKind, WarmUiaObservation,
 };
 
 #[derive(Clone, Copy)]
@@ -25,6 +25,8 @@ struct Port {
     overlay_pixels: usize,
     paint_actions: usize,
     comparison_actions: usize,
+    capture_exclusion_actions: usize,
+    capture_exclusion: bool,
     refusal: Vec<TelegramAppearanceRepairFailure>,
 }
 
@@ -41,6 +43,8 @@ impl Port {
             overlay_pixels: 3,
             paint_actions: 0,
             comparison_actions: 0,
+            capture_exclusion_actions: 0,
+            capture_exclusion: true,
             refusal: Vec::new(),
         }
     }
@@ -94,6 +98,11 @@ impl TelegramAppearanceRepairPort for Port {
         self.paint_actions += 1;
         self.overlay_pixels = 3;
         Ok(())
+    }
+
+    fn capture_exclusion_verified(&mut self, _: &TelegramStructuralPaintTarget) -> bool {
+        self.capture_exclusion_actions += 1;
+        self.capture_exclusion
     }
 
     fn local_5103_matches(&mut self, _: &TelegramStructuralPaintTarget) -> bool {
@@ -184,8 +193,43 @@ fn geometry_colour_type_radius_and_spacing_drift_repair_before_repaint() {
         assert!(port.hidden, "{changed}");
         assert_eq!(port.paint_actions, 1, "{changed}");
         assert_eq!(port.comparison_actions, 1, "{changed}");
+        assert_eq!(port.capture_exclusion_actions, 1, "{changed}");
         assert_eq!(port.refusal.len(), 0, "{changed}");
     }
+}
+
+#[test]
+fn colour_only_restyle_replaces_a_warmed_fingerprint_with_two_live_samples_before_paint() {
+    let mut port = Port::good();
+    let old = sample();
+    let mut colour_restyle = sample();
+    colour_restyle.capture.dominant_rgb = [44, 55, 66];
+    port.samples = vec![colour_restyle.clone(), colour_restyle];
+
+    let mut guard = AppearanceGuard::default();
+    guard.remeasure(DriftEvent::BeforeReveal, 90, old.uia.clone(), old.capture.clone())
+        .unwrap();
+    guard.reveal(91, old.uia, old.capture).unwrap();
+    assert!(guard.fingerprint().is_some());
+
+    assert_eq!(
+        repair_telegram_appearance_before_paint(
+            &mut port,
+            &mut guard,
+            TelegramPaintSurface::Composer,
+            100,
+        ),
+        Ok(())
+    );
+    assert!(port.hidden);
+    assert_eq!(port.paint_actions, 1);
+    assert_eq!(port.comparison_actions, 1);
+    assert_eq!(port.capture_exclusion_actions, 1);
+    assert_eq!(
+        guard.fingerprint().unwrap().dominant_rgb,
+        [44, 55, 66],
+        "paint was preceded by a fresh colour-restyle fingerprint"
+    );
 }
 
 #[test]
@@ -211,6 +255,7 @@ fn zero_or_multiple_structure_and_missing_or_unstable_samples_refuse_without_pai
     );
     assert_eq!(starved.overlay_pixels, 0);
     assert_eq!(starved.paint_actions, 0);
+    assert_eq!(starved.capture_exclusion_actions, 0);
     assert_eq!(starved.refusal.len(), 1);
 
     let mut unstable = Port::good();
@@ -222,6 +267,21 @@ fn zero_or_multiple_structure_and_missing_or_unstable_samples_refuse_without_pai
     assert_eq!(unstable.overlay_pixels, 0);
     assert_eq!(unstable.paint_actions, 0);
     assert_eq!(unstable.refusal.len(), 1);
+}
+
+#[test]
+fn capture_exclusion_is_read_back_after_live_samples_and_before_paint() {
+    let mut port = Port::good();
+    port.capture_exclusion = false;
+    assert_eq!(
+        run(&mut port),
+        Err(TelegramAppearanceRepairFailure::Appearance)
+    );
+    assert!(port.hidden);
+    assert_eq!(port.capture_exclusion_actions, 1);
+    assert_eq!(port.paint_actions, 0);
+    assert_eq!(port.overlay_pixels, 0);
+    assert_eq!(port.refusal, vec![TelegramAppearanceRepairFailure::Appearance]);
 }
 
 #[test]

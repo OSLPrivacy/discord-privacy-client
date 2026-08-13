@@ -617,6 +617,10 @@ pub trait TelegramAppearanceRepairPort {
         target: &TelegramStructuralPaintTarget,
         paint: &[TelegramMeasuredPaint],
     ) -> Result<(), TelegramAppearanceRepairFailure>;
+    /// The OSL-owned surface must still be excluded from capture immediately
+    /// before it receives carrier-derived pixels.  A previous readback is not
+    /// transferable across a drift repair.
+    fn capture_exclusion_verified(&mut self, target: &TelegramStructuralPaintTarget) -> bool;
     /// Runs the local task-5103 regional comparison against the just-painted
     /// OSL surface. `false` means the paint is removed and 5105 is entered.
     fn local_5103_matches(&mut self, target: &TelegramStructuralPaintTarget) -> bool;
@@ -682,6 +686,11 @@ pub fn repair_telegram_appearance_before_paint(
     // A repair starts a new two-observation agreement. It cannot reuse an old
     // fingerprint after a drift-triggered hide.
     guard.invalidate(DriftEvent::BeforeReveal);
+    // Keep this explicit assertion beside invalidation.  It makes a repair
+    // fail closed if this path is ever changed to retain pre-restyle state.
+    if guard.fingerprint().is_some() {
+        return refuse_telegram_appearance(port, TelegramAppearanceRepairFailure::Appearance);
+    }
     let fingerprinted = guard
         .remeasure(
             DriftEvent::BeforeReveal,
@@ -697,6 +706,9 @@ pub fn repair_telegram_appearance_before_paint(
             )
         });
     if fingerprinted.is_err() {
+        return refuse_telegram_appearance(port, TelegramAppearanceRepairFailure::Appearance);
+    }
+    if !port.capture_exclusion_verified(&target) {
         return refuse_telegram_appearance(port, TelegramAppearanceRepairFailure::Appearance);
     }
     if let Err(error) = port.apply_measured(&target, &second.paint) {
