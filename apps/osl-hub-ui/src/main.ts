@@ -223,6 +223,7 @@ import {
   type SettingsFriend,
 } from "./friends-settings-surface";
 import { initializeThemePreference, themeStorageKey, type ThemeChoice } from "./theme-preference";
+import { initializePostStoryDefaults, isStoryLifetimeId, isVisibilityOptionId, postStoryDefaultsSettingsMarkup, savePostVisibilityDefault, saveStoryLifetimeDefault, saveStoryVisibilityDefault, type PostStoryDefaults } from "./post-story-defaults-settings";
 import { inDomTooltipMarkup } from "./in-dom-tooltip";
 import { applyOslChatDraftToElement, firstPartyOslSurfaceContract, OSL_CHAT_MAX_DRAFT_BYTES, oslChatDraftBytes, oslChatHandshakeConfirmed, oslChatsViewMarkup, senderReceiptStateFor, type OslChatMessage } from "./osl-chats-view";
 import { createOslChatDeliveryRuntime, mergeOslChatTimeline, oslChatHistoryMessages, receivedOslChatBatchMessage, type OslChatDeliveryHost } from "./osl-chat-runtime";
@@ -374,7 +375,7 @@ type NativeDiscordComposerUnreachableReason = (typeof NATIVE_DISCORD_COMPOSER_UN
 // exactly `RETAINED_ONBOARDING_ROUTES`; `onboarding-route-contract.ts` is the
 // authority both the static inventory and the physical crawl read.
 type OnboardingRoute = RetainedOnboardingRoute;
-type SettingsSection = "account" | "apps" | "friends" | "scrub" | "cleanup" | "notifications" | "appearance" | "about";
+type SettingsSection = "account" | "apps" | "friends" | "content" | "scrub" | "cleanup" | "notifications" | "appearance" | "about";
 type SavedAccountMode = "ask" | "use" | "clean";
 type BurnScope = "chat" | "app" | "account";
 type BurnResult = {
@@ -635,6 +636,7 @@ let identityStorageMethod: string | null = null;
 const knownIdentityStorageMethods = new Map<string, string>();
 let decryptDisplay = true;
 let themeChoice: ThemeChoice = initializeThemePreference(localStorage);
+let postStoryDefaults: PostStoryDefaults = initializePostStoryDefaults(localStorage);
 let sidebarOrder: string[] = [];
 let hiddenServices = new Set<string>();
 let homeEditMode = false;
@@ -5872,7 +5874,7 @@ function serviceGuideContent(service: LinkedService, step: ServiceGuideStep): st
 }
 
 function settingsContent(): string {
-  const items: Array<[SettingsSection, string]> = [["account", "Account"], ["apps", "Apps"], ["friends", "Friends"], ["scrub", "Scrub"], ["cleanup", "Cleanup"], ["notifications", "Notifications"], ["appearance", "Appearance"], ["about", "About"]];
+  const items: Array<[SettingsSection, string]> = [["account", "Account"], ["apps", "Apps"], ["friends", "Friends"], ["content", "Posts and stories"], ["scrub", "Scrub"], ["cleanup", "Cleanup"], ["notifications", "Notifications"], ["appearance", "Appearance"], ["about", "About"]];
   // These buttons pick a section WITHIN Settings, so they are not `page`.
   // Settings itself is the page, and the primary sidebar already marks it
   // `aria-current="page"`; marking a section button the same way put two
@@ -5886,6 +5888,7 @@ function settingsSectionContent(): string {
   if (settingsSection === "account") return `${identitySettingsContent()}${settingsDivider()}${passwordSecuritySettingsContent()}${accountAdvancedSettingsContent()}${renderRecoveryStatesSettings()}`;
   if (settingsSection === "apps") return `${serviceAccountsSettingsContent()}${optionalComponentsSettingsContent()}${sendingSettingsContent()}`;
   if (settingsSection === "friends") return friendsSettingsContent();
+  if (settingsSection === "content") return postStoryDefaultsSettingsMarkup(postStoryDefaults);
   if (settingsSection === "scrub") return privacySettingsContent();
   if (settingsSection === "cleanup") return massCleanupSettingsContent();
   if (settingsSection === "notifications") return notificationSettingsContent();
@@ -8093,6 +8096,20 @@ function bindWorkspace(): void {
     themeChoice = next;
     localStorage.setItem(themeStorageKey, next);
     applyTheme(next);
+    render();
+  }));
+  document.querySelectorAll<HTMLButtonElement>("[data-post-story-default-choice]").forEach((button) => button.addEventListener("click", () => {
+    const group = button.dataset.postStoryDefaultGroup;
+    const choice = button.dataset.postStoryDefaultChoice ?? "";
+    if (group === "post-visibility" && isVisibilityOptionId(choice)) {
+      postStoryDefaults = { ...postStoryDefaults, postVisibility: savePostVisibilityDefault(localStorage, choice) };
+    } else if (group === "story-visibility" && isVisibilityOptionId(choice)) {
+      postStoryDefaults = { ...postStoryDefaults, storyVisibility: saveStoryVisibilityDefault(localStorage, choice) };
+    } else if (group === "story-lifetime" && isStoryLifetimeId(choice)) {
+      postStoryDefaults = { ...postStoryDefaults, storyLifetime: saveStoryLifetimeDefault(localStorage, choice) };
+    } else {
+      return;
+    }
     render();
   }));
   document.querySelector("#service-guide-next")?.addEventListener("click", () => {
