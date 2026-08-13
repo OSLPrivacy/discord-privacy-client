@@ -20,6 +20,9 @@ use crate::signal_message_reader::{
 pub struct SignalLiveRowCapture {
     pub row_index: usize,
     pub name: String,
+    /// TASK 4077's winning group-only authorship signal: the sender name
+    /// Signal published at the front of this row's accessible name.
+    pub published_name: Option<String>,
 }
 
 impl SignalLiveRowCapture {
@@ -27,6 +30,19 @@ impl SignalLiveRowCapture {
         Self {
             row_index,
             name: name.into(),
+            published_name: None,
+        }
+    }
+
+    pub fn with_published_name(
+        row_index: usize,
+        name: impl Into<String>,
+        published_name: impl Into<String>,
+    ) -> Self {
+        Self {
+            row_index,
+            name: name.into(),
+            published_name: Some(published_name.into()),
         }
     }
 }
@@ -53,12 +69,15 @@ pub fn signal_open_screen_messages_from_live_rows(
             if text.is_empty() {
                 return None;
             }
-            Some(SignalOpenScreenMessage::new(
-                format!("signal-live-row-{:06}", row.row_index),
-                text.to_owned(),
-                row.row_index as i64,
-                SIGNAL_LIVE_ROW_SENDER_ID,
-            ))
+            Some(
+                SignalOpenScreenMessage::new(
+                    format!("signal-live-row-{:06}", row.row_index),
+                    text.to_owned(),
+                    row.row_index as i64,
+                    SIGNAL_LIVE_ROW_SENDER_ID,
+                )
+                .with_published_name_and_position(row.published_name.clone(), row.row_index),
+            )
         })
         .collect()
 }
@@ -108,6 +127,32 @@ impl<Capture: SignalLiveRowCaptureSource> SignalOpenScreenSource
 
 #[cfg(target_os = "windows")]
 pub use windows::LiveSignalWindowRowCapture;
+
+/// The Windows shipping entry point.  It deliberately accepts the already
+/// claimed Signal window and trusted process predicate from the caller: this
+/// reader does not find, activate, focus, or otherwise operate Signal.
+#[cfg(target_os = "windows")]
+pub fn read_claimed_signal_rows_with_published_names(
+    owner_osl_user_id: &str,
+    account_id: &str,
+    selected_place: &crate::services::SharedConversationPlace,
+    signed_in_sender_id: &str,
+    own_names: &crate::app_own_names::AppOwnNameState,
+    window: isize,
+    process_id: u32,
+    process_is_trusted: impl Fn(u32) -> bool + Send + 'static,
+) -> Result<crate::signal_message_reader::SignalPublishedNameRead, String> {
+    let capture = LiveSignalWindowRowCapture::new(window, process_id, process_is_trusted);
+    let mut source = LiveSignalTranscriptRowWords::new(selected_place.place_id.clone(), capture);
+    crate::signal_message_reader::read_signal_messages_with_published_names_for_scrub(
+        owner_osl_user_id,
+        account_id,
+        selected_place,
+        signed_in_sender_id,
+        own_names,
+        &mut source,
+    )
+}
 
 #[cfg(target_os = "windows")]
 mod windows {
@@ -198,7 +243,18 @@ mod windows {
                     if !is_offscreen && bounds.right > bounds.left && bounds.bottom > bounds.top {
                         let name = unsafe { element.CurrentName() }
                             .map_err(|error| format!("Signal UIA row name unavailable: {error}"))?;
-                        rows.push(SignalLiveRowCapture::new(rows.len(), name.to_string()));
+                        let name = name.to_string();
+                        let row_index = rows.len();
+                        let capture = signal_published_name_from_row_accessible_name(&name)
+                            .map(|published_name| {
+                                SignalLiveRowCapture::with_published_name(
+                                    row_index,
+                                    name,
+                                    published_name,
+                                )
+                            })
+                            .unwrap_or_else(|| SignalLiveRowCapture::new(row_index, name));
+                        rows.push(capture);
                     }
                 }
                 for child in child_elements(&walker, &element)? {
@@ -235,6 +291,17 @@ mod windows {
         }
         Ok(children)
     }
+}
+
+/// TASK 4077 measured a group sender as the text enclosed by Signal's
+/// FIRST-STRONG-ISOLATE / POP-DIRECTIONAL-ISOLATE markers at the start of the
+/// row's accessible name.  Direct rows have no such field, so this returns
+/// `None` rather than inventing an author from direction, text, or pixels.
+pub fn signal_published_name_from_row_accessible_name(name: &str) -> Option<String> {
+    let rest = name.strip_prefix('\u{2068}')?;
+    let (author, _) = rest.split_once('\u{2069}')?;
+    let author = author.trim();
+    (!author.is_empty()).then(|| author.to_owned())
 }
 
 #[cfg(test)]
@@ -294,7 +361,10 @@ mod tests {
         let mut source = LiveSignalTranscriptRowWords::new("place-1", FixedRowCapture(rows));
         let snapshot = source.read_open_screen().expect("read open screen");
         assert_eq!(snapshot.messages.len(), 3);
-        assert_eq!(source.action_log(), [SignalScreenReadAction::ReadOpenScreen]);
+        assert_eq!(
+            source.action_log(),
+            [SignalScreenReadAction::ReadOpenScreen]
+        );
         assert_eq!(
             source
                 .action_log()
@@ -302,6 +372,18 @@ mod tests {
                 .filter(|action| matches!(action, SignalScreenReadAction::KeyPress { .. }))
                 .count(),
             0
+        );
+    }
+
+    #[test]
+    fn extracts_only_the_4077_published_group_sender_name() {
+        assert_eq!(
+            signal_published_name_from_row_accessible_name("\u{2068}Morgan Lee\u{2069} hello"),
+            Some("Morgan Lee".to_owned())
+        );
+        assert_eq!(
+            signal_published_name_from_row_accessible_name("hello"),
+            None
         );
     }
 }
