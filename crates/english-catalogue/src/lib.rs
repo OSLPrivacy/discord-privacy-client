@@ -60,6 +60,10 @@ pub const PRODUCTION_KEYS: &[ProductionKey] = &[
         placeholders: &[],
     },
     ProductionKey {
+        key: "mail.timer.pointer_only_disclosure",
+        placeholders: &[],
+    },
+    ProductionKey {
         key: "windows.catalogue.loaded",
         placeholders: &["caller", "version"],
     },

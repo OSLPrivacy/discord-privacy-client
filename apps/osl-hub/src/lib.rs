@@ -95,6 +95,7 @@ pub mod english_catalogue_entry;
 #[cfg(feature = "desktop")]
 pub mod entitlement_refresh;
 pub mod execution_consent;
+pub mod email_timer_contract;
 pub mod external_overlay;
 pub(crate) mod firefox_migration_coordinator;
 #[cfg(feature = "core")]

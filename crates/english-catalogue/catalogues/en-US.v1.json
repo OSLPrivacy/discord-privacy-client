@@ -28,6 +28,10 @@
       "value": "Continue"
     },
     {
+      "key": "mail.timer.pointer_only_disclosure",
+      "value": "The private part stops working. The cover email stays in their inbox and cannot be recalled."
+    },
+    {
       "key": "windows.catalogue.loaded",
       "value": "Loaded English catalogue {version} for {caller}."
     },
