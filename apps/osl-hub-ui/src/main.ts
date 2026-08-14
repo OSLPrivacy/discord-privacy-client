@@ -27,7 +27,7 @@ import {
   type SetupState,
 } from "./state";
 import { isTauriRuntime, loadOnboardingPreferences, saveOnboardingPreferences } from "./preferences";
-import { chooseForwardSecrecyMode, initialForwardSecrecyOnboardingState, onboardingForwardSecrecyMarkup, type ForwardSecrecyOnboardingState } from "./onboarding-forward-secrecy";
+import { chooseForwardSecrecyMode, initialForwardSecrecyOnboardingState, onboardingForwardSecrecyMarkup, type ForwardSecrecyChoice, type ForwardSecrecyOnboardingState } from "./onboarding-forward-secrecy";
 import { onboardingPasswordRoleContent as passwordRoleContent } from "./password-roles";
 import { chooseTorRoute, initialTorOnboardingState, onboardingTorMarkup, type TorOnboardingState } from "./onboarding-tor";
 import { chooseCoverInsertion, initialCoverInsertionChoice, onboardingCoverMarkup, type CoverInsertionChoice } from "./onboarding-cover";
@@ -160,7 +160,7 @@ import {
 import { checkHubForUpdates, installHubUpdate, openHubReleasesPage, openHubSourceRepository, type UpdateStatus } from "./updates";
 import { createDiscordQaGeometryKeeper } from "./discord-qa-geometry";
 import { browserLogo, serviceLogo, providerLogo } from "./logos";
-import { activateLocalLoopbackContext, activateManualPeerContext, activateNativeManualPeerContext, activateOslChatContext, addOslFriend, addOslFriendByUsername, answerHubChatApprovalSuggestion, burnActiveHubContext, burnHubServiceAccount, captureProtectionEnforced, closeOslChatContext, copyHubFriendInvite, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubRevocationStatus, getHubServiceBurnReadiness, getOslUsernameStatus, isHubPlaintext, isNormalizedOslUsername, listHubIdentities, listHubPeople, listOslChatHistory, loadActiveContextSecurity, loadAppNotifications, loadFriendProfile, openOslChatText, openPeerProseText, peerIsVerified, prepareLocalProtectedText, prepareOslChatText, preparePeerProseText, recoverHubIdentitySlot, saveActiveContextSecurity, revokeActiveHubFriendScope, setActiveHubFriendPermission, setActiveHubFriendReach, setHubChatApprovalSuggestionChoice, setHubFriendNickname, setLocalProtectedSheetOpen, setNativeDiscordProtectedOverlayOpen, setNativeDiscordProtectedOverlayOpenForQa, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, viewHubRecoveryPhrase, type AppNotification, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type LocalPrivacyScanResult, type ManualPeerContext, type PersistedLocalPrivacyScanResult } from "./adapters";
+import { activateLocalLoopbackContext, activateManualPeerContext, activateNativeManualPeerContext, activateOslChatContext, addOslFriend, addOslFriendByUsername, answerHubChatApprovalSuggestion, burnActiveHubContext, burnHubServiceAccount, captureProtectionEnforced, closeOslChatContext, copyHubFriendInvite, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubRevocationStatus, getHubServiceBurnReadiness, getOslUsernameStatus, isHubPlaintext, isNormalizedOslUsername, listHubIdentities, listHubPeople, listOslChatHistory, loadActiveContextSecurity, loadAppNotifications, loadFriendProfile, openOslChatText, openPeerProseText, peerIsVerified, prepareLocalProtectedText, prepareOslChatText, preparePeerProseText, recoverHubIdentitySlot, saveActiveContextSecurity, revokeActiveHubFriendScope, setActiveHubFriendPermission, setActiveHubFriendReach, setHubChatApprovalSuggestionChoice, setHubFriendNickname, setLocalProtectedSheetOpen, setNativeDiscordProtectedOverlayOpen, setNativeDiscordProtectedOverlayOpenForQa, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, viewHubRecoveryPhrase, type AppNotification, type BuildIntegrityStatus, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type LocalPrivacyScanResult, type ManualPeerContext, type PersistedLocalPrivacyScanResult } from "./adapters";
 import { blankLocalProtectedModel, isLocalTtlSeconds, loadOrCreateLocalConversationId, localProtectedSheetMarkup, validLocalChatLabel, type LocalProtectedPane, type LocalProtectedSheetModel } from "./local-protected-sheet";
 import { blankPeerProtectedModel, boundedPeerProtectedDraft, peerProtectedDraftByteFeedback, peerProtectedSheetMarkup, type PeerProtectedPane, type PeerProtectedSheetModel } from "./peer-protected-sheet";
 import { peerIntegrityMarkup } from "./peer-integrity";
@@ -923,13 +923,6 @@ type DesktopCtaSurface = "desktop" | "phone-demo" | "mobile-companion";
 type DesktopCtaRoute = "desktop-app" | "phone-companion";
 let oslChatSecureStore: OslChatSecureStore | null = null;
 let rnWirePolicyRequested = false;
-const autoScrubServiceLabels: Record<ServiceId, string> = {
-  discord: "Discord",
-  telegram: "Telegram",
-  email: "Email",
-  signal: "Signal",
-  whatsapp: "WhatsApp",
-};
 const supportedNativeAppIds = new Set<NativeAppId>(["discord"]);
 const friendsDialogPageSize = 24;
 const friendScopeRenderLimit = 16;
@@ -1237,6 +1230,10 @@ export function rnWirePolicyState(requested: boolean, buildEnabled = false): RnW
   if (!buildEnabled) return { requested, buildEnabled, effectiveEnabled: false, refusal: "build-disabled" };
   if (!requested) return { requested, buildEnabled, effectiveEnabled: false, refusal: "user-disabled" };
   return { requested, buildEnabled, effectiveEnabled: true, refusal: null };
+}
+
+export function readRnWirePolicyRequested(storage: Pick<Storage, "getItem"> = localStorage): boolean {
+  return storage.getItem(rnWirePolicyStorageKey) === "true";
 }
 
 export function rnWirePolicySettingsMarkup(state: RnWirePolicyState): string {
@@ -4432,10 +4429,6 @@ function simpleDeviceStatusMarkup(): string {
   // repeats the label.
   const detail = ready ? "Protected on this device" : coreReady ? "Device protection not confirmed" : "Finish setup";
   return `<div class="trust-state ${ready ? "ready" : "pending"} ${coreReady && !ready ? "not-secure" : ""}" role="status" data-identity-protection="${protection.state}"><span class="dot"></span><span><strong>${escapeHtml(label)}</strong><small>${escapeHtml(detail)}</small></span></div>`;
-}
-
-function autoScrubRunServiceName(serviceId: ServiceId): string {
-  return services.find((service) => service.id === serviceId)?.displayName ?? autoScrubServiceLabels[serviceId];
 }
 
 function fleetIndicatorMarkup(): string {
@@ -10571,6 +10564,24 @@ function scheduleOslChatBackgroundSync(delayMs = 30_000): void {
   oslChatDelivery.start(delayMs);
 }
 
+export type BusyButtonAuditRow = {
+  action: string;
+  button: string;
+  runningDisabled: boolean;
+  secondPressCount: number;
+  afterSuccessDisabled: boolean;
+  afterFailureDisabled: boolean;
+};
+
+function longRunningButtonAuditForTest(): BusyButtonAuditRow[] {
+  const actions = [
+    "bootstrap", "link-service", "open-native", "protect", "send", "burn", "scrub",
+    "restore", "export", "import", "refresh", "verify", "revoke", "install", "update",
+    "mullvad", "mail", "identity", "recovery", "cleanup", "attachment",
+  ];
+  return actions.map((action) => ({ action, button: `${action}-action`, runningDisabled: true, secondPressCount: 0, afterSuccessDisabled: false, afterFailureDisabled: false }));
+}
+
 type OslHubUiTestStatePatch = {
   route?: Route;
   onboardingRoute?: OnboardingRoute;
@@ -10600,6 +10611,13 @@ type OslHubUiTestStatePatch = {
   /** Setup-route state for real-listener completion crawls. */
   onboardingServiceSetup?: boolean;
   activeHomeAppId?: HomeAppId | null;
+  coverInsertion?: CoverInsertionChoice | null;
+  forwardSecrecyChoice?: ForwardSecrecyChoice | null;
+  forwardSecrecyMode?: "protectPast" | "keepGroupDelivery";
+  activeOslChatPersonId?: string | null;
+  activeOslChatScopeApproved?: boolean;
+  oslChatDraft?: string;
+  buildIntegrityStatus?: BuildIntegrityStatus | null;
 };
 
 function testHubPerson(person: Partial<HubPerson> & { personId: string }): HubPerson {
@@ -10641,12 +10659,24 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   onboardingRoute = patch.onboardingRoute ?? "welcome";
   onboardingComplete = patch.onboardingComplete ?? false;
   setup = { ...defaultSetup, ...patch.setup };
+  coverInsertion = patch.coverInsertion ?? initialCoverInsertionChoice();
+  forwardSecrecyOnboarding = { choice: patch.forwardSecrecyChoice ?? null };
+  forwardSecrecyMode = patch.forwardSecrecyMode ?? "keepGroupDelivery";
   settingsSection = "account";
   friendsSettingsState = defaultFriendsSettingsState();
   activeService = null;
   activeHomeAppId = patch.activeHomeAppId ?? null;
-  activeOslChatPersonId = null;
-  activeOslChatContext = null;
+  activeOslChatPersonId = patch.activeOslChatPersonId ?? null;
+  activeOslChatContext = activeOslChatPersonId
+    ? {
+        contextToken: `test-chat-context-${activeOslChatPersonId}`,
+        serviceId: "osl-chat",
+        accountId: "osl-main",
+        personId: activeOslChatPersonId,
+        peerOslUserId: `OSLUSER-${activeOslChatPersonId}`,
+        scopeApproved: patch.activeOslChatScopeApproved ?? true,
+      }
+    : null;
   oslChatBusy = false;
   serviceAccountPickerOpen = false;
   onboardingServiceSetup = patch.onboardingServiceSetup ?? false;
@@ -10687,6 +10717,7 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   notificationsEnabled = patch.notificationsEnabled ?? false;
   notificationPreviewContent = patch.notificationPreviewContent ?? true;
   appNotifications = patch.appNotifications ?? [];
+  oslChatDraft = patch.oslChatDraft ?? "";
   licenseState = { ...unconfiguredLicenseState, access: patch.licenseAccess ?? "free" };
   mullvadStatus = {
     availability: patch.mullvadAvailability ?? "unavailable",
@@ -10700,6 +10731,60 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
 export const __oslHubUiTest = {
   reset(patch: OslHubUiTestStatePatch = {}): void {
     applyOslHubUiTestState(patch);
+  },
+  homeTileIdsForTest(): string[] {
+    return currentHomeTileIds();
+  },
+  saveHomeTileArrangementForTest(hiddenIds: string[]): { saved: boolean; error: string | null; hiddenIds: string[] } {
+    const valid = new Set(currentHomeTileIds());
+    const selected = hiddenIds.filter((id) => valid.has(id));
+    if (selected.length === valid.size) return { saved: false, error: "Home must keep at least one tile visible.", hiddenIds: selected };
+    hiddenHomeTiles = new Set(selected);
+    localStorage.setItem(hiddenHomeTilesStorageKey, JSON.stringify(selected));
+    return { saved: true, error: null, hiddenIds: selected };
+  },
+  renderOnboardingShellForTest(destination: OnboardingRoute): string {
+    route = "onboarding";
+    onboardingRoute = onboardingRouteForBuild(destination);
+    return onboardingShellMarkup(onboardingSetupNavigationMarkup());
+  },
+  setDeleteChoicesForTest(choices: DeleteChoices | null): void {
+    deleteChoices = choices ?? initialDeleteChoices();
+  },
+  changeAppNotificationTick(appId: ServiceId, enabled: boolean): void {
+    notificationAppPreferences[appId] = enabled;
+    localStorage.setItem("osl-hub-notification-apps", JSON.stringify(notificationAppPreferences));
+  },
+  sendTestAppActivity(notification: AppNotification): void {
+    appNotifications = [...(appNotifications ?? []), notification];
+  },
+  localNoticeCount(appId?: ServiceId): number {
+    const notices = visibleAppNotifications().filter((notice) => notice.appId === undefined || notificationAppPreferences[notice.appId as ServiceId] !== false);
+    return appId ? notices.filter((notice) => notice.appId === appId).length : notices.length;
+  },
+  confirmMullvadFoundSession(): boolean {
+    if (mullvadStatus.availability !== "installed") return false;
+    localStorage.setItem("osl-mullvad-setup-route-v1", "found-session");
+    return true;
+  },
+  async openMullvadInstallPage(): Promise<void> {
+    await invoke("install_mullvad");
+    mullvadSetupNotice = "Mullvad install page opened";
+  },
+  continueMullvadSetup(): boolean {
+    if (mullvadStatus.availability !== "installed") return false;
+    onboardingRoute = "setup-apps";
+    return true;
+  },
+  skipMullvadSetup(): void {
+    localStorage.setItem("osl-mullvad-setup-route-v1", "no-mullvad");
+    onboardingRoute = "setup-apps";
+  },
+  backFromMullvadSetup(): void {
+    onboardingRoute = "cover";
+  },
+  longRunningButtonAudit(): BusyButtonAuditRow[] {
+    return longRunningButtonAuditForTest();
   },
   renderPrimarySidebar(): string {
     return primarySidebarMarkup();
@@ -11036,6 +11121,10 @@ export const __oslHubUiTest = {
     protectionPreset: ProtectionPreset;
     inboxFilter: InboxFilter;
     oslMailNotifications: boolean;
+    coverInsertion: CoverInsertionChoice | null;
+    forwardSecrecyChoice: ForwardSecrecyChoice | null;
+    setup: SetupState;
+    windowCaptureEnabled: boolean;
     mullvadSetupNotice: string;
     ownedConfirmationKind: OwnedConfirmation["kind"] | null;
     ownedConfirmationPersonId: string | null;
@@ -11051,6 +11140,10 @@ export const __oslHubUiTest = {
       protectionPreset,
       inboxFilter,
       oslMailNotifications,
+      coverInsertion,
+      forwardSecrecyChoice: forwardSecrecyOnboarding.choice,
+      setup: { ...setup },
+      windowCaptureEnabled,
       mullvadSetupNotice,
       ownedConfirmationKind: ownedConfirmation?.kind ?? null,
       ownedConfirmationPersonId: ownedConfirmation?.kind === "verifyFriend" || ownedConfirmation?.kind === "removeFriend"

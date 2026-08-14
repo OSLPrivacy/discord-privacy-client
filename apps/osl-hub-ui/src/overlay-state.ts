@@ -138,7 +138,7 @@ export interface NativeDiscordOverlayOpenedBatch {
    * Rows whose public cover was recognized, but whose protected store content
    * was already gone. Count-only: the renderer shows one fixed refusal sentence.
    */
-  contentGoneRows: number;
+  contentGoneRows?: number;
 }
 
 export interface NativeDiscordOverlayPendingViewOnce {

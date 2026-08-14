@@ -150,6 +150,7 @@ export interface OslChatMessage {
   timestampLabel: string;
   expiresAt?: number;
   format?: OslChatFormat;
+  reactions?: readonly { emoji: string; count: number; mine: boolean }[];
 }
 
 export interface OslChatsViewModel {
@@ -170,6 +171,9 @@ export interface OslChatsViewModel {
    * that is why the composer copy never promises removal on its own.
    */
   deletionUnconfirmed?: number;
+  buildIntegrity?: "verified" | "mismatch" | "unknown";
+  buildWarning?: { kind: string; reason: string; message: string; messageSendingAvailable: boolean } | null;
+  verificationWarningSurface?: "conversation-open" | "before-send" | "none";
 }
 
 /**

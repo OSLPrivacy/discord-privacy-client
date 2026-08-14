@@ -75,7 +75,7 @@ const service = {
   launchState: "available",
   supportsNativePreview: true,
   supportsProtectedPreview: true,
-  accounts: [],
+  accounts: [] as import("./services").LinkedAccount[],
 } as const;
 
 let selectors: Record<string, FakeElement[]> = {};

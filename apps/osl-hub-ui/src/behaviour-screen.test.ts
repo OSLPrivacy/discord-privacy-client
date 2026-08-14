@@ -9,7 +9,6 @@
 
 import { describe, expect, it } from "vitest";
 import {
-  BEHAVIOUR_SETTING_IDS,
   type BehaviourScreenState,
   behaviourScreenMarkup,
 } from "./behaviour-screen";

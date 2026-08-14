@@ -29,7 +29,7 @@ export type { HubRevocationStatus, HubScopeBurnOutcome };
  * friend is added (`HubPerson.safetyNumber`).
  */
 export interface FriendProfile { friendCode: string; oslUserId: string; }
-export interface AppNotification { id: string; title: string; detail: string; createdAt: string; }
+export interface AppNotification { id: string; appId?: string; title: string; detail: string; createdAt: string; }
 export type SupportMatrixPublicStatus = "available" | "beta" | "coming_soon" | "externally_blocked" | "unsupported";
 export type SupportMatrixInputEvidenceStatus = "qualified_profile" | "runtime_proven" | "qa_foundations_only" | "separate_qa_required" | "externally_blocked" | "unsupported" | "unknown";
 export interface SupportMatrixPresentationInput {
@@ -102,6 +102,22 @@ export interface OslChatHistoryRow {
   plaintext: string;
   createdAt: number;
   decryptedAt: number;
+  reactions?: OslChatMessageReaction[];
+}
+export type BuildIntegrityStatus = "verified" | "mismatch" | "unknown";
+export interface OslChatMessageReaction { emoji: string; count: number; mine: boolean; }
+export type OslChatBurnChoice = "yourSide" | "theirSide" | "bothSides";
+export interface OslChatBurnResult {
+  choice: OslChatBurnChoice;
+  messagesBefore: number;
+  messagesAfter: number;
+  rowsDestroyed: number;
+  yourRowsDestroyed: number;
+  theirRowsDestroyed: number;
+  othersRowsDestroyed: 0;
+  othersMessagesHidden: boolean;
+  localCleanupComplete: true;
+  recipientCopiesDeleted: false;
 }
 export interface PreparedHubAttachment {
   sealedB64: string;
@@ -172,6 +188,8 @@ export interface HubServiceBurnReadiness {
 }
 export interface HubServiceBurnResult {
   burnId: string;
+  currentAccountId: string;
+  selectedTotal: number;
   scopesBurned: number;
   rowsDestroyed: number;
   whitelistEntriesRemoved: number;
@@ -229,6 +247,7 @@ export interface LocalPrivacyScanResult {
 }
 export interface PersistedLocalPrivacyScanResult extends Omit<LocalPrivacyScanResult, "persisted"> {
   persisted: true;
+  emailProtectionChecks: [];
 }
 export interface ReviewedItemIdentity {
   reviewId: string;
@@ -536,6 +555,19 @@ export async function openOslChatText(): Promise<NativeDiscordOverlayOpenedBatch
   catch (error) { recordBackendFailure("open_osl_chat_text", error); return null; }
 }
 
+function parseBuildIntegrityStatus(value: unknown): BuildIntegrityStatus | null {
+  return value === "verified" || value === "mismatch" || value === "unknown" ? value : null;
+}
+
+export async function loadBuildIntegrityStatus(): Promise<BuildIntegrityStatus | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    return checkedBackendResponse("build_integrity_status",
+      parseBuildIntegrityStatus(await invoke<unknown>("build_integrity_status")),
+      "the build integrity status did not match the expected shape");
+  } catch (error) { recordBackendFailure("build_integrity_status", error); return null; }
+}
+
 export async function listOslChatHistory(): Promise<OslChatHistoryRow[] | null> {
   if (!isTauriRuntime()) return null;
   try {
@@ -557,12 +589,22 @@ export async function listOslChatHistory(): Promise<OslChatHistoryRow[] | null> 
         plaintext: entry.plaintext as string,
         createdAt: entry.decrypted_at as number,
         decryptedAt: entry.decrypted_at as number,
+        reactions: [],
       };
     });
     return checkedBackendResponse("list_osl_chat_history",
       rows.some((row) => row === null) ? null : rows as OslChatHistoryRow[],
       "a history row did not match the expected shape");
   } catch (error) { recordBackendFailure("list_osl_chat_history", error); return null; }
+}
+
+export function parseOslChatBurnResult(raw: unknown): OslChatBurnResult | null {
+  if (!isRecord(raw) || !exact(raw, ["choice", "messagesBefore", "messagesAfter", "rowsDestroyed", "yourRowsDestroyed", "theirRowsDestroyed", "othersRowsDestroyed", "othersMessagesHidden", "localCleanupComplete", "recipientCopiesDeleted"])) return null;
+  if (!(["yourSide", "theirSide", "bothSides"] as string[]).includes(String(raw.choice))
+    || ![raw.messagesBefore, raw.messagesAfter, raw.rowsDestroyed, raw.yourRowsDestroyed, raw.theirRowsDestroyed, raw.othersRowsDestroyed].every(boundedCount)
+    || raw.othersRowsDestroyed !== 0 || typeof raw.othersMessagesHidden !== "boolean"
+    || raw.localCleanupComplete !== true || raw.recipientCopiesDeleted !== false) return null;
+  return raw as unknown as OslChatBurnResult;
 }
 
 export async function preparePeerProseText(
@@ -890,6 +932,44 @@ export async function setActiveHubFriendPermission(contextToken: string, personI
   if (!isTauriRuntime() || !safe(contextToken, 180) || !safe(personId, 180) || typeof broadened !== "boolean") return false;
   try { await invoke("set_active_hub_friend_permission", { contextToken, personId, enabled, broadened }); return true; }
   catch (error) { recordBackendFailure("set_active_hub_friend_permission", error); return false; }
+}
+
+export interface GroupMemberPermissionRecord { groupId: string; memberId: string; allowed: boolean; }
+const groupMemberPermissionId = /^[A-Za-z0-9_-]{1,128}$/;
+
+export function parseGroupMemberPermissionRecord(raw: unknown): GroupMemberPermissionRecord | null {
+  if (!isRecord(raw) || !exact(raw, ["groupId", "memberId", "allowed"])) return null;
+  if (!groupMemberPermissionId.test(String(raw.groupId)) || !groupMemberPermissionId.test(String(raw.memberId)) || typeof raw.allowed !== "boolean") return null;
+  return { groupId: String(raw.groupId), memberId: String(raw.memberId), allowed: raw.allowed };
+}
+
+export async function addGroupMemberPermission(groupId: string, memberId: string): Promise<GroupMemberPermissionRecord | null> {
+  if (!isTauriRuntime() || !groupMemberPermissionId.test(groupId) || !groupMemberPermissionId.test(memberId)) return null;
+  try {
+    return checkedBackendResponse("add_group_member_permission",
+      parseGroupMemberPermissionRecord(await invoke<unknown>("add_group_member_permission", { groupId, memberId, allowed: true })),
+      "the saved group-member permission did not match the expected shape");
+  } catch (error) { recordBackendFailure("add_group_member_permission", error); return null; }
+}
+
+export async function removeGroupMemberPermission(groupId: string, memberId: string): Promise<boolean | null> {
+  if (!isTauriRuntime() || !groupMemberPermissionId.test(groupId) || !groupMemberPermissionId.test(memberId)) return null;
+  try {
+    const raw = await invoke<unknown>("remove_group_member_permission", { groupId, memberId });
+    return typeof raw === "boolean" ? raw : checkedBackendResponse("remove_group_member_permission", null, "the removal result was not a boolean");
+  } catch (error) { recordBackendFailure("remove_group_member_permission", error); return null; }
+}
+
+export async function listGroupMemberPermissions(groupId: string): Promise<GroupMemberPermissionRecord[] | null> {
+  if (!isTauriRuntime() || !groupMemberPermissionId.test(groupId)) return null;
+  try {
+    const raw = await invoke<unknown>("list_group_member_permissions", { groupId });
+    if (!Array.isArray(raw) || raw.length > 4_096) return null;
+    const records = raw.map(parseGroupMemberPermissionRecord);
+    return checkedBackendResponse("list_group_member_permissions",
+      records.every((record): record is GroupMemberPermissionRecord => record !== null) ? records : null,
+      "a group-member permission row did not match the expected shape");
+  } catch (error) { recordBackendFailure("list_group_member_permissions", error); return null; }
 }
 
 // Widen or withdraw one verified friend's reach across the scopes shared with
@@ -1300,8 +1380,8 @@ export function parseHubServiceBurnReadiness(raw: unknown): HubServiceBurnReadin
 }
 
 export function parseHubServiceBurnResult(raw: unknown): HubServiceBurnResult | null {
-  if (!isRecord(raw) || !exact(raw, ["burnId", "scopesBurned", "rowsDestroyed", "whitelistEntriesRemoved", "remoteBlobsDeleted", "remoteBlobDeletionsFailed", "localCleanupComplete", "remoteCleanupComplete", "loginProfileUntouched", "nativeHistoryUntouched"])) return null;
-  if (!/^[a-f0-9]{64}$/.test(String(raw.burnId)) || ![raw.scopesBurned, raw.rowsDestroyed, raw.whitelistEntriesRemoved, raw.remoteBlobsDeleted, raw.remoteBlobDeletionsFailed].every(boundedCount) || typeof raw.localCleanupComplete !== "boolean" || typeof raw.remoteCleanupComplete !== "boolean" || raw.loginProfileUntouched !== true || raw.nativeHistoryUntouched !== true) return null;
+  if (!isRecord(raw) || !exact(raw, ["burnId", "currentAccountId", "selectedTotal", "scopesBurned", "rowsDestroyed", "whitelistEntriesRemoved", "remoteBlobsDeleted", "remoteBlobDeletionsFailed", "localCleanupComplete", "remoteCleanupComplete", "loginProfileUntouched", "nativeHistoryUntouched"])) return null;
+  if (!/^[a-f0-9]{64}$/.test(String(raw.burnId)) || !safePlaintext(raw.currentAccountId, 128) || ![raw.selectedTotal, raw.scopesBurned, raw.rowsDestroyed, raw.whitelistEntriesRemoved, raw.remoteBlobsDeleted, raw.remoteBlobDeletionsFailed].every(boundedCount) || typeof raw.localCleanupComplete !== "boolean" || typeof raw.remoteCleanupComplete !== "boolean" || raw.loginProfileUntouched !== true || raw.nativeHistoryUntouched !== true) return null;
   return raw as unknown as HubServiceBurnResult;
 }
 

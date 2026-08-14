@@ -48,23 +48,6 @@ export interface BehaviourScreenHandlers {
   readonly onStateChanged?: (state: BehaviourScreenState) => void;
 }
 
-function settingLabel(id: BehaviourSettingId): string {
-  switch (id) {
-    case "start_with_windows":
-      return "Start with Windows";
-    case "idle_lock_time_choice":
-      return "Idle lock time";
-    case "ask_before_irreversible_actions":
-      return "Ask before irreversible actions";
-    case "alert_mode_choice":
-      return "Alert mode";
-    case "language":
-      return "Language";
-    case "follow_active_app_choice":
-      return "Follow active app";
-  }
-}
-
 function escapeHtml(value: string): string {
   return value
     .replace(/&/g, "&amp;")

@@ -153,7 +153,7 @@ function requireRuntimeRegistryCoverage(): void {
     ["route", unionValues("Route"), expectedRoutes],
     ["onboarding", unionValues("OnboardingRoute"), expectedOnboarding],
     ["settings", unionValues("SettingsSection"), expectedSettings],
-  ] as const) {
+  ] as Array<[string, readonly string[], readonly string[]]>) {
     const unregistered = sourceValues.filter((value) => !registeredValues.includes(value));
     const stale = registeredValues.filter((value) => !sourceValues.includes(value));
     if (unregistered.length > 0 || stale.length > 0) {

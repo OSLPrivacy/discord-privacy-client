@@ -98,16 +98,16 @@ export function bindSettingsProfileBlock(root: ParentNode, options: SettingsProf
     root.querySelectorAll("[data-profile-background]").forEach((choice) => choice.classList.toggle("is-selected", choice === button));
     persist();
   }));
-  root.querySelector<HTMLInputElement>("[data-profile-background-hex]")?.addEventListener("change", (event) => {
-    const input = event.currentTarget;
+  root.querySelector<HTMLInputElement>("[data-profile-background-hex]")?.addEventListener("change", (event: Event) => {
+    const input = event.currentTarget as HTMLInputElement;
     if (!validHex(input.value)) { input.value = profile.cardBackground.startsWith("#") ? profile.cardBackground : ""; return; }
     profile.cardBackground = input.value.toLowerCase();
     root.querySelectorAll("[data-profile-background]").forEach((choice) => choice.classList.remove("is-selected"));
     persist();
   });
   root.querySelector<HTMLButtonElement>("[data-profile-avatar-remove]")?.addEventListener("click", () => { profile.avatar = null; refreshAvatar(); persist(); });
-  root.querySelector<HTMLInputElement>("[data-profile-avatar-upload]")?.addEventListener("change", (event) => {
-    const file = event.currentTarget.files?.[0];
+  root.querySelector<HTMLInputElement>("[data-profile-avatar-upload]")?.addEventListener("change", (event: Event) => {
+    const file = (event.currentTarget as HTMLInputElement).files?.[0];
     if (!file || !/image\/(png|jpeg|gif)/u.test(file.type)) return;
     const reader = new FileReader();
     reader.addEventListener("load", () => { if (typeof reader.result === "string") { profile.avatar = reader.result; refreshAvatar(); persist(); } }, { once: true });

@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 import { existsSync, globSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, type ChildProcessByStdio } from "node:child_process";
+import type { Readable } from "node:stream";
 import { inflateSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -84,7 +85,7 @@ function locateChrome(): string {
   return chrome;
 }
 
-async function connectToChrome(chromeChild: ChildProcessWithoutNullStreams): Promise<{ cdp: CDPClient; ws: WebSocket }> {
+async function connectToChrome(chromeChild: ChildProcessByStdio<null, null, Readable>): Promise<{ cdp: CDPClient; ws: WebSocket }> {
   let buffer = "";
   const wsUrl = await new Promise<string>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error("timed out waiting for Chrome CDP")), 15_000);
