@@ -49,7 +49,7 @@ use message_lifecycle::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::control_contract::TimedMessageMode;
 
@@ -833,6 +833,180 @@ pub struct TimedDeleteExpiryReport {
     pub retained_records: usize,
     pub removed_records: usize,
     pub shredded_cache_rows: usize,
+}
+
+/// What the sender selected for one timed carrier message.
+///
+/// The key-only mode is the privacy floor: the carrier object is deliberately
+/// retained, but neither OSL device keeps the material needed to open it.
+/// The optional carrier deletion mode is strictly additive and is attempted
+/// only after that floor has been reached on both devices.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TimedExpiryMode {
+    KeyOnly,
+    KeyAndCarrierMessage,
+}
+
+/// A device's message-specific Mode 1 decryption capability.
+///
+/// This is intentionally per message rather than a conversation key.  Taking
+/// it away cannot affect a later message and, once taken, there is no API that
+/// can put it back.  `offline` records that this capability was reached through
+/// the existing remote both-sides path while its UI was not running.
+#[derive(Debug)]
+pub struct MessageDecryptionCapability {
+    device_name: String,
+    mode1_salt: Option<Zeroizing<[u8; 32]>>,
+    offline: bool,
+    /// Fault seam: secure erase has already happened, but its durable receipt
+    /// could not be confirmed.  It must report failure without retaining a
+    /// usable capability on either device.
+    destruction_confirmation_error: Option<String>,
+}
+
+impl MessageDecryptionCapability {
+    pub fn new(device_name: impl Into<String>, mode1_salt: [u8; 32]) -> Self {
+        Self {
+            device_name: device_name.into(),
+            mode1_salt: Some(Zeroizing::new(mode1_salt)),
+            offline: false,
+            destruction_confirmation_error: None,
+        }
+    }
+
+    /// Mark this device as closed at expiry.  The caller still delivers the
+    /// destruction over the same both-sides path; this flag is evidence that
+    /// it was not starved merely because its UI was offline.
+    pub fn set_offline(&mut self, offline: bool) {
+        self.offline = offline;
+    }
+
+    pub fn is_offline(&self) -> bool {
+        self.offline
+    }
+
+    pub fn device_name(&self) -> &str {
+        &self.device_name
+    }
+
+    pub fn can_decrypt(&self) -> bool {
+        self.mode1_salt.is_some()
+    }
+
+    /// Decode a real Mode 1 carrier only while this exact message capability
+    /// remains.  The provider's bytes are an input, never modified here.
+    pub fn open_mode1_carrier(&self, carrier_bytes: &str) -> Result<Vec<u8>, String> {
+        let salt = self.mode1_salt.as_ref().ok_or_else(|| {
+            format!(
+                "OSL decryption for this message was destroyed on {}",
+                self.device_name
+            )
+        })?;
+        let cipher = stego::ConversationCipher::from_salt(&**salt);
+        stego::decode_mode1(&cipher, carrier_bytes)
+            .map_err(|_| format!("OSL could not decrypt this carrier on {}", self.device_name))
+    }
+
+    /// Test and hardware-confirmation seam.  The salt is always removed first;
+    /// an error therefore describes confirmation/reporting, never a rollback.
+    pub fn fail_destruction_confirmation(&mut self, reason: impl Into<String>) {
+        self.destruction_confirmation_error = Some(reason.into());
+    }
+
+    fn destroy(&mut self) -> Result<(), String> {
+        let Some(mut salt) = self.mode1_salt.take() else {
+            return Ok(());
+        };
+        salt.zeroize();
+        if let Some(reason) = self.destruction_confirmation_error.take() {
+            return Err(reason);
+        }
+        Ok(())
+    }
+}
+
+/// Carrier operation which is optional and can never guard destruction.
+pub trait ExpiryCarrierDelete {
+    fn delete_carrier_message(&mut self) -> Result<(), String>;
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KeyDestructionFailure {
+    pub device_name: String,
+    pub reason: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KeyFirstExpiryError {
+    pub failures: Vec<KeyDestructionFailure>,
+}
+
+impl std::fmt::Display for KeyFirstExpiryError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let names = self
+            .failures
+            .iter()
+            .map(|failure| failure.device_name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        write!(formatter, "OSL key destruction failed on {names}")
+    }
+}
+
+impl std::error::Error for KeyFirstExpiryError {}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KeyFirstExpiryReport {
+    pub destroyed_device_names: [String; 2],
+    pub offline_device_names: Vec<String>,
+    pub carrier_delete_attempted: bool,
+    pub carrier_delete_error: Option<String>,
+}
+
+/// Establish the timed-message promise: destroy decryption on both devices
+/// before any optional carrier request is made.
+///
+/// Every device is attempted even when the first destruction confirmation
+/// fails.  Since [`MessageDecryptionCapability::destroy`] removes the secret
+/// before it can fail, an error cannot leave a readable half-state or permit a
+/// later rollback.  In key-only mode no carrier call is possible; in the
+/// optional mode a carrier failure is reported in the successful destruction
+/// report and cannot restore either capability.
+pub fn destroy_decryption_before_carrier(
+    mode: TimedExpiryMode,
+    first: &mut MessageDecryptionCapability,
+    second: &mut MessageDecryptionCapability,
+    carrier: &mut dyn ExpiryCarrierDelete,
+) -> Result<KeyFirstExpiryReport, KeyFirstExpiryError> {
+    let mut failures = Vec::new();
+    for device in [&mut *first, &mut *second] {
+        if let Err(reason) = device.destroy() {
+            failures.push(KeyDestructionFailure {
+                device_name: device.device_name.clone(),
+                reason,
+            });
+        }
+    }
+    if !failures.is_empty() {
+        return Err(KeyFirstExpiryError { failures });
+    }
+
+    let carrier_delete_attempted = matches!(mode, TimedExpiryMode::KeyAndCarrierMessage);
+    let carrier_delete_error = if carrier_delete_attempted {
+        carrier.delete_carrier_message().err()
+    } else {
+        None
+    };
+    Ok(KeyFirstExpiryReport {
+        destroyed_device_names: [first.device_name.clone(), second.device_name.clone()],
+        offline_device_names: [&*first, &*second]
+            .into_iter()
+            .filter(|device| device.offline)
+            .map(|device| device.device_name.clone())
+            .collect(),
+        carrier_delete_attempted,
+        carrier_delete_error,
+    })
 }
 
 #[derive(Default, Deserialize, Serialize)]
