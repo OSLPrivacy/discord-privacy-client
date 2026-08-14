@@ -1,8 +1,77 @@
+fn verify_marked_placement(before: &str, after: &str, mark: &str) -> Result<(), String> {
+    if !before.as_bytes().is_empty() {
+        return Err(format!(
+            "composer was not empty before placement: {before:?}"
+        ));
+    }
+    if after != mark {
+        return Err(format!(
+            "readback did not equal placed mark {mark:?}: {after:?}"
+        ));
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SharedTextPlacementReceipt {
+    pub placed_bytes: usize,
+    pub readback_bytes: usize,
+    pub clear_bytes: usize,
+}
+
+/// Provider-neutral text actions used by the shared place-text job.  A service
+/// adapter supplies one already-discovered composer; the shared job owns the
+/// empty-before, exact-readback, and empty-after-clear checks.
+pub trait SharedTextActions {
+    fn read_back_text(&mut self) -> Result<String, String>;
+    fn place_text(&mut self, text: &str) -> Result<(), String>;
+    fn clear_text(&mut self) -> Result<(), String>;
+}
+
+pub fn place_read_back_and_clear(
+    actions: &mut impl SharedTextActions,
+    mark: &str,
+) -> Result<SharedTextPlacementReceipt, String> {
+    if mark.as_bytes().is_empty() {
+        return Err("marked text must contain at least one byte".to_owned());
+    }
+
+    let before_readback = actions.read_back_text()?;
+    println!("before_readback={before_readback:?}");
+    if !before_readback.as_bytes().is_empty() {
+        return Err(format!(
+            "composer was not empty before placement: {before_readback:?}"
+        ));
+    }
+
+    actions.place_text(mark)?;
+    let readback = actions.read_back_text()?;
+    println!("readback={readback:?}");
+    verify_marked_placement(&before_readback, &readback, mark)?;
+
+    actions.clear_text()?;
+    let clear_readback = actions.read_back_text()?;
+    println!("clear_readback={clear_readback:?}");
+    if !clear_readback.as_bytes().is_empty() {
+        return Err(format!(
+            "composer clear left {} bytes: {clear_readback:?}",
+            clear_readback.len()
+        ));
+    }
+
+    Ok(SharedTextPlacementReceipt {
+        placed_bytes: mark.len(),
+        readback_bytes: readback.len(),
+        clear_bytes: clear_readback.len(),
+    })
+}
+
 #[cfg(target_os = "windows")]
 mod windows_place_text {
     use std::ffi::{c_void, OsString};
     use std::mem::size_of;
     use std::os::windows::ffi::OsStringExt;
+    use std::process::{Child, Command, Stdio};
     use std::ptr;
     use std::thread;
     use std::time::{Duration, Instant};
@@ -20,21 +89,22 @@ mod windows_place_text {
     };
     use windows_sys::Win32::Foundation::{CloseHandle, BOOL, HWND, LPARAM, POINT, TRUE};
     use windows_sys::Win32::System::DataExchange::{
-        CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardData, OpenClipboard,
-        SetClipboardData,
+        CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardData,
+        IsClipboardFormatAvailable, OpenClipboard, SetClipboardData,
     };
     use windows_sys::Win32::System::Memory::{
         GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE,
     };
     use windows_sys::Win32::System::Ole::CF_UNICODETEXT;
     use windows_sys::Win32::System::Threading::{
-        AttachThreadInput, GetCurrentThreadId, OpenProcess, QueryFullProcessImageNameW,
+        AttachThreadInput, GetCurrentProcessId, GetCurrentThreadId, OpenProcess,
+        GetExitCodeProcess, QueryFullProcessImageNameW,
         PROCESS_QUERY_LIMITED_INFORMATION,
     };
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
         SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_KEYUP,
         MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MOVE,
-        MOUSEEVENTF_VIRTUALDESK, MOUSEINPUT, VK_CONTROL,
+        MOUSEEVENTF_VIRTUALDESK, MOUSEINPUT, VK_CONTROL, VK_DELETE,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         EnumWindows, GetAncestor, GetCursorPos, GetForegroundWindow, GetSystemMetrics,
@@ -45,6 +115,7 @@ mod windows_place_text {
 
     const DEFAULT_APP: &str = "Discord";
     const DEFAULT_TEXT: &str = "MAPLE-3406";
+    const DEFAULT_PRIVATE_CANARY: &str = "QQQQQQQQQQ";
     const DEFAULT_INITIAL_FRONT: &str = "Photos";
     const EVENT_SYSTEM_ALERT: u32 = 0x0002;
     const ELECTRON_A11Y_OBJECT_ID: i32 = 1;
@@ -52,6 +123,7 @@ mod windows_place_text {
     const MIN_TREE_ELEMENTS: i32 = 10;
     const TREE_WAIT_MS: u64 = 1_000;
     const SETTLE_MS: u64 = 160;
+    const STILL_ACTIVE: u32 = 259;
     const COMPOSER_STEMS: &[&str] = &["message", "nachricht", "mensaje"];
     const NON_COMPOSER_STEMS: &[&str] = &["search", "filter", "buscar"];
 
@@ -60,6 +132,7 @@ mod windows_place_text {
         hwnd: HWND,
         title: String,
         process_name: String,
+        process_id: u32,
     }
 
     struct Search {
@@ -94,10 +167,10 @@ mod windows_place_text {
     }
 
     impl ClipboardRestorer {
-        fn restore(&mut self) -> Result<(), String> {
-            restore_clipboard(&self.snapshot)?;
+        fn restore(&mut self) -> Result<Instant, String> {
+            let removed_at = restore_clipboard(&self.snapshot)?;
             self.restored = true;
-            Ok(())
+            Ok(removed_at)
         }
     }
 
@@ -133,24 +206,35 @@ mod windows_place_text {
 
     pub fn run() -> Result<(), CommandError> {
         let args = Args::parse()?;
+        if let Some(observer) = args.observer {
+            return run_clipboard_observer(observer);
+        }
+        let PlaceArgs {
+            initial_front,
+            app,
+            composer_name,
+            text,
+            private_canary,
+            pause_after_step,
+        } = args.place;
         let initial = foreground_window()
             .ok_or_else(|| CommandError::exit1("Windows reported no foreground window"))?;
         println!(
             "initial_front={}",
             describe_window(&initial).replace('\n', " ")
         );
-        if !window_matches(&initial, &args.initial_front) {
+        if !window_matches(&initial, &initial_front) {
             return Err(CommandError::exit1(format!(
                 "initial front window was not {}",
-                args.initial_front
+                initial_front
             )));
         }
 
-        let discord = match find_window(&args.app) {
+        let discord = match find_window(&app) {
             Some(window) => window,
             None => {
                 println!("osl_clipboard_entries=0");
-                return Err(CommandError::exit1(format!("{} not found", args.app)));
+                return Err(CommandError::exit1(format!("{} not found", app)));
             }
         };
         let initially_behind = !same_root(initial.hwnd, discord.hwnd);
@@ -162,7 +246,7 @@ mod windows_place_text {
         if !initially_behind {
             return Err(CommandError::exit1(format!(
                 "{} was already the foreground window",
-                args.app
+                app
             )));
         }
 
@@ -178,19 +262,20 @@ mod windows_place_text {
         if !same_root(grabbed.hwnd, discord.hwnd) {
             return Err(CommandError::exit1(format!(
                 "{} did not become the foreground window",
-                args.app
+                app
             )));
         }
 
         let _com = initialize_com()?;
         let automation = automation()?;
-        let root = discord_accessibility_root(&automation, discord.hwnd)?;
-        wait_for_tree(&root, &automation)?;
-        let composer = find_composer(&root, &automation)?;
+        let (root, root_route) =
+            accessibility_root(&automation, discord.hwnd, composer_name.as_deref())?;
+        println!("root_route={root_route}");
+        wait_for_tree(&root, &automation, &app)?;
+        let composer = find_composer(&root, &automation, composer_name.as_deref())?;
         println!("composer_name={:?}", element_name(&composer));
-        let bounds = element_bounds(&composer).ok_or_else(|| {
-            CommandError::exit1(format!("{} composer bounds not found", args.app))
-        })?;
+        let bounds = element_bounds(&composer)
+            .ok_or_else(|| CommandError::exit1(format!("{} composer bounds not found", app)))?;
         println!(
             "composer_bounds={},{},{},{}",
             bounds[0], bounds[1], bounds[2], bounds[3]
@@ -205,63 +290,85 @@ mod windows_place_text {
         if !focus {
             return Err(CommandError::exit1(format!(
                 "{} composer did not take keyboard focus",
-                args.app
+                app
             )));
         }
 
-        let snapshot = snapshot_clipboard()
-            .map_err(|error| CommandError::exit1(format!("clipboard snapshot failed: {error}")))?;
-        let before_digest = snapshot.digest();
-        let mut restorer = ClipboardRestorer {
-            snapshot,
-            restored: false,
+        let mut actions = WindowsComposerTextActions {
+            composer: &composer,
+            private_canary: &private_canary,
+            provider_name: &app,
+            provider_pid: discord.process_id,
+            pause_after_step: pause_after_step.as_deref(),
         };
-        stage_clipboard_text(&args.text)
-            .map_err(|error| CommandError::exit1(format!("clipboard stage failed: {error}")))?;
-        send_ctrl_v().map_err(CommandError::exit1)?;
-        thread::sleep(Duration::from_millis(320));
-
-        let readback = value_of(&composer).unwrap_or_default();
-        println!("readback={readback:?}");
-        restorer
-            .restore()
-            .map_err(|error| CommandError::exit1(format!("clipboard restore failed: {error}")))?;
-        let after_digest = snapshot_clipboard()
-            .map_err(|error| CommandError::exit1(format!("clipboard resnapshot failed: {error}")))?
-            .digest();
-        println!("clipboard_before_digest={before_digest:016x}");
-        println!("clipboard_after_digest={after_digest:016x}");
-        println!("clipboard_restored_exact={}", before_digest == after_digest);
-        println!("osl_clipboard_entries=0");
-
-        if readback != args.text {
-            return Err(CommandError::exit1(format!(
-                "{} readback did not equal {:?}",
-                args.app, args.text
-            )));
-        }
-        if before_digest != after_digest {
-            return Err(CommandError::exit1(
-                "clipboard content changed across placement",
-            ));
-        }
+        // The private draft never enters this command.  Its caller supplies a
+        // canary solely so a live close-provider run can prove the opaque
+        // private-draft fingerprint did not change across a refused attempt.
+        println!("private_draft_fingerprint={:016x}", digest_text(&private_canary));
+        let receipt = match super::place_read_back_and_clear(&mut actions, &text) {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                println!("covers_sent=0");
+                return Err(CommandError::exit1(format!("{app} {error}")));
+            }
+        };
+        println!("placed_bytes={}", receipt.placed_bytes);
+        println!("readback_bytes={}", receipt.readback_bytes);
+        println!("clear_bytes={}", receipt.clear_bytes);
+        println!("covers_sent=0");
         Ok(())
     }
 
     struct Args {
+        place: PlaceArgs,
+        observer: Option<ObserverArgs>,
+    }
+
+    struct PlaceArgs {
         initial_front: String,
         app: String,
+        composer_name: Option<String>,
         text: String,
+        private_canary: String,
+        pause_after_step: Option<String>,
+    }
+
+    struct ObserverArgs {
+        needle: String,
+        timeout: Duration,
     }
 
     impl Args {
         fn parse() -> Result<Self, CommandError> {
             let mut initial_front = DEFAULT_INITIAL_FRONT.to_owned();
             let mut app = DEFAULT_APP.to_owned();
+            let mut composer_name = None;
             let mut text = DEFAULT_TEXT.to_owned();
+            let mut private_canary = DEFAULT_PRIVATE_CANARY.to_owned();
+            let mut pause_after_step = None;
+            let mut observer = false;
+            let mut observer_needle = String::new();
+            let mut observer_timeout = Duration::from_millis(3_000);
             let mut args = std::env::args().skip(1);
             while let Some(arg) = args.next() {
                 match arg.as_str() {
+                    "--clipboard-observer" => {
+                        observer = true;
+                    }
+                    "--observer-needle" => {
+                        observer_needle = args.next().ok_or_else(|| {
+                            CommandError::usage("--observer-needle needs a value")
+                        })?;
+                    }
+                    "--observer-timeout-ms" => {
+                        let raw = args.next().ok_or_else(|| {
+                            CommandError::usage("--observer-timeout-ms needs a value")
+                        })?;
+                        let millis = raw.parse::<u64>().map_err(|_| {
+                            CommandError::usage("--observer-timeout-ms must be an integer")
+                        })?;
+                        observer_timeout = Duration::from_millis(millis);
+                    }
                     "--initial-front" => {
                         initial_front = args
                             .next()
@@ -272,14 +379,36 @@ mod windows_place_text {
                             .next()
                             .ok_or_else(|| CommandError::usage("--app needs a value"))?;
                     }
+                    "--composer-name" => {
+                        composer_name =
+                            Some(args.next().ok_or_else(|| {
+                                CommandError::usage("--composer-name needs a value")
+                            })?);
+                    }
                     "--text" => {
                         text = args
                             .next()
                             .ok_or_else(|| CommandError::usage("--text needs a value"))?;
                     }
+                    "--private-canary" => {
+                        private_canary = args
+                            .next()
+                            .ok_or_else(|| CommandError::usage("--private-canary needs a value"))?;
+                    }
+                    "--pause-after-step" => {
+                        let step = args.next().ok_or_else(|| {
+                            CommandError::usage("--pause-after-step needs a value")
+                        })?;
+                        if !matches!(step.as_str(), "empty-readback" | "marked-paste" | "exact-readback" | "clear") {
+                            return Err(CommandError::usage(
+                                "--pause-after-step must be empty-readback, marked-paste, exact-readback, or clear",
+                            ));
+                        }
+                        pause_after_step = Some(step);
+                    }
                     "--help" | "-h" => {
                         return Err(CommandError::usage(
-                            "usage: task_3406_place_text [--initial-front Photos] [--app Discord] [--text MAPLE-3406]",
+                            "usage: task_3406_place_text [--initial-front Photos] [--app Discord] [--composer-name Message] [--text MAPLE-3406] [--private-canary QQQQQQQQQQ]",
                         ));
                     }
                     other => {
@@ -290,12 +419,129 @@ mod windows_place_text {
             if text.is_empty() || text.chars().any(|ch| matches!(ch, '\n' | '\r')) {
                 return Err(CommandError::usage("text must be one non-empty line"));
             }
+            if composer_name
+                .as_ref()
+                .is_some_and(|name: &String| name.trim().is_empty())
+            {
+                return Err(CommandError::usage("composer name must not be empty"));
+            }
+            if observer {
+                if observer_needle.is_empty() {
+                    return Err(CommandError::usage(
+                        "--clipboard-observer requires --observer-needle",
+                    ));
+                }
+                return Ok(Self {
+                    place: PlaceArgs {
+                        initial_front,
+                        app,
+                        composer_name,
+                        text,
+                        private_canary,
+                        pause_after_step: None,
+                    },
+                    observer: Some(ObserverArgs {
+                        needle: observer_needle,
+                        timeout: observer_timeout,
+                    }),
+                });
+            }
+            if private_canary.is_empty() || private_canary.chars().any(|ch| text.contains(ch)) {
+                return Err(CommandError::usage(
+                    "--private-canary must be non-empty and share no characters with --text",
+                ));
+            }
             Ok(Self {
-                initial_front,
-                app,
-                text,
+                place: PlaceArgs {
+                    initial_front,
+                    app,
+                    composer_name,
+                    text,
+                    private_canary,
+                    pause_after_step,
+                },
+                observer: None,
             })
         }
+    }
+
+    struct ClipboardObserver {
+        child: Child,
+    }
+
+    struct ClipboardObserverReport {
+        pid: Option<u32>,
+        saw: String,
+    }
+
+    impl ClipboardObserver {
+        fn spawn(needle: &str, timeout: Duration) -> Result<Self, String> {
+            let exe = std::env::current_exe()
+                .map_err(|error| format!("current exe unavailable: {error}"))?;
+            let child = Command::new(exe)
+                .arg("--clipboard-observer")
+                .arg("--observer-needle")
+                .arg(needle)
+                .arg("--observer-timeout-ms")
+                .arg(timeout.as_millis().to_string())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|error| format!("spawn failed: {error}"))?;
+            Ok(Self { child })
+        }
+
+        fn wait(self) -> Result<ClipboardObserverReport, String> {
+            let output = self
+                .child
+                .wait_with_output()
+                .map_err(|error| format!("wait failed: {error}"))?;
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let mut pid = None;
+            let mut saw = None;
+            for line in stdout.lines() {
+                if let Some(value) = line.strip_prefix("observer_pid=") {
+                    pid = value.parse::<u32>().ok();
+                } else if let Some(value) = line.strip_prefix("observer_saw=") {
+                    saw = Some(value.to_owned());
+                }
+            }
+            if !output.status.success() {
+                return Err(format!(
+                    "observer exited {:?}; stdout={stdout:?}; stderr={stderr:?}",
+                    output.status.code()
+                ));
+            }
+            Ok(ClipboardObserverReport {
+                pid,
+                saw: saw.ok_or_else(|| {
+                    format!("observer did not print observer_saw; stdout={stdout:?}")
+                })?,
+            })
+        }
+    }
+
+    fn run_clipboard_observer(args: ObserverArgs) -> Result<(), CommandError> {
+        println!("observer_pid={}", unsafe { GetCurrentProcessId() });
+        let started = Instant::now();
+        let mut last_text = None;
+        while started.elapsed() < args.timeout {
+            if let Ok(Some(text)) = read_clipboard_unicode_text() {
+                if text == args.needle {
+                    println!("observer_saw={text}");
+                    return Ok(());
+                }
+                last_text = Some(text);
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        if let Some(text) = last_text {
+            println!("observer_saw={text}");
+        }
+        Err(CommandError::exit1(
+            "observer did not see requested clipboard text",
+        ))
     }
 
     fn initialize_com() -> Result<ComGuard, CommandError> {
@@ -315,13 +561,25 @@ mod windows_place_text {
         })
     }
 
-    fn discord_accessibility_root(
+    fn accessibility_root(
         automation: &IUIAutomation,
         hwnd: HWND,
-    ) -> Result<IUIAutomationElement, CommandError> {
+        composer_name: Option<&str>,
+    ) -> Result<(IUIAutomationElement, &'static str), CommandError> {
+        if let Ok(root) =
+            unsafe { automation.ElementFromHandle(windows::Win32::Foundation::HWND(hwnd as _)) }
+        {
+            if subtree_len(&root, automation) >= MIN_TREE_ELEMENTS
+                && find_composer(&root, automation, composer_name).is_ok()
+            {
+                return Ok((root, "uia_native"));
+            }
+        }
+
         let accessible = wake_electron_accessibility(hwnd)
-            .ok_or_else(|| CommandError::exit1("Discord accessibility wake failed"))?;
+            .ok_or_else(|| CommandError::exit1("accessibility root not available"))?;
         unsafe { automation.ElementFromIAccessible(&accessible, 0) }
+            .map(|root| (root, "msaa_client_after_wake"))
             .map_err(|error| CommandError::exit1(format!("MSAA bridge failed: {error:?}")))
     }
 
@@ -358,6 +616,7 @@ mod windows_place_text {
     fn wait_for_tree(
         root: &IUIAutomationElement,
         automation: &IUIAutomation,
+        app: &str,
     ) -> Result<(), CommandError> {
         let started = Instant::now();
         loop {
@@ -368,7 +627,7 @@ mod windows_place_text {
             }
             if started.elapsed() >= Duration::from_millis(TREE_WAIT_MS) {
                 return Err(CommandError::exit1(format!(
-                    "Discord accessibility tree never populated: saw {count}, needed {MIN_TREE_ELEMENTS}"
+                    "{app} accessibility tree never populated: saw {count}, needed {MIN_TREE_ELEMENTS}"
                 )));
             }
             thread::sleep(Duration::from_millis(100));
@@ -388,6 +647,7 @@ mod windows_place_text {
     fn find_composer(
         root: &IUIAutomationElement,
         automation: &IUIAutomation,
+        composer_name: Option<&str>,
     ) -> Result<IUIAutomationElement, CommandError> {
         let condition = unsafe { automation.CreateTrueCondition() }.map_err(|error| {
             CommandError::exit1(format!("UI Automation condition failed: {error:?}"))
@@ -401,20 +661,20 @@ mod windows_place_text {
             let Ok(element) = (unsafe { found.GetElement(index) }) else {
                 continue;
             };
-            if element_is_composer(&element) {
+            if element_is_composer(&element, composer_name) {
                 matches.push(element);
             }
         }
         match matches.len() {
             1 => Ok(matches.remove(0)),
-            0 => Err(CommandError::exit1("Discord composer not found")),
+            0 => Err(CommandError::exit1("named composer not found")),
             count => Err(CommandError::exit1(format!(
-                "Discord composer ambiguous: {count} candidates"
+                "named composer ambiguous: {count} candidates"
             ))),
         }
     }
 
-    fn element_is_composer(element: &IUIAutomationElement) -> bool {
+    fn element_is_composer(element: &IUIAutomationElement, composer_name: Option<&str>) -> bool {
         let control_type = unsafe { element.CurrentControlType() }.ok();
         if !control_type.is_some_and(|kind| {
             kind == UIA_EditControlTypeId
@@ -435,7 +695,11 @@ mod windows_place_text {
         let read_only = unsafe { pattern.CurrentIsReadOnly() }
             .map(|value| value.as_bool())
             .unwrap_or(true);
-        enabled && focusable && !read_only && name_is_composer(&element_name(element))
+        let name = element_name(element);
+        let name_matches = composer_name
+            .map(|wanted| name.trim() == wanted.trim())
+            .unwrap_or_else(|| name_is_composer(&name));
+        enabled && focusable && !read_only && name_matches
     }
 
     fn value_pattern(element: &IUIAutomationElement) -> Option<IUIAutomationValuePattern> {
@@ -450,6 +714,164 @@ mod windows_place_text {
         unsafe { pattern.CurrentValue() }
             .ok()
             .map(|value| value.to_string())
+    }
+
+    fn wait_for_value(
+        element: &IUIAutomationElement,
+        expected: &str,
+        timeout: Duration,
+    ) -> Result<String, CommandError> {
+        let started = Instant::now();
+        let mut last = String::new();
+        while started.elapsed() < timeout {
+            last = value_of(element).unwrap_or_default();
+            if last == expected {
+                return Ok(last);
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        Ok(last)
+    }
+
+    struct WindowsComposerTextActions<'a> {
+        composer: &'a IUIAutomationElement,
+        private_canary: &'a str,
+        provider_name: &'a str,
+        provider_pid: u32,
+        pause_after_step: Option<&'a str>,
+    }
+
+    impl WindowsComposerTextActions<'_> {
+        /// A live-run test may pause at one named shipping step and terminate
+        /// the exact process which owns the discovered provider window.  This
+        /// is deliberately in the writer, not a provider-process fixture: the
+        /// next writer operation observes the death and reports a retry-safe
+        /// refusal before any send boundary exists.
+        fn pause_and_require_live_provider(&self, step: &str) -> Result<(), String> {
+            if self.pause_after_step == Some(step) {
+                println!(
+                    "TASK3585_PAUSED provider={} pid={} step={step}",
+                    self.provider_name, self.provider_pid
+                );
+                for _ in 0..400 {
+                    if !provider_process_is_live(self.provider_pid) {
+                        return Err(format!(
+                            "{} closed during {step}. Your message was not sent anywhere. Retry placement in {}.",
+                            self.provider_name, self.provider_name
+                        ));
+                    }
+                    thread::sleep(Duration::from_millis(25));
+                }
+                return Err(format!(
+                    "{} did not close during requested {step} pause; refusing marked placement. Your message was not sent anywhere. Retry placement in {}.",
+                    self.provider_name, self.provider_name
+                ));
+            }
+            if !provider_process_is_live(self.provider_pid) {
+                return Err(format!(
+                    "{} closed during {step}. Your message was not sent anywhere. Retry placement in {}.",
+                    self.provider_name, self.provider_name
+                ));
+            }
+            Ok(())
+        }
+    }
+
+    impl super::SharedTextActions for WindowsComposerTextActions<'_> {
+        fn read_back_text(&mut self) -> Result<String, String> {
+            let value = value_of(self.composer)
+                .ok_or_else(|| "composer value could not be read back".to_owned())?;
+            // `place_read_back_and_clear` calls this before placement, after
+            // the paste, and after clear.  Only those concrete runtime steps
+            // are eligible for the close-provider pause.
+            let step = if value.is_empty() { "empty-readback" } else { "exact-readback" };
+            self.pause_and_require_live_provider(step)?;
+            Ok(value)
+        }
+
+        fn place_text(&mut self, text: &str) -> Result<(), String> {
+            let snapshot = snapshot_clipboard()
+                .map_err(|error| format!("clipboard snapshot failed: {error}"))?;
+            let before_digest = snapshot.digest();
+            let before_text = snapshot.unicode_text();
+            let mut restorer = ClipboardRestorer {
+                snapshot,
+                restored: false,
+            };
+            let observer = ClipboardObserver::spawn(text, Duration::from_millis(3_000))
+                .map_err(|error| format!("clipboard observer failed: {error}"))?;
+            let staged_at = stage_clipboard_text(&text)
+                .map_err(|error| format!("clipboard stage failed: {error}"))?;
+            send_ctrl_v()?;
+            self.pause_and_require_live_provider("marked-paste")?;
+            let readback = wait_for_value(self.composer, text, Duration::from_millis(1_200))
+                .map_err(|error| error.message)?;
+            let observer_report = observer
+                .wait()
+                .map_err(|error| format!("clipboard observer failed: {error}"))?;
+
+            let removed_at = restorer
+                .restore()
+                .map_err(|error| format!("clipboard restore failed: {error}"))?;
+            let exposure_ms = removed_at.saturating_duration_since(staged_at).as_millis();
+            let after_snapshot = snapshot_clipboard()
+                .map_err(|error| format!("clipboard resnapshot failed: {error}"))?;
+            let after_digest = after_snapshot.digest();
+            let after_text = after_snapshot.unicode_text();
+            let private_chars_found = private_canary_chars_reaching_clipboard(
+                self.private_canary,
+                &[text, observer_report.saw.as_str()],
+            );
+            let private_chars = private_chars_found.chars().count();
+            println!("clipboard_exposure_ms={exposure_ms}");
+            println!("clipboard_private_chars={private_chars}");
+            println!("clipboard_private_chars_found={private_chars_found:?}");
+            println!("clipboard_original_text_before={before_text:?}");
+            println!("clipboard_original_text_after={after_text:?}");
+            println!("clipboard_before_digest={before_digest:016x}");
+            println!("clipboard_after_digest={after_digest:016x}");
+            println!("clipboard_restored_exact={}", before_digest == after_digest);
+            println!(
+                "clipboard_second_program_pid={}",
+                observer_report.pid.unwrap_or(0)
+            );
+            println!("clipboard_second_program_saw={:?}", observer_report.saw);
+            println!("osl_clipboard_entries=0");
+            if readback != text {
+                return Err(format!("readback did not equal {text:?}"));
+            }
+            if before_digest != after_digest {
+                return Err("clipboard content changed across placement".to_owned());
+            }
+            if before_text != after_text {
+                return Err("clipboard text changed across placement".to_owned());
+            }
+            if observer_report.saw != text {
+                return Err(format!(
+                    "clipboard observer saw {:?}, not {:?}",
+                    observer_report.saw, text
+                ));
+            }
+            if private_chars != 0 {
+                return Err(format!(
+                    "{private_chars} private canary characters reached the clipboard: {private_chars_found:?}"
+                ));
+            }
+            Ok(())
+        }
+
+        fn clear_text(&mut self) -> Result<(), String> {
+            self.pause_and_require_live_provider("clear")?;
+            let focused = unsafe { self.composer.CurrentHasKeyboardFocus() }
+                .map(|value| value.as_bool())
+                .unwrap_or(false);
+            if !focused {
+                return Err("composer lost keyboard focus before clear".to_owned());
+            }
+            send_ctrl_a_delete()?;
+            thread::sleep(Duration::from_millis(220));
+            Ok(())
+        }
     }
 
     fn element_name(element: &IUIAutomationElement) -> String {
@@ -514,11 +936,34 @@ mod windows_place_text {
     }
 
     fn window_info(hwnd: HWND) -> WindowInfo {
+        let mut process_id = 0;
+        unsafe { GetWindowThreadProcessId(hwnd, &mut process_id) };
         WindowInfo {
             hwnd,
             title: window_title(hwnd),
             process_name: window_process_name(hwnd).unwrap_or_default(),
+            process_id,
         }
+    }
+
+    fn provider_process_is_live(pid: u32) -> bool {
+        if pid == 0 {
+            return false;
+        }
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if handle.is_null() {
+            return false;
+        }
+        let mut exit_code = 0;
+        let live = unsafe { GetExitCodeProcess(handle, &mut exit_code) } != 0 && exit_code == STILL_ACTIVE;
+        unsafe { CloseHandle(handle) };
+        live
+    }
+
+    fn digest_text(value: &str) -> u64 {
+        value.as_bytes().iter().fold(0xcbf29ce484222325u64, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+        })
     }
 
     fn window_matches(window: &WindowInfo, wanted: &str) -> bool {
@@ -671,6 +1116,40 @@ mod windows_place_text {
         Ok(())
     }
 
+    fn send_ctrl_a_delete() -> Result<(), String> {
+        let key = |vk: u16, flags: u32| INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: vk,
+                    wScan: 0,
+                    dwFlags: flags,
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        };
+        let inputs = [
+            key(VK_CONTROL, 0),
+            key(u16::from(b'A'), 0),
+            key(u16::from(b'A'), KEYEVENTF_KEYUP),
+            key(VK_CONTROL, KEYEVENTF_KEYUP),
+            key(VK_DELETE, 0),
+            key(VK_DELETE, KEYEVENTF_KEYUP),
+        ];
+        let accepted = unsafe {
+            SendInput(
+                inputs.len() as u32,
+                inputs.as_ptr(),
+                size_of::<INPUT>() as i32,
+            )
+        };
+        if accepted != inputs.len() as u32 {
+            return Err("Windows rejected Ctrl+A/Delete".to_owned());
+        }
+        Ok(())
+    }
+
     fn snapshot_clipboard() -> Result<ClipboardSnapshot, String> {
         with_clipboard(|| {
             let mut formats = Vec::new();
@@ -701,7 +1180,7 @@ mod windows_place_text {
         })
     }
 
-    fn stage_clipboard_text(value: &str) -> Result<(), String> {
+    fn stage_clipboard_text(value: &str) -> Result<Instant, String> {
         let utf16 = value
             .encode_utf16()
             .chain(std::iter::once(0))
@@ -713,19 +1192,51 @@ mod windows_place_text {
             if unsafe { EmptyClipboard() } == 0 {
                 return Err("clipboard clear failed".to_owned());
             }
-            set_clipboard_bytes(CF_UNICODETEXT as u32, bytes)
+            set_clipboard_bytes(CF_UNICODETEXT as u32, bytes)?;
+            Ok(Instant::now())
         })
     }
 
-    fn restore_clipboard(snapshot: &ClipboardSnapshot) -> Result<(), String> {
+    fn restore_clipboard(snapshot: &ClipboardSnapshot) -> Result<Instant, String> {
         with_clipboard(|| {
             if unsafe { EmptyClipboard() } == 0 {
                 return Err("clipboard clear failed".to_owned());
             }
+            let removed_at = Instant::now();
             for format in &snapshot.formats {
                 set_clipboard_bytes(format.format, &format.bytes)?;
             }
-            Ok(())
+            Ok(removed_at)
+        })
+    }
+
+    fn read_clipboard_unicode_text() -> Result<Option<String>, String> {
+        with_clipboard(|| {
+            if unsafe { IsClipboardFormatAvailable(CF_UNICODETEXT as u32) } == 0 {
+                return Ok(None);
+            }
+            let handle = unsafe { GetClipboardData(CF_UNICODETEXT as u32) };
+            if handle.is_null() {
+                return Ok(None);
+            }
+            let size = unsafe { GlobalSize(handle as _) };
+            if size < size_of::<u16>() {
+                return Ok(None);
+            }
+            let source = unsafe { GlobalLock(handle as _) };
+            if source.is_null() {
+                return Err("clipboard text could not be locked".to_owned());
+            }
+            let units = unsafe {
+                std::slice::from_raw_parts(source.cast::<u16>(), size / size_of::<u16>())
+            };
+            let nul = units
+                .iter()
+                .position(|unit| *unit == 0)
+                .unwrap_or(units.len());
+            let text = String::from_utf16_lossy(&units[..nul]);
+            unsafe { GlobalUnlock(handle as _) };
+            Ok(Some(text))
         })
     }
 
@@ -790,6 +1301,30 @@ mod windows_place_text {
             }
             hash
         }
+
+        fn unicode_text(&self) -> Option<String> {
+            let text = self
+                .formats
+                .iter()
+                .find(|format| format.format == CF_UNICODETEXT as u32)?;
+            let units = text
+                .bytes
+                .chunks_exact(size_of::<u16>())
+                .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+                .collect::<Vec<_>>();
+            let nul = units
+                .iter()
+                .position(|unit| *unit == 0)
+                .unwrap_or(units.len());
+            Some(String::from_utf16_lossy(&units[..nul]))
+        }
+    }
+
+    fn private_canary_chars_reaching_clipboard(canary: &str, observations: &[&str]) -> String {
+        canary
+            .chars()
+            .filter(|private| observations.iter().any(|seen| seen.contains(*private)))
+            .collect()
     }
 
     fn window_title(hwnd: HWND) -> String {
@@ -846,4 +1381,35 @@ fn main() {
 fn main() {
     eprintln!("task_3406_place_text requires Windows");
     std::process::exit(2);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::verify_marked_placement;
+
+    fn random_mark() -> String {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock is after epoch")
+            .as_nanos();
+        format!("TASK3415-{nanos:x}-OSL")
+    }
+
+    #[test]
+    fn task_3415_empty_before_exact_after_check_is_not_vacuous() {
+        let mark = random_mark();
+
+        assert!(verify_marked_placement("", &mark, &mark).is_ok());
+        let dirty = verify_marked_placement("owner draft", &mark, &mark)
+            .expect_err("a non-empty composer must fail before placement");
+        let noop = verify_marked_placement("", "", &mark)
+            .expect_err("a no-op placing job must fail the exact readback");
+
+        eprintln!(
+            "task3415 mark={mark:?} before={:?} after={mark:?} noop_after={:?} noop_failed=true",
+            "", ""
+        );
+        assert!(dirty.contains("not empty"));
+        assert!(noop.contains("readback did not equal placed mark"));
+    }
 }
